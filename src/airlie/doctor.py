@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+import httpx
+
 from airlie.config import AirlieConfig
 
 Status = Literal["ok", "warn", "fail"]
@@ -28,6 +30,7 @@ class SystemProbe(Protocol):
     def model_snapshot_dir(self, repo: str, revision: str) -> Path | None: ...
     def tool_version(self, name: str) -> str | None: ...
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
+    def http_ok(self, url: str) -> bool: ...
 
 
 def is_hybrid_attention(config: dict[str, Any]) -> bool | None:
@@ -97,6 +100,12 @@ class RealProbe:
         except (OSError, ValueError):
             return None
         return obj if isinstance(obj, dict) else None
+
+    def http_ok(self, url: str) -> bool:
+        try:
+            return httpx.get(url, timeout=3.0).status_code == 200
+        except httpx.HTTPError:
+            return False
 
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
@@ -183,6 +192,13 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 CheckResult(
                     f"engine:{ename}:memory_budget", "ok", f"{e.memory_budget_gb} GB of {ram_gb:.0f} GiB"
                 )
+            )
+        health_url = f"{(e.base_url or '').removesuffix('/v1')}/health"
+        if probe.http_ok(health_url):
+            results.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
+        else:
+            results.append(
+                CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up")
             )
         projected, unknown = project_memory_gb(cfg, ename)
         limit_gb = cfg.memory.wired_limit_mb / 1024.0

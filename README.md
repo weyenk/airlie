@@ -39,12 +39,22 @@ Run `task` to list them. The ones that exist today:
 | `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools, vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
-| `task test` / `task lint` / `task typecheck` / `task check` | unit tests / ruff / mypy / all three |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
+| `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
+| `task bench:models` | the same for every catalog model marked `bench: true`, one table |
+| `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
+| `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task fmt` | auto-format and auto-fix lint |
 
-Coming per the roadmap: `task up/down/status/logs` (manage the vllm-mlx process), `task run -- "goal"`,
-`task serve`, `task bench`, `task bench:models`, `task bench:lts`, `task events`, `task trace`, `task memory`,
-`task controller:*`.
+Coming per the roadmap: `task run -- "goal"`, `task serve`, `task bench:lts`, `task events`, `task trace`,
+`task memory`, `task controller:*`.
+
+## Choosing the team model
+
+`task doctor` warns when a catalog model uses hybrid (linear/SSM) attention: vllm-mlx 0.5.0 cannot keep prefix-cache
+entries for those, so every agent turn re-prefills the whole conversation (measured: a 4k-token prefix cost 4.3 s on
+every turn with Qwen3.8-27B, versus 72 ms on turn 2 with a standard-attention model). Keep `roles.coder.model` on a
+standard-attention model; the numbers are in [`docs/bench/`](docs/bench/).
 
 ## Configuration
 

@@ -39,6 +39,9 @@ class FakeProbe(SystemProbe):
     def model_config(self, repo: str, revision: str) -> dict | None:
         return None
 
+    def http_ok(self, url: str) -> bool:
+        return True
+
 
 def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
     data = {
@@ -250,3 +253,29 @@ def test_attention_check_skipped_when_config_unreadable(tmp_path: Path) -> None:
     )
     names = {r.name for r in run_checks(cfg, ConfigProbe({}, snapshots={"org/model@r1"}))}
     assert "model:team:attention" not in names
+
+
+# ---- engine health row (M1 Task 5) ----
+
+
+class HealthProbe(ConfigProbe):
+    def __init__(self, health: dict[str, bool], **kw) -> None:
+        super().__init__({}, **kw)
+        self._health = health
+
+    def http_ok(self, url: str) -> bool:
+        return self._health.get(url, False)
+
+
+def test_engine_health_ok_when_health_endpoint_answers(tmp_path: Path) -> None:
+    cfg = managed(tmp_path)
+    probe = HealthProbe({"http://127.0.0.1:8080/health": True}, snapshots={"org/model@r1"})
+    r = by_name(run_checks(cfg, probe))["engine:main:health"]
+    assert r.status == "ok"
+
+
+def test_engine_health_warn_when_not_running(tmp_path: Path) -> None:
+    cfg = managed(tmp_path)
+    r = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
+    assert r.status == "warn"
+    assert "task up" in r.detail
