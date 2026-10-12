@@ -1,0 +1,85 @@
+{
+ "rows": [
+  {
+   "task": "inventory_cli",
+   "controller": "never",
+   "repeat": 0,
+   "wall_s": 386.6,
+   "steps": 96,
+   "prompt_tokens": 41434,
+   "completion_tokens": 18326,
+   "admissions": 0,
+   "retrievals": 0,
+   "teams_passed": 1,
+   "teams": 3,
+   "run_id": "20261012-180534-40a3"
+  },
+  {
+   "task": "inventory_cli",
+   "controller": "heuristic",
+   "repeat": 0,
+   "wall_s": 222.7,
+   "steps": 73,
+   "prompt_tokens": 134400,
+   "completion_tokens": 10757,
+   "admissions": 23,
+   "retrievals": 0,
+   "teams_passed": 1,
+   "teams": 3,
+   "run_id": "20261012-181203-dbec"
+  },
+  {
+   "task": "log_pipeline",
+   "controller": "never",
+   "repeat": 0,
+   "wall_s": 210.1,
+   "steps": 81,
+   "prompt_tokens": 420851,
+   "completion_tokens": 20994,
+   "admissions": 0,
+   "retrievals": 0,
+   "teams_passed": 0,
+   "teams": 3,
+   "run_id": "20261012-181547-9437"
+  },
+  {
+   "task": "log_pipeline",
+   "controller": "heuristic",
+   "repeat": 0,
+   "wall_s": 843.6,
+   "steps": 115,
+   "prompt_tokens": 166475,
+   "completion_tokens": 86714,
+   "admissions": 62,
+   "retrievals": 0,
+   "teams_passed": 0,
+   "teams": 3,
+   "run_id": "20261012-181918-fec9"
+  }
+ ],
+ "summary": {
+  "never": {
+   "runs": 2.0,
+   "mean_wall_s": 298.4,
+   "mean_steps": 88.5,
+   "mean_admissions": 0.0,
+   "mean_retrievals": 0.0,
+   "pass_rate": 0.5,
+   "team_pass_rate": 0.167
+  },
+  "heuristic": {
+   "runs": 2.0,
+   "mean_wall_s": 533.1,
+   "mean_steps": 94.0,
+   "mean_admissions": 42.5,
+   "mean_retrievals": 0.0,
+   "pass_rate": 0.5,
+   "team_pass_rate": 0.167
+  }
+ },
+ "verdict": {
+  "reduction_pct": -78.7,
+  "met": false,
+  "text": "wall-clock 298.4s \u2192 533.1s (-78.7 % reduction; target \u2265 25 %); pass rate 0.50 \u2192 0.50; criterion NOT met"
+ }
+}
