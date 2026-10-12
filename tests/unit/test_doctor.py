@@ -279,3 +279,25 @@ def test_engine_health_warn_when_not_running(tmp_path: Path) -> None:
     r = by_name(run_checks(cfg, HealthProbe({}, snapshots={"org/model@r1"})))["engine:main:health"]
     assert r.status == "warn"
     assert "task up" in r.detail
+
+
+def test_standard_config_without_layer_types_is_classified_standard() -> None:
+    from airlie.doctor import is_hybrid_attention
+
+    assert (
+        is_hybrid_attention({"num_attention_heads": 32, "num_key_value_heads": 4, "model_type": "qwen3_moe"})
+        is False
+    )
+    assert is_hybrid_attention({"model_type": "mystery"}) is None
+
+
+def test_missing_lazy_model_is_warn_not_fail(tmp_path: Path) -> None:
+    cfg = make_cfg(
+        tmp_path,
+        {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team", "alt"]}},
+        {"team": "org/model", "alt": "org/alt"},
+    )
+    cfg.models["alt"].preload = False
+    r = by_name(run_checks(cfg, FakeProbe(snapshots={"org/model@r1"})))["model:alt"]
+    assert r.status == "warn"
+    assert "lazy" in r.detail and "task models:pull" in r.detail

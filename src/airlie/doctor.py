@@ -46,8 +46,10 @@ def is_hybrid_attention(config: dict[str, Any]) -> bool | None:
             str(t) != "full_attention" and "attention" in str(t) or str(t) in {"mamba", "ssm"}
             for t in layer_types
         )
-    if any(k in text for k in ("linear_num_key_heads", "linear_conv_kernel_dim", "ssm_cfg")):
+    if any(k in text for k in ("linear_num_key_heads", "linear_conv_kernel_dim", "ssm_cfg", "mamba_d_state")):
         return True
+    if "num_attention_heads" in text or "num_key_value_heads" in text:
+        return False  # plain attention stack, nothing hybrid declared
     return None
 
 
@@ -239,12 +241,21 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 results.append(
                     CheckResult(f"model:{mname}:attention", "ok", "standard attention (prefix cache works)")
                 )
-        else:
+        elif m.preload:
             results.append(
                 CheckResult(
                     f"model:{mname}",
                     "fail",
                     f"{m.repo}@{m.revision[:8]} not in HF cache; run: task models:pull",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    f"model:{mname}",
+                    "warn",
+                    f"{m.repo}@{m.revision[:8]} not in HF cache (lazy model, loads on demand); "
+                    f"run: task models:pull -- {mname}",
                 )
             )
     return results
