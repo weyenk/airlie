@@ -1,4 +1,4 @@
-"""LTSObserver: keys injected before each step, each step summarized/judged/admitted after; orchestrator wiring."""
+"""LTSObserver: inject keys before each step; summarize, judge, admit after; orchestrator wiring."""
 
 from __future__ import annotations
 

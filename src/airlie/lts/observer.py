@@ -1,6 +1,6 @@
 """LTSObserver: the Learning-to-Share substrate attached to every team step (spec 01 §4 steps 5–7, 04 §3).
 
-before_step → inject the current summary keys; after_step → summarize (s_t), decide with C_θ, admit (s_t, o_t)."""
+before_step → inject the current summary keys; after_step → summarize (s_t), decide with C_θ, admit."""
 
 from __future__ import annotations
 
