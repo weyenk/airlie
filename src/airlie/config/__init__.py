@@ -4,9 +4,19 @@ from airlie.config.load import ConfigError, load_config
 from airlie.config.schema import (
     AirlieConfig,
     EngineSpec,
+    MCPServerSpec,
     ModelSpec,
     RoleSpec,
     Sampling,
 )
 
-__all__ = ["AirlieConfig", "ConfigError", "EngineSpec", "ModelSpec", "RoleSpec", "Sampling", "load_config"]
+__all__ = [
+    "AirlieConfig",
+    "ConfigError",
+    "EngineSpec",
+    "MCPServerSpec",
+    "ModelSpec",
+    "RoleSpec",
+    "Sampling",
+    "load_config",
+]

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 
 from airlie.engine.types import ToolCall, ToolSchema
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.jsonargs import parse_tool_args
 from airlie.tools.protocol import Tool, ToolContext, ToolResult
 from airlie.tools.shell import Git, RunTests, Shell
 
@@ -52,13 +52,9 @@ class ToolRegistry:
                 False, f"error: unknown tool '{call.name}'; available: {', '.join(self._tools)}"
             )
         try:
-            args = json.loads(call.arguments or "{}")
-            if not isinstance(args, dict):
-                raise ValueError("arguments must be a JSON object")
+            args = parse_tool_args(call.arguments)
         except ValueError as e:
-            return ToolResult(
-                False, f"error: could not parse tool arguments as JSON ({e}): {call.arguments[:200]}"
-            )
+            return ToolResult(False, f"error: {e}; arguments were: {call.arguments[:200]}")
         try:
             return await tool.run(args, self.ctx)
         except Exception as e:  # noqa: BLE001 - a tool bug becomes an observation, never a crash

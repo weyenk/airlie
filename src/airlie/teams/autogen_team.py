@@ -31,6 +31,7 @@ from pydantic import BaseModel, create_model
 
 from airlie.config import RoleSpec
 from airlie.engine.types import ToolCall
+from airlie.teams.autogen_client import RepairingOpenAIClient
 from airlie.teams.native_team import _goal_message
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 from airlie.tools import ToolRegistry
@@ -88,7 +89,7 @@ def build_model_client(
         "family": "unknown",
         "structured_output": False,
     }
-    return OpenAIChatCompletionClient(
+    return RepairingOpenAIClient(
         model=served_model,
         base_url=base_url,
         api_key=api_key or "airlie",
