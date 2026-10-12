@@ -11,7 +11,7 @@ engines:
     kind: vllm_mlx
     host: 127.0.0.1
     port: 8080
-    models: [base, small, llama70b, qwen25_32b]   # one process; preloaded + lazily loadable (vllm-mlx --models-config)
+    models: [base, small, qwen38, llama70b, qwen25_32b]   # one process; preloaded + lazily loadable (--models-config)
     memory_budget_gb: 90           # weights only; KV cache is on top. 128 GB host, 106.5 GB wired limit.
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
@@ -23,16 +23,28 @@ engines:
 
 # ---- Model catalog (pinned HF revisions; `task models:pull` fetches exactly these) ---------------------------------
 # Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
-# Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so
-# `base` is Qwen3.8-27B-4bit and the spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
-# To swap the team model: change `roles.coder.model` (and `aggregator`) to another catalog name.
+# Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
+# spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
+# `base` must be a STANDARD-ATTENTION model: vllm-mlx 0.5.0's prefix cache cannot store hybrid (linear/SSM attention)
+# models such as Qwen3.8-27B, so every agent turn would re-prefill the whole conversation (measured 2026-10-12: a 4k
+# prefix cost 4.3 s on every turn; the same prefix on a standard model hit the cache and dropped to 72 ms).
+# `task doctor` warns on hybrid models. To swap the team model: change `roles.coder.model` (and `aggregator`).
 models:
-  base:
-    repo: mlx-community/Qwen3.8-27B-4bit
-    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
+  base:                            # Qwen3-Coder-30B-A3B: MoE (3B active), standard GQA attention, coding + tool use
+    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+    revision: 6e302ea604ad9ab206367e2c501d1571023e7b6d   # 2025-08-06
     preload: true
     bench: true
-    tags: [modern, coder]
+    tags: [modern, coder, moe]
+    estimated_memory_gb: 17
+    kv_mb_per_1k_tokens: 192
+    tool_call_parser: qwen3_coder
+  qwen38:                          # strongest coder in the ai-mode bake-off, but hybrid attention: no prefix cache
+    repo: mlx-community/Qwen3.8-27B-4bit
+    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
+    preload: false
+    bench: true
+    tags: [modern, coder, hybrid-attention]
     estimated_memory_gb: 16
     kv_mb_per_1k_tokens: 256
     tool_call_parser: qwen
@@ -74,7 +86,7 @@ roles:
     model: base
     max_context: 65536
     max_tokens: 8192
-    thinking: true
+    thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. qwen38)
     thinking_budget: 16384
     sampling: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
   summarizer:                      # LTS summary keys (15–20 words), stateless
@@ -96,7 +108,7 @@ roles:
     model: base
     max_context: 65536
     max_tokens: 4096
-    thinking: true
+    thinking: false
     thinking_budget: 8192
     sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
 

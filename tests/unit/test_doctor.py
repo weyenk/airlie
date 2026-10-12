@@ -36,6 +36,9 @@ class FakeProbe(SystemProbe):
     def tool_version(self, name: str) -> str | None:
         return self._tools.get(name)
 
+    def model_config(self, repo: str, revision: str) -> dict | None:
+        return None
+
 
 def make_cfg(tmp_path: Path, engines: dict, models: dict) -> AirlieConfig:
     data = {
@@ -208,3 +211,42 @@ def test_real_probe_rejects_incomplete_download(tmp_path: Path) -> None:
     snap = make_snapshot(tmp_path, "org/model", "r1", weights="real")
     (snap / "model-00002.safetensors.incomplete").write_bytes(b"\0")
     assert RealProbe(hf_cache=tmp_path).model_snapshot_dir("org/model", "r1") is None
+
+
+# ---- hybrid-attention warning (vllm-mlx 0.5.0 prefix cache cannot store linear/SSM attention state) ----
+
+
+class ConfigProbe(FakeProbe):
+    def __init__(self, configs: dict[str, dict], **kw) -> None:
+        super().__init__(**kw)
+        self._configs = configs
+
+    def model_config(self, repo: str, revision: str) -> dict | None:
+        return self._configs.get(f"{repo}@{revision}")
+
+
+def test_hybrid_attention_model_warns_about_prefix_cache(tmp_path: Path) -> None:
+    cfg = make_cfg(
+        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+    )
+    hybrid = {"text_config": {"layer_types": ["linear_attention", "linear_attention", "full_attention"]}}
+    probe = ConfigProbe({"org/model@r1": hybrid}, snapshots={"org/model@r1"})
+    r = by_name(run_checks(cfg, probe))["model:team:attention"]
+    assert r.status == "warn"
+    assert "hybrid" in r.detail and "prefix cache" in r.detail
+
+
+def test_standard_attention_model_is_ok(tmp_path: Path) -> None:
+    cfg = make_cfg(
+        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+    )
+    probe = ConfigProbe({"org/model@r1": {"layer_types": ["full_attention"] * 4}}, snapshots={"org/model@r1"})
+    assert by_name(run_checks(cfg, probe))["model:team:attention"].status == "ok"
+
+
+def test_attention_check_skipped_when_config_unreadable(tmp_path: Path) -> None:
+    cfg = make_cfg(
+        tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
+    )
+    names = {r.name for r in run_checks(cfg, ConfigProbe({}, snapshots={"org/model@r1"}))}
+    assert "model:team:attention" not in names

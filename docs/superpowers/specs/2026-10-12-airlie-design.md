@@ -64,7 +64,7 @@ trace; config errors name the key path; no client-specific hooks.
 
 | Topic | Spec says | airlie does | Why |
 | --- | --- | --- | --- |
-| Base model | Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit | default `Qwen3.8-27B-4bit`; both spec models in the catalog, pinned, `bench: true` | Noah: modern model for the same slot is fine if configurable and benchmarkable |
+| Base model | Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit | default `Qwen3-Coder-30B-A3B-Instruct-4bit`; both spec models and Qwen3.8-27B in the catalog, pinned, `bench: true` | Noah: modern model for the same slot is fine if configurable and benchmarkable. Qwen3.8-27B was the first default but is hybrid-attention (see below) |
 | Framework | AutoGen / LangGraph | AutoGen default, native fallback behind one seam | Noah: stick with the spec |
 | `--max-kv-size` | 8192 (02 §1) vs 32K–64K per team (01 §1) | 65536, one-line override | internal inconsistency; coding agents need the context |
 | Controller base | text: Qwen3-0.6B; code: Qwen2.5-0.6B-Instruct; YES/NO ids hard-coded | Qwen3-0.6B; ids looked up from the tokenizer | internal inconsistency |
@@ -106,3 +106,23 @@ Recorded with `scripts/record_fixtures.py` against `vllm-mlx serve --continuous-
 - **Qwen3.8-27B-4bit loads as an MLLM** (`mllm=True`, "Native video pipeline enabled"), so vllm-mlx uses its MLLM
   scheduler for the base model; MLLM-specific limits (MTP only at batch size 1, fixed MLLM prefill step) apply.
   First request after startup: 1.1 s for 16 tokens.
+
+## Prefix cache and hybrid-attention models (measured 2026-10-12)
+
+Spec 02 §3 requires prefix caching so an agent's next turn does not re-prefill the conversation. Measured through
+`HTTPEngine` against the managed vllm-mlx engine, three turns sharing a 4k-token system prompt:
+
+| Model | Attention | Turn 1 TTFT | Turn 2 TTFT | Turn 3 TTFT | Server log |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3-4B-4bit (`small`) | standard | 975 ms | 72 ms | 81 ms | `cache_fetch HIT cached=4017` |
+| Qwen3.8-27B-4bit | hybrid (3 of 4 layers `linear_attention`) | 4455 ms | 4232 ms | 4248 ms | full chunked prefill every turn, no fetch |
+| Qwen3.8-27B-4bit, identical prompt ×3 | hybrid | 3935 ms | 3777 ms | 3768 ms | store skipped |
+
+Cause, from vllm-mlx 0.5.0 source: `memory_cache.py` blocks longest-common-prefix lookups for hybrid models
+("SSM state can't be rewound") and `mllm_batch_generator._store_prefix_snapshot` skips the store when the cache
+"cannot be rewound safely". So Qwen3.5/3.8-class models (Gated DeltaNet + attention) get no prefix-cache benefit at
+all in this engine version, and a 20k-token conversation costs ~21 s of prefill on every single step.
+
+Decision: team roles use a standard-attention base model (`Qwen3-Coder-30B-A3B-Instruct-4bit`, MoE, standard GQA).
+Qwen3.8-27B stays in the catalog (`qwen38`, `bench: true`) for `task bench:models`, and `task doctor` warns on any
+hybrid-attention catalog model. Revisit when vllm-mlx can snapshot hybrid caches.

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from airlie.config import AirlieConfig
 
@@ -26,6 +27,25 @@ class SystemProbe(Protocol):
     def total_ram_bytes(self) -> int: ...
     def model_snapshot_dir(self, repo: str, revision: str) -> Path | None: ...
     def tool_version(self, name: str) -> str | None: ...
+    def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
+
+
+def is_hybrid_attention(config: dict[str, Any]) -> bool | None:
+    """True when the checkpoint mixes linear/SSM layers with attention (Qwen3.5/3.8, Qwen3-Next, Mamba).
+
+    vllm-mlx 0.5.0's prefix cache cannot rewind SSM state, so such models never get prefix-cache hits
+    (measured 2026-10-12). None when the config does not say."""
+    text = config.get("text_config") if isinstance(config.get("text_config"), dict) else config
+    assert isinstance(text, dict)
+    layer_types = text.get("layer_types") or text.get("layers_block_type")
+    if isinstance(layer_types, list) and layer_types:
+        return any(
+            str(t) != "full_attention" and "attention" in str(t) or str(t) in {"mamba", "ssm"}
+            for t in layer_types
+        )
+    if any(k in text for k in ("linear_num_key_heads", "linear_conv_kernel_dim", "ssm_cfg")):
+        return True
+    return None
 
 
 class RealProbe:
@@ -67,6 +87,16 @@ class RealProbe:
         if all(p.resolve().is_file() and p.resolve().stat().st_size > 0 for p in weights):
             return d
         return None
+
+    def model_config(self, repo: str, revision: str) -> dict[str, Any] | None:
+        d = self.model_snapshot_dir(repo, revision)
+        if d is None:
+            return None
+        try:
+            obj = json.loads((d / "config.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return obj if isinstance(obj, dict) else None
 
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
@@ -178,6 +208,21 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
         d = probe.model_snapshot_dir(m.repo, m.revision)
         if d:
             results.append(CheckResult(f"model:{mname}", "ok", f"{m.repo}@{m.revision[:8]}"))
+            conf = probe.model_config(m.repo, m.revision)
+            hybrid = is_hybrid_attention(conf) if conf is not None else None
+            if hybrid is True:
+                results.append(
+                    CheckResult(
+                        f"model:{mname}:attention",
+                        "warn",
+                        "hybrid (linear/SSM) attention: vllm-mlx 0.5.0 prefix cache cannot store it, every "
+                        "turn re-prefills the whole conversation; prefer standard attention for team roles",
+                    )
+                )
+            elif hybrid is False:
+                results.append(
+                    CheckResult(f"model:{mname}:attention", "ok", "standard attention (prefix cache works)")
+                )
         else:
             results.append(
                 CheckResult(
