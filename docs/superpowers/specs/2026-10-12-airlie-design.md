@@ -164,6 +164,27 @@ divergent work is what M4's `task bench:lts` measures. Two loop fixes came out o
 counts context + generated tokens (resent history is prefix-cached and was exhausting the budget), and the
 repeated-action stop requires identical outputs (a run-tests fix loop is not a stuck loop).
 
+## LTS follow-up (2026-10-12): admission off the critical path, ranked injection
+
+The first `task bench:lts` on the bigger tasks (`docs/bench/2026-10-12-lts-bench-bigger.md`) showed LTS as pure
+overhead: `after_step` awaited the summarizer and the controller before the team's next turn, every step
+re-injected the last 32 keys, and no team ever called `retrieve_value`. Two changes, both behind config:
+
+- **Background admission** (`lts.background_admission: true`, `lts.admission_concurrency: 2`). `after_step`
+  schedules summarize + decide as a task under a semaphore and returns at once; the orchestrator calls
+  `LTSObserver.drain()` after the teams finish, before aggregation, so every decision is in the bank and the log
+  before the run is reported. A failing summarizer or controller emits `admission_error` instead of taking the
+  team down. Spec 01 §4 step 5 still holds: admission happens after step completion; it just no longer blocks
+  the next step. The blueprint `run_step` keeps the synchronous order.
+- **Ranked injection** (`lts.ranking: relevance | recency`, `lts.max_keys: 12`, `lts.inject_own: false`,
+  `lts.inline_top: 2`, `lts.inline_chars: 1500`). Keys are ranked for each team by distinct-token overlap between
+  the key (plus the head of its value) and the team's context (task query + its last step), identifiers split
+  into parts; ties stay newest first; a team never sees its own keys; the top fresh keys carry their value inline
+  once per team, so the obvious hits need no tool call. The key lines keep the spec 04 §3 `- Key [id]: summary`
+  format and `recency` restores the blueprint order. A spec deviation, stated: spec 04 §3 injects *every* key;
+  the ranked, own-excluded, value-inlined block is what makes spec 01 §4 step 7 ("if relevant, they fetch o_i")
+  reachable for a coding agent that otherwise never fetches.
+
 ## M5 result (2026-10-12)
 
 The spec 03 §2 controller is implemented as written (frozen Qwen3-0.6B embedder φ, `proj_query/proj_mem/proj_step`,

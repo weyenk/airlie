@@ -83,9 +83,12 @@ per-request draft length, so the budgets are computed and logged but only *appli
 After every step a team's (action, observation) pair is summarized into a one-line key by the `summarizer` role
 and offered to the admission controller (`lts.controller.kind`: `heuristic` now, `judge` for a small-model
 YES/NO, `learned` once the spec 03 §2 controller is trained in M5, `always`/`never` for baselines). Admitted
-entries go into the shared memory bank; before each model call every team sees the current keys under
-`[Shared Memory Keys Available]` and can fetch any full value with `retrieve_value`. `task memory -- RUN_ID`
-shows the bank; `runs/<id>/lts/admission.jsonl` and `retrieval.jsonl` are the training log.
+entries go into the shared memory bank. Summarize + decide run in the background (`lts.background_admission`),
+so a team never waits on admission. Before each model call a team sees the keys ranked for its current step
+under `[Shared Memory Keys Available]` (`lts.ranking`, `lts.max_keys`; its own keys excluded unless
+`lts.inject_own`), the top `lts.inline_top` carry their value inline once, and any full value is one
+`retrieve_value` call away. `task memory -- RUN_ID` shows the bank; `runs/<id>/lts/admission.jsonl` and
+`retrieval.jsonl` are the training log.
 
 ### Training the controller
 

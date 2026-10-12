@@ -19,5 +19,6 @@ the repository. Your job is working code that passes the tests, produced with th
 
 ## Shared memory
 Other teams publish short summaries of what they learned (file layouts, failing tests, root causes, commands that
-work). They appear under "Shared Memory Keys Available". If a key looks relevant, fetch it with `retrieve_value`
-before re-deriving it yourself. Do not fetch keys that do not bear on your current step.
+work). They appear under "Shared Memory Keys Available", most relevant to your current step first; the top ones
+come with their value inlined. Use what is there instead of re-deriving it. When a key without an inlined value
+bears on your current step, fetch it with `retrieve_value`; do not fetch keys that do not.
