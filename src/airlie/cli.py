@@ -19,6 +19,10 @@ config_app = typer.Typer(no_args_is_help=True, help="Inspect configuration.")
 app.add_typer(config_app, name="config")
 models_app = typer.Typer(no_args_is_help=True, help="Model catalog: list and pull pinned revisions.")
 app.add_typer(models_app, name="models")
+engine_app = typer.Typer(
+    no_args_is_help=True, help="Manage the vllm-mlx process(es) declared in airlie.yaml."
+)
+app.add_typer(engine_app, name="engine")
 console = Console()
 err = Console(stderr=True)
 
@@ -109,6 +113,102 @@ def models_pull(
     if failed:
         err.print(f"[red]failed: {', '.join(failed)}[/red]")
         raise typer.Exit(1)
+
+
+# ---- engine process management (task up/down/restart/status/logs) ----
+
+
+def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-def]
+    """Factory, patched in tests."""
+    from airlie.engine.process import EngineProcess
+
+    return EngineProcess(cfg, name, state_dir=cfg.observability.state_dir.expanduser())
+
+
+def _managed(cfg: AirlieConfig) -> list[str]:
+    return [n for n, e in cfg.engines.items() if e.kind == "vllm_mlx"]
+
+
+def _health_table(rows: list[tuple[str, object]]) -> Table:
+    table = Table(title="engines")
+    for col in ("engine", "pid", "ok", "models", "detail"):
+        table.add_column(col)
+    colors = {"ready": "green", "loading": "yellow", "missing": "red"}
+    for name, h in rows:
+        models = "  ".join(f"{m}: [{colors[s]}]{s}[/{colors[s]}]" for m, s in h.models.items())  # type: ignore[attr-defined]
+        table.add_row(name, str(h.pid or "-"), "yes" if h.ok else "no", models, h.detail)  # type: ignore[attr-defined]
+    return table
+
+
+@engine_app.command("up")
+def engine_up(
+    config: ConfigOpt = None, timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900
+) -> None:
+    """Start every managed engine and wait until its preloaded models are ready."""
+    import asyncio
+
+    from airlie.engine.types import EngineError
+
+    cfg = _load(config)
+    rows = []
+    for name in _managed(cfg):
+        p = _engine_process(cfg, name)
+        console.print(f"starting engine [bold]{name}[/bold] (log: {p.log_path})")
+        try:
+            rows.append((name, asyncio.run(p.start(timeout_s=timeout))))
+        except EngineError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+    console.print(_health_table(rows))
+
+
+@engine_app.command("down")
+def engine_down(config: ConfigOpt = None) -> None:
+    """Stop every managed engine."""
+    import asyncio
+
+    cfg = _load(config)
+    for name in _managed(cfg):
+        asyncio.run(_engine_process(cfg, name).stop())
+        console.print(f"stopped engine [bold]{name}[/bold]")
+
+
+@engine_app.command("restart")
+def engine_restart(config: ConfigOpt = None, timeout: float = 900) -> None:
+    """Stop then start every managed engine."""
+    engine_down(config)
+    engine_up(config, timeout)
+
+
+@engine_app.command("status")
+def engine_status(config: ConfigOpt = None) -> None:
+    """Show pid, health and per-model readiness for every managed engine."""
+    import asyncio
+
+    cfg = _load(config)
+    rows = [(name, asyncio.run(_engine_process(cfg, name).status())) for name in _managed(cfg)]
+    console.print(_health_table(rows))
+    if not rows:
+        console.print("no managed (vllm_mlx) engines in config")
+
+
+@engine_app.command("logs")
+def engine_logs(
+    config: ConfigOpt = None,
+    n: Annotated[int, typer.Option("-n", help="lines")] = 50,
+    follow: Annotated[bool, typer.Option("--follow", "-f")] = False,
+) -> None:
+    """Print the tail of each managed engine's server log (use -f to follow the first one)."""
+    import subprocess
+
+    cfg = _load(config)
+    for name in _managed(cfg):
+        p = _engine_process(cfg, name)
+        console.rule(f"{name}: {p.log_path}")
+        console.print(p.tail_log(n), markup=False, highlight=False)
+        if follow:
+            subprocess.run(["tail", "-f", str(p.log_path)], check=False)
+            break
 
 
 def main() -> None:

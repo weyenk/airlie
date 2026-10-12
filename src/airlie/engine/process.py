@@ -5,10 +5,10 @@ All OS interaction goes through `ProcessRunner` and `Prober`, so the logic is un
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -63,21 +63,19 @@ class RealRunner:
     def is_alive(self, pid: int) -> bool:
         try:
             p = psutil.Process(pid)
-            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+            return bool(p.is_running() and p.status() != psutil.STATUS_ZOMBIE)
         except psutil.Error:
             return False
 
     def terminate(self, pid: int, sig: str) -> None:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(os.getpgid(pid), signal.SIGTERM if sig == "TERM" else signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
     def port_holder(self, port: int) -> int | None:
         try:
             for c in psutil.net_connections(kind="inet"):
                 if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN:
-                    return c.pid
+                    return int(c.pid) if c.pid is not None else None
         except psutil.AccessDenied:
             return None
         return None
@@ -164,7 +162,8 @@ class EngineProcess:
             raise EngineError(f"engine '{self.name}' is already running (pid {pid}); use restart")
         if (holder := self.runner.port_holder(self.spec.port)) is not None:
             raise EngineError(
-                f"port {self.spec.port} is held by pid {holder}, not by airlie; stop it or change engines.{self.name}.port"
+                f"port {self.spec.port} is held by pid {holder}, not by airlie; "
+                f"stop it or change engines.{self.name}.port"
             )
         registry = build_registry(self.cfg, self.name, self.snapshot_dir)
         write_registry(registry, self.registry_path)
@@ -230,7 +229,3 @@ class EngineProcess:
 
 def default_state_dir(cfg: AirlieConfig) -> Path:
     return cfg.observability.state_dir.expanduser()
-
-
-if sys.platform != "darwin":  # pragma: no cover - documented limitation
-    pass

@@ -1,4 +1,4 @@
-"""EngineProcess: start/stop/status over an injected ProcessRunner and an injected HTTP prober; no real server."""
+"""EngineProcess: start/stop/status over an injected ProcessRunner and HTTP prober; no real server."""
 
 from pathlib import Path
 

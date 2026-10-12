@@ -1,4 +1,4 @@
-"""SSE frame parsing for OpenAI-compatible streams: stop at [DONE], surface error frames, never hang on truncation."""
+"""SSE parsing for OpenAI-compatible streams: stop at [DONE], surface errors, never hang on truncation."""
 
 from collections.abc import AsyncIterator
 

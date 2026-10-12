@@ -41,6 +41,31 @@ tasks:
     cmds:
       - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
 
+  up:
+    desc: Start the vllm-mlx engine(s) from airlie.yaml and wait until preloaded models are ready
+    cmds:
+      - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
+
+  down:
+    desc: Stop the managed engine(s)
+    cmds:
+      - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
+
+  restart:
+    desc: Stop then start the managed engine(s)
+    cmds:
+      - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
+
+  status:
+    desc: Show engine pid, health and per-model readiness
+    cmds:
+      - '{{.RUN}} airlie engine status {{.CLI_ARGS}}'
+
+  logs:
+    desc: Tail the engine log (`task logs -- -f` to follow)
+    cmds:
+      - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
+
   test:
     desc: Unit tests (no models, runs anywhere)
     cmds:

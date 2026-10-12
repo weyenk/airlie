@@ -79,3 +79,24 @@ trace; config errors name the key path; no client-specific hooks.
 + 12 GB OS/orchestrator reserve, and fails if the sum exceeds `iogpu.wired_limit_mb`. Defaults put the Qwen3.8 stack
 at roughly 16 + 48 + 3 + 12 ≈ 79 GB and the Llama-70B stack at ≈ 100 GB, both under 104 GB, matching the spec's
 83–98 GB envelope.
+
+## vllm-mlx 0.5.0 wire format (recorded 2026-10-12, `tests/fixtures/vllm_mlx/`)
+
+Recorded with `scripts/record_fixtures.py` against `vllm-mlx serve --continuous-batching --reasoning-parser qwen3
+--enable-auto-tool-choice --tool-call-parser qwen` and the `small` model. HTTPEngine is written against these.
+
+- **Streaming** is standard OpenAI `chat.completion.chunk` SSE ending with `data: [DONE]`. The last content frame
+  carries `finish_reason`; one more frame with `choices: []` carries `usage` (`prompt_tokens`, `completion_tokens`,
+  `total_tokens`). A `{"delta": {"role": "assistant"}}` frame can appear more than once mid-stream; it is ignored.
+- **Reasoning** arrives as `delta.reasoning_content` frames (Qwen3 parser), then `delta.content`.
+- **Tool calls** arrive as whole objects in `delta.tool_calls[i]` (`id`, `type`, `function.name`,
+  `function.arguments` as a JSON string), **emitted twice**: once with `finish_reason: null` and again on the
+  `finish_reason: "tool_calls"` frame with a different `id`. HTTPEngine merges by `index`, so one call results.
+- **No `cached_tokens`.** `usage` has no `prompt_tokens_details`; prefix-cache hits are measured by TTFT (and
+  `/metrics` when enabled), not reported per request.
+- **`logprobs` is ignored**: the response has no `logprobs` field. `yes_no` therefore uses the constrained one-word
+  text answer; `EngineCapabilities.logprobs = False`.
+- **Errors** are FastAPI-style: `404 {"detail": "The model `x` does not exist. Available model: `small`"}`; OpenAI
+  `{"error": …}` is also handled.
+- **`GET /health`** → `{"status": "healthy", "model_loaded": true, "model_name": …, "available_models": [...],
+  "engine_type": "batched"}`; **`GET /v1/models`** → `{"data": [{"id": "small", …}]}`.
