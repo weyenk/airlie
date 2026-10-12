@@ -296,6 +296,16 @@ def bench_engine(
         console.print(f"saved {save(results, out)}")
 
 
+@bench_app.command("report")
+def bench_report(paths: list[Path]) -> None:
+    """Render saved bench JSON file(s) as one markdown table (what docs/bench/*.md contain)."""
+    from airlie.bench.engine_bench import load_results
+    from airlie.bench.report import render_table
+
+    results = [r for p in paths for r in load_results(p)]
+    console.print(render_table(results), markup=False, highlight=False)
+
+
 @bench_app.command("compare")
 def bench_compare(a: Path, b: Path) -> None:
     """Per-cell deltas (%) of B over A for two saved bench JSON files."""

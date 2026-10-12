@@ -96,3 +96,28 @@ def test_render_and_compare(tmp_path: Path) -> None:
     deltas = compare(tmp_path / "a.json", tmp_path / "b.json")
     assert deltas[0]["decode_tps_per_stream_delta_pct"] == 20.0
     assert deltas[0]["ttft_ms_delta_pct"] == -50.0
+
+
+def test_load_results_round_trips_resume(tmp_path: Path) -> None:
+    from airlie.bench.engine_bench import ResumeResult, load_results, save
+
+    r = BenchResult(
+        model="m",
+        role="coder",
+        ctx=4000,
+        concurrency=1,
+        gen=64,
+        runs=1,
+        ttft_ms=100,
+        prefill_tps=4000,
+        decode_tps_per_stream=50,
+        agg_decode_tps=50,
+        prompt_tokens=4000,
+        completion_tokens=64,
+        rss_mb=None,
+        resume=ResumeResult(4000, 100.0, 4010, 8.0),
+    )
+    path = save([r], tmp_path / "r.json")
+    back = load_results(path)
+    assert back[0].resume is not None and back[0].resume.ttft_ratio == 0.08
+    assert "0.1" in render_table(back)

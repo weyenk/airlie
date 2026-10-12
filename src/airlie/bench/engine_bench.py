@@ -249,6 +249,17 @@ def save(results: list[BenchResult], path: Path) -> Path:
     return path
 
 
+def load_results(path: Path) -> list[BenchResult]:
+    out: list[BenchResult] = []
+    for d in json.loads(path.read_text()):
+        resume = d.pop("resume", None)
+        r = BenchResult(**d)
+        if resume:
+            r.resume = ResumeResult(**resume)
+        out.append(r)
+    return out
+
+
 def compare(a: Path, b: Path) -> list[dict[str, Any]]:
     ra = {(r["ctx"], r["concurrency"]): r for r in json.loads(a.read_text())}
     rb = {(r["ctx"], r["concurrency"]): r for r in json.loads(b.read_text())}
