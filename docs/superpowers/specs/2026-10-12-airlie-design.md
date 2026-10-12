@@ -163,3 +163,15 @@ identical small task there is little to fetch; the retrieval path is unit-tested
 divergent work is what M4's `task bench:lts` measures. Two loop fixes came out of this run: the token budget now
 counts context + generated tokens (resent history is prefix-cached and was exhausting the budget), and the
 repeated-action stop requires identical outputs (a run-tests fix loop is not a stuck loop).
+
+## M5 result (2026-10-12)
+
+The spec 03 §2 controller is implemented as written (frozen Qwen3-0.6B embedder φ, `proj_query/proj_mem/proj_step`,
+LoRA r=16 α=16 through peft, YES/NO logits at the last position; token ids resolved from the tokenizer) and trained
+with the spec 03 §3 objective over the logged decisions of every run. Live: `task controller:dataset` found 92
+decisions in 3 runs (44 train / 48 holdout by run), `task controller:train -- --epochs 3` on MPS took 29 s with
+loss 0.279 → 0.132, and `task controller:eval` replays decisions. **The usage signal is empty**: no cross-team
+retrieval has happened in any run, so `used_later` is false everywhere, usage-weighted precision/recall are 0 for
+both policies, and the trained controller is at this point only learning the outcome reward. The pipeline is
+complete; it becomes meaningful once runs produce retrievals (larger, divergent tasks; M4b). Selecting it is one
+config line: `lts.controller: {kind: learned, adapter_path: ~/.local/state/airlie/controller/latest}`.
