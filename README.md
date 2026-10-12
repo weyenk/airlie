@@ -44,6 +44,7 @@ Run `task` to list them. The ones that exist today:
 | `task eval -- lang_detect [--k 1]` | materialize a graded task from `evals/tasks/`, run the teams on it, grade every worktree with the hidden tests |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
+| `task controller:dataset` / `task controller:train [-- --epochs 5]` / `task controller:eval` | build the training set from every run's admission log; train the spec 03 §2 controller (LoRA on Qwen3-0.6B + projections) with the spec 03 §3 REINFORCE objective; replay held-out decisions against the logged controller |
 | `task memory -- RUN_ID [--full]` | show a run's shared memory bank: keys, owning team, cross-team reads |
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
@@ -51,7 +52,7 @@ Run `task` to list them. The ones that exist today:
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task fmt` | auto-format and auto-fix lint |
 
-Coming per the roadmap: `task events`, `task trace`, `task controller:*` (M5), `task bench:gaia` (M4b).
+Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).
 
 ## Using airlie from another client
 
@@ -80,6 +81,15 @@ YES/NO, `learned` once the spec 03 §2 controller is trained in M5, `always`/`ne
 entries go into the shared memory bank; before each model call every team sees the current keys under
 `[Shared Memory Keys Available]` and can fetch any full value with `retrieve_value`. `task memory -- RUN_ID`
 shows the bank; `runs/<id>/lts/admission.jsonl` and `retrieval.jsonl` are the training log.
+
+### Training the controller
+
+Every run logs each admission decision with the context the controller saw, whether a peer later retrieved the
+entry, and the team's outcome. `task controller:dataset` turns those logs into examples, `task controller:train`
+trains the spec 03 §2 model (frozen Qwen3-0.6B embedder, three projection layers, LoRA r=16 α=16) with the spec
+03 §3 objective (group-relative advantages per task, usage-aware shaping β=0.5, sparsity λ=0.05), and
+`task controller:eval` replays held-out decisions. To switch the live system to it, set
+`lts.controller: {kind: learned, adapter_path: ~/.local/state/airlie/controller/latest}`.
 
 ## Choosing the team model
 

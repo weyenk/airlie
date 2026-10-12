@@ -27,6 +27,8 @@ bench_app = typer.Typer(no_args_is_help=True, help="Benchmarks through the Engin
 app.add_typer(bench_app, name="bench")
 eval_app = typer.Typer(no_args_is_help=True, help="Graded coding tasks (evals/tasks).")
 app.add_typer(eval_app, name="eval")
+controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission controller (spec 03 §2–3).")
+app.add_typer(controller_app, name="controller")
 console = Console()
 err = Console(stderr=True)
 
@@ -585,6 +587,138 @@ def memory(
         for e in bank.entries():
             console.rule(e.id)
             console.print(e.raw_value[:4000], markup=False, highlight=False)
+
+
+# ---- learned controller (M5) ----
+
+
+def _controller_backbone(base_name: str, device: str | None):  # type: ignore[no-untyped-def]
+    """Factory, patched in tests: (llm, tokenizer) for the controller base model."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(base_name)
+    llm = AutoModelForCausalLM.from_pretrained(base_name, torch_dtype=torch.float32)
+    return llm, tok
+
+
+def _controller_dir(cfg: AirlieConfig) -> Path:
+    return cfg.observability.state_dir.expanduser() / "controller"
+
+
+@controller_app.command("dataset")
+def controller_dataset(config: ConfigOpt = None, holdout: float = 0.25, seed: int = 0) -> None:
+    """Build the training set from every run's lts/admission.jsonl (+ events) under the state dir."""
+    from airlie.train.dataset import build_dataset, save_dataset, split_by_run
+
+    cfg = _load(config)
+    examples = build_dataset(cfg.observability.state_dir.expanduser())
+    if not examples:
+        err.print("[red]no admission logs found; run some tasks first (task eval / task run)[/red]")
+        raise typer.Exit(1)
+    train, hold = split_by_run(examples, holdout_fraction=holdout, seed=seed)
+    d = _controller_dir(cfg)
+    save_dataset(examples, d / "dataset.jsonl")
+    save_dataset(train, d / "train.jsonl")
+    save_dataset(hold, d / "holdout.jsonl")
+    used = sum(1 for e in examples if e.used_later)
+    console.print(
+        f"{len(examples)} decisions from {len({e.run_id for e in examples})} runs "
+        f"({len(train)} train / {len(hold)} holdout); YES {sum(e.action == 'YES' for e in examples)}, "
+        f"used_later {used}, rewarded {sum(e.team_reward > 0 for e in examples)} → {d}"
+    )
+
+
+@controller_app.command("train")
+def controller_train(
+    config: ConfigOpt = None,
+    epochs: int = 5,
+    lr: float = 1e-4,
+    batch_size: int = 8,
+    lora_r: int = 16,
+    lora_alpha: int = 16,
+    device: Annotated[str | None, typer.Option(help="cpu | mps (default: mps if available)")] = None,
+) -> None:
+    """Train the spec 03 §2 controller (LoRA + projections) with the spec 03 §3 objective on train.jsonl."""
+    from airlie.lts.controller.learned import LTSAdmissionController, pick_device
+    from airlie.train.dataset import load_dataset
+    from airlie.train.trainer import TrainConfig, train
+
+    cfg = _load(config)
+    d = _controller_dir(cfg)
+    if not (d / "train.jsonl").is_file():
+        err.print("[red]no train.jsonl; run `task controller:dataset` first[/red]")
+        raise typer.Exit(1)
+    examples = load_dataset(d / "train.jsonl")
+    base = cfg.models["controller_base"].repo if "controller_base" in cfg.models else "Qwen/Qwen3-0.6B"
+    dev = pick_device(device)
+    llm, tok = _controller_backbone(base, device)
+    ctrl = LTSAdmissionController.from_modules(
+        llm, tok, lora_r=lora_r, lora_alpha=lora_alpha, base_name=base
+    ).to(dev)
+    console.print(f"training on {len(examples)} decisions, base={base}, device={dev}, epochs={epochs}")
+    tc = TrainConfig(
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        lambda_sparse=0.05,
+        beta=0.5,
+        lambda_first=1.0,
+        device=str(dev),
+    )
+    metrics = train(ctrl, examples, tc, out_dir=d / "latest")
+    console.print(f"epoch_loss: {[round(x, 4) for x in metrics['epoch_loss']]}")
+    console.print(
+        f"epoch_yes_rate: {[round(x, 3) for x in metrics['epoch_yes_rate']]}  ({metrics['train_seconds']}s)"
+    )
+    console.print(
+        f"checkpoint: {d / 'latest'}  → set lts.controller: {{kind: learned, adapter_path: {d / 'latest'}}}"
+    )
+
+
+@controller_app.command("eval")
+def controller_eval(
+    config: ConfigOpt = None,
+    checkpoint: Annotated[Path | None, typer.Option(help="default: <state>/controller/latest")] = None,
+    split: Annotated[str, typer.Option(help="holdout | train | dataset")] = "holdout",
+    threshold: float = 0.5,
+    device: str | None = None,
+) -> None:
+    """Replay logged decisions: learned controller vs the logged (heuristic/judge) ones, usage-weighted."""
+    import json as _json
+
+    from airlie.lts.controller.learned import LTSAdmissionController, pick_device
+    from airlie.train.dataset import load_dataset
+    from airlie.train.trainer import evaluate
+
+    cfg = _load(config)
+    d = _controller_dir(cfg)
+    ckpt = checkpoint or d / "latest"
+    path = d / f"{split}.jsonl"
+    if not path.is_file() or not (ckpt / "controller.json").is_file():
+        err.print(
+            f"[red]need {path} and a checkpoint at {ckpt} "
+            "(run task controller:dataset, then task controller:train)[/red]"
+        )
+        raise typer.Exit(1)
+    examples = load_dataset(path)
+    if not examples:
+        err.print(f"[yellow]{path} is empty (too few runs for a holdout?); try --split dataset[/yellow]")
+        raise typer.Exit(1)
+    meta = _json.loads((ckpt / "controller.json").read_text())
+    llm, tok = _controller_backbone(meta["base_name"], device)
+    ctrl = LTSAdmissionController.load(ckpt, backbone=(llm, tok), device=pick_device(device))
+    rep = evaluate(ctrl, examples, threshold=threshold)
+    table = Table(
+        title=f"controller eval on {split} ({rep['n']} decisions, useful fraction {rep['useful_fraction']})"
+    )
+    for col in ("policy", "yes_rate", "useful_precision", "useful_recall"):
+        table.add_column(col)
+    for name in ("logged", "learned"):
+        m = rep[name]
+        table.add_row(name, str(m["yes_rate"]), str(m["useful_precision"]), str(m["useful_recall"]))
+    console.print(table)
+    console.print(f"agreement with logged decisions: {rep['agreement']}")
 
 
 def main() -> None:

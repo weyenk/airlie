@@ -91,6 +91,21 @@ tasks:
     cmds:
       - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
 
+  controller:dataset:
+    desc: "Build the controller training set from every run's admission log"
+    cmds:
+      - '{{.RUN}} airlie controller dataset {{.CLI_ARGS}}'
+
+  controller:train:
+    desc: "Train the spec 03 §2 controller (LoRA on Qwen3-0.6B) with the spec 03 §3 objective (task controller:train -- --epochs 5)"
+    cmds:
+      - '{{.RUN}} airlie controller train {{.CLI_ARGS}}'
+
+  controller:eval:
+    desc: "Replay held-out decisions: learned vs logged controller"
+    cmds:
+      - '{{.RUN}} airlie controller eval {{.CLI_ARGS}}'
+
   bench:
     desc: "Engine throughput through the seam (task bench -- --model llama70b --ctx 4k,32k --n 1,2,4)"
     cmds:
