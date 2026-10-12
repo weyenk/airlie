@@ -1,0 +1,76 @@
+# airlie — every action is a task. Run `task` to list them.
+version: '3'
+
+vars:
+  UV: uv
+  RUN: uv run --quiet
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: One-time setup (idempotent) — installs the pinned Python and all dependencies via uv
+    cmds:
+      - '{{.UV}} python install 3.12'
+      - '{{.UV}} sync --all-groups'
+      - cmd: test -f airlie.local.yaml || cp airlie.local.example.yaml airlie.local.yaml
+        silent: true
+      - echo "ready — try 'task doctor'"
+
+  doctor:
+    desc: Check config, hardware limits, models on disk and tooling; exit 1 on any red row
+    cmds:
+      - '{{.RUN}} airlie doctor {{.CLI_ARGS}}'
+
+  config:
+    desc: Print the fully resolved configuration (airlie.yaml + airlie.local.yaml)
+    cmds:
+      - '{{.RUN}} airlie config show {{.CLI_ARGS}}'
+
+  models:list:
+    desc: Show the model catalog with pinned revisions and serving engine
+    cmds:
+      - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
+
+  models:pull:
+    desc: Download every catalog model at its pinned revision (pass names to limit, e.g. `task models:pull -- small`)
+    cmds:
+      - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
+
+  test:
+    desc: Unit tests (no models, runs anywhere)
+    cmds:
+      - '{{.RUN}} pytest {{.CLI_ARGS}}'
+
+  test:live:
+    desc: Live tests against a running engine (Apple Silicon, after `task up`)
+    cmds:
+      - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
+
+  lint:
+    desc: Ruff lint + format check
+    cmds:
+      - '{{.RUN}} ruff check .'
+      - '{{.RUN}} ruff format --check .'
+
+  fmt:
+    desc: Auto-format and auto-fix lint
+    cmds:
+      - '{{.RUN}} ruff format .'
+      - '{{.RUN}} ruff check --fix .'
+
+  typecheck:
+    desc: mypy (strict) over src/airlie
+    cmds:
+      - '{{.RUN}} mypy'
+
+  check:
+    desc: lint + typecheck + unit tests
+    cmds:
+      - task: lint
+      - task: typecheck
+      - task: test

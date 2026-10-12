@@ -1,0 +1,60 @@
+# Ported from the ai-mode 2026-10 bake-off (task 1: language detection). Graded by hidden tests the agent never sees.
+id: lang_detect
+language: python
+requirement: |
+  In this repository, create `langdetect/__init__.py` exposing `detect_language(path: str) -> str`.
+  It returns the programming language of a source file from its extension, case-insensitively:
+  .py → "python", .go → "go", .ts/.tsx → "typescript", .js/.jsx → "javascript", .rs → "rust", .md → "markdown".
+  Unknown or missing extensions return "unknown". A path that is a directory (ends with "/") returns "unknown".
+  Also expose `detect_many(paths: list[str]) -> dict[str, list[str]]` mapping each language to the paths with
+  that language, preserving input order within each list; languages with no paths are omitted (never an empty list).
+  Add tests under `tests/` and make `python -m pytest` pass.
+setup:
+  files:
+    pyproject.toml: |
+      [project]
+      name = "langdetect-task"
+      version = "0.0.1"
+      requires-python = ">=3.12"
+      [tool.pytest.ini_options]
+      testpaths = ["tests", "hidden_tests"]
+    README.md: |
+      # langdetect task
+      See the requirement given to the agent.
+run_cmd: python -m pytest -q
+hidden_tests:
+  hidden_tests/test_hidden.py: |
+    from langdetect import detect_language, detect_many
+
+    def test_basic_extensions():
+        assert detect_language("a.py") == "python"
+        assert detect_language("x/y/z.go") == "go"
+        assert detect_language("c.ts") == "typescript"
+        assert detect_language("c.tsx") == "typescript"
+        assert detect_language("d.jsx") == "javascript"
+        assert detect_language("e.rs") == "rust"
+        assert detect_language("README.md") == "markdown"
+
+    def test_case_insensitive():
+        assert detect_language("A.PY") == "python"
+        assert detect_language("b.Go") == "go"
+
+    def test_unknown_and_missing():
+        assert detect_language("Makefile") == "unknown"
+        assert detect_language("archive.tar.gz") == "unknown"
+        assert detect_language("") == "unknown"
+
+    def test_directory_is_unknown():
+        assert detect_language("src/") == "unknown"
+        assert detect_language("src/pkg.py/") == "unknown"
+
+    def test_detect_many_groups_and_orders():
+        out = detect_many(["a.py", "b.go", "c.py", "d.txt"])
+        assert out == {"python": ["a.py", "c.py"], "go": ["b.go"], "unknown": ["d.txt"]}
+
+    def test_detect_many_omits_empty_languages():
+        assert detect_many([]) == {}
+        assert "rust" not in detect_many(["a.py"])
+
+    def test_detect_many_keeps_duplicates():
+        assert detect_many(["a.py", "a.py"]) == {"python": ["a.py", "a.py"]}

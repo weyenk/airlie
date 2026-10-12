@@ -1,0 +1,81 @@
+# airlie design — architecture over the build spec
+
+**Source of truth:** `docs/wiki/build-spec/01–04`. This document records how airlie realises that spec, which
+seams are configurable, and the handful of places where the spec is internally inconsistent or asks for something
+the chosen engine cannot do. When this document and the spec disagree, the spec wins and this document is wrong.
+
+Status: approved by Noah 2026-10-12 (rev 3.1 of the roadmap plan, kept at `~/.claude/plans/`, is the living copy;
+this file is the committed snapshot).
+
+## What airlie is
+
+A Python 3.12 / asyncio / FastAPI / Pydantic v2 orchestrator (spec 01 §2) that runs K parallel agent teams on one
+Mac Studio, shares what they learn through a Learning-to-Share memory bank with an admission controller (spec 03),
+schedules them EdgeAgent-style (spec 04), and sends every generation request over HTTP/SSE to a vllm-mlx server on
+`127.0.0.1:8080` that airlie starts and stops (spec 02). The first workload is coding tasks in a git repository,
+graded by hidden tests.
+
+## Topology
+
+```
+ task run / task serve / any OpenAI-compatible client
+            │
+            ▼
+ ┌──────────────────────── airlie orchestrator (Python 3.12 / asyncio / FastAPI / Pydantic v2) ──────────────┐
+ │  ParallelAgentTeamOrchestrator (spec 04 §3)                                                               │
+ │    TeamOrchestrator ×K  [AutoGen default | native]  each: ReAct + tools + isolated git worktree           │
+ │        │ (u_t, s_t, o_t)                                                   ▲ [Shared Memory Keys] / fetch │
+ │        ▼                                                                   │                              │
+ │  LTS: Summarizer → LTSAdmissionController C_θ → SharedMemoryBank                                          │
+ │  EdgeAgent scheduling: HALSpeculativeScheduler (L_total=16) + slots; ACTIVE ⇄ SUSPENDED_TOOL_STALL         │
+ │  Engine seam ── HTTPEngine ──► managed vllm-mlx process (task up; --models-config) ──► or any OpenAI URL  │
+ │  LLM Aggregator · Events/Trace · Doctor · Bench · Process manager                                         │
+ └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                      │ HTTP / SSE, 127.0.0.1:8080
+                                      ▼
+ ┌──────────────────────────────── vllm-mlx serve (MLX 0.32+) ───────────────────────────────────────────────┐
+ │  continuous batching · prefix KV cache · scheduler · MTP · multi-model residency                           │
+ └───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Seams
+
+Every seam is selected in `airlie.yaml`, has a protocol, and has a fake for tests.
+
+| Seam | Protocol | Implementations | Config key |
+| --- | --- | --- | --- |
+| Inference | `Engine` | `HTTPEngine` (managed `vllm_mlx` process or external `openai_http`); `FakeEngine` | `engines.<name>.kind` |
+| Model catalog | `ModelSpec` | HF repo + pinned revision or local path; `bench`/`tags` for comparisons | `models.<name>` |
+| Roles | `RoleSpec` | prompt + model + sampling + thinking + caps; engine derived from model | `roles.<name>` |
+| Team orchestrator | `TeamOrchestrator` | `autogen` (default, per spec), `native` | `teams.orchestrator` |
+| Tools | `Tool` | builtin fs/shell/git/tests, `retrieve_value`, MCP client | `tools.*`, `mcp.*` |
+| Admission | `LTSAdmissionController` | `always` (spec blueprint), `never` (baseline), `heuristic`, `judge`, `learned` (spec 03 §2 torch model) | `lts.controller.kind` |
+| Summaries | `Summarizer` | `truncate` (spec blueprint `output[:100]`), `role` (LLM, 15–20 words) | `lts.summarizer.kind` |
+| Memory bank | `SharedMemoryBank` | in-memory + JSONL per run | `lts.*` |
+| Scheduling | `Scheduler` | `HALSpeculativeScheduler` + slot accounting | `scheduler.*` |
+| Aggregation | `Aggregator` | `llm` (spec 01 §4 step 9), `test_score` | `aggregator.kind` |
+| Observability | `EventSink` | JSONL events + per-run trace | `observability` |
+
+Hard rules: models are reached only through the `Engine` seam, except the LTS controller C_θ which is the spec's
+in-process torch module; every long-running thing is cancellable; every tool call is timeboxed; every run writes a
+trace; config errors name the key path; no client-specific hooks.
+
+## Decisions and deviations
+
+| Topic | Spec says | airlie does | Why |
+| --- | --- | --- | --- |
+| Base model | Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit | default `Qwen3.8-27B-4bit`; both spec models in the catalog, pinned, `bench: true` | Noah: modern model for the same slot is fine if configurable and benchmarkable |
+| Framework | AutoGen / LangGraph | AutoGen default, native fallback behind one seam | Noah: stick with the spec |
+| `--max-kv-size` | 8192 (02 §1) vs 32K–64K per team (01 §1) | 65536, one-line override | internal inconsistency; coding agents need the context |
+| Controller base | text: Qwen3-0.6B; code: Qwen2.5-0.6B-Instruct; YES/NO ids hard-coded | Qwen3-0.6B; ids looked up from the tokenizer | internal inconsistency |
+| Per-request draft budgets (HAL) | scheduler sets L_i per agent | HAL computes budgets; applies them only when the engine reports `per_request_draft` | vllm-mlx 0.5.0 sets MTP draft length per server, not per request |
+| CPU/GPU heterogeneous TP, SME2 kernels | spec 02 §2 | not done | engine-internal; vllm-mlx has no such mode |
+| Benchmark | AssistantBench / GAIA | coding tasks first (`task bench:lts`), GAIA runner later (`task bench:gaia`) | Noah's first workload |
+| Project name | `m5-mlx-agent-framework` | package `airlie` | repo name |
+
+## Memory budget (spec 01 §1)
+
+`task doctor` projects: Σ `estimated_memory_gb` of preloaded models + `teams.k` × `max_kv_size` × `kv_mb_per_1k_tokens`
++ 12 GB OS/orchestrator reserve, and fails if the sum exceeds `iogpu.wired_limit_mb`. Defaults put the Qwen3.8 stack
+at roughly 16 + 48 + 3 + 12 ≈ 79 GB and the Llama-70B stack at ≈ 100 GB, both under 104 GB, matching the spec's
+83–98 GB envelope.

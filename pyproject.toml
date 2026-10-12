@@ -1,0 +1,71 @@
+[project]
+name = "airlie"
+version = "0.1.0"
+description = "Multi-agent build system on Apple Silicon: parallel agent teams over an in-process MLX engine with Learning-to-Share memory"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
+    "mlx>=0.32.2; sys_platform == 'darwin'",
+    "mlx-lm==0.32.0",
+    "vllm-mlx==0.5.0",
+    "torch>=2.8",             # used solely for LTS controller RL training (spec 03)
+    "transformers>=5.7",
+    "peft>=0.14",             # LoRA adapters for the admission controller
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.10",
+    "httpx[http2]>=0.28",
+    "numpy>=2.1",
+    "rich>=13.9",
+    # airlie additions
+    "typer>=0.15",
+    "pyyaml>=6.0",
+    "psutil>=6",
+    "mcp>=1.2",
+    "autogen-agentchat>=0.7",  # spec 01 §2: AutoGen team orchestrator
+    "autogen-ext[openai]>=0.7",
+]
+
+[project.scripts]
+airlie = "airlie.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airlie"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: needs a running engine on the Mac (run with `task test:live`)",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["airlie"]
+ignore_missing_imports = true
