@@ -1,0 +1,202 @@
+id: log_pipeline
+language: python
+requirement: |-
+  The repository holds `logpipe/`, a log parsing and aggregation library (see README.md). Extend it:
+
+  1. JSON-lines input. `parse_line` must also accept lines that start with `{`: a JSON object with keys `ts`, `level`,
+     `svc`, `msg` (same meaning as the key=value format). Lines of either format that cannot be parsed are skipped.
+  2. Timezone normalisation. Timestamps may carry an offset (`2024-01-02T03:04:05+02:00`) or `Z`. `Event.ts` must
+     always be a timezone-aware UTC datetime (`tzinfo=timezone.utc`), so `2024-01-02T03:04:05+02:00` becomes
+     `2024-01-02T01:04:05+00:00`. A timestamp with no offset is invalid and the line is skipped.
+  3. `parse_lines_with_stats(lines) -> tuple[list[Event], int]` in `logpipe/parse.py`: the events plus the number of
+     skipped lines. Keep `parse_lines(lines) -> list[Event]` working.
+  4. `top_services(events, n) -> list[tuple[str, int]]` in `logpipe/aggregate.py`: the `n` services with the most
+     ERROR events as `(svc, count)` pairs, highest count first, ties broken by service name ascending; services with
+     zero errors are omitted.
+  `tests/` has the existing suite; one of its tests encodes the old (wrong) naive-timestamp behaviour and must be
+  updated to the new contract. Run `python -m pytest` until everything passes.
+setup:
+  files:
+    pyproject.toml: |
+      [project]
+      name = "logpipe-task"
+      version = "0.1.0"
+      requires-python = ">=3.12"
+      [tool.pytest.ini_options]
+      testpaths = ["tests", "hidden_tests"]
+    README.md: |
+      # logpipe
+
+      - `logpipe/parse.py` — `parse_line(line) -> Event | None`, `parse_lines(lines) -> list[Event]`. Input format:
+        `2024-01-02T03:04:05Z level=INFO svc=api msg="text with spaces"`.
+      - `logpipe/aggregate.py` — `count_by_level(events)`, `errors_per_service(events)`.
+      - `logpipe/format.py` — `render_summary(counts)`.
+      - `tests/` — pytest suite (`python -m pytest`).
+    logpipe/__init__.py: |
+      """Log parsing and aggregation."""
+    logpipe/parse.py: |
+      from __future__ import annotations
+
+      import re
+      import shlex
+      from dataclasses import dataclass
+      from datetime import datetime
+
+      LINE = re.compile(r"^(?P<ts>\S+)\s+(?P<rest>.*)$")
+
+
+      @dataclass(frozen=True)
+      class Event:
+          ts: datetime
+          level: str
+          svc: str
+          msg: str
+
+
+      def _parse_ts(raw: str) -> datetime | None:
+          try:
+              return datetime.fromisoformat(raw.replace("Z", ""))
+          except ValueError:
+              return None
+
+
+      def parse_line(line: str) -> Event | None:
+          """Parse one `ts level=.. svc=.. msg=".."` line; None when malformed."""
+          m = LINE.match(line.strip())
+          if not m:
+              return None
+          ts = _parse_ts(m.group("ts"))
+          if ts is None:
+              return None
+          fields: dict[str, str] = {}
+          try:
+              for tok in shlex.split(m.group("rest")):
+                  if "=" not in tok:
+                      return None
+                  k, v = tok.split("=", 1)
+                  fields[k] = v
+          except ValueError:
+              return None
+          if not {"level", "svc", "msg"} <= fields.keys():
+              return None
+          return Event(ts, fields["level"].upper(), fields["svc"], fields["msg"])
+
+
+      def parse_lines(lines: list[str]) -> list[Event]:
+          out = []
+          for line in lines:
+              ev = parse_line(line)
+              if ev is not None:
+                  out.append(ev)
+          return out
+    logpipe/aggregate.py: |
+      from __future__ import annotations
+
+      from collections import Counter
+
+      from logpipe.parse import Event
+
+
+      def count_by_level(events: list[Event]) -> dict[str, int]:
+          return dict(Counter(e.level for e in events))
+
+
+      def errors_per_service(events: list[Event]) -> dict[str, int]:
+          return dict(Counter(e.svc for e in events if e.level == "ERROR"))
+    logpipe/format.py: |
+      from __future__ import annotations
+
+
+      def render_summary(counts: dict[str, int]) -> str:
+          lines = [f"{level}: {n}" for level, n in sorted(counts.items())]
+          return "\n".join(lines)
+    tests/__init__.py: ''
+    tests/test_parse.py: |
+      from datetime import datetime
+
+      from logpipe.parse import parse_line, parse_lines
+
+
+      def test_parse_basic_line():
+          ev = parse_line('2024-01-02T03:04:05Z level=info svc=api msg="hello there"')
+          assert ev is not None
+          assert ev.level == "INFO" and ev.svc == "api" and ev.msg == "hello there"
+
+
+      def test_naive_timestamp_is_kept_naive():
+          ev = parse_line('2024-01-02T03:04:05Z level=INFO svc=api msg=x')
+          assert ev.ts == datetime(2024, 1, 2, 3, 4, 5)
+
+
+      def test_malformed_lines_are_skipped():
+          events = parse_lines(["garbage", "2024-01-02T03:04:05Z level=INFO svc=a msg=ok", "2024-01-02T03:04:05Z nothing"])
+          assert len(events) == 1
+    tests/test_aggregate.py: |
+      from datetime import datetime
+
+      from logpipe.aggregate import count_by_level, errors_per_service
+      from logpipe.parse import Event
+
+
+      def ev(level, svc):
+          return Event(datetime(2024, 1, 1), level, svc, "m")
+
+
+      def test_counts():
+          events = [ev("INFO", "a"), ev("ERROR", "a"), ev("ERROR", "b")]
+          assert count_by_level(events) == {"INFO": 1, "ERROR": 2}
+          assert errors_per_service(events) == {"a": 1, "b": 1}
+run_cmd: python -m pytest -q
+hidden_tests:
+  hidden_tests/test_hidden.py: |
+    from datetime import datetime, timezone
+
+    from logpipe.aggregate import errors_per_service, top_services
+    from logpipe.parse import Event, parse_line, parse_lines, parse_lines_with_stats
+
+
+    def test_kv_line_with_z_is_utc_aware():
+        ev = parse_line('2024-01-02T03:04:05Z level=INFO svc=api msg="hi"')
+        assert ev.ts == datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        assert ev.ts.tzinfo is not None
+
+
+    def test_offset_is_normalised_to_utc():
+        ev = parse_line('2024-01-02T03:04:05+02:00 level=WARN svc=db msg=x')
+        assert ev.ts == datetime(2024, 1, 2, 1, 4, 5, tzinfo=timezone.utc)
+        assert ev.ts.utcoffset().total_seconds() == 0
+
+
+    def test_naive_timestamp_is_skipped():
+        assert parse_line('2024-01-02T03:04:05 level=INFO svc=api msg=x') is None
+
+
+    def test_json_line():
+        ev = parse_line('{"ts": "2024-05-06T07:08:09Z", "level": "error", "svc": "api", "msg": "boom"}')
+        assert ev == Event(datetime(2024, 5, 6, 7, 8, 9, tzinfo=timezone.utc), "ERROR", "api", "boom")
+
+
+    def test_json_line_with_offset_and_bad_json():
+        ev = parse_line('{"ts": "2024-05-06T07:08:09-01:00", "level": "info", "svc": "web", "msg": "ok"}')
+        assert ev.ts == datetime(2024, 5, 6, 8, 8, 9, tzinfo=timezone.utc)
+        assert parse_line('{"ts": "2024-05-06T07:08:09Z", "level": "info"}') is None
+        assert parse_line('{not json') is None
+
+
+    def test_parse_lines_with_stats_counts_skipped():
+        lines = ['2024-01-02T03:04:05Z level=INFO svc=a msg=ok', 'garbage', '{"ts": "2024-01-02T03:04:05Z", "level": "ERROR", "svc": "b", "msg": "m"}', '{bad']
+        events, skipped = parse_lines_with_stats(lines)
+        assert len(events) == 2 and skipped == 2
+        assert parse_lines(lines) == events
+
+
+    def ev(level, svc):
+        return Event(datetime(2024, 1, 1, tzinfo=timezone.utc), level, svc, "m")
+
+
+    def test_top_services_orders_and_limits():
+        events = [ev("ERROR", "api"), ev("ERROR", "api"), ev("ERROR", "db"), ev("ERROR", "cache"), ev("INFO", "web"), ev("ERROR", "db")]
+        assert top_services(events, 2) == [("api", 2), ("db", 2)]
+        assert top_services(events, 5) == [("api", 2), ("db", 2), ("cache", 1)]
+        assert top_services([ev("INFO", "x")], 3) == []
+        assert errors_per_service(events) == {"api": 2, "db": 2, "cache": 1}

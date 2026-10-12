@@ -1,0 +1,237 @@
+id: inventory_cli
+language: python
+requirement: |-
+  The repository holds `inventory/`, a small CSV-backed stock tool (see README.md for the layout). Two things:
+
+  1. `tests/test_report.py` currently fails because `inventory/report.py` has two bugs. Fix them:
+     `total_value_cents(items)` must return the sum of `qty * unit_cost_cents` over all items, and
+     `low_stock(items, threshold)` must return the items whose `qty` is less than OR EQUAL to `threshold`, in input order.
+  2. Add a restock feature:
+     - `inventory/store.py` with `restock(path: str, sku: str, qty: int) -> Item`: loads the CSV at `path`, adds `qty`
+       to the matching item's quantity, writes the whole CSV back in the same column order (`sku,name,qty,unit_cost_cents`,
+       with header), and returns the updated `Item`. Unknown `sku` raises `KeyError`; `qty <= 0` raises `ValueError`.
+     - A `restock` CLI command in `inventory/cli.py`: `python -m inventory.cli restock --file PATH SKU QTY`. On success it
+       prints `restocked <sku>: <new qty>` and exits 0. An unknown SKU or a non-positive QTY prints an error to stderr
+       and exits with code 2.
+  Keep the existing `report` command working. Run `python -m pytest` until everything passes.
+setup:
+  files:
+    pyproject.toml: |
+      [project]
+      name = "inventory-task"
+      version = "0.1.0"
+      requires-python = ">=3.12"
+      [tool.pytest.ini_options]
+      testpaths = ["tests", "hidden_tests"]
+    README.md: |
+      # inventory
+
+      CSV-backed stock tool.
+
+      - `inventory/models.py` — `Item` dataclass and `parse_items` / `dump_items` for the CSV format `sku,name,qty,unit_cost_cents`.
+      - `inventory/report.py` — reporting helpers (`total_value_cents`, `low_stock`).
+      - `inventory/cli.py` — `python -m inventory.cli report --file stock.csv`.
+      - `tests/` — pytest suite (`python -m pytest`).
+    stock.csv: |
+      sku,name,qty,unit_cost_cents
+      A100,bolt,40,25
+      B200,nut,3,10
+      C300,washer,0,5
+    inventory/__init__.py: |
+      """Small CSV-backed inventory tool."""
+    inventory/models.py: |
+      from __future__ import annotations
+
+      import csv
+      import io
+      from dataclasses import dataclass
+
+      COLUMNS = ["sku", "name", "qty", "unit_cost_cents"]
+
+
+      @dataclass(frozen=True)
+      class Item:
+          sku: str
+          name: str
+          qty: int
+          unit_cost_cents: int
+
+
+      def parse_items(text: str) -> list[Item]:
+          """Parse CSV text with a header row into Items. Raises ValueError on a bad header or a bad number."""
+          reader = csv.DictReader(io.StringIO(text))
+          if reader.fieldnames != COLUMNS:
+              raise ValueError(f"expected columns {COLUMNS}, got {reader.fieldnames}")
+          items = []
+          for row in reader:
+              try:
+                  items.append(Item(row["sku"], row["name"], int(row["qty"]), int(row["unit_cost_cents"])))
+              except (TypeError, ValueError) as e:
+                  raise ValueError(f"bad row {row}: {e}") from e
+          return items
+
+
+      def dump_items(items: list[Item]) -> str:
+          out = io.StringIO()
+          writer = csv.writer(out, lineterminator="\n")
+          writer.writerow(COLUMNS)
+          for it in items:
+              writer.writerow([it.sku, it.name, it.qty, it.unit_cost_cents])
+          return out.getvalue()
+    inventory/report.py: |
+      from __future__ import annotations
+
+      from inventory.models import Item
+
+
+      def total_value_cents(items: list[Item]) -> int:
+          """Total stock value in cents."""
+          total = 0
+          for it in items:
+              total += it.qty + it.unit_cost_cents
+          return total
+
+
+      def low_stock(items: list[Item], threshold: int) -> list[Item]:
+          """Items at or below the threshold, in input order."""
+          return [it for it in items if it.qty < threshold]
+    inventory/cli.py: |
+      from __future__ import annotations
+
+      import argparse
+      import sys
+
+      from inventory.models import parse_items
+      from inventory.report import low_stock, total_value_cents
+
+
+      def build_parser() -> argparse.ArgumentParser:
+          p = argparse.ArgumentParser(prog="inventory")
+          sub = p.add_subparsers(dest="command", required=True)
+          rep = sub.add_parser("report", help="print stock summary")
+          rep.add_argument("--file", required=True)
+          rep.add_argument("--low", type=int, default=5)
+          return p
+
+
+      def main(argv: list[str] | None = None) -> int:
+          args = build_parser().parse_args(argv)
+          if args.command == "report":
+              with open(args.file) as f:
+                  items = parse_items(f.read())
+              print(f"items: {len(items)}")
+              print(f"total value: {total_value_cents(items)} cents")
+              for it in low_stock(items, args.low):
+                  print(f"low stock: {it.sku} ({it.qty})")
+              return 0
+          return 1
+
+
+      if __name__ == "__main__":
+          sys.exit(main())
+    tests/__init__.py: ''
+    tests/test_models.py: |
+      from inventory.models import Item, dump_items, parse_items
+
+
+      def test_parse_and_dump_round_trip():
+          text = "sku,name,qty,unit_cost_cents\nA1,bolt,2,25\n"
+          items = parse_items(text)
+          assert items == [Item("A1", "bolt", 2, 25)]
+          assert dump_items(items) == text
+
+
+      def test_bad_header():
+          import pytest
+
+          with pytest.raises(ValueError):
+              parse_items("x,y\n1,2\n")
+    tests/test_report.py: |
+      from inventory.models import Item
+      from inventory.report import low_stock, total_value_cents
+
+
+      def test_total_value():
+          items = [Item("A", "a", 2, 100), Item("B", "b", 3, 10)]
+          assert total_value_cents(items) == 230
+
+
+      def test_low_stock_includes_threshold():
+          items = [Item("A", "a", 5, 1), Item("B", "b", 6, 1), Item("C", "c", 0, 1)]
+          assert [i.sku for i in low_stock(items, 5)] == ["A", "C"]
+run_cmd: python -m pytest -q
+hidden_tests:
+  hidden_tests/test_hidden.py: |
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import pytest
+
+    from inventory.models import Item, parse_items
+    from inventory.report import low_stock, total_value_cents
+
+
+    def test_total_value_cents():
+        assert total_value_cents([Item("A", "a", 2, 100), Item("B", "b", 3, 10)]) == 230
+        assert total_value_cents([]) == 0
+
+
+    def test_low_stock_boundary_and_order():
+        items = [Item("A", "a", 5, 1), Item("B", "b", 6, 1), Item("C", "c", 0, 1), Item("D", "d", 5, 1)]
+        assert [i.sku for i in low_stock(items, 5)] == ["A", "C", "D"]
+
+
+    def write_csv(tmp_path: Path) -> Path:
+        p = tmp_path / "stock.csv"
+        p.write_text("sku,name,qty,unit_cost_cents\nA100,bolt,40,25\nB200,nut,3,10\n")
+        return p
+
+
+    def test_restock_updates_file_and_returns_item(tmp_path):
+        from inventory.store import restock
+
+        p = write_csv(tmp_path)
+        item = restock(str(p), "B200", 7)
+        assert item == Item("B200", "nut", 10, 10)
+        assert p.read_text() == "sku,name,qty,unit_cost_cents\nA100,bolt,40,25\nB200,nut,10,10\n"
+        assert parse_items(p.read_text())[1].qty == 10
+
+
+    def test_restock_errors(tmp_path):
+        from inventory.store import restock
+
+        p = write_csv(tmp_path)
+        with pytest.raises(KeyError):
+            restock(str(p), "ZZZ", 1)
+        with pytest.raises(ValueError):
+            restock(str(p), "A100", 0)
+        assert p.read_text().count("\n") == 3  # untouched
+
+
+    def run_cli(*args):
+        return subprocess.run([sys.executable, "-m", "inventory.cli", *args], capture_output=True, text=True, cwd=Path.cwd())
+
+
+    def test_cli_restock_success(tmp_path):
+        p = write_csv(tmp_path)
+        r = run_cli("restock", "--file", str(p), "A100", "5")
+        assert r.returncode == 0, r.stderr
+        assert "restocked A100: 45" in r.stdout
+        assert "A100,bolt,45,25" in p.read_text()
+
+
+    def test_cli_restock_errors(tmp_path):
+        p = write_csv(tmp_path)
+        r = run_cli("restock", "--file", str(p), "NOPE", "5")
+        assert r.returncode == 2 and r.stderr.strip() != ""
+        r = run_cli("restock", "--file", str(p), "A100", "0")
+        assert r.returncode == 2
+
+
+    def test_cli_report_still_works(tmp_path):
+        p = write_csv(tmp_path)
+        r = run_cli("report", "--file", str(p))
+        assert r.returncode == 0
+        assert "total value: 1030 cents" in r.stdout
+        assert "low stock: B200 (3)" in r.stdout
