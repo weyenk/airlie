@@ -172,7 +172,8 @@ class AutoGenTeam:
         )
         steps = 0
         prompt_tokens = completion_tokens = 0
-        recent: list[tuple[str, str]] = []
+        max_prompt = 0
+        recent: list[tuple[str, str, str]] = []
         task: str | None = _goal_message(ctx.goal, ctx.worktree.name)
         final_text = ""
         stop: StopReason = "done"
@@ -193,12 +194,14 @@ class AutoGenTeam:
                 for ev in events:
                     usage = getattr(ev, "models_usage", None)
                     if usage:
-                        prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+                        pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+                        prompt_tokens += pt
+                        max_prompt = max(max_prompt, pt)
                         completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
                 new_steps = pair_steps(ctx.team_id, steps, events, assistant_text="")
                 for s in new_steps:
                     await observer.after_step(s)
-                    recent.append((s.u_t.name, s.u_t.arguments))
+                    recent.append((s.u_t.name, s.u_t.arguments, s.o_t))
                 recent = recent[-ctx.repeat_limit :]
                 steps += len(new_steps)
                 last = result.messages[-1] if result and result.messages else None
@@ -223,7 +226,7 @@ class AutoGenTeam:
                     final_text = f"stopped: reached max_steps={ctx.max_steps}"
                     stop = "max_steps"
                     break
-                if prompt_tokens + completion_tokens >= ctx.token_budget:
+                if max_prompt + completion_tokens >= ctx.token_budget:
                     final_text = f"stopped: token budget {ctx.token_budget} exhausted"
                     stop = "token_budget"
                     break

@@ -42,14 +42,14 @@ Run `task` to list them. The ones that exist today:
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--k 3] [--test-cmd "pytest -q"]` | run K parallel teams on a goal; each team works in its own git worktree under the run directory and the report lists every team's outcome, branch and trace |
 | `task eval -- lang_detect [--k 1]` | materialize a graded task from `evals/tasks/`, run the teams on it, grade every worktree with the hidden tests |
+| `task memory -- RUN_ID [--full]` | show a run's shared memory bank: keys, owning team, cross-team reads |
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task fmt` | auto-format and auto-fix lint |
 
-Coming per the roadmap: `task serve`, `task bench:lts`, `task events`, `task trace`, `task memory`,
-`task controller:*`.
+Coming per the roadmap: `task serve`, `task bench:lts`, `task events`, `task trace`, `task controller:*`.
 
 ## How a run works
 
@@ -59,6 +59,15 @@ tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `shell`, `run
 servers under `mcp:`) confined to its own worktree. Generation slots are accounted per engine; a team inside a
 tool call holds no slot (spec 04 §2 suspend-and-yield), and the engine's prefix cache makes its next turn cheap.
 Every step is written to `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
+
+## Learning to Share
+
+After every step a team's (action, observation) pair is summarized into a one-line key by the `summarizer` role
+and offered to the admission controller (`lts.controller.kind`: `heuristic` now, `judge` for a small-model
+YES/NO, `learned` once the spec 03 §2 controller is trained in M5, `always`/`never` for baselines). Admitted
+entries go into the shared memory bank; before each model call every team sees the current keys under
+`[Shared Memory Keys Available]` and can fetch any full value with `retrieve_value`. `task memory -- RUN_ID`
+shows the bank; `runs/<id>/lts/admission.jsonl` and `retrieval.jsonl` are the training log.
 
 ## Choosing the team model
 

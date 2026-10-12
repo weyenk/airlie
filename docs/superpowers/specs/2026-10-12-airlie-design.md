@@ -147,3 +147,19 @@ body contains braces. Both are repaired before AutoGen parses them; the native l
 Run-to-run variance is real: of four live runs, two finished cleanly (24 s / 87 s), one hit a requirement
 ambiguity (now fixed in the task), one looped on shell experiments until `max_steps` (prompt tightened, coder
 temperature 0.3).
+
+## M3 result (2026-10-12)
+
+The Learning-to-Share substrate is live: `SharedMemoryBank`/`MemoryEntry` (spec 03 §1 verbatim), summary keys
+written by the `summarizer` role on the small model, admission by the configured controller (`heuristic` default;
+`always`, `never`, `judge` selectable), keys injected before every model call in the spec 04 §3 format, and a
+`retrieve_value(entry_id)` tool per team. Every decision lands in `runs/<id>/lts/admission.jsonl` with
+`used_later` and `episode_reward` filled after the run, plus `retrieval.jsonl` and `memory.jsonl` (`task memory`).
+
+Live `task eval -- lang_detect --k 3`: 3 teams in parallel (max_concurrent 3, 48 yields), 29 entries admitted of
+48 steps, 2 of 3 worktrees pass the hidden tests, 246 s wall-clock. **No cross-team retrievals happened**: the keys
+were injected (visible in the traces) but the agents never called `retrieve_value`. With three teams on an
+identical small task there is little to fetch; the retrieval path is unit-tested and the behaviour on real,
+divergent work is what M4's `task bench:lts` measures. Two loop fixes came out of this run: the token budget now
+counts context + generated tokens (resent history is prefix-cached and was exhausting the budget), and the
+repeated-action stop requires identical outputs (a run-tests fix loop is not a stuck loop).

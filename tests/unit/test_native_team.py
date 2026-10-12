@@ -134,3 +134,48 @@ async def test_tools_are_sent_to_the_engine(tmp_path: Path) -> None:
     assert [t.name for t in engine.requests[0].tools or []] == ["write_file", "read_file", "run_tests"]
     assert engine.requests[0].messages[0].content == "You are the coder."
     assert "make it pass" in engine.requests[0].messages[1].content
+
+
+async def test_token_budget_counts_context_plus_generated_not_resent_history(tmp_path: Path) -> None:
+    """Each turn resends the whole conversation (prefix-cached); the budget must not grow quadratically."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": f"f{i}"}))])
+                for i in range(6)
+            ]
+            + [FakeReply(text="ok")]
+        }
+    )
+    team, ctx = make_team(
+        tmp_path, engine, token_budget=250
+    )  # fake prompt_tokens ≈ words in messages (~20-40)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done"  # cumulative resent prompts would exceed 60 long before step 6
+
+
+async def test_repeated_action_requires_identical_outputs(tmp_path: Path) -> None:
+    """run_tests three times with changing output is a fix loop, not a stuck loop."""
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    outputs = iter(["fail 1", "fail 2", "pass"])
+    engine = FakeEngine(
+        {
+            "coder": [FakeReply(tool_calls=[ToolCall("c", "shell", json.dumps({"cmd": "echo x"}))])] * 3
+            + [FakeReply(text="done")]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+
+    class VaryingShell:
+        name = "shell"
+        description = "x"
+        parameters = {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+
+        async def run(self, args, c):
+            from airlie.tools import ToolResult
+
+            return ToolResult(True, next(outputs))
+
+    ctx.tools.add(VaryingShell())
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 3

@@ -32,8 +32,9 @@ class NativeTeam:
             Message(role="user", content=_goal_message(ctx.goal, ctx.worktree.name)),
         ]
         prompt_tokens = completion_tokens = 0
+        max_prompt = 0
         steps = 0
-        recent: list[tuple[str, str]] = []
+        recent: list[tuple[str, str, str]] = []
         final_text = ""
         stop: StopReason = "done"
         ok = False
@@ -61,6 +62,7 @@ class NativeTeam:
                 break
             gen_ms = (time.monotonic() - g0) * 1000.0
             prompt_tokens += res.prompt_tokens
+            max_prompt = max(max_prompt, res.prompt_tokens)
             completion_tokens += res.completion_tokens
             if not res.tool_calls:
                 final_text = res.text
@@ -91,7 +93,7 @@ class NativeTeam:
                         tool_ms=tool_ms,
                     )
                 )
-                recent.append((call.name, call.arguments))
+                recent.append((call.name, call.arguments, result.output))
                 recent = recent[-ctx.repeat_limit :]
             if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
                 final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
@@ -101,7 +103,9 @@ class NativeTeam:
                 final_text = f"stopped: reached max_steps={ctx.max_steps}"
                 stop = "max_steps"
                 break
-            if prompt_tokens + completion_tokens >= ctx.token_budget:
+            if (
+                max_prompt + completion_tokens >= ctx.token_budget
+            ):  # context size + generated, not resent history
                 final_text = f"stopped: token budget {ctx.token_budget} exhausted"
                 stop = "token_budget"
                 break
