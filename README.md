@@ -40,14 +40,25 @@ Run `task` to list them. The ones that exist today:
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
+| `task run -- "goal" --repo PATH [--k 3] [--test-cmd "pytest -q"]` | run K parallel teams on a goal; each team works in its own git worktree under the run directory and the report lists every team's outcome, branch and trace |
+| `task eval -- lang_detect [--k 1]` | materialize a graded task from `evals/tasks/`, run the teams on it, grade every worktree with the hidden tests |
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task fmt` | auto-format and auto-fix lint |
 
-Coming per the roadmap: `task run -- "goal"`, `task serve`, `task bench:lts`, `task events`, `task trace`,
-`task memory`, `task controller:*`.
+Coming per the roadmap: `task serve`, `task bench:lts`, `task events`, `task trace`, `task memory`,
+`task controller:*`.
+
+## How a run works
+
+`task run` spawns K teams (`teams.k`). Each team is an AutoGen `AssistantAgent` (spec 01 §2; `teams.orchestrator:
+native` selects the built-in ReAct loop instead) talking to the engine through the OpenAI endpoint, with sandboxed
+tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `shell`, `run_tests`, `git`, plus any MCP
+servers under `mcp:`) confined to its own worktree. Generation slots are accounted per engine; a team inside a
+tool call holds no slot (spec 04 §2 suspend-and-yield), and the engine's prefix cache makes its next turn cheap.
+Every step is written to `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
 
 ## Choosing the team model
 

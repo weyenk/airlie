@@ -134,3 +134,16 @@ qwen25_32b lazy), `task status` shows per-model readiness, `task test:live` pass
 measured the default team model at 112 tok/s decode / 4.2k tok/s prefill (4k, N=1) with a turn-2 prefix-cache TTFT
 ratio of 0.1 (full table: `docs/bench/2026-10-12-engine-bench.md`). Spec 02 §1 launch parameters and §3 prefix
 caching are therefore in effect for the team model.
+
+## M2 result (2026-10-12)
+
+`task eval -- lang_detect --k 1` runs end to end against the managed engine: an AutoGen team (spec 01 §2) in its
+own git worktree, sandboxed tools, slot accounting with suspend-and-yield on every tool call (11 yields recorded),
+every step traced. Hidden tests: 9/9 pass in 11 steps, 87 s wall-clock, on the default base model.
+
+Two engine quirks handled at the client boundary (`teams/autogen_client.py`, `tools/jsonargs.py`): vllm-mlx emits
+each streamed tool call twice, and its `qwen3_coder` parser can append a stray `}` to JSON arguments when a file
+body contains braces. Both are repaired before AutoGen parses them; the native loop uses the same repair.
+Run-to-run variance is real: of four live runs, two finished cleanly (24 s / 87 s), one hit a requirement
+ambiguity (now fixed in the task), one looped on shell experiments until `max_steps` (prompt tightened, coder
+temperature 0.3).
