@@ -122,3 +122,116 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     assert written == {"t1.txt", "t2.txt"}
     assert not (repo / "t1.txt").exists() and not (repo / "t2.txt").exists()
     assert os.path.isdir(report.run_dir.path / "trace")
+
+
+async def test_orchestrator_aggregates_and_writes_report(tmp_path: Path) -> None:
+    repo = git_repo(tmp_path)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    for r in ("coder", "summarizer", "judge", "aggregator"):
+        (cfg_dir / f"{r}.md").write_text(f"you are {r}")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
+            for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "teams": {"k": 2, "orchestrator": "native", "max_steps": 5, "stop_on_first_pass": False},
+        "tools": {"builtin": ["write_file"]},
+        "lts": {"enabled": False},
+        "aggregator": {"kind": "llm", "role": "aggregator"},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
+    cfg = load_config(cfg_dir / "airlie.yaml")
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[ToolCall("a1", "write_file", json.dumps({"path": "ok.txt", "content": "1"}))]
+                ),
+                FakeReply(text="team one done"),
+                FakeReply(text="team two done"),
+            ],
+            "aggregator": [FakeReply(text="WINNER: team-1\nTeam one wrote ok.txt and its tests pass.")],
+        }
+    )
+    orch = ParallelAgentTeamOrchestrator(cfg, engine, run_id="r10")
+    # test_cmd passes only where ok.txt exists
+    report = await orch.execute_task("do it", repo=repo, test_cmd="test -f ok.txt")
+    assert report.winner == "team-1"
+    assert report.final_answer.startswith("Team one wrote")
+    assert report.scores["team-1"] == 1.0 and report.scores["team-2"] == 0.0
+    md = (report.run_dir.path / "report.md").read_text()
+    assert "team-1" in md and "WINNER" not in md and "Team one wrote" in md
+    events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+    agg = [e for e in events if e["kind"] == "aggregate"][0]
+    assert agg["winner"] == "team-1" and agg["kind"] == "aggregate"
+    assert report.tests["team-1"] is True and report.tests["team-2"] is False
+
+
+async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
+    import asyncio
+
+    repo = git_repo(tmp_path)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    for r in ("coder", "summarizer", "judge", "aggregator"):
+        (cfg_dir / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
+            for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "teams": {"k": 2, "orchestrator": "native", "max_steps": 50, "stop_on_first_pass": True},
+        "tools": {"builtin": ["write_file", "shell"]},
+        "lts": {"enabled": False},
+        "aggregator": {"kind": "test_score"},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
+    cfg = load_config(cfg_dir / "airlie.yaml")
+
+    class RoutingFake(FakeEngine):
+        """Per-team scripts, selected by the 'You are team-N' line the goal message carries."""
+
+        def __init__(self, per_team: dict[str, list[FakeReply]]) -> None:
+            super().__init__({f"coder@{t}": v for t, v in per_team.items()})
+
+        async def generate(self, req, on_token=None):
+            team = next(t for t in ("team-1", "team-2") if f"You are {t}." in req.messages[1].content)
+            req.role = f"coder@{team}"
+            res = await super().generate(req, on_token)
+            if team == "team-2":
+                await asyncio.sleep(0.05)
+            return res
+
+    engine = RoutingFake(
+        {
+            "team-1": [
+                FakeReply(
+                    tool_calls=[ToolCall("a1", "write_file", json.dumps({"path": "ok.txt", "content": "1"}))]
+                ),
+                FakeReply(text="team one done"),
+            ],
+            "team-2": [
+                FakeReply(tool_calls=[ToolCall(f"b{i}", "shell", json.dumps({"cmd": f"echo {i}"}))])
+                for i in range(40)
+            ],
+        }
+    )
+    orch = ParallelAgentTeamOrchestrator(cfg, engine, run_id="r11")
+    report = await asyncio.wait_for(
+        orch.execute_task("do it", repo=repo, test_cmd="test -f ok.txt"), timeout=20
+    )
+    by = {t.team_id: t for t in report.teams}
+    assert by["team-1"].ok and report.tests["team-1"] is True
+    assert by["team-2"].stop_reason == "cancelled"
+    assert report.winner == "team-1"
+    events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+    assert any(e["kind"] == "early_stop" and e["winner"] == "team-1" for e in events)

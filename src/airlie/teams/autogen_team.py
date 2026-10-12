@@ -174,7 +174,7 @@ class AutoGenTeam:
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         recent: list[tuple[str, str, str]] = []
-        task: str | None = _goal_message(ctx.goal, ctx.worktree.name)
+        task: str | None = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id)
         final_text = ""
         stop: StopReason = "done"
         ok = False

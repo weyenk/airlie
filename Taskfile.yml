@@ -81,6 +81,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie memory {{.CLI_ARGS}}'
 
+  serve:
+    desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles as models; POST /v1/airlie/run)"
+    cmds:
+      - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
+
+  bench:lts:
+    desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"
+    cmds:
+      - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
+
   bench:
     desc: "Engine throughput through the seam (task bench -- --model llama70b --ctx 4k,32k --n 1,2,4)"
     cmds:

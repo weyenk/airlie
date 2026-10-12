@@ -298,6 +298,92 @@ def bench_engine(
         console.print(f"saved {save(results, out)}")
 
 
+@bench_app.command("lts")
+def bench_lts(
+    config: ConfigOpt = None,
+    tasks: Annotated[str, typer.Option(help="comma-separated task ids (default: all in evals/tasks)")] = "",
+    tasks_dir: Annotated[Path, typer.Option()] = Path("evals/tasks"),
+    repeats: Annotated[int, typer.Option(help="runs per task per controller")] = 1,
+    baseline: Annotated[str, typer.Option(help="memory-free baseline controller")] = "never",
+    target_pct: Annotated[float, typer.Option(help="spec 04 §4 wall-clock reduction target")] = 25.0,
+    out: Annotated[Path | None, typer.Option(help="write JSON here")] = None,
+) -> None:
+    """Memory-free baseline vs the configured LTS controller on graded tasks; ≥25 % verdict (spec 04 §4)."""
+    import asyncio
+    import time
+
+    from airlie.bench.lts_bench import BenchRow, events_counts, render, save, summarize, verdict
+    from airlie.evals import find_task, load_task, materialize
+
+    cfg = _load(config)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()] or sorted(
+        p.stem for p in tasks_dir.glob("*.yaml")
+    )
+    candidate = cfg.lts.controller.kind
+    if candidate == baseline:
+        err.print(f"[red]configured controller is the baseline ({baseline}); set lts.controller.kind[/red]")
+        raise typer.Exit(1)
+    rows: list[BenchRow] = []
+    for task_id in ids:
+        task = find_task(tasks_dir.resolve(), task_id) if task_id else load_task(Path(task_id))
+        for rep in range(repeats):
+            for ctrl in (baseline, candidate):
+                c = cfg.model_copy(deep=True)
+                c.lts.controller.kind = ctrl  # type: ignore[assignment]
+                c.lts.enabled = ctrl != baseline or True
+                orch = _orchestrator(c)
+                repo = materialize(task, orch.run_dir.path / "task-repo")
+                console.print(
+                    f"[bold]{task.id}[/bold] controller={ctrl} repeat={rep} run={orch.run_dir.run_id}"
+                )
+                t0 = time.monotonic()
+                report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
+                wall = time.monotonic() - t0
+                passed = sum(1 for t in report.teams if task.grade(orch.run_dir.path / t.team_id).passed)
+                counts = events_counts(report.run_dir.events_path)
+                rows.append(
+                    BenchRow(
+                        task.id,
+                        ctrl,
+                        rep,
+                        round(wall, 1),
+                        counts["steps"],
+                        sum(t.prompt_tokens for t in report.teams),
+                        sum(t.completion_tokens for t in report.teams),
+                        counts["admissions"],
+                        counts["retrievals"],
+                        passed,
+                        len(report.teams),
+                        report.run_id,
+                    )
+                )
+                console.print(
+                    f"  wall {wall:.0f}s, steps {counts['steps']}, admissions {counts['admissions']}, "
+                    f"retrievals {counts['retrievals']}, teams passed {passed}/{len(report.teams)}"
+                )
+    summary = summarize(rows)
+    v = verdict(summary, baseline=baseline, candidate=candidate, target_pct=target_pct)
+    print(render(summary, v))
+    if out:
+        console.print(f"saved {save(rows, summary, v, out)}")
+
+
+@app.command()
+def serve(
+    config: ConfigOpt = None,
+    host: str = "127.0.0.1",
+    port: int = 8090,
+) -> None:
+    """OpenAI-compatible endpoint in front of airlie: roles as models, plus POST /v1/airlie/run."""
+    import uvicorn
+
+    from airlie.serve import create_app
+
+    cfg = _load(config)
+    console.print(f"airlie serve on http://{host}:{port}/v1  (models = roles: {', '.join(cfg.roles)})")
+    uvicorn.run(create_app(cfg), host=host, port=port, log_level="info")
+
+
 @bench_app.command("report")
 def bench_report(paths: list[Path]) -> None:
     """Render saved bench JSON file(s) as one markdown table (what docs/bench/*.md contain)."""
@@ -397,7 +483,13 @@ def _print_report(report) -> None:  # type: ignore[no-untyped-def]
             t.final_text[:200].replace("\n", " "),
         )
     console.print(table)
-    console.print(f"events: {report.run_dir.events_path}\nworktrees: {report.run_dir.path}/team-*")
+    if report.winner:
+        console.print(f"[bold]winner:[/bold] {report.winner} (branch {report.winning_branch})")
+        console.print(report.final_answer, markup=False, highlight=False)
+    console.print(
+        f"report: {report.run_dir.path}/report.md\nevents: {report.run_dir.events_path}\n"
+        f"worktrees: {report.run_dir.path}/team-*"
+    )
 
 
 @app.command()

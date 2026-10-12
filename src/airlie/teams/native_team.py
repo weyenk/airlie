@@ -12,9 +12,10 @@ from airlie.engine.types import EngineError, GenRequest, Message, ToolCall
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 
 
-def _goal_message(goal: str, worktree_hint: str) -> str:
+def _goal_message(goal: str, worktree_hint: str, team_id: str = "") -> str:
+    who = f"You are {team_id}. " if team_id else ""
     return (
-        f"Goal:\n{goal}\n\n"
+        f"Goal:\n{goal}\n\n{who}"
         f"You are working inside a git checkout of the repository ({worktree_hint}). "
         "Use the tools to inspect and change it, run the tests, and stop with a short summary when they pass."
     )
@@ -29,7 +30,7 @@ class NativeTeam:
         system = ctx.role.prompt.read_text()
         messages: list[Message] = [
             Message(role="system", content=system),
-            Message(role="user", content=_goal_message(ctx.goal, ctx.worktree.name)),
+            Message(role="user", content=_goal_message(ctx.goal, ctx.worktree.name, ctx.team_id)),
         ]
         prompt_tokens = completion_tokens = 0
         max_prompt = 0

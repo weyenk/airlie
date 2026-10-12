@@ -23,6 +23,7 @@ from airlie.lts.summarizer import build_summarizer
 from airlie.obs import EventSink, RunDir
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
+from airlie.teams.aggregate import Aggregator, LLMAggregator, TeamOutcome, TestScoreAggregator
 from airlie.teams.worktree import add_worktree
 from airlie.tools import ToolContext, ToolRegistry
 
@@ -34,6 +35,11 @@ class RunReport:
     goal: str
     teams: list[TeamResult] = field(default_factory=list)
     wall_ms: float = 0.0
+    winner: str | None = None
+    final_answer: str = ""
+    scores: dict[str, float] = field(default_factory=dict)
+    tests: dict[str, bool | None] = field(default_factory=dict)
+    winning_branch: str | None = None
 
     @property
     def any_ok(self) -> bool:
@@ -99,6 +105,11 @@ class ParallelAgentTeamOrchestrator:
         self._logging = LoggingObserver(self.sink, self.run_dir)
         self.observer: StepObserver = observer or self._logging
         self.lts: LTSObserver | None = None
+        self.aggregator: Aggregator = (
+            LLMAggregator(engine, cfg.aggregator.role)
+            if cfg.aggregator.kind == "llm"
+            else TestScoreAggregator()
+        )
 
     def _default_team(self) -> TeamOrchestrator:
         if self.cfg.teams.orchestrator == "autogen":
@@ -206,11 +217,20 @@ class ParallelAgentTeamOrchestrator:
             "run_start", goal=query_text, k=k, repo=str(repo), orchestrator=self.cfg.teams.orchestrator
         )
         teams = [f"team-{i + 1}" for i in range(k)]
-        results = await asyncio.gather(*(self._run_team(tid, query_text, repo, test_cmd) for tid in teams))
+        results = await self._run_teams(teams, query_text, repo, test_cmd)
         report = RunReport(
             self.run_dir.run_id, self.run_dir, query_text, list(results), (time.monotonic() - t0) * 1000.0
         )
-        self.finalize_rewards({r.team_id: (1.0 if r.ok else 0.0) for r in results})
+        outcomes = [await self._outcome(r, test_cmd) for r in results]
+        report.tests = {o.result.team_id: o.tests_passed for o in outcomes}
+        agg = await self.aggregator.aggregate(query_text, outcomes)
+        report.winner, report.final_answer, report.scores = agg.winner, agg.final_answer, agg.scores
+        report.winning_branch = f"airlie/{self.run_dir.run_id}/{agg.winner}"
+        self.sink.emit(
+            "aggregate", winner=agg.winner, reason=agg.reason, scores=agg.scores, all_failed=agg.all_failed
+        )
+        self._write_report(report, agg.reason)
+        self.finalize_rewards({o.result.team_id: (1.0 if o.tests_passed else 0.0) for o in outcomes})
         m = self.scheduler.metrics()
         self.sink.emit(
             "run_done",
@@ -224,6 +244,79 @@ class ParallelAgentTeamOrchestrator:
             cross_team_retrievals=sum(e.access_count for e in self.memory_bank.entries()),
         )
         return report
+
+    async def _run_teams(
+        self, teams: list[str], goal: str, repo: Path, test_cmd: str | None
+    ) -> list[TeamResult]:
+        """K teams in parallel; with `teams.stop_on_first_pass`, the first team whose tests pass cancels the
+        rest."""
+        tasks = {tid: asyncio.create_task(self._run_team(tid, goal, repo, test_cmd)) for tid in teams}
+        results: dict[str, TeamResult] = {}
+        pending = set(tasks.values())
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                if t.cancelled():
+                    continue  # recorded below as "cancelled"
+                r = t.result()
+                results[r.team_id] = r
+                early = self.cfg.teams.stop_on_first_pass and test_cmd and r.ok and pending
+                if early and (await self._outcome(r, test_cmd)).tests_passed:
+                    self.sink.emit(
+                        "early_stop", winner=r.team_id, cancelled=[x for x in teams if x not in results]
+                    )
+                    for other in pending:
+                        other.cancel()
+        for tid, task in tasks.items():
+            if tid not in results:
+                try:
+                    results[tid] = await task
+                except asyncio.CancelledError:
+                    results[tid] = TeamResult(
+                        tid, False, "cancelled", "cancelled: another team passed first", 0, 0, 0, 0.0
+                    )
+                    self.sink.emit("team_done", team_id=tid, ok=False, stop_reason="cancelled", steps=0)
+        return [results[tid] for tid in teams]
+
+    async def _outcome(self, r: TeamResult, test_cmd: str | None) -> TeamOutcome:
+        wt = self.run_dir.path / r.team_id
+        if not test_cmd:
+            return TeamOutcome(r, wt, None, "")
+        proc = await asyncio.create_subprocess_shell(
+            test_cmd, cwd=wt, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=self.cfg.tools.shell_timeout_s)
+        except TimeoutError:
+            proc.kill()
+            return TeamOutcome(r, wt, False, "test command timed out")
+        return TeamOutcome(r, wt, proc.returncode == 0, out.decode("utf-8", "replace")[-4000:])
+
+    def _write_report(self, report: RunReport, reason: str) -> None:
+        lines = [
+            f"# airlie run {report.run_id}",
+            "",
+            f"**Goal:** {report.goal}",
+            "",
+            f"**Winner:** {report.winner} (branch `{report.winning_branch}`, chosen by {reason})",
+            "",
+            "## Final answer",
+            "",
+            report.final_answer,
+            "",
+            "## Teams",
+            "",
+            "| team | ok | stop | steps | tests | score |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for t in report.teams:
+            tp = report.tests.get(t.team_id)
+            lines.append(
+                f"| {t.team_id} | {'yes' if t.ok else 'no'} | {t.stop_reason} | {t.steps} | "
+                f"{'pass' if tp else ('fail' if tp is False else '-')} | "
+                f"{report.scores.get(t.team_id, 0):.1f} |"
+            )
+        (self.run_dir.path / "report.md").write_text("\n".join(lines) + "\n")
 
     async def _run_team(self, team_id: str, goal: str, repo: Path, test_cmd: str | None) -> TeamResult:
         wt = add_worktree(repo, self.run_dir.path / team_id, branch=f"airlie/{self.run_dir.run_id}/{team_id}")

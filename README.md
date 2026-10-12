@@ -42,6 +42,8 @@ Run `task` to list them. The ones that exist today:
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--k 3] [--test-cmd "pytest -q"]` | run K parallel teams on a goal; each team works in its own git worktree under the run directory and the report lists every team's outcome, branch and trace |
 | `task eval -- lang_detect [--k 1]` | materialize a graded task from `evals/tasks/`, run the teams on it, grade every worktree with the hidden tests |
+| `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
 | `task memory -- RUN_ID [--full]` | show a run's shared memory bank: keys, owning team, cross-team reads |
 | `task bench [-- --model NAME --ctx 4k,32k --n 1,2,4]` | engine throughput through the seam: TTFT, prefill and decode tok/s, aggregate at N streams, and whether turn 2 of a conversation hits the prefix cache |
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
@@ -49,7 +51,14 @@ Run `task` to list them. The ones that exist today:
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task fmt` | auto-format and auto-fix lint |
 
-Coming per the roadmap: `task serve`, `task bench:lts`, `task events`, `task trace`, `task controller:*`.
+Coming per the roadmap: `task events`, `task trace`, `task controller:*` (M5), `task bench:gaia` (M4b).
+
+## Using airlie from another client
+
+`task serve` starts an OpenAI-compatible server on `127.0.0.1:8090`. Point Claude Code, Qwen Code, Cursor or
+`curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends the role prompt and
+forwards to the engine. `POST /v1/airlie/run` with `{"goal": ..., "repo": "/path", "k": 3}` runs the parallel
+teams and returns the aggregated answer and winning branch.
 
 ## How a run works
 
@@ -58,7 +67,10 @@ native` selects the built-in ReAct loop instead) talking to the engine through t
 tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `shell`, `run_tests`, `git`, plus any MCP
 servers under `mcp:`) confined to its own worktree. Generation slots are accounted per engine; a team inside a
 tool call holds no slot (spec 04 §2 suspend-and-yield), and the engine's prefix cache makes its next turn cheap.
-Every step is written to `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
+When the teams finish, the aggregator (spec 01 §4 step 9; `aggregator.kind: llm` or `test_score`) runs the test
+command in every worktree, picks one winning branch (`airlie/<run_id>/team-N`) and writes the final answer to
+`runs/<run_id>/report.md`. With `teams.stop_on_first_pass: true` the first team whose tests pass cancels the
+others. Every step is written to `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
 
 ## Learning to Share
 
