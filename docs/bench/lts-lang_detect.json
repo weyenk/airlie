@@ -1,0 +1,57 @@
+{
+ "rows": [
+  {
+   "task": "lang_detect",
+   "controller": "never",
+   "repeat": 0,
+   "wall_s": 219.7,
+   "steps": 28,
+   "prompt_tokens": 73538,
+   "completion_tokens": 10760,
+   "admissions": 0,
+   "retrievals": 0,
+   "teams_passed": 1,
+   "teams": 3,
+   "run_id": "20261012-171531-a97a"
+  },
+  {
+   "task": "lang_detect",
+   "controller": "heuristic",
+   "repeat": 0,
+   "wall_s": 25.3,
+   "steps": 17,
+   "prompt_tokens": 14788,
+   "completion_tokens": 1106,
+   "admissions": 9,
+   "retrievals": 0,
+   "teams_passed": 3,
+   "teams": 3,
+   "run_id": "20261012-171912-282a"
+  }
+ ],
+ "summary": {
+  "never": {
+   "runs": 1.0,
+   "mean_wall_s": 219.7,
+   "mean_steps": 28.0,
+   "mean_admissions": 0.0,
+   "mean_retrievals": 0.0,
+   "pass_rate": 1.0,
+   "team_pass_rate": 0.333
+  },
+  "heuristic": {
+   "runs": 1.0,
+   "mean_wall_s": 25.3,
+   "mean_steps": 17.0,
+   "mean_admissions": 9.0,
+   "mean_retrievals": 0.0,
+   "pass_rate": 1.0,
+   "team_pass_rate": 1.0
+  }
+ },
+ "verdict": {
+  "reduction_pct": 88.5,
+  "met": true,
+  "text": "wall-clock 219.7s \u2192 25.3s (+88.5 % reduction; target \u2265 25 %); pass rate 1.00 \u2192 1.00; criterion MET"
+ }
+}

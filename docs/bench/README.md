@@ -21,5 +21,6 @@ output (`task bench:compare -- a.json b.json` prints deltas).
 | File | Model | Notes |
 | --- | --- | --- |
 | `2026-10-12-engine-bench.md` | base vs qwen38 | tables, comparison and interpretation |
+| `2026-10-12-lts-bench.md` / `lts-lang_detect.json` | never vs heuristic, K=3 | first `task bench:lts` run; verdict not meaningful yet (0 retrievals, 1 sample) |
 | `qwen38.json` | mlx-community/Qwen3.8-27B-4bit | hybrid attention: no prefix cache in vllm-mlx 0.5.0 |
 | `base.json` | mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit | default team model |
