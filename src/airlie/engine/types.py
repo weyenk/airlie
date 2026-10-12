@@ -9,7 +9,8 @@ from typing import Any, Literal
 from airlie.config import Sampling
 
 FinishReason = Literal["stop", "length", "tool_calls", "cancelled"]
-ModelState = Literal["ready", "loading", "missing"]
+ModelState = Literal["ready", "loading", "lazy", "missing"]
+"""lazy = registered in the vllm-mlx registry, loads on first request (preload: false)."""
 
 
 @dataclass(frozen=True)

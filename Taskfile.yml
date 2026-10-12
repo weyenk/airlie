@@ -66,6 +66,21 @@ tasks:
     cmds:
       - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
+  bench:
+    desc: Engine throughput through the seam (`task bench -- --model llama70b --ctx 4k,32k --n 1,2,4`)
+    cmds:
+      - '{{.RUN}} airlie bench engine {{.CLI_ARGS}}'
+
+  bench:models:
+    desc: Bench every catalog model marked `bench: true`, one table (`task bench:models -- --ctx 4k --n 1,4`)
+    cmds:
+      - '{{.RUN}} airlie bench models {{.CLI_ARGS}}'
+
+  bench:compare:
+    desc: Per-cell deltas between two saved bench JSON files (`task bench:compare -- a.json b.json`)
+    cmds:
+      - '{{.RUN}} airlie bench compare {{.CLI_ARGS}}'
+
   test:
     desc: Unit tests (no models, runs anywhere)
     cmds:

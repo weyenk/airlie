@@ -100,3 +100,9 @@ Recorded with `scripts/record_fixtures.py` against `vllm-mlx serve --continuous-
   `{"error": …}` is also handled.
 - **`GET /health`** → `{"status": "healthy", "model_loaded": true, "model_name": …, "available_models": [...],
   "engine_type": "batched"}`; **`GET /v1/models`** → `{"data": [{"id": "small", …}]}`.
+- **Registry mode (`--models-config`)**: `/health` reports `available_models` = every registered name and
+  `model_name: null`; it answers only after all `preload: true` models have loaded (server.log shows both loads before
+  "Application startup complete"). Non-preloaded models load on first request, so `task status` shows them as `lazy`.
+- **Qwen3.8-27B-4bit loads as an MLLM** (`mllm=True`, "Native video pipeline enabled"), so vllm-mlx uses its MLLM
+  scheduler for the base model; MLLM-specific limits (MTP only at batch size 1, fixed MLLM prefill step) apply.
+  First request after startup: 1.1 s for 16 tokens.

@@ -198,7 +198,12 @@ class EngineProcess:
         ids = set(await self.prober.model_ids()) if ok else set()
         models: dict[str, ModelState] = {}
         for m in self.spec.models:
-            models[m] = "ready" if m in ids else ("loading" if ok else "missing")
+            if m not in ids:
+                models[m] = "loading" if ok else "missing"
+            elif self.cfg.models[m].preload:
+                models[m] = "ready"  # vllm-mlx preloads before /health answers (see server.log)
+            else:
+                models[m] = "lazy"  # registered; the registry loads it on first request
         return ProcessHealth(ok, models, pid, "healthy" if ok else "health endpoint not answering")
 
     async def status(self) -> ProcessHealth:

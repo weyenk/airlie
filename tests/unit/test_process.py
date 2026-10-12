@@ -139,6 +139,14 @@ async def test_status_reports_loading_model(tmp_path: Path) -> None:
     assert h.pid == 4242
 
 
+async def test_non_preloaded_model_is_lazy_not_ready(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    p = proc(tmp_path, runner, FakeProber(health=[True, True], models=[["base", "small"], ["base", "small"]]))
+    p.cfg.models["small"].preload = False
+    await p.start(timeout_s=5)
+    assert (await p.status()).models == {"base": "ready", "small": "lazy"}
+
+
 async def test_status_when_not_running(tmp_path: Path) -> None:
     p = proc(tmp_path, FakeRunner(), FakeProber(health=[], models=[]))
     h = await p.status()
