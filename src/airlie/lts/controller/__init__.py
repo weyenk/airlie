@@ -20,7 +20,13 @@ def build_controller(spec: ControllerSpec, engine: Engine | None = None) -> LTSA
             raise ValueError("lts.controller.kind=judge needs an engine")
         return JudgeController(engine, spec.judge_role, spec.threshold)
     if spec.kind == "learned":
-        raise NotImplementedError("lts.controller.kind=learned arrives in M5 (spec 03 §2 torch controller)")
+        from airlie.lts.controller.learned import LearnedController, LTSAdmissionController
+
+        if spec.adapter_path is None:
+            raise ValueError(
+                "lts.controller.kind=learned needs lts.controller.adapter_path (run `task controller:train`)"
+            )
+        return LearnedController(LTSAdmissionController.load(spec.adapter_path), threshold=spec.threshold)
     raise ValueError(f"unknown controller kind {spec.kind}")
 
 
