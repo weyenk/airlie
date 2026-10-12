@@ -1,0 +1,120 @@
+"""NativeTeam: a ReAct loop over the Engine seam. Reference implementation and fallback for the AutoGen team.
+
+Each turn resends the whole conversation (the engine's prefix cache makes that cheap); the tool call is the
+action u_t, its output the observation o_t. Entering a tool call releases the generation slot (spec 04 §2)."""
+
+from __future__ import annotations
+
+import time
+
+from airlie.engine.protocol import Engine
+from airlie.engine.types import EngineError, GenRequest, Message, ToolCall
+from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
+
+
+def _goal_message(goal: str, worktree_hint: str) -> str:
+    return (
+        f"Goal:\n{goal}\n\n"
+        f"You are working inside a git checkout of the repository ({worktree_hint}). "
+        "Use the tools to inspect and change it, run the tests, and stop with a short summary when they pass."
+    )
+
+
+class NativeTeam:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
+        t0 = time.monotonic()
+        system = ctx.role.prompt.read_text()
+        messages: list[Message] = [
+            Message(role="system", content=system),
+            Message(role="user", content=_goal_message(ctx.goal, ctx.worktree.name)),
+        ]
+        prompt_tokens = completion_tokens = 0
+        steps = 0
+        recent: list[tuple[str, str]] = []
+        final_text = ""
+        stop: StopReason = "done"
+        ok = False
+        while True:
+            step_num = steps + 1
+            injected = await observer.before_step(ctx.team_id, step_num)
+            if injected:
+                messages.append(Message(role="user", content=injected))
+            req = GenRequest(
+                role=ctx.role_name,
+                messages=list(messages),
+                sampling=ctx.role.sampling,
+                max_tokens=ctx.role.max_tokens,
+                stop=list(ctx.role.stop),
+                tools=ctx.tools.schemas(),
+                thinking=ctx.role.thinking,
+            )
+            g0 = time.monotonic()
+            try:
+                async with ctx.scheduler.generation(ctx.team_id):
+                    res = await self.engine.generate(req)
+            except EngineError as e:
+                final_text = f"engine error: {e}"
+                stop = "engine_error"
+                break
+            gen_ms = (time.monotonic() - g0) * 1000.0
+            prompt_tokens += res.prompt_tokens
+            completion_tokens += res.completion_tokens
+            if not res.tool_calls:
+                final_text = res.text
+                ok = True
+                stop = "done"
+                break
+            messages.append(Message(role="assistant", content=res.text, tool_calls=tuple(res.tool_calls)))
+            for call in res.tool_calls:
+                steps += 1
+                async with ctx.scheduler.tool_stall(ctx.team_id):
+                    t1 = time.monotonic()
+                    result = await ctx.tools.call(call)
+                    tool_ms = (time.monotonic() - t1) * 1000.0
+                messages.append(
+                    Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
+                )
+                await observer.after_step(
+                    StepRecord(
+                        team_id=ctx.team_id,
+                        step_num=steps,
+                        u_t=call,
+                        o_t=result.output,
+                        ok=result.ok,
+                        assistant_text=res.text,
+                        prompt_tokens=res.prompt_tokens,
+                        completion_tokens=res.completion_tokens,
+                        gen_ms=gen_ms,
+                        tool_ms=tool_ms,
+                    )
+                )
+                recent.append((call.name, call.arguments))
+                recent = recent[-ctx.repeat_limit :]
+            if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
+                final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
+                stop = "repeated_action"
+                break
+            if steps >= ctx.max_steps:
+                final_text = f"stopped: reached max_steps={ctx.max_steps}"
+                stop = "max_steps"
+                break
+            if prompt_tokens + completion_tokens >= ctx.token_budget:
+                final_text = f"stopped: token budget {ctx.token_budget} exhausted"
+                stop = "token_budget"
+                break
+        return TeamResult(
+            team_id=ctx.team_id,
+            ok=ok,
+            stop_reason=stop,
+            final_text=final_text,
+            steps=steps,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            wall_ms=(time.monotonic() - t0) * 1000.0,
+        )
+
+
+__all__ = ["NativeTeam", "ToolCall"]
