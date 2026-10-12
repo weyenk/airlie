@@ -126,3 +126,11 @@ all in this engine version, and a 20k-token conversation costs ~21 s of prefill 
 Decision: team roles use a standard-attention base model (`Qwen3-Coder-30B-A3B-Instruct-4bit`, MoE, standard GQA).
 Qwen3.8-27B stays in the catalog (`qwen38`, `bench: true`) for `task bench:models`, and `task doctor` warns on any
 hybrid-attention catalog model. Revisit when vllm-mlx can snapshot hybrid caches.
+
+## M1 result (2026-10-12)
+
+`task up` starts one vllm-mlx process from `airlie.yaml` (registry: base + small preloaded, qwen38 / llama70b /
+qwen25_32b lazy), `task status` shows per-model readiness, `task test:live` passes against it, and `task bench`
+measured the default team model at 112 tok/s decode / 4.2k tok/s prefill (4k, N=1) with a turn-2 prefix-cache TTFT
+ratio of 0.1 (full table: `docs/bench/2026-10-12-engine-bench.md`). Spec 02 §1 launch parameters and §3 prefix
+caching are therefore in effect for the team model.
