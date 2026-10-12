@@ -66,6 +66,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
+  run:
+    desc: "Run K parallel teams on a goal in a repo (task run -- \"goal\" --repo PATH --k 3 --test-cmd \"pytest -q\")"
+    cmds:
+      - '{{.RUN}} airlie run {{.CLI_ARGS}}'
+
+  eval:
+    desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1)"
+    cmds:
+      - '{{.RUN}} airlie eval run {{.CLI_ARGS}}'
+
   bench:
     desc: "Engine throughput through the seam (task bench -- --model llama70b --ctx 4k,32k --n 1,2,4)"
     cmds:

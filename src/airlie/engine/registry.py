@@ -4,6 +4,7 @@ Flag names follow vllm-mlx 0.5.0 (`vllm-mlx serve --help`); values follow docs/w
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,11 @@ def build_serve_command(cfg: AirlieConfig, engine_name: str, registry_path: Path
         argv += ["--enable-auto-tool-choice", "--tool-call-parser", team_model.tool_call_parser]
     if team_model.reasoning_parser:
         argv += ["--reasoning-parser", team_model.reasoning_parser]
+    team_role = cfg.roles[cfg.teams.role]
+    argv += ["--default-chat-template-kwargs", json.dumps({"enable_thinking": bool(team_role.thinking)})]
+    argv += ["--default-top-k", str(team_role.sampling.top_k)]
+    if team_role.thinking and team_role.thinking_budget:
+        argv += ["--default-thinking-token-budget", str(team_role.thinking_budget)]
     argv.append("--offline")
     argv += list(e.extra_args)
     return argv

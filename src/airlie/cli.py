@@ -25,6 +25,8 @@ engine_app = typer.Typer(
 app.add_typer(engine_app, name="engine")
 bench_app = typer.Typer(no_args_is_help=True, help="Benchmarks through the Engine seam.")
 app.add_typer(bench_app, name="bench")
+eval_app = typer.Typer(no_args_is_help=True, help="Graded coding tasks (evals/tasks).")
+app.add_typer(eval_app, name="eval")
 console = Console()
 err = Console(stderr=True)
 
@@ -365,6 +367,103 @@ def bench_models(
         save(res, out_dir / f"{name}.json")
         all_results.extend(res)
     print(render_table(all_results))
+
+
+# ---- run / eval ----
+
+
+def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
+    """Factory, patched in tests."""
+    from airlie.orchestrator import ParallelAgentTeamOrchestrator
+
+    role = cfg.roles[cfg.teams.role]
+    engine = _http_engine(cfg, cfg.engine_for_model(role.model))
+    return ParallelAgentTeamOrchestrator(cfg, engine, run_id=run_id)
+
+
+def _print_report(report) -> None:  # type: ignore[no-untyped-def]
+    table = Table(title=f"run {report.run_id}")
+    for col in ("team", "ok", "stop", "steps", "prompt tok", "gen tok", "wall s", "result"):
+        table.add_column(col)
+    for t in report.teams:
+        table.add_row(
+            t.team_id,
+            "yes" if t.ok else "no",
+            t.stop_reason,
+            str(t.steps),
+            str(t.prompt_tokens),
+            str(t.completion_tokens),
+            f"{t.wall_ms / 1000:.1f}",
+            t.final_text[:200].replace("\n", " "),
+        )
+    console.print(table)
+    console.print(f"events: {report.run_dir.events_path}\nworktrees: {report.run_dir.path}/team-*")
+
+
+@app.command()
+def run(
+    goal: Annotated[str, typer.Argument(help="what the teams should accomplish")],
+    repo: Annotated[
+        Path, typer.Option(help="git repository to work in (teams get their own worktrees)")
+    ] = Path("."),
+    k: Annotated[int | None, typer.Option(help="number of parallel teams (default: teams.k)")] = None,
+    test_cmd: Annotated[
+        str | None, typer.Option(help="command the run_tests tool runs inside a worktree")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Run K parallel teams on a goal in a repository and print the report."""
+    import asyncio
+
+    cfg = _load(config)
+    if k is not None:
+        cfg.teams.k = k
+    repo = repo.resolve()
+    if not (repo / ".git").exists():
+        err.print(f"[red]{repo} is not a git repository[/red]")
+        raise typer.Exit(1)
+    report = asyncio.run(_orchestrator(cfg).execute_task(goal, repo=repo, test_cmd=test_cmd))
+    _print_report(report)
+    if not report.any_ok:
+        raise typer.Exit(1)
+
+
+@eval_app.command("run")
+def eval_run(
+    task_id: Annotated[str, typer.Argument(help="task id, e.g. lang_detect")],
+    k: Annotated[int | None, typer.Option(help="number of parallel teams")] = None,
+    tasks_dir: Annotated[Path, typer.Option(help="directory of task YAML files")] = Path("evals/tasks"),
+    config: ConfigOpt = None,
+) -> None:
+    """Materialize a graded task into a fresh repo, run the teams, grade each worktree with hidden tests."""
+    import asyncio
+
+    from airlie.evals import find_task, materialize
+
+    cfg = _load(config)
+    if k is not None:
+        cfg.teams.k = k
+    try:
+        task = find_task(tasks_dir.resolve(), task_id)
+    except FileNotFoundError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    orch = _orchestrator(cfg)
+    repo = materialize(task, orch.run_dir.path / "task-repo")
+    console.print(f"task [bold]{task.id}[/bold] → {repo}")
+    report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
+    _print_report(report)
+    passed = 0
+    for t in report.teams:
+        g = task.grade(orch.run_dir.path / t.team_id)
+        passed += int(g.passed)
+        verdict = "[green]PASS[/green]" if g.passed else "[red]FAIL[/red]"
+        console.print(f"[bold]{t.team_id}[/bold]: hidden tests {verdict}")
+        if not g.passed:
+            console.print(g.output[-1500:], markup=False, highlight=False)
+    console.print(f"{passed}/{len(report.teams)} teams pass the hidden tests")
+    if passed == 0:
+        raise typer.Exit(1)
 
 
 def main() -> None:
