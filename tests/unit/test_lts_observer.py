@@ -32,6 +32,7 @@ def make_observer(tmp_path: Path, max_keys: int = 32) -> tuple[LTSObserver, Shar
         query="implement it",
         max_keys=max_keys,
         inner=NullObserver(),
+        background=False,  # the synchronous path (lts.background_admission: false)
     )
     return obs, bank
 
@@ -162,3 +163,97 @@ async def test_run_step_blueprint(tmp_path: Path) -> None:
     assert orch.evaluate_lts_admission("q", "summary", "output") is True
     await orch.run_step("team-2", "next", [])
     assert any("[Shared Memory Keys Available]" in m.content for m in engine.requests[1].messages)
+
+
+# ---- background admission + relevance injection ----
+
+
+class SlowController:
+    kind = "slow"
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.calls = 0
+
+    async def decide(self, ctx):  # type: ignore[no-untyped-def]
+        import asyncio
+
+        from airlie.lts.controller.protocol import Decision
+
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        return Decision(True, 0.9, "slow")
+
+
+def make_bg_observer(tmp_path: Path, controller, **kw):  # type: ignore[no-untyped-def]
+    rd = RunDir.create(tmp_path / "state", run_id="r1")
+    bank = SharedMemoryBank(persist_path=rd.path / "memory.jsonl")
+    obs = LTSObserver(
+        bank=bank,
+        summarizer=build_summarizer(SummarizerSpec(kind="truncate", truncate_chars=60)),
+        controller=controller,
+        log=AdmissionLog(rd.path / "lts"),
+        sink=EventSink(rd.events_path, "r1"),
+        run_id="r1",
+        query="fix report.py total cost",
+        max_keys=8,
+        inner=NullObserver(),
+        background=True,
+        **kw,
+    )
+    return obs, bank, rd
+
+
+async def test_after_step_returns_before_admission_and_drain_waits(tmp_path: Path) -> None:
+    import time
+
+    ctrl = SlowController(0.2)
+    obs, bank, _ = make_bg_observer(tmp_path, ctrl, admission_concurrency=2)
+    t0 = time.monotonic()
+    for i in range(1, 4):
+        await obs.after_step(rec("team-1", i, "run_tests", f"FAILED test_{i}"))
+    assert time.monotonic() - t0 < 0.15  # none of the three decisions blocked the team
+    assert len(bank) == 0
+    await obs.drain()
+    assert len(bank) == 3 and ctrl.calls == 3
+    assert time.monotonic() - t0 >= 0.4  # concurrency 2 → two rounds of 0.2 s
+
+
+async def test_background_admission_errors_are_reported_not_raised(tmp_path: Path) -> None:
+    class Boom:
+        kind = "boom"
+
+        async def decide(self, ctx):  # type: ignore[no-untyped-def]
+            raise RuntimeError("summarizer down")
+
+    obs, bank, rd = make_bg_observer(tmp_path, Boom())
+    await obs.after_step(rec("team-1", 1, "run_tests", "FAILED"))
+    await obs.drain()
+    assert len(bank) == 0
+    events = [json.loads(x) for x in rd.events_path.read_text().splitlines()]
+    err = [e for e in events if e["kind"] == "admission_error"]
+    assert err and "summarizer down" in err[0]["error"]
+
+
+async def test_injection_is_ranked_by_the_teams_context_and_inlines_once(tmp_path: Path) -> None:
+    obs, bank, _ = make_bg_observer(tmp_path, SlowController(0.0), inline_top=1, inline_chars=80)
+    await obs.after_step(rec("team-2", 1, "list_dir", "inventory/report.py inventory/cli.py tests/"))
+    failure = "FAILED test_total_cost: expected 1500 got 15 " + "y" * 200
+    await obs.after_step(rec("team-2", 2, "run_tests", failure))
+    await obs.after_step(rec("team-3", 1, "shell", "git log oneline: init"))
+    await obs.drain()
+    # team-1's last step talked about total cost → the test-failure key ranks first and is inlined
+    await obs.after_step(rec("team-1", 1, "read_file", "def total_cost(qty, unit_cost_cents): ..."))
+    await obs.drain()
+    text = await obs.before_step("team-1", 2)
+    assert text is not None
+    lines = [ln for ln in text.splitlines() if ln.startswith("- Key [")]
+    assert "test_total_cost" in lines[0]
+    assert text.count("Value") == 1 and "y" * 20 in text and "y" * 60 not in text
+    # a team never sees its own keys; an inlined value is not repeated, the next fresh key gets its turn
+    assert "- Key [mem-team-1" not in text
+    text2 = await obs.before_step("team-1", 3)
+    assert text2 is not None and "test_total_cost" in text2 and "y" * 20 not in text2
+    assert text2.count("Value") == 1 and "inventory/cli.py tests/" in text2
+    text_own = await obs.before_step("team-2", 3)
+    assert text_own is not None and "test_total_cost" not in text_own and "git log" in text_own

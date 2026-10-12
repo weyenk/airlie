@@ -128,8 +128,14 @@ lts:
     threshold: 0.5
     duplicate_jaccard: 0.8
   summarizer: { kind: role, role: summarizer, max_words: 20, truncate_chars: 100 }   # truncate = spec 04 §3 blueprint
-  max_keys: 32
+  max_keys: 12                     # keys injected per step, ranked for the team (see ranking)
   max_value_chars: 20000
+  background_admission: true       # summarize + decide off the team's critical path
+  admission_concurrency: 2
+  ranking: relevance               # relevance = overlap with the team's last step | recency = spec blueprint order
+  inject_own: false                # a team does not see its own keys
+  inline_top: 2                    # top-ranked keys get their value inlined, once per team
+  inline_chars: 1500
 
 # ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
 scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }

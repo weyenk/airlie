@@ -255,6 +255,12 @@ class ParallelAgentTeamOrchestrator:
                 max_keys=self.cfg.lts.max_keys,
                 inner=self.observer,
                 max_value_chars=self.cfg.lts.max_value_chars,
+                background=self.cfg.lts.background_admission,
+                admission_concurrency=self.cfg.lts.admission_concurrency,
+                ranking=self.cfg.lts.ranking,
+                inject_own=self.cfg.lts.inject_own,
+                inline_top=self.cfg.lts.inline_top,
+                inline_chars=self.cfg.lts.inline_chars,
             )
         self.sink.emit(
             "run_start", goal=query_text, k=k, repo=str(repo), orchestrator=self.cfg.teams.orchestrator
@@ -262,6 +268,8 @@ class ParallelAgentTeamOrchestrator:
         teams = [f"team-{i + 1}" for i in range(k)]
         self.hal_observer = HALObserver(self.hal, self.scheduler, self.sink, self.lts or self.observer, teams)
         results = await self._run_teams(teams, query_text, repo, test_cmd)
+        if self.lts is not None:
+            await self.lts.drain()  # admissions still in flight land before the run is reported
         report = RunReport(
             self.run_dir.run_id, self.run_dir, query_text, list(results), (time.monotonic() - t0) * 1000.0
         )

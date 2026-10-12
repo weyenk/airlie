@@ -148,8 +148,20 @@ class LTSSpec(Strict):
     enabled: bool = True
     controller: ControllerSpec = Field(default_factory=ControllerSpec)
     summarizer: SummarizerSpec = Field(default_factory=SummarizerSpec)
-    max_keys: int = Field(default=32, description="most recent keys injected into a team's prompt")
+    max_keys: int = Field(default=12, description="keys injected into a team's prompt per step")
     max_value_chars: int = 20000
+    background_admission: bool = Field(
+        default=True, description="summarize + decide off the team's critical path (drained at run end)"
+    )
+    admission_concurrency: int = Field(default=2, ge=1, description="in-flight summarize+decide calls")
+    ranking: Literal["relevance", "recency"] = Field(
+        default="relevance", description="relevance = overlap with the team's last step; recency = blueprint"
+    )
+    inject_own: bool = Field(default=False, description="also show a team its own keys")
+    inline_top: int = Field(
+        default=2, ge=0, description="top-ranked keys whose value is inlined, once per team"
+    )
+    inline_chars: int = Field(default=1500, ge=0, description="chars of an inlined value")
 
 
 class SchedulerSpec(Strict):

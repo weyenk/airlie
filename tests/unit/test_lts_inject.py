@@ -123,3 +123,73 @@ def test_finalize_marks_used_later_and_reward(tmp_path: Path) -> None:
     adm = [json.loads(x) for x in (tmp_path / "lts" / "admission.jsonl").read_text().splitlines()]
     assert [a["used_later"] for a in adm] == [False, True]
     assert all(a["episode_reward"] == 1.0 for a in adm)
+
+
+# ---- relevance-ranked injection with inlined values (post-M6 bench follow-up) ----
+
+
+def bank_mixed() -> SharedMemoryBank:
+    b = SharedMemoryBank()
+    rows = [
+        ("mem-1", "team-1", "Listed repository files: inventory/report.py, inventory/cli.py", "report.py"),
+        (
+            "mem-2",
+            "team-2",
+            "run_tests: FAILED test_total_cost expected 1500 got 15",
+            "FAILED test_total_cost",
+        ),
+        ("mem-3", "team-1", "Edited README wording", "README"),
+        (
+            "mem-4",
+            "team-3",
+            "Root cause: report.py adds qty + unit_cost_cents instead of multiplying",
+            "x" * 5000,
+        ),
+    ]
+    for i, (eid, team, key, val) in enumerate(rows, 1):
+        b.add_entry(MemoryEntry(id=eid, team_id=team, step_num=i, summary_key=key, raw_value=val))
+    return b
+
+
+def test_rank_entries_prefers_overlap_with_context_and_excludes_own_team() -> None:
+    from airlie.lts.inject import rank_entries
+
+    ranked = rank_entries(
+        bank_mixed().entries(),
+        context="fix total cost in report.py: test_total_cost fails",
+        max_keys=3,
+        exclude_team="team-1",
+    )
+    ids = [r.entry.id for r in ranked]
+    assert "mem-1" not in ids and "mem-3" not in ids  # own team never injected
+    assert ids[0] in {"mem-2", "mem-4"} and ids[1] in {"mem-2", "mem-4"}
+    assert ranked[0].score >= ranked[1].score > 0
+
+
+def test_rank_entries_falls_back_to_recency_without_overlap() -> None:
+    from airlie.lts.inject import rank_entries
+
+    ranked = rank_entries(bank_mixed().entries(), context="zzz qqq", max_keys=2, exclude_team=None)
+    assert [r.entry.id for r in ranked] == ["mem-4", "mem-3"]  # newest first
+    assert all(r.score == 0 for r in ranked)
+
+
+def test_rank_entries_recency_mode_ignores_context() -> None:
+    from airlie.lts.inject import rank_entries
+
+    ranked = rank_entries(
+        bank_mixed().entries(), context="report.py", max_keys=2, exclude_team=None, ranking="recency"
+    )
+    assert [r.entry.id for r in ranked] == ["mem-4", "mem-3"]
+
+
+def test_render_entries_keeps_spec_lines_and_inlines_chosen_values() -> None:
+    from airlie.lts.inject import rank_entries, render_entries
+
+    ranked = rank_entries(bank_mixed().entries(), context="report.py total", max_keys=3, exclude_team=None)
+    text = render_entries(ranked, inline_ids={"mem-4"}, inline_chars=100)
+    assert text.startswith("\n[Shared Memory Keys Available]:\n- Key [")
+    assert "- Key [mem-4]: Root cause: report.py adds qty + unit_cost_cents instead of multiplying" in text
+    assert "x" * 100 in text and "x" * 101 not in text  # inlined, capped
+    assert "[truncated" in text
+    assert text.count("Value") == 1  # only the chosen id is inlined
