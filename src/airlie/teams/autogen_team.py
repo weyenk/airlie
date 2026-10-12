@@ -26,11 +26,11 @@ from autogen_agentchat.messages import (
 from autogen_core import CancellationToken
 from autogen_core.models import ModelInfo, UserMessage
 from autogen_core.tools import BaseTool
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from pydantic import BaseModel, create_model
 
 from airlie.config import RoleSpec
 from airlie.engine.types import ToolCall
+from airlie.scheduler import SlotScheduler
 from airlie.teams.autogen_client import RepairingOpenAIClient
 from airlie.teams.native_team import _goal_message
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
@@ -50,7 +50,9 @@ _JSON_TO_PY: dict[str, Any] = {
 class _RegistryTool(BaseTool[BaseModel, BaseModel]):
     """Exposes one airlie Tool to AutoGen; execution goes through the registry (sandbox, timeouts, caps)."""
 
-    def __init__(self, tool: Tool, registry: ToolRegistry) -> None:
+    def __init__(
+        self, tool: Tool, registry: ToolRegistry, scheduler: SlotScheduler | None = None, team_id: str = ""
+    ) -> None:
         props = tool.parameters.get("properties", {})
         required = set(tool.parameters.get("required", []))
         fields: dict[str, Any] = {}
@@ -62,12 +64,17 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
         super().__init__(args_model, out_model, tool.name, tool.description)
         self._tool = tool
         self._registry = registry
+        self._scheduler = scheduler
+        self._team_id = team_id
 
     async def run(self, args: BaseModel, cancellation_token: CancellationToken) -> BaseModel:
         payload = {k: v for k, v in args.model_dump().items() if v is not None}
-        result = await self._registry.call(
-            ToolCall(id="", name=self._tool.name, arguments=json.dumps(payload))
-        )
+        call = ToolCall(id="", name=self._tool.name, arguments=json.dumps(payload))
+        if self._scheduler is not None:  # spec 04 §2: yield the generation slot while the tool runs
+            async with self._scheduler.tool_stall(self._team_id):
+                result = await self._registry.call(call)
+        else:
+            result = await self._registry.call(call)
         out: BaseModel = self.return_type()(output=result.output)
         return out
 
@@ -75,13 +82,20 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
         return str(getattr(value, "output", value))
 
 
-def build_function_tools(registry: ToolRegistry) -> list[BaseTool[Any, Any] | Callable[..., Any]]:
-    return [_RegistryTool(t, registry) for t in registry._tools.values()]  # noqa: SLF001
+def build_function_tools(
+    registry: ToolRegistry, scheduler: SlotScheduler | None = None, team_id: str = ""
+) -> list[BaseTool[Any, Any] | Callable[..., Any]]:
+    return [_RegistryTool(t, registry, scheduler, team_id) for t in registry._tools.values()]  # noqa: SLF001
 
 
 def build_model_client(
-    base_url: str, served_model: str, role: RoleSpec, api_key: str | None
-) -> OpenAIChatCompletionClient:
+    base_url: str,
+    served_model: str,
+    role: RoleSpec,
+    api_key: str | None,
+    scheduler: SlotScheduler | None = None,
+    team_id: str = "",
+) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
         "function_calling": True,
@@ -89,7 +103,7 @@ def build_model_client(
         "family": "unknown",
         "structured_output": False,
     }
-    return RepairingOpenAIClient(
+    client = RepairingOpenAIClient(
         model=served_model,
         base_url=base_url,
         api_key=api_key or "airlie",
@@ -98,6 +112,9 @@ def build_model_client(
         top_p=role.sampling.top_p,
         max_tokens=role.max_tokens,
     )
+    client.slot_scheduler = scheduler
+    client.team_id = team_id
+    return client
 
 
 def pair_steps(
@@ -137,11 +154,18 @@ class AutoGenTeam:
 
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
-        client = build_model_client(self.base_url, self.served_model, ctx.role, self.api_key)
+        client = build_model_client(
+            self.base_url,
+            self.served_model,
+            ctx.role,
+            self.api_key,
+            scheduler=ctx.scheduler,
+            team_id=ctx.team_id,
+        )
         agent = AssistantAgent(
             name=ctx.team_id.replace("-", "_"),
             model_client=client,
-            tools=build_function_tools(ctx.tools),
+            tools=build_function_tools(ctx.tools, ctx.scheduler, ctx.team_id),
             system_message=ctx.role.prompt.read_text(),
             reflect_on_tool_use=False,
             max_tool_iterations=1,
@@ -160,12 +184,11 @@ class AutoGenTeam:
                     await agent.model_context.add_message(UserMessage(content=injected, source="airlie"))
                 events: list[BaseAgentEvent | BaseChatMessage] = []
                 result: TaskResult | None = None
-                async with ctx.scheduler.generation(ctx.team_id):
-                    async for item in agent.run_stream(task=task, output_task_messages=False):
-                        if isinstance(item, TaskResult):
-                            result = item
-                        else:
-                            events.append(item)
+                async for item in agent.run_stream(task=task, output_task_messages=False):
+                    if isinstance(item, TaskResult):
+                        result = item
+                    else:
+                        events.append(item)
                 task = None
                 for ev in events:
                     usage = getattr(ev, "models_usage", None)

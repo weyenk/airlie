@@ -73,3 +73,41 @@ def test_model_client_targets_engine_and_role_model(tmp_path: Path) -> None:
     assert cfg["base_url"] == "http://127.0.0.1:8080/v1"
     assert cfg["model"] == "base"
     assert cfg["temperature"] == role.sampling.temperature
+
+
+async def test_registry_tool_yields_slot_during_tool_execution(tmp_path: Path) -> None:
+    """Spec 04 §2: a team inside a tool call must not hold a generation slot."""
+    from airlie.scheduler import AgentState, SlotScheduler
+    from airlie.teams.autogen_team import build_function_tools
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sched = SlotScheduler(1)
+    seen: list[AgentState] = []
+
+    class SpyRegistry(ToolRegistry):
+        async def call(self, call):  # type: ignore[override]
+            seen.append(sched.state("team-1"))
+            return await super().call(call)
+
+    reg = SpyRegistry.builtin(["read_file"], ToolContext(worktree=wt))  # type: ignore[assignment]
+    (wt / "a.txt").write_text("x")
+    tools = build_function_tools(reg, scheduler=sched, team_id="team-1")
+    await tools[0].run_json({"path": "a.txt"}, cancellation_token=None)  # type: ignore[arg-type]
+    assert seen == [AgentState.SUSPENDED_TOOL_STALL]
+    assert sched.metrics().yield_count == 1
+    assert sched.state("team-1") == AgentState.ACTIVE
+
+
+def test_model_client_takes_a_generation_slot_per_call(tmp_path: Path) -> None:
+    from airlie.scheduler import SlotScheduler
+    from airlie.teams.autogen_client import RepairingOpenAIClient
+
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)
+    sched = SlotScheduler(2)
+    client = build_model_client(
+        "http://127.0.0.1:1/v1", "base", role, api_key=None, scheduler=sched, team_id="t"
+    )
+    assert isinstance(client, RepairingOpenAIClient)
+    assert client.slot_scheduler is sched and client.team_id == "t"

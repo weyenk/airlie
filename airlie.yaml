@@ -88,7 +88,7 @@ roles:
     max_tokens: 8192
     thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. qwen38)
     thinking_budget: 16384
-    sampling: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
+    sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }   # low temp for code
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
     model: small

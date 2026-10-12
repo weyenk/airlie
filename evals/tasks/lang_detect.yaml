@@ -6,8 +6,9 @@ requirement: |
   It returns the programming language of a source file from its extension, case-insensitively:
   .py → "python", .go → "go", .ts/.tsx → "typescript", .js/.jsx → "javascript", .rs → "rust", .md → "markdown".
   Unknown or missing extensions return "unknown". A path that is a directory (ends with "/") returns "unknown".
-  Also expose `detect_many(paths: list[str]) -> dict[str, list[str]]` mapping each language to the paths with
-  that language, preserving input order within each list; languages with no paths are omitted (never an empty list).
+  Also expose `detect_many(paths: list[str]) -> dict[str, list[str]]` mapping each language name (including
+  "unknown") to the paths with that language, preserving input order within each list; languages with no paths
+  are omitted (never an empty list), so `detect_many(["a.py", "d.txt"]) == {"python": ["a.py"], "unknown": ["d.txt"]}`.
   Add tests under `tests/` and make `python -m pytest` pass.
 setup:
   files:

@@ -7,6 +7,7 @@ both are fixed at the client boundary."""
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
 
 from autogen_core import CancellationToken, FunctionCall
@@ -14,6 +15,7 @@ from autogen_core.models import CreateResult, LLMMessage
 from autogen_core.tools import Tool, ToolSchema
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
+from airlie.scheduler import SlotScheduler
 from airlie.tools.jsonargs import repair_json_args
 
 
@@ -34,6 +36,16 @@ def repair_create_result(result: CreateResult) -> CreateResult:
 
 
 class RepairingOpenAIClient(OpenAIChatCompletionClient):
+    """Also takes a generation slot from the SlotScheduler for each model call (spec 04 §2)."""
+
+    slot_scheduler: SlotScheduler | None = None
+    team_id: str = ""
+
+    def _slot(self) -> AbstractAsyncContextManager[None]:
+        if self.slot_scheduler is None:
+            return nullcontext()
+        return self.slot_scheduler.generation(self.team_id)
+
     async def create(
         self,
         messages: Sequence[LLMMessage],
@@ -44,14 +56,15 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
         extra_create_args: Any = None,
         cancellation_token: CancellationToken | None = None,
     ) -> CreateResult:
-        res = await super().create(
-            messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            json_output=json_output,
-            extra_create_args=extra_create_args or {},
-            cancellation_token=cancellation_token,
-        )
+        async with self._slot():
+            res = await super().create(
+                messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                json_output=json_output,
+                extra_create_args=extra_create_args or {},
+                cancellation_token=cancellation_token,
+            )
         return repair_create_result(res)
 
     async def create_stream(
@@ -66,14 +79,15 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
         max_consecutive_empty_chunk_tolerance: int = 0,
         include_usage: bool | None = None,
     ) -> AsyncGenerator[str | CreateResult, None]:
-        async for item in super().create_stream(
-            messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            json_output=json_output,
-            extra_create_args=extra_create_args or {},
-            cancellation_token=cancellation_token,
-            max_consecutive_empty_chunk_tolerance=max_consecutive_empty_chunk_tolerance,
-            include_usage=include_usage,
-        ):
-            yield repair_create_result(item) if isinstance(item, CreateResult) else item
+        async with self._slot():
+            async for item in super().create_stream(
+                messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                json_output=json_output,
+                extra_create_args=extra_create_args or {},
+                cancellation_token=cancellation_token,
+                max_consecutive_empty_chunk_tolerance=max_consecutive_empty_chunk_tolerance,
+                include_usage=include_usage,
+            ):
+                yield repair_create_result(item) if isinstance(item, CreateResult) else item
