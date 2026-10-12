@@ -37,7 +37,7 @@ tasks:
       - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
 
   models:pull:
-    desc: Download every catalog model at its pinned revision (pass names to limit, e.g. `task models:pull -- small`)
+    desc: "Download every catalog model at its pinned revision (pass names to limit: task models:pull -- small)"
     cmds:
       - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
 
@@ -62,22 +62,22 @@ tasks:
       - '{{.RUN}} airlie engine status {{.CLI_ARGS}}'
 
   logs:
-    desc: Tail the engine log (`task logs -- -f` to follow)
+    desc: "Tail the engine log (task logs -- -f to follow)"
     cmds:
       - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
   bench:
-    desc: Engine throughput through the seam (`task bench -- --model llama70b --ctx 4k,32k --n 1,2,4`)
+    desc: "Engine throughput through the seam (task bench -- --model llama70b --ctx 4k,32k --n 1,2,4)"
     cmds:
       - '{{.RUN}} airlie bench engine {{.CLI_ARGS}}'
 
   bench:models:
-    desc: Bench every catalog model marked `bench: true`, one table (`task bench:models -- --ctx 4k --n 1,4`)
+    desc: "Bench every catalog model marked bench=true, one table (task bench:models -- --ctx 4k --n 1,4)"
     cmds:
       - '{{.RUN}} airlie bench models {{.CLI_ARGS}}'
 
   bench:compare:
-    desc: Per-cell deltas between two saved bench JSON files (`task bench:compare -- a.json b.json`)
+    desc: "Per-cell deltas between two saved bench JSON files (task bench:compare -- a.json b.json)"
     cmds:
       - '{{.RUN}} airlie bench compare {{.CLI_ARGS}}'
 

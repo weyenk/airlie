@@ -291,7 +291,7 @@ def bench_engine(
     except EngineError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
-    console.print(render_table(results), markup=False, highlight=False)
+    print(render_table(results))
     if out:
         console.print(f"saved {save(results, out)}")
 
@@ -303,7 +303,7 @@ def bench_report(paths: list[Path]) -> None:
     from airlie.bench.report import render_table
 
     results = [r for p in paths for r in load_results(p)]
-    console.print(render_table(results), markup=False, highlight=False)
+    print(render_table(results))
 
 
 @bench_app.command("compare")
@@ -312,7 +312,7 @@ def bench_compare(a: Path, b: Path) -> None:
     from airlie.bench.engine_bench import compare
     from airlie.bench.report import render_compare
 
-    console.print(render_compare(compare(a, b)), markup=False, highlight=False)
+    print(render_compare(compare(a, b)))
 
 
 @bench_app.command("models")
@@ -364,7 +364,7 @@ def bench_models(
             continue
         save(res, out_dir / f"{name}.json")
         all_results.extend(res)
-    console.print(render_table(all_results), markup=False, highlight=False)
+    print(render_table(all_results))
 
 
 def main() -> None:
