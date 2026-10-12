@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +45,47 @@ class RunReport:
     @property
     def any_ok(self) -> bool:
         return any(t.ok for t in self.teams)
+
+
+class HALObserver:
+    """Spec 04 §1 in the loop: update A_i from accepted draft tokens after each step, re-allocate budgets."""
+
+    def __init__(
+        self,
+        hal: HALSpeculativeScheduler,
+        scheduler: SlotScheduler,
+        sink: EventSink,
+        inner: StepObserver,
+        teams: list[str],
+    ) -> None:
+        self.hal = hal
+        self.scheduler = scheduler
+        self.sink = sink
+        self.inner = inner
+        self.teams = teams
+        self.budgets: dict[str, int] = hal.allocate_budgets(teams)
+
+    async def before_step(self, team_id: str, step_num: int) -> str | None:
+        return await self.inner.before_step(team_id, step_num)
+
+    async def after_step(self, step: StepRecord) -> None:
+        await self.inner.after_step(step)
+        if step.accepted_draft_tokens is not None:
+            self.hal.update_hal(step.team_id, step.accepted_draft_tokens)
+            active = self.scheduler.active_ids() or self.teams
+            self.budgets = self.hal.allocate_budgets(sorted(set(active) | {step.team_id}))
+            self.sink.emit(
+                "hal",
+                team_id=step.team_id,
+                step=step.step_num,
+                accepted=step.accepted_draft_tokens,
+                drafts=step.draft_tokens,
+                hal=round(self.hal.hal_history[step.team_id], 3),
+                budgets=self.budgets,
+            )
+
+    def budget_for(self, team_id: str) -> int | None:
+        return self.budgets.get(team_id)
 
 
 class LoggingObserver:
@@ -105,6 +147,7 @@ class ParallelAgentTeamOrchestrator:
         self._logging = LoggingObserver(self.sink, self.run_dir)
         self.observer: StepObserver = observer or self._logging
         self.lts: LTSObserver | None = None
+        self.hal_observer: HALObserver | None = None
         self.aggregator: Aggregator = (
             LLMAggregator(engine, cfg.aggregator.role)
             if cfg.aggregator.kind == "llm"
@@ -217,6 +260,7 @@ class ParallelAgentTeamOrchestrator:
             "run_start", goal=query_text, k=k, repo=str(repo), orchestrator=self.cfg.teams.orchestrator
         )
         teams = [f"team-{i + 1}" for i in range(k)]
+        self.hal_observer = HALObserver(self.hal, self.scheduler, self.sink, self.lts or self.observer, teams)
         results = await self._run_teams(teams, query_text, repo, test_cmd)
         report = RunReport(
             self.run_dir.run_id, self.run_dir, query_text, list(results), (time.monotonic() - t0) * 1000.0
@@ -278,6 +322,12 @@ class ParallelAgentTeamOrchestrator:
                     self.sink.emit("team_done", team_id=tid, ok=False, stop_reason="cancelled", steps=0)
         return [results[tid] for tid in teams]
 
+    def _budget_provider(self, team_id: str) -> Callable[[], int | None]:
+        def provide() -> int | None:
+            return self.hal_observer.budget_for(team_id) if self.hal_observer else None
+
+        return provide
+
     async def _outcome(self, r: TeamResult, test_cmd: str | None) -> TeamOutcome:
         wt = self.run_dir.path / r.team_id
         if not test_cmd:
@@ -326,10 +376,9 @@ class ParallelAgentTeamOrchestrator:
             self.cfg.tools.builtin,
             ToolContext(wt, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars, test_cmd),
         )
-        observer: StepObserver = self.observer
+        observer: StepObserver = self.hal_observer or self.observer
         if self.lts is not None:
             tools.add(RetrieveValue(self.memory_bank, team_id, on_retrieve=self.lts.on_retrieve))
-            observer = self.lts
         ctx = TeamContext(
             team_id=team_id,
             goal=goal,
@@ -340,6 +389,7 @@ class ParallelAgentTeamOrchestrator:
             max_steps=self.cfg.teams.max_steps,
             token_budget=self.cfg.teams.token_budget,
             scheduler=self.scheduler,
+            draft_budget=self._budget_provider(team_id),
         )
         self.sink.emit("team_start", team_id=team_id, worktree=str(wt))
         result = await self.team.run(ctx, observer)

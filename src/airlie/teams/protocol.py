@@ -5,6 +5,7 @@ keys), `after_step` receives the step triplet for admission."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
@@ -31,6 +32,8 @@ class StepRecord:
     completion_tokens: int = 0
     gen_ms: float = 0.0
     tool_ms: float = 0.0
+    accepted_draft_tokens: int | None = None
+    draft_tokens: int | None = None
 
 
 @dataclass
@@ -45,6 +48,8 @@ class TeamContext:
     token_budget: int = 200_000
     scheduler: SlotScheduler = field(default_factory=lambda: SlotScheduler(4))
     repeat_limit: int = 3
+    draft_budget: Callable[[], int | None] = field(default=lambda: None)
+    """HAL budget provider (spec 04 §1): consulted before each generation request."""
 
 
 @dataclass

@@ -73,6 +73,11 @@ command in every worktree, picks one winning branch (`airlie/<run_id>/team-N`) a
 `runs/<run_id>/report.md`. With `teams.stop_on_first_pass: true` the first team whose tests pass cancels the
 others. Every step is written to `~/.local/state/airlie/runs/<run_id>/events.jsonl` and `trace/`.
 
+The EdgeAgent HAL scheduler (spec 04 §1) runs alongside: accepted-draft counts reported by the engine update each
+team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). vllm-mlx 0.5.0 cannot take a
+per-request draft length, so the budgets are computed and logged but only *applied* on an engine with
+`engines.<name>.per_request_draft: true`.
+
 ## Learning to Share
 
 After every step a team's (action, observation) pair is summarized into a one-line key by the `summarizer` role

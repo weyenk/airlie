@@ -46,6 +46,8 @@ class GenRequest:
     stop: list[str] = field(default_factory=list)
     tools: list[ToolSchema] | None = None
     thinking: bool | None = None
+    draft_budget: int | None = None
+    """HAL draft budget L_i for this request (spec 04 §1); sent only when the engine has per_request_draft."""
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -65,6 +67,7 @@ class GenResult:
     completion_tokens: int
     cached_tokens: int | None = None
     accepted_draft_tokens: int | None = None
+    draft_tokens: int | None = None
     ttft_ms: float = 0.0
     decode_tps: float = 0.0
     raw_finish: str = ""

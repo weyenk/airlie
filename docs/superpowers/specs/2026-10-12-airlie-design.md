@@ -175,3 +175,23 @@ retrieval has happened in any run, so `used_later` is false everywhere, usage-we
 both policies, and the trained controller is at this point only learning the outcome reward. The pipeline is
 complete; it becomes meaningful once runs produce retrievals (larger, divergent tasks; M4b). Selecting it is one
 config line: `lts.controller: {kind: learned, adapter_path: ~/.local/state/airlie/controller/latest}`.
+
+## M6 result (2026-10-12): speculative draft budgets
+
+Spec 04 §1 wants the HAL scheduler to set each agent's speculative draft length L_i. Checked against vllm-mlx
+0.5.0 source: MTP is installed once per `BatchGenerator` (`scheduler._install_mtp`, a monkey-patch), the draft
+length is the server-level `mtp_num_draft_tokens`, and the batched path "drafts exactly one token per verify
+step" (warning at `scheduler.py:1281`). There is no per-request draft-length field in the chat API. So budgets
+cannot be *applied* with this engine; the 🚫 row in the audit stands.
+
+What is wired: the engine reports `generation_metadata.mtp_accepted` / `mtp_drafts` per response, `HTTPEngine`
+surfaces them as `GenResult.accepted_draft_tokens` / `draft_tokens`, every step carries them, and the
+orchestrator's `HALObserver` runs `update_hal` and `allocate_budgets` after each step (events `hal`). The budget
+reaches the request as `GenRequest.draft_budget`, sent as `num_draft_tokens` only when
+`engines.<name>.per_request_draft: true` (`EngineCapabilities.per_request_draft`). Flipping that flag is the whole
+change once an engine supports it; the upstream patch would add a per-request draft length to
+`_install_mtp`'s step (and to `GenerationRequest`), which is where the `requested_draft_tokens` stat already lives.
+
+Not measured: `--enable-mtp` throughput. The default base (Qwen3-Coder-30B-A3B) has no MTP head, the MTP checkpoint
+is Qwen3.8-27B (hybrid attention, no prefix cache), and comparative benchmarking is not a deliverable (Noah,
+2026-10-12); `task bench -- --model <mtp model>` with `extra_args: [--enable-mtp]` runs it whenever wanted.

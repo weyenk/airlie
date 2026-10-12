@@ -228,7 +228,13 @@ def _http_engine(cfg: AirlieConfig, engine_name: str, model_override: str | None
     def served(role: str) -> str:
         return e.served_name(model_override or cfg.roles[role].model)
 
-    return HTTPEngine(e.base_url or "", served, lambda role: cfg.roles[role], api_key=e.api_key)
+    return HTTPEngine(
+        e.base_url or "",
+        served,
+        lambda role: cfg.roles[role],
+        api_key=e.api_key,
+        per_request_draft=e.per_request_draft,
+    )
 
 
 def _parse_list(spec: str, scale: dict[str, int] | None = None) -> list[int]:

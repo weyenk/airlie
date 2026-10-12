@@ -44,7 +44,15 @@ class HTTPEngine:
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
+        per_request_draft: bool = False,
     ) -> None:
+        self.capabilities = EngineCapabilities(
+            batching=True,
+            prefix_cache=True,
+            logprobs=False,
+            native_tools=True,
+            per_request_draft=per_request_draft,
+        )
         self.base_url = base_url.rstrip("/")
         self._root = self.base_url.removesuffix("/v1")
         self._served = served_name_for_role
@@ -123,6 +131,8 @@ class HTTPEngine:
             body["tool_choice"] = "auto"
         if thinking and spec.thinking_budget:
             body["thinking_budget"] = spec.thinking_budget
+        if req.draft_budget is not None and self.capabilities.per_request_draft:
+            body["num_draft_tokens"] = req.draft_budget
         return body
 
     async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
@@ -136,6 +146,8 @@ class HTTPEngine:
         finish = "stop"
         prompt_tokens = completion_tokens = 0
         cached: int | None = None
+        accepted: int | None = None
+        drafts: int | None = None
         t0 = time.monotonic()
         t_first: float | None = None
         t_last = t0
@@ -150,6 +162,12 @@ class HTTPEngine:
                     if req.request_id in self._cancelled:
                         finish = "cancelled"
                         break
+                    meta = frame.get("generation_metadata")
+                    if isinstance(meta, dict):
+                        if meta.get("mtp_accepted") is not None:
+                            accepted = int(meta["mtp_accepted"])
+                        if meta.get("mtp_drafts") is not None:
+                            drafts = int(meta["mtp_drafts"])
                     usage = frame.get("usage")
                     if isinstance(usage, dict):
                         prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens))
@@ -213,6 +231,8 @@ class HTTPEngine:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cached_tokens=cached,
+            accepted_draft_tokens=accepted,
+            draft_tokens=drafts,
             ttft_ms=ttft_ms,
             decode_tps=(completion_tokens / span) if completion_tokens > 1 else 0.0,
             raw_finish=finish,

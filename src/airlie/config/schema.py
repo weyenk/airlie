@@ -70,6 +70,10 @@ class EngineSpec(Strict):
     gpu_memory_utilization: float = 0.9
     max_request_tokens: int = 32768
     timeout_s: float = 600.0
+    per_request_draft: bool = Field(
+        default=False,
+        description="engine accepts num_draft_tokens per request (HAL budgets apply); vllm-mlx 0.5.0: no",
+    )
     extra_args: list[str] = Field(default_factory=list, description="appended verbatim to `vllm-mlx serve`")
 
     @model_validator(mode="after")

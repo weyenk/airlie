@@ -27,6 +27,8 @@ class FakeReply:
     p_yes: float | None = None
     cached_tokens: int | None = None
     finish_reason: str | None = None  # override; default derives from tool_calls
+    accepted_draft_tokens: int | None = None
+    draft_tokens: int | None = None
 
 
 def _words(text: str) -> list[str]:
@@ -81,6 +83,8 @@ class FakeEngine:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion,
             cached_tokens=reply.cached_tokens,
+            accepted_draft_tokens=reply.accepted_draft_tokens,
+            draft_tokens=reply.draft_tokens,
             ttft_ms=1.0,
             decode_tps=1000.0,
             raw_finish=finish,

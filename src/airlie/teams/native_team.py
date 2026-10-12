@@ -52,6 +52,7 @@ class NativeTeam:
                 stop=list(ctx.role.stop),
                 tools=ctx.tools.schemas(),
                 thinking=ctx.role.thinking,
+                draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()
             try:
@@ -92,6 +93,8 @@ class NativeTeam:
                         completion_tokens=res.completion_tokens,
                         gen_ms=gen_ms,
                         tool_ms=tool_ms,
+                        accepted_draft_tokens=res.accepted_draft_tokens,
+                        draft_tokens=res.draft_tokens,
                     )
                 )
                 recent.append((call.name, call.arguments, result.output))
