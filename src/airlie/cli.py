@@ -466,6 +466,35 @@ def eval_run(
         raise typer.Exit(1)
 
 
+@app.command()
+def memory(
+    run_id: Annotated[
+        str, typer.Argument(help="run id (see `task run` output or ~/.local/state/airlie/runs)")
+    ],
+    config: ConfigOpt = None,
+    full: Annotated[bool, typer.Option(help="print full values, not just keys")] = False,
+) -> None:
+    """Show a run's shared memory bank: keys, owners and cross-team access counts."""
+    from airlie.lts import SharedMemoryBank
+
+    cfg = _load(config)
+    path = cfg.observability.state_dir.expanduser() / "runs" / run_id / "memory.jsonl"
+    if not path.is_file():
+        err.print(f"[red]no memory log for run '{run_id}' ({path})[/red]")
+        raise typer.Exit(1)
+    bank = SharedMemoryBank.load(path)
+    table = Table(title=f"shared memory bank, run {run_id} ({len(bank)} entries)")
+    for col in ("id", "team", "step", "reads", "summary key"):
+        table.add_column(col)
+    for e in bank.entries():
+        table.add_row(e.id, e.team_id, str(e.step_num), str(e.access_count), e.summary_key[:120])
+    console.print(table)
+    if full:
+        for e in bank.entries():
+            console.rule(e.id)
+            console.print(e.raw_value[:4000], markup=False, highlight=False)
+
+
 def main() -> None:
     app()
 

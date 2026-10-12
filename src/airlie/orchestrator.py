@@ -12,6 +12,14 @@ from pathlib import Path
 
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
+from airlie.engine.types import GenRequest, Message, ToolCall
+from airlie.lts import MemoryEntry, SharedMemoryBank
+from airlie.lts.controller import AdmissionContext, build_controller
+from airlie.lts.inject import render_keys
+from airlie.lts.log import AdmissionLog
+from airlie.lts.memory_tool import RetrieveValue
+from airlie.lts.observer import LTSObserver
+from airlie.lts.summarizer import build_summarizer
 from airlie.obs import EventSink, RunDir
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
@@ -82,7 +90,15 @@ class ParallelAgentTeamOrchestrator:
         self.scheduler = SlotScheduler(cfg.scheduler.max_active, cfg.scheduler.starvation_ms)
         self.hal = HALSpeculativeScheduler()
         self.team: TeamOrchestrator = team_factory or self._default_team()
-        self.observer: StepObserver = observer or LoggingObserver(self.sink, self.run_dir)
+        # Spec 04 §3: memory_bank, controller (C_θ), scheduler
+        self.memory_bank = SharedMemoryBank(persist_path=self.run_dir.path / "memory.jsonl")
+        self.controller = build_controller(cfg.lts.controller, engine)
+        self.summarizer = build_summarizer(cfg.lts.summarizer, engine)
+        self.lts_log = AdmissionLog(self.run_dir.path / "lts")
+        self.query = ""
+        self._logging = LoggingObserver(self.sink, self.run_dir)
+        self.observer: StepObserver = observer or self._logging
+        self.lts: LTSObserver | None = None
 
     def _default_team(self) -> TeamOrchestrator:
         if self.cfg.teams.orchestrator == "autogen":
@@ -93,13 +109,99 @@ class ParallelAgentTeamOrchestrator:
             return AutoGenTeam(e.base_url or "", e.served_name(role.model), e.api_key)
         return NativeTeam(self.engine)
 
+    def evaluate_lts_admission(self, query: str, summary: str, output: str) -> bool:
+        """Spec 04 §3 signature; synchronous wrapper over the configured controller C_θ."""
+        import asyncio
+
+        ctx = AdmissionContext(
+            query=query,
+            memory_keys=[k for _, k in self.memory_bank.get_summaries()],
+            u_t=ToolCall("", "generate", ""),
+            s_t=summary,
+            o_t=output,
+            team_id="",
+            step_num=0,
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.controller.decide(ctx)).admit
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(lambda: asyncio.run(self.controller.decide(ctx))).result().admit
+
     async def run_step(self, team_id: str, prompt: str, history: list[dict[str, str]]) -> str:
-        """Spec 04 §3 blueprint entry point: one ReAct step. M2 teams run whole trajectories; kept for M3."""
-        raise NotImplementedError("M3: run_step with LTS injection")
+        """Spec 04 §3 blueprint: inject selective LTS keys, generate one step, evaluate admission, store."""
+        summaries = self.memory_bank.get_summaries()
+        summary_prompt = render_keys(summaries, max_keys=self.cfg.lts.max_keys)
+        role_name = self.cfg.teams.role
+        role = self.cfg.roles[role_name]
+        messages = [Message(role="system", content=role.prompt.read_text())]
+        messages += [Message(role=h["role"], content=h["content"]) for h in history]  # type: ignore[arg-type]
+        messages.append(Message(role="user", content=prompt + summary_prompt))
+        res = await self.engine.generate(
+            GenRequest(
+                role=role_name,
+                messages=messages,
+                sampling=role.sampling,
+                max_tokens=role.max_tokens,
+                stop=list(role.stop),
+                thinking=role.thinking,
+            )
+        )
+        output_text = res.text
+        step = StepRecord(
+            team_id=team_id,
+            step_num=len(history) + 1,
+            u_t=ToolCall("", "generate", prompt),
+            o_t=output_text,
+            ok=True,
+            assistant_text=output_text,
+        )
+        step_summary = await self.summarizer.summarize(prompt, step)
+        ctx = AdmissionContext(
+            query=prompt,
+            memory_keys=[k for _, k in summaries],
+            u_t=step.u_t,
+            s_t=step_summary,
+            o_t=output_text,
+            team_id=team_id,
+            step_num=step.step_num,
+        )
+        if (await self.controller.decide(ctx)).admit:
+            self.memory_bank.add_entry(
+                MemoryEntry(
+                    id=f"mem-{team_id}-{len(summaries) + 1}",
+                    team_id=team_id,
+                    step_num=len(history),
+                    summary_key=step_summary,
+                    raw_value=output_text,
+                )
+            )
+        return output_text
+
+    def finalize_rewards(self, episode_reward: dict[str, float]) -> None:
+        """Attach outcome rewards to the admission log (M5 training signal)."""
+        self.lts_log.finalize(episode_reward)
 
     async def execute_task(self, query_text: str, *, repo: Path, test_cmd: str | None = None) -> RunReport:
         t0 = time.monotonic()
         k = self.cfg.teams.k
+        self.query = query_text
+        if self.cfg.lts.enabled and self.lts is None:
+            self.lts = LTSObserver(
+                bank=self.memory_bank,
+                summarizer=self.summarizer,
+                controller=self.controller,
+                log=self.lts_log,
+                sink=self.sink,
+                run_id=self.run_dir.run_id,
+                query=query_text,
+                max_keys=self.cfg.lts.max_keys,
+                inner=self.observer,
+                max_value_chars=self.cfg.lts.max_value_chars,
+            )
         self.sink.emit(
             "run_start", goal=query_text, k=k, repo=str(repo), orchestrator=self.cfg.teams.orchestrator
         )
@@ -108,6 +210,7 @@ class ParallelAgentTeamOrchestrator:
         report = RunReport(
             self.run_dir.run_id, self.run_dir, query_text, list(results), (time.monotonic() - t0) * 1000.0
         )
+        self.finalize_rewards({r.team_id: (1.0 if r.ok else 0.0) for r in results})
         m = self.scheduler.metrics()
         self.sink.emit(
             "run_done",
@@ -117,6 +220,8 @@ class ParallelAgentTeamOrchestrator:
             max_concurrent=m.max_concurrent,
             slot_wait_ms=round(m.slot_wait_ms_total, 1),
             hal_budgets=self.hal.allocate_budgets(teams),
+            memory_entries=len(self.memory_bank),
+            cross_team_retrievals=sum(e.access_count for e in self.memory_bank.entries()),
         )
         return report
 
@@ -128,6 +233,10 @@ class ParallelAgentTeamOrchestrator:
             self.cfg.tools.builtin,
             ToolContext(wt, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars, test_cmd),
         )
+        observer: StepObserver = self.observer
+        if self.lts is not None:
+            tools.add(RetrieveValue(self.memory_bank, team_id, on_retrieve=self.lts.on_retrieve))
+            observer = self.lts
         ctx = TeamContext(
             team_id=team_id,
             goal=goal,
@@ -140,7 +249,7 @@ class ParallelAgentTeamOrchestrator:
             scheduler=self.scheduler,
         )
         self.sink.emit("team_start", team_id=team_id, worktree=str(wt))
-        result = await self.team.run(ctx, self.observer)
+        result = await self.team.run(ctx, observer)
         self.hal.update_hal(
             team_id, 0
         )  # accepted draft tokens are reported only by engines with per_request_draft
