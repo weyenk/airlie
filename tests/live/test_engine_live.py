@@ -40,7 +40,9 @@ async def test_plain_generation_streams(engine) -> None:
     assert seen and res.ttft_ms > 0 and res.decode_tps >= 0
 
 
-async def test_reasoning_is_separated(engine) -> None:
+async def test_reasoning_is_separated(engine, cfg) -> None:
+    if not cfg.models[cfg.roles["coder"].model].reasoning_parser:
+        pytest.skip("team model has no reasoning parser (non-thinking model)")
     res = await engine.generate(
         req(
             "coder",
