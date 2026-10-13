@@ -113,3 +113,23 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     assert r.exit_code == 0, r.output
     assert sorted(StubProcess.calls) == ["start:decision", "start:main"]  # yaml dump sorts engine names
     assert "already running" in r.output
+
+
+def test_engine_up_and_restart_take_a_topology_profile(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def make(cfg, name):  # type: ignore[no-untyped-def]
+        seen.append(cfg.topology.kind)
+        return StubProcess(cfg, name)
+
+    StubProcess.calls = []
+    monkeypatch.setattr(cli, "_engine_process", make)
+    p = write_cfg(tmp_path)
+    data = yaml.safe_load(p.read_text())
+    data["topology"] = {"kind": "teams", "profiles": {"fork": {"engines": {"main": {"max_kv_size": 4096}}}}}
+    p.write_text(yaml.safe_dump(data))
+    r = runner.invoke(cli.app, ["engine", "up", "--config", str(p), "--topology", "fork"])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(cli.app, ["engine", "restart", "--config", str(p), "--topology", "fork"])
+    assert r.exit_code == 0, r.output
+    assert seen and set(seen) == {"fork"}
