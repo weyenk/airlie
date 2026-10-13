@@ -67,3 +67,21 @@ def test_load_skills_reads_summaries_and_skips_files_without(tmp_path: Path) -> 
     assert [s.name for s in skills] == ["e2e", "unit"]
     assert skills[1].summary == "Pure functions in isolation" and skills[1].text.startswith("# Unit")
     assert skill_criteria(skills) == {"e2e": "Full journeys", "unit": "Pure functions in isolation"}
+
+
+def test_routable_false_in_frontmatter_excludes_the_role(tmp_path: Path) -> None:
+    (tmp_path / "chief.md").write_text("---\nsummary: the chief\nroutable: false\n---\n# chief\n")
+    (tmp_path / "coder.md").write_text("---\nsummary: Implement code\n---\n# coder\n")
+    for n in ("summarizer", "judge", "aggregator"):
+        (tmp_path / f"{n}.md").write_text(f"# {n}\n")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["m"]}},
+        "models": {"m": {"repo": "o/m", "revision": "r"}},
+        "roles": {
+            n: {"prompt": f"{n}.md", "model": "m"}
+            for n in ("chief", "coder", "summarizer", "judge", "aggregator")
+        },
+    }
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    assert routable_roles(load_config(tmp_path / "airlie.yaml")) == {"coder": "Implement code"}
