@@ -22,3 +22,7 @@ Other teams publish short summaries of what they learned (file layouts, failing 
 work). They appear under "Shared Memory Keys Available", most relevant to your current step first; the top ones
 come with their value inlined. Use what is there instead of re-deriving it. When a key without an inlined value
 bears on your current step, fetch it with `retrieve_value`; do not fetch keys that do not.
+
+## Branches
+You may be told you are now a branch continuing an earlier conversation. The previous approach failed; the
+message names a hypothesis to pursue. Do not repeat the earlier change. Work from the files as they are now.
