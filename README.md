@@ -64,8 +64,8 @@ teams and returns the aggregated answer and winning branch.
 
 ## How a run works
 
-`task run` spawns K teams (`teams.k`). Each team is an AutoGen `AssistantAgent` (spec 01 §2; `teams.orchestrator:
-native` selects the built-in ReAct loop instead) talking to the engine through the OpenAI endpoint, with sandboxed
+`task run` spawns K teams (`teams.k`). Each team is the built-in ReAct loop (`teams.orchestrator: native`, the
+default since 2026-10-13; `autogen` selects the spec 01 §2 AutoGen `AssistantAgent` over the same seams) talking to the engine through the OpenAI endpoint, with sandboxed
 tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `shell`, `run_tests`, `git`, plus any MCP
 servers under `mcp:`) confined to its own worktree. Generation slots are accounted per engine; a team inside a
 tool call holds no slot (spec 04 §2 suspend-and-yield), and the engine's prefix cache makes its next turn cheap.

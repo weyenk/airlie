@@ -54,7 +54,17 @@ class ToolRegistry:
         try:
             args = parse_tool_args(call.arguments)
         except ValueError as e:
+            if "could not parse" in str(e) and len(call.arguments) > 40:  # cut off mid-string: a runaway
+                return ToolResult(
+                    False,
+                    f"error: the arguments of {call.name} were cut off (the generation ran away, ending in "
+                    f"{call.arguments[-4:]!r}). Make a shorter call: write a smaller file or split the "
+                    "change.",
+                )
             return ToolResult(False, f"error: {e}; arguments were: {call.arguments[:200]}")
+        required = [str(n) for n in tool.parameters.get("required", [])]
+        if missing := [n for n in required if args.get(n) is None]:
+            return ToolResult(False, f"error: {call.name} requires: {', '.join(missing)}")
         try:
             return await tool.run(args, self.ctx)
         except Exception as e:  # noqa: BLE001 - a tool bug becomes an observation, never a crash

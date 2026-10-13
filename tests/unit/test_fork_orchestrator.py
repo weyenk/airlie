@@ -199,6 +199,6 @@ async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_pat
         "user",
     ]  # note step kept, 3 read_file pairs dropped
     nudge = child_first.messages[-1].content
-    assert "read_file" in nudge and "error: 'path'" in nudge
+    assert "read_file" in nudge and "requires: path" in nudge
     fp = next(e for e in events(report) if e["kind"] == "fork_point")
     assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "read_file"

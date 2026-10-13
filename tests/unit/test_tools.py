@@ -112,3 +112,12 @@ def test_schemas_expose_every_registered_tool(tmp_path: Path) -> None:
     names = [s.name for s in reg.schemas()]
     assert names == ["read_file", "shell"]
     assert reg.schemas()[0].parameters["required"] == ["path"]
+
+
+async def test_registry_names_missing_required_args_and_cut_off_arguments(tmp_path: Path) -> None:
+    """Parity with the AutoGen path (2026-10-13): clear, actionable errors the model can act on."""
+    reg = ToolRegistry.builtin(["read_file", "write_file"], ctx(tmp_path))
+    r = await reg.call(ToolCall("1", "read_file", "{}"))
+    assert not r.ok and r.output == "error: read_file requires: path"
+    r = await reg.call(ToolCall("2", "write_file", '{"path": "a.py", "content": "x = 1' + "0" * 300))
+    assert not r.ok and "cut off" in r.output and "shorter" in r.output and "'0000'" in r.output

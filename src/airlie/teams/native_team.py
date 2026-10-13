@@ -109,8 +109,9 @@ class NativeTeam:
                 ok = True
                 stop = "done"
                 break
-            messages.append(Message(role="assistant", content=res.text, tool_calls=tuple(res.tool_calls)))
-            for call in res.tool_calls:
+            calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
+            messages.append(Message(role="assistant", content=res.text, tool_calls=tuple(calls)))
+            for call in calls:
                 steps += 1
                 async with ctx.scheduler.tool_stall(ctx.team_id):
                     t1 = time.monotonic()

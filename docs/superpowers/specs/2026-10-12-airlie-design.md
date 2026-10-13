@@ -185,6 +185,17 @@ re-injected the last 32 keys, and no team ever called `retrieve_value`. Two chan
   the ranked, own-excluded, value-inlined block is what makes spec 01 §4 step 7 ("if relevant, they fetch o_i")
   reachable for a coding agent that otherwise never fetches.
 
+## Team loop default (2026-10-13): native, AutoGen selectable
+
+Noah's call after the fork-when-stuck smoke runs. AutoGen's `AssistantAgent` is used only as the per-team ReAct
+loop; airlie uses none of its multi-agent features. Three of its behaviours needed shims on the same day (tool
+failures are not `is_error` unless the tool raises; its OpenAI client has no `top_k`/`min_p`/`repetition_penalty`
+fields; argument decoding errors are pydantic dumps), while the built-in loop implements the same `TeamOrchestrator`
+contract in ~130 lines with direct control of sampling, state and errors. `teams.orchestrator` now defaults to
+`native`; `autogen` remains one config line away for spec 01 §2 conformance and is covered by the same tests.
+Both loops carry the same guards (one tool call per step, named missing arguments, cut-off arguments reported,
+per-request repetition penalty).
+
 ## M5 result (2026-10-12)
 
 The spec 03 §2 controller is implemented as written (frozen Qwen3-0.6B embedder φ, `proj_query/proj_mem/proj_step`,

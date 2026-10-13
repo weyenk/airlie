@@ -214,7 +214,7 @@ def test_missing_aggregator_role_fails(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
 
 
-def test_teams_orchestrator_default_is_autogen(tmp_path: Path) -> None:
+def test_teams_orchestrator_default_is_native(tmp_path: Path) -> None:
     data = {
         **MINIMAL,
         "roles": {
@@ -223,7 +223,9 @@ def test_teams_orchestrator_default_is_autogen(tmp_path: Path) -> None:
         },
     }
     cfg = load_config(write(tmp_path, data))
-    assert cfg.teams.orchestrator == "autogen"
+    assert (
+        cfg.teams.orchestrator == "native"
+    )  # 2026-10-13: native by default, autogen (spec 01 §2) selectable
 
 
 def test_summarizer_kind_default_is_role(tmp_path: Path) -> None:

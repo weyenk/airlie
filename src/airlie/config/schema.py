@@ -176,7 +176,10 @@ class SchedulerSpec(Strict):
 class TeamsSpec(Strict):
     k: int = Field(default=3, ge=1)
     role: str = "coder"
-    orchestrator: Literal["autogen", "native"] = Field(default="autogen", description="spec 01 §2: AutoGen")
+    orchestrator: Literal["autogen", "native"] = Field(
+        default="native",
+        description="native = built-in ReAct loop (default since 2026-10-13); autogen = spec 01 §2",
+    )
     max_steps: int = 40
     token_budget: int = 200000
     stop_on_first_pass: bool = True

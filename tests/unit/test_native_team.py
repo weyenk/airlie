@@ -241,3 +241,30 @@ async def test_preamble_precedes_goal(tmp_path: Path) -> None:
     await team.run(ctx, Recorder())
     goal_msg = engine.requests[0].messages[1].content
     assert goal_msg.startswith("[Repository map]") and "Goal:\nmake it pass" in goal_msg
+
+
+async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -> None:
+    """Parity with the AutoGen path (2026-10-13): one action per step; later calls in a 'plan' are often
+    argument-less, and the history must only carry the call that ran."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[
+                        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
+                        ToolCall("c2", "read_file", "{}"),
+                    ]
+                ),
+                FakeReply(text="done"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    res = await team.run(ctx, rec)
+    assert res.steps == 1 and [s.u_t.name for s in rec.steps] == ["write_file"]
+    sent = engine.requests[1].messages
+    assert sent[2].tool_calls == (
+        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
+    )
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]
