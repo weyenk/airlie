@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from airlie.config import AirlieConfig
@@ -22,29 +21,12 @@ from airlie.lts.memory_tool import RetrieveValue
 from airlie.lts.observer import LTSObserver
 from airlie.lts.summarizer import build_summarizer
 from airlie.obs import EventSink, RunDir
+from airlie.report import RunReport, write_report
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.aggregate import Aggregator, LLMAggregator, TeamOutcome, TestScoreAggregator
 from airlie.teams.worktree import add_worktree
 from airlie.tools import ToolContext, ToolRegistry
-
-
-@dataclass
-class RunReport:
-    run_id: str
-    run_dir: RunDir
-    goal: str
-    teams: list[TeamResult] = field(default_factory=list)
-    wall_ms: float = 0.0
-    winner: str | None = None
-    final_answer: str = ""
-    scores: dict[str, float] = field(default_factory=dict)
-    tests: dict[str, bool | None] = field(default_factory=dict)
-    winning_branch: str | None = None
-
-    @property
-    def any_ok(self) -> bool:
-        return any(t.ok for t in self.teams)
 
 
 class HALObserver:
@@ -351,30 +333,7 @@ class ParallelAgentTeamOrchestrator:
         return TeamOutcome(r, wt, proc.returncode == 0, out.decode("utf-8", "replace")[-4000:])
 
     def _write_report(self, report: RunReport, reason: str) -> None:
-        lines = [
-            f"# airlie run {report.run_id}",
-            "",
-            f"**Goal:** {report.goal}",
-            "",
-            f"**Winner:** {report.winner} (branch `{report.winning_branch}`, chosen by {reason})",
-            "",
-            "## Final answer",
-            "",
-            report.final_answer,
-            "",
-            "## Teams",
-            "",
-            "| team | ok | stop | steps | tests | score |",
-            "| --- | --- | --- | --- | --- | --- |",
-        ]
-        for t in report.teams:
-            tp = report.tests.get(t.team_id)
-            lines.append(
-                f"| {t.team_id} | {'yes' if t.ok else 'no'} | {t.stop_reason} | {t.steps} | "
-                f"{'pass' if tp else ('fail' if tp is False else '-')} | "
-                f"{report.scores.get(t.team_id, 0):.1f} |"
-            )
-        (self.run_dir.path / "report.md").write_text("\n".join(lines) + "\n")
+        write_report(report, reason, self.run_dir.path / "report.md")
 
     async def _run_team(self, team_id: str, goal: str, repo: Path, test_cmd: str | None) -> TeamResult:
         wt = add_worktree(repo, self.run_dir.path / team_id, branch=f"airlie/{self.run_dir.run_id}/{team_id}")

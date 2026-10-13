@@ -235,3 +235,34 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
     assert report.winner == "team-1"
     events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
     assert any(e["kind"] == "early_stop" and e["winner"] == "team-1" for e in events)
+
+
+# ---- fork-when-stuck worktree helpers ----
+
+
+def test_commit_wip_includes_untracked_files_and_children_start_from_it(tmp_path: Path) -> None:
+    from airlie.teams.worktree import commit_wip, diff_last_commit
+
+    repo = git_repo(tmp_path)
+    trunk = add_worktree(repo, tmp_path / "runs" / "r1" / "trunk", branch="airlie/r1/trunk")
+    (trunk / "new_module.py").write_text("x = 1\n")
+    (trunk / "README.md").write_text("changed\n")
+    sha = commit_wip(trunk, "airlie fork point 1")
+    assert len(sha) == 40
+    child = add_worktree(repo, tmp_path / "runs" / "r1" / "r1-1", branch="airlie/r1/r1-1", start_point=sha)
+    assert (child / "new_module.py").read_text() == "x = 1\n"
+    assert (child / "README.md").read_text() == "changed\n"
+    diff = diff_last_commit(trunk, max_chars=4000)
+    assert "+x = 1" in diff and "+changed" in diff
+
+
+def test_commit_wip_with_nothing_to_commit_still_returns_a_sha(tmp_path: Path) -> None:
+    from airlie.teams.worktree import commit_wip
+
+    repo = git_repo(tmp_path)
+    trunk = add_worktree(repo, tmp_path / "runs" / "r2" / "trunk", branch="airlie/r2/trunk")
+    before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=trunk, capture_output=True, text=True
+    ).stdout.strip()
+    sha = commit_wip(trunk, "empty fork point")
+    assert sha != before and len(sha) == 40
