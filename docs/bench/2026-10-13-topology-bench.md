@@ -82,5 +82,8 @@ Verdicts (design §9, against `single`): **teams** same pass rate, solved runs 4
 
 `airlie.yaml` default is now the single agent: `topology.kind: teams`, `teams.k: 1`, `lts.enabled: false`.
 The spec's configuration is three lines away (`teams.k: 3`, `lts.enabled: true`) and `fork` is `topology.kind:
-fork`. A fork follow-up worth one 30-minute pass: `after_failures: 3`, `child_steps: 25`, and resolve rules that
+fork`. Two of the fork mechanisms above were fixed right after this run (review of the branch, same day, commit
+following this write-up): a branch that quits with "done" but never passed its tests is now a fork point, and
+best-effort resolution ranks branches that ran tests and did more work ahead of quitters. The numbers in this
+file are from before those fixes. A fork follow-up worth one 30-minute pass: `after_failures: 3`, `child_steps: 25`, and resolve rules that
 never end the run on a child's `done` without a visible pass (continue the trunk instead).

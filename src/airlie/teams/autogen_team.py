@@ -284,7 +284,7 @@ class AutoGenTeam:
             final_text = f"engine error: {type(e).__name__}: {e}"
             stop = "engine_error"
         finally:
-            if ctx.stop_when is not None and stop != "done":
+            if ctx.stop_when is not None:  # every stop is a possible fork point (a quitter's "done" too)
                 state = await agent_state(agent)
             await client.close()
         return TeamResult(

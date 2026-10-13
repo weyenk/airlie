@@ -202,3 +202,54 @@ async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_pat
     assert "read_file" in nudge and "requires: path" in nudge
     fp = next(e for e in events(report) if e["kind"] == "fork_point")
     assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "read_file"
+
+
+async def test_a_child_that_quits_without_passing_is_forked_again_not_accepted(tmp_path: Path) -> None:
+    """Review finding 2026-10-13: when no child had test output, best-effort picked the one that said 'done'
+    after a few steps, and the run ended on it. A 'done' without a passing test run is stuck too: snapshot it
+    and fork again."""
+    bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
+    engine = FakeEngine(
+        {
+            "coder": [
+                RUN,
+                RUN,  # trunk: two failures → fork
+                FakeReply(text="I give up"),  # one child quits at once
+                bad,
+                bad,
+                bad,  # the other loops on a failing call → repeated_action; nobody ran tests
+                WRITE_PASS,  # round 2
+                RUN,
+                RUN,
+                FakeReply(text="fixed"),
+                RUN,
+                RUN,
+                RUN,
+            ]
+        }
+    )
+    cfg = cfg_for(tmp_path, max_rounds=3, child_steps=4)
+    cfg.tools.builtin = ["write_file", "read_file", "run_tests"]
+    orch = ForkOrchestrator(cfg, engine, run_id="f5")
+    report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
+    ev = events(report)
+    resolved = [(e["round"], e["winner"], e["how"]) for e in ev if e["kind"] == "fork_resolved"]
+    assert len(resolved) >= 2, resolved  # the quitter did not end the run
+    assert report.any_ok and (orch.run_dir.path / report.winner / "PASS").exists()
+
+
+async def test_best_effort_prefers_branches_that_ran_tests_and_worked(tmp_path: Path) -> None:
+    from airlie.teams.protocol import TeamResult
+    from airlie.topology.fork import Branch
+
+    orch = ForkOrchestrator(cfg_for(tmp_path), FakeEngine({}), run_id="f6")
+    quitter = Branch("r1-1", tmp_path, "b1", result=TeamResult("r1-1", True, "done", "gave up", 3, 0, 0, 0.0))
+    worker = Branch(
+        "r1-2", tmp_path, "b2", result=TeamResult("r1-2", False, "repeated_action", "", 6, 0, 0, 0.0)
+    )
+    winner, how = orch._resolve([quitter, worker])  # noqa: SLF001  # no test output anywhere: more work wins
+    assert (winner.id, how) == ("r1-2", "best_effort")
+    orch.observer.last_test["r1-2"] = "2 failed, 1 passed"  # ran tests beats never ran
+    assert orch._resolve([quitter, worker])[0].id == "r1-2"  # noqa: SLF001
+    orch.observer.last_test["r1-1"] = "1 failed, 2 passed"  # fewer failures beats more steps
+    assert orch._resolve([quitter, worker])[0].id == "r1-1"  # noqa: SLF001

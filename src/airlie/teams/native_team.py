@@ -169,9 +169,7 @@ class NativeTeam:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             wall_ms=(time.monotonic() - t0) * 1000.0,
-            state={"messages": dump_messages(messages)}
-            if ctx.stop_when is not None and stop != "done"
-            else None,
+            state={"messages": dump_messages(messages)} if ctx.stop_when is not None else None,
             last_test_output=last_test_output,
         )
 

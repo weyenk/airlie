@@ -155,3 +155,12 @@ def test_run_endpoint_passes_topology_to_factory(tmp_path: Path) -> None:
     r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "fork"})
     assert r.status_code == 200, r.text
     assert seen == ["fork"]
+
+
+def test_run_endpoint_rejects_unknown_topology_with_400(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()))
+    r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "ring"})
+    assert r.status_code == 400 and "ring" in r.json()["detail"]

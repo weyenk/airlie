@@ -143,9 +143,8 @@ class ForkOrchestrator:
         )
         rounds = forks = 0
         while (
-            res.stop_reason in FORK_REASONS
+            self._stuck(trunk, res)
             and res.state is not None
-            and not self.observer.passed.get(trunk.id, False)  # a branch whose tests pass is never forked
             and rounds < f.max_rounds
             and self.total_steps < f.max_total_steps
         ):
@@ -201,6 +200,13 @@ class ForkOrchestrator:
             total_steps=self.total_steps,
         )
         return report
+
+    def _stuck(self, b: Branch, res: TeamResult) -> bool:
+        """Fork from a branch that hit a fork reason, or quit ("done") without a passing test run; never from
+        a branch whose last test run passed."""
+        if self.observer.passed.get(b.id, False):
+            return False
+        return res.stop_reason in FORK_REASONS or res.stop_reason == "done"
 
     # ---- branches ----
     def _branch(self, bid: str, repo: Path, *, start_point: str | None) -> Branch:
@@ -300,9 +306,12 @@ class ForkOrchestrator:
         if not live:
             return None, "none"
 
-        def key(k: Branch) -> tuple[int, int, str]:
+        def key(k: Branch) -> tuple[int, int, int, str]:
+            """Fewest failing tests; then branches that ran tests at all; then the most work done."""
             failing = parse_failing(self.observer.last_test.get(k.id, ""))
-            return (failing if failing is not None else 10**6, k.result.steps if k.result else 0, k.id)
+            ran_tests = 0 if k.id in self.observer.last_test else 1
+            steps = k.result.steps if k.result else 0
+            return (failing if failing is not None else 10**6, ran_tests, -steps, k.id)
 
         live.sort(key=key)
         return live[0], "best_effort"
