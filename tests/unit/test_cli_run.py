@@ -144,8 +144,8 @@ def test_run_with_topology_single_selects_the_profile(tmp_path: Path, monkeypatc
 
 def test_run_with_unknown_topology_exits_2(tmp_path: Path) -> None:
     p = write_cfg(tmp_path)
-    r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "studio", "-c", str(p)])
-    assert r.exit_code == 2 and "single, teams, fork" in r.output
+    r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "ring", "-c", str(p)])
+    assert r.exit_code == 2 and "single, teams, fork, studio" in r.output
 
 
 def test_k_above_one_under_the_single_kind_selects_teams(tmp_path: Path, monkeypatch) -> None:

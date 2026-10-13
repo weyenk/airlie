@@ -31,6 +31,7 @@ from pydantic import BaseModel, create_model
 from airlie.config import RoleSpec
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
+from airlie.skills import prompt_text
 from airlie.teams.autogen_client import RepairingOpenAIClient
 from airlie.teams.native_team import _goal_message
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
@@ -200,7 +201,7 @@ class AutoGenTeam:
             name=ctx.team_id.replace("-", "_"),
             model_client=client,
             tools=build_function_tools(ctx.tools, ctx.scheduler, ctx.team_id),
-            system_message=ctx.role.prompt.read_text(),
+            system_message=prompt_text(ctx.role.prompt),
             reflect_on_tool_use=False,
             max_tool_iterations=1,
         )

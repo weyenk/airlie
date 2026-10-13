@@ -11,6 +11,7 @@ from typing import Any
 
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall
+from airlie.skills import prompt_text
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 
 
@@ -63,7 +64,7 @@ class NativeTeam:
 
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
-        system = ctx.role.prompt.read_text()
+        system = prompt_text(ctx.role.prompt)
         goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
         messages: list[Message]
         if ctx.initial_state is not None:

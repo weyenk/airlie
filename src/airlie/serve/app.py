@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from airlie.config import AirlieConfig
+from airlie.skills import prompt_text
 
 
 class RunRequest(BaseModel):
@@ -70,7 +71,7 @@ def create_app(
         spec = cfg.roles[role]
         msgs = list(body.get("messages") or [])
         if not msgs or msgs[0].get("role") != "system":
-            msgs = [{"role": "system", "content": spec.prompt.read_text()}, *msgs]
+            msgs = [{"role": "system", "content": prompt_text(spec.prompt)}, *msgs]
         out = {**body, "model": served, "messages": msgs}
         out.setdefault("max_tokens", spec.max_tokens)
         out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
