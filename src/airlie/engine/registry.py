@@ -44,6 +44,28 @@ def build_registry(cfg: AirlieConfig, engine_name: str, snapshot_dir: SnapshotRe
     }
 
 
+def gguf_path(m: ModelSpec, snapshot_dir: SnapshotResolver) -> Path:
+    if not m.file:
+        raise ValueError(f"model {m.repo} has no `file`; llama_server engines serve one .gguf")
+    return (m.path if m.path is not None else snapshot_dir(m)) / m.file
+
+
+def build_llama_command(cfg: AirlieConfig, engine_name: str, gguf: Path) -> list[str]:
+    e = cfg.engines[engine_name]
+    name = e.models[0]
+    argv = [
+        e.binary, "-m", str(gguf),
+        "--host", e.host, "--port", str(e.port),
+        "-c", str(e.ctx_size),
+        "--alias", e.served_name(name),
+        "--jinja",
+    ]  # fmt: skip
+    if e.api_key:
+        argv += ["--api-key", e.api_key]
+    argv += list(e.extra_args)
+    return argv
+
+
 def write_registry(registry: dict[str, Any], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(registry, sort_keys=False))
@@ -73,9 +95,9 @@ def build_serve_command(cfg: AirlieConfig, engine_name: str, registry_path: Path
         argv.append("--kv-cache-quantization")
     if e.api_key:
         argv += ["--api-key", e.api_key]
-    if team_model.tool_call_parser:
+    if e.server_parsers and team_model.tool_call_parser:
         argv += ["--enable-auto-tool-choice", "--tool-call-parser", team_model.tool_call_parser]
-    if team_model.reasoning_parser:
+    if e.server_parsers and team_model.reasoning_parser:
         argv += ["--reasoning-parser", team_model.reasoning_parser]
     team_role = cfg.roles[cfg.teams.role]
     argv += ["--default-chat-template-kwargs", json.dumps({"enable_thinking": bool(team_role.thinking)})]

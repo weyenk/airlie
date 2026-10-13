@@ -16,6 +16,30 @@ team paths) and `roles.coder.max_tokens: 4096` (bounds a runaway to ~2 min); a c
 the model as such instead of executed. Still: run `task restart` before a benchmark, and compare the count of
 `8192 tokens` / `4096 tokens` completions in `engines/main/server.log` across runs when results look off.
 
+## Output parsing without server parser flags (checked live 2026-10-13)
+
+A throwaway `vllm-mlx serve` of Qwen3-4B with no `--enable-auto-tool-choice` and no `--reasoning-parser` was
+sent a chat request with one `read_file` tool: the tools were rendered into the prompt, the model answered with a
+call, `finish_reason` was `tool_calls`. vllm-mlx renders `tools` whenever the request carries them (the parser
+flag only chooses the parser), and without a flag it applies a generic fallback that recognises JSON-in-
+`<tool_call>`, Llama `<function=…>`, MiniMax and Nemotron styles. Checked the same day with the coder model
+(Qwen3-Coder-30B-A3B) on a throwaway no-parser server: its `<tool_call><function=…><parameter=…>` XML matches
+the fallback's Nemotron pattern, so the server parsed it too and `HTTPEngine` received a `ToolCall` with or
+without the client parser. What does come back raw is Harmony (gpt-oss) and Muse Glimmer's channels; those are
+what `airlie.engine.output_parse` parses on the client with vllm-mlx's own parser classes
+(`engines.main.server_parsers: false`), validated on fixtures until Muse is pulled in plan 2. Server-parsed calls
+always win; nothing is parsed twice.
+
+## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
+
+`ggml-org/Kev-4B-GGUF` (Q4_K_M, 3 GB) behind `/v1/systemone`, asked the role question over the nine criteria in
+`evals/routing-roles.yaml` for the 54 labelled tasks in `evals/routing.jsonl` (ai-mode's classify sets, role
+rows only): **54/54 correct (accuracy 1.00), mean confidence
+0.64, wrong-but-clear 0**, no confusions. Raw: `routing.json`.
+The design's bar for using studio routing for real work is accuracy ≥ 0.9. Mean confidence 0.64 means the
+`clear / ambiguous / low-confidence` policy (gap 0.15, floor 0.5) will route a fair share of tasks through the
+chief's hint; the per-decision log (`runs/<id>/routing.jsonl`) is what to tune the criteria lines against.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported

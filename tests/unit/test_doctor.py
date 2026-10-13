@@ -18,11 +18,26 @@ class FakeProbe(SystemProbe):
         ram_gb: float = 128.0,
         snapshots: set[str] | None = None,
         tools: dict[str, str | None] | None = None,
+        binaries: dict[str, str] | None = None,
+        dylib_has_systemone: bool = True,
+        files: set[str] | None = None,
     ) -> None:
         self._wired = wired_mb
         self._ram = ram_gb
         self._snaps = snapshots if snapshots is not None else set()
         self._tools = tools if tools is not None else dict(TOOLS_OK)
+        self._bins = binaries or {}
+        self._systemone = dylib_has_systemone
+        self._files = files or set()
+
+    def resolve_binary(self, name: str) -> Path | None:
+        return Path(self._bins[name]) if name in self._bins else None
+
+    def file_contains(self, path: Path, needle: str) -> bool | None:
+        return self._systemone if needle == "/v1/systemone" else None
+
+    def model_file(self, repo: str, revision: str, file: str) -> Path | None:
+        return Path(f"/fake/{repo}/{revision}/{file}") if f"{repo}@{revision}/{file}" in self._files else None
 
     def sysctl_int(self, name: str) -> int | None:
         return self._wired if name == "iogpu.wired_limit_mb" else None
@@ -156,7 +171,7 @@ def projected_cfg(tmp_path: Path, est_gb: float) -> AirlieConfig:
 def test_memory_projection_within_limit_is_ok(tmp_path: Path) -> None:
     # 16 GB weights + 3 teams × 65.536k tokens × 256 MB/1k ≈ 49 GB + 12 GB reserve ≈ 77 GB < 104 GB
     r = by_name(run_checks(projected_cfg(tmp_path, 16), FakeProbe(snapshots={"org/model@r1"})))[
-        "engine:main:memory_projection"
+        "engine:main:memory_projection[teams]"
     ]
     assert r.status == "ok"
     assert "77" in r.detail
@@ -164,7 +179,7 @@ def test_memory_projection_within_limit_is_ok(tmp_path: Path) -> None:
 
 def test_memory_projection_over_limit_is_fail(tmp_path: Path) -> None:
     r = by_name(run_checks(projected_cfg(tmp_path, 90), FakeProbe(snapshots={"org/model@r1"})))[
-        "engine:main:memory_projection"
+        "engine:main:memory_projection[teams]"
     ]
     assert r.status == "fail"
     assert "151" in r.detail
@@ -301,3 +316,96 @@ def test_missing_lazy_model_is_warn_not_fail(tmp_path: Path) -> None:
     r = by_name(run_checks(cfg, FakeProbe(snapshots={"org/model@r1"})))["model:alt"]
     assert r.status == "warn"
     assert "lazy" in r.detail and "task models:pull" in r.detail
+
+
+# ---- Studio foundations Task 3: llama_server engine (Kev) and per-profile projection ----
+
+
+def decision_cfg(tmp_path: Path) -> AirlieConfig:
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]},
+            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
+        },
+        "models": {
+            "team": {"repo": "org/t", "revision": "r1", "estimated_memory_gb": 16},
+            "kev": {
+                "repo": "ggml-org/Kev-4B-GGUF",
+                "revision": "d9",
+                "file": "Kev-4B-Q4_K_M.gguf",
+                "preload": True,
+                "estimated_memory_gb": 3,
+            },
+        },
+        "roles": {
+            r: {"prompt": "p.md", "model": "team"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "router": {"kind": "jev", "model": "kev"},
+        "topology": {
+            "kind": "teams",
+            "profiles": {"single": {"teams": {"k": 1}}, "teams": {"teams": {"k": 3}}},
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
+
+
+def test_llama_server_engine_checks_binary_systemone_and_gguf(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    probe = FakeProbe(
+        snapshots={"org/t@r1"},
+        binaries={"llama-server": "/opt/homebrew/bin/llama-server"},
+        files={"ggml-org/Kev-4B-GGUF@d9/Kev-4B-Q4_K_M.gguf"},
+    )
+    rows = by_name(run_checks(cfg, probe))
+    assert rows["engine:decision:binary"].status == "ok"
+    assert rows["engine:decision:systemone"].status == "ok"
+    assert rows["model:kev:file"].status == "ok"
+
+
+def test_llama_server_without_systemone_fails(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    probe = FakeProbe(
+        snapshots={"org/t@r1"},
+        binaries={"llama-server": "/opt/homebrew/bin/llama-server"},
+        dylib_has_systemone=False,
+        files={"ggml-org/Kev-4B-GGUF@d9/Kev-4B-Q4_K_M.gguf"},
+    )
+    rows = by_name(run_checks(cfg, probe))
+    assert rows["engine:decision:systemone"].status == "fail"
+    assert "brew" in rows["engine:decision:systemone"].detail
+
+
+def test_missing_gguf_file_fails_with_pull_hint(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    probe = FakeProbe(snapshots={"org/t@r1"}, binaries={"llama-server": "/x/llama-server"})
+    rows = by_name(run_checks(cfg, probe))
+    assert rows["model:kev:file"].status == "fail"
+    assert "task models:pull -- kev" in rows["model:kev:file"].detail
+
+
+def test_memory_projection_is_reported_per_profile(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
+    assert "engine:main:memory_projection[single]" in rows
+    assert "engine:main:memory_projection[teams]" in rows
+    assert "1 teams" in rows["engine:main:memory_projection[single]"].detail
+    assert "3 teams" in rows["engine:main:memory_projection[teams]"].detail
+
+
+def test_memory_projection_counts_every_managed_engines_preloaded_weights(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)  # team 16 GB on main, Kev 3 GB preloaded on the decision engine
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
+    assert "projected 47 GB" in rows["engine:main:memory_projection[single]"].detail  # 16 + 16.4 KV + 12 + 3
+
+
+def test_invalid_profile_is_a_fail_row_not_a_crash(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    data = yaml.safe_load((tmp_path / "airlie.yaml").read_text())
+    data["topology"]["profiles"]["single"] = {"teams": {"k": 0}}
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
+    row = rows["engine:main:memory_projection[single]"]
+    assert row.status == "fail" and "config invalid" in row.detail

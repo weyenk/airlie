@@ -1,0 +1,69 @@
+[
+  {
+    "name": "airlie engine (vllm-mlx, raw models)",
+    "vendor": "customendpoint",
+    "apiKey": "${input:airlieApiKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "base",
+        "name": "airlie base: Qwen3-Coder-30B-A3B 4-bit",
+        "url": "http://127.0.0.1:8080/v1/chat/completions",
+        "toolCalling": true,
+        "vision": false,
+        "maxInputTokens": 60000,
+        "maxOutputTokens": 4096,
+        "thinking": false,
+        "streaming": true,
+        "editTools": ["find-replace", "multi-find-replace"],
+        "modelOptions": {
+          "temperature": 0.3,
+          "top_p": 0.8,
+          "repetition_penalty": 1.05
+        }
+      },
+      {
+        "id": "small",
+        "name": "airlie small: Qwen3-4B 4-bit (chat only)",
+        "url": "http://127.0.0.1:8080/v1/chat/completions",
+        "toolCalling": false,
+        "vision": false,
+        "maxInputTokens": 12000,
+        "maxOutputTokens": 2048,
+        "thinking": false,
+        "streaming": true
+      }
+    ]
+  },
+  {
+    "name": "airlie roles (task serve)",
+    "vendor": "customendpoint",
+    "apiKey": "${input:airlieApiKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "coder",
+        "name": "airlie coder role (base + coder prompt)",
+        "url": "http://127.0.0.1:8090/v1/chat/completions",
+        "toolCalling": true,
+        "vision": false,
+        "maxInputTokens": 60000,
+        "maxOutputTokens": 4096,
+        "thinking": false,
+        "streaming": true,
+        "editTools": ["find-replace", "multi-find-replace"]
+      },
+      {
+        "id": "judge",
+        "name": "airlie judge role (small, YES/NO)",
+        "url": "http://127.0.0.1:8090/v1/chat/completions",
+        "toolCalling": false,
+        "vision": false,
+        "maxInputTokens": 12000,
+        "maxOutputTokens": 256,
+        "thinking": false,
+        "streaming": true
+      }
+    ]
+  }
+]

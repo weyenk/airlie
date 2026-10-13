@@ -19,7 +19,13 @@ import httpx
 import psutil
 
 from airlie.config import AirlieConfig, ModelSpec
-from airlie.engine.registry import build_registry, build_serve_command, write_registry
+from airlie.engine.registry import (
+    build_llama_command,
+    build_registry,
+    build_serve_command,
+    gguf_path,
+    write_registry,
+)
 from airlie.engine.types import EngineError, ModelState
 
 
@@ -48,9 +54,10 @@ class RealRunner:
 
     def spawn(self, argv: list[str], log_path: Path, cwd: Path) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = ["uv", "run", "--quiet", *argv] if argv[:1] == ["vllm-mlx"] else list(argv)
         with log_path.open("ab") as log:
             proc = subprocess.Popen(
-                ["uv", "run", "--quiet", *argv],
+                cmd,
                 cwd=cwd,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -165,9 +172,13 @@ class EngineProcess:
                 f"port {self.spec.port} is held by pid {holder}, not by airlie; "
                 f"stop it or change engines.{self.name}.port"
             )
-        registry = build_registry(self.cfg, self.name, self.snapshot_dir)
-        write_registry(registry, self.registry_path)
-        argv = build_serve_command(self.cfg, self.name, self.registry_path)
+        if self.spec.kind == "llama_server":
+            gguf = gguf_path(self.cfg.models[self.spec.models[0]], self.snapshot_dir)
+            argv = build_llama_command(self.cfg, self.name, gguf)
+        else:
+            registry = build_registry(self.cfg, self.name, self.snapshot_dir)
+            write_registry(registry, self.registry_path)
+            argv = build_serve_command(self.cfg, self.name, self.registry_path)
         self.dir.mkdir(parents=True, exist_ok=True)
         pid = self.runner.spawn(argv, self.log_path, self.cwd)
         self.pidfile.write_text(f"{pid}\n")

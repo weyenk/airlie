@@ -36,7 +36,7 @@ class TopoRow:
 def apply_topology(cfg: AirlieConfig, name: str) -> AirlieConfig:
     c = cfg.model_copy(deep=True)
     if name == "single":
-        c.topology.kind = "teams"
+        c.topology.kind = "single"
         c.teams.k = 1
         c.lts.enabled = False
     elif name == "teams":

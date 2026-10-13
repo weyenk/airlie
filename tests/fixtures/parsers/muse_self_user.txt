@@ -1,0 +1,1 @@
+ to=self<|message|>The guard checks qty < 0 so zero slips through.<|eom|><|start|>assistant to=user<|message|>{"verdict": "request_changes", "findings": [{"severity": "blocking", "file": "app/orders.py", "line": 41, "claim": "qty == 0 reaches the division", "evidence": "guard is qty < 0"}]}<|eot|>

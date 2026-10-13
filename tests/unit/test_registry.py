@@ -115,3 +115,40 @@ def test_serve_command_omits_parsers_when_model_has_none(tmp_path: Path) -> None
     argv = build_serve_command(c, "main", Path("m.yaml"))
     assert "--tool-call-parser" not in argv and "--enable-auto-tool-choice" not in argv
     assert "--reasoning-parser" not in argv
+
+
+def test_llama_command_serves_one_gguf_under_its_catalog_name(tmp_path: Path) -> None:
+    from airlie.engine.registry import build_llama_command, gguf_path
+
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["base"]},
+            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"], "ctx_size": 4096},
+        },
+        "models": {
+            "base": {"repo": "org/base", "revision": "r1"},
+            "kev": {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9", "file": "Kev-4B-Q4_K_M.gguf"},
+        },
+        "roles": {
+            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    c = load_config(tmp_path / "airlie.yaml")
+    gguf = gguf_path(c.models["kev"], snap)
+    assert gguf == Path("/hf/ggml-org/Kev-4B-GGUF/d9/Kev-4B-Q4_K_M.gguf")
+    argv = build_llama_command(c, "decision", gguf)
+    assert argv == [
+        "llama-server", "-m", str(gguf), "--host", "127.0.0.1", "--port", "8081", "-c", "4096",
+        "--alias", "kev", "--jinja",
+    ]  # fmt: skip
+
+
+def test_server_parsers_false_emits_no_parser_flags(tmp_path: Path) -> None:
+    argv = build_serve_command(cfg(tmp_path, server_parsers=False), "main", Path("/r.yaml"))
+    assert "--tool-call-parser" not in argv and "--reasoning-parser" not in argv
+    assert "--enable-auto-tool-choice" not in argv
+    argv = build_serve_command(cfg(tmp_path), "main", Path("/r.yaml"))
+    assert argv[argv.index("--tool-call-parser") + 1] == "qwen"

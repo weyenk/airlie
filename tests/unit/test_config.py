@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.config import AirlieConfig, ConfigError, load_config, profile_configs
 
 MINIMAL: dict = {
     "version": 1,
@@ -255,3 +255,117 @@ def test_fork_hypothesis_role_must_exist(tmp_path: Path) -> None:
     data = {**MINIMAL, "fork": {"hypothesis_role": "nobody"}}
     with pytest.raises(ConfigError, match=r"fork\.hypothesis_role"):
         load_config(write(tmp_path, data))
+
+
+def test_profile_for_the_selected_kind_is_deep_merged(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "teams",
+            "profiles": {
+                "single": {"teams": {"k": 1}, "lts": {"enabled": False}},
+                "teams": {"teams": {"k": 3}},
+            },
+        },
+    }
+    cfg = load_config(write(tmp_path, data), topology="single")
+    assert cfg.topology.kind == "single"
+    assert cfg.teams.k == 1 and cfg.lts.enabled is False
+    assert cfg.source_path == (tmp_path / "airlie.yaml").resolve()
+    base = load_config(tmp_path / "airlie.yaml")  # no override → the file's own kind
+    assert base.topology.kind == "teams" and base.teams.k == 3
+
+
+def test_profile_extends_chain_merges_parent_first(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "fork",
+            "profiles": {
+                "teams": {"teams": {"k": 3, "max_steps": 20}},
+                "fork": {"extends": "teams", "teams": {"k": 1}},
+            },
+        },
+    }
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.teams.k == 1 and cfg.teams.max_steps == 20
+
+
+def test_profile_extends_cycle_is_a_config_error(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "fork",
+            "profiles": {"teams": {"extends": "fork"}, "fork": {"extends": "teams"}},
+        },
+    }
+    with pytest.raises(ConfigError, match=r"topology\.profiles\.fork\.extends.*cycle"):
+        load_config(write(tmp_path, data))
+
+
+def test_profile_extends_unknown_parent_is_a_config_error(tmp_path: Path) -> None:
+    data = {**MINIMAL, "topology": {"kind": "fork", "profiles": {"fork": {"extends": "nope"}}}}
+    with pytest.raises(ConfigError, match=r"topology\.profiles\.fork\.extends.*'nope'"):
+        load_config(write(tmp_path, data))
+
+
+def test_unknown_topology_override_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"topology.*'studio'.*single, teams, fork"):
+        load_config(write(tmp_path, MINIMAL), topology="studio")
+
+
+def test_jev_router_needs_a_llama_server_engine_serving_its_model(tmp_path: Path) -> None:
+    data = {**MINIMAL, "router": {"kind": "jev", "model": "team"}}
+    with pytest.raises(ConfigError, match=r"router\.model.*'team'.*llama_server"):
+        load_config(write(tmp_path, data))
+
+
+def test_llama_server_engine_serves_one_gguf_model(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "engines": {
+            **MINIMAL["engines"],
+            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
+        },
+        "models": {**MINIMAL["models"], "kev": {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9"}},
+        "router": {"kind": "jev", "model": "kev"},
+    }
+    with pytest.raises(ConfigError, match=r"models\.kev\.file.*llama_server"):
+        load_config(write(tmp_path, data))
+    data["models"]["kev"]["file"] = "Kev-4B-Q4_K_M.gguf"
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.engines["decision"].base_url == "http://127.0.0.1:8081/v1"
+    assert cfg.engines["decision"].server_parsers is True and cfg.engines["decision"].ctx_size == 16384
+    assert cfg.router.kind == "jev" and cfg.router.ambiguous_gap == 0.15
+
+
+def test_profile_configs_loads_every_profile_from_the_source_file(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {"kind": "teams", "profiles": {"single": {"teams": {"k": 1}}, "teams": {}}},
+    }
+    cfg = load_config(write(tmp_path, data))
+    profiles = profile_configs(cfg)
+    assert set(profiles) == {"single", "teams"}
+    assert profiles["single"].teams.k == 1 and profiles["teams"].teams.k == 3
+
+
+def test_a_profile_outside_the_kinds_can_be_a_parent_and_be_selected(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "teams",
+            "profiles": {
+                "studio-qwen38": {"teams": {"k": 2}},
+                "single": {"extends": "studio-qwen38"},
+                "fast": {"topology": {"kind": "fork"}, "teams": {"max_steps": 5}},
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p, topology="single").teams.k == 2
+    chosen = load_config(p, topology="studio-qwen38")  # a profile name selects it; kind stays the file's
+    assert chosen.topology.kind == "teams" and chosen.teams.k == 2
+    fast = load_config(p, topology="fast")  # a profile may set the kind itself
+    assert fast.topology.kind == "fork" and fast.teams.max_steps == 5
+    assert set(profile_configs(load_config(p))) == {"studio-qwen38", "single", "fast"}

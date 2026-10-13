@@ -24,6 +24,10 @@ def build_topology(cfg: AirlieConfig, engine: Engine, run_id: str | None = None)
         from airlie.topology.fork import ForkOrchestrator
 
         return ForkOrchestrator(cfg, engine, run_id=run_id)
+    if cfg.topology.kind == "single":
+        cfg = cfg.model_copy(deep=True)  # never mutate a config shared across requests (serve)
+        cfg.teams.k = 1
+        cfg.lts.enabled = False
     from airlie.orchestrator import ParallelAgentTeamOrchestrator
 
     return ParallelAgentTeamOrchestrator(cfg, engine, run_id=run_id)

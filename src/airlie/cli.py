@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from airlie import __version__
-from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 
 app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="airlie: parallel agent teams with shared memory."
@@ -29,6 +29,8 @@ eval_app = typer.Typer(no_args_is_help=True, help="Graded coding tasks (evals/ta
 app.add_typer(eval_app, name="eval")
 controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission controller (spec 03 §2–3).")
 app.add_typer(controller_app, name="controller")
+route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
+app.add_typer(route_app, name="route")
 console = Console()
 err = Console(stderr=True)
 
@@ -37,12 +39,12 @@ ConfigOpt = Annotated[
 ]
 
 
-def _load(config: Path | None) -> AirlieConfig:
+def _load(config: Path | None, topology: str | None = None) -> AirlieConfig:
     try:
-        return load_config(config)
+        return load_config(config, topology=topology)
     except ConfigError as e:
         err.print(f"[red]{e}[/red]")
-        raise typer.Exit(1) from None
+        raise typer.Exit(2 if topology and "unknown topology" in str(e) else 1) from None
 
 
 @app.callback()
@@ -132,7 +134,7 @@ def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-de
 
 
 def _managed(cfg: AirlieConfig) -> list[str]:
-    return [n for n, e in cfg.engines.items() if e.kind == "vllm_mlx"]
+    return [n for n, e in cfg.engines.items() if e.kind in ("vllm_mlx", "llama_server")]
 
 
 def _health_table(rows: list[tuple[str, object]]) -> Table:
@@ -163,6 +165,10 @@ def engine_up(
         try:
             rows.append((name, asyncio.run(p.start(timeout_s=timeout))))
         except EngineError as e:
+            if "already running" in str(e):
+                console.print(f"engine [bold]{name}[/bold] is already running; leaving it (use restart)")
+                rows.append((name, asyncio.run(p.status())))
+                continue
             err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
     console.print(_health_table(rows))
@@ -234,6 +240,7 @@ def _http_engine(cfg: AirlieConfig, engine_name: str, model_override: str | None
         lambda role: cfg.roles[role],
         api_key=e.api_key,
         per_request_draft=e.per_request_draft,
+        model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
     )
 
 
@@ -544,16 +551,33 @@ def bench_models(
 # ---- run / eval ----
 
 
-TopologyOpt = Annotated[str | None, typer.Option(help="teams | fork (default: topology.kind)")]
+TopologyOpt = Annotated[
+    str | None,
+    typer.Option(help=f"{' | '.join(TOPOLOGY_KINDS)} (default: topology.kind; selects its profile)"),
+]
 
 
-def _set_topology(cfg: AirlieConfig, topology: str | None) -> None:
+def select_topology(cfg: AirlieConfig, topology: str | None) -> AirlieConfig:
+    """The config with `topology`'s profile applied: reloaded from its file when it has one."""
     if topology is None:
-        return
-    if topology not in ("teams", "fork"):
-        err.print(f"[red]unknown topology '{topology}'; use teams or fork[/red]")
+        return cfg
+    if topology not in TOPOLOGY_KINDS:
+        err.print(f"[red]unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}[/red]")
         raise typer.Exit(2)
+    if cfg.source_path is not None:
+        return load_config(cfg.source_path, topology=topology)
     cfg.topology.kind = topology  # type: ignore[assignment]
+    return cfg
+
+
+def apply_k(cfg: AirlieConfig, k: int | None) -> AirlieConfig:
+    """`--k`: more than one team under the single kind means the teams topology."""
+    if k is None:
+        return cfg
+    if k > 1 and cfg.topology.kind == "single":
+        cfg = select_topology(cfg, "teams")
+    cfg.teams.k = k
+    return cfg
 
 
 def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
@@ -606,10 +630,8 @@ def run(
     """Run the configured topology (K parallel teams, or fork-when-stuck) on a goal in a repository."""
     import asyncio
 
-    cfg = _load(config)
-    _set_topology(cfg, topology)
-    if k is not None:
-        cfg.teams.k = k
+    cfg = _load(config, topology)
+    cfg = apply_k(cfg, k)
     repo = repo.resolve()
     if not (repo / ".git").exists():
         err.print(f"[red]{repo} is not a git repository[/red]")
@@ -633,10 +655,8 @@ def eval_run(
 
     from airlie.evals import find_task, materialize
 
-    cfg = _load(config)
-    _set_topology(cfg, topology)
-    if k is not None:
-        cfg.teams.k = k
+    cfg = _load(config, topology)
+    cfg = apply_k(cfg, k)
     try:
         task = find_task(tasks_dir.resolve(), task_id)
     except FileNotFoundError as e:
@@ -819,6 +839,36 @@ def controller_eval(
         table.add_row(name, str(m["yes_rate"]), str(m["useful_precision"]), str(m["useful_recall"]))
     console.print(table)
     console.print(f"agreement with logged decisions: {rep['agreement']}")
+
+
+@route_app.command("eval")
+def route_eval(
+    cases: Annotated[Path, typer.Option(help="labelled JSONL: question, task, expect")] = Path(
+        "evals/routing.jsonl"
+    ),
+    roles: Annotated[Path, typer.Option(help="role -> criterion YAML")] = Path("evals/routing-roles.yaml"),
+    min_accuracy: Annotated[float, typer.Option(help="exit 1 below this")] = 0.0,
+    out: Annotated[Path | None, typer.Option(help="save the JSON report here")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Score the router on a labelled set (accuracy, mean confidence, wrong-but-clear, confusions)."""
+    import asyncio
+
+    from airlie.bench.route_eval import evaluate, load_cases, load_criteria, render, save
+    from airlie.router import build_router
+
+    cfg = _load(config)
+    if cfg.router.kind != "jev":
+        err.print(
+            "[red]router.kind must be jev to evaluate routing (chief routing has nothing to score)[/red]"
+        )
+        raise typer.Exit(2)
+    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), load_criteria(roles)))
+    console.print(render(rep), markup=False, highlight=False)
+    if out is not None:
+        console.print(f"saved {save(rep, out)}")
+    if rep.accuracy < min_accuracy:
+        raise typer.Exit(1)
 
 
 def main() -> None:

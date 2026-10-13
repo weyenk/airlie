@@ -85,3 +85,31 @@ def test_logs_prints_tail(tmp_path: Path, monkeypatch) -> None:
     r = runner.invoke(cli.app, ["engine", "logs", "-n", "2", "--config", str(write_cfg(tmp_path))])
     assert r.exit_code == 0, r.output
     assert "line1" in r.output and "line2" in r.output
+
+
+def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path: Path, monkeypatch) -> None:
+    from airlie.engine.types import EngineError
+
+    class Running(StubProcess):
+        async def start(self, timeout_s: float = 600.0) -> ProcessHealth:
+            StubProcess.calls.append(f"start:{self.name}")
+            raise EngineError(f"engine '{self.name}' is already running (pid 7); use restart")
+
+        async def status(self) -> ProcessHealth:
+            return ProcessHealth(True, {"base": "ready"}, 7, "healthy")
+
+    StubProcess.calls = []
+    monkeypatch.setattr(
+        cli,
+        "_engine_process",
+        lambda cfg, name: Running(cfg, name) if name == "main" else StubProcess(cfg, name),
+    )
+    p = write_cfg(tmp_path)
+    data = yaml.safe_load(p.read_text())
+    data["engines"]["decision"] = {"kind": "llama_server", "port": 8081, "models": ["kev"]}
+    data["models"]["kev"] = {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9", "file": "k.gguf"}
+    p.write_text(yaml.safe_dump(data))
+    r = runner.invoke(cli.app, ["engine", "up", "--config", str(p)])
+    assert r.exit_code == 0, r.output
+    assert sorted(StubProcess.calls) == ["start:decision", "start:main"]  # yaml dump sorts engine names
+    assert "already running" in r.output

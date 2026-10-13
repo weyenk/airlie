@@ -161,3 +161,42 @@ async def test_stop_terminates_then_kills_and_clears_pidfile(tmp_path: Path) -> 
     assert runner.killed[0] == (4242, "TERM")
     assert not (tmp_path / "state" / "engines" / "main" / "pid").exists()
     assert (await p.status()).ok is False
+
+
+def llama_cfg(tmp_path: Path):
+    data = {
+        "version": 1,
+        "engines": {
+            "main": {"kind": "vllm_mlx", "port": 8080, "models": ["base"]},
+            "decision": {"kind": "llama_server", "port": 8081, "models": ["kev"]},
+        },
+        "models": {
+            "base": {"repo": "org/base", "revision": "r1"},
+            "kev": {"repo": "ggml-org/Kev-4B-GGUF", "revision": "d9", "file": "Kev-4B-Q4_K_M.gguf"},
+        },
+        "roles": {
+            r: {"prompt": "p.md", "model": "base"} for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+    }
+    (tmp_path / "p.md").write_text("x")
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(tmp_path / "airlie.yaml")
+
+
+async def test_llama_server_engine_starts_with_the_gguf_and_waits_for_its_alias(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    prober = FakeProber(health=[False, True], models=[[], ["kev"]])
+    p = EngineProcess(
+        llama_cfg(tmp_path),
+        "decision",
+        state_dir=tmp_path / "state",
+        runner=runner,
+        prober=prober,
+        snapshot_dir=lambda m: Path(f"/hf/{m.repo}/{m.revision}"),
+        poll_s=0.0,
+    )
+    h = await p.start(timeout_s=5)
+    argv, _ = runner.spawned[0]
+    assert argv[:3] == ["llama-server", "-m", "/hf/ggml-org/Kev-4B-GGUF/d9/Kev-4B-Q4_K_M.gguf"]
+    assert h.ok and h.models == {"kev": "ready"}
+    assert not p.registry_path.exists()  # no vllm-mlx registry for a llama_server engine

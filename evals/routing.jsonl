@@ -1,0 +1,54 @@
+{"question": "role", "task": "Plan the migration of our monolith's auth module into a standalone service", "expect": "architect"}
+{"question": "role", "task": "Write an ADR for moving from REST to gRPC between internal services", "expect": "architect"}
+{"question": "role", "task": "Map how the payments package depends on the rest of the monorepo before we refactor", "expect": "architect"}
+{"question": "role", "task": "Design the data model and service boundaries for the notifications system", "expect": "architect"}
+{"question": "role", "task": "Implement the retry logic from the approved plan in api/client.go", "expect": "coder"}
+{"question": "role", "task": "Fix the failing pagination bug in the orders list endpoint", "expect": "coder"}
+{"question": "role", "task": "Add a --dry-run flag to the deploy script", "expect": "coder"}
+{"question": "role", "task": "Refactor the user service to use the new repository interface per the plan", "expect": "coder"}
+{"question": "role", "task": "Draft a user story and acceptance criteria for CSV export", "expect": "product"}
+{"question": "role", "task": "Prioritise these five feature requests for next sprint", "expect": "product"}
+{"question": "role", "task": "Write a one-page PRD for team invitations", "expect": "product"}
+{"question": "role", "task": "Which of these should be in the MVP and which can wait?", "expect": "product"}
+{"question": "role", "task": "Compare three rate-limiting libraries and summarise the tradeoffs", "expect": "research"}
+{"question": "role", "task": "Investigate whether the Stripe API supports partial refunds", "expect": "research"}
+{"question": "role", "task": "What are the main competitors to our product and how do they price?", "expect": "research"}
+{"question": "role", "task": "Spike: can SQLite handle our expected write volume for the audit log?", "expect": "research"}
+{"question": "role", "task": "Write the changelog and README section for v2.1", "expect": "docs"}
+{"question": "role", "task": "Draft release notes for the new billing features", "expect": "docs"}
+{"question": "role", "task": "Document the environment variables the service reads, for the README", "expect": "docs"}
+{"question": "role", "task": "Rewrite the contributing guide so it is shorter and clearer", "expect": "docs"}
+{"question": "role", "task": "Write edge-case tests for login rate limiting", "expect": "qa"}
+{"question": "role", "task": "Design a regression test plan for the checkout flow", "expect": "qa"}
+{"question": "role", "task": "What test cases are we missing for the coupon validation module?", "expect": "qa"}
+{"question": "role", "task": "Add unit tests for the date parsing helpers", "expect": "qa"}
+{"question": "role", "task": "Threat model the new OAuth callback endpoint", "expect": "security"}
+{"question": "role", "task": "Review this file upload handler for vulnerabilities", "expect": "security"}
+{"question": "role", "task": "Are we storing session tokens safely? Audit the auth middleware", "expect": "security"}
+{"question": "role", "task": "Check our dependencies for known CVEs and tell me what is risky", "expect": "security"}
+{"question": "role", "task": "Critique this checkout page layout and colour hierarchy", "expect": "design"}
+{"question": "role", "task": "Review the visual consistency of the settings screens", "expect": "design"}
+{"question": "role", "task": "Does this dashboard mockup have good spacing and typography?", "expect": "design"}
+{"question": "role", "task": "Suggest improvements to the icon set and button styles in this screenshot", "expect": "design"}
+{"question": "role", "task": "Is the onboarding flow confusing? Review the steps and microcopy", "expect": "ux"}
+{"question": "role", "task": "Map the user journey for cancelling a subscription and find friction", "expect": "ux"}
+{"question": "role", "task": "Rewrite these error messages so they are clearer to non-technical users", "expect": "ux"}
+{"question": "role", "task": "Should the filters live in a sidebar or a modal? Think about usability", "expect": "ux"}
+{"question": "role", "task": "Break the rewrite of our billing engine into phases with dependencies and risks", "expect": "architect"}
+{"question": "role", "task": "Decide where caching should live across our services and document the decision", "expect": "architect"}
+{"question": "role", "task": "Write the SQL migration and handler code for the new tags feature", "expect": "coder"}
+{"question": "role", "task": "Make the CLI return a non-zero exit code when validation fails", "expect": "coder"}
+{"question": "role", "task": "Turn this customer feedback into a prioritised backlog with epics", "expect": "product"}
+{"question": "role", "task": "Define success metrics and scope for the referral program", "expect": "product"}
+{"question": "role", "task": "Find out which OAuth libraries for Go are actively maintained and how they differ", "expect": "research"}
+{"question": "role", "task": "How do other SaaS products handle seat-based billing? Gather examples", "expect": "research"}
+{"question": "role", "task": "Update the API reference page to include the new pagination parameters", "expect": "docs"}
+{"question": "role", "task": "Write a migration guide for users upgrading from v1 to v2", "expect": "docs"}
+{"question": "role", "task": "Propose a strategy to catch regressions in our PDF export", "expect": "qa"}
+{"question": "role", "task": "Review these tests and tell me which assertions are weak", "expect": "qa"}
+{"question": "role", "task": "Do a secure code review of the password reset flow", "expect": "security"}
+{"question": "role", "task": "What are the abuse risks of our public invite-link feature?", "expect": "security"}
+{"question": "role", "task": "Give feedback on the typography and visual hierarchy of this landing page", "expect": "design"}
+{"question": "role", "task": "Is our new logo and colour palette cohesive across the app?", "expect": "design"}
+{"question": "role", "task": "Walk through the signup form from a first-time user's view and flag confusing moments", "expect": "ux"}
+{"question": "role", "task": "Where do users likely get stuck in the checkout? Suggest flow changes", "expect": "ux"}

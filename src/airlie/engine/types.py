@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from airlie.config import Sampling
@@ -29,12 +32,28 @@ class ToolSchema:
 
 
 @dataclass(frozen=True)
+class ContentPart:
+    type: Literal["text", "image_url"]
+    text: str = ""
+    url: str = ""
+
+
+def image_part(path: Path) -> ContentPart:
+    """An image_url part carrying the file as a data URL (mime from the suffix; png when unknown)."""
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return ContentPart("image_url", url=f"data:{mime};base64,{data}")
+
+
+@dataclass(frozen=True)
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     name: str | None = None
     tool_calls: tuple[ToolCall, ...] | None = None
     tool_call_id: str | None = None
+    parts: tuple[ContentPart, ...] | None = None
+    """When set, the wire content is this list (text + image_url parts); `content` stays the text."""
 
 
 @dataclass

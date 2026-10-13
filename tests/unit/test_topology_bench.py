@@ -29,7 +29,7 @@ def cfg(tmp_path: Path):  # type: ignore[no-untyped-def]
 def test_apply_topology(tmp_path: Path) -> None:
     base = cfg(tmp_path)
     s = apply_topology(base, "single")
-    assert (s.topology.kind, s.teams.k, s.lts.enabled) == ("teams", 1, False)
+    assert (s.topology.kind, s.teams.k, s.lts.enabled) == ("single", 1, False)
     t = apply_topology(base, "teams")
     assert (t.topology.kind, t.teams.k, t.lts.enabled) == ("teams", 3, True)
     f = apply_topology(base, "fork")
@@ -56,3 +56,8 @@ def test_summary_and_verdict() -> None:
     assert v.met and "MET" in v.text
     text = render(s, v)
     assert "| topology |" in text and "fork" in text
+
+
+def test_apply_topology_single_sets_the_single_kind(tmp_path: Path) -> None:
+    s = apply_topology(cfg(tmp_path), "single")
+    assert (s.topology.kind, s.teams.k, s.lts.enabled) == ("single", 1, False)

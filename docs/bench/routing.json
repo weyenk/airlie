@@ -1,0 +1,442 @@
+{
+ "n": 54,
+ "correct": 54,
+ "accuracy": 1.0,
+ "mean_confidence": 0.6356440216534102,
+ "wrong_but_clear": 0,
+ "confusions": {},
+ "rows": [
+  {
+   "task": "Plan the migration of our monolith's auth module into a standalone service",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.6172528772832456,
+   "ok": true
+  },
+  {
+   "task": "Write an ADR for moving from REST to gRPC between internal services",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.5748335818087807,
+   "ok": true
+  },
+  {
+   "task": "Map how the payments package depends on the rest of the monorepo before we refactor",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.6141593287597034,
+   "ok": true
+  },
+  {
+   "task": "Design the data model and service boundaries for the notifications system",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.5248845631987862,
+   "ok": true
+  },
+  {
+   "task": "Implement the retry logic from the approved plan in api/client.go",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "clear",
+   "confidence": 0.7649417605751293,
+   "ok": true
+  },
+  {
+   "task": "Fix the failing pagination bug in the orders list endpoint",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "clear",
+   "confidence": 0.7168471367103164,
+   "ok": true
+  },
+  {
+   "task": "Add a --dry-run flag to the deploy script",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "clear",
+   "confidence": 0.6503751532985038,
+   "ok": true
+  },
+  {
+   "task": "Refactor the user service to use the new repository interface per the plan",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "clear",
+   "confidence": 0.7434334577892882,
+   "ok": true
+  },
+  {
+   "task": "Draft a user story and acceptance criteria for CSV export",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.5744522563989716,
+   "ok": true
+  },
+  {
+   "task": "Prioritise these five feature requests for next sprint",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.678383067551681,
+   "ok": true
+  },
+  {
+   "task": "Write a one-page PRD for team invitations",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.8284769921804185,
+   "ok": true
+  },
+  {
+   "task": "Which of these should be in the MVP and which can wait?",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.798610630930383,
+   "ok": true
+  },
+  {
+   "task": "Compare three rate-limiting libraries and summarise the tradeoffs",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "clear",
+   "confidence": 0.7478121571428803,
+   "ok": true
+  },
+  {
+   "task": "Investigate whether the Stripe API supports partial refunds",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "clear",
+   "confidence": 0.7082649666545077,
+   "ok": true
+  },
+  {
+   "task": "What are the main competitors to our product and how do they price?",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "clear",
+   "confidence": 0.7598887034167134,
+   "ok": true
+  },
+  {
+   "task": "Spike: can SQLite handle our expected write volume for the audit log?",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "low-confidence",
+   "confidence": 0.4292465377286615,
+   "ok": true
+  },
+  {
+   "task": "Write the changelog and README section for v2.1",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "clear",
+   "confidence": 0.7831662642635754,
+   "ok": true
+  },
+  {
+   "task": "Draft release notes for the new billing features",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "clear",
+   "confidence": 0.644295241174126,
+   "ok": true
+  },
+  {
+   "task": "Document the environment variables the service reads, for the README",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "clear",
+   "confidence": 0.6760336867861393,
+   "ok": true
+  },
+  {
+   "task": "Rewrite the contributing guide so it is shorter and clearer",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "clear",
+   "confidence": 0.7267254941422496,
+   "ok": true
+  },
+  {
+   "task": "Write edge-case tests for login rate limiting",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "clear",
+   "confidence": 0.6672425046719361,
+   "ok": true
+  },
+  {
+   "task": "Design a regression test plan for the checkout flow",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "clear",
+   "confidence": 0.8498735514978003,
+   "ok": true
+  },
+  {
+   "task": "What test cases are we missing for the coupon validation module?",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "clear",
+   "confidence": 0.7898679483603736,
+   "ok": true
+  },
+  {
+   "task": "Add unit tests for the date parsing helpers",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "low-confidence",
+   "confidence": 0.4788285638665501,
+   "ok": true
+  },
+  {
+   "task": "Threat model the new OAuth callback endpoint",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.7497929384793741,
+   "ok": true
+  },
+  {
+   "task": "Review this file upload handler for vulnerabilities",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.6581615509244126,
+   "ok": true
+  },
+  {
+   "task": "Are we storing session tokens safely? Audit the auth middleware",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.5255809515256996,
+   "ok": true
+  },
+  {
+   "task": "Check our dependencies for known CVEs and tell me what is risky",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.5441496334655692,
+   "ok": true
+  },
+  {
+   "task": "Critique this checkout page layout and colour hierarchy",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.5905449247031554,
+   "ok": true
+  },
+  {
+   "task": "Review the visual consistency of the settings screens",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.6409964053424341,
+   "ok": true
+  },
+  {
+   "task": "Does this dashboard mockup have good spacing and typography?",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.5934918294194651,
+   "ok": true
+  },
+  {
+   "task": "Suggest improvements to the icon set and button styles in this screenshot",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.6527081058639083,
+   "ok": true
+  },
+  {
+   "task": "Is the onboarding flow confusing? Review the steps and microcopy",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "clear",
+   "confidence": 0.7149616480831386,
+   "ok": true
+  },
+  {
+   "task": "Map the user journey for cancelling a subscription and find friction",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "clear",
+   "confidence": 0.7926407034427065,
+   "ok": true
+  },
+  {
+   "task": "Rewrite these error messages so they are clearer to non-technical users",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "ambiguous",
+   "confidence": 0.2959279318577049,
+   "ok": true
+  },
+  {
+   "task": "Should the filters live in a sidebar or a modal? Think about usability",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "clear",
+   "confidence": 0.5147078345055354,
+   "ok": true
+  },
+  {
+   "task": "Break the rewrite of our billing engine into phases with dependencies and risks",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.6715812344561543,
+   "ok": true
+  },
+  {
+   "task": "Decide where caching should live across our services and document the decision",
+   "expect": "architect",
+   "chosen": "architect",
+   "decision": "clear",
+   "confidence": 0.5337228900893124,
+   "ok": true
+  },
+  {
+   "task": "Write the SQL migration and handler code for the new tags feature",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "low-confidence",
+   "confidence": 0.4683863609705608,
+   "ok": true
+  },
+  {
+   "task": "Make the CLI return a non-zero exit code when validation fails",
+   "expect": "coder",
+   "chosen": "coder",
+   "decision": "clear",
+   "confidence": 0.5886514155811328,
+   "ok": true
+  },
+  {
+   "task": "Turn this customer feedback into a prioritised backlog with epics",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.7691431006558866,
+   "ok": true
+  },
+  {
+   "task": "Define success metrics and scope for the referral program",
+   "expect": "product",
+   "chosen": "product",
+   "decision": "clear",
+   "confidence": 0.6520486221151659,
+   "ok": true
+  },
+  {
+   "task": "Find out which OAuth libraries for Go are actively maintained and how they differ",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "clear",
+   "confidence": 0.6617691343615225,
+   "ok": true
+  },
+  {
+   "task": "How do other SaaS products handle seat-based billing? Gather examples",
+   "expect": "research",
+   "chosen": "research",
+   "decision": "clear",
+   "confidence": 0.5724183484603518,
+   "ok": true
+  },
+  {
+   "task": "Update the API reference page to include the new pagination parameters",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "clear",
+   "confidence": 0.7536597043538787,
+   "ok": true
+  },
+  {
+   "task": "Write a migration guide for users upgrading from v1 to v2",
+   "expect": "docs",
+   "chosen": "docs",
+   "decision": "low-confidence",
+   "confidence": 0.46109881893822063,
+   "ok": true
+  },
+  {
+   "task": "Propose a strategy to catch regressions in our PDF export",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "low-confidence",
+   "confidence": 0.4624274347140071,
+   "ok": true
+  },
+  {
+   "task": "Review these tests and tell me which assertions are weak",
+   "expect": "qa",
+   "chosen": "qa",
+   "decision": "ambiguous",
+   "confidence": 0.2483138875887607,
+   "ok": true
+  },
+  {
+   "task": "Do a secure code review of the password reset flow",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.8024897556133384,
+   "ok": true
+  },
+  {
+   "task": "What are the abuse risks of our public invite-link feature?",
+   "expect": "security",
+   "chosen": "security",
+   "decision": "clear",
+   "confidence": 0.564510659926745,
+   "ok": true
+  },
+  {
+   "task": "Give feedback on the typography and visual hierarchy of this landing page",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.6477636911119227,
+   "ok": true
+  },
+  {
+   "task": "Is our new logo and colour palette cohesive across the app?",
+   "expect": "design",
+   "chosen": "design",
+   "decision": "clear",
+   "confidence": 0.6443971003509065,
+   "ok": true
+  },
+  {
+   "task": "Walk through the signup form from a first-time user's view and flag confusing moments",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "clear",
+   "confidence": 0.669218927892822,
+   "ok": true
+  },
+  {
+   "task": "Where do users likely get stuck in the checkout? Suggest flow changes",
+   "expect": "ux",
+   "chosen": "ux",
+   "decision": "clear",
+   "confidence": 0.5316151982996202,
+   "ok": true
+  }
+ ]
+}

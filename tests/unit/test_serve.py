@@ -164,3 +164,63 @@ def test_run_endpoint_rejects_unknown_topology_with_400(tmp_path: Path) -> None:
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "ring"})
     assert r.status_code == 400 and "ring" in r.json()["detail"]
+
+
+def test_run_endpoint_accepts_single(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    seen: list[tuple[str, int, str | None]] = []
+
+    class Stub:
+        def __init__(self) -> None:
+            self.run_dir = RunDir.create(c.observability.state_dir, "s3")
+
+        async def execute_task(self, goal, *, repo, test_cmd=None):
+            return RunReport("s3", self.run_dir, goal, [], 1.0, winner=None, final_answer="")
+
+    def factory(cfg, k, topology=None):  # type: ignore[no-untyped-def]
+        seen.append((cfg.topology.kind, cfg.teams.k, topology))
+        return Stub()
+
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=factory)
+    r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "single"})
+    assert r.status_code == 200, r.text
+    # a custom factory gets the raw cfg + the name; _default_factory does the selection (next test)
+    assert seen[0][2] == "single"
+
+
+def test_default_factory_selects_single_profile(tmp_path: Path) -> None:
+    from airlie.serve.app import _default_factory
+
+    c = cfg(tmp_path)
+    captured: list = []
+
+    import airlie.cli as cli_mod
+
+    original = cli_mod._orchestrator
+    cli_mod._orchestrator = lambda cfg, run_id=None: captured.append(cfg)  # type: ignore[assignment]
+    try:
+        _default_factory(c, None, topology="single")
+    finally:
+        cli_mod._orchestrator = original
+    assert captured[0].topology.kind == "single"
+
+
+def test_default_factory_with_k_above_one_selects_teams(tmp_path: Path) -> None:
+    from airlie.serve.app import _default_factory
+
+    c = cfg(tmp_path)
+    c.topology.kind = "single"  # type: ignore[assignment]
+    captured: list = []
+
+    import airlie.cli as cli_mod
+
+    original = cli_mod._orchestrator
+    cli_mod._orchestrator = lambda cfg, run_id=None: captured.append(cfg)  # type: ignore[assignment]
+    try:
+        _default_factory(c, 3)
+    finally:
+        cli_mod._orchestrator = original
+    assert captured[0].topology.kind == "teams" and captured[0].teams.k == 3
+    assert c.topology.kind == "single"  # the shared config is not mutated by a request

@@ -12,7 +12,8 @@ from typing import Any
 
 import httpx
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
+from airlie.engine.output_parse import parse_output
 from airlie.engine.protocol import OnToken
 from airlie.engine.sse import iter_sse
 from airlie.engine.types import (
@@ -45,6 +46,7 @@ class HTTPEngine:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 600.0,
         per_request_draft: bool = False,
+        model_spec_for: Callable[[str], ModelSpec] | None = None,
     ) -> None:
         self.capabilities = EngineCapabilities(
             batching=True,
@@ -57,6 +59,7 @@ class HTTPEngine:
         self._root = self.base_url.removesuffix("/v1")
         self._served = served_name_for_role
         self._role = role_spec_for
+        self._model = model_spec_for
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._transport = transport
         self._timeout = timeout_s
@@ -114,7 +117,7 @@ class HTTPEngine:
             "top_k": req.sampling.top_k,
             "min_p": req.sampling.min_p,
             "presence_penalty": req.sampling.presence_penalty,
-            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
+            "chat_template_kwargs": {"enable_thinking": bool(thinking), **spec.chat_template_kwargs},
         }
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
@@ -225,7 +228,7 @@ class HTTPEngine:
         self._stats.tokens_out += completion_tokens
         ttft_ms = ((t_first or t_last) - t0) * 1000.0
         span = max(t_last - (t_first or t_last), 1e-6)
-        return GenResult(
+        res = GenResult(
             text="".join(text),
             reasoning="".join(reasoning),
             tool_calls=tool_calls,
@@ -239,6 +242,9 @@ class HTTPEngine:
             decode_tps=(completion_tokens / span) if completion_tokens > 1 else 0.0,
             raw_finish=finish,
         )
+        if self._model is not None:
+            res = parse_output(self._model(req.role), res)
+        return res
 
     async def cancel(self, request_id: str) -> None:
         self._cancelled.add(request_id)
@@ -282,7 +288,15 @@ def _finish(raw: str) -> FinishReason:
 
 
 def _wire_message(m: Message) -> dict[str, Any]:
-    d: dict[str, Any] = {"role": m.role, "content": m.content}
+    content: Any = m.content
+    if m.parts:
+        content = [
+            {"type": "text", "text": p.text}
+            if p.type == "text"
+            else {"type": "image_url", "image_url": {"url": p.url}}
+            for p in m.parts
+        ]
+    d: dict[str, Any] = {"role": m.role, "content": content}
     if m.name:
         d["name"] = m.name
     if m.tool_call_id:

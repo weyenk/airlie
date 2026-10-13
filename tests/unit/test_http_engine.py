@@ -180,3 +180,56 @@ def test_body_carries_repetition_penalty_when_set() -> None:
     assert "repetition_penalty" not in eng._body(req, stream=False)  # noqa: SLF001 - 1.0 means off
     req.sampling = Sampling(repetition_penalty=1.05)
     assert eng._body(req, stream=False)["repetition_penalty"] == 1.05  # noqa: SLF001
+
+
+async def test_engine_applies_the_models_parsers_to_raw_content() -> None:
+    from airlie.config import ModelSpec
+
+    raw = (Path(__file__).resolve().parents[1] / "fixtures" / "parsers" / "qwen3_coder_xml.txt").read_text()
+    frames = [
+        {"choices": [{"delta": {"content": raw}, "finish_reason": None}]},
+        {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 9},
+        },
+    ]
+    body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+    rec = Recorder({"stream": body.encode()})
+    eng = HTTPEngine(
+        base_url="http://engine.test/v1",
+        served_name_for_role=lambda role: "base",
+        role_spec_for=lambda role: role_spec(),
+        model_spec_for=lambda role: ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
+        transport=httpx.MockTransport(rec),
+    )
+    res = await eng.generate(plain_request())
+    assert res.finish_reason == "tool_calls" and res.tool_calls[0].name == "read_file"
+
+
+async def test_message_parts_are_sent_as_content_list_and_role_kwargs_merge(tmp_path: Path) -> None:
+    from airlie.engine import ContentPart, image_part
+
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n")
+    eng, rec = engine({"stream": sse("plain")})
+    eng._role = lambda role: RoleSpec(
+        prompt=Path("/dev/null"),
+        model="m",
+        thinking=False,
+        chat_template_kwargs={"reasoning_strength": "low"},
+    )
+    req = plain_request()
+    req.messages = [
+        Message(
+            role="user",
+            content="critique this",
+            parts=(ContentPart("text", text="critique this"), image_part(png)),
+        )
+    ]
+    await eng.generate(req)
+    body = json.loads(rec.requests[0].content)
+    content = body["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "critique this"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "reasoning_strength": "low"}

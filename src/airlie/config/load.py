@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.config.schema import AirlieConfig
+from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -61,8 +61,64 @@ def find_config(start: Path | None = None) -> Path:
     )
 
 
-def load_config(path: Path | None = None, local_path: Path | None = None) -> AirlieConfig:
-    """Parse + validate. `local_path` defaults to `airlie.local.yaml` beside `path` and is optional."""
+def resolve_profile(profiles: dict[str, Any], name: str) -> dict[str, Any]:
+    """The profile `name` with its `extends` chain merged parent-first; `extends` itself is dropped."""
+    chain: list[str] = []
+    cur: str | None = name
+    while cur is not None:
+        if cur in chain:
+            raise ConfigError(f"topology.profiles.{chain[0]}.extends: cycle {' -> '.join([*chain, cur])}")
+        if cur not in profiles:
+            where = f"topology.profiles.{chain[-1]}.extends" if chain else "topology.profiles"
+            raise ConfigError(f"{where} names '{cur}', which is not a profile ({sorted(profiles)})")
+        if not isinstance(profiles[cur], dict):
+            raise ConfigError(f"topology.profiles.{cur} must be a mapping")
+        chain.append(cur)
+        parent = profiles[cur].get("extends")
+        cur = str(parent) if parent is not None else None
+    merged: dict[str, Any] = {}
+    for p in reversed(chain):
+        body = {k: v for k, v in profiles[p].items() if k != "extends"}
+        merged = deep_merge(merged, body)
+    return merged
+
+
+def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
+    """Select `kind` (or the file's own topology.kind) and merge its profile, if one is declared."""
+    raw_topo = data.get("topology")
+    topo: dict[str, Any] = dict(raw_topo) if isinstance(raw_topo, dict) else {}
+    file_kind = str(topo.get("kind", "teams"))
+    selected = kind or file_kind
+    raw_profiles = topo.get("profiles")
+    profiles: dict[str, Any] = dict(raw_profiles) if isinstance(raw_profiles, dict) else {}
+    if selected not in TOPOLOGY_KINDS and selected not in profiles:
+        raise ConfigError(
+            f"unknown topology '{selected}'; use one of {', '.join(TOPOLOGY_KINDS)}"
+            + (f" or a profile ({', '.join(sorted(profiles))})" if profiles else "")
+        )
+    out = dict(data)
+    effective = selected
+    if selected in profiles:
+        body = resolve_profile(profiles, selected)
+        out = deep_merge(out, body)
+        if selected not in TOPOLOGY_KINDS:  # a named variant: its own topology.kind, else the file's kind
+            raw_body_topo = body.get("topology")
+            body_topo: dict[str, Any] = dict(raw_body_topo) if isinstance(raw_body_topo, dict) else {}
+            effective = str(body_topo.get("kind", file_kind))
+    if effective not in TOPOLOGY_KINDS:
+        raise ConfigError(
+            f"topology.profiles.{selected}.topology.kind '{effective}' is unknown; "
+            f"use one of {', '.join(TOPOLOGY_KINDS)}"
+        )
+    out["topology"] = {**(out.get("topology") or {}), "kind": effective}
+    return out
+
+
+def load_config(
+    path: Path | None = None, local_path: Path | None = None, *, topology: str | None = None
+) -> AirlieConfig:
+    """Parse + validate. `local_path` defaults to `airlie.local.yaml` beside `path`; `topology` picks the
+    profile (default: the file's own topology.kind)."""
     path = (path or find_config()).resolve()
     if not path.is_file():
         raise ConfigError(f"config file not found: {path}")
@@ -70,10 +126,12 @@ def load_config(path: Path | None = None, local_path: Path | None = None) -> Air
     local = local_path if local_path is not None else path.with_name(DEFAULT_LOCAL)
     if local.is_file():
         data = deep_merge(data, _read_yaml(local))
+    data = apply_profile(data, topology)
     try:
         cfg = AirlieConfig.model_validate(data)
     except ValidationError as e:
         raise ConfigError(_format_validation_error(e)) from e
+    cfg.source_path = path
     base = path.parent
     for role in cfg.roles.values():
         role.prompt = (base / role.prompt.expanduser()).resolve()
@@ -87,3 +145,10 @@ def load_config(path: Path | None = None, local_path: Path | None = None) -> Air
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
     return cfg
+
+
+def profile_configs(cfg: AirlieConfig) -> dict[str, AirlieConfig]:
+    """Every declared profile, loaded from the same source file (empty when the config has no file)."""
+    if cfg.source_path is None:
+        return {}
+    return {name: load_config(cfg.source_path, topology=name) for name in cfg.topology.profiles}

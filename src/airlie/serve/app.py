@@ -24,13 +24,13 @@ class RunRequest(BaseModel):
 
 
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
-    from airlie.cli import _orchestrator, _set_topology
+    from airlie.cli import _orchestrator, apply_k, select_topology
+    from airlie.config import TOPOLOGY_KINDS
 
-    if topology is not None and topology not in ("teams", "fork"):
-        raise HTTPException(400, f"unknown topology '{topology}'; use teams or fork")
-    _set_topology(cfg, topology)
-    if k is not None:
-        cfg.teams.k = k
+    if topology is not None and topology not in TOPOLOGY_KINDS:
+        raise HTTPException(400, f"unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}")
+    cfg = select_topology(cfg, topology)
+    cfg = apply_k(cfg if cfg.source_path is not None else cfg.model_copy(deep=True), k)
     return _orchestrator(cfg)
 
 
