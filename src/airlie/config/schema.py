@@ -6,7 +6,7 @@ checked in `AirlieConfig.validate_references`; defaults mirror the wiki build sp
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -32,6 +32,9 @@ class ModelSpec(Strict):
     repo: str
     revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
     path: Path | None = Field(default=None, description="local directory instead of the HF cache")
+    file: str | None = Field(
+        default=None, description="one file inside the repo (a .gguf) for llama_server engines"
+    )
     preload: bool = True
     continuous_batching: bool | None = Field(
         default=None, description="per-model override of the engine default"
@@ -53,7 +56,7 @@ class ModelSpec(Strict):
 class EngineSpec(Strict):
     """An inference endpoint. `vllm_mlx` is a process airlie manages; `openai_http` is any external server."""
 
-    kind: Literal["vllm_mlx", "openai_http"]
+    kind: Literal["vllm_mlx", "openai_http", "llama_server"]
     models: list[str] = Field(min_length=1, description="catalog names this engine serves")
     host: str = "127.0.0.1"
     port: int = 8080
@@ -78,12 +81,19 @@ class EngineSpec(Strict):
         description="engine accepts num_draft_tokens per request (HAL budgets apply); vllm-mlx 0.5.0: no",
     )
     extra_args: list[str] = Field(default_factory=list, description="appended verbatim to `vllm-mlx serve`")
+    server_parsers: bool = Field(
+        default=True,
+        description="vllm_mlx: pass the team model's tool/reasoning parsers as server flags; "
+        "False = airlie parses every model's output itself (design 2026-10-13 §4b)",
+    )
+    ctx_size: int = Field(default=16384, description="llama_server: -c")
+    binary: str = Field(default="llama-server", description="llama_server: executable name or path")
 
     @model_validator(mode="after")
     def _derive_or_require_base_url(self) -> EngineSpec:
         if self.kind == "openai_http" and not self.base_url:
             raise ValueError("engines of kind 'openai_http' need a base_url (e.g. http://127.0.0.1:8080/v1)")
-        if self.kind == "vllm_mlx" and not self.base_url:
+        if self.kind in ("vllm_mlx", "llama_server") and not self.base_url:
             self.base_url = f"http://{self.host}:{self.port}/v1"
         return self
 
@@ -102,6 +112,10 @@ class RoleSpec(Strict):
     thinking: bool = True
     thinking_budget: int | None = Field(default=16384, description="cap on reasoning tokens; None = uncapped")
     stop: list[str] = Field(default_factory=list)
+    chat_template_kwargs: dict[str, object] = Field(
+        default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
+    )
+    summary: str | None = Field(default=None, description="one line the router sees; prompt frontmatter wins")
 
 
 class ToolsSpec(Strict):
@@ -204,10 +218,28 @@ class MemorySpec(Strict):
     os_reserve_gb: float = Field(default=12.0, description="OS + orchestrator reservation (spec 01 §1)")
 
 
+class RouterSpec(Strict):
+    kind: Literal["jev", "chief"] = Field(
+        default="chief", description="jev = /v1/systemone on a llama_server engine"
+    )
+    model: str | None = Field(default=None, description="catalog name of the decision model (jev)")
+    ambiguous_gap: float = Field(default=0.15, ge=0.0, le=1.0)
+    min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork")
+
+
 class TopologySpec(Strict):
-    kind: Literal["teams", "fork"] = Field(
+    kind: Literal["single", "teams", "fork"] = Field(
         default="teams",
-        description="teams = spec K parallel teams + LTS; fork = fork-when-stuck (2026-10-13)",
+        description="single = one agent (teams k=1, no LTS); teams = spec K teams + LTS; "
+        "fork = fork-when-stuck",
+    )
+    profiles: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="per-kind partial configs deep-merged over this file when that kind is selected; "
+        "`extends: <profile>` chains",
     )
 
 
@@ -246,6 +278,8 @@ class AirlieConfig(Strict):
     repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
     topology: TopologySpec = Field(default_factory=TopologySpec)
     fork: ForkSpec = Field(default_factory=ForkSpec)
+    router: RouterSpec = Field(default_factory=RouterSpec)
+    source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
@@ -262,11 +296,29 @@ class AirlieConfig(Strict):
                     served_by[m].append(ename)
         ports: dict[int, list[str]] = {}
         for ename, e in self.engines.items():
-            if e.kind == "vllm_mlx":
+            if e.kind in ("vllm_mlx", "llama_server"):
                 ports.setdefault(e.port, []).append(ename)
         for port, names in ports.items():
             if len(names) > 1:
                 problems.append(f"port {port} is used by more than one managed engine: {', '.join(names)}")
+        for ename, e in self.engines.items():
+            if e.kind != "llama_server":
+                continue
+            if len(e.models) != 1:
+                problems.append(f"engines.{ename}.models: a llama_server engine serves exactly one model")
+            for m in e.models:
+                if m in self.models and not self.models[m].file:
+                    problems.append(f"models.{m}.file is required (served by llama_server engine '{ename}')")
+        if self.router.kind == "jev":
+            rm = self.router.model
+            if rm is None or rm not in self.models:
+                problems.append(
+                    f"router.model must name a catalog model when router.kind is jev (got {rm!r})"
+                )
+            else:
+                hosts = [n for n, e in self.engines.items() if rm in e.models and e.kind == "llama_server"]
+                if not hosts:
+                    problems.append(f"router.model '{rm}' must be served by a llama_server engine")
         for rname, r in self.roles.items():
             if r.model not in self.models:
                 problems.append(
