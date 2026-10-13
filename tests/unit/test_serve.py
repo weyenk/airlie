@@ -132,3 +132,26 @@ def test_run_endpoint_uses_orchestrator_factory(tmp_path: Path) -> None:
     assert r.status_code == 200
     j = r.json()
     assert j["winner"] == "team-1" and j["final_answer"] == "did it" and j["teams"][0]["team_id"] == "team-1"
+
+
+def test_run_endpoint_passes_topology_to_factory(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    seen: list[str] = []
+
+    class Stub:
+        def __init__(self) -> None:
+            self.run_dir = RunDir.create(c.observability.state_dir, "s2")
+
+        async def execute_task(self, goal, *, repo, test_cmd=None):
+            return RunReport("s2", self.run_dir, goal, [], 1.0, winner=None, final_answer="")
+
+    def factory(cfg, k, topology=None):  # type: ignore[no-untyped-def]
+        seen.append(topology)
+        return Stub()
+
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=factory)
+    r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "fork"})
+    assert r.status_code == 200, r.text
+    assert seen == ["fork"]

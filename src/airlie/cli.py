@@ -466,13 +466,25 @@ def bench_models(
 # ---- run / eval ----
 
 
+TopologyOpt = Annotated[str | None, typer.Option(help="teams | fork (default: topology.kind)")]
+
+
+def _set_topology(cfg: AirlieConfig, topology: str | None) -> None:
+    if topology is None:
+        return
+    if topology not in ("teams", "fork"):
+        err.print(f"[red]unknown topology '{topology}'; use teams or fork[/red]")
+        raise typer.Exit(2)
+    cfg.topology.kind = topology  # type: ignore[assignment]
+
+
 def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
-    """Factory, patched in tests."""
-    from airlie.orchestrator import ParallelAgentTeamOrchestrator
+    """Factory, patched in tests: the topology named by cfg.topology.kind over the HTTP engine."""
+    from airlie.topology.protocol import build_topology
 
     role = cfg.roles[cfg.teams.role]
     engine = _http_engine(cfg, cfg.engine_for_model(role.model))
-    return ParallelAgentTeamOrchestrator(cfg, engine, run_id=run_id)
+    return build_topology(cfg, engine, run_id=run_id)
 
 
 def _print_report(report) -> None:  # type: ignore[no-untyped-def]
@@ -496,7 +508,7 @@ def _print_report(report) -> None:  # type: ignore[no-untyped-def]
         console.print(report.final_answer, markup=False, highlight=False)
     console.print(
         f"report: {report.run_dir.path}/report.md\nevents: {report.run_dir.events_path}\n"
-        f"worktrees: {report.run_dir.path}/team-*"
+        f"worktrees: {report.run_dir.path}/*"
     )
 
 
@@ -510,12 +522,14 @@ def run(
     test_cmd: Annotated[
         str | None, typer.Option(help="command the run_tests tool runs inside a worktree")
     ] = None,
+    topology: TopologyOpt = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Run K parallel teams on a goal in a repository and print the report."""
+    """Run the configured topology (K parallel teams, or fork-when-stuck) on a goal in a repository."""
     import asyncio
 
     cfg = _load(config)
+    _set_topology(cfg, topology)
     if k is not None:
         cfg.teams.k = k
     repo = repo.resolve()
@@ -533,6 +547,7 @@ def eval_run(
     task_id: Annotated[str, typer.Argument(help="task id, e.g. lang_detect")],
     k: Annotated[int | None, typer.Option(help="number of parallel teams")] = None,
     tasks_dir: Annotated[Path, typer.Option(help="directory of task YAML files")] = Path("evals/tasks"),
+    topology: TopologyOpt = None,
     config: ConfigOpt = None,
 ) -> None:
     """Materialize a graded task into a fresh repo, run the teams, grade each worktree with hidden tests."""
@@ -541,6 +556,7 @@ def eval_run(
     from airlie.evals import find_task, materialize
 
     cfg = _load(config)
+    _set_topology(cfg, topology)
     if k is not None:
         cfg.teams.k = k
     try:

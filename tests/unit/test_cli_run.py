@@ -97,3 +97,26 @@ def test_eval_run_materializes_task_and_grades(tmp_path: Path, monkeypatch) -> N
     assert "detect_language" in goal and test_cmd == "python -m pytest -q"
     assert Path(repo).joinpath("pyproject.toml").is_file()
     assert "FAIL" in r.output
+
+
+def test_run_topology_option_sets_config(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake(cfg, run_id=None):  # type: ignore[no-untyped-def]
+        seen.append(cfg.topology.kind)
+        return StubOrchestrator(cfg, None, run_id)
+
+    monkeypatch.setattr(cli, "_orchestrator", fake)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    r = runner.invoke(
+        cli.app,
+        ["run", "g", "--repo", str(repo), "--topology", "fork", "--config", str(write_cfg(tmp_path))],
+    )
+    assert r.exit_code == 0, r.output
+    assert seen == ["fork"]
+    r = runner.invoke(
+        cli.app, ["run", "g", "--repo", str(repo), "--topology", "ring", "--config", str(write_cfg(tmp_path))]
+    )
+    assert r.exit_code == 2 and "unknown topology" in r.output

@@ -20,11 +20,13 @@ class RunRequest(BaseModel):
     repo: str
     k: int | None = None
     test_cmd: str | None = None
+    topology: str | None = None
 
 
-def _default_factory(cfg: AirlieConfig, k: int | None) -> Any:
-    from airlie.cli import _orchestrator
+def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
+    from airlie.cli import _orchestrator, _set_topology
 
+    _set_topology(cfg, topology)
     if k is not None:
         cfg.teams.k = k
     return _orchestrator(cfg)
@@ -34,7 +36,7 @@ def create_app(
     cfg: AirlieConfig,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-    orchestrator_factory: Callable[[AirlieConfig, int | None], Any] | None = None,
+    orchestrator_factory: Callable[..., Any] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
@@ -92,7 +94,7 @@ def create_app(
         repo = Path(req.repo).expanduser().resolve()
         if not (repo / ".git").exists():
             raise HTTPException(400, f"{repo} is not a git repository")
-        orch = factory(cfg, req.k)
+        orch = factory(cfg, req.k, topology=req.topology) if req.topology else factory(cfg, req.k)
         report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd)
         return {
             "run_id": report.run_id,

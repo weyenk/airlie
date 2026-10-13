@@ -67,12 +67,12 @@ tasks:
       - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
 
   run:
-    desc: "Run K parallel teams on a goal in a repo (task run -- \"goal\" --repo PATH --k 3 --test-cmd \"pytest -q\")"
+    desc: "Run the configured topology on a goal in a repo (task run -- \"goal\" --repo PATH --topology fork --test-cmd \"pytest -q\")"
     cmds:
       - '{{.RUN}} airlie run {{.CLI_ARGS}}'
 
   eval:
-    desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1)"
+    desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
     cmds:
       - '{{.RUN}} airlie eval run {{.CLI_ARGS}}'
 
