@@ -328,6 +328,39 @@ Still open:
    (specialists now have tools and tests, which ai-mode's one-shot prompts do not assume). Recommended: port
    chief and the summaries as-is, rewrite coder/qa/architect for tools; the reviewer prompt is new.
 
+## 14. Beyond code: the three seams a media studio needs
+
+Studio is written for a dev shop, and three of its assumptions are dev-shop assumptions. They are named here so
+the dev-shop implementations are built as one option of each seam, not as the only way; a photo/audio/video
+studio is then a profile, a tool pack and a few prompts, not a fifth topology.
+
+**Media models are tools, not roles.** Diffusion, speech-to-text, text-to-speech and upscalers are not chat
+models: no conversation, no tool calling, and vllm-mlx does not serve them. The thing that reasons is still a
+vision LLM (the generalist looking at a render and deciding what to change). So a media role is a vision LLM
+holding tools such as `generate_image`, `transcribe`, `speak`, `upscale`, `cut`, each wrapping an MLX pipeline
+(mflux, mlx-whisper, mlx-audio) or a CLI (ffmpeg). `ToolSpec` gains `kind: builtin | cli | model` and, for
+`model`, `memory_gb`, `load`, `unload`; the tool registry is otherwise unchanged.
+
+| seam | dev shop (built first) | media shop (later profile) |
+|---|---|---|
+| `Workspace` | git worktree; the branch is the deliverable; diff for review | asset directory with numbered versions and a provenance manifest (model, prompt, seed, inputs per file); the manifest is the deliverable |
+| `Verifier` (stop condition + review input) | visible test pass; reviewer reads the diff | critic loop: the reviewer (vision) grades the output against the brief and a style-guide skill, bounded regenerate rounds; `needs_input` for taste calls becomes a first-class stop, not a later version |
+| resident models (`ModelHost`) | three LLMs resident under vllm-mlx's budget | tool models load on demand and unload LRU under the same 90 GB budget; the profile drops the coder and reviewer LLMs to make room |
+
+Already in place for this: content parts (§3) carry images and, with `input_audio`, audio; the chief plan with
+`depends_on` covers pipelines (transcode → caption → cut); skills/knowledge are brand kits, style guides, LUT
+libraries, past projects; the router's closed-set decisions grade and triage media as well as code. Honest
+limits on this hardware: image generation, speech both ways, and image/video *understanding* are practical;
+video and music *generation* are slow or immature locally; audio understanding needs an omni model
+(Qwen3-Omni) rather than Qwen3.8. A media profile starts with photo and audio and treats video as ffmpeg work.
+
+**Jev as a tool for any role.** `/v1/systemone` is a typed, calibrated choice among named options with a
+probability per option; nothing about it is router-specific. A builtin tool `decide(question, options,
+criteria?) -> {choice, probabilities, confidence}` over the same client lets any role make closed-set calls
+(which of four renders best matches the brief; is this finding blocking; which skill applies), logged like
+routing decisions and scorable by `task route:eval` with a labelled set. Roles declare it in `tools` like any
+other tool; the router keeps its own policy (§6).
+
 Sources for §4a: https://arxiv.org/abs/2404.13076 · https://arxiv.org/abs/2410.21819 ·
 https://www.themoonlight.io/en/review/mllm-as-a-judge-exhibits-model-preference-bias · Muse Glimmer:
 https://huggingface.co/meta-models/Muse-Glimmer-30B · https://huggingface.co/mlx-community/Muse-Glimmer-30B-4bit ·
