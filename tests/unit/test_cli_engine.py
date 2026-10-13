@@ -111,5 +111,5 @@ def test_up_skips_an_engine_that_is_already_running_and_starts_the_rest(tmp_path
     p.write_text(yaml.safe_dump(data))
     r = runner.invoke(cli.app, ["engine", "up", "--config", str(p)])
     assert r.exit_code == 0, r.output
-    assert StubProcess.calls == ["start:main", "start:decision"]
+    assert sorted(StubProcess.calls) == ["start:decision", "start:main"]  # yaml dump sorts engine names
     assert "already running" in r.output
