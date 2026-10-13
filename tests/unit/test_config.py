@@ -418,3 +418,18 @@ def test_role_skills_dir_must_exist(tmp_path: Path) -> None:
     }
     with pytest.raises(ConfigError, match=r"roles\.coder\.skills.*not a directory"):
         load_config(write(tmp_path, data))
+
+
+def test_named_variant_inherits_the_kind_of_the_profile_it_extends(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "single",
+            "profiles": {
+                "fork": {"teams": {"k": 1}},
+                "fork-hot": {"extends": "fork", "teams": {"max_steps": 3}},
+            },
+        },
+    }
+    cfg = load_config(write(tmp_path, data), topology="fork-hot")
+    assert cfg.topology.kind == "fork" and cfg.teams.max_steps == 3

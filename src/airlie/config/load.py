@@ -61,8 +61,8 @@ def find_config(start: Path | None = None) -> Path:
     )
 
 
-def resolve_profile(profiles: dict[str, Any], name: str) -> dict[str, Any]:
-    """The profile `name` with its `extends` chain merged parent-first; `extends` itself is dropped."""
+def profile_chain(profiles: dict[str, Any], name: str) -> list[str]:
+    """`name` followed by its `extends` parents, nearest first; ConfigError on a cycle or a missing parent."""
     chain: list[str] = []
     cur: str | None = name
     while cur is not None:
@@ -76,8 +76,13 @@ def resolve_profile(profiles: dict[str, Any], name: str) -> dict[str, Any]:
         chain.append(cur)
         parent = profiles[cur].get("extends")
         cur = str(parent) if parent is not None else None
+    return chain
+
+
+def resolve_profile(profiles: dict[str, Any], name: str) -> dict[str, Any]:
+    """The profile `name` with its `extends` chain merged parent-first; `extends` itself is dropped."""
     merged: dict[str, Any] = {}
-    for p in reversed(chain):
+    for p in reversed(profile_chain(profiles, name)):
         body = {k: v for k, v in profiles[p].items() if k != "extends"}
         merged = deep_merge(merged, body)
     return merged
@@ -101,10 +106,13 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     if selected in profiles:
         body = resolve_profile(profiles, selected)
         out = deep_merge(out, body)
-        if selected not in TOPOLOGY_KINDS:  # a named variant: its own topology.kind, else the file's kind
+        if selected not in TOPOLOGY_KINDS:
+            # a named variant: its own topology.kind, else the nearest kind-named profile it extends,
+            # else the file's kind
             raw_body_topo = body.get("topology")
             body_topo: dict[str, Any] = dict(raw_body_topo) if isinstance(raw_body_topo, dict) else {}
-            effective = str(body_topo.get("kind", file_kind))
+            inherited = next((n for n in profile_chain(profiles, selected) if n in TOPOLOGY_KINDS), file_kind)
+            effective = str(body_topo.get("kind", inherited))
     if effective not in TOPOLOGY_KINDS:
         raise ConfigError(
             f"topology.profiles.{selected}.topology.kind '{effective}' is unknown; "

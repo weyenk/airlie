@@ -59,11 +59,16 @@ def version() -> None:
 
 
 @app.command()
-def doctor(config: ConfigOpt = None) -> None:
+def doctor(
+    config: ConfigOpt = None,
+    topology: Annotated[
+        str | None, typer.Option("--topology", help="check the config as this topology profile")
+    ] = None,
+) -> None:
     """Check config, host limits, tooling and model files. Exit 1 on any failing row."""
     from airlie.doctor import RealProbe, run_checks, worst
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     results = run_checks(cfg, RealProbe())
     table = Table(title="airlie doctor", show_lines=False)
     table.add_column("check")
@@ -885,9 +890,12 @@ def route_eval(
     cases: Annotated[Path, typer.Option(help="labelled JSONL: question, task, expect")] = Path(
         "evals/routing.jsonl"
     ),
-    roles: Annotated[Path, typer.Option(help="role -> criterion YAML")] = Path("evals/routing-roles.yaml"),
+    roles: Annotated[
+        Path | None, typer.Option(help="role -> criterion YAML (default: the config's routable roles)")
+    ] = None,
     min_accuracy: Annotated[float, typer.Option(help="exit 1 below this")] = 0.0,
     out: Annotated[Path | None, typer.Option(help="save the JSON report here")] = None,
+    topology: TopologyOpt = None,
     config: ConfigOpt = None,
 ) -> None:
     """Score the router on a labelled set (accuracy, mean confidence, wrong-but-clear, confusions)."""
@@ -895,14 +903,22 @@ def route_eval(
 
     from airlie.bench.route_eval import evaluate, load_cases, load_criteria, render, save
     from airlie.router import build_router
+    from airlie.skills import routable_roles
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     if cfg.router.kind != "jev":
         err.print(
             "[red]router.kind must be jev to evaluate routing (chief routing has nothing to score)[/red]"
         )
         raise typer.Exit(2)
-    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), load_criteria(roles)))
+    if roles is not None:
+        criteria = load_criteria(roles)
+    else:
+        criteria = routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})
+        if not criteria:
+            err.print("[red]no routable roles in the config (prompts need a summary:); pass --roles[/red]")
+            raise typer.Exit(2)
+    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), criteria))
     console.print(render(rep), markup=False, highlight=False)
     if out is not None:
         console.print(f"saved {save(rep, out)}")
