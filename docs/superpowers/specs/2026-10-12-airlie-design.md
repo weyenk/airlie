@@ -196,6 +196,17 @@ contract in ~130 lines with direct control of sampling, state and errors. `teams
 Both loops carry the same guards (one tool call per step, named missing arguments, cut-off arguments reported,
 per-request repetition penalty).
 
+## Topology result (2026-10-13)
+
+`task bench:topology` on lang_detect, size_parse, inventory_cli × 3 repeats (`docs/bench/2026-10-13-topology-bench.md`):
+single agent 5/9 at 39 s mean on solved runs; the spec's K=3 + LTS 5/9 at 57 s; fork-when-stuck 2/9. Neither
+candidate met the design §9 criterion against the single agent, so the default is now the single agent
+(`teams.k: 1`, `lts.enabled: false`); the spec's topology and `fork` stay one config line away. Fork's losses are
+mechanical and listed in the write-up (trigger at the second failing test run is too early; best-effort resolve
+accepts a child's "done" without a passing test; 15 child steps too few) and worth one tuning pass before
+drawing a final conclusion on the idea. Audit-table status for spec 01 §2 / 04 §3 topology: 👤 single agent by
+evidence; K=3 + LTS selectable.
+
 ## M5 result (2026-10-12)
 
 The spec 03 §2 controller is implemented as written (frozen Qwen3-0.6B embedder φ, `proj_query/proj_mem/proj_step`,

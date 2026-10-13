@@ -33,6 +33,7 @@ the model as such instead of executed. Still: run `task restart` before a benchm
 | File | Model | Notes |
 | --- | --- | --- |
 | `2026-10-12-engine-bench.md` | base vs qwen38 | tables, comparison and interpretation |
+| `2026-10-13-topology-bench.md` / `topology.json` | single vs K=3 teams vs fork-when-stuck, 3 tasks × 3 repeats, native loop | single matches K=3 on pass rate at 45 % of the wall-clock; fork loses (trigger too early, best-effort picks quitters); default → single |
 | `2026-10-12-lts-bench-bigger-v2.md` / `lts-bigger-v2.json` | round 2: background admission + ranked injection, 3 repeats | admission wait gone, still +28 % per step from the injected block; 0 retrievals; runs dominated by solve/no-solve; criterion not met |
 | `2026-10-12-lts-bench-bigger.md` / `lts-bigger.json` | never vs heuristic on inventory_cli + log_pipeline, K=3 | still 0 retrievals; LTS overhead doubled wall-clock; criterion not met |
 | `2026-10-12-lts-bench.md` / `lts-lang_detect.json` | never vs heuristic, K=3 | first `task bench:lts` run; verdict not meaningful yet (0 retrievals, 1 sample) |

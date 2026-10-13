@@ -128,7 +128,7 @@ mcp: {}                            # name: { command, args, env } — exposed to
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:
-  enabled: true
+  enabled: false                   # off by default since the 2026-10-13 topology bench (single agent won); spec: true
   controller:
     kind: heuristic                # always | never | heuristic | judge | learned
     judge_role: judge
@@ -161,7 +161,7 @@ repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatu
 
 # ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
 scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }
-teams: { k: 3, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true }
+teams: { k: 1, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true }   # k: 1 = single agent (bench 2026-10-13); spec: k: 3
 aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 step 9
 
 # ---- Host + observability -----------------------------------------------------------------------------------------

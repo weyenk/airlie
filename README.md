@@ -84,7 +84,9 @@ per-request draft length, so the budgets are computed and logged but only *appli
 `topology.kind` picks how branches are arranged over the engine (design: `docs/superpowers/specs/2026-10-13-fork-when-stuck-design.md`):
 
 - **`teams`** (the build spec): K independent teams from the start, sharing through the LTS memory bank, one
-  winner picked by the aggregator. `teams.k: 1` with `lts.enabled: false` is the single-agent baseline.
+  winner picked by the aggregator. `teams.k: 1` with `lts.enabled: false` is the single agent, **the default since
+  the 2026-10-13 benchmark** (`docs/bench/2026-10-13-topology-bench.md`): it matched K=3 on pass rate at 45 % of
+  the wall-clock. The spec's K=3 + LTS is `teams.k: 3`, `lts.enabled: true`.
 - **`fork`** (fork-when-stuck): one trunk runs with the whole engine budget until it is stuck (two consecutive
   failing `run_tests`, or a repeated action). Its working tree is committed, `fork.width` children get worktrees
   at that commit and the trunk's conversation verbatim (a prefix-cache hit) plus one nudge each: a distinct
