@@ -87,7 +87,7 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     topo: dict[str, Any] = dict(raw_topo) if isinstance(raw_topo, dict) else {}
     selected = kind or str(topo.get("kind", "teams"))
     if selected not in TOPOLOGY_KINDS:
-        raise ConfigError(f"topology kind '{selected}' is unknown; use one of {', '.join(TOPOLOGY_KINDS)}")
+        raise ConfigError(f"unknown topology '{selected}'; use one of {', '.join(TOPOLOGY_KINDS)}")
     raw_profiles = topo.get("profiles")
     profiles: dict[str, Any] = dict(raw_profiles) if isinstance(raw_profiles, dict) else {}
     out = dict(data)

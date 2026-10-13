@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from airlie import __version__
-from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 
 app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="airlie: parallel agent teams with shared memory."
@@ -37,12 +37,12 @@ ConfigOpt = Annotated[
 ]
 
 
-def _load(config: Path | None) -> AirlieConfig:
+def _load(config: Path | None, topology: str | None = None) -> AirlieConfig:
     try:
-        return load_config(config)
+        return load_config(config, topology=topology)
     except ConfigError as e:
         err.print(f"[red]{e}[/red]")
-        raise typer.Exit(1) from None
+        raise typer.Exit(2 if topology and "unknown topology" in str(e) else 1) from None
 
 
 @app.callback()
@@ -544,16 +544,23 @@ def bench_models(
 # ---- run / eval ----
 
 
-TopologyOpt = Annotated[str | None, typer.Option(help="teams | fork (default: topology.kind)")]
+TopologyOpt = Annotated[
+    str | None,
+    typer.Option(help=f"{' | '.join(TOPOLOGY_KINDS)} (default: topology.kind; selects its profile)"),
+]
 
 
-def _set_topology(cfg: AirlieConfig, topology: str | None) -> None:
+def select_topology(cfg: AirlieConfig, topology: str | None) -> AirlieConfig:
+    """The config with `topology`'s profile applied: reloaded from its file when it has one."""
     if topology is None:
-        return
-    if topology not in ("teams", "fork"):
-        err.print(f"[red]unknown topology '{topology}'; use teams or fork[/red]")
+        return cfg
+    if topology not in TOPOLOGY_KINDS:
+        err.print(f"[red]unknown topology '{topology}'; use one of {', '.join(TOPOLOGY_KINDS)}[/red]")
         raise typer.Exit(2)
+    if cfg.source_path is not None:
+        return load_config(cfg.source_path, topology=topology)
     cfg.topology.kind = topology  # type: ignore[assignment]
+    return cfg
 
 
 def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
@@ -606,8 +613,7 @@ def run(
     """Run the configured topology (K parallel teams, or fork-when-stuck) on a goal in a repository."""
     import asyncio
 
-    cfg = _load(config)
-    _set_topology(cfg, topology)
+    cfg = _load(config, topology)
     if k is not None:
         cfg.teams.k = k
     repo = repo.resolve()
@@ -633,8 +639,7 @@ def eval_run(
 
     from airlie.evals import find_task, materialize
 
-    cfg = _load(config)
-    _set_topology(cfg, topology)
+    cfg = _load(config, topology)
     if k is not None:
         cfg.teams.k = k
     try:
