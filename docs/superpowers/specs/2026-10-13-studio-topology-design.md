@@ -2,7 +2,8 @@
 
 > **Status:** draft for Noah's review, rev 2 (2026-10-13). Nothing built yet. Rev 2 after Noah's review: the
 > generalist is Qwen3.8-27B, a cross-family adversarial reviewer on Meta's Muse Glimmer 30B is added (§4a, with
-> the evidence), and the coder seat gets a benchmarked alternative profile.
+> the evidence), the coder seat gets a benchmarked alternative profile, and output parsing moves client-side on
+> vllm-mlx's own parser classes, which lifts the one-tool-calling-family-per-server limit (§4b, verified live).
 > **Lineage:** the "chief + Jev router + specialists" idea from `~/git/ai-mode`, rebuilt on airlie's seams.
 > **Relation to the build spec:** a fourth topology next to `teams` (spec), `fork` and the single agent; the
 > spec's components (engine, roles, worktrees, event log, benches) are reused unchanged. LTS is not part of it.
@@ -38,9 +39,9 @@ Non-goals
 
 | role(s) | model | size | why |
 |---|---|---|---|
-| chief, architect, ux, design, product, docs, research | `Qwen3.8-27B-4bit` (`10c35caa…`, on disk) | 16.1 GB | the strongest model that fits and it sees images (mlx-vlm conversion, vision encoder included). Dense 27B, **hybrid attention** (48 linear + 16 full-attention layers), so vllm-mlx 0.5.0 cannot prefix-cache it; chief makes a few long one-shot calls (plan, synthesis), not forty cache-dependent turns, so the cost is bounded (one prefill per call). Thinking is switchable per request (`enable_thinking` in its template) and is on for plan/synthesis with a token budget. |
-| coder, qa, security | `Qwen3-Coder-30B-A3B-Instruct-4bit` (`6e302ea6…`) | 17.2 GB | today's base: prefix cache works, 3B active so decode is fast, vllm-mlx has its tool parser (`--tool-call-parser` is server-wide, so one tool-calling family per server). Profile `studio-qwen38` puts `Qwen3.8-27B` in this seat for the bench (below). |
-| reviewer | `Muse-Glimmer-30B-4bit` (`3e7677d7…`, Meta, Apache 2.0) | 19.4 GB | the adversarial reviewer, deliberately **not Qwen** (§4a). Dense 30B, 52 layers of sliding-window (2048) + full attention, 2 KV heads, 131k context, vision encoder included. Loads in our env (mlx-vlm 0.7.6 and mlx-lm 0.32.0 both ship `muse_glimmer`). vllm-mlx 0.5.0 has no Muse parsers (PR #812 is open), so airlie splits its channel format itself (§4a); the reviewer uses no native tools, so the server-wide tool parser is not involved. |
+| chief, architect, ux, design, product, docs, research | `Qwen3.8-27B-4bit` (`10c35caa…`, on disk) | 16.1 GB | the strongest model that fits and it sees images (mlx-vlm conversion, vision encoder included). Dense 27B, **hybrid attention** (48 linear + 16 full-attention layers), so vllm-mlx 0.5.0 cannot prefix-cache it; chief makes a few long one-shot calls (plan, synthesis), not forty cache-dependent turns, so the cost is bounded (one prefill per call). Thinking is switchable per request (`enable_thinking` in its template) and is on for plan/synthesis with a token budget. Specialists on it may use native tools (parsers `qwen` + `qwen3`, §4b). |
+| coder, qa, security | `Qwen3-Coder-30B-A3B-Instruct-4bit` (`6e302ea6…`) | 17.2 GB | today's base: prefix cache works, 3B active so decode is fast; its XML tool format is parsed by vllm-mlx's `qwen3_coder` parser, run client-side under §4b. Profile `studio-qwen38` puts `Qwen3.8-27B` in this seat for the bench (below). |
+| reviewer | `Muse-Glimmer-30B-4bit` (`3e7677d7…`, Meta, Apache 2.0) | 19.4 GB | the adversarial reviewer, deliberately **not Qwen** (§4a). Dense 30B, 52 layers of sliding-window (2048) + full attention, 2 KV heads, 131k context, vision encoder included. Loads in our env (mlx-vlm 0.7.6 and mlx-lm 0.32.0 both ship `muse_glimmer`). vllm-mlx 0.5.0 has no Muse parsers (PR #812 is open), so airlie vendors that PR's two parser classes and runs them client-side (§4b). |
 | summarizer, hypothesizer, triage | `Qwen3-4B-4bit` | 2.3 GB | cheap helpers |
 | router | `ggml-org/Kev-4B-GGUF` on llama-server `/v1/systemone` | 2.5 GB | calibrated closed-set decisions; the one non-mlx-community exception, flagged; `router.kind: chief` needs no second server |
 
@@ -136,13 +137,41 @@ mlx-community model outside the Qwen family that fits beside the other two (gpt-
 
 **Muse Glimmer's output format.** Its template frames every turn as channels: generation begins
 ` to=self<|message|>…<|eom|>` (reasoning) and continues `to=user<|message|>…<|eot|>` (answer); later turns may
-omit the `to=self` block and open with a bare `to=user`. vllm-mlx 0.5.0 would return all of that as `content`.
-airlie adds `ModelSpec.output_format: muse_channels` and a post-parser in `HTTPEngine` that strips
-`<|start|>`/`<|message|>` framing, moves `to=self` blocks (up to `<|eom|>`) into `GenResult.reasoning`, and
-returns the `to=user` block as `text`, mirroring the regexes of vllm-mlx PR #812 so the client-side split can be
-deleted when that PR ships. Reasoning depth is the template's `reasoning_strength` (`medium` for reviews),
-passed as the per-request `chat_template_kwargs` airlie already sends for `enable_thinking`. Tool-call channels
-(`to=<tool>` with `<atem:invoke>`) are not parsed: the reviewer has no tools.
+omit the `to=self` block and open with a bare `to=user`. vllm-mlx 0.5.0 would return all of that as `content`;
+§4b parses it on the client with the parser classes from vllm-mlx PR #812. Reasoning depth is the template's
+`reasoning_strength` (`medium` for reviews), passed as the per-request `chat_template_kwargs` airlie already
+sends for `enable_thinking`.
+
+## 4b. Output parsing: vllm-mlx's parsers, run client-side
+
+vllm-mlx's reasoning and tool parsers are plain classes (`vllm_mlx.reasoning.get_parser(name)()`,
+`vllm_mlx.tool_parsers.ToolParserManager.get_tool_parser(name)()`; tokenizer optional; `extract_reasoning(text)
+-> (reasoning, content)` and `extract_tool_calls(text, request) -> {tools_called, tool_calls, content}`).
+Verified in our env on 2026-10-13: `gpt_oss` split a Harmony string, `qwen3_coder` and `harmony` each parsed a raw
+tool block into `{"name": "read_file", "arguments": "{\"path\": \"app.py\"}"}`, no server involved. About 20
+tool formats and 7 reasoning formats are registered, and a model's names are exactly the server flag values.
+
+**The server runs without parser flags.** Live check (same day, a throwaway `vllm-mlx serve` of Qwen3-4B with no
+`--enable-auto-tool-choice` and no `--reasoning-parser`): a request with `tools` was rendered into the prompt,
+the model answered with a tool call, `finish_reason` was `tool_calls`. The chat template gets `tools` whenever
+the request carries them and `tool_choice != "none"`, independent of the parser flag (server.py `chat_kwargs["tools"]`). Without the
+flag the server applies a *generic* fallback that recognises JSON-in-`<tool_call>`, Llama `<function=…>`,
+MiniMax and Nemotron styles; Qwen3-Coder's XML, Harmony and Muse's atem channels come back raw in `content`.
+
+**airlie's side.** `engine/output_parse.py`: `parse_output(model: ModelSpec, result) -> GenResult` runs after
+every response: server-parsed `tool_calls` win; otherwise the model's `tool_parser` is applied to `content`, and
+`reasoning_parser` splits reasoning out when the server returned none. Complete-output methods only; streaming
+to the UI stays raw tokens, the loop acts on complete responses as today. `ModelSpec.tool_parser` /
+`reasoning_parser` keep their names; `engines.<e>.server_parsers: false` (studio default) stops `registry.py`
+turning them into server flags, `true` keeps today's behaviour (single/teams/fork keep `true` until the
+topology bench shows parity on the coder). The Muse parsers are vendored from PR #812 as
+`engine/parsers/vendor/muse_glimmer_{reasoning,tool}.py` (same base classes), registered at import under
+`muse_glimmer`, deleted when a vllm-mlx release carries them. One wrapper, so a vllm-mlx rename costs one file;
+vllm-mlx stays pinned (0.5.0) and the parser tests run on every `task check`.
+
+**What this lifts.** The design no longer needs "one tool-calling family per server": Qwen3-Coder (`qwen3_coder`),
+Qwen3.8 specialists (`qwen`/`qwen3`), Muse (`muse_glimmer`) and a future gpt-oss (`harmony`) can share one process.
+Chief stays JSON-only because the protocol (§5) wants one object per turn, not because of parsing.
 
 ## 5. Chief protocol (what the generalist must output)
 
@@ -213,8 +242,12 @@ router: { kind: jev, role: jev, ambiguous_gap: 0.15, min_confidence: 0.5 }
 studio: { chief_role: chief, max_subtasks: 12, max_rounds: 2, parallel: 3, result_chars: 6000,
           review: { enabled: true, role: reviewer, roles: [coder, qa, security], rounds: 1, diff_chars: 40000 } }
 models:
-  generalist: { repo: mlx-community/Qwen3.8-27B-4bit, revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818, tags: [hybrid-attention, vision] }
-  reviewer:   { repo: mlx-community/Muse-Glimmer-30B-4bit, revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710, output_format: muse_channels, tags: [vision] }
+  generalist: { repo: mlx-community/Qwen3.8-27B-4bit, revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818,
+                tool_call_parser: qwen, reasoning_parser: qwen3, tags: [hybrid-attention, vision] }
+  reviewer:   { repo: mlx-community/Muse-Glimmer-30B-4bit, revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710,
+                tool_call_parser: muse_glimmer, reasoning_parser: muse_glimmer, tags: [vision] }
+engines:
+  main: { server_parsers: false }     # parsers run in airlie (§4b); the registry emits no parser flags
 roles:
   chief:     { prompt: prompts/roles/chief.md, model: generalist, tools: [] }
   architect: { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep] }
@@ -227,8 +260,9 @@ engines:
   decision: { kind: llama_server, port: 8081, models: [kev4b] }
 ```
 `RoleSpec` gains `tools`, `skills`, `knowledge`, `vision`, `summary` (read from the prompt's frontmatter when
-absent) and `chat_template_kwargs`. `ModelSpec` gains `output_format: none | muse_channels`. `EngineSpec.kind`
-gains `llama_server` (from the Jev design). `Message.content` gains content parts. Profiles gain `extends`.
+absent) and `chat_template_kwargs`. `ModelSpec.tool_parser` / `reasoning_parser` are now applied client-side when
+`EngineSpec.server_parsers` is false (§4b). `EngineSpec.kind` gains `llama_server` (from the Jev design).
+`Message.content` gains content parts. Profiles gain `extends`.
 
 ## 10. Code shape
 
@@ -236,7 +270,8 @@ gains `llama_server` (from the Jev design). `Message.content` gains content part
 |---|---|
 | `config/schema.py`, `config/load.py` | `RouterSpec`, `StudioSpec`, `RoleSpec` fields, profiles deep-merge, `llama_server` engine kind |
 | `engine/types.py`, `engine/http_engine.py`, `teams/native_team.py` | content parts (text + image_url) through the native loop; per-role `chat_template_kwargs` |
-| `engine/output_formats.py` | `split_muse_channels(text) -> (reasoning, text)`, applied in `HTTPEngine` when the model's `output_format` is `muse_channels` (streaming: buffered until the `to=user` header is seen) |
+| `engine/output_parse.py`, `engine/parsers/vendor/muse_glimmer_{reasoning,tool}.py` | `parse_output(model, result)` over vllm-mlx's parser registries (server-parsed calls win, else the model's `tool_parser`, then `reasoning_parser`); the two Muse parser classes vendored from PR #812 and registered under `muse_glimmer` |
+| `engine/registry.py`, `config/schema.py` | `EngineSpec.server_parsers` (studio: false) gates the `--enable-auto-tool-choice/--tool-call-parser/--reasoning-parser` flags |
 | `topology/review.py` | `Reviewer.review(brief, diff, test_tail, files) -> Review{verdict, findings}` with JSON repair; fix-round wiring used by `topology/studio.py` |
 | `engine/process.py`, `engine/registry.py` | `llama-server -m <pinned gguf> --host --port -c` command, `/health` readiness, `models:pull` of one gguf file |
 | `router/{protocol,jev,chief,policy,log}.py` | `Router` protocol, `JevRouter` (httpx, mock transport in tests), `ChiefRouter`, decision policy, `routing.jsonl` |
@@ -255,9 +290,11 @@ assumptions, per-subtask table (role, decision, steps, outcome), branch.
   text fallback; dependency scheduling (parallel set, coder serialisation, cycle = config error); `JevRouter`
   against a mocked `/v1/systemone` (clear / ambiguous / low-confidence / not-in-set); `ChiefRouter`; skill
   frontmatter + injection; BM25 search ordering and source paths; content parts on the wire; the studio run end
-  to end on `FakeEngine` with scripted chief JSON and two specialists; `split_muse_channels` on fixtures from
-  PR #812 (leading-space ` to=self…<|eom|>to=user…<|eot|>`, a bare `to=user` turn with no reasoning, an
-  unterminated `to=self` block, framing tokens present and absent); review JSON parse + repair; the fix round
+  to end on `FakeEngine` with scripted chief JSON and two specialists; `parse_output` on one recorded fixture
+  per format (Qwen3-Coder XML, Qwen3.8 bracket calls + `<think>`, Harmony, Muse channels from PR #812: leading-space
+  ` to=self…<|eom|>to=user…<|eot|>`, a bare `to=user` turn, an unterminated `to=self` block) and the precedence
+  rule (server-parsed `tool_calls` are not re-parsed); `registry.py` argv has no parser flags when
+  `server_parsers` is false; review JSON parse + repair; the fix round
   (`request_changes` with a blocking finding resumes the coder once, `approve` does not, a second
   `request_changes` is reported not retried); profile `extends`.
 - Routing eval: `task route:eval` on the seed set ≥ 0.9 accuracy before studio is used for real work; the
@@ -277,7 +314,9 @@ the pass rate, and its wall-clock (one reviewer call per code subtask, plus fix 
 ## 13. Decisions
 
 Decided by Noah (2026-10-13): generalist = `Qwen3.8-27B` (chief + vision); an adversarial reviewer from a
-different family, on Meta's `Muse-Glimmer-30B` (mlx-community 4-bit); mlx-community only, Jev the one exception.
+different family, on Meta's `Muse-Glimmer-30B` (mlx-community 4-bit); mlx-community only, Jev the one exception;
+output parsing reuses vllm-mlx's parser classes client-side and the one-family-per-server limit is lifted (§4b,
+tools rendering without the parser flag verified live).
 
 Still open:
 1. Coder seat default: keep `Qwen3-Coder-30B-A3B` (cache-friendly, fast) and let `studio-qwen38` earn the seat
