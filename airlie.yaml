@@ -11,7 +11,7 @@ engines:
     kind: vllm_mlx
     host: 127.0.0.1
     port: 8080
-    models: [base, small, qwen38, llama70b, qwen25_32b]   # one process; preloaded + lazily loadable (--models-config)
+    models: [base, small, qwen38, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
     memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
@@ -20,6 +20,13 @@ engines:
     kv_cache_quantization: false
     use_paged_cache: false
     extra_args: []
+    server_parsers: true           # false = airlie parses every model's output itself (design 2026-10-13 §4b)
+  decision:                        # llama-server serving Kev; POST /v1/systemone (llama.cpp 0.6.0 has the endpoint)
+    kind: llama_server
+    host: 127.0.0.1
+    port: 8081
+    models: [kev4b]
+    ctx_size: 16384
 
 # ---- Model catalog (pinned HF revisions; `task models:pull` fetches exactly these) ---------------------------------
 # Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
@@ -73,6 +80,30 @@ models:
     preload: true
     estimated_memory_gb: 3
     reasoning_parser: qwen3
+  generalist:                      # Qwen3.8-27B: chief + vision in the studio design; hybrid attention (no prefix cache)
+    repo: mlx-community/Qwen3.8-27B-4bit
+    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
+    preload: false
+    estimated_memory_gb: 16.1
+    kv_mb_per_1k_tokens: 256
+    tool_call_parser: qwen
+    reasoning_parser: qwen3
+    tags: [modern, vision, hybrid-attention]
+  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer
+    repo: mlx-community/Muse-Glimmer-30B-4bit
+    revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
+    preload: false
+    estimated_memory_gb: 19.4
+    kv_mb_per_1k_tokens: 64        # 2 KV heads × 128 dim × 52 layers, 3/4 of them sliding-window
+    tool_call_parser: muse_glimmer
+    reasoning_parser: muse_glimmer
+    tags: [modern, vision, reviewer]
+  kev4b:                           # System One decision model behind the Jev API (router, decide tool)
+    repo: ggml-org/Kev-4B-GGUF
+    revision: d924f2e2c3872da8b8aaf3eb4453b4126deceb79
+    file: Kev-4B-Q4_K_M.gguf
+    preload: true
+    estimated_memory_gb: 3
   controller_base:                 # M5: base for the learned LTS admission controller (LoRA r=16)
     repo: Qwen/Qwen3-0.6B
     revision: c1899de289a04d12100db370d81485cdf75e47ca
@@ -144,8 +175,16 @@ lts:
   inline_top: 2                    # top-ranked keys get their value inlined, once per team
   inline_chars: 1500
 
+# ---- Router (design 2026-10-13 §6) ------------------------------------------------------------------------------
+router: { kind: jev, model: kev4b, ambiguous_gap: 0.15, min_confidence: 0.5 }   # jev | chief
+
 # ---- Topology -------------------------------------------------------------------------------------------------
-topology: { kind: teams }          # teams = spec K parallel teams + LTS | fork = fork-when-stuck
+topology:
+  kind: single                     # single | teams | fork; each selects its profile below (task run -- --topology X)
+  profiles:
+    single: { teams: { k: 1 }, lts: { enabled: false } }
+    teams:  { teams: { k: 3 }, lts: { enabled: true } }
+    fork:   { teams: { k: 1 }, lts: { enabled: false } }
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck

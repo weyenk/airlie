@@ -16,6 +16,16 @@ team paths) and `roles.coder.max_tokens: 4096` (bounds a runaway to ~2 min); a c
 the model as such instead of executed. Still: run `task restart` before a benchmark, and compare the count of
 `8192 tokens` / `4096 tokens` completions in `engines/main/server.log` across runs when results look off.
 
+## Output parsing without server parser flags (checked live 2026-10-13)
+
+A throwaway `vllm-mlx serve` of Qwen3-4B with no `--enable-auto-tool-choice` and no `--reasoning-parser` was
+sent a chat request with one `read_file` tool: the tools were rendered into the prompt, the model answered with a
+call, `finish_reason` was `tool_calls`. vllm-mlx renders `tools` whenever the request carries them (the parser
+flag only chooses the parser), and without a flag it applies a generic fallback that recognises JSON-in-
+`<tool_call>`, Llama `<function=…>`, MiniMax and Nemotron styles. Qwen3-Coder's XML, Harmony and Muse Glimmer's
+channels come back raw, which is what `airlie.engine.output_parse` parses on the client with vllm-mlx's own
+parser classes (`engines.main.server_parsers: false`). Server-parsed calls always win; nothing is parsed twice.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported

@@ -363,6 +363,15 @@ criteria?) -> {choice, probabilities, confidence}` over the same client lets any
 routing decisions and scorable by `task route:eval` with a labelled set. Roles declare it in `tools` like any
 other tool; the router keeps its own policy (§6).
 
+Rulings made while planning and building the foundations (plan `2026-10-13-studio-foundations.md`):
+- **Per-profile engine settings win** over §8's "largest `max_kv_size` any profile needs": a profile may set
+  `engines.main.*` itself, and a change takes effect at the next `task restart` (the doctor projection is what
+  keeps the wired limit honest).
+- **`single` is a topology kind** (the bench already named it): the teams orchestrator with `k` forced to 1 and
+  LTS off, so profiles can key on it.
+- **Muse parsers are written against vllm-mlx's base classes**, with PR #812's regexes credited, rather than
+  copied from the unmerged PR; deleted when a release ships them.
+
 Sources for §4a: https://arxiv.org/abs/2404.13076 · https://arxiv.org/abs/2410.21819 ·
 https://www.themoonlight.io/en/review/mllm-as-a-judge-exhibits-model-preference-bias · Muse Glimmer:
 https://huggingface.co/meta-models/Muse-Glimmer-30B · https://huggingface.co/mlx-community/Muse-Glimmer-30B-4bit ·

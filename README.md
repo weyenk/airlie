@@ -39,10 +39,11 @@ Run `task` to list them. The ones that exist today:
 | `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools, vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
-| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
+| `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: the vllm-mlx process (`main`, all catalog models in its registry) and the llama-server process serving Kev (`decision`, `/v1/systemone`); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the Kev router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
 | `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs the spec's K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
 | `task controller:dataset` / `task controller:train [-- --epochs 5]` / `task controller:eval` | build the training set from every run's admission log; train the spec 03 §2 controller (LoRA on Qwen3-0.6B + projections) with the spec 03 §3 REINFORCE objective; replay held-out decisions against the logged controller |
@@ -83,10 +84,10 @@ per-request draft length, so the budgets are computed and logged but only *appli
 
 `topology.kind` picks how branches are arranged over the engine (design: `docs/superpowers/specs/2026-10-13-fork-when-stuck-design.md`):
 
+- **`single`**: one agent, no shared memory (`teams.k` forced to 1, LTS off). **The default since the 2026-10-13
+  benchmark** (`docs/bench/2026-10-13-topology-bench.md`): it matched K=3 on pass rate at 45 % of the wall-clock.
 - **`teams`** (the build spec): K independent teams from the start, sharing through the LTS memory bank, one
-  winner picked by the aggregator. `teams.k: 1` with `lts.enabled: false` is the single agent, **the default since
-  the 2026-10-13 benchmark** (`docs/bench/2026-10-13-topology-bench.md`): it matched K=3 on pass rate at 45 % of
-  the wall-clock. The spec's K=3 + LTS is `teams.k: 3`, `lts.enabled: true`.
+  winner picked by the aggregator (`teams.k: 3`, `lts.enabled: true`).
 - **`fork`** (fork-when-stuck): one trunk runs with the whole engine budget until it is stuck (two consecutive
   failing `run_tests`, or a repeated action). Its working tree is committed, `fork.width` children get worktrees
   at that commit and the trunk's conversation verbatim (a prefix-cache hit) plus one nudge each: a distinct
@@ -96,8 +97,13 @@ per-request draft length, so the budgets are computed and logged but only *appli
   the report names the winning git branch. Events: `fork_point`, `fork_resolved`, `branch_done`.
 
 Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
-`<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout. `--topology` on `task run`/`task
-eval` and `topology` in `POST /v1/airlie/run` override the config for one run; `task bench:topology` compares them.
+`<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout.
+
+**Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
+selected (`extends: <profile>` chains), so each topology declares its own team count, memory settings, contexts
+and models. `--topology` on `task run`/`task eval` and `topology` in `POST /v1/airlie/run` select the profile for
+one run; `task doctor` projects memory per profile. A profile that changes engine settings (`max_kv_size`,
+`server_parsers`, the resident model set) takes effect at the next `task restart`.
 
 ## Learning to Share
 
@@ -130,10 +136,13 @@ standard-attention model; the numbers are in [`docs/bench/`](docs/bench/).
 ## Configuration
 
 Everything is in [`airlie.yaml`](airlie.yaml); copy `airlie.local.example.yaml` to `airlie.local.yaml` for local
-overrides (deep-merged, gitignored). Every seam is a key there: engines (`vllm_mlx` managed process or any
-`openai_http` server), the model catalog (pinned Hugging Face revisions; `bench: true` entries are compared by
-`task bench:models`), roles, tools and MCP servers, the LTS admission controller, summarizer, scheduler, teams,
-aggregator. Unknown keys are errors, and every error names the key path.
+overrides (deep-merged, gitignored). Every seam is a key there: engines (`vllm_mlx` managed process, a
+`llama_server` managed process for one GGUF such as Kev, or any `openai_http` server), the model catalog (pinned
+Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser` /
+`reasoning_parser` name the vllm-mlx parser classes airlie runs on each model's output when
+`engines.<e>.server_parsers` is false), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
+or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles. Unknown
+keys are errors, and every error names the key path.
 
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.
