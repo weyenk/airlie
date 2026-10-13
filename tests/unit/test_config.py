@@ -310,8 +310,8 @@ def test_profile_extends_unknown_parent_is_a_config_error(tmp_path: Path) -> Non
 
 
 def test_unknown_topology_override_is_a_config_error(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match=r"topology.*'studio'.*single, teams, fork"):
-        load_config(write(tmp_path, MINIMAL), topology="studio")
+    with pytest.raises(ConfigError, match=r"topology.*'ring'.*single, teams, fork, studio"):
+        load_config(write(tmp_path, MINIMAL), topology="ring")
 
 
 def test_jev_router_needs_a_llama_server_engine_serving_its_model(tmp_path: Path) -> None:
@@ -369,3 +369,52 @@ def test_a_profile_outside_the_kinds_can_be_a_parent_and_be_selected(tmp_path: P
     fast = load_config(p, topology="fast")  # a profile may set the kind itself
     assert fast.topology.kind == "fork" and fast.teams.max_steps == 5
     assert set(profile_configs(load_config(p))) == {"studio-qwen38", "single", "fast"}
+
+
+STUDIO_ROLES = {
+    "chief": {"prompt": "prompts/roles/chief.md", "model": "team", "tools": []},
+    "reviewer": {"prompt": "prompts/roles/reviewer.md", "model": "team", "tools": []},
+    "security": {"prompt": "prompts/roles/security.md", "model": "team", "tools": ["read_file"]},
+    "qa": {
+        "prompt": "prompts/roles/qa.md",
+        "model": "team",
+        "skills": "skills/qa",
+        "tools": ["read_file", "run_tests"],
+    },
+}
+
+
+def test_studio_kind_loads_with_defaults_and_role_fields(tmp_path: Path) -> None:
+    data = {**MINIMAL, "roles": {**MINIMAL["roles"], **STUDIO_ROLES}, "topology": {"kind": "studio"}}
+    (tmp_path / "skills" / "qa").mkdir(parents=True)
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.topology.kind == "studio"
+    assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["coder", "qa", "security"]
+    assert cfg.studio.parallel == 3 and cfg.studio.review.rounds == 1
+    assert cfg.roles["qa"].skills == (tmp_path / "skills" / "qa").resolve()
+    assert cfg.roles["qa"].tools == ["read_file", "run_tests"] and cfg.roles["coder"].tools is None
+    assert cfg.roles["chief"].vision is False and cfg.roles["chief"].max_steps is None
+
+
+def test_studio_kind_requires_chief_and_reviewer_roles(tmp_path: Path) -> None:
+    data = {**MINIMAL, "topology": {"kind": "studio"}}
+    with pytest.raises(ConfigError, match=r"studio\.chief_role.*'chief'"):
+        load_config(write(tmp_path, data))
+
+
+def test_role_tools_must_be_known(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "tools": ["teleport"]}},
+    }
+    with pytest.raises(ConfigError, match=r"roles\.coder\.tools.*'teleport'"):
+        load_config(write(tmp_path, data))
+
+
+def test_role_skills_dir_must_exist(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "skills": "skills/nope"}},
+    }
+    with pytest.raises(ConfigError, match=r"roles\.coder\.skills.*not a directory"):
+        load_config(write(tmp_path, data))

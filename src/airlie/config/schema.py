@@ -15,6 +15,14 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+KNOWN_TOOLS = frozenset(
+    {
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+        "retrieve_value", "decide", "search_knowledge",
+    }
+)  # fmt: skip
+
+
 class Sampling(Strict):
     temperature: float = 0.7
     top_p: float = 0.8
@@ -116,6 +124,17 @@ class RoleSpec(Strict):
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
     )
     summary: str | None = Field(default=None, description="one line the router sees; prompt frontmatter wins")
+    tools: list[str] | None = Field(
+        default=None, description="tool names this role gets (None = tools.builtin); [] = no tools"
+    )
+    skills: Path | None = Field(
+        default=None, description="directory of skills/<name>.md with summary: frontmatter"
+    )
+    knowledge: Path | None = Field(default=None, description="directory of markdown for search_knowledge")
+    vision: bool = Field(default=False, description="the role receives the run's images as content parts")
+    max_steps: int | None = Field(
+        default=None, ge=1, description="steps per subtask (None = teams.max_steps)"
+    )
 
 
 class ToolsSpec(Strict):
@@ -227,14 +246,34 @@ class RouterSpec(Strict):
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
-TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork")
+class ReviewSpec(Strict):
+    enabled: bool = True
+    role: str = "reviewer"
+    roles: list[str] = Field(default_factory=lambda: ["coder", "qa", "security"])
+    rounds: int = Field(
+        default=1, ge=0, description="fix rounds after request_changes with a blocking finding"
+    )
+    diff_chars: int = Field(default=40000, ge=0)
+    files_chars: int = Field(default=20000, ge=0)
+
+
+class StudioSpec(Strict):
+    chief_role: str = "chief"
+    max_subtasks: int = Field(default=12, ge=1)
+    max_rounds: int = Field(default=2, ge=1, description="chief plan rounds (delegate after synthesis)")
+    parallel: int = Field(default=3, ge=1, description="independent subtasks in flight")
+    result_chars: int = Field(default=6000, ge=0, description="chars of a dependency's result in a brief")
+    review: ReviewSpec = Field(default_factory=ReviewSpec)
+
+
+TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork", "studio")
 
 
 class TopologySpec(Strict):
-    kind: Literal["single", "teams", "fork"] = Field(
+    kind: Literal["single", "teams", "fork", "studio"] = Field(
         default="teams",
         description="single = one agent (teams k=1, no LTS); teams = spec K teams + LTS; "
-        "fork = fork-when-stuck",
+        "fork = fork-when-stuck; studio = chief + router + specialists (2026-10-13)",
     )
     profiles: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
@@ -279,6 +318,7 @@ class AirlieConfig(Strict):
     topology: TopologySpec = Field(default_factory=TopologySpec)
     fork: ForkSpec = Field(default_factory=ForkSpec)
     router: RouterSpec = Field(default_factory=RouterSpec)
+    studio: StudioSpec = Field(default_factory=StudioSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
@@ -337,6 +377,14 @@ class AirlieConfig(Strict):
                 )
             if not r.prompt.is_file():
                 problems.append(f"roles.{rname}.prompt file not found: {r.prompt}")
+            for t in r.tools or []:
+                if t not in KNOWN_TOOLS:
+                    problems.append(
+                        f"roles.{rname}.tools names '{t}', which is not a tool ({sorted(KNOWN_TOOLS)})"
+                    )
+            for label, d in (("skills", r.skills), ("knowledge", r.knowledge)):
+                if d is not None and not d.is_dir():
+                    problems.append(f"roles.{rname}.{label}: {d} is not a directory")
         for label, role in (
             ("teams.role", self.teams.role),
             ("lts.summarizer.role", self.lts.summarizer.role),
@@ -347,6 +395,14 @@ class AirlieConfig(Strict):
         ):
             if role not in self.roles:
                 problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")
+        if self.topology.kind == "studio":
+            need = [("studio.chief_role", self.studio.chief_role)]
+            if self.studio.review.enabled:
+                need.append(("studio.review.role", self.studio.review.role))
+                need += [("studio.review.roles", x) for x in self.studio.review.roles]
+            for label, role in need:
+                if role not in self.roles:
+                    problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")
         return problems
 
     def engine_for_model(self, model: str) -> str:

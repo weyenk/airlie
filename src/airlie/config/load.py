@@ -135,6 +135,10 @@ def load_config(
     base = path.parent
     for role in cfg.roles.values():
         role.prompt = (base / role.prompt.expanduser()).resolve()
+        if role.skills is not None:
+            role.skills = (base / role.skills.expanduser()).resolve()
+        if role.knowledge is not None:
+            role.knowledge = (base / role.knowledge.expanduser()).resolve()
     for m in cfg.models.values():
         if m.path is not None:
             m.path = (base / m.path.expanduser()).resolve()

@@ -2,19 +2,23 @@
 
 from airlie.config.load import ConfigError, apply_profile, load_config, profile_configs
 from airlie.config.schema import (
+    KNOWN_TOOLS,
     TOPOLOGY_KINDS,
     AirlieConfig,
     ControllerSpec,
     EngineSpec,
     MCPServerSpec,
     ModelSpec,
+    ReviewSpec,
     RoleSpec,
     RouterSpec,
     Sampling,
+    StudioSpec,
     SummarizerSpec,
 )
 
 __all__ = [
+    "KNOWN_TOOLS",
     "TOPOLOGY_KINDS",
     "AirlieConfig",
     "ConfigError",
@@ -22,9 +26,11 @@ __all__ = [
     "EngineSpec",
     "MCPServerSpec",
     "ModelSpec",
+    "ReviewSpec",
     "RoleSpec",
     "RouterSpec",
     "Sampling",
+    "StudioSpec",
     "SummarizerSpec",
     "apply_profile",
     "load_config",
