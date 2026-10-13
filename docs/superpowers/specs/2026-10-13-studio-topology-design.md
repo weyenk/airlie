@@ -43,7 +43,7 @@ Non-goals
 | coder, qa, security | `Qwen3-Coder-30B-A3B-Instruct-4bit` (`6e302ea6…`) | 17.2 GB | today's base: prefix cache works, 3B active so decode is fast; its XML tool format is parsed by vllm-mlx's `qwen3_coder` parser, run client-side under §4b. Profile `studio-qwen38` puts `Qwen3.8-27B` in this seat for the bench (below). |
 | reviewer | `Muse-Glimmer-30B-4bit` (`3e7677d7…`, Meta, Apache 2.0) | 19.4 GB | the adversarial reviewer, deliberately **not Qwen** (§4a). Dense 30B, 52 layers of sliding-window (2048) + full attention, 2 KV heads, 131k context, vision encoder included. Loads in our env (mlx-vlm 0.7.6 and mlx-lm 0.32.0 both ship `muse_glimmer`). vllm-mlx 0.5.0 has no Muse parsers (PR #812 is open), so airlie vendors that PR's two parser classes and runs them client-side (§4b). |
 | summarizer, hypothesizer, triage | `Qwen3-4B-4bit` | 2.3 GB | cheap helpers |
-| router | `ggml-org/Kev-4B-GGUF` on llama-server `/v1/systemone` | 2.5 GB | calibrated closed-set decisions; the one non-mlx-community exception, flagged; `router.kind: chief` needs no second server |
+| router | `ggml-org/Kev-4B-GGUF` (Apache 2.0) on llama-server `/v1/systemone` | 2.5 GB | calibrated closed-set decisions; the one non-mlx-community exception, flagged; `router.kind: chief` needs no second server. "Jev" in this document names the System One API and decision policy; the weights airlie downloads are Kev (Jared Palmer's open clone, same API). TypeSafe's Jev itself is a closed hosted model; OpenJev is CC BY-NC and excluded. |
 
 Resident weights ≈ 55 GB + Jev 2.5 GB, leaving ~32 GB of the 90 GB budget for KV (one full 262k coder context
 is ~24 GB at 96 KB/token; `task doctor` projects per profile, §8). Specialists are *prompts* over three models
