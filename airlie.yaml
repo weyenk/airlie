@@ -11,7 +11,7 @@ engines:
     kind: vllm_mlx
     host: 127.0.0.1
     port: 8080
-    models: [base, small, qwen38, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
+    models: [base, small, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
     memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
@@ -46,16 +46,6 @@ models:
     estimated_memory_gb: 17
     kv_mb_per_1k_tokens: 192
     tool_call_parser: qwen3_coder
-  qwen38:                          # strongest coder in the ai-mode bake-off, but hybrid attention: no prefix cache
-    repo: mlx-community/Qwen3.8-27B-4bit
-    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
-    preload: false
-    bench: true
-    tags: [modern, coder, hybrid-attention]
-    estimated_memory_gb: 16
-    kv_mb_per_1k_tokens: 256
-    tool_call_parser: qwen
-    reasoning_parser: qwen3
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
@@ -84,11 +74,12 @@ models:
     repo: mlx-community/Qwen3.8-27B-4bit
     revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
     preload: false
+    bench: true
     estimated_memory_gb: 16.1
     kv_mb_per_1k_tokens: 256
     tool_call_parser: qwen
     reasoning_parser: qwen3
-    tags: [modern, vision, hybrid-attention]
+    tags: [modern, coder, vision, hybrid-attention]
   reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer
     repo: mlx-community/Muse-Glimmer-30B-4bit
     revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
@@ -117,7 +108,7 @@ roles:
     model: base
     max_context: 65536
     max_tokens: 4096                 # bounds a runaway generation to ~2 min; raise for very large files
-    thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. qwen38)
+    thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. generalist)
     thinking_budget: 16384
     sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
   summarizer:                      # LTS summary keys (15–20 words), stateless

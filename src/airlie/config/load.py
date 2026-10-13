@@ -71,8 +71,10 @@ def resolve_profile(profiles: dict[str, Any], name: str) -> dict[str, Any]:
         if cur not in profiles:
             where = f"topology.profiles.{chain[-1]}.extends" if chain else "topology.profiles"
             raise ConfigError(f"{where} names '{cur}', which is not a profile ({sorted(profiles)})")
+        if not isinstance(profiles[cur], dict):
+            raise ConfigError(f"topology.profiles.{cur} must be a mapping")
         chain.append(cur)
-        parent = profiles[cur].get("extends") if isinstance(profiles[cur], dict) else None
+        parent = profiles[cur].get("extends")
         cur = str(parent) if parent is not None else None
     merged: dict[str, Any] = {}
     for p in reversed(chain):
@@ -85,15 +87,30 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     """Select `kind` (or the file's own topology.kind) and merge its profile, if one is declared."""
     raw_topo = data.get("topology")
     topo: dict[str, Any] = dict(raw_topo) if isinstance(raw_topo, dict) else {}
-    selected = kind or str(topo.get("kind", "teams"))
-    if selected not in TOPOLOGY_KINDS:
-        raise ConfigError(f"unknown topology '{selected}'; use one of {', '.join(TOPOLOGY_KINDS)}")
+    file_kind = str(topo.get("kind", "teams"))
+    selected = kind or file_kind
     raw_profiles = topo.get("profiles")
     profiles: dict[str, Any] = dict(raw_profiles) if isinstance(raw_profiles, dict) else {}
+    if selected not in TOPOLOGY_KINDS and selected not in profiles:
+        raise ConfigError(
+            f"unknown topology '{selected}'; use one of {', '.join(TOPOLOGY_KINDS)}"
+            + (f" or a profile ({', '.join(sorted(profiles))})" if profiles else "")
+        )
     out = dict(data)
+    effective = selected
     if selected in profiles:
-        out = deep_merge(out, resolve_profile(profiles, selected))
-    out["topology"] = {**(out.get("topology") or {}), "kind": selected}
+        body = resolve_profile(profiles, selected)
+        out = deep_merge(out, body)
+        if selected not in TOPOLOGY_KINDS:  # a named variant: its own topology.kind, else the file's kind
+            raw_body_topo = body.get("topology")
+            body_topo: dict[str, Any] = dict(raw_body_topo) if isinstance(raw_body_topo, dict) else {}
+            effective = str(body_topo.get("kind", file_kind))
+    if effective not in TOPOLOGY_KINDS:
+        raise ConfigError(
+            f"topology.profiles.{selected}.topology.kind '{effective}' is unknown; "
+            f"use one of {', '.join(TOPOLOGY_KINDS)}"
+        )
+    out["topology"] = {**(out.get("topology") or {}), "kind": effective}
     return out
 
 

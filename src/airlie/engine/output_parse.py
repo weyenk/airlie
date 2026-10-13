@@ -41,6 +41,7 @@ def parse_output(model: ModelSpec, result: GenResult) -> GenResult:
         reasoning, content = _reasoning_parser(model.reasoning_parser).extract_reasoning(text)
         if reasoning:
             result.reasoning = reasoning
+        if reasoning or (content is not None and content != text):  # markers present: take the parsed content
             text = content or ""
     if model.tool_call_parser and not result.tool_calls and text:
         parser = _tool_parser(model.tool_call_parser)

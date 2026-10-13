@@ -146,3 +146,23 @@ def test_run_with_unknown_topology_exits_2(tmp_path: Path) -> None:
     p = write_cfg(tmp_path)
     r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "studio", "-c", str(p)])
     assert r.exit_code == 2 and "single, teams, fork" in r.output
+
+
+def test_k_above_one_under_the_single_kind_selects_teams(tmp_path: Path, monkeypatch) -> None:
+    seen: list = []
+
+    def fake_orch(cfg, run_id=None):  # type: ignore[no-untyped-def]
+        seen.append(cfg)
+        return StubOrchestrator(cfg, None, run_id)
+
+    monkeypatch.setattr(cli, "_orchestrator", fake_orch)
+    p = write_cfg(tmp_path)
+    data = yaml.safe_load(p.read_text())
+    data["topology"] = {"kind": "single", "profiles": {"teams": {"teams": {"max_steps": 9}}}}
+    p.write_text(yaml.safe_dump(data))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    r = runner.invoke(cli.app, ["run", "go", "--repo", str(repo), "--k", "3", "-c", str(p)])
+    assert r.exit_code == 0, r.output
+    assert seen[0].topology.kind == "teams" and seen[0].teams.k == 3 and seen[0].teams.max_steps == 9

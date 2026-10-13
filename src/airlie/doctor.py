@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
-from airlie.config import AirlieConfig, profile_configs
+from airlie.config import AirlieConfig, ConfigError, load_config
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_TOOLS = ("task", "uv", "git", "hf")
@@ -156,21 +156,38 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
     e = cfg.engines[engine_name]
     weights = 0.0
     unknown: list[str] = []
-    for mname in e.models:
-        m = cfg.models[mname]
-        if not m.preload:
+    for other in cfg.engines.values():  # every managed process shares the one wired limit
+        if other.kind not in ("vllm_mlx", "llama_server"):
             continue
-        if m.estimated_memory_gb is None:
-            unknown.append(mname)
-        else:
-            weights += m.estimated_memory_gb
+        for mname in other.models:
+            m = cfg.models[mname]
+            if not m.preload:
+                continue
+            if m.estimated_memory_gb is None:
+                unknown.append(mname)
+            else:
+                weights += m.estimated_memory_gb
     team_model = cfg.models[cfg.roles[cfg.teams.role].model]
     kv = cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0
     return weights + kv + cfg.memory.os_reserve_gb, unknown
 
 
+def _profile_variants(cfg: AirlieConfig) -> dict[str, AirlieConfig | ConfigError]:
+    """Each declared profile from the source file (an invalid one keeps its error), else the config."""
+    if cfg.source_path is None or not cfg.topology.profiles:
+        return {cfg.topology.kind: cfg}
+    out: dict[str, AirlieConfig | ConfigError] = {}
+    for name in cfg.topology.profiles:
+        try:
+            out[name] = load_config(cfg.source_path, topology=name)
+        except ConfigError as e:
+            out[name] = e
+    return out
+
+
 def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
     results: list[CheckResult] = []
+    variants = _profile_variants(cfg)
     for tool in REQUIRED_TOOLS:
         v = probe.tool_version(tool)
         results.append(
@@ -232,9 +249,13 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
             results.append(
                 CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up")
             )
-        variants = profile_configs(cfg) or {cfg.topology.kind: cfg}
         limit_gb = cfg.memory.wired_limit_mb / 1024.0
         for pname, pcfg in variants.items():
+            if isinstance(pcfg, ConfigError):
+                results.append(
+                    CheckResult(f"engine:{ename}:memory_projection[{pname}]", "fail", f"profile: {pcfg}")
+                )
+                continue
             if ename not in pcfg.engines:
                 continue
             pe = pcfg.engines[ename]

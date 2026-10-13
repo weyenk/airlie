@@ -77,3 +77,16 @@ def test_model_without_parsers_is_untouched() -> None:
 def test_server_reasoning_is_not_reparsed() -> None:
     out = parse_output(model(reasoning_parser="qwen3"), result("<think>x</think>y", reasoning="server"))
     assert out.reasoning == "server" and out.text == "<think>x</think>y"
+
+
+def test_muse_bare_user_turn_through_parse_output() -> None:
+    out = parse_output(
+        model(tool_call_parser="muse_glimmer", reasoning_parser="muse_glimmer"),
+        result((FIX / "muse_bare_user.txt").read_text()),
+    )
+    assert out.reasoning == "" and out.text == '{"verdict": "approve", "findings": []}' and not out.tool_calls
+
+
+def test_empty_think_block_is_removed_from_text() -> None:
+    out = parse_output(model(reasoning_parser="qwen3"), result("<think>\n\n</think>\n\nanswer"))
+    assert out.text == "answer"

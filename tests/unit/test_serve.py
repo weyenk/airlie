@@ -205,3 +205,22 @@ def test_default_factory_selects_single_profile(tmp_path: Path) -> None:
     finally:
         cli_mod._orchestrator = original
     assert captured[0].topology.kind == "single"
+
+
+def test_default_factory_with_k_above_one_selects_teams(tmp_path: Path) -> None:
+    from airlie.serve.app import _default_factory
+
+    c = cfg(tmp_path)
+    c.topology.kind = "single"  # type: ignore[assignment]
+    captured: list = []
+
+    import airlie.cli as cli_mod
+
+    original = cli_mod._orchestrator
+    cli_mod._orchestrator = lambda cfg, run_id=None: captured.append(cfg)  # type: ignore[assignment]
+    try:
+        _default_factory(c, 3)
+    finally:
+        cli_mod._orchestrator = original
+    assert captured[0].topology.kind == "teams" and captured[0].teams.k == 3
+    assert c.topology.kind == "single"  # the shared config is not mutated by a request

@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from airlie.config import AirlieConfig
-from airlie.router import JevClient, jev_client, policy, ranked
+from airlie.router import JevClient, RouteDecision, RoutingLog, jev_client, policy, ranked
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.registry import ToolRegistry
 
@@ -33,10 +33,18 @@ class Decide:
         "required": ["question", "state", "options"],
     }
 
-    def __init__(self, client: JevClient, *, ambiguous_gap: float, min_confidence: float) -> None:
+    def __init__(
+        self,
+        client: JevClient,
+        *,
+        ambiguous_gap: float,
+        min_confidence: float,
+        log: RoutingLog | None = None,
+    ) -> None:
         self.client = client
         self.gap = ambiguous_gap
         self.min_conf = min_confidence
+        self.log = log
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         options = args.get("options")
@@ -50,8 +58,21 @@ class Decide:
         except (httpx.HTTPError, ValueError) as e:
             return ToolResult(False, f"error: decision engine unavailable: {e}")
         r = [(k, p) for k, p in ranked(ans.probabilities) if k in criteria]
-        choice = ans.choice if ans.choice in criteria else (r[0][0] if r else "")
-        d = policy(r, ans.confidence, ambiguous_gap=self.gap, min_confidence=self.min_conf)
+        d: str
+        if ans.choice in criteria:
+            choice = ans.choice
+            d = policy(r, ans.confidence, ambiguous_gap=self.gap, min_confidence=self.min_conf)
+        else:  # Kev answered outside the closed set: top in-set option, labelled invalid (as JevRouter does)
+            choice = r[0][0] if r else ""
+            d = "invalid"
+        if self.log is not None:
+            question = str(args["question"])
+            self.log.record(
+                f"decide:{question}",
+                RouteDecision(
+                    question, ans.choice, choice, d, ans.probabilities, ans.confidence, None, ans.input_tokens
+                ),
+            )
         out = {
             "choice": choice,
             "decision": d,

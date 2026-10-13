@@ -570,6 +570,16 @@ def select_topology(cfg: AirlieConfig, topology: str | None) -> AirlieConfig:
     return cfg
 
 
+def apply_k(cfg: AirlieConfig, k: int | None) -> AirlieConfig:
+    """`--k`: more than one team under the single kind means the teams topology."""
+    if k is None:
+        return cfg
+    if k > 1 and cfg.topology.kind == "single":
+        cfg = select_topology(cfg, "teams")
+    cfg.teams.k = k
+    return cfg
+
+
 def _orchestrator(cfg: AirlieConfig, run_id: str | None = None):  # type: ignore[no-untyped-def]
     """Factory, patched in tests: the topology named by cfg.topology.kind over the HTTP engine."""
     from airlie.topology.protocol import build_topology
@@ -621,8 +631,7 @@ def run(
     import asyncio
 
     cfg = _load(config, topology)
-    if k is not None:
-        cfg.teams.k = k
+    cfg = apply_k(cfg, k)
     repo = repo.resolve()
     if not (repo / ".git").exists():
         err.print(f"[red]{repo} is not a git repository[/red]")
@@ -647,8 +656,7 @@ def eval_run(
     from airlie.evals import find_task, materialize
 
     cfg = _load(config, topology)
-    if k is not None:
-        cfg.teams.k = k
+    cfg = apply_k(cfg, k)
     try:
         task = find_task(tasks_dir.resolve(), task_id)
     except FileNotFoundError as e:

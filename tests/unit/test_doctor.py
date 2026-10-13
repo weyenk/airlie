@@ -335,6 +335,7 @@ def decision_cfg(tmp_path: Path) -> AirlieConfig:
                 "revision": "d9",
                 "file": "Kev-4B-Q4_K_M.gguf",
                 "preload": True,
+                "estimated_memory_gb": 3,
             },
         },
         "roles": {
@@ -392,3 +393,19 @@ def test_memory_projection_is_reported_per_profile(tmp_path: Path) -> None:
     assert "engine:main:memory_projection[teams]" in rows
     assert "1 teams" in rows["engine:main:memory_projection[single]"].detail
     assert "3 teams" in rows["engine:main:memory_projection[teams]"].detail
+
+
+def test_memory_projection_counts_every_managed_engines_preloaded_weights(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)  # team 16 GB on main, Kev 3 GB preloaded on the decision engine
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
+    assert "projected 47 GB" in rows["engine:main:memory_projection[single]"].detail  # 16 + 16.4 KV + 12 + 3
+
+
+def test_invalid_profile_is_a_fail_row_not_a_crash(tmp_path: Path) -> None:
+    cfg = decision_cfg(tmp_path)
+    data = yaml.safe_load((tmp_path / "airlie.yaml").read_text())
+    data["topology"]["profiles"]["single"] = {"teams": {"k": 0}}
+    (tmp_path / "airlie.yaml").write_text(yaml.safe_dump(data))
+    rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
+    row = rows["engine:main:memory_projection[single]"]
+    assert row.status == "fail" and "config invalid" in row.detail

@@ -348,3 +348,24 @@ def test_profile_configs_loads_every_profile_from_the_source_file(tmp_path: Path
     profiles = profile_configs(cfg)
     assert set(profiles) == {"single", "teams"}
     assert profiles["single"].teams.k == 1 and profiles["teams"].teams.k == 3
+
+
+def test_a_profile_outside_the_kinds_can_be_a_parent_and_be_selected(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "topology": {
+            "kind": "teams",
+            "profiles": {
+                "studio-qwen38": {"teams": {"k": 2}},
+                "single": {"extends": "studio-qwen38"},
+                "fast": {"topology": {"kind": "fork"}, "teams": {"max_steps": 5}},
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p, topology="single").teams.k == 2
+    chosen = load_config(p, topology="studio-qwen38")  # a profile name selects it; kind stays the file's
+    assert chosen.topology.kind == "teams" and chosen.teams.k == 2
+    fast = load_config(p, topology="fast")  # a profile may set the kind itself
+    assert fast.topology.kind == "fork" and fast.teams.max_steps == 5
+    assert set(profile_configs(load_config(p))) == {"studio-qwen38", "single", "fast"}
