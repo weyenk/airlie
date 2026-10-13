@@ -1,0 +1,270 @@
+"""Native ReAct team loop over the Engine seam: tool calls become steps, observers see (u_t, o_t)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from airlie.config import RoleSpec
+from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.scheduler import SlotScheduler
+from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext
+from airlie.tools import ToolContext, ToolRegistry
+
+
+class Recorder(StepObserver):
+    def __init__(self, inject: bool = False) -> None:
+        self.steps: list[StepRecord] = []
+        self.injections: list[tuple[str, int]] = []
+        self.inject = inject
+
+    async def before_step(self, team_id: str, step_num: int) -> str | None:
+        self.injections.append((team_id, step_num))
+        return (
+            "[Shared Memory Keys Available]:\n- Key [m1]: nothing yet"
+            if self.inject and step_num == 2
+            else None
+        )
+
+    async def after_step(self, step: StepRecord) -> None:
+        self.steps.append(step)
+
+
+def make_team(tmp_path: Path, engine: FakeEngine, *, max_steps: int = 10, token_budget: int = 10**6):
+    wt = tmp_path / "wt"
+    wt.mkdir(exist_ok=True)
+    (tmp_path / "coder.md").write_text("You are the coder.")
+    role = RoleSpec(prompt=tmp_path / "coder.md", model="base", thinking=False, max_tokens=64)
+    tools = ToolRegistry.builtin(
+        ["write_file", "read_file", "run_tests"], ToolContext(worktree=wt, test_cmd="echo ok")
+    )
+    ctx = TeamContext(
+        team_id="team-1",
+        goal="make it pass",
+        role=role,
+        tools=tools,
+        worktree=wt,
+        max_steps=max_steps,
+        token_budget=token_budget,
+        scheduler=SlotScheduler(2),
+    )
+    return NativeTeam(engine), ctx
+
+
+async def test_tool_calls_become_steps_and_final_text_ends_the_run(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[
+                        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))
+                    ]
+                ),
+                FakeReply(tool_calls=[ToolCall("c2", "run_tests", "{}")]),
+                FakeReply(text="Done: wrote a.py and tests pass."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.final_text.startswith("Done")
+    assert [s.u_t.name for s in rec.steps] == ["write_file", "run_tests"]
+    assert rec.steps[0].o_t.startswith("wrote a.py")
+    assert "ok" in rec.steps[1].o_t
+    assert (tmp_path / "wt" / "a.py").read_text() == "x=1\n"
+    assert result.steps == 2
+    # the conversation resent to the engine grows: system, user, assistant(tool_calls), tool, ...
+    last = engine.requests[-1].messages
+    assert [m.role for m in last][:5] == ["system", "user", "assistant", "tool", "assistant"]
+    assert last[2].tool_calls and last[3].tool_call_id == "c1"
+
+
+async def test_observer_injection_is_appended_as_a_user_message(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "missing.py"}))]),
+                FakeReply(text="giving up"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder(inject=True)
+    await team.run(ctx, rec)
+    msgs = engine.requests[-1].messages
+    injected = [m for m in msgs if m.role == "user" and "Shared Memory Keys" in m.content]
+    assert len(injected) == 1
+    assert rec.injections == [("team-1", 1), ("team-1", 2)]
+
+
+async def test_max_steps_stops_the_loop(tmp_path: Path) -> None:
+    calls = [
+        FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": f"f{i}"}))]) for i in range(10)
+    ]
+    engine = FakeEngine({"coder": calls})
+    team, ctx = make_team(tmp_path, engine, max_steps=3)
+    result = await team.run(ctx, Recorder())
+    assert not result.ok and result.stop_reason == "max_steps"
+    assert result.steps == 3
+
+
+async def test_native_team_repeated_action_stops(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 10})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action"
+    assert result.steps == 3  # three identical calls in a row
+
+
+async def test_token_budget_stops_the_loop(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {"coder": [FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])] * 10}
+    )
+    team, ctx = make_team(tmp_path, engine, token_budget=5)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "token_budget"
+
+
+async def test_tools_are_sent_to_the_engine(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text="ok")]})
+    team, ctx = make_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert [t.name for t in engine.requests[0].tools or []] == ["write_file", "read_file", "run_tests"]
+    assert engine.requests[0].messages[0].content == "You are the coder."
+    assert "make it pass" in engine.requests[0].messages[1].content
+
+
+async def test_token_budget_counts_context_plus_generated_not_resent_history(tmp_path: Path) -> None:
+    """Each turn resends the whole conversation (prefix-cached); the budget must not grow quadratically."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": f"f{i}"}))])
+                for i in range(6)
+            ]
+            + [FakeReply(text="ok")]
+        }
+    )
+    team, ctx = make_team(
+        tmp_path, engine, token_budget=250
+    )  # fake prompt_tokens ≈ words in messages (~20-40)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done"  # cumulative resent prompts would exceed 60 long before step 6
+
+
+async def test_repeated_action_requires_identical_outputs(tmp_path: Path) -> None:
+    """run_tests three times with changing output is a fix loop, not a stuck loop."""
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    outputs = iter(["fail 1", "fail 2", "pass"])
+    engine = FakeEngine(
+        {
+            "coder": [FakeReply(tool_calls=[ToolCall("c", "shell", json.dumps({"cmd": "echo x"}))])] * 3
+            + [FakeReply(text="done")]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+
+    class VaryingShell:
+        name = "shell"
+        description = "x"
+        parameters = {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+
+        async def run(self, args, c):
+            from airlie.tools import ToolResult
+
+            return ToolResult(True, next(outputs))
+
+    ctx.tools.add(VaryingShell())
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 3
+
+
+# ---- fork-when-stuck seam: stop predicate, state snapshot, resume with nudge, preamble ----
+
+
+async def test_stop_when_returns_fork_point_with_state_and_last_test_output(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "run_tests", "{}")]),
+                FakeReply(tool_calls=[ToolCall("c2", "run_tests", "{}")]),
+                FakeReply(text="never reached"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    ctx.tools = ToolRegistry.builtin(
+        ["run_tests"], ToolContext(worktree=ctx.worktree, test_cmd="echo FAILED x; false")
+    )
+    seen: list[str] = []
+
+    def stuck(step: StepRecord) -> bool:
+        seen.append(step.u_t.name)
+        return len(seen) >= 2
+
+    ctx.stop_when = stuck
+    res = await team.run(ctx, Recorder())
+    assert res.stop_reason == "fork_point" and res.steps == 2
+    assert res.state is not None and len(res.state["messages"]) == 6  # system, goal, 2×(assistant, tool)
+    assert "FAILED x" in res.last_test_output
+    assert len(engine.requests) == 2  # the third reply was never requested
+
+
+async def test_initial_state_resumes_verbatim_and_nudge_is_next_user_message(tmp_path: Path) -> None:
+    from airlie.engine.types import Message
+    from airlie.teams.native_team import dump_messages
+
+    history = [
+        Message(role="system", content="You are the coder."),
+        Message(role="user", content="Goal:\nmake it pass"),
+        Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
+        Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
+    ]
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.initial_state = {"messages": dump_messages(history)}
+    ctx.nudge = "Branch r1-1 of 2. Try a different approach."
+    res = await team.run(ctx, Recorder())
+    assert res.ok and res.stop_reason == "done"
+    sent = engine.requests[0].messages
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool", "user"]
+    assert sent[2].tool_calls == (ToolCall("c1", "run_tests", "{}"),)
+    assert sent[-1].content == ctx.nudge
+
+
+async def test_preamble_precedes_goal(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.preamble = "[Repository map]\ntests/\n  test_a.py"
+    await team.run(ctx, Recorder())
+    goal_msg = engine.requests[0].messages[1].content
+    assert goal_msg.startswith("[Repository map]") and "Goal:\nmake it pass" in goal_msg
+
+
+async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -> None:
+    """Parity with the AutoGen path (2026-10-13): one action per step; later calls in a 'plan' are often
+    argument-less, and the history must only carry the call that ran."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[
+                        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
+                        ToolCall("c2", "read_file", "{}"),
+                    ]
+                ),
+                FakeReply(text="done"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    res = await team.run(ctx, rec)
+    assert res.steps == 1 and [s.u_t.name for s in rec.steps] == ["write_file"]
+    sent = engine.requests[1].messages
+    assert sent[2].tool_calls == (
+        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
+    )
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]

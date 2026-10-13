@@ -1,0 +1,161 @@
+# airlie — every action is a task. Run `task` to list them.
+version: '3'
+
+vars:
+  UV: uv
+  RUN: uv run --quiet
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: One-time setup (idempotent) — installs the pinned Python and all dependencies via uv
+    cmds:
+      - '{{.UV}} python install 3.12'
+      - '{{.UV}} sync --all-groups'
+      - cmd: test -f airlie.local.yaml || cp airlie.local.example.yaml airlie.local.yaml
+        silent: true
+      - echo "ready — try 'task doctor'"
+
+  doctor:
+    desc: Check config, hardware limits, models on disk and tooling; exit 1 on any red row
+    cmds:
+      - '{{.RUN}} airlie doctor {{.CLI_ARGS}}'
+
+  config:
+    desc: Print the fully resolved configuration (airlie.yaml + airlie.local.yaml)
+    cmds:
+      - '{{.RUN}} airlie config show {{.CLI_ARGS}}'
+
+  models:list:
+    desc: Show the model catalog with pinned revisions and serving engine
+    cmds:
+      - '{{.RUN}} airlie models list {{.CLI_ARGS}}'
+
+  models:pull:
+    desc: "Download every catalog model at its pinned revision (pass names to limit: task models:pull -- small)"
+    cmds:
+      - '{{.RUN}} airlie models pull {{.CLI_ARGS}}'
+
+  up:
+    desc: Start the vllm-mlx engine(s) from airlie.yaml and wait until preloaded models are ready
+    cmds:
+      - '{{.RUN}} airlie engine up {{.CLI_ARGS}}'
+
+  down:
+    desc: Stop the managed engine(s)
+    cmds:
+      - '{{.RUN}} airlie engine down {{.CLI_ARGS}}'
+
+  restart:
+    desc: Stop then start the managed engine(s)
+    cmds:
+      - '{{.RUN}} airlie engine restart {{.CLI_ARGS}}'
+
+  status:
+    desc: Show engine pid, health and per-model readiness
+    cmds:
+      - '{{.RUN}} airlie engine status {{.CLI_ARGS}}'
+
+  logs:
+    desc: "Tail the engine log (task logs -- -f to follow)"
+    cmds:
+      - '{{.RUN}} airlie engine logs {{.CLI_ARGS}}'
+
+  run:
+    desc: "Run the configured topology on a goal in a repo (task run -- \"goal\" --repo PATH --topology fork --test-cmd \"pytest -q\")"
+    cmds:
+      - '{{.RUN}} airlie run {{.CLI_ARGS}}'
+
+  eval:
+    desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
+    cmds:
+      - '{{.RUN}} airlie eval run {{.CLI_ARGS}}'
+
+  memory:
+    desc: "Show a run's shared memory bank (task memory -- RUN_ID [--full])"
+    cmds:
+      - '{{.RUN}} airlie memory {{.CLI_ARGS}}'
+
+  serve:
+    desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles as models; POST /v1/airlie/run)"
+    cmds:
+      - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
+
+  bench:lts:
+    desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"
+    cmds:
+      - '{{.RUN}} airlie bench lts {{.CLI_ARGS}}'
+
+  bench:topology:
+    desc: "single agent vs K teams vs fork-when-stuck on graded tasks (task bench:topology -- --topologies single,teams,fork --repeats 3)"
+    cmds:
+      - '{{.RUN}} airlie bench topology {{.CLI_ARGS}}'
+
+  controller:dataset:
+    desc: "Build the controller training set from every run's admission log"
+    cmds:
+      - '{{.RUN}} airlie controller dataset {{.CLI_ARGS}}'
+
+  controller:train:
+    desc: "Train the spec 03 §2 controller (LoRA on Qwen3-0.6B) with the spec 03 §3 objective (task controller:train -- --epochs 5)"
+    cmds:
+      - '{{.RUN}} airlie controller train {{.CLI_ARGS}}'
+
+  controller:eval:
+    desc: "Replay held-out decisions: learned vs logged controller"
+    cmds:
+      - '{{.RUN}} airlie controller eval {{.CLI_ARGS}}'
+
+  bench:
+    desc: "Engine throughput through the seam (task bench -- --model llama70b --ctx 4k,32k --n 1,2,4)"
+    cmds:
+      - '{{.RUN}} airlie bench engine {{.CLI_ARGS}}'
+
+  bench:models:
+    desc: "Bench every catalog model marked bench=true, one table (task bench:models -- --ctx 4k --n 1,4)"
+    cmds:
+      - '{{.RUN}} airlie bench models {{.CLI_ARGS}}'
+
+  bench:compare:
+    desc: "Per-cell deltas between two saved bench JSON files (task bench:compare -- a.json b.json)"
+    cmds:
+      - '{{.RUN}} airlie bench compare {{.CLI_ARGS}}'
+
+  test:
+    desc: Unit tests (no models, runs anywhere)
+    cmds:
+      - '{{.RUN}} pytest {{.CLI_ARGS}}'
+
+  test:live:
+    desc: Live tests against a running engine (Apple Silicon, after `task up`)
+    cmds:
+      - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
+
+  lint:
+    desc: Ruff lint + format check
+    cmds:
+      - '{{.RUN}} ruff check .'
+      - '{{.RUN}} ruff format --check .'
+
+  fmt:
+    desc: Auto-format and auto-fix lint
+    cmds:
+      - '{{.RUN}} ruff format .'
+      - '{{.RUN}} ruff check --fix .'
+
+  typecheck:
+    desc: mypy (strict) over src/airlie
+    cmds:
+      - '{{.RUN}} mypy'
+
+  check:
+    desc: lint + typecheck + unit tests
+    cmds:
+      - task: lint
+      - task: typecheck
+      - task: test

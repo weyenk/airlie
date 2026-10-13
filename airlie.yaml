@@ -1,0 +1,169 @@
+# airlie configuration. Every seam of the system is chosen here; `airlie.local.yaml` (gitignored) deep-merges on top.
+# Reference: docs/superpowers/specs/2026-10-12-airlie-design.md. Validate with `task doctor`, inspect with `task config`.
+version: 1
+
+# ---- Inference engines ------------------------------------------------------------------------------------------
+# A `vllm_mlx` engine is a process airlie starts for you (`task up`); `openai_http` is any external
+# OpenAI-compatible server (llama-server, mlx_lm.server, vllm-mlx you run yourself). Roles pick a model; the engine
+# that serves that model is derived, so swapping engines never touches the roles.
+engines:
+  main:
+    kind: vllm_mlx
+    host: 127.0.0.1
+    port: 8080
+    models: [base, small, qwen38, llama70b, qwen25_32b]   # one process; preloaded + lazily loadable (--models-config)
+    memory_budget_gb: 90           # weights only; KV cache is on top. 128 GB host, 106.5 GB wired limit.
+    continuous_batching: true
+    max_num_seqs: 16               # docs/wiki/build-spec/02 §1
+    max_kv_size: 65536
+    prefill_step_size: 2048
+    kv_cache_quantization: false
+    use_paged_cache: false
+    extra_args: []
+
+# ---- Model catalog (pinned HF revisions; `task models:pull` fetches exactly these) ---------------------------------
+# Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
+# Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
+# spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
+# `base` must be a STANDARD-ATTENTION model: vllm-mlx 0.5.0's prefix cache cannot store hybrid (linear/SSM attention)
+# models such as Qwen3.8-27B, so every agent turn would re-prefill the whole conversation (measured 2026-10-12: a 4k
+# prefix cost 4.3 s on every turn; the same prefix on a standard model hit the cache and dropped to 72 ms).
+# `task doctor` warns on hybrid models. To swap the team model: change `roles.coder.model` (and `aggregator`).
+models:
+  base:                            # Qwen3-Coder-30B-A3B: MoE (3B active), standard GQA attention, coding + tool use
+    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+    revision: 6e302ea604ad9ab206367e2c501d1571023e7b6d   # 2025-08-06
+    preload: true
+    bench: true
+    tags: [modern, coder, moe]
+    estimated_memory_gb: 17
+    kv_mb_per_1k_tokens: 192
+    tool_call_parser: qwen3_coder
+  qwen38:                          # strongest coder in the ai-mode bake-off, but hybrid attention: no prefix cache
+    repo: mlx-community/Qwen3.8-27B-4bit
+    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
+    preload: false
+    bench: true
+    tags: [modern, coder, hybrid-attention]
+    estimated_memory_gb: 16
+    kv_mb_per_1k_tokens: 256
+    tool_call_parser: qwen
+    reasoning_parser: qwen3
+  llama70b:                        # spec 01 §1 / 02 §1 named model
+    repo: mlx-community/Llama-3.3-70B-Instruct-4bit
+    revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
+    preload: false
+    bench: true
+    tags: [spec]
+    estimated_memory_gb: 40
+    kv_mb_per_1k_tokens: 320
+    tool_call_parser: llama
+  qwen25_32b:                      # spec 01 §1 named model
+    repo: mlx-community/Qwen2.5-32B-Instruct-4bit
+    revision: 2938092373e5f97b95538884112085364c2da315   # 2024-09-18
+    preload: false
+    bench: true
+    tags: [spec]
+    estimated_memory_gb: 19
+    kv_mb_per_1k_tokens: 256
+    tool_call_parser: qwen
+  small:
+    repo: mlx-community/Qwen3-4B-4bit
+    revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28
+    preload: true
+    estimated_memory_gb: 3
+    reasoning_parser: qwen3
+  controller_base:                 # M5: base for the learned LTS admission controller (LoRA r=16)
+    repo: Qwen/Qwen3-0.6B
+    revision: c1899de289a04d12100db370d81485cdf75e47ca
+    preload: false
+    estimated_memory_gb: 1.5
+
+# ---- Roles --------------------------------------------------------------------------------------------------------
+roles:
+  coder:                           # the team agent: ReAct loop with repo tools
+    prompt: prompts/roles/coder.md
+    model: base
+    max_context: 65536
+    max_tokens: 4096                 # bounds a runaway generation to ~2 min; raise for very large files
+    thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. qwen38)
+    thinking_budget: 16384
+    sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
+  summarizer:                      # LTS summary keys (15–20 words), stateless
+    prompt: prompts/roles/summarizer.md
+    model: small
+    max_context: 8192
+    max_tokens: 64
+    thinking: false
+    sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
+  judge:                           # YES/NO admission judge and aggregator tie-breaker
+    prompt: prompts/roles/judge.md
+    model: small
+    max_context: 16384
+    max_tokens: 256
+    thinking: false
+    sampling: { temperature: 0.0, top_p: 1.0, top_k: 0, min_p: 0.0, presence_penalty: 0.0 }
+  hypothesizer:                    # fork-when-stuck: lists distinct root-cause hypotheses at a fork point
+    prompt: prompts/roles/hypothesizer.md
+    model: small
+    max_context: 16384
+    max_tokens: 400
+    thinking: false
+    sampling: { temperature: 0.7, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
+  aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
+    prompt: prompts/roles/aggregator.md
+    model: base
+    max_context: 65536
+    max_tokens: 4096
+    thinking: false
+    thinking_budget: 8192
+    sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
+
+# ---- Tools --------------------------------------------------------------------------------------------------------
+tools:
+  builtin: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git]
+  shell_timeout_s: 120
+  output_cap_chars: 20000
+mcp: {}                            # name: { command, args, env } — exposed to teams as extra tools
+
+# ---- Learning to Share --------------------------------------------------------------------------------------------
+lts:
+  enabled: false                   # off by default since the 2026-10-13 topology bench (single agent won); spec: true
+  controller:
+    kind: heuristic                # always | never | heuristic | judge | learned
+    judge_role: judge
+    threshold: 0.5
+    duplicate_jaccard: 0.8
+  summarizer: { kind: role, role: summarizer, max_words: 20, truncate_chars: 100 }   # truncate = spec 04 §3 blueprint
+  max_keys: 12                     # keys injected per step, ranked for the team (see ranking)
+  max_value_chars: 20000
+  background_admission: true       # summarize + decide off the team's critical path
+  admission_concurrency: 2
+  ranking: relevance               # relevance = overlap with the team's last step | recency = spec blueprint order
+  inject_own: false                # a team does not see its own keys
+  inline_top: 2                    # top-ranked keys get their value inlined, once per team
+  inline_chars: 1500
+
+# ---- Topology -------------------------------------------------------------------------------------------------
+topology: { kind: teams }          # teams = spec K parallel teams + LTS | fork = fork-when-stuck
+fork:
+  width: 2                         # children per fork point
+  after_failures: 2                # consecutive failing run_tests that mark a branch stuck
+  child_steps: 15                  # steps a child gets before resolve
+  max_rounds: 3
+  max_total_steps: 120
+  diversify: hypotheses            # hypotheses (one small-model call per fork) | temperature
+  hypothesis_role: hypothesizer
+  temperatures: [0.3, 0.7]
+
+# ---- Repository map (every topology) --------------------------------------------------------------------------
+repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatures, injected before the goal
+
+# ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
+scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }
+teams: { k: 1, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true }   # k: 1 = single agent (bench 2026-10-13); spec: k: 3
+aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 step 9
+
+# ---- Host + observability -----------------------------------------------------------------------------------------
+memory: { wired_limit_mb: 106496, os_reserve_gb: 12 }  # docs/wiki/build-spec/01 §1; `task doctor` projects the total
+observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 14 }

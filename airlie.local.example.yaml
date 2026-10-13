@@ -1,0 +1,6 @@
+# Local overrides for airlie.yaml (deep-merged on top). Copy to airlie.local.yaml (gitignored).
+# Example: run everything through an external OpenAI-compatible server instead of in-process MLX.
+# engines:
+#   main:
+#     kind: openai_http
+#     base_url: http://127.0.0.1:8080/v1
