@@ -111,3 +111,20 @@ def test_model_client_takes_a_generation_slot_per_call(tmp_path: Path) -> None:
     )
     assert isinstance(client, RepairingOpenAIClient)
     assert client.slot_scheduler is sched and client.team_id == "t"
+
+
+async def test_autogen_state_round_trip_and_nudge(tmp_path: Path) -> None:
+    """save_state after a fork point reloads into a fresh agent; the nudge is the next task."""
+    from autogen_agentchat.agents import AssistantAgent
+    from autogen_ext.models.replay import ReplayChatCompletionClient
+
+    from airlie.teams.autogen_team import agent_state, load_agent_state
+
+    a = AssistantAgent("trunk", model_client=ReplayChatCompletionClient(["first"]), system_message="sys")
+    await a.run(task="Goal: x")
+    state = await agent_state(a)
+    assert state["type"] == "AssistantAgentState" and len(state["llm_context"]["messages"]) == 2
+    b = AssistantAgent("child", model_client=ReplayChatCompletionClient(["second"]), system_message="sys")
+    await load_agent_state(b, state)
+    msgs = await b.model_context.get_messages()
+    assert [m.content for m in msgs] == ["Goal: x", "first"]

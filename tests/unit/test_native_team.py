@@ -179,3 +179,65 @@ async def test_repeated_action_requires_identical_outputs(tmp_path: Path) -> Non
     ctx.tools.add(VaryingShell())
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 3
+
+
+# ---- fork-when-stuck seam: stop predicate, state snapshot, resume with nudge, preamble ----
+
+
+async def test_stop_when_returns_fork_point_with_state_and_last_test_output(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "run_tests", "{}")]),
+                FakeReply(tool_calls=[ToolCall("c2", "run_tests", "{}")]),
+                FakeReply(text="never reached"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    ctx.tools = ToolRegistry.builtin(
+        ["run_tests"], ToolContext(worktree=ctx.worktree, test_cmd="echo FAILED x; false")
+    )
+    seen: list[str] = []
+
+    def stuck(step: StepRecord) -> bool:
+        seen.append(step.u_t.name)
+        return len(seen) >= 2
+
+    ctx.stop_when = stuck
+    res = await team.run(ctx, Recorder())
+    assert res.stop_reason == "fork_point" and res.steps == 2
+    assert res.state is not None and len(res.state["messages"]) == 6  # system, goal, 2×(assistant, tool)
+    assert "FAILED x" in res.last_test_output
+    assert len(engine.requests) == 2  # the third reply was never requested
+
+
+async def test_initial_state_resumes_verbatim_and_nudge_is_next_user_message(tmp_path: Path) -> None:
+    from airlie.engine.types import Message
+    from airlie.teams.native_team import dump_messages
+
+    history = [
+        Message(role="system", content="You are the coder."),
+        Message(role="user", content="Goal:\nmake it pass"),
+        Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
+        Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
+    ]
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.initial_state = {"messages": dump_messages(history)}
+    ctx.nudge = "Branch r1-1 of 2. Try a different approach."
+    res = await team.run(ctx, Recorder())
+    assert res.ok and res.stop_reason == "done"
+    sent = engine.requests[0].messages
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool", "user"]
+    assert sent[2].tool_calls == (ToolCall("c1", "run_tests", "{}"),)
+    assert sent[-1].content == ctx.nudge
+
+
+async def test_preamble_precedes_goal(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.preamble = "[Repository map]\ntests/\n  test_a.py"
+    await team.run(ctx, Recorder())
+    goal_msg = engine.requests[0].messages[1].content
+    assert goal_msg.startswith("[Repository map]") and "Goal:\nmake it pass" in goal_msg

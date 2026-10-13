@@ -8,14 +8,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from airlie.config import RoleSpec
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.tools import ToolRegistry
 
-StopReason = Literal["done", "max_steps", "token_budget", "repeated_action", "engine_error", "cancelled"]
+StopReason = Literal[
+    "done", "max_steps", "token_budget", "repeated_action", "engine_error", "cancelled", "fork_point"
+]
 
 
 @dataclass
@@ -50,6 +52,14 @@ class TeamContext:
     repeat_limit: int = 3
     draft_budget: Callable[[], int | None] = field(default=lambda: None)
     """HAL budget provider (spec 04 §1): consulted before each generation request."""
+    preamble: str | None = None
+    """Text placed before the goal in the first user message (the repo map)."""
+    initial_state: dict[str, Any] | None = None
+    """A snapshot from an earlier TeamResult.state; the conversation resumes from it verbatim."""
+    nudge: str | None = None
+    """With initial_state: the next user message instead of the goal (branch label, hypothesis)."""
+    stop_when: Callable[[StepRecord], bool] | None = None
+    """Evaluated after every step; True stops the run with stop_reason="fork_point" and a state snapshot."""
 
 
 @dataclass
@@ -62,6 +72,8 @@ class TeamResult:
     prompt_tokens: int
     completion_tokens: int
     wall_ms: float
+    state: dict[str, Any] | None = None
+    last_test_output: str = ""
 
 
 class StepObserver(Protocol):

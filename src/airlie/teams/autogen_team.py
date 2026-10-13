@@ -146,6 +146,14 @@ def pair_steps(
     return steps
 
 
+async def agent_state(agent: AssistantAgent) -> dict[str, Any]:
+    return dict(await agent.save_state())
+
+
+async def load_agent_state(agent: AssistantAgent, state: dict[str, Any]) -> None:
+    await agent.load_state(state)
+
+
 class AutoGenTeam:
     def __init__(self, base_url: str, served_model: str, api_key: str | None = None) -> None:
         self.base_url = base_url
@@ -174,7 +182,14 @@ class AutoGenTeam:
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         recent: list[tuple[str, str, str]] = []
-        task: str | None = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id)
+        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
+        task: str | None = goal_msg
+        if ctx.initial_state is not None:
+            await load_agent_state(agent, ctx.initial_state)
+            task = ctx.nudge or goal_msg
+        last_test_output = ""
+        forked = False
+        state: dict[str, Any] | None = None
         final_text = ""
         stop: StopReason = "done"
         ok = False
@@ -201,9 +216,18 @@ class AutoGenTeam:
                 new_steps = pair_steps(ctx.team_id, steps, events, assistant_text="")
                 for s in new_steps:
                     await observer.after_step(s)
+                    if s.u_t.name == "run_tests":
+                        last_test_output = s.o_t
                     recent.append((s.u_t.name, s.u_t.arguments, s.o_t))
+                    if ctx.stop_when is not None and ctx.stop_when(s):
+                        forked = True
+                        break
                 recent = recent[-ctx.repeat_limit :]
                 steps += len(new_steps)
+                if forked:
+                    final_text = "fork point: stuck, handing over to branches"
+                    stop = "fork_point"
+                    break
                 last = result.messages[-1] if result and result.messages else None
                 if not new_steps:
                     final_text = (
@@ -234,6 +258,8 @@ class AutoGenTeam:
             final_text = f"engine error: {type(e).__name__}: {e}"
             stop = "engine_error"
         finally:
+            if ctx.stop_when is not None and stop != "done":
+                state = await agent_state(agent)
             await client.close()
         return TeamResult(
             team_id=ctx.team_id,
@@ -244,4 +270,6 @@ class AutoGenTeam:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             wall_ms=(time.monotonic() - t0) * 1000.0,
+            state=state,
+            last_test_output=last_test_output,
         )

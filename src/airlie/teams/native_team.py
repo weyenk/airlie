@@ -6,19 +6,52 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
+from typing import Any
 
 from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message, ToolCall
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 
 
-def _goal_message(goal: str, worktree_hint: str, team_id: str = "") -> str:
+def _goal_message(goal: str, worktree_hint: str, team_id: str = "", preamble: str | None = None) -> str:
     who = f"You are {team_id}. " if team_id else ""
+    head = f"{preamble.rstrip()}\n\n" if preamble else ""
     return (
-        f"Goal:\n{goal}\n\n{who}"
+        f"{head}Goal:\n{goal}\n\n{who}"
         f"You are working inside a git checkout of the repository ({worktree_hint}). "
         "Use the tools to inspect and change it, run the tests, and stop with a short summary when they pass."
     )
+
+
+def dump_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        d: dict[str, Any] = {
+            "role": m.role,
+            "content": m.content,
+            "name": m.name,
+            "tool_call_id": m.tool_call_id,
+        }
+        d["tool_calls"] = [asdict(c) for c in m.tool_calls] if m.tool_calls else None
+        out.append(d)
+    return out
+
+
+def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
+    out: list[Message] = []
+    for d in dumped:
+        calls = tuple(ToolCall(**c) for c in d["tool_calls"]) if d.get("tool_calls") else None
+        out.append(
+            Message(
+                role=d["role"],
+                content=d["content"],
+                name=d.get("name"),
+                tool_calls=calls,
+                tool_call_id=d.get("tool_call_id"),
+            )
+        )
+    return out
 
 
 class NativeTeam:
@@ -28,10 +61,15 @@ class NativeTeam:
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
         system = ctx.role.prompt.read_text()
-        messages: list[Message] = [
-            Message(role="system", content=system),
-            Message(role="user", content=_goal_message(ctx.goal, ctx.worktree.name, ctx.team_id)),
-        ]
+        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
+        messages: list[Message]
+        if ctx.initial_state is not None:
+            messages = load_messages(ctx.initial_state["messages"])
+            messages.append(Message(role="user", content=ctx.nudge or goal_msg))
+        else:
+            messages = [Message(role="system", content=system), Message(role="user", content=goal_msg)]
+        last_test_output = ""
+        forked = False
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         steps = 0
@@ -81,24 +119,32 @@ class NativeTeam:
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
-                await observer.after_step(
-                    StepRecord(
-                        team_id=ctx.team_id,
-                        step_num=steps,
-                        u_t=call,
-                        o_t=result.output,
-                        ok=result.ok,
-                        assistant_text=res.text,
-                        prompt_tokens=res.prompt_tokens,
-                        completion_tokens=res.completion_tokens,
-                        gen_ms=gen_ms,
-                        tool_ms=tool_ms,
-                        accepted_draft_tokens=res.accepted_draft_tokens,
-                        draft_tokens=res.draft_tokens,
-                    )
+                step_record = StepRecord(
+                    team_id=ctx.team_id,
+                    step_num=steps,
+                    u_t=call,
+                    o_t=result.output,
+                    ok=result.ok,
+                    assistant_text=res.text,
+                    prompt_tokens=res.prompt_tokens,
+                    completion_tokens=res.completion_tokens,
+                    gen_ms=gen_ms,
+                    tool_ms=tool_ms,
+                    accepted_draft_tokens=res.accepted_draft_tokens,
+                    draft_tokens=res.draft_tokens,
                 )
+                await observer.after_step(step_record)
+                if call.name == "run_tests":
+                    last_test_output = result.output
                 recent.append((call.name, call.arguments, result.output))
                 recent = recent[-ctx.repeat_limit :]
+                if ctx.stop_when is not None and ctx.stop_when(step_record):
+                    forked = True
+                    break
+            if forked:
+                final_text = "fork point: stuck, handing over to branches"
+                stop = "fork_point"
+                break
             if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
                 final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
                 stop = "repeated_action"
@@ -122,6 +168,10 @@ class NativeTeam:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             wall_ms=(time.monotonic() - t0) * 1000.0,
+            state={"messages": dump_messages(messages)}
+            if ctx.stop_when is not None and stop != "done"
+            else None,
+            last_test_output=last_test_output,
         )
 
 
