@@ -35,6 +35,21 @@ def diff_last_commit(worktree: Path, max_chars: int) -> str:
     return out[:max_chars]
 
 
+def diff_between(worktree: Path, base_sha: str, max_chars: int) -> str:
+    """The diff from `base_sha` to HEAD, capped."""
+    out = subprocess.run(
+        ["git", "diff", "--no-color", base_sha, "HEAD"], cwd=worktree, capture_output=True, text=True
+    ).stdout
+    return out[:max_chars]
+
+
+def changed_files(worktree: Path, base_sha: str) -> list[str]:
+    out = subprocess.run(
+        ["git", "diff", "--name-only", base_sha, "HEAD"], cwd=worktree, capture_output=True, text=True
+    ).stdout
+    return [line for line in out.splitlines() if line]
+
+
 def remove_worktree(repo: Path, path: Path) -> None:
     subprocess.run(
         ["git", "worktree", "remove", "--force", str(path)], cwd=repo, capture_output=True, text=True
