@@ -21,6 +21,7 @@ output (`task bench:compare -- a.json b.json` prints deltas).
 | File | Model | Notes |
 | --- | --- | --- |
 | `2026-10-12-engine-bench.md` | base vs qwen38 | tables, comparison and interpretation |
+| `2026-10-12-lts-bench-bigger-v2.md` / `lts-bigger-v2.json` | round 2: background admission + ranked injection, 3 repeats | admission wait gone, still +28 % per step from the injected block; 0 retrievals; runs dominated by solve/no-solve; criterion not met |
 | `2026-10-12-lts-bench-bigger.md` / `lts-bigger.json` | never vs heuristic on inventory_cli + log_pipeline, K=3 | still 0 retrievals; LTS overhead doubled wall-clock; criterion not met |
 | `2026-10-12-lts-bench.md` / `lts-lang_detect.json` | never vs heuristic, K=3 | first `task bench:lts` run; verdict not meaningful yet (0 retrievals, 1 sample) |
 | `qwen38.json` | mlx-community/Qwen3.8-27B-4bit | hybrid attention: no prefix cache in vllm-mlx 0.5.0 |
