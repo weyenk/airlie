@@ -3,6 +3,7 @@
 from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.protocol import Engine, OnToken
 from airlie.engine.types import (
+    ContentPart,
     EngineCapabilities,
     EngineError,
     EngineHealth,
@@ -15,9 +16,11 @@ from airlie.engine.types import (
     TokenEvent,
     ToolCall,
     ToolSchema,
+    image_part,
 )
 
 __all__ = [
+    "ContentPart",
     "Engine",
     "EngineCapabilities",
     "EngineError",
@@ -34,4 +37,5 @@ __all__ = [
     "TokenEvent",
     "ToolCall",
     "ToolSchema",
+    "image_part",
 ]

@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 from airlie.engine.protocol import Engine
-from airlie.engine.types import EngineError, GenRequest, Message, ToolCall
+from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 
 
@@ -34,6 +34,7 @@ def dump_messages(messages: list[Message]) -> list[dict[str, Any]]:
             "tool_call_id": m.tool_call_id,
         }
         d["tool_calls"] = [asdict(c) for c in m.tool_calls] if m.tool_calls else None
+        d["parts"] = [asdict(p) for p in m.parts] if m.parts else None
         out.append(d)
     return out
 
@@ -42,6 +43,7 @@ def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
     out: list[Message] = []
     for d in dumped:
         calls = tuple(ToolCall(**c) for c in d["tool_calls"]) if d.get("tool_calls") else None
+        parts = tuple(ContentPart(**p) for p in d["parts"]) if d.get("parts") else None
         out.append(
             Message(
                 role=d["role"],
@@ -49,6 +51,7 @@ def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
                 name=d.get("name"),
                 tool_calls=calls,
                 tool_call_id=d.get("tool_call_id"),
+                parts=parts,
             )
         )
     return out

@@ -117,7 +117,7 @@ class HTTPEngine:
             "top_k": req.sampling.top_k,
             "min_p": req.sampling.min_p,
             "presence_penalty": req.sampling.presence_penalty,
-            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
+            "chat_template_kwargs": {"enable_thinking": bool(thinking), **spec.chat_template_kwargs},
         }
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
@@ -288,7 +288,15 @@ def _finish(raw: str) -> FinishReason:
 
 
 def _wire_message(m: Message) -> dict[str, Any]:
-    d: dict[str, Any] = {"role": m.role, "content": m.content}
+    content: Any = m.content
+    if m.parts:
+        content = [
+            {"type": "text", "text": p.text}
+            if p.type == "text"
+            else {"type": "image_url", "image_url": {"url": p.url}}
+            for p in m.parts
+        ]
+    d: dict[str, Any] = {"role": m.role, "content": content}
     if m.name:
         d["name"] = m.name
     if m.tool_call_id:

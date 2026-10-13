@@ -268,3 +268,13 @@ async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -
         ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\\n"})),
     )
     assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]
+
+
+def test_dump_and_load_messages_keep_parts() -> None:
+    from airlie.engine import ContentPart, Message
+    from airlie.teams.native_team import dump_messages, load_messages
+
+    m = Message(
+        role="user", content="see image", parts=(ContentPart("image_url", url="data:image/png;base64,AA=="),)
+    )
+    assert load_messages(dump_messages([m])) == [m]
