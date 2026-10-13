@@ -12,7 +12,7 @@ engines:
     host: 127.0.0.1
     port: 8080
     models: [base, small, qwen38, llama70b, qwen25_32b]   # one process; preloaded + lazily loadable (--models-config)
-    memory_budget_gb: 90           # weights only; KV cache is on top. 128 GB host, 106.5 GB wired limit.
+    memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
     max_kv_size: 65536

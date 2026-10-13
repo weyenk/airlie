@@ -45,8 +45,10 @@ Non-goals
 | summarizer, hypothesizer, triage | `Qwen3-4B-4bit` | 2.3 GB | cheap helpers |
 | router | `ggml-org/Kev-4B-GGUF` (Apache 2.0) on llama-server `/v1/systemone` | 2.5 GB | calibrated closed-set decisions; the one non-mlx-community exception, flagged; `router.kind: chief` needs no second server. "Jev" in this document names the System One API and decision policy; the weights airlie downloads are Kev (Jared Palmer's open clone, same API). TypeSafe's Jev itself is a closed hosted model; OpenJev is CC BY-NC and excluded. |
 
-Resident weights ≈ 55 GB + Jev 2.5 GB, leaving ~32 GB of the 90 GB budget for KV (one full 262k coder context
-is ~24 GB at 96 KB/token; `task doctor` projects per profile, §8). Specialists are *prompts* over three models
+Resident weights ≈ 55 GB + Kev 3 GB = 58 GB. The ceiling is the GPU wired limit, 104 GB (`iogpu.wired_limit_mb
+106496`), minus the 12 GB OS reserve: 92 GB for weights plus KV, so ~34 GB of KV headroom (one full 262k coder
+context is ~24 GB at 96 KB/token; `task doctor` projects per profile, §8). `engines.main.memory_budget_gb` (90)
+is a separate knob: vllm-mlx's cap on resident weights alone. Specialists are *prompts* over three models
 plus one reviewer, not nine models: ai-mode's `product`, `docs`, `research`, `ux`, `design` collapse onto the
 generalist; `qa` and `security` onto the coder.
 
@@ -63,8 +65,8 @@ Excluded on purpose for agent seats: `Qwen3-Next-80B`, `Qwen3-Coder-Next`, `Qwen
 hybrid-attention penalty, no quality claim that offsets it).
 
 Dropped: the earlier `studio-max` profile (GLM-4.5-Air coder, 60 GB) no longer fits beside the generalist and the
-reviewer (60 + 16 + 19 = 95 GB > 90); it returns only if a benchmark asks for it, with the reviewer swapped to
-`gpt-oss-20b-MXFP4` (12 GB, OpenAI family, parser already in vllm-mlx 0.5.0).
+reviewer (60 + 16 + 19 + 3 Kev + 12 reserve = 110 GB > 104, before any KV); it returns only if a benchmark asks
+for it, with the reviewer swapped to `gpt-oss-20b-MXFP4` (12 GB, OpenAI family, parser already in vllm-mlx 0.5.0).
 
 Engine: one vllm-mlx registry as today, `max_kv_size 262144`, plus a managed `llama_server` engine for Jev
 (design 2026-10-13 "add jev" §1, unchanged). Vision input needs `Message.content` to accept OpenAI content parts
