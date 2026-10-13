@@ -1,0 +1,6 @@
+ to=self<|message|>I need the file.<|eom|><|start|>assistant to=read_file<|message|><atem:function_calls>
+<atem:invoke name="read_file">
+<atem:parameter name="path">app.py</atem:parameter>
+<atem:parameter name="lines">[1, 40]</atem:parameter>
+</atem:invoke>
+</atem:function_calls><|eom|>

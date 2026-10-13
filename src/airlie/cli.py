@@ -234,6 +234,7 @@ def _http_engine(cfg: AirlieConfig, engine_name: str, model_override: str | None
         lambda role: cfg.roles[role],
         api_key=e.api_key,
         per_request_draft=e.per_request_draft,
+        model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
     )
 
 

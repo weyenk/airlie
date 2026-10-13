@@ -180,3 +180,27 @@ def test_body_carries_repetition_penalty_when_set() -> None:
     assert "repetition_penalty" not in eng._body(req, stream=False)  # noqa: SLF001 - 1.0 means off
     req.sampling = Sampling(repetition_penalty=1.05)
     assert eng._body(req, stream=False)["repetition_penalty"] == 1.05  # noqa: SLF001
+
+
+async def test_engine_applies_the_models_parsers_to_raw_content() -> None:
+    from airlie.config import ModelSpec
+
+    raw = (Path(__file__).resolve().parents[1] / "fixtures" / "parsers" / "qwen3_coder_xml.txt").read_text()
+    frames = [
+        {"choices": [{"delta": {"content": raw}, "finish_reason": None}]},
+        {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 9},
+        },
+    ]
+    body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+    rec = Recorder({"stream": body.encode()})
+    eng = HTTPEngine(
+        base_url="http://engine.test/v1",
+        served_name_for_role=lambda role: "base",
+        role_spec_for=lambda role: role_spec(),
+        model_spec_for=lambda role: ModelSpec(repo="o/m", revision="r", tool_call_parser="qwen3_coder"),
+        transport=httpx.MockTransport(rec),
+    )
+    res = await eng.generate(plain_request())
+    assert res.finish_reason == "tool_calls" and res.tool_calls[0].name == "read_file"

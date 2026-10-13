@@ -1,0 +1,7 @@
+<think>
+The user wants the file.
+</think>
+
+<tool_call>
+{"name": "read_file", "arguments": {"path": "app.py"}}
+</tool_call>

@@ -1,0 +1,8 @@
+I'll look at the file first.
+<tool_call>
+<function=read_file>
+<parameter=path>
+app.py
+</parameter>
+</function>
+</tool_call>
