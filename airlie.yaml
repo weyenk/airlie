@@ -137,6 +137,9 @@ lts:
   inline_top: 2                    # top-ranked keys get their value inlined, once per team
   inline_chars: 1500
 
+# ---- Repository map (every topology) --------------------------------------------------------------------------
+repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatures, injected before the goal
+
 # ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
 scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }
 teams: { k: 3, role: coder, orchestrator: autogen, max_steps: 40, token_budget: 200000, stop_on_first_pass: true }

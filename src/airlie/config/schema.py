@@ -198,6 +198,14 @@ class MemorySpec(Strict):
     os_reserve_gb: float = Field(default=12.0, description="OS + orchestrator reservation (spec 01 §1)")
 
 
+class RepoMapSpec(Strict):
+    enabled: bool = Field(default=True, description="inject a deterministic repository map before the goal")
+    max_chars: int = Field(default=6000, ge=0)
+    depth: int = Field(
+        default=3, ge=1, description="directory depth shown; deeper paths collapse to 'dir/ …'"
+    )
+
+
 class AirlieConfig(Strict):
     version: Literal[1] = 1
     engines: dict[str, EngineSpec]
@@ -211,6 +219,7 @@ class AirlieConfig(Strict):
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
+    repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
