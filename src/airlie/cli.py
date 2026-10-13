@@ -165,6 +165,10 @@ def engine_up(
         try:
             rows.append((name, asyncio.run(p.start(timeout_s=timeout))))
         except EngineError as e:
+            if "already running" in str(e):
+                console.print(f"engine [bold]{name}[/bold] is already running; leaving it (use restart)")
+                rows.append((name, asyncio.run(p.status())))
+                continue
             err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
     console.print(_health_table(rows))
