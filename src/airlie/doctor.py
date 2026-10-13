@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
-from airlie.config import AirlieConfig
+from airlie.config import AirlieConfig, profile_configs
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_TOOLS = ("task", "uv", "git", "hf")
@@ -31,6 +31,16 @@ class SystemProbe(Protocol):
     def tool_version(self, name: str) -> str | None: ...
     def model_config(self, repo: str, revision: str) -> dict[str, Any] | None: ...
     def http_ok(self, url: str) -> bool: ...
+    def resolve_binary(self, name: str) -> Path | None: ...
+    def file_contains(self, path: Path, needle: str) -> bool | None: ...
+    def model_file(self, repo: str, revision: str, file: str) -> Path | None: ...
+
+
+def systemone_impl_path(binary: Path) -> Path:
+    """llama-server's HTTP routes live in lib/libllama-server-impl.dylib beside the binary's prefix
+    (ai-mode's doctor checked the same file); the binary itself is a thin launcher."""
+    real = binary.resolve()
+    return real.parent.parent / "lib" / "libllama-server-impl.dylib"
 
 
 def is_hybrid_attention(config: dict[str, Any]) -> bool | None:
@@ -109,6 +119,22 @@ class RealProbe:
         except httpx.HTTPError:
             return False
 
+    def resolve_binary(self, name: str) -> Path | None:
+        exe = shutil.which(name)
+        return Path(exe) if exe else None
+
+    def file_contains(self, path: Path, needle: str) -> bool | None:
+        try:
+            return needle.encode() in path.read_bytes()
+        except OSError:
+            return None
+
+    def model_file(self, repo: str, revision: str, file: str) -> Path | None:
+        d = self.hf_cache / f"models--{repo.replace('/', '--')}" / "snapshots" / revision / file
+        if d.is_file() and d.resolve().is_file() and d.resolve().stat().st_size > 0:
+            return d
+        return None
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -170,6 +196,10 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
 
     managed_models: set[str] = set()
     for ename, e in cfg.engines.items():
+        if e.kind == "llama_server":
+            managed_models.update(e.models)
+            results.extend(_llama_server_checks(ename, e.binary, e.base_url or "", probe))
+            continue
         if e.kind != "vllm_mlx":
             continue
         managed_models.update(e.models)
@@ -202,19 +232,39 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
             results.append(
                 CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up")
             )
-        projected, unknown = project_memory_gb(cfg, ename)
+        variants = profile_configs(cfg) or {cfg.topology.kind: cfg}
         limit_gb = cfg.memory.wired_limit_mb / 1024.0
-        detail = (
-            f"projected {projected:.0f} GB (preloaded weights + {cfg.teams.k} teams × {e.max_kv_size} KV"
-            f" + {cfg.memory.os_reserve_gb:.0f} GB reserve) vs wired limit {limit_gb:.0f} GB"
-        )
-        if unknown:
-            detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
-        status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
-        results.append(CheckResult(f"engine:{ename}:memory_projection", status, detail))
+        for pname, pcfg in variants.items():
+            if ename not in pcfg.engines:
+                continue
+            pe = pcfg.engines[ename]
+            projected, unknown = project_memory_gb(pcfg, ename)
+            detail = (
+                f"projected {projected:.0f} GB (preloaded weights + {pcfg.teams.k} teams × "
+                f"{pe.max_kv_size} KV + {pcfg.memory.os_reserve_gb:.0f} GB reserve) "
+                f"vs wired limit {limit_gb:.0f} GB"
+            )
+            if unknown:
+                detail += f"; no estimated_memory_gb for {', '.join(unknown)}"
+            status: Status = "fail" if projected > limit_gb else ("warn" if unknown else "ok")
+            results.append(CheckResult(f"engine:{ename}:memory_projection[{pname}]", status, detail))
 
     for mname in sorted(managed_models):
         m = cfg.models[mname]
+        if m.file:
+            f = probe.model_file(m.repo, m.revision, m.file)
+            if f:
+                results.append(CheckResult(f"model:{mname}:file", "ok", str(f)))
+            else:
+                results.append(
+                    CheckResult(
+                        f"model:{mname}:file",
+                        "fail",
+                        f"{m.repo}@{m.revision[:8]} {m.file} not in HF cache; "
+                        f"run: task models:pull -- {mname}",
+                    )
+                )
+            continue
         if m.path is not None:
             ok = m.path.is_dir()
             results.append(
@@ -259,6 +309,36 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 )
             )
     return results
+
+
+def _llama_server_checks(ename: str, binary: str, base_url: str, probe: SystemProbe) -> list[CheckResult]:
+    out: list[CheckResult] = []
+    exe = probe.resolve_binary(binary)
+    out.append(
+        CheckResult(
+            f"engine:{ename}:binary",
+            "ok" if exe else "fail",
+            str(exe) if exe else f"'{binary}' not on PATH; run: brew install llama.cpp",
+        )
+    )
+    if exe:
+        impl = systemone_impl_path(exe)
+        if probe.file_contains(impl, "/v1/systemone"):
+            out.append(CheckResult(f"engine:{ename}:systemone", "ok", f"{impl.name} has /v1/systemone"))
+        else:
+            out.append(
+                CheckResult(
+                    f"engine:{ename}:systemone",
+                    "fail",
+                    f"{impl} lacks /v1/systemone (Kev needs it); run: brew install --HEAD llama.cpp",
+                )
+            )
+    health_url = f"{base_url.removesuffix('/v1')}/health"
+    if probe.http_ok(health_url):
+        out.append(CheckResult(f"engine:{ename}:health", "ok", f"{health_url} answers"))
+    else:
+        out.append(CheckResult(f"engine:{ename}:health", "warn", f"not running ({health_url}); run: task up"))
+    return out
 
 
 def worst(results: list[CheckResult]) -> Status:
