@@ -26,6 +26,16 @@ flag only chooses the parser), and without a flag it applies a generic fallback 
 channels come back raw, which is what `airlie.engine.output_parse` parses on the client with vllm-mlx's own
 parser classes (`engines.main.server_parsers: false`). Server-parsed calls always win; nothing is parsed twice.
 
+## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
+
+`ggml-org/Kev-4B-GGUF` (Q4_K_M, 3 GB) behind `/v1/systemone`, asked the role question over the nine criteria in
+`evals/routing-roles.yaml` for the 54 labelled tasks in `evals/routing.jsonl` (ai-mode's classify sets, role
+rows only): **54/54 correct (accuracy 1.00), mean confidence
+0.64, wrong-but-clear 0**, no confusions. Raw: `routing.json`.
+The design's bar for using studio routing for real work is accuracy ≥ 0.9. Mean confidence 0.64 means the
+`clear / ambiguous / low-confidence` policy (gap 0.15, floor 0.5) will route a fair share of tasks through the
+chief's hint; the per-decision log (`runs/<id>/routing.jsonl`) is what to tune the criteria lines against.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported
