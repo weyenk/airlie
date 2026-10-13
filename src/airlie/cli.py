@@ -132,7 +132,7 @@ def _engine_process(cfg: AirlieConfig, name: str):  # type: ignore[no-untyped-de
 
 
 def _managed(cfg: AirlieConfig) -> list[str]:
-    return [n for n, e in cfg.engines.items() if e.kind == "vllm_mlx"]
+    return [n for n, e in cfg.engines.items() if e.kind in ("vllm_mlx", "llama_server")]
 
 
 def _health_table(rows: list[tuple[str, object]]) -> Table:

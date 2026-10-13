@@ -31,7 +31,10 @@ def plan_pulls(cfg: AirlieConfig, only: Sequence[str] = ()) -> list[PullPlan]:
             continue
         if m.path is not None:
             continue
-        plans.append(PullPlan(name, m.repo, m.revision, ("hf", "download", m.repo, "--revision", m.revision)))
+        file = (m.file,) if m.file else ()
+        plans.append(
+            PullPlan(name, m.repo, m.revision, ("hf", "download", m.repo, *file, "--revision", m.revision))
+        )
     return plans
 
 
