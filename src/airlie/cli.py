@@ -29,6 +29,8 @@ eval_app = typer.Typer(no_args_is_help=True, help="Graded coding tasks (evals/ta
 app.add_typer(eval_app, name="eval")
 controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission controller (spec 03 §2–3).")
 app.add_typer(controller_app, name="controller")
+route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
+app.add_typer(route_app, name="route")
 console = Console()
 err = Console(stderr=True)
 
@@ -825,6 +827,36 @@ def controller_eval(
         table.add_row(name, str(m["yes_rate"]), str(m["useful_precision"]), str(m["useful_recall"]))
     console.print(table)
     console.print(f"agreement with logged decisions: {rep['agreement']}")
+
+
+@route_app.command("eval")
+def route_eval(
+    cases: Annotated[Path, typer.Option(help="labelled JSONL: question, task, expect")] = Path(
+        "evals/routing.jsonl"
+    ),
+    roles: Annotated[Path, typer.Option(help="role -> criterion YAML")] = Path("evals/routing-roles.yaml"),
+    min_accuracy: Annotated[float, typer.Option(help="exit 1 below this")] = 0.0,
+    out: Annotated[Path | None, typer.Option(help="save the JSON report here")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Score the router on a labelled set (accuracy, mean confidence, wrong-but-clear, confusions)."""
+    import asyncio
+
+    from airlie.bench.route_eval import evaluate, load_cases, load_criteria, render, save
+    from airlie.router import build_router
+
+    cfg = _load(config)
+    if cfg.router.kind != "jev":
+        err.print(
+            "[red]router.kind must be jev to evaluate routing (chief routing has nothing to score)[/red]"
+        )
+        raise typer.Exit(2)
+    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), load_criteria(roles)))
+    console.print(render(rep), markup=False, highlight=False)
+    if out is not None:
+        console.print(f"saved {save(rep, out)}")
+    if rep.accuracy < min_accuracy:
+        raise typer.Exit(1)
 
 
 def main() -> None:
