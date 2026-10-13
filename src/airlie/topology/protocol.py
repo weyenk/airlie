@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -15,7 +16,7 @@ class Topology(Protocol):
     run_dir: RunDir
 
     async def execute_task(
-        self, query_text: str, *, repo: Path, test_cmd: str | None = None
+        self, query_text: str, *, repo: Path, test_cmd: str | None = None, images: Sequence[Path] = ()
     ) -> RunReport: ...
 
 
@@ -24,6 +25,10 @@ def build_topology(cfg: AirlieConfig, engine: Engine, run_id: str | None = None)
         from airlie.topology.fork import ForkOrchestrator
 
         return ForkOrchestrator(cfg, engine, run_id=run_id)
+    if cfg.topology.kind == "studio":
+        from airlie.topology.studio import StudioOrchestrator
+
+        return StudioOrchestrator(cfg, engine, run_id=run_id)
     if cfg.topology.kind == "single":
         cfg = cfg.model_copy(deep=True)  # never mutate a config shared across requests (serve)
         cfg.teams.k = 1

@@ -21,9 +21,13 @@ class RunReport:
     scores: dict[str, float] = field(default_factory=dict)
     tests: dict[str, bool | None] = field(default_factory=dict)
     winning_branch: str | None = None
+    ok_override: bool | None = None
+    """A topology's own verdict when `teams` does not carry it (studio: an answer with no subtasks)."""
 
     @property
     def any_ok(self) -> bool:
+        if self.ok_override is not None:
+            return self.ok_override
         return any(t.ok for t in self.teams)
 
 
