@@ -376,6 +376,84 @@ def bench_lts(
         console.print(f"saved {save(rows, summary, v, out)}")
 
 
+@bench_app.command("topology")
+def bench_topology(
+    tasks: Annotated[str, typer.Option(help="comma-separated task ids (default: all)")] = "",
+    topologies: Annotated[str, typer.Option(help="comma-separated: single,teams,fork")] = "single,fork",
+    repeats: int = 3,
+    baseline: str = "single",
+    target_pct: float = 25.0,
+    tasks_dir: Path = Path("evals/tasks"),
+    out: Path | None = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Single-agent baseline vs K teams vs fork-when-stuck on graded tasks; design 2026-10-13 §9 verdict."""
+    import asyncio
+    import time
+
+    from airlie.bench.topology_bench import (
+        TopoRow,
+        apply_topology,
+        events_counts,
+        render,
+        save,
+        summarize,
+        verdict,
+    )
+    from airlie.evals import find_task, load_task, materialize
+
+    cfg = _load(config)
+    ids = [t.strip() for t in tasks.split(",") if t.strip()] or sorted(
+        p.stem for p in tasks_dir.glob("*.yaml")
+    )
+    topos = [t.strip() for t in topologies.split(",") if t.strip()]
+    rows: list[TopoRow] = []
+    for task_id in ids:
+        task = find_task(tasks_dir.resolve(), task_id) if task_id else load_task(Path(task_id))
+        for rep in range(repeats):
+            for topo in topos:
+                orch = _orchestrator(apply_topology(cfg, topo))
+                repo = materialize(task, orch.run_dir.path / "task-repo")
+                console.print(
+                    f"[bold]{task.id}[/bold] topology={topo} repeat={rep} run={orch.run_dir.run_id}"
+                )
+                t0 = time.monotonic()
+                report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
+                wall = time.monotonic() - t0
+                graded = {t.team_id: task.grade(orch.run_dir.path / t.team_id).passed for t in report.teams}
+                counts = events_counts(report.run_dir.events_path)
+                winner_passed = bool(graded.get(report.winner or "", False))
+                rows.append(
+                    TopoRow(
+                        task.id,
+                        topo,
+                        rep,
+                        round(wall, 1),
+                        counts["steps"],
+                        sum(t.prompt_tokens for t in report.teams),
+                        sum(t.completion_tokens for t in report.teams),
+                        counts["forks"],
+                        counts["rounds"],
+                        winner_passed,
+                        any(graded.values()),
+                        len(report.teams),
+                        report.run_id,
+                    )
+                )
+                verdict_txt = "PASS" if winner_passed else "FAIL"
+                console.print(
+                    f"  wall {wall:.0f}s, steps {counts['steps']}, forks {counts['forks']}, "
+                    f"winner {report.winner} {verdict_txt}, any {any(graded.values())}"
+                )
+    summary = summarize(rows)
+    candidates = [t for t in topos if t != baseline] or topos
+    for topo in candidates:
+        print(render(summary, verdict(summary, baseline=baseline, candidate=topo, target_pct=target_pct)))
+    if out:
+        v = verdict(summary, baseline=baseline, candidate=candidates[-1], target_pct=target_pct)
+        console.print(f"saved {save(rows, summary, v, out)}")
+
+
 @app.command()
 def serve(
     config: ConfigOpt = None,
