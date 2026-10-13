@@ -40,9 +40,10 @@ Run `task` to list them. The ones that exist today:
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task models:list` / `task models:pull [-- name…]` | show the catalog with pinned revisions / download exactly those revisions |
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop the vllm-mlx engine declared in `airlie.yaml` (one process, all catalog models in its registry); status shows pid and per-model readiness |
-| `task run -- "goal" --repo PATH [--k 3] [--test-cmd "pytest -q"]` | run K parallel teams on a goal; each team works in its own git worktree under the run directory and the report lists every team's outcome, branch and trace |
-| `task eval -- lang_detect [--k 1]` | materialize a graded task from `evals/tasks/`, run the teams on it, grade every worktree with the hidden tests |
+| `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
+| `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs the spec's K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
 | `task controller:dataset` / `task controller:train [-- --epochs 5]` / `task controller:eval` | build the training set from every run's admission log; train the spec 03 §2 controller (LoRA on Qwen3-0.6B + projections) with the spec 03 §3 REINFORCE objective; replay held-out decisions against the logged controller |
 | `task memory -- RUN_ID [--full]` | show a run's shared memory bank: keys, owning team, cross-team reads |
@@ -77,6 +78,24 @@ The EdgeAgent HAL scheduler (spec 04 §1) runs alongside: accepted-draft counts 
 team's EMA and re-allocate the 16-slot draft budget after every step (`hal` events). vllm-mlx 0.5.0 cannot take a
 per-request draft length, so the budgets are computed and logged but only *applied* on an engine with
 `engines.<name>.per_request_draft: true`.
+
+## Topologies
+
+`topology.kind` picks how branches are arranged over the engine (design: `docs/superpowers/specs/2026-10-13-fork-when-stuck-design.md`):
+
+- **`teams`** (the build spec): K independent teams from the start, sharing through the LTS memory bank, one
+  winner picked by the aggregator. `teams.k: 1` with `lts.enabled: false` is the single-agent baseline.
+- **`fork`** (fork-when-stuck): one trunk runs with the whole engine budget until it is stuck (two consecutive
+  failing `run_tests`, or a repeated action). Its working tree is committed, `fork.width` children get worktrees
+  at that commit and the trunk's conversation verbatim (a prefix-cache hit) plus one nudge each: a distinct
+  root-cause hypothesis from the `hypothesizer` role (`fork.diversify: hypotheses`) or a temperature spread. The
+  first child whose tests pass cancels its siblings and continues as the trunk; with no pass, the child with the
+  fewest failing tests continues, up to `fork.max_rounds`. Branches are `trunk`, `r1-1`, `r1-2`, `r2-1`, … and
+  the report names the winning git branch. Events: `fork_point`, `fork_resolved`, `branch_done`.
+
+Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
+`<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout. `--topology` on `task run`/`task
+eval` and `topology` in `POST /v1/airlie/run` override the config for one run; `task bench:topology` compares them.
 
 ## Learning to Share
 

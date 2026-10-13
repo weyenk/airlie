@@ -4,6 +4,13 @@ Every number here was produced through the `Engine` seam (`HTTPEngine`) against 
 by `task up`, on the Mac Studio M5 Max / 128 GB. Re-run with the commands shown; JSON next to each table is the raw
 output (`task bench:compare -- a.json b.json` prints deltas).
 
+## Before any benchmark: restart the engine
+
+Finding (2026-10-13): after about a day of runs the vllm-mlx prefix cache (35 entries, 19.6 GB) produced degenerate
+generations on the base model: tool calls without arguments and `run_tests` blocks repeated until `max_tokens`.
+`task restart` cleared it immediately. Run `task restart` before a benchmark, and treat a sudden rise in
+argument-less tool calls or 8192-token steps as a stale-cache symptom, not a model regression.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported
