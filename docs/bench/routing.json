@@ -2,7 +2,7 @@
  "n": 54,
  "correct": 54,
  "accuracy": 1.0,
- "mean_confidence": 0.6356440216534102,
+ "mean_confidence": 0.6242004448117259,
  "wrong_but_clear": 0,
  "confusions": {},
  "rows": [
@@ -11,7 +11,7 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.6172528772832456,
+   "confidence": 0.5591152815413112,
    "ok": true
   },
   {
@@ -19,7 +19,7 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.5748335818087807,
+   "confidence": 0.6327493885095843,
    "ok": true
   },
   {
@@ -27,7 +27,7 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.6141593287597034,
+   "confidence": 0.6441273992947161,
    "ok": true
   },
   {
@@ -35,7 +35,7 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.5248845631987862,
+   "confidence": 0.7071542760146473,
    "ok": true
   },
   {
@@ -43,7 +43,7 @@
    "expect": "coder",
    "chosen": "coder",
    "decision": "clear",
-   "confidence": 0.7649417605751293,
+   "confidence": 0.660482588229162,
    "ok": true
   },
   {
@@ -51,7 +51,7 @@
    "expect": "coder",
    "chosen": "coder",
    "decision": "clear",
-   "confidence": 0.7168471367103164,
+   "confidence": 0.6450739073570393,
    "ok": true
   },
   {
@@ -59,7 +59,7 @@
    "expect": "coder",
    "chosen": "coder",
    "decision": "clear",
-   "confidence": 0.6503751532985038,
+   "confidence": 0.5817544815835048,
    "ok": true
   },
   {
@@ -67,7 +67,7 @@
    "expect": "coder",
    "chosen": "coder",
    "decision": "clear",
-   "confidence": 0.7434334577892882,
+   "confidence": 0.6724272281041637,
    "ok": true
   },
   {
@@ -75,7 +75,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.5744522563989716,
+   "confidence": 0.6041648491507984,
    "ok": true
   },
   {
@@ -83,7 +83,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.678383067551681,
+   "confidence": 0.7262146730818642,
    "ok": true
   },
   {
@@ -91,7 +91,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.8284769921804185,
+   "confidence": 0.8284627750204477,
    "ok": true
   },
   {
@@ -99,7 +99,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.798610630930383,
+   "confidence": 0.8047574901657045,
    "ok": true
   },
   {
@@ -107,7 +107,7 @@
    "expect": "research",
    "chosen": "research",
    "decision": "clear",
-   "confidence": 0.7478121571428803,
+   "confidence": 0.7060747083267993,
    "ok": true
   },
   {
@@ -115,7 +115,7 @@
    "expect": "research",
    "chosen": "research",
    "decision": "clear",
-   "confidence": 0.7082649666545077,
+   "confidence": 0.6322048728660766,
    "ok": true
   },
   {
@@ -123,15 +123,15 @@
    "expect": "research",
    "chosen": "research",
    "decision": "clear",
-   "confidence": 0.7598887034167134,
+   "confidence": 0.69506855768636,
    "ok": true
   },
   {
    "task": "Spike: can SQLite handle our expected write volume for the audit log?",
    "expect": "research",
    "chosen": "research",
-   "decision": "low-confidence",
-   "confidence": 0.4292465377286615,
+   "decision": "ambiguous",
+   "confidence": 0.33807391906811357,
    "ok": true
   },
   {
@@ -139,7 +139,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "clear",
-   "confidence": 0.7831662642635754,
+   "confidence": 0.7553224509484677,
    "ok": true
   },
   {
@@ -147,7 +147,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "clear",
-   "confidence": 0.644295241174126,
+   "confidence": 0.6157656666181333,
    "ok": true
   },
   {
@@ -155,7 +155,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "clear",
-   "confidence": 0.6760336867861393,
+   "confidence": 0.6675354306329203,
    "ok": true
   },
   {
@@ -163,7 +163,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "clear",
-   "confidence": 0.7267254941422496,
+   "confidence": 0.7475404211192644,
    "ok": true
   },
   {
@@ -171,7 +171,7 @@
    "expect": "qa",
    "chosen": "qa",
    "decision": "clear",
-   "confidence": 0.6672425046719361,
+   "confidence": 0.6759742205725902,
    "ok": true
   },
   {
@@ -179,7 +179,7 @@
    "expect": "qa",
    "chosen": "qa",
    "decision": "clear",
-   "confidence": 0.8498735514978003,
+   "confidence": 0.837896440887807,
    "ok": true
   },
   {
@@ -187,15 +187,15 @@
    "expect": "qa",
    "chosen": "qa",
    "decision": "clear",
-   "confidence": 0.7898679483603736,
+   "confidence": 0.7969524601565482,
    "ok": true
   },
   {
    "task": "Add unit tests for the date parsing helpers",
    "expect": "qa",
    "chosen": "qa",
-   "decision": "low-confidence",
-   "confidence": 0.4788285638665501,
+   "decision": "clear",
+   "confidence": 0.634742527950308,
    "ok": true
   },
   {
@@ -203,7 +203,7 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.7497929384793741,
+   "confidence": 0.7259877348186494,
    "ok": true
   },
   {
@@ -211,7 +211,7 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.6581615509244126,
+   "confidence": 0.7028951750191694,
    "ok": true
   },
   {
@@ -219,7 +219,7 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.5255809515256996,
+   "confidence": 0.5708050076117123,
    "ok": true
   },
   {
@@ -227,15 +227,15 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.5441496334655692,
+   "confidence": 0.6008195322896414,
    "ok": true
   },
   {
    "task": "Critique this checkout page layout and colour hierarchy",
    "expect": "design",
    "chosen": "design",
-   "decision": "clear",
-   "confidence": 0.5905449247031554,
+   "decision": "ambiguous",
+   "confidence": 0.423979685697633,
    "ok": true
   },
   {
@@ -243,15 +243,15 @@
    "expect": "design",
    "chosen": "design",
    "decision": "clear",
-   "confidence": 0.6409964053424341,
+   "confidence": 0.6204083982445208,
    "ok": true
   },
   {
    "task": "Does this dashboard mockup have good spacing and typography?",
    "expect": "design",
    "chosen": "design",
-   "decision": "clear",
-   "confidence": 0.5934918294194651,
+   "decision": "low-confidence",
+   "confidence": 0.4796485771034618,
    "ok": true
   },
   {
@@ -259,7 +259,7 @@
    "expect": "design",
    "chosen": "design",
    "decision": "clear",
-   "confidence": 0.6527081058639083,
+   "confidence": 0.5774317558790371,
    "ok": true
   },
   {
@@ -267,7 +267,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "clear",
-   "confidence": 0.7149616480831386,
+   "confidence": 0.7230656510131042,
    "ok": true
   },
   {
@@ -275,7 +275,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "clear",
-   "confidence": 0.7926407034427065,
+   "confidence": 0.7628272208607695,
    "ok": true
   },
   {
@@ -283,7 +283,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "ambiguous",
-   "confidence": 0.2959279318577049,
+   "confidence": 0.2750617061758795,
    "ok": true
   },
   {
@@ -291,7 +291,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "clear",
-   "confidence": 0.5147078345055354,
+   "confidence": 0.5809590993569579,
    "ok": true
   },
   {
@@ -299,7 +299,7 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.6715812344561543,
+   "confidence": 0.5635554528557082,
    "ok": true
   },
   {
@@ -307,23 +307,23 @@
    "expect": "architect",
    "chosen": "architect",
    "decision": "clear",
-   "confidence": 0.5337228900893124,
+   "confidence": 0.6323405510572407,
    "ok": true
   },
   {
    "task": "Write the SQL migration and handler code for the new tags feature",
    "expect": "coder",
    "chosen": "coder",
-   "decision": "low-confidence",
-   "confidence": 0.4683863609705608,
+   "decision": "ambiguous",
+   "confidence": 0.36713368477024955,
    "ok": true
   },
   {
    "task": "Make the CLI return a non-zero exit code when validation fails",
    "expect": "coder",
    "chosen": "coder",
-   "decision": "clear",
-   "confidence": 0.5886514155811328,
+   "decision": "low-confidence",
+   "confidence": 0.4737985005057685,
    "ok": true
   },
   {
@@ -331,7 +331,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.7691431006558866,
+   "confidence": 0.767702083830647,
    "ok": true
   },
   {
@@ -339,7 +339,7 @@
    "expect": "product",
    "chosen": "product",
    "decision": "clear",
-   "confidence": 0.6520486221151659,
+   "confidence": 0.7430524211450028,
    "ok": true
   },
   {
@@ -347,7 +347,7 @@
    "expect": "research",
    "chosen": "research",
    "decision": "clear",
-   "confidence": 0.6617691343615225,
+   "confidence": 0.6626567816924516,
    "ok": true
   },
   {
@@ -355,7 +355,7 @@
    "expect": "research",
    "chosen": "research",
    "decision": "clear",
-   "confidence": 0.5724183484603518,
+   "confidence": 0.5149522962187185,
    "ok": true
   },
   {
@@ -363,7 +363,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "clear",
-   "confidence": 0.7536597043538787,
+   "confidence": 0.798581641084626,
    "ok": true
   },
   {
@@ -371,7 +371,7 @@
    "expect": "docs",
    "chosen": "docs",
    "decision": "low-confidence",
-   "confidence": 0.46109881893822063,
+   "confidence": 0.41858366937483166,
    "ok": true
   },
   {
@@ -379,15 +379,15 @@
    "expect": "qa",
    "chosen": "qa",
    "decision": "low-confidence",
-   "confidence": 0.4624274347140071,
+   "confidence": 0.45823779182704777,
    "ok": true
   },
   {
    "task": "Review these tests and tell me which assertions are weak",
    "expect": "qa",
    "chosen": "qa",
-   "decision": "ambiguous",
-   "confidence": 0.2483138875887607,
+   "decision": "low-confidence",
+   "confidence": 0.2633441607384532,
    "ok": true
   },
   {
@@ -395,7 +395,7 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.8024897556133384,
+   "confidence": 0.8221139139193877,
    "ok": true
   },
   {
@@ -403,7 +403,7 @@
    "expect": "security",
    "chosen": "security",
    "decision": "clear",
-   "confidence": 0.564510659926745,
+   "confidence": 0.5801076521947672,
    "ok": true
   },
   {
@@ -411,7 +411,7 @@
    "expect": "design",
    "chosen": "design",
    "decision": "clear",
-   "confidence": 0.6477636911119227,
+   "confidence": 0.5624443890942054,
    "ok": true
   },
   {
@@ -419,7 +419,7 @@
    "expect": "design",
    "chosen": "design",
    "decision": "clear",
-   "confidence": 0.6443971003509065,
+   "confidence": 0.6181620472786445,
    "ok": true
   },
   {
@@ -427,7 +427,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "clear",
-   "confidence": 0.669218927892822,
+   "confidence": 0.6894688988474084,
    "ok": true
   },
   {
@@ -435,7 +435,7 @@
    "expect": "ux",
    "chosen": "ux",
    "decision": "clear",
-   "confidence": 0.5316151982996202,
+   "confidence": 0.5570625244411748,
    "ok": true
   }
  ]

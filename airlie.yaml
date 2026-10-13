@@ -188,7 +188,10 @@ topology:
     teams:  { teams: { k: 3 }, lts: { enabled: true } }
     fork:   { teams: { k: 1 }, lts: { enabled: false } }
     studio:                        # chief + Kev router + specialists (design 2026-10-13); needs `task restart -- --topology studio`
-      engines: { main: { server_parsers: false, max_kv_size: 131072 } }
+      # server_parsers stays true: without the flag vllm-mlx 0.5.0's batched engine renders tools in its own
+      # bracket protocol and the coder's calls arrive argument-less (seen 2026-10-13). The server parses the coder
+      # family; airlie parses what it leaves raw (Muse channels, hermes JSON from the generalist roles).
+      engines: { main: { max_kv_size: 131072 } }
       models: { generalist: { preload: true }, reviewer: { preload: true } }
       teams: { k: 1, max_steps: 40 }
       lts: { enabled: false }

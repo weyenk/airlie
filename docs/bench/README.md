@@ -28,7 +28,11 @@ the fallback's Nemotron pattern, so the server parsed it too and `HTTPEngine` re
 without the client parser. What does come back raw is Harmony (gpt-oss) and Muse Glimmer's channels; those are
 what `airlie.engine.output_parse` parses on the client with vllm-mlx's own parser classes
 (`engines.main.server_parsers: false`), validated on fixtures until Muse is pulled in plan 2. Server-parsed calls
-always win; nothing is parsed twice.
+always win; nothing is parsed twice. **But** (2026-10-13, studio bench attempt 1): the *managed* engine
+(`--models-config`, continuous batching) started without the parser flags rendered tools in vllm-mlx's own
+bracket protocol (`[Calling tool: name({...})]`) and the coder's calls came back with empty arguments; the
+single-agent baseline failed in 6 s. The studio profile therefore keeps `server_parsers: true`; client-side
+parsing is for what the server leaves raw.
 
 ## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
 

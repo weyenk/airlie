@@ -109,8 +109,8 @@ Every topology injects a deterministic repository map (tree, sizes, Python signa
   writers one at a time, readers in parallel; after a code subtask the reviewer (a different model family, on
   purpose: judges favour their own family's text) returns a JSON verdict and blocking findings give the coder
   one fix round; the chief synthesises. Run it with `task studio -- "goal" --repo . [--image shot.png]` after
-  `task restart -- --topology studio` (the profile preloads the generalist and the reviewer and turns
-  server-side parsing off). Every routing decision is logged (`runs/<id>/routing.jsonl`) and scorable with
+  `task restart -- --topology studio` (the profile preloads the generalist and the reviewer; the server keeps
+  parsing the coder family's tool calls and airlie parses what it leaves raw, such as Muse's channels). Every routing decision is logged (`runs/<id>/routing.jsonl`) and scorable with
   `task route:eval`.
 
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
