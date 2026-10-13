@@ -75,6 +75,12 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
     async def run_json(
         self, args: Mapping[str, Any], cancellation_token: CancellationToken, call_id: str | None = None
     ) -> Any:
+        if "__truncated__" in args:  # repair_create_result could not decode the arguments
+            tail = str(args["__truncated__"])[-40:]
+            raise ToolError(
+                f"error: the arguments of {self._tool.name} were cut off (the generation ran away, ending in "
+                f"{tail!r}). Make a shorter call: write a smaller file or split the change."
+            )
         missing = [n for n in self._required if args.get(n) is None]
         if missing:  # a clear error instead of pydantic's, so the model can correct the call
             raise ToolError(f"error: {self._tool.name} requires: {', '.join(missing)}")
@@ -126,6 +132,11 @@ def build_model_client(
         temperature=role.sampling.temperature,
         top_p=role.sampling.top_p,
         max_tokens=role.max_tokens,
+        extra_body={  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
+            "top_k": role.sampling.top_k,
+            "min_p": role.sampling.min_p,
+            "repetition_penalty": role.sampling.repetition_penalty,
+        },  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not in the typed config
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id

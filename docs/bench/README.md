@@ -4,12 +4,17 @@ Every number here was produced through the `Engine` seam (`HTTPEngine`) against 
 by `task up`, on the Mac Studio M5 Max / 128 GB. Re-run with the commands shown; JSON next to each table is the raw
 output (`task bench:compare -- a.json b.json` prints deltas).
 
-## Before any benchmark: restart the engine
+## Before any benchmark: restart the engine, and know the model's failure mode
 
-Finding (2026-10-13): after about a day of runs the vllm-mlx prefix cache (35 entries, 19.6 GB) produced degenerate
-generations on the base model: tool calls without arguments and `run_tests` blocks repeated until `max_tokens`.
-`task restart` cleared it immediately. Run `task restart` before a benchmark, and treat a sudden rise in
-argument-less tool calls or 8192-token steps as a stale-cache symptom, not a model regression.
+Finding (2026-10-13): the base coder model (Qwen3-Coder-30B-A3B-4bit at temperature 0.3) sometimes collapses into
+repetition mid-generation (a file's content turning into thousands of `0`s, or `run_tests` call blocks repeated
+until `max_tokens`). Server log signature: `Chat completion: 8192 tokens in 200–400s`. It happened in 121 of the
+first ~600 completions on 2026-10-12/13 regardless of topology, so it is a model pathology, not a cache or
+topology effect; a day-old prefix cache made the argument-less-call variant worse and `task restart` cleared that
+part. Guards now in `airlie.yaml`: `roles.coder.sampling.repetition_penalty: 1.05` (sent per request on both
+team paths) and `roles.coder.max_tokens: 4096` (bounds a runaway to ~2 min); a cut-off tool call is reported to
+the model as such instead of executed. Still: run `task restart` before a benchmark, and compare the count of
+`8192 tokens` / `4096 tokens` completions in `engines/main/server.log` across runs when results look off.
 
 ## Method (`task bench`)
 

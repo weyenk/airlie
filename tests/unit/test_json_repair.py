@@ -94,3 +94,21 @@ def test_repair_create_result_keeps_only_the_first_call() -> None:
     assert isinstance(out.content, list) and [c.name for c in out.content] == ["run_tests"]
     text = CreateResult(finish_reason="stop", content="hi", usage=RequestUsage(1, 1), cached=False)
     assert repair_create_result(text).content == "hi"
+
+
+def test_repair_create_result_marks_cut_off_arguments() -> None:
+    from autogen_core import FunctionCall
+    from autogen_core.models import CreateResult, RequestUsage
+
+    from airlie.teams.autogen_client import repair_create_result
+
+    raw = '{"path": "a.py", "content": "x = 1' + "0" * 500
+    res = CreateResult(
+        finish_reason="function_calls",
+        content=[FunctionCall(id="a", name="write_file", arguments=raw)],
+        usage=RequestUsage(1, 1),
+        cached=False,
+    )
+    out = repair_create_result(res)
+    args = json.loads(out.content[0].arguments)  # type: ignore[union-attr]
+    assert set(args) == {"__truncated__"} and args["__truncated__"].endswith("0" * 20)

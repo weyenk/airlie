@@ -116,6 +116,8 @@ class HTTPEngine:
             "presence_penalty": req.sampling.presence_penalty,
             "chat_template_kwargs": {"enable_thinking": bool(thinking)},
         }
+        if req.sampling.repetition_penalty != 1.0:
+            body["repetition_penalty"] = req.sampling.repetition_penalty
         if stream:
             body["stream_options"] = {"include_usage": True}
         if req.stop:

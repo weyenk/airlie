@@ -6,6 +6,7 @@ both are fixed at the client boundary."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
@@ -24,7 +25,14 @@ def repair_create_result(result: CreateResult) -> CreateResult:
         return result
     fixed: list[FunctionCall] = []
     for call in result.content[:1]:  # one action per step: later calls in a "plan" are often argument-less
-        fixed.append(FunctionCall(id=call.id, name=call.name, arguments=repair_json_args(call.arguments)))
+        args = repair_json_args(call.arguments)
+        try:
+            json.loads(args)
+        except (
+            json.JSONDecodeError
+        ):  # cut off mid-string (runaway generation): tell the model, do not execute
+            args = json.dumps({"__truncated__": call.arguments[-200:]})
+        fixed.append(FunctionCall(id=call.id, name=call.name, arguments=args))
     result.content = fixed
     return result
 

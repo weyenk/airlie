@@ -21,6 +21,9 @@ class Sampling(Strict):
     top_k: int = 20
     min_p: float = 0.0
     presence_penalty: float = 0.0
+    repetition_penalty: float = Field(
+        default=1.0, ge=1.0, description="mlx-lm style (>1.0 penalizes); guards against repetition collapse"
+    )
 
 
 class ModelSpec(Strict):

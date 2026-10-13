@@ -147,3 +147,34 @@ async def test_registry_tool_marks_failures_as_errors_and_names_missing_args(tmp
         await read.run_json({"path": "missing.txt"}, cancellation_token=None)  # type: ignore[arg-type]
     with pytest.raises(ToolError):
         await run_tests.run_json({}, cancellation_token=None)  # type: ignore[arg-type]
+
+
+def test_model_client_passes_sampling_the_openai_client_lacks_via_extra_body(tmp_path: Path) -> None:
+    from airlie.config import Sampling
+
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md",
+        model="base",
+        thinking=False,
+        max_tokens=64,
+        sampling=Sampling(top_k=20, min_p=0.05, repetition_penalty=1.05),
+    )
+    client = build_model_client("http://127.0.0.1:8080/v1", "base", role, api_key=None)
+    extra = client._create_args["extra_body"]  # noqa: SLF001 - what the OpenAI client sends per request
+    assert extra == {"top_k": 20, "min_p": 0.05, "repetition_penalty": 1.05}
+
+
+async def test_registry_tool_reports_cut_off_arguments(tmp_path: Path) -> None:
+    """A runaway generation leaves the arguments JSON unterminated; the model gets a clear, actionable
+    error."""
+    import pytest
+
+    from airlie.teams.autogen_team import ToolError
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    reg = ToolRegistry.builtin(["write_file"], ToolContext(worktree=wt))
+    (write,) = build_function_tools(reg)
+    with pytest.raises(ToolError, match="cut off.*shorter"):
+        await write.run_json({"__truncated__": "0000000000"}, cancellation_token=None)  # type: ignore[arg-type]
