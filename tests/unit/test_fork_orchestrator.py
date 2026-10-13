@@ -1,0 +1,177 @@
+"""Fork-when-stuck: trunk forks after two failing run_tests; children share state and tree; first pass
+wins."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import yaml
+
+from airlie.config import load_config
+from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.topology.fork import ForkOrchestrator
+from airlie.topology.protocol import build_topology
+
+
+def repo_with_marker_tests(tmp_path: Path) -> Path:
+    """Tests pass only once a file named PASS exists in the worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("hi\n")
+    (repo / "check.sh").write_text(
+        "#!/bin/sh\nif [ -f PASS ]; then echo '1 passed'; exit 0; fi\necho '1 failed'; exit 1\n"
+    )
+    os.chmod(repo / "check.sh", 0o755)
+    env = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
+def cfg_for(tmp_path: Path, **fork: object):  # type: ignore[no-untyped-def]
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir(exist_ok=True)
+    for r in ("coder", "summarizer", "judge", "aggregator"):
+        (cfg_dir / f"{r}.md").write_text(f"you are {r}")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
+            for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "teams": {"orchestrator": "native", "max_steps": 10},
+        "tools": {"builtin": ["write_file", "run_tests"]},
+        "topology": {"kind": "fork"},
+        "fork": {
+            "width": 2,
+            "after_failures": 2,
+            "child_steps": 4,
+            "max_rounds": 2,
+            "diversify": "temperature",
+            **fork,
+        },
+        "repo_map": {"enabled": False},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(cfg_dir / "airlie.yaml")
+
+
+RUN = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+WRITE_PASS = FakeReply(
+    tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "PASS", "content": "ok\n"}))]
+)
+WRITE_NOTE = FakeReply(
+    tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "note.txt", "content": "trunk\n"}))]
+)
+
+
+def events(report):  # type: ignore[no-untyped-def]
+    return [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+
+
+async def test_trunk_forks_after_two_failures_and_passing_child_wins(tmp_path: Path) -> None:
+    # Replies are consumed in request order: trunk (note, run, run) → fork → children interleave.
+    # One child writes PASS and runs the tests (pass) and finishes; the other only runs failing tests
+    # until it is cancelled.
+    engine = FakeEngine(
+        {
+            "coder": [
+                WRITE_NOTE,
+                RUN,
+                RUN,  # trunk: note written, two failures → fork point
+                WRITE_PASS,  # first child request
+                RUN,  # second child request (fails)
+                RUN,  # first child again (passes) → sibling cancelled
+                FakeReply(text="fixed it"),  # first child final
+                RUN,
+                RUN,
+                RUN,  # spare replies if the sibling is still running
+            ]
+        }
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f1")
+    report = await orch.execute_task(
+        "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    ids = [t.team_id for t in report.teams]
+    assert ids[0] == "trunk" and set(ids[1:]) == {"r1-1", "r1-2"}
+    trunk = report.teams[0]
+    assert trunk.stop_reason == "fork_point" and trunk.steps == 3
+    assert report.winner in {"r1-1", "r1-2"}
+    assert (orch.run_dir.path / report.winner / "PASS").exists()
+    assert report.winning_branch == f"airlie/f1/{report.winner}"
+    assert report.final_answer == "fixed it" and report.any_ok
+    assert (orch.run_dir.path / "r1-1" / "note.txt").read_text() == "trunk\n"  # child from the WIP commit
+    assert (orch.run_dir.path / "r1-2" / "note.txt").read_text() == "trunk\n"
+    ev = events(report)
+    kinds = [e["kind"] for e in ev]
+    assert kinds.count("fork_point") == 1 and kinds.count("fork_resolved") == 1
+    fp = next(e for e in ev if e["kind"] == "fork_point")
+    assert fp["round"] == 1 and fp["parent"] == "trunk" and fp["children"] == ["r1-1", "r1-2"]
+    assert "1 failed" in fp["test_tail"]
+    fr = next(e for e in ev if e["kind"] == "fork_resolved")
+    assert fr["winner"] == report.winner and fr["how"] == "visible_pass"
+    done = next(e for e in ev if e["kind"] == "run_done")
+    assert done["forks"] == 1 and done["rounds"] == 1 and done["ok"] is True
+    # a child resumed the trunk's conversation: its first request carries the history plus a nudge
+    child_first = next(r for r in engine.requests[3:] if "You are now branch" in r.messages[-1].content)
+    assert [m.role for m in child_first.messages[:2]] == ["system", "user"]
+    assert len(child_first.messages) == 9  # system, goal, 3×(assistant, tool), nudge
+    assert (orch.run_dir.path / "report.md").is_file()
+    loser = next(t for t in report.teams if t.team_id not in ("trunk", report.winner))
+    assert loser.stop_reason == "cancelled"
+
+
+async def test_no_child_passes_best_effort_then_max_rounds(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [RUN] * 40})  # everyone only ever runs failing tests
+    orch = ForkOrchestrator(cfg_for(tmp_path, child_steps=2, max_rounds=2), engine, run_id="f2")
+    report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
+    ev = events(report)
+    resolved = [e for e in ev if e["kind"] == "fork_resolved"]
+    assert [e["how"] for e in resolved] == ["best_effort", "best_effort"]
+    assert sum(1 for e in ev if e["kind"] == "fork_point") == 2
+    assert report.winner in {"r2-1", "r2-2"} and not report.any_ok
+    assert {t.team_id for t in report.teams} == {"trunk", "r1-1", "r1-2", "r2-1", "r2-2"}
+
+
+async def test_resolve_uses_last_run_tests_outcome(tmp_path: Path) -> None:
+    """A child that passed once and then broke the tests is not the winner."""
+    from airlie.obs import EventSink
+    from airlie.teams import NullObserver
+    from airlie.teams.protocol import StepRecord
+    from airlie.topology.fork import ForkObserver
+
+    obs = ForkObserver(NullObserver(), EventSink(tmp_path / "e.jsonl", "r"), after_failures=2)
+    ok = StepRecord("r1-1", 1, ToolCall("a", "run_tests", "{}"), "1 passed", True)
+    bad = StepRecord("r1-1", 2, ToolCall("b", "run_tests", "{}"), "1 failed", False)
+    await obs.after_step(ok)
+    assert obs.passed["r1-1"] is True
+    await obs.after_step(bad)
+    assert obs.passed["r1-1"] is False and obs.failing["r1-1"] == 1 and obs.stuck(bad) is False
+    await obs.after_step(bad)
+    assert obs.stuck(bad) is True
+
+
+async def test_total_step_cap_ends_the_run(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [RUN] * 40})
+    orch = ForkOrchestrator(cfg_for(tmp_path, max_total_steps=5, max_rounds=5), engine, run_id="f3")
+    report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
+    assert sum(1 for e in events(report) if e["kind"] == "fork_point") == 1  # trunk 2 + kids 2×4 ≥ cap
+    assert sum(t.steps for t in report.teams) <= 2 + 2 * 4
+
+
+def test_build_topology_selects_by_kind(tmp_path: Path) -> None:
+    from airlie.orchestrator import ParallelAgentTeamOrchestrator
+
+    engine = FakeEngine({})
+    cfg = cfg_for(tmp_path)
+    assert isinstance(build_topology(cfg, engine, run_id="b1"), ForkOrchestrator)
+    cfg.topology.kind = "teams"
+    assert isinstance(build_topology(cfg, engine, run_id="b2"), ParallelAgentTeamOrchestrator)
