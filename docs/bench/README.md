@@ -22,9 +22,13 @@ A throwaway `vllm-mlx serve` of Qwen3-4B with no `--enable-auto-tool-choice` and
 sent a chat request with one `read_file` tool: the tools were rendered into the prompt, the model answered with a
 call, `finish_reason` was `tool_calls`. vllm-mlx renders `tools` whenever the request carries them (the parser
 flag only chooses the parser), and without a flag it applies a generic fallback that recognises JSON-in-
-`<tool_call>`, Llama `<function=…>`, MiniMax and Nemotron styles. Qwen3-Coder's XML, Harmony and Muse Glimmer's
-channels come back raw, which is what `airlie.engine.output_parse` parses on the client with vllm-mlx's own
-parser classes (`engines.main.server_parsers: false`). Server-parsed calls always win; nothing is parsed twice.
+`<tool_call>`, Llama `<function=…>`, MiniMax and Nemotron styles. Checked the same day with the coder model
+(Qwen3-Coder-30B-A3B) on a throwaway no-parser server: its `<tool_call><function=…><parameter=…>` XML matches
+the fallback's Nemotron pattern, so the server parsed it too and `HTTPEngine` received a `ToolCall` with or
+without the client parser. What does come back raw is Harmony (gpt-oss) and Muse Glimmer's channels; those are
+what `airlie.engine.output_parse` parses on the client with vllm-mlx's own parser classes
+(`engines.main.server_parsers: false`), validated on fixtures until Muse is pulled in plan 2. Server-parsed calls
+always win; nothing is parsed twice.
 
 ## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
 

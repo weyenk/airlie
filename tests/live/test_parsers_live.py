@@ -1,4 +1,6 @@
-"""Live: the coder model's raw tool-call text parses on the client the same way the server parses it."""
+"""Live: a coder tool call arrives as a ToolCall through HTTPEngine. With `engines.main.server_parsers: true`
+the server parses it and `parse_output` keeps it; with `false` the client parses the raw XML (checked by hand
+on a no-parser server on 2026-10-13, see docs/bench/README.md)."""
 
 import pytest
 
@@ -9,7 +11,7 @@ from airlie.engine import GenRequest, Message, ToolSchema
 pytestmark = pytest.mark.live
 
 
-async def test_coder_tool_call_round_trip_through_parse_output() -> None:
+async def test_coder_tool_call_arrives_as_a_tool_call() -> None:
     cfg = load_config()
     eng = _http_engine(cfg, cfg.engine_for_role("coder"))
     tool = ToolSchema(

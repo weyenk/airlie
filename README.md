@@ -102,8 +102,11 @@ Every topology injects a deterministic repository map (tree, sizes, Python signa
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
 selected (`extends: <profile>` chains), so each topology declares its own team count, memory settings, contexts
 and models. `--topology` on `task run`/`task eval` and `topology` in `POST /v1/airlie/run` select the profile for
-one run; `task doctor` projects memory per profile. A profile that changes engine settings (`max_kv_size`,
-`server_parsers`, the resident model set) takes effect at the next `task restart`.
+one run; a profile name that is not a kind (a named variant such as `studio-qwen38`, or a parent other
+profiles `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
+`--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
+profile across every managed engine. A profile that changes engine settings (`max_kv_size`, `server_parsers`,
+the resident model set) takes effect at the next `task restart`.
 
 ## Learning to Share
 
