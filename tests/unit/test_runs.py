@@ -116,6 +116,8 @@ async def test_orchestrator_runs_k_teams_in_worktrees_and_reports(tmp_path: Path
     events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
     kinds = [e["kind"] for e in events]
     assert kinds.count("step") == 2 and kinds.count("team_done") == 2 and "run_done" in kinds
+    assert "repo_map" in kinds  # design 2026-10-13 §4: every topology injects the repository map
+    assert engine.requests[0].messages[1].content.startswith("[Repository map]")
     # each team worked in its own worktree. The fake engine hands replies out in execution order, so which
     # team wrote which file is not fixed; both files exist across the worktrees, none leaked into the repo.
     written = {p.name for i in (1, 2) for p in (report.run_dir.path / f"team-{i}").glob("t*.txt")}

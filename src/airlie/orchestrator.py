@@ -21,6 +21,7 @@ from airlie.lts.memory_tool import RetrieveValue
 from airlie.lts.observer import LTSObserver
 from airlie.lts.summarizer import build_summarizer
 from airlie.obs import EventSink, RunDir
+from airlie.repo_map import build_repo_map
 from airlie.report import RunReport, write_report
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
@@ -130,6 +131,7 @@ class ParallelAgentTeamOrchestrator:
         self.observer: StepObserver = observer or self._logging
         self.lts: LTSObserver | None = None
         self.hal_observer: HALObserver | None = None
+        self.preamble: str | None = None
         self.aggregator: Aggregator = (
             LLMAggregator(engine, cfg.aggregator.role)
             if cfg.aggregator.kind == "llm"
@@ -247,6 +249,16 @@ class ParallelAgentTeamOrchestrator:
         self.sink.emit(
             "run_start", goal=query_text, k=k, repo=str(repo), orchestrator=self.cfg.teams.orchestrator
         )
+        if self.cfg.repo_map.enabled:
+            text, cached = build_repo_map(
+                repo,
+                test_cmd=test_cmd,
+                max_chars=self.cfg.repo_map.max_chars,
+                depth=self.cfg.repo_map.depth,
+                cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
+            )
+            self.preamble = text
+            self.sink.emit("repo_map", chars=len(text), cached=cached)
         teams = [f"team-{i + 1}" for i in range(k)]
         self.hal_observer = HALObserver(self.hal, self.scheduler, self.sink, self.lts or self.observer, teams)
         results = await self._run_teams(teams, query_text, repo, test_cmd)
@@ -357,6 +369,7 @@ class ParallelAgentTeamOrchestrator:
             token_budget=self.cfg.teams.token_budget,
             scheduler=self.scheduler,
             draft_budget=self._budget_provider(team_id),
+            preamble=self.preamble,
         )
         self.sink.emit("team_start", team_id=team_id, worktree=str(wt))
         result = await self.team.run(ctx, observer)

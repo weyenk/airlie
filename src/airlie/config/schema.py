@@ -198,6 +198,24 @@ class MemorySpec(Strict):
     os_reserve_gb: float = Field(default=12.0, description="OS + orchestrator reservation (spec 01 §1)")
 
 
+class TopologySpec(Strict):
+    kind: Literal["teams", "fork"] = Field(
+        default="teams",
+        description="teams = spec K parallel teams + LTS; fork = fork-when-stuck (2026-10-13)",
+    )
+
+
+class ForkSpec(Strict):
+    width: int = Field(default=2, ge=1, description="children per fork point")
+    after_failures: int = Field(default=2, ge=1, description="consecutive failing run_tests = stuck")
+    child_steps: int = Field(default=15, ge=1, description="steps a child gets before resolve")
+    max_rounds: int = Field(default=3, ge=0)
+    max_total_steps: int = Field(default=120, ge=1, description="steps across every branch of a run")
+    diversify: Literal["hypotheses", "temperature"] = "hypotheses"
+    hypothesis_role: str = Field(default="judge", description="role that lists root-cause hypotheses")
+    temperatures: list[float] = Field(default=[0.3, 0.7], min_length=1)
+
+
 class RepoMapSpec(Strict):
     enabled: bool = Field(default=True, description="inject a deterministic repository map before the goal")
     max_chars: int = Field(default=6000, ge=0)
@@ -220,6 +238,8 @@ class AirlieConfig(Strict):
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
+    topology: TopologySpec = Field(default_factory=TopologySpec)
+    fork: ForkSpec = Field(default_factory=ForkSpec)
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
@@ -265,6 +285,7 @@ class AirlieConfig(Strict):
             ("lts.controller.judge_role", self.lts.controller.judge_role),
             ("aggregator.role", self.aggregator.role),
             ("aggregator.judge_role", self.aggregator.judge_role),
+            ("fork.hypothesis_role", self.fork.hypothesis_role),
         ):
             if role not in self.roles:
                 problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")

@@ -237,3 +237,19 @@ def test_summarizer_kind_default_is_role(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, data))
     assert cfg.lts.summarizer.kind == "role"
     assert cfg.lts.summarizer.truncate_chars == 100
+
+
+def test_topology_and_fork_defaults(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.topology.kind == "teams"
+    assert cfg.fork.width == 2 and cfg.fork.after_failures == 2 and cfg.fork.child_steps == 15
+    assert cfg.fork.max_rounds == 3 and cfg.fork.max_total_steps == 120
+    assert cfg.fork.diversify == "hypotheses" and cfg.fork.hypothesis_role == "judge"
+    assert cfg.fork.temperatures == [0.3, 0.7]
+    assert cfg.repo_map.enabled is True
+
+
+def test_fork_hypothesis_role_must_exist(tmp_path: Path) -> None:
+    data = {**MINIMAL, "fork": {"hypothesis_role": "nobody"}}
+    with pytest.raises(ConfigError, match=r"fork\.hypothesis_role"):
+        load_config(write(tmp_path, data))

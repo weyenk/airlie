@@ -137,6 +137,18 @@ lts:
   inline_top: 2                    # top-ranked keys get their value inlined, once per team
   inline_chars: 1500
 
+# ---- Topology -------------------------------------------------------------------------------------------------
+topology: { kind: teams }          # teams = spec K parallel teams + LTS | fork = fork-when-stuck
+fork:
+  width: 2                         # children per fork point
+  after_failures: 2                # consecutive failing run_tests that mark a branch stuck
+  child_steps: 15                  # steps a child gets before resolve
+  max_rounds: 3
+  max_total_steps: 120
+  diversify: hypotheses            # hypotheses (one small-model call per fork) | temperature
+  hypothesis_role: judge
+  temperatures: [0.3, 0.7]
+
 # ---- Repository map (every topology) --------------------------------------------------------------------------
 repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatures, injected before the goal
 
