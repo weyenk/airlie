@@ -128,3 +128,22 @@ async def test_autogen_state_round_trip_and_nudge(tmp_path: Path) -> None:
     await load_agent_state(b, state)
     msgs = await b.model_context.get_messages()
     assert [m.content for m in msgs] == ["Goal: x", "first"]
+
+
+async def test_registry_tool_marks_failures_as_errors_and_names_missing_args(tmp_path: Path) -> None:
+    """Live finding 2026-10-13: AutoGen only sets is_error when the tool raises, so a failing run_tests looked
+    like a pass to the fork trigger. Failures raise ToolError; a missing required argument names it."""
+    import pytest
+
+    from airlie.teams.autogen_team import ToolError
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    reg = ToolRegistry.builtin(["read_file", "run_tests"], ToolContext(worktree=wt, test_cmd="false"))
+    read, run_tests = build_function_tools(reg)
+    with pytest.raises(ToolError, match="read_file requires: path"):
+        await read.run_json({}, cancellation_token=None)  # type: ignore[arg-type]
+    with pytest.raises(ToolError, match="no such file|not found|error"):
+        await read.run_json({"path": "missing.txt"}, cancellation_token=None)  # type: ignore[arg-type]
+    with pytest.raises(ToolError):
+        await run_tests.run_json({}, cancellation_token=None)  # type: ignore[arg-type]

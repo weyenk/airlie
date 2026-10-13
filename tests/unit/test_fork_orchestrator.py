@@ -175,3 +175,30 @@ def test_build_topology_selects_by_kind(tmp_path: Path) -> None:
     assert isinstance(build_topology(cfg, engine, run_id="b1"), ForkOrchestrator)
     cfg.topology.kind = "teams"
     assert isinstance(build_topology(cfg, engine, run_id="b2"), ParallelAgentTeamOrchestrator)
+
+
+async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_path: Path) -> None:
+    """Live finding 2026-10-13: children inherited the trunk's three identical failing calls and repeated
+    them."""
+    bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
+    engine = FakeEngine(
+        {"coder": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path, max_rounds=1), engine, run_id="f4")
+    cfg = orch.cfg
+    cfg.tools.builtin = ["write_file", "read_file", "run_tests"]
+    report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
+    assert report.teams[0].stop_reason == "repeated_action" and report.teams[0].steps == 4
+    child_first = next(r for r in engine.requests[4:] if "You are now branch" in r.messages[-1].content)
+    roles = [m.role for m in child_first.messages]
+    assert roles == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]  # note step kept, 3 read_file pairs dropped
+    nudge = child_first.messages[-1].content
+    assert "read_file" in nudge and "error: 'path'" in nudge
+    fp = next(e for e in events(report) if e["kind"] == "fork_point")
+    assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "read_file"

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -24,9 +24,16 @@ from airlie.scheduler import SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.worktree import add_worktree, commit_wip, diff_last_commit
 from airlie.tools import ToolContext, ToolRegistry
-from airlie.topology.diversify import hypotheses, nudge_text, parse_failing, role_at_temperature
+from airlie.topology.diversify import (
+    hypotheses,
+    nudge_text,
+    parse_failing,
+    role_at_temperature,
+    trim_repeated_tail,
+)
 
 FORK_REASONS: frozenset[str] = frozenset({"fork_point", "repeated_action"})
+REPEAT_LIMIT = 3  # TeamContext.repeat_limit default: identical steps that make a repeated_action stop
 ResolveHow = Literal["visible_pass", "best_effort", "none"]
 
 
@@ -40,6 +47,7 @@ class ForkObserver:
         self.failing: dict[str, int] = {}
         self.passed: dict[str, bool] = {}
         self.last_test: dict[str, str] = {}
+        self.last_action: dict[str, tuple[str, str, str]] = {}
         self.on_pass: Callable[[str], None] | None = None
 
     async def before_step(self, team_id: str, step_num: int) -> str | None:
@@ -47,6 +55,7 @@ class ForkObserver:
 
     async def after_step(self, step: StepRecord) -> None:
         await self.inner.after_step(step)
+        self.last_action[step.team_id] = (step.u_t.name, step.u_t.arguments, step.o_t)
         if step.u_t.name != "run_tests":
             return
         self.last_test[step.team_id] = step.o_t
@@ -75,6 +84,7 @@ class Branch:
     result: TeamResult | None = None
     hypothesis: str | None = None
     temperature: float | None = None
+    nudge: str | None = None
 
 
 def _cancelled(bid: str) -> TeamResult:
@@ -135,6 +145,7 @@ class ForkOrchestrator:
         while (
             res.stop_reason in FORK_REASONS
             and res.state is not None
+            and not self.observer.passed.get(trunk.id, False)  # a branch whose tests pass is never forked
             and rounds < f.max_rounds
             and self.total_steps < f.max_total_steps
         ):
@@ -143,6 +154,14 @@ class ForkOrchestrator:
             base = commit_wip(trunk.worktree, f"airlie fork point {rounds}")
             kids = [self._branch(f"r{rounds}-{i + 1}", repo, start_point=base) for i in range(f.width)]
             await self._diversify(kids, query_text, trunk, res.last_test_output)
+            repeated = (
+                self.observer.last_action.get(trunk.id) if res.stop_reason == "repeated_action" else None
+            )
+            parent = res
+            if repeated is not None:  # children must not inherit the stuck loop itself
+                parent = replace(res, state=trim_repeated_tail(res.state, REPEAT_LIMIT))
+            for k in kids:
+                k.nudge = nudge_text(k.id, f.width, k.hypothesis, res.last_test_output, repeated)
             self.sink.emit(
                 "fork_point",
                 round=rounds,
@@ -153,8 +172,13 @@ class ForkOrchestrator:
                 test_tail=res.last_test_output[-1500:],
                 hypotheses=[k.hypothesis for k in kids],
                 temperatures=[k.temperature for k in kids],
+                repeated=(
+                    {"name": repeated[0], "arguments": repeated[1], "output": repeated[2][-600:]}
+                    if repeated
+                    else None
+                ),
             )
-            await self._run_children(kids, query_text, test_cmd, parent=res)
+            await self._run_children(kids, query_text, test_cmd, parent=parent)
             winner, how = self._resolve(kids)
             self.sink.emit(
                 "fork_resolved",
@@ -199,9 +223,6 @@ class ForkOrchestrator:
                 b.worktree, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars, test_cmd
             ),
         )
-        nudge = (
-            nudge_text(b.id, self.cfg.fork.width, b.hypothesis, parent.last_test_output) if parent else None
-        )
         return TeamContext(
             team_id=b.id,
             goal=goal,
@@ -214,7 +235,7 @@ class ForkOrchestrator:
             scheduler=self.scheduler,
             preamble=self.preamble,
             initial_state=parent.state if parent is not None else None,
-            nudge=nudge,
+            nudge=b.nudge,
             stop_when=self.observer.stuck,
         )
 
@@ -311,6 +332,9 @@ class ForkOrchestrator:
     def _report(
         self, goal: str, trunk: Branch, res: TeamResult, t0: float, *, forks: int, rounds: int
     ) -> RunReport:
+        if self.observer.passed.get(trunk.id) and not res.ok:  # tests pass: a result, not a failure
+            res = replace(res, ok=True)
+            trunk.result = res
         teams = [b.result for b in self.branches if b.result is not None]
         report = RunReport(self.run_dir.run_id, self.run_dir, goal, teams, (time.monotonic() - t0) * 1000.0)
         report.winner = trunk.id

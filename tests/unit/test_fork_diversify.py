@@ -60,3 +60,57 @@ def test_parse_failing() -> None:
     assert parse_failing("3 failed, 2 passed in 0.1s") == 3
     assert parse_failing("5 passed in 0.1s") == 0
     assert parse_failing("ok\n") is None
+
+
+def test_nudge_text_names_the_repeated_failing_action() -> None:
+    n = nudge_text("r1-1", 2, None, "", repeated=("read_file", "{}", "error: 'path'"))
+    assert "read_file" in n and "{}" in n and "error: 'path'" in n and "required arguments" in n.lower()
+
+
+def test_trim_repeated_tail_native_and_autogen_states() -> None:
+    from airlie.topology.diversify import trim_repeated_tail
+
+    native = {
+        "messages": [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "g"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "1", "name": "list_dir", "arguments": "{}"}],
+            },
+            {"role": "tool", "content": "ok", "tool_call_id": "1", "name": "list_dir"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "2", "name": "read_file", "arguments": "{}"}],
+            },
+            {"role": "tool", "content": "err", "tool_call_id": "2", "name": "read_file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "3", "name": "read_file", "arguments": "{}"}],
+            },
+            {"role": "tool", "content": "err", "tool_call_id": "3", "name": "read_file"},
+        ]
+    }
+    out = trim_repeated_tail(native, 2)
+    assert [m["role"] for m in out["messages"]] == ["system", "user", "assistant", "tool"]
+    assert len(native["messages"]) == 8  # input untouched
+    autogen = {
+        "type": "AssistantAgentState",
+        "llm_context": {
+            "messages": [
+                {"type": "UserMessage", "content": "g"},
+                {"type": "AssistantMessage", "content": [{"name": "read_file", "arguments": "{}"}]},
+                {"type": "FunctionExecutionResultMessage", "content": [{"content": "err"}]},
+                {"type": "AssistantMessage", "content": [{"name": "read_file", "arguments": "{}"}]},
+                {"type": "FunctionExecutionResultMessage", "content": [{"content": "err"}]},
+            ]
+        },
+    }
+    out = trim_repeated_tail(autogen, 2)
+    assert [m["type"] for m in out["llm_context"]["messages"]] == ["UserMessage"]
+    assert trim_repeated_tail({"messages": [{"role": "user", "content": "g"}]}, 3) == {
+        "messages": [{"role": "user", "content": "g"}]
+    }

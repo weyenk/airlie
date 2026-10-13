@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from autogen_agentchat.agents import AssistantAgent
@@ -47,6 +47,10 @@ _JSON_TO_PY: dict[str, Any] = {
 }
 
 
+class ToolError(Exception):
+    """Raised by _RegistryTool when the airlie tool reports failure, so AutoGen marks the result is_error."""
+
+
 class _RegistryTool(BaseTool[BaseModel, BaseModel]):
     """Exposes one airlie Tool to AutoGen; execution goes through the registry (sandbox, timeouts, caps)."""
 
@@ -66,6 +70,15 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
         self._registry = registry
         self._scheduler = scheduler
         self._team_id = team_id
+        self._required = sorted(required)
+
+    async def run_json(
+        self, args: Mapping[str, Any], cancellation_token: CancellationToken, call_id: str | None = None
+    ) -> Any:
+        missing = [n for n in self._required if args.get(n) is None]
+        if missing:  # a clear error instead of pydantic's, so the model can correct the call
+            raise ToolError(f"error: {self._tool.name} requires: {', '.join(missing)}")
+        return await super().run_json(args, cancellation_token, call_id)
 
     async def run(self, args: BaseModel, cancellation_token: CancellationToken) -> BaseModel:
         payload = {k: v for k, v in args.model_dump().items() if v is not None}
@@ -75,6 +88,8 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
                 result = await self._registry.call(call)
         else:
             result = await self._registry.call(call)
+        if not result.ok:  # AutoGen sets is_error only on exceptions; the fork trigger and LTS rely on it
+            raise ToolError(result.output)
         out: BaseModel = self.return_type()(output=result.output)
         return out
 

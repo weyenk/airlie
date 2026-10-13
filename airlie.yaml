@@ -103,6 +103,13 @@ roles:
     max_tokens: 256
     thinking: false
     sampling: { temperature: 0.0, top_p: 1.0, top_k: 0, min_p: 0.0, presence_penalty: 0.0 }
+  hypothesizer:                    # fork-when-stuck: lists distinct root-cause hypotheses at a fork point
+    prompt: prompts/roles/hypothesizer.md
+    model: small
+    max_context: 16384
+    max_tokens: 400
+    thinking: false
+    sampling: { temperature: 0.7, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
     model: base
@@ -146,7 +153,7 @@ fork:
   max_rounds: 3
   max_total_steps: 120
   diversify: hypotheses            # hypotheses (one small-model call per fork) | temperature
-  hypothesis_role: judge
+  hypothesis_role: hypothesizer
   temperatures: [0.3, 0.7]
 
 # ---- Repository map (every topology) --------------------------------------------------------------------------
