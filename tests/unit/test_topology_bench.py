@@ -61,3 +61,22 @@ def test_summary_and_verdict() -> None:
 def test_apply_topology_single_sets_the_single_kind(tmp_path: Path) -> None:
     s = apply_topology(cfg(tmp_path), "single")
     assert (s.topology.kind, s.teams.k, s.lts.enabled) == ("single", 1, False)
+
+
+def test_apply_topology_studio_and_review_counts(tmp_path: Path) -> None:
+    import json
+
+    from airlie.bench.topology_bench import events_counts
+
+    s = apply_topology(cfg(tmp_path), "studio")
+    assert s.topology.kind == "studio"
+    ev = tmp_path / "events.jsonl"
+    rows = [
+        {"kind": "review", "verdict": "request_changes", "blocking": 2},
+        {"kind": "fix_round"},
+        {"kind": "review", "verdict": "approve", "blocking": 0},
+        {"kind": "step"},
+    ]
+    ev.write_text("\n".join(json.dumps(e) for e in rows))
+    c = events_counts(ev)
+    assert c["reviews"] == 2 and c["blocking"] == 2 and c["fix_rounds"] == 1 and c["steps"] == 1

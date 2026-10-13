@@ -22,6 +22,7 @@ class RunRequest(BaseModel):
     k: int | None = None
     test_cmd: str | None = None
     topology: str | None = None
+    images: list[str] = []
 
 
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
@@ -98,7 +99,14 @@ def create_app(
         if not (repo / ".git").exists():
             raise HTTPException(400, f"{repo} is not a git repository")
         orch = factory(cfg, req.k, topology=req.topology) if req.topology else factory(cfg, req.k)
-        report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd)
+        images = [Path(p).expanduser().resolve() for p in req.images]
+        for p in images:
+            if not p.is_file():
+                raise HTTPException(400, f"image not found: {p}")
+        if images:
+            report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd, images=images)
+        else:
+            report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd)
         return {
             "run_id": report.run_id,
             "winner": report.winner,

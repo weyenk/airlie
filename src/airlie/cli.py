@@ -386,7 +386,9 @@ def bench_lts(
 @bench_app.command("topology")
 def bench_topology(
     tasks: Annotated[str, typer.Option(help="comma-separated task ids (default: all)")] = "",
-    topologies: Annotated[str, typer.Option(help="comma-separated: single,teams,fork")] = "single,fork",
+    topologies: Annotated[
+        str, typer.Option(help="comma-separated: single,teams,fork,studio")
+    ] = "single,fork",
     repeats: int = 3,
     baseline: str = "single",
     target_pct: float = 25.0,
@@ -427,7 +429,12 @@ def bench_topology(
                 t0 = time.monotonic()
                 report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
                 wall = time.monotonic() - t0
-                graded = {t.team_id: task.grade(orch.run_dir.path / t.team_id).passed for t in report.teams}
+                graded_ids = {t.team_id for t in report.teams} | ({report.winner} if report.winner else set())
+                graded = {
+                    i: task.grade(orch.run_dir.path / i).passed
+                    for i in sorted(graded_ids)
+                    if (orch.run_dir.path / i).is_dir()
+                }
                 counts = events_counts(report.run_dir.events_path)
                 winner_passed = bool(graded.get(report.winner or "", False))
                 rows.append(
@@ -445,11 +452,15 @@ def bench_topology(
                         any(graded.values()),
                         len(report.teams),
                         report.run_id,
+                        counts["reviews"],
+                        counts["blocking"],
+                        counts["fix_rounds"],
                     )
                 )
                 verdict_txt = "PASS" if winner_passed else "FAIL"
                 console.print(
                     f"  wall {wall:.0f}s, steps {counts['steps']}, forks {counts['forks']}, "
+                    f"reviews {counts['reviews']} (fix rounds {counts['fix_rounds']}), "
                     f"winner {report.winner} {verdict_txt}, any {any(graded.values())}"
                 )
     summary = summarize(rows)
@@ -626,8 +637,11 @@ def run(
     ] = None,
     topology: TopologyOpt = None,
     config: ConfigOpt = None,
+    image: Annotated[
+        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles (studio)")
+    ] = None,
 ) -> None:
-    """Run the configured topology (K parallel teams, or fork-when-stuck) on a goal in a repository."""
+    """Run the configured topology (single agent, K teams, fork-when-stuck, studio) on a goal in a repo."""
     import asyncio
 
     cfg = _load(config, topology)
@@ -636,10 +650,35 @@ def run(
     if not (repo / ".git").exists():
         err.print(f"[red]{repo} is not a git repository[/red]")
         raise typer.Exit(1)
-    report = asyncio.run(_orchestrator(cfg).execute_task(goal, repo=repo, test_cmd=test_cmd))
+    images = [p.resolve() for p in image or []]
+    for p in images:
+        if not p.is_file():
+            err.print(f"[red]image not found: {p}[/red]")
+            raise typer.Exit(1)
+    orch = _orchestrator(cfg)
+    coro = (
+        orch.execute_task(goal, repo=repo, test_cmd=test_cmd, images=images)
+        if images
+        else orch.execute_task(goal, repo=repo, test_cmd=test_cmd)
+    )
+    report = asyncio.run(coro)
     _print_report(report)
     if not report.any_ok:
         raise typer.Exit(1)
+
+
+@app.command()
+def studio(
+    goal: Annotated[str, typer.Argument(help="what the studio should accomplish")],
+    repo: Annotated[Path, typer.Option(help="git repository to work in")] = Path("."),
+    image: Annotated[
+        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles")
+    ] = None,
+    test_cmd: Annotated[str | None, typer.Option(help="command run_tests runs in the worktree")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Run the studio topology (chief → router → specialists → review → synthesis) on a goal."""
+    run(goal, repo=repo, k=None, test_cmd=test_cmd, topology="studio", config=config, image=image)
 
 
 @eval_app.command("run")

@@ -224,3 +224,28 @@ def test_default_factory_with_k_above_one_selects_teams(tmp_path: Path) -> None:
         cli_mod._orchestrator = original
     assert captured[0].topology.kind == "teams" and captured[0].teams.k == 3
     assert c.topology.kind == "single"  # the shared config is not mutated by a request
+
+
+def test_run_endpoint_accepts_images(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    seen: list[list[Path]] = []
+
+    class Stub:
+        def __init__(self) -> None:
+            self.run_dir = RunDir.create(c.observability.state_dir, "s4")
+
+        async def execute_task(self, goal, *, repo, test_cmd=None, images=()):  # type: ignore[no-untyped-def]
+            seen.append(list(images))
+            return RunReport("s4", self.run_dir, goal, [], 1.0, winner=None, final_answer="")
+
+    app = create_app(
+        c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=lambda *a, **k: Stub()
+    )
+    body = {"goal": "g", "repo": str(repo), "topology": "studio", "images": [str(png)]}
+    r = TestClient(app).post("/v1/airlie/run", json=body)
+    assert r.status_code == 200, r.text
+    assert seen == [[png.resolve()]]

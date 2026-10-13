@@ -13,7 +13,7 @@ from typing import Any
 from airlie.bench.lts_bench import Verdict
 from airlie.config import AirlieConfig
 
-TOPOLOGIES = ("single", "teams", "fork")
+TOPOLOGIES = ("single", "teams", "fork", "studio")
 
 
 @dataclass
@@ -31,6 +31,9 @@ class TopoRow:
     any_passed: bool
     branches: int
     run_id: str
+    reviews: int = 0
+    blocking: int = 0
+    fix_rounds: int = 0
 
 
 def apply_topology(cfg: AirlieConfig, name: str) -> AirlieConfig:
@@ -43,6 +46,8 @@ def apply_topology(cfg: AirlieConfig, name: str) -> AirlieConfig:
         c.topology.kind = "teams"
     elif name == "fork":
         c.topology.kind = "fork"
+    elif name == "studio":
+        c.topology.kind = "studio"
     else:
         raise ValueError(f"unknown topology {name!r}; known: {', '.join(TOPOLOGIES)}")
     return c
@@ -64,6 +69,8 @@ def summarize(rows: list[TopoRow]) -> dict[str, dict[str, float]]:
             "mean_forks": round(sum(r.forks for r in rs) / n, 2),
             "pass_rate": round(len(solved) / n, 3),
             "any_pass_rate": round(sum(1 for r in rs if r.any_passed) / n, 3),
+            "mean_reviews": round(sum(r.reviews for r in rs) / n, 2),
+            "mean_fix_rounds": round(sum(r.fix_rounds for r in rs) / n, 2),
         }
     return out
 
@@ -98,6 +105,8 @@ def render(summary: dict[str, dict[str, float]], v: Verdict) -> str:
         "mean_forks",
         "pass_rate",
         "any_pass_rate",
+        "mean_reviews",
+        "mean_fix_rounds",
     ]
     lines = ["| " + " | ".join(cols) + " |", "|" + "|".join("---" for _ in cols) + "|"]
     for topo, s in summary.items():
@@ -114,7 +123,7 @@ def save(rows: list[TopoRow], summary: dict[str, dict[str, float]], v: Verdict, 
 
 
 def events_counts(events_path: Path) -> dict[str, Any]:
-    steps = forks = rounds = 0
+    steps = forks = rounds = reviews = blocking = fix_rounds = 0
     for line in events_path.read_text().splitlines():
         e = json.loads(line)
         if e["kind"] == "step":
@@ -122,4 +131,16 @@ def events_counts(events_path: Path) -> dict[str, Any]:
         elif e["kind"] == "fork_point":
             forks += 1
             rounds = max(rounds, int(e.get("round", 0)))
-    return {"steps": steps, "forks": forks, "rounds": rounds}
+        elif e["kind"] == "review":
+            reviews += 1
+            blocking += int(e.get("blocking", 0))
+        elif e["kind"] == "fix_round":
+            fix_rounds += 1
+    return {
+        "steps": steps,
+        "forks": forks,
+        "rounds": rounds,
+        "reviews": reviews,
+        "blocking": blocking,
+        "fix_rounds": fix_rounds,
+    }

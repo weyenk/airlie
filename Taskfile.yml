@@ -71,6 +71,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie run {{.CLI_ARGS}}'
 
+  studio:
+    desc: "Run the studio topology (task studio -- \"goal\" --repo PATH [--image shot.png] [--test-cmd \"pytest -q\"])"
+    cmds:
+      - '{{.RUN}} airlie studio {{.CLI_ARGS}}'
+
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
     cmds:
@@ -97,7 +102,7 @@ tasks:
       - '{{.RUN}} airlie route eval {{.CLI_ARGS}}'
 
   bench:topology:
-    desc: "single agent vs K teams vs fork-when-stuck on graded tasks (task bench:topology -- --topologies single,teams,fork --repeats 3)"
+    desc: "single agent vs K teams vs fork-when-stuck vs studio on graded tasks (task bench:topology -- --topologies single,studio --repeats 3)"
     cmds:
       - '{{.RUN}} airlie bench topology {{.CLI_ARGS}}'
 
