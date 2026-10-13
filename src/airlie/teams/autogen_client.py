@@ -22,15 +22,9 @@ from airlie.tools.jsonargs import repair_json_args
 def repair_create_result(result: CreateResult) -> CreateResult:
     if not isinstance(result.content, list):
         return result
-    seen: set[tuple[str, str]] = set()
     fixed: list[FunctionCall] = []
-    for call in result.content:
-        args = repair_json_args(call.arguments)
-        key = (call.name, args)
-        if key in seen:
-            continue
-        seen.add(key)
-        fixed.append(FunctionCall(id=call.id, name=call.name, arguments=args))
+    for call in result.content[:1]:  # one action per step: later calls in a "plan" are often argument-less
+        fixed.append(FunctionCall(id=call.id, name=call.name, arguments=repair_json_args(call.arguments)))
     result.content = fixed
     return result
 

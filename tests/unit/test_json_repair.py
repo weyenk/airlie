@@ -38,7 +38,7 @@ def test_parse_tool_args_rejects_non_objects() -> None:
         parse_tool_args("[1, 2]")
 
 
-def test_repair_create_result_fixes_calls_and_dedupes_duplicates() -> None:
+def test_repair_create_result_fixes_args_and_keeps_the_first_call() -> None:
     calls = [
         FunctionCall(id="a", name="write_file", arguments='{"path": "x", "content": "{}"}}'),
         FunctionCall(
@@ -53,7 +53,7 @@ def test_repair_create_result_fixes_calls_and_dedupes_duplicates() -> None:
         cached=False,
     )
     out = repair_create_result(res)
-    assert [c.id for c in out.content] == ["a", "c"]  # type: ignore[union-attr]
+    assert [c.id for c in out.content] == ["a"]  # type: ignore[union-attr]  # first call only (2026-10-13)
     assert json.loads(out.content[0].arguments) == {"path": "x", "content": "{}"}  # type: ignore[union-attr]
 
 
@@ -69,3 +69,28 @@ def test_repair_create_result_passes_text_through() -> None:
 
 def test_tool_call_dataclass_round_trip() -> None:
     assert ToolCall("1", "x", "{}").arguments == "{}"
+
+
+def test_repair_create_result_keeps_only_the_first_call() -> None:
+    """Live finding 2026-10-13: the coder sometimes lists a whole plan of calls in one response, the later
+    ones without arguments. One action per step (spec 03 §1 triplets); the model re-plans after each
+    result."""
+    from autogen_core import FunctionCall
+    from autogen_core.models import CreateResult, RequestUsage
+
+    from airlie.teams.autogen_client import repair_create_result
+
+    res = CreateResult(
+        finish_reason="function_calls",
+        content=[
+            FunctionCall(id="a", name="run_tests", arguments="{}"),
+            FunctionCall(id="b", name="read_file", arguments="{}"),
+            FunctionCall(id="c", name="read_file", arguments='{"path": "x"}'),
+        ],
+        usage=RequestUsage(prompt_tokens=1, completion_tokens=1),
+        cached=False,
+    )
+    out = repair_create_result(res)
+    assert isinstance(out.content, list) and [c.name for c in out.content] == ["run_tests"]
+    text = CreateResult(finish_reason="stop", content="hi", usage=RequestUsage(1, 1), cached=False)
+    assert repair_create_result(text).content == "hi"
