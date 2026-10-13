@@ -1,0 +1,48 @@
+# A feature that needs a plan, an implementation, tests and a README section: the studio's graded task.
+id: studio_feature
+language: python
+requirement: |
+  Add a tiny expense ledger to this repository as the package `ledger/` with `__init__.py` exposing:
+  `Ledger()` with `add(amount: float, category: str, note: str = "") -> int` (returns a 1-based entry id,
+  rejects amount <= 0 with ValueError), `total(category: str | None = None) -> float` (sum over all entries or
+  one category, 0.0 when none), `by_category() -> dict[str, float]` (categories sorted by name, no empty
+  categories), and `remove(entry_id: int) -> None` (KeyError when unknown; totals update).
+  Write a short README section describing the API, and tests under `tests/`; `python -m pytest` must pass.
+setup:
+  files:
+    pyproject.toml: |
+      [project]
+      name = "ledger-task"
+      version = "0.0.1"
+      requires-python = ">=3.12"
+      [tool.pytest.ini_options]
+      testpaths = ["tests", "hidden_tests"]
+    README.md: |
+      # ledger task
+run_cmd: python -m pytest -q
+hidden_tests:
+  hidden_tests/test_hidden.py: |
+    import pytest
+    from ledger import Ledger
+
+    def test_add_total_and_ids():
+        l = Ledger()
+        assert l.add(10, "food") == 1 and l.add(2.5, "food", "coffee") == 2 and l.add(7, "travel") == 3
+        assert l.total() == 19.5 and l.total("food") == 12.5 and l.total("none") == 0.0
+
+    def test_rejects_non_positive():
+        with pytest.raises(ValueError):
+            Ledger().add(0, "x")
+
+    def test_by_category_sorted_and_no_empties():
+        l = Ledger()
+        l.add(1, "b"); l.add(2, "a")
+        assert list(l.by_category().items()) == [("a", 2.0), ("b", 1.0)]
+
+    def test_remove_updates_totals_and_rejects_unknown():
+        l = Ledger()
+        i = l.add(5, "food")
+        l.remove(i)
+        assert l.total() == 0.0 and l.by_category() == {}
+        with pytest.raises(KeyError):
+            l.remove(99)
