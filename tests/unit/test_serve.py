@@ -186,7 +186,8 @@ def test_run_endpoint_accepts_single(tmp_path: Path) -> None:
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=factory)
     r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "topology": "single"})
     assert r.status_code == 200, r.text
-    assert seen[0][2] == "single"  # a custom factory gets the raw cfg + name; _default_factory selects (next test)
+    # a custom factory gets the raw cfg + the name; _default_factory does the selection (next test)
+    assert seen[0][2] == "single"
 
 
 def test_default_factory_selects_single_profile(tmp_path: Path) -> None:
