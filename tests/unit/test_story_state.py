@@ -1,6 +1,7 @@
 """Story state survives a restart, refuses a different repository, and the lock admits one story at a time."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -37,3 +38,116 @@ def test_the_lock_admits_one_story_at_a_time(tmp_path: Path) -> None:
             assert not second
     with story_lock(tmp_path) as again:
         assert again
+
+
+def test_save_syncs_the_new_file_before_the_rename_and_the_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = text_card("Let users upload an avatar")
+    st = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    calls: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        calls.append("fsync")
+        real_fsync(fd)
+
+    def replace(src: Path, dst: Path) -> None:
+        calls.append("replace")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    st.save()
+    assert calls == ["fsync", "replace", "fsync"]  # sync the file, rename, sync the directory
+
+
+def test_a_crash_between_the_sync_and_the_rename_leaves_the_old_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    card = text_card("Let users upload an avatar")
+    story_dir = tmp_path / card.key
+    st = StoryState.open(story_dir, card, tmp_path / "repo")
+    st.finish("intake")
+    old = (story_dir / "state.json").read_bytes()
+    st.stage = "refine"  # in memory only: the rename that would publish it never happens
+
+    def crash(src: Path, dst: Path) -> None:
+        raise OSError("crashed between the sync and the rename")
+
+    monkeypatch.setattr(os, "replace", crash)
+    with pytest.raises(OSError, match="crashed between"):
+        st.save()
+    assert (story_dir / "state.json").read_bytes() == old
+    assert StoryState.open(story_dir, card, tmp_path / "repo").stage == "intake"
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        b"",  # emptied by a crash
+        b'{"card": {"key": "text-',  # cut short mid-write
+        b"\x00" * 64,  # NUL-filled, as some filesystems leave a file after a crash
+        b"[]",  # valid JSON, but not an object
+        b'{"stage": "new"}',  # an object missing its required fields
+        b'{"card": {}, "repo": "r", "stage": "new", "unknown": 1}',  # a key this version does not know
+        b'{"card": {}, "repo": "r", "stage": "deploy"}',  # a stage this version does not know
+    ],
+    ids=["empty", "truncated", "nul-filled", "list", "missing-field", "unknown-key", "unknown-stage"],
+)
+def test_a_damaged_state_file_is_a_readable_stop_that_names_the_story(tmp_path: Path, damaged: bytes) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo")
+    (story_dir / "state.json").write_bytes(damaged)
+    with pytest.raises(StorySetupError, match="is damaged") as e:
+        StoryState.open(story_dir, card, tmp_path / "repo")
+    assert str(story_dir) in str(e.value)
+
+
+def test_a_torn_event_line_is_closed_before_the_next_event_on_resume(tmp_path: Path) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("intake")
+    fragment = '{"ts": 1.0, "run_id": "text-x", "kind": "sta'  # a write cut off before its newline
+    with (story_dir / "events.jsonl").open("a") as f:
+        f.write(fragment)
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("refine")
+    lines = (story_dir / "events.jsonl").read_text().splitlines()
+    assert lines[1] == fragment  # the fragment keeps a line of its own
+    after = [json.loads(x) for x in lines[2:]]  # and every line after it is an event
+    assert [(e["kind"], e["stage"]) for e in after] == [("stage", "refine")]
+
+
+def test_a_torn_event_line_is_closed_when_a_story_starts_again_from_scratch(tmp_path: Path) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("intake")
+    (story_dir / "state.json").unlink()  # deleting the state to start over keeps the event log
+    with (story_dir / "events.jsonl").open("a") as f:
+        f.write('{"ts": 1.0, "run_id": "text-x", "kind": "sta')
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("intake")
+    lines = (story_dir / "events.jsonl").read_text().splitlines()
+    assert len(lines) == 3  # the first event, the fragment on its own line, the new event
+    after = [json.loads(x) for x in lines[2:]]
+    assert [(e["kind"], e["stage"]) for e in after] == [("stage", "intake")]
+
+
+def test_an_error_in_the_contended_branch_is_not_chained_to_the_lock(tmp_path: Path) -> None:
+    with story_lock(tmp_path) as first:
+        assert first
+        with pytest.raises(RuntimeError, match="caller failed") as e, story_lock(tmp_path) as second:
+            assert not second
+            raise RuntimeError("caller failed")
+        assert e.value.__context__ is None
+
+
+def test_finish_refuses_a_stage_that_is_not_one(tmp_path: Path) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    st = StoryState.open(story_dir, card, tmp_path / "repo")
+    before = (story_dir / "state.json").read_bytes()
+    with pytest.raises(ValueError, match="'deploy' is not a stage"):
+        st.finish("deploy")
+    assert st.stage == "new" and (story_dir / "state.json").read_bytes() == before
+    assert not (story_dir / "events.jsonl").exists()
