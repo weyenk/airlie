@@ -1,21 +1,28 @@
 """`task serve`: the client-agnostic front door. Any OpenAI-compatible client (Claude Code, Qwen Code, curl)
-can talk to a role by name; `/v1/airlie/run` launches a parallel team run."""
+can talk to a role by name; `/v1/airlie/run` launches a parallel team run. The jobs API starts a studio plan
+(`/v1/airlie/plans`) or run (`/v1/airlie/runs`) in the background; a client follows the job by long polls on
+`GET /v1/airlie/jobs/{id}?since=N&wait=S` and cancels it with `DELETE`."""
 
 from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from airlie.config import AirlieConfig
+from airlie.report import RunReport
+from airlie.serve.jobs import Jobs
 from airlie.skills import prompt_text
+from airlie.teams.worktree import rev_parse
+from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
+from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
 
 
 class ToolCallStreamRepair:
@@ -58,6 +65,42 @@ class RunRequest(BaseModel):
     images: list[str] = []
 
 
+class PlanRequest(BaseModel):
+    goal: str
+    repo: str
+    test_cmd: str | None = None
+    images: list[str] = []
+
+
+class StartRun(PlanRequest):
+    plan: dict[str, Any] | None = None
+    base: str | None = None
+    synthesise: bool = True
+
+
+def _run_result(report: RunReport) -> dict[str, Any]:
+    return {
+        "run_id": report.run_id,
+        "ok": report.any_ok,
+        "branch": report.winning_branch,
+        "tests": report.tests,
+        "final_answer": report.final_answer,
+        "report": str(report.run_dir.path / "report.md"),
+    }
+
+
+async def _finish_run(work: Awaitable[RunReport]) -> dict[str, Any]:
+    return _run_result(await work)
+
+
+async def _finish_plan(run_id: str, work: Awaitable[PlanOutcome]) -> dict[str, Any]:
+    out = await work
+    body: dict[str, Any] = {"run_id": run_id, "failed": out.failed}
+    if out.plan is not None:
+        return {**body, "type": "plan", "plan": plan_to_dict(out.plan)}
+    return {**body, "type": "answer", "answer": out.answer}
+
+
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
@@ -80,6 +123,20 @@ def create_app(
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
+    jobs = Jobs()
+
+    def repo_path(raw: str) -> Path:
+        repo = Path(raw).expanduser().resolve()
+        if not (repo / ".git").exists():
+            raise HTTPException(400, f"{repo} is not a git repository")
+        return repo
+
+    def image_paths(raw: list[str]) -> list[Path]:
+        images = [Path(p).expanduser().resolve() for p in raw]
+        for p in images:
+            if not p.is_file():
+                raise HTTPException(400, f"image not found: {p}")
+        return images
 
     if api_key:
 
@@ -161,14 +218,8 @@ def create_app(
 
     @app.post("/v1/airlie/run")
     async def run(req: RunRequest) -> dict[str, Any]:
-        repo = Path(req.repo).expanduser().resolve()
-        if not (repo / ".git").exists():
-            raise HTTPException(400, f"{repo} is not a git repository")
+        repo, images = repo_path(req.repo), image_paths(req.images)
         orch = factory(cfg, req.k, topology=req.topology) if req.topology else factory(cfg, req.k)
-        images = [Path(p).expanduser().resolve() for p in req.images]
-        for p in images:
-            if not p.is_file():
-                raise HTTPException(400, f"image not found: {p}")
         if images:
             report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd, images=images)
         else:
@@ -191,6 +242,54 @@ def create_app(
                 for t in report.teams
             ],
         }
+
+    @app.post("/v1/airlie/plans", status_code=202)
+    async def start_plan(req: PlanRequest) -> dict[str, Any]:
+        repo, images = repo_path(req.repo), image_paths(req.images)
+        orch: StudioOrchestrator = factory(cfg, None, topology="studio")
+        work = orch.plan(req.goal, repo=repo, test_cmd=req.test_cmd, images=images)
+        rid = orch.run_dir.run_id
+        job = jobs.start("plan", rid, orch.run_dir.events_path, _finish_plan(rid, work))
+        return {"job_id": job.id, "kind": job.kind}
+
+    @app.post("/v1/airlie/runs", status_code=202)
+    async def start_run(req: StartRun) -> dict[str, Any]:
+        repo, images = repo_path(req.repo), image_paths(req.images)
+        if req.base is not None and (req.base.startswith("-") or rev_parse(repo, req.base) is None):
+            raise HTTPException(400, f"base {req.base!r} is not a branch, tag or commit in {repo}")
+        given: Plan | None = None
+        if req.plan is not None:
+            try:
+                given = plan_from_dict(req.plan)
+                check_plan(cfg, pin(given))
+            except PlanError as e:
+                raise HTTPException(400, f"plan rejected: {e}") from e
+        # last: the orchestrator makes its run directory when it is built, so a rejected request leaves none
+        orch: StudioOrchestrator = factory(cfg, None, topology="studio")
+        work = orch.execute_task(
+            req.goal,
+            repo=repo,
+            test_cmd=req.test_cmd,
+            images=images,
+            plan=given,
+            base=req.base,
+            synthesise=req.synthesise,
+        )
+        job = jobs.start("run", orch.run_dir.run_id, orch.run_dir.events_path, _finish_run(work))
+        return {"job_id": job.id, "kind": job.kind}
+
+    @app.get("/v1/airlie/jobs/{job_id}")
+    async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:
+        out = await jobs.status(job_id, since=since, wait=min(wait, 300.0))
+        if out is None:
+            raise HTTPException(404, f"no job '{job_id}' in this server (jobs do not survive a restart)")
+        return out
+
+    @app.delete("/v1/airlie/jobs/{job_id}")
+    async def job_cancel(job_id: str) -> dict[str, Any]:
+        if jobs.get(job_id) is None:
+            raise HTTPException(404, f"no job '{job_id}'")
+        return {"job_id": job_id, "cancelled": jobs.cancel(job_id)}
 
     @app.on_event("shutdown")
     async def shutdown() -> None:

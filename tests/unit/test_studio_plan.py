@@ -102,6 +102,33 @@ def test_plan_from_dict_names_the_problem() -> None:
         plan_from_dict({"subtasks": [{"id": "a", "brief": "x"}, {"id": "b"}]})
 
 
+def test_plan_from_dict_reads_lists_the_way_a_person_or_a_model_writes_them() -> None:
+    p = plan_from_dict(
+        {
+            "assumptions": "the API is Flask",  # models drop the brackets around a lone item
+            "subtasks": [
+                {"id": "setup", "brief": "x", "depends_on": None},
+                {"id": "b", "brief": "y", "depends_on": "setup", "inputs": "img:1"},
+                {"id": "c", "brief": "z", "depends_on": ["setup", 2], "inputs": []},
+            ],
+        }
+    )
+    assert p.assumptions == ("the API is Flask",)
+    assert [s.depends_on for s in p.subtasks] == [(), ("setup",), ("setup", "2")]
+    assert [s.inputs for s in p.subtasks] == [(), ("img:1",), ()]
+    assert plan_from_dict({"assumptions": None, "subtasks": [{"id": "a", "brief": "x"}]}).assumptions == ()
+
+
+def test_plan_from_dict_names_a_list_field_of_the_wrong_type() -> None:
+    sub = {"id": "a", "brief": "x"}
+    with pytest.raises(PlanError, match="'assumptions' must be a list of strings"):
+        plan_from_dict({"assumptions": 5, "subtasks": [sub]})
+    with pytest.raises(PlanError, match="subtask 2 'depends_on' must be a list of ids"):
+        plan_from_dict({"subtasks": [sub, {**sub, "id": "b", "depends_on": {"a": 1}}]})
+    with pytest.raises(PlanError, match="subtask 1 'inputs' must be a list of strings"):
+        plan_from_dict({"subtasks": [{**sub, "inputs": 5}]})
+
+
 def test_pin_marks_every_subtask_and_keeps_roles() -> None:
     p = pin(Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "qa"))))
     assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["coder", "qa"]

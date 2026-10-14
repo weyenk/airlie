@@ -125,6 +125,18 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
     }
 
 
+def _str_list(value: Any, what: str, of: str = "strings") -> tuple[str, ...]:
+    """A list field of a plan someone edited by hand. Missing or null is empty, a lone string is a list of one
+    (models drop the brackets), a list is the str of each item; anything else is a PlanError naming `what`."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list):
+        return tuple(str(x) for x in value)
+    raise PlanError(f"{what} must be a list of {of}")
+
+
 def plan_from_dict(obj: dict[str, Any]) -> Plan:
     """A plan a person or a pipeline wrote (the chief's shape); PlanError says what to fix."""
     raw = obj.get("subtasks")
@@ -132,11 +144,17 @@ def plan_from_dict(obj: dict[str, Any]) -> Plan:
         raise PlanError("a plan needs a non-empty 'subtasks' list")
     subs: list[Subtask] = []
     for n, d in enumerate(raw, 1):
+        if isinstance(d, dict):  # check the list fields first: `_subtask` reads the chief's replies loosely
+            d = {
+                **d,
+                "depends_on": _str_list(d.get("depends_on"), f"subtask {n} 'depends_on'", "ids"),
+                "inputs": _str_list(d.get("inputs"), f"subtask {n} 'inputs'"),
+            }
         s = _subtask(d)
         if s is None:
             raise PlanError(f"subtask {n} needs an 'id' and a 'brief'")
         subs.append(s)
-    return Plan(tuple(str(a) for a in obj.get("assumptions") or []), tuple(subs))
+    return Plan(_str_list(obj.get("assumptions"), "'assumptions'"), tuple(subs))
 
 
 def pin(plan: Plan) -> Plan:

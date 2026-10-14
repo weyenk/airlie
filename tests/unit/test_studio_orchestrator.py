@@ -15,7 +15,7 @@ from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.router import ChiefRouter, RouteDecision
 from airlie.topology.protocol import build_topology
-from airlie.topology.studio import StudioOrchestrator
+from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
@@ -421,7 +421,26 @@ async def test_a_given_plan_that_cannot_run_raises_before_any_work(tmp_path: Pat
         await orch.execute_task("g", repo=repo, plan=two)
     with pytest.raises(PlanError, match="dependency cycle"):
         await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "coder", ("a",)),)))
+    with pytest.raises(PlanError, match="no subtasks"):
+        await orch.execute_task("g", repo=repo, plan=Plan((), ()))
     assert not (orch.run_dir.path / "studio").exists()
+
+
+def test_check_plan_judges_a_plan_from_outside_the_chief_by_every_role_pinned_or_not(tmp_path: Path) -> None:
+    cfg = cfg_for(tmp_path, max_subtasks=2)
+    check_plan(cfg, Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "docs", ("a",)))))  # runnable
+    with pytest.raises(PlanError, match="no subtasks"):
+        check_plan(cfg, Plan((), ()))
+    with pytest.raises(PlanError, match="role 'chief'"):  # not pinned, and still rejected
+        check_plan(cfg, Plan((), (Subtask("a", "x", "chief"),)))
+    with pytest.raises(PlanError, match="role None"):
+        check_plan(cfg, Plan((), (Subtask("a", "x"),)))
+    with pytest.raises(PlanError, match="max_subtasks is 2"):
+        check_plan(cfg, Plan((), tuple(Subtask(i, "x", "coder") for i in "abc")))
+    with pytest.raises(PlanError, match="not in the plan"):
+        check_plan(cfg, Plan((), (Subtask("a", "x", "coder", ("zz",)),)))
+    with pytest.raises(PlanError, match="dependency cycle"):
+        check_plan(cfg, Plan((), (Subtask("a", "x", "coder", ("a",)),)))
 
 
 async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tmp_path: Path) -> None:

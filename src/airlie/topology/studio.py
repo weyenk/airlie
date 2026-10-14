@@ -76,6 +76,23 @@ def specialists(cfg: AirlieConfig) -> dict[str, str]:
     return routable_roles(cfg, exclude=exclude)
 
 
+def check_plan(cfg: AirlieConfig, plan: Plan) -> None:
+    """Raise PlanError when a plan from outside the chief (a person's edit, the pipeline) cannot run: no
+    subtasks, more than studio.max_subtasks, a role that is not a specialist, a missing dependency, a
+    duplicate id or a cycle. Every role is checked, pinned or not: a chief-made plan never comes here."""
+    if not plan.subtasks:
+        raise PlanError("the plan has no subtasks")
+    limit = cfg.studio.max_subtasks
+    if len(plan.subtasks) > limit:
+        raise PlanError(f"the plan has {len(plan.subtasks)} subtasks; studio.max_subtasks is {limit}")
+    roles = specialists(cfg)
+    for s in plan.subtasks:
+        if s.role_hint not in roles:
+            use = ", ".join(sorted(roles))
+            raise PlanError(f"subtask '{s.id}' names role {s.role_hint!r}; use one of: {use}")
+    schedule(plan)
+
+
 class StudioOrchestrator:
     def __init__(
         self,
@@ -366,16 +383,8 @@ class StudioOrchestrator:
 
     # ---- the run ----
     def check_plan(self, plan: Plan) -> None:
-        """Raise PlanError when a plan from outside the chief cannot run: more subtasks than
-        studio.max_subtasks, a pinned role that is not a specialist, a missing dependency or a cycle."""
-        limit = self.cfg.studio.max_subtasks
-        if len(plan.subtasks) > limit:
-            raise PlanError(f"the plan has {len(plan.subtasks)} subtasks; studio.max_subtasks is {limit}")
-        for s in plan.subtasks:
-            if s.pinned and s.role_hint not in self.criteria:
-                roles = ", ".join(sorted(self.criteria))
-                raise PlanError(f"subtask '{s.id}' names role {s.role_hint!r}; use one of: {roles}")
-        schedule(plan)
+        """Raise PlanError when a plan from outside the chief cannot run (see the module's `check_plan`)."""
+        check_plan(self.cfg, plan)
 
     def _prepare(self, repo: Path, test_cmd: str | None) -> None:
         if not self.cfg.repo_map.enabled:
