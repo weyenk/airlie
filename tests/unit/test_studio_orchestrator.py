@@ -31,20 +31,26 @@ ROLES: dict[str, tuple[str, list[str] | None]] = {
 }
 
 
-def cfg_for(tmp_path: Path, **studio: object):  # type: ignore[no-untyped-def]
+def cfg_for(
+    tmp_path: Path,
+    *,
+    roles: dict[str, tuple[str, list[str] | None]] | None = None,
+    extra: dict[str, object] | None = None,
+    **studio: object,
+):  # type: ignore[no-untyped-def]
     d = tmp_path / "cfg"
     d.mkdir(exist_ok=True)
-    roles: dict[str, dict[str, object]] = {}
-    for name, (text, tools) in ROLES.items():
+    role_cfg: dict[str, dict[str, object]] = {}
+    for name, (text, tools) in (roles or ROLES).items():
         (d / f"{name}.md").write_text(text)
-        roles[name] = {"prompt": f"{name}.md", "model": "base", "thinking": False}
+        role_cfg[name] = {"prompt": f"{name}.md", "model": "base", "thinking": False}
         if tools is not None:
-            roles[name]["tools"] = tools
+            role_cfg[name]["tools"] = tools
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
-        "roles": roles,
+        "roles": role_cfg,
         "teams": {"orchestrator": "native", "max_steps": 6},
         "tools": {"builtin": ["read_file", "write_file", "list_dir", "run_tests"]},
         "topology": {"kind": "studio"},
@@ -52,6 +58,7 @@ def cfg_for(tmp_path: Path, **studio: object):  # type: ignore[no-untyped-def]
         "studio": {"parallel": 2, "review": {"enabled": True, "roles": ["coder"], "rounds": 1}, **studio},
         "repo_map": {"enabled": False},
         "observability": {"state_dir": str(tmp_path / "state")},
+        **(extra or {}),
     }
     (d / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(d / "airlie.yaml")
