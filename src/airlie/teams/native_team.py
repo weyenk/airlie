@@ -10,7 +10,8 @@ from dataclasses import asdict
 from typing import Any
 
 from airlie.engine.protocol import Engine
-from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall
+from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall, image_part
+from airlie.skills import prompt_text
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
 
 
@@ -63,14 +64,20 @@ class NativeTeam:
 
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
-        system = ctx.role.prompt.read_text()
+        system = prompt_text(ctx.role.prompt)
         goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
         messages: list[Message]
         if ctx.initial_state is not None:
             messages = load_messages(ctx.initial_state["messages"])
             messages.append(Message(role="user", content=ctx.nudge or goal_msg))
         else:
-            messages = [Message(role="system", content=system), Message(role="user", content=goal_msg)]
+            parts = None
+            if ctx.images:
+                parts = (ContentPart("text", text=goal_msg), *[image_part(p) for p in ctx.images])
+            messages = [
+                Message(role="system", content=system),
+                Message(role="user", content=goal_msg, parts=parts),
+            ]
         last_test_output = ""
         forked = False
         prompt_tokens = completion_tokens = 0

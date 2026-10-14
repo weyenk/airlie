@@ -87,3 +87,32 @@ following this write-up): a branch that quits with "done" but never passed its t
 best-effort resolution ranks branches that ran tests and did more work ahead of quitters. The numbers in this
 file are from before those fixes. A fork follow-up worth one 30-minute pass: `after_failures: 3`, `child_steps: 25`, and resolve rules that
 never end the run on a child's `done` without a visible pass (continue the trunk instead).
+
+
+## Studio (2026-10-13, attempt 2; `docs/bench/topology-studio.json`)
+
+`task bench:topology -- --topologies single,studio --tasks lang_detect,inventory_cli,studio_feature --repeats 2`
+on the studio profile (generalist Qwen3.8-27B as chief, Qwen3-Coder as coder/qa/security, Muse Glimmer 30B as
+reviewer, Kev router; server parsers on). Attempt 1 was discarded: started without the server parser flags, the
+managed engine rendered a bracket tool protocol and the single baseline failed in 6 s (see `README.md`).
+
+| topology | runs | mean wall s | mean wall solved s | mean steps | pass rate | mean reviews | mean fix rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| single | 6 | 58.4 | 60.4 | 18.7 | 0.833 | 0 | 0 |
+| studio | 6 | 548.9 | 440.6 | 50.8 | 0.667 | 2.67 | 0.83 |
+
+Per run (pass/fail, wall): lang_detect single 52 s pass, 48 s fail (repeated action); studio 197 s pass, 563 s pass
+(6 reviews, 2 fix rounds). inventory_cli single 154 s pass, 60 s pass; studio 361 s **fail** (coder stopped on a
+repeated action after 37 steps, review unparsable; 3 hidden tests fail), 217 s pass. studio_feature single 17 s
+pass, 19 s pass; studio 785 s pass (4 reviews, 2 fix rounds), 1170 s **fail** (qa wrote tests before the
+implementation; `by_category` not sorted; the chief's two `delegate` attempts to fix it were rejected because
+they depended on the finished `impl` subtask — a bug, fixed the same day: dependencies on finished subtasks are
+satisfied).
+
+**Criterion (design §12): not met.** Pass rate 0.67 vs 0.83; solved-run wall-clock 441 s vs 60 s (the bar was
+within 25 %). Routing: 10 decisions, all `clear`, every one the role the chief hinted. Reviews: 9 calls,
+4 request_changes (10 blocking findings), 2 approve, 3 unparsable (Muse answered outside the JSON contract; raw
+output is now traced to `trace/<subtask>/review-<n>.json` for prompt tuning). What the studio does that the
+single agent does not: a plan and a synthesis on a dense 27B with thinking, a qa subtask that writes tests, a
+docs subtask, one reviewer call per code subtask, and fix rounds; those are where the 7× wall-clock goes.
+Decision on next steps is Noah's (memory: a missed criterion changes direction, it does not drop the feature).

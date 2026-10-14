@@ -10,9 +10,9 @@ dependencies = [
     "mlx>=0.32.2; sys_platform == 'darwin'",
     "mlx-lm==0.32.0",
     "vllm-mlx==0.5.0",
-    "torch>=2.8",             # used solely for LTS controller RL training (spec 03)
+    "torch>=2.8", # used solely for LTS controller RL training (spec 03)
     "transformers>=5.7",
-    "peft>=0.14",             # LoRA adapters for the admission controller
+    "peft>=0.14", # LoRA adapters for the admission controller
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.10",
@@ -24,8 +24,9 @@ dependencies = [
     "pyyaml>=6.0",
     "psutil>=6",
     "mcp>=1.2",
-    "autogen-agentchat>=0.7",  # spec 01 §2: AutoGen team orchestrator
+    "autogen-agentchat>=0.7", # spec 01 §2: AutoGen team orchestrator
     "autogen-ext[openai]>=0.7",
+    "rank-bm25>=0.2.2",
 ]
 
 [project.scripts]

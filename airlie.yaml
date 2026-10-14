@@ -46,6 +46,8 @@ models:
     estimated_memory_gb: 17
     kv_mb_per_1k_tokens: 192
     tool_call_parser: qwen3_coder
+    reasoning_parser: qwen3      # server-wide flag (taken from the team model): thinking roles on Qwen3.8 return
+                                 # reasoning_content instead of leaking <think> into content for chat clients
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
@@ -132,6 +134,17 @@ roles:
     max_tokens: 400
     thinking: false
     sampling: { temperature: 0.7, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
+  # ---- studio roles (design 2026-10-13): specialists are prompts over three models; summaries route them ----
+  chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [], max_context: 131072, max_tokens: 4096, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 4096, thinking: true, thinking_budget: 8192, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  product:      { prompt: prompts/roles/product.md, model: generalist, tools: [read_file, list_dir], max_tokens: 4096, thinking: false, max_steps: 8, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  ux:           { prompt: prompts/roles/ux.md, model: generalist, tools: [], vision: true, max_tokens: 2048, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  design:       { prompt: prompts/roles/design.md, model: generalist, tools: [], vision: true, max_tokens: 2048, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  docs:         { prompt: prompts/roles/docs.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge], knowledge: knowledge/research, max_tokens: 4096, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  qa:           { prompt: prompts/roles/qa.md, model: base, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], skills: skills/qa, max_tokens: 4096, thinking: false, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
+  security:     { prompt: prompts/roles/security.md, model: base, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
+  reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [], max_context: 131072, max_tokens: 2048, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
     model: base
@@ -176,6 +189,18 @@ topology:
     single: { teams: { k: 1 }, lts: { enabled: false } }
     teams:  { teams: { k: 3 }, lts: { enabled: true } }
     fork:   { teams: { k: 1 }, lts: { enabled: false } }
+    studio:                        # chief + Kev router + specialists (design 2026-10-13); needs `task restart -- --topology studio`
+      # server_parsers stays true: without the flag vllm-mlx 0.5.0's batched engine renders tools in its own
+      # bracket protocol and the coder's calls arrive argument-less (seen 2026-10-13). The server parses the coder
+      # family; airlie parses what it leaves raw (Muse channels, hermes JSON from the generalist roles).
+      engines: { main: { max_kv_size: 131072 } }
+      models: { generalist: { preload: true }, reviewer: { preload: true } }
+      teams: { k: 1, max_steps: 40 }
+      lts: { enabled: false }
+      studio: { parallel: 3 }
+    studio-qwen38:                 # the bench variant: Qwen3.8-27B in the coder seat (design §3)
+      extends: studio
+      roles: { coder: { model: generalist, thinking: true, thinking_budget: 8192 } }
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck

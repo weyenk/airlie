@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -123,7 +123,10 @@ class ForkOrchestrator:
         return NativeTeam(self.engine)
 
     # ---- run ----
-    async def execute_task(self, query_text: str, *, repo: Path, test_cmd: str | None = None) -> RunReport:
+    async def execute_task(
+        self, query_text: str, *, repo: Path, test_cmd: str | None = None, images: Sequence[Path] = ()
+    ) -> RunReport:
+        del images  # text-only topology; the studio uses them
         t0 = time.monotonic()
         f = self.cfg.fork
         self.sink.emit("run_start", goal=query_text, topology="fork", repo=str(repo), width=f.width)

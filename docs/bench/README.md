@@ -28,7 +28,11 @@ the fallback's Nemotron pattern, so the server parsed it too and `HTTPEngine` re
 without the client parser. What does come back raw is Harmony (gpt-oss) and Muse Glimmer's channels; those are
 what `airlie.engine.output_parse` parses on the client with vllm-mlx's own parser classes
 (`engines.main.server_parsers: false`), validated on fixtures until Muse is pulled in plan 2. Server-parsed calls
-always win; nothing is parsed twice.
+always win; nothing is parsed twice. **But** (2026-10-13, studio bench attempt 1): the *managed* engine
+(`--models-config`, continuous batching) started without the parser flags rendered tools in vllm-mlx's own
+bracket protocol (`[Calling tool: name({...})]`) and the coder's calls came back with empty arguments; the
+single-agent baseline failed in 6 s. The studio profile therefore keeps `server_parsers: true`; client-side
+parsing is for what the server leaves raw.
 
 ## Routing (Kev-4B on llama-server, `task route:eval`, 2026-10-13)
 
@@ -39,6 +43,16 @@ rows only): **54/54 correct (accuracy 1.00), mean confidence
 The design's bar for using studio routing for real work is accuracy ≥ 0.9. Mean confidence 0.64 means the
 `clear / ambiguous / low-confidence` policy (gap 0.15, floor 0.5) will route a fair share of tasks through the
 chief's hint; the per-decision log (`runs/<id>/routing.jsonl`) is what to tune the criteria lines against.
+
+## Studio topology (2026-10-13)
+
+`task bench:topology -- --topologies single,studio …` on the studio profile: studio 4/6 vs single 5/6; solved
+wall-clock 441 s vs 60 s; 9 reviews (4 request_changes, 2 approve, 3 unparsable); routing 10/10 as hinted. The
+design's original criterion is not met; the per-run analysis and the two defects it exposed are in
+`2026-10-13-topology-bench.md` ("Studio"). Raw: `topology-studio.json`, `routing.json`. Noah's call
+(2026-10-13): studio is a different product (plan, tests, docs, review), so the single agent is a reference
+column, not a bar; studio is benched on multi-role tasks (`studio_feature`: 1 of 2 passed, the miss traced to
+the delegate bug fixed the same day), and `single` stays the default topology.
 
 ## Method (`task bench`)
 

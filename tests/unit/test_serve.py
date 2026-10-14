@@ -70,7 +70,9 @@ def test_models_lists_roles(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).get("/v1/models")
     assert r.status_code == 200
-    assert sorted(m["id"] for m in r.json()["data"]) == ["aggregator", "coder", "judge", "summarizer"]
+    ids = [m["id"] for m in r.json()["data"]]
+    assert sorted(ids[:4]) == ["aggregator", "coder", "judge", "summarizer"]  # roles first
+    assert sorted(ids[4:]) == ["base", "small"]  # then the raw catalog models
 
 
 def test_chat_completion_maps_role_to_served_model_and_prepends_system_prompt(tmp_path: Path) -> None:
@@ -224,3 +226,129 @@ def test_default_factory_with_k_above_one_selects_teams(tmp_path: Path) -> None:
         cli_mod._orchestrator = original
     assert captured[0].topology.kind == "teams" and captured[0].teams.k == 3
     assert c.topology.kind == "single"  # the shared config is not mutated by a request
+
+
+def test_run_endpoint_accepts_images(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    seen: list[list[Path]] = []
+
+    class Stub:
+        def __init__(self) -> None:
+            self.run_dir = RunDir.create(c.observability.state_dir, "s4")
+
+        async def execute_task(self, goal, *, repo, test_cmd=None, images=()):  # type: ignore[no-untyped-def]
+            seen.append(list(images))
+            return RunReport("s4", self.run_dir, goal, [], 1.0, winner=None, final_answer="")
+
+    app = create_app(
+        c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=lambda *a, **k: Stub()
+    )
+    body = {"goal": "g", "repo": str(repo), "topology": "studio", "images": [str(png)]}
+    r = TestClient(app).post("/v1/airlie/run", json=body)
+    assert r.status_code == 200, r.text
+    assert seen == [[png.resolve()]]
+
+
+def test_api_key_guards_the_v1_routes_but_not_health(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="s3cret")
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
+        assert c.get("/v1/models").status_code == 401
+        assert c.get("/v1/models", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        assert c.get("/v1/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+        body = {"model": "coder", "messages": [{"role": "user", "content": "hi"}]}
+        assert c.post("/v1/chat/completions", json=body).status_code == 401
+        ok = c.post("/v1/chat/completions", json=body, headers={"Authorization": "Bearer s3cret"})
+        assert ok.status_code == 200
+
+
+def test_raw_catalog_models_are_served_without_a_prompt(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(up))
+    with TestClient(app) as c:
+        ids = {m["id"] for m in c.get("/v1/models").json()["data"]}
+        assert {"coder", "small", "base"} <= ids  # roles and raw catalog models
+        r = c.post(
+            "/v1/chat/completions", json={"model": "small", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert r.status_code == 200
+    sent = json.loads(up.requests[-1].content)
+    assert (
+        sent["model"] == "tiny" and sent["messages"][0]["role"] == "user"
+    )  # served name, no prompt prepended
+
+
+def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(up))
+    (tmp_path / "coder.md").write_text("---\nsummary: Implement code\n---\n# coder\nUse write_file.")
+    body = {
+        "model": "coder",
+        "messages": [
+            {"role": "system", "content": "You are OpenCode. Tools: write, read, bash."},
+            {"role": "user", "content": "hi"},
+        ],
+    }
+    with TestClient(app) as c:
+        assert c.post("/v1/chat/completions", json=body).status_code == 200
+    sent = json.loads(up.requests[-1].content)["messages"]
+    assert [m["role"] for m in sent] == ["system", "system", "user"]
+    assert sent[0]["content"].startswith("# coder") and "use the tools offered" in sent[0]["content"]
+    assert sent[1]["content"].startswith("You are OpenCode")
+
+
+class IdlessToolStream:
+    """An upstream whose streamed tool-call deltas carry no id/type (what broke OpenCode's AI SDK)."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        frames = [
+            {"choices": [{"index": 0, "delta": {"content": "I'll look."}, "finish_reason": None}]},
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": ""}}]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '{"pattern": "*.html"}'}}]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+
+def test_streamed_tool_calls_always_carry_an_id_and_type(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(IdlessToolStream()))
+    body = {"model": "base", "stream": True, "messages": [{"role": "user", "content": "find html"}]}
+    with TestClient(app) as c:
+        text = c.post("/v1/chat/completions", json=body).text
+    frames = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
+    calls = [tc for f in frames for ch in f["choices"] for tc in ch["delta"].get("tool_calls", [])]
+    assert len(calls) == 2
+    assert all(isinstance(tc["id"], str) and tc["id"].startswith("call_") for tc in calls)
+    assert calls[0]["id"] == calls[1]["id"] and all(tc["type"] == "function" for tc in calls)
+    assert frames[0]["choices"][0]["delta"]["content"] == "I'll look." and text.rstrip().endswith(
+        "data: [DONE]"
+    )

@@ -278,3 +278,26 @@ def test_dump_and_load_messages_keep_parts() -> None:
         role="user", content="see image", parts=(ContentPart("image_url", url="data:image/png;base64,AA=="),)
     )
     assert load_messages(dump_messages([m])) == [m]
+
+
+async def test_prompt_frontmatter_is_not_sent_as_system_text(tmp_path: Path) -> None:
+    from airlie.engine import FakeEngine, FakeReply
+
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.role.prompt.write_text("---\nsummary: Implement code\n---\n# coder\n")
+    await team.run(ctx, Recorder())
+    assert engine.requests[0].messages[0].content == "# coder\n"
+
+
+async def test_images_become_parts_on_the_goal_message(tmp_path: Path) -> None:
+    from airlie.engine import FakeEngine, FakeReply
+
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n")
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.images = [png]
+    await team.run(ctx, Recorder())
+    goal = engine.requests[0].messages[1]
+    assert goal.parts is not None and goal.parts[0].type == "text" and goal.parts[1].type == "image_url"

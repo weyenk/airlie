@@ -60,6 +60,8 @@ class TeamContext:
     """With initial_state: the next user message instead of the goal (branch label, hypothesis)."""
     stop_when: Callable[[StepRecord], bool] | None = None
     """Evaluated after every step; True stops the run with stop_reason="fork_point" and a state snapshot."""
+    images: list[Path] = field(default_factory=list)
+    """Image files attached to the goal message as content parts (vision roles)."""
 
 
 @dataclass

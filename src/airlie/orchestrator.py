@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from airlie.config import AirlieConfig
@@ -223,7 +223,10 @@ class ParallelAgentTeamOrchestrator:
         """Attach outcome rewards to the admission log (M5 training signal)."""
         self.lts_log.finalize(episode_reward)
 
-    async def execute_task(self, query_text: str, *, repo: Path, test_cmd: str | None = None) -> RunReport:
+    async def execute_task(
+        self, query_text: str, *, repo: Path, test_cmd: str | None = None, images: Sequence[Path] = ()
+    ) -> RunReport:
+        del images  # text-only topology; the studio uses them
         t0 = time.monotonic()
         k = self.cfg.teams.k
         self.query = query_text

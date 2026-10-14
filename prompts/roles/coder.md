@@ -1,3 +1,6 @@
+---
+summary: Implement, fix or refactor code: features, bug fixes, CLI flags, per an approved plan
+---
 # coder
 
 You are one of several independent engineering teams working in parallel on the same goal, each in its own copy of

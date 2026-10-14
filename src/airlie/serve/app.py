@@ -3,16 +3,50 @@ can talk to a role by name; `/v1/airlie/run` launches a parallel team run."""
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from airlie.config import AirlieConfig
+from airlie.skills import prompt_text
+
+
+class ToolCallStreamRepair:
+    """Give every streamed tool-call delta an `id` and `type`. vllm-mlx sometimes streams a call's deltas
+    without them (seen 2026-10-14 when Qwen3-Coder opened a call with a bare `<function=...>`), and the
+    Vercel AI SDK behind OpenCode rejects such a chunk ("Expected 'id' to be a string")."""
+
+    def __init__(self) -> None:
+        self.ids: dict[tuple[int, int], str] = {}
+
+    def frame(self, frame: bytes) -> bytes:
+        text = frame.decode("utf-8", "replace")
+        if not text.startswith("data: {") or '"tool_calls"' not in text:
+            return frame
+        try:
+            obj = json.loads(text[6:])
+        except ValueError:
+            return frame
+        changed = False
+        for choice in obj.get("choices") or []:
+            for tc in (choice.get("delta") or {}).get("tool_calls") or []:
+                key = (int(choice.get("index", 0)), int(tc.get("index", 0)))
+                if tc.get("id"):
+                    self.ids.setdefault(key, str(tc["id"]))
+                else:
+                    tc["id"] = self.ids.setdefault(key, f"call_{uuid.uuid4().hex[:24]}")
+                    changed = True
+                if not tc.get("type"):
+                    tc["type"] = "function"
+                    changed = True
+        return f"data: {json.dumps(obj)}".encode() if changed else frame
 
 
 class RunRequest(BaseModel):
@@ -21,6 +55,7 @@ class RunRequest(BaseModel):
     k: int | None = None
     test_cmd: str | None = None
     topology: str | None = None
+    images: list[str] = []
 
 
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
@@ -39,18 +74,35 @@ def create_app(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     orchestrator_factory: Callable[..., Any] | None = None,
+    api_key: str | None = None,
 ) -> FastAPI:
+    """`api_key`: when set, every /v1 route needs `Authorization: Bearer <key>` (use it before a tunnel)."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
 
-    def upstream(role: str) -> tuple[str, str, dict[str, str]]:
-        if role not in cfg.roles:
-            raise HTTPException(404, f"unknown role '{role}'; roles: {', '.join(cfg.roles)}")
-        model = cfg.roles[role].model
+    if api_key:
+
+        @app.middleware("http")
+        async def _require_key(request: Request, call_next: Callable[..., Any]) -> Any:
+            if request.url.path.startswith("/v1"):
+                auth = request.headers.get("authorization", "")
+                if auth != f"Bearer {api_key}":
+                    return JSONResponse({"error": "invalid or missing API key"}, status_code=401)
+            return await call_next(request)
+
+    def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
+        """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
+        if name in cfg.roles:
+            model, prompt = cfg.roles[name].model, prompt_text(cfg.roles[name].prompt)
+        elif name in cfg.models:
+            model, prompt = name, None
+        else:
+            known = ", ".join([*cfg.roles, *cfg.models])
+            raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
         e = cfg.engines[cfg.engine_for_model(model)]
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
-        return (e.base_url or "").rstrip("/"), e.served_name(model), headers
+        return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -58,30 +110,46 @@ def create_app(
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
+        served = [m for m in cfg.models if m not in cfg.roles]
         return {
             "object": "list",
-            "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in cfg.roles],
+            "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
         }
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any]) -> Any:
-        role = str(body.get("model", ""))
-        base, served, headers = upstream(role)
-        spec = cfg.roles[role]
+        name = str(body.get("model", ""))
+        base, served, headers, prompt = upstream(name)
         msgs = list(body.get("messages") or [])
-        if not msgs or msgs[0].get("role") != "system":
-            msgs = [{"role": "system", "content": spec.prompt.read_text()}, *msgs]
+        if prompt is not None:
+            if msgs and msgs[0].get("role") == "system":  # a client with its own harness (OpenCode, VS Code)
+                bridge = (
+                    "\n\nYou are running inside a client that provides its own instructions and tools below; "
+                    "use the tools offered in this conversation, not the tool names mentioned above."
+                )
+                msgs = [{"role": "system", "content": prompt.rstrip() + bridge}, *msgs]
+            else:
+                msgs = [{"role": "system", "content": prompt}, *msgs]
         out = {**body, "model": served, "messages": msgs}
-        out.setdefault("max_tokens", spec.max_tokens)
-        out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
+        if name in cfg.roles:
+            spec = cfg.roles[name]
+            out.setdefault("max_tokens", spec.max_tokens)
+            out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
             resp = await client.send(req, stream=True)
 
             async def gen() -> AsyncIterator[bytes]:
+                repair = ToolCallStreamRepair()
+                buf = b""
                 try:
                     async for chunk in resp.aiter_bytes():
-                        yield chunk
+                        buf += chunk
+                        while b"\n\n" in buf:
+                            frame, buf = buf.split(b"\n\n", 1)
+                            yield repair.frame(frame) + b"\n\n"
+                    if buf:
+                        yield repair.frame(buf)
                 finally:
                     await resp.aclose()
 
@@ -97,7 +165,14 @@ def create_app(
         if not (repo / ".git").exists():
             raise HTTPException(400, f"{repo} is not a git repository")
         orch = factory(cfg, req.k, topology=req.topology) if req.topology else factory(cfg, req.k)
-        report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd)
+        images = [Path(p).expanduser().resolve() for p in req.images]
+        for p in images:
+            if not p.is_file():
+                raise HTTPException(400, f"image not found: {p}")
+        if images:
+            report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd, images=images)
+        else:
+            report = await orch.execute_task(req.goal, repo=repo, test_cmd=req.test_cmd)
         return {
             "run_id": report.run_id,
             "winner": report.winner,

@@ -43,8 +43,9 @@ Run `task` to list them. The ones that exist today:
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
 | `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the Kev router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
-| `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs the spec's K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
+| `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
 | `task controller:dataset` / `task controller:train [-- --epochs 5]` / `task controller:eval` | build the training set from every run's admission log; train the spec 03 §2 controller (LoRA on Qwen3-0.6B + projections) with the spec 03 §3 REINFORCE objective; replay held-out decisions against the logged controller |
 | `task memory -- RUN_ID [--full]` | show a run's shared memory bank: keys, owning team, cross-team reads |
@@ -80,6 +81,11 @@ uploads the per-module score table; enrolled modules must be clean, the other mo
 enrol a module, add its path to `[tool.airlie.mutation].enrolled` once `task mutate:changed` is clean for it.
 
 ## Using airlie from another client
+
+Terminal agents (OpenCode, Claude Code, Qwen Code) call the engine directly: see
+[`docs/integrations/local-agents.md`](docs/integrations/local-agents.md). VS Code's chat (Local session) and
+Cursor (through a tunnel) are in `docs/integrations/` too.
+
 
 `task serve` starts an OpenAI-compatible server on `127.0.0.1:8090`. Point Claude Code, Qwen Code, Cursor or
 `curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends the role prompt and
@@ -121,6 +127,19 @@ per-request draft length, so the budgets are computed and logged but only *appli
 
 Every topology injects a deterministic repository map (tree, sizes, Python signatures; `repo_map.*`, cached under
 `<state_dir>/repo_maps/`) before the goal, so no branch re-discovers the layout.
+
+- **`studio`** (design: `docs/superpowers/specs/2026-10-13-studio-topology-design.md`): one generalist
+  (`chief`, Qwen3.8-27B, also the vision model) scopes the request into a JSON plan of subtasks; the router
+  (Kev on llama-server, or the chief's own hint with `router.kind: chief`) assigns each subtask a specialist
+  role from the roles whose prompts carry a `summary:` line, and for roles with a skill library (`qa` →
+  `skills/qa/*.md`) picks the guideline to inject; specialists are prompts over three models (generalist, the
+  coder for `coder`/`qa`/`security`, Muse Glimmer for the `reviewer`) and run as single agents on one worktree,
+  writers one at a time, readers in parallel; after a code subtask the reviewer (a different model family, on
+  purpose: judges favour their own family's text) returns a JSON verdict and blocking findings give the coder
+  one fix round; the chief synthesises. Run it with `task studio -- "goal" --repo . [--image shot.png]` after
+  `task restart -- --topology studio` (the profile preloads the generalist and the reviewer; the server keeps
+  parsing the coder family's tool calls and airlie parses what it leaves raw, such as Muse's channels). Every routing decision is logged (`runs/<id>/routing.jsonl`) and scorable with
+  `task route:eval`.
 
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
 selected (`extends: <profile>` chains), so each topology declares its own team count, memory settings, contexts
@@ -167,8 +186,12 @@ overrides (deep-merged, gitignored). Every seam is a key there: engines (`vllm_m
 Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser` /
 `reasoning_parser` name the vllm-mlx parser classes airlie runs on each model's output when
 `engines.<e>.server_parsers` is false), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
-or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles. Unknown
-keys are errors, and every error names the key path.
+or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
+`studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds). A role may
+declare `tools` (a subset of the builtins plus `decide` and `search_knowledge`), `skills` (a directory of
+guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory the `search_knowledge` tool
+indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
+error names the key path.
 
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.

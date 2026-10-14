@@ -144,8 +144,8 @@ def test_run_with_topology_single_selects_the_profile(tmp_path: Path, monkeypatc
 
 def test_run_with_unknown_topology_exits_2(tmp_path: Path) -> None:
     p = write_cfg(tmp_path)
-    r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "studio", "-c", str(p)])
-    assert r.exit_code == 2 and "single, teams, fork" in r.output
+    r = runner.invoke(cli.app, ["run", "go", "--repo", str(tmp_path), "--topology", "ring", "-c", str(p)])
+    assert r.exit_code == 2 and "single, teams, fork, studio" in r.output
 
 
 def test_k_above_one_under_the_single_kind_selects_teams(tmp_path: Path, monkeypatch) -> None:
@@ -166,3 +166,29 @@ def test_k_above_one_under_the_single_kind_selects_teams(tmp_path: Path, monkeyp
     r = runner.invoke(cli.app, ["run", "go", "--repo", str(repo), "--k", "3", "-c", str(p)])
     assert r.exit_code == 0, r.output
     assert seen[0].topology.kind == "teams" and seen[0].teams.k == 3 and seen[0].teams.max_steps == 9
+
+
+def test_studio_command_passes_images(tmp_path: Path, monkeypatch) -> None:
+    seen: list = []
+
+    class Stub(StubOrchestrator):
+        async def execute_task(self, goal, *, repo, test_cmd=None, images=()):  # type: ignore[no-untyped-def]
+            seen.append(list(images))
+            return await super().execute_task(goal, repo=repo, test_cmd=test_cmd)
+
+    monkeypatch.setattr(cli, "_orchestrator", lambda cfg, run_id=None: Stub(cfg, None, run_id))
+    png = tmp_path / "s.png"
+    png.write_bytes(b"\x89PNG")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    p = write_cfg(tmp_path)
+    data = yaml.safe_load(p.read_text())
+    data["topology"] = {"kind": "teams", "profiles": {"studio": {"teams": {"max_steps": 5}}}}
+    for r in ("chief", "reviewer", "qa", "security"):
+        (tmp_path / f"{r}.md").write_text("x")
+        data["roles"][r] = {"prompt": f"{r}.md", "model": "base"}
+    p.write_text(yaml.safe_dump(data))
+    r = runner.invoke(cli.app, ["studio", "critique", "--repo", str(repo), "--image", str(png), "-c", str(p)])
+    assert r.exit_code == 0, r.output
+    assert seen == [[png.resolve()]]

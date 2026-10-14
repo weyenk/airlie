@@ -1,0 +1,100 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "airlie": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "airlie",
+      "options": {
+        "baseURL": "http://127.0.0.1:8090/v1",
+        "apiKey": "airlie-local"
+      },
+      "models": {
+        "coder": {
+          "name": "coder",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "architect": {
+          "name": "architect",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "qa": {
+          "name": "qa",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "security": {
+          "name": "security",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "docs": {
+          "name": "docs",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "research": {
+          "name": "research",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "product": {
+          "name": "product",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "ux": {
+          "name": "ux",
+          "limit": {
+            "context": 131072,
+            "output": 2048
+          }
+        },
+        "design": {
+          "name": "design",
+          "limit": {
+            "context": 131072,
+            "output": 2048
+          }
+        },
+        "base": {
+          "name": "base",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "generalist": {
+          "name": "generalist",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "small": {
+          "name": "small",
+          "limit": {
+            "context": 16384,
+            "output": 2048
+          }
+        }
+      }
+    }
+  },
+  "model": "airlie/coder"
+}

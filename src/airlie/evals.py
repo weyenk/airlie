@@ -84,3 +84,10 @@ def materialize(task: EvalTask, dest: Path) -> Path:
     subprocess.run(["git", *env, "add", "-A"], cwd=dest, check=True)
     subprocess.run(["git", *env, "commit", "-q", "-m", f"eval task {task.id}: setup"], cwd=dest, check=True)
     return dest
+
+
+def grade_dirs(run_path: Path, team_ids: list[str], winner: str | None) -> list[str]:
+    """The run directories to grade: each team's, plus the winner's (studio subtasks share one worktree
+    named after the winner); only directories that exist."""
+    ids = list(dict.fromkeys([*team_ids, *([winner] if winner else [])]))
+    return [i for i in ids if (run_path / i).is_dir()]

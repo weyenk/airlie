@@ -59,11 +59,16 @@ def version() -> None:
 
 
 @app.command()
-def doctor(config: ConfigOpt = None) -> None:
+def doctor(
+    config: ConfigOpt = None,
+    topology: Annotated[
+        str | None, typer.Option("--topology", help="check the config as this topology profile")
+    ] = None,
+) -> None:
     """Check config, host limits, tooling and model files. Exit 1 on any failing row."""
     from airlie.doctor import RealProbe, run_checks, worst
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     results = run_checks(cfg, RealProbe())
     table = Table(title="airlie doctor", show_lines=False)
     table.add_column("check")
@@ -148,16 +153,23 @@ def _health_table(rows: list[tuple[str, object]]) -> Table:
     return table
 
 
+ProfileOpt = Annotated[
+    str | None, typer.Option("--topology", help="start the engines as this topology profile configures them")
+]
+
+
 @engine_app.command("up")
 def engine_up(
-    config: ConfigOpt = None, timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900
+    config: ConfigOpt = None,
+    timeout: Annotated[float, typer.Option(help="seconds to wait for models")] = 900,
+    topology: ProfileOpt = None,
 ) -> None:
     """Start every managed engine and wait until its preloaded models are ready."""
     import asyncio
 
     from airlie.engine.types import EngineError
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     rows = []
     for name in _managed(cfg):
         p = _engine_process(cfg, name)
@@ -175,21 +187,21 @@ def engine_up(
 
 
 @engine_app.command("down")
-def engine_down(config: ConfigOpt = None) -> None:
+def engine_down(config: ConfigOpt = None, topology: ProfileOpt = None) -> None:
     """Stop every managed engine."""
     import asyncio
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     for name in _managed(cfg):
         asyncio.run(_engine_process(cfg, name).stop())
         console.print(f"stopped engine [bold]{name}[/bold]")
 
 
 @engine_app.command("restart")
-def engine_restart(config: ConfigOpt = None, timeout: float = 900) -> None:
-    """Stop then start every managed engine."""
-    engine_down(config)
-    engine_up(config, timeout)
+def engine_restart(config: ConfigOpt = None, timeout: float = 900, topology: ProfileOpt = None) -> None:
+    """Stop then start every managed engine (as the given topology profile configures them)."""
+    engine_down(config, topology)
+    engine_up(config, timeout, topology)
 
 
 @engine_app.command("status")
@@ -386,7 +398,9 @@ def bench_lts(
 @bench_app.command("topology")
 def bench_topology(
     tasks: Annotated[str, typer.Option(help="comma-separated task ids (default: all)")] = "",
-    topologies: Annotated[str, typer.Option(help="comma-separated: single,teams,fork")] = "single,fork",
+    topologies: Annotated[
+        str, typer.Option(help="comma-separated: single,teams,fork,studio")
+    ] = "single,fork",
     repeats: int = 3,
     baseline: str = "single",
     target_pct: float = 25.0,
@@ -407,7 +421,7 @@ def bench_topology(
         summarize,
         verdict,
     )
-    from airlie.evals import find_task, load_task, materialize
+    from airlie.evals import find_task, grade_dirs, load_task, materialize
 
     cfg = _load(config)
     ids = [t.strip() for t in tasks.split(",") if t.strip()] or sorted(
@@ -427,7 +441,10 @@ def bench_topology(
                 t0 = time.monotonic()
                 report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
                 wall = time.monotonic() - t0
-                graded = {t.team_id: task.grade(orch.run_dir.path / t.team_id).passed for t in report.teams}
+                graded = {
+                    i: task.grade(orch.run_dir.path / i).passed
+                    for i in grade_dirs(orch.run_dir.path, [t.team_id for t in report.teams], report.winner)
+                }
                 counts = events_counts(report.run_dir.events_path)
                 winner_passed = bool(graded.get(report.winner or "", False))
                 rows.append(
@@ -445,11 +462,15 @@ def bench_topology(
                         any(graded.values()),
                         len(report.teams),
                         report.run_id,
+                        counts["reviews"],
+                        counts["blocking"],
+                        counts["fix_rounds"],
                     )
                 )
                 verdict_txt = "PASS" if winner_passed else "FAIL"
                 console.print(
                     f"  wall {wall:.0f}s, steps {counts['steps']}, forks {counts['forks']}, "
+                    f"reviews {counts['reviews']} (fix rounds {counts['fix_rounds']}), "
                     f"winner {report.winner} {verdict_txt}, any {any(graded.values())}"
                 )
     summary = summarize(rows)
@@ -466,15 +487,26 @@ def serve(
     config: ConfigOpt = None,
     host: str = "127.0.0.1",
     port: int = 8090,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            envvar="AIRLIE_SERVE_API_KEY",
+            help="require `Authorization: Bearer <key>` on /v1 (set it before exposing the server)",
+        ),
+    ] = None,
 ) -> None:
-    """OpenAI-compatible endpoint in front of airlie: roles as models, plus POST /v1/airlie/run."""
+    """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
     import uvicorn
 
     from airlie.serve import create_app
 
     cfg = _load(config)
-    console.print(f"airlie serve on http://{host}:{port}/v1  (models = roles: {', '.join(cfg.roles)})")
-    uvicorn.run(create_app(cfg), host=host, port=port, log_level="info")
+    raw = [m for m in cfg.models if m not in cfg.roles]
+    console.print(
+        f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
+        f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
+    )
+    uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
 
 
 @bench_app.command("report")
@@ -626,8 +658,11 @@ def run(
     ] = None,
     topology: TopologyOpt = None,
     config: ConfigOpt = None,
+    image: Annotated[
+        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles (studio)")
+    ] = None,
 ) -> None:
-    """Run the configured topology (K parallel teams, or fork-when-stuck) on a goal in a repository."""
+    """Run the configured topology (single agent, K teams, fork-when-stuck, studio) on a goal in a repo."""
     import asyncio
 
     cfg = _load(config, topology)
@@ -636,10 +671,35 @@ def run(
     if not (repo / ".git").exists():
         err.print(f"[red]{repo} is not a git repository[/red]")
         raise typer.Exit(1)
-    report = asyncio.run(_orchestrator(cfg).execute_task(goal, repo=repo, test_cmd=test_cmd))
+    images = [p.resolve() for p in image or []]
+    for p in images:
+        if not p.is_file():
+            err.print(f"[red]image not found: {p}[/red]")
+            raise typer.Exit(1)
+    orch = _orchestrator(cfg)
+    coro = (
+        orch.execute_task(goal, repo=repo, test_cmd=test_cmd, images=images)
+        if images
+        else orch.execute_task(goal, repo=repo, test_cmd=test_cmd)
+    )
+    report = asyncio.run(coro)
     _print_report(report)
     if not report.any_ok:
         raise typer.Exit(1)
+
+
+@app.command()
+def studio(
+    goal: Annotated[str, typer.Argument(help="what the studio should accomplish")],
+    repo: Annotated[Path, typer.Option(help="git repository to work in")] = Path("."),
+    image: Annotated[
+        list[Path] | None, typer.Option("--image", help="image file(s) for vision roles")
+    ] = None,
+    test_cmd: Annotated[str | None, typer.Option(help="command run_tests runs in the worktree")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Run the studio topology (chief → router → specialists → review → synthesis) on a goal."""
+    run(goal, repo=repo, k=None, test_cmd=test_cmd, topology="studio", config=config, image=image)
 
 
 @eval_app.command("run")
@@ -667,15 +727,20 @@ def eval_run(
     console.print(f"task [bold]{task.id}[/bold] → {repo}")
     report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
     _print_report(report)
+    from airlie.evals import grade_dirs
+
     passed = 0
-    for t in report.teams:
-        g = task.grade(orch.run_dir.path / t.team_id)
+    dirs = grade_dirs(orch.run_dir.path, [t.team_id for t in report.teams], report.winner)
+    if not dirs:
+        console.print("[red]FAIL[/red]: no worktree to grade (no team or winner directory under the run)")
+    for name in dirs:
+        g = task.grade(orch.run_dir.path / name)
         passed += int(g.passed)
         verdict = "[green]PASS[/green]" if g.passed else "[red]FAIL[/red]"
-        console.print(f"[bold]{t.team_id}[/bold]: hidden tests {verdict}")
+        console.print(f"[bold]{name}[/bold]: hidden tests {verdict}")
         if not g.passed:
             console.print(g.output[-1500:], markup=False, highlight=False)
-    console.print(f"{passed}/{len(report.teams)} teams pass the hidden tests")
+    console.print(f"{passed}/{len(dirs)} worktrees pass the hidden tests")
     if passed == 0:
         raise typer.Exit(1)
 
@@ -846,9 +911,12 @@ def route_eval(
     cases: Annotated[Path, typer.Option(help="labelled JSONL: question, task, expect")] = Path(
         "evals/routing.jsonl"
     ),
-    roles: Annotated[Path, typer.Option(help="role -> criterion YAML")] = Path("evals/routing-roles.yaml"),
+    roles: Annotated[
+        Path | None, typer.Option(help="role -> criterion YAML (default: the config's routable roles)")
+    ] = None,
     min_accuracy: Annotated[float, typer.Option(help="exit 1 below this")] = 0.0,
     out: Annotated[Path | None, typer.Option(help="save the JSON report here")] = None,
+    topology: TopologyOpt = None,
     config: ConfigOpt = None,
 ) -> None:
     """Score the router on a labelled set (accuracy, mean confidence, wrong-but-clear, confusions)."""
@@ -856,14 +924,22 @@ def route_eval(
 
     from airlie.bench.route_eval import evaluate, load_cases, load_criteria, render, save
     from airlie.router import build_router
+    from airlie.skills import routable_roles
 
-    cfg = _load(config)
+    cfg = _load(config, topology)
     if cfg.router.kind != "jev":
         err.print(
             "[red]router.kind must be jev to evaluate routing (chief routing has nothing to score)[/red]"
         )
         raise typer.Exit(2)
-    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), load_criteria(roles)))
+    if roles is not None:
+        criteria = load_criteria(roles)
+    else:
+        criteria = routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})
+        if not criteria:
+            err.print("[red]no routable roles in the config (prompts need a summary:); pass --roles[/red]")
+            raise typer.Exit(2)
+    rep = asyncio.run(evaluate(build_router(cfg), load_cases(cases), criteria))
     console.print(render(rep), markup=False, highlight=False)
     if out is not None:
         console.print(f"saved {save(rep, out)}")
