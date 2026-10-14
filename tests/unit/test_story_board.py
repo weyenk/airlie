@@ -233,7 +233,6 @@ def test_a_project_key_is_capital_letters_digits_and_underscores() -> None:
         "http://localhost@evil.test/",  # the host is evil.test
         "http://127.0.0.1.evil.test",
         "http://127.0.0.2",
-        "http://[::1",
         "http://exa mple.com",
     ],
 )
@@ -257,6 +256,76 @@ def test_an_api_url_is_held_to_the_same_rule() -> None:
         assert api_url not in str(e.value)
 
 
+USERINFO_URLS = [
+    "https://syn-user:syn-p4ss@acme.atlassian.net",
+    "https://syn-user@acme.atlassian.net",
+    "https://:syn-p4ss@acme.atlassian.net",
+    "https://syn-user:@acme.atlassian.net",
+    "https://syn-user%40x:syn-p4ss@acme.atlassian.net/rest/api/3",
+    "HTTPS://syn-user:syn-p4ss@ACME.atlassian.net",
+    "http://syn-user:syn-p4ss@127.0.0.1:8080",  # even to this machine
+    "https://acme.atlassian.net@evil.test",  # a user that looks like the host: the host is evil.test
+]
+SITE_SETTING, API_SETTING = "ATLASSIAN_BASE_URL / story.jira.site", "story.jira.api_url"
+
+
+@pytest.mark.parametrize("url", USERINFO_URLS)
+def test_a_url_carrying_a_user_or_password_is_refused_for_the_site_and_the_api_url(url: str) -> None:
+    """httpx would send the userinfo as Basic auth in place of the Authorization header airlie builds, and the
+    site is copied into every card's URL (notes, state, PR text)."""
+    tail = "must not carry a user or password; credentials go in ATLASSIAN_EMAIL and ATLASSIAN_API_KEY"
+    for field, setting in (("site", SITE_SETTING), ("api_url", API_SETTING)):
+        data = {"site": SITE, "project": "AIR"}
+        data[field] = url
+        with pytest.raises(BoardError) as e:
+            JiraBoard(JiraSpec.model_validate(data), email=EMAIL, token=TOKEN)
+        assert str(e.value) == f"{setting} {tail}"
+        shown = "".join(traceback.format_exception(e.value))
+        assert [s for s in ("syn-user", "syn-p4ss", "evil.test") if s in shown] == []
+        assert e.value.__cause__ is None and e.value.__context__ is None
+
+
+def test_a_site_with_a_user_from_the_env_file_or_the_environment_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://syn-user:syn-p4ss@acme.atlassian.net"
+    dotenv = {"ATLASSIAN_BASE_URL": url, "ATLASSIAN_PROJECT_KEY": "AIR"}
+    dotenv |= {"ATLASSIAN_EMAIL": EMAIL, "ATLASSIAN_API_KEY": TOKEN}
+    monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: dotenv)
+    cfg = cfg_for(tmp_path)
+    refused = f"{SITE_SETTING} must not carry a user or password"
+    with pytest.raises(BoardError, match=refused) as from_file:
+        jira_board(cfg)
+    del dotenv["ATLASSIAN_BASE_URL"]
+    monkeypatch.setenv("ATLASSIAN_BASE_URL", url)
+    with pytest.raises(BoardError, match=refused) as from_shell:
+        jira_board(cfg)
+    shown = "".join("".join(traceback.format_exception(e.value)) for e in (from_file, from_shell))
+    assert "syn-user" not in shown and "syn-p4ss" not in shown
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://acme.atlassian.net:syn-port",  # not a port
+        "https://syn-user:syn-p4ss@acme.atlassian.net:syn-port",
+        "http://[::1",
+        "https://[::1",
+        "https:///x",  # no host
+    ],
+)
+def test_a_url_httpx_cannot_parse_is_refused_naming_the_setting_not_the_value(url: str) -> None:
+    for field, setting in (("site", SITE_SETTING), ("api_url", API_SETTING)):
+        data = {"site": SITE, "project": "AIR"}
+        data[field] = url
+        with pytest.raises(BoardError) as e:
+            JiraBoard(JiraSpec.model_validate(data), email=EMAIL, token=TOKEN)
+        assert str(e.value).startswith(f"{setting} must be a URL, like https://")
+        shown = "".join(traceback.format_exception(e.value))
+        assert [s for s in ("syn-port", "syn-user", "syn-p4ss") if s in shown] == []
+        assert e.value.__cause__ is None and e.value.__context__ is None
+
+
 @pytest.mark.parametrize(
     "site",
     [
@@ -273,6 +342,28 @@ def test_https_and_an_http_site_on_this_machine_are_accepted(site: str) -> None:
     api_url = "http://127.0.0.1:9/rest/api/3"  # the same for the REST base
     here = JiraSpec.model_validate({"site": SITE, "project": "AIR", "api_url": api_url})
     JiraBoard(here, email=EMAIL, token=TOKEN)
+
+
+async def test_an_upper_case_scheme_and_host_give_a_lower_case_card_url_that_adf_links() -> None:
+    acme, api = "https://acme.atlassian.net", "https://api.atlassian.com/ex/jira/C1D2/rest/api/3"
+    shouty_api = "HTTPS://API.ATLASSIAN.COM/ex/jira/C1D2/rest/api/3/"
+    for site, api_url, want_site, want_api, host in (
+        ("HTTPS://ACME.atlassian.net/Jira/", None, f"{acme}/Jira", None, "acme.atlassian.net"),
+        ("HTTPS://ACME.atlassian.net", shouty_api, acme, api, "api.atlassian.com"),
+        ("HTTP://LOCALHOST:9000/", None, "http://localhost:9000", None, "localhost"),
+        ("https://@ACME.atlassian.net", None, acme, None, "acme.atlassian.net"),  # an empty userinfo: no user
+    ):  # only the scheme and the host are lower-cased: a path keeps its case
+        spec = JiraSpec.model_validate({"site": site, "project": "AIR", "api_url": api_url})
+        fake = FakeJira()
+        b = JiraBoard(spec, email=EMAIL, token=TOKEN, transport=httpx.MockTransport(fake))
+        card = await b.card("AIR-7")
+        assert (b.site, b.api) == (want_site, want_api or f"{want_site}/rest/api/3")
+        assert (b.spec.site, b.spec.api_url) == (want_site, want_api)  # the stored spec agrees with the board
+        assert card.url == f"{want_site}/browse/AIR-7"
+        assert fake.requests[0].url.host == host
+        paragraph = adf_doc(note(f"opened {card.url}"))["content"][0]["content"]
+        links = [n for n in paragraph if [m["type"] for m in n.get("marks", [])] == ["link"]]
+        assert [(n["text"], n["marks"][0]["attrs"]["href"]) for n in links] == [(card.url, card.url)]
 
 
 async def test_a_comment_is_adf_with_strong_and_link_marks() -> None:
@@ -442,12 +533,20 @@ async def test_a_redirect_or_a_reply_that_is_not_json_is_a_board_error() -> None
         await JiraBoard(spec, email=EMAIL, token=TOKEN, transport=broken).card("AIR-7")
 
 
-async def test_a_site_httpx_cannot_parse_is_a_board_error_that_does_not_quote_it() -> None:
-    spec = JiraSpec.model_validate({"site": "https://acme.atlassian.net:abc", "project": "AIR"})  # not a port
-    b = JiraBoard(spec, email=EMAIL, token=TOKEN, transport=httpx.MockTransport(FakeJira()))
-    with pytest.raises(BoardError, match="Jira GET issue/AIR-7: InvalidURL") as e:
+async def test_a_url_httpx_refuses_at_request_time_is_still_a_board_error_that_does_not_quote_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = board(FakeJira())
+
+    # a board only holds URLs that parse, so this is a backstop
+    def refuse(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        raise httpx.InvalidURL("Invalid port: 'syn-port'")
+
+    monkeypatch.setattr(httpx, "AsyncClient", refuse)
+    with pytest.raises(BoardError, match="Jira GET issue/AIR-7: InvalidURL, no reply") as e:
         await b.card("AIR-7")
-    assert "abc" not in str(e.value) and e.value.__cause__ is None
+    assert "syn-port" not in "".join(traceback.format_exception(e.value))
+    assert e.value.__cause__ is None and e.value.__context__ is None
 
 
 async def test_null_board_writes_notes_and_text_cards_are_stable(tmp_path: Path) -> None:

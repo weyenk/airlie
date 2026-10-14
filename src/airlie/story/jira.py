@@ -30,6 +30,7 @@ _QUOTED = re.compile(r"""(["'])(.*?)\1(?:\s+#.*)?""")  # "value" or 'value', the
 _COMMENT = re.compile(r"\s+#.*")
 _PROJECT = re.compile(r"[A-Z][A-Z0-9_]+", re.ASCII)
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
+_API_EXAMPLE = "https://api.atlassian.com/ex/jira/CLOUD_ID/rest/api/3"
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _URL = re.compile(r"https?://[^\s<>\"'`]+[^\s<>\"'`.,;:!?)\]]")
 
@@ -216,19 +217,25 @@ def _issue(card: Card) -> str:
     return f"issue/{card.key}"
 
 
-def _url_problem(url: str) -> str | None:
-    """Why `url` is no place to send credentials, or None. The account email and API token go with every
-    request, so it is https://, or http:// to this machine."""
-    low = url.lower()
-    if low.startswith("https://"):
-        return None
-    if not low.startswith("http://"):
-        return "must be a URL"
+def _web_url(url: str, setting: str, example: str) -> str:
+    """`url` as the board keeps it (scheme and host in lower case, as httpx will use them; a path keeps its
+    case), or a BoardError that names `setting` and never quotes `url`, which may carry a user and password.
+    The account email and API token go with every request, so the URL is https://, or http:// to this
+    machine, and has no user or password of its own: httpx would send those in place of the Authorization
+    header airlie builds, and the URL is copied into card links, notes, state and PR text."""
     try:
-        host = httpx.URL(url).host  # the host a request would really reach
+        parsed: httpx.URL | None = httpx.URL(url)  # parsed as a request will parse it
     except httpx.InvalidURL:
-        host = ""
-    return None if host in _LOOPBACK else "must be https:// (http:// is only for localhost)"
+        parsed = None
+    if parsed is None or parsed.scheme not in ("http", "https") or not parsed.host:
+        problem = f"must be a URL, like {example}"
+    elif parsed.scheme == "http" and parsed.host not in _LOOPBACK:
+        problem = f"must be https:// (http:// is only for localhost), like {example}"
+    elif parsed.userinfo:
+        problem = "must not carry a user or password; credentials go in ATLASSIAN_EMAIL and ATLASSIAN_API_KEY"
+    else:
+        return str(parsed).rstrip("/")
+    raise BoardError(f"{setting} {problem}")  # raised outside the handler above: nothing is chained
 
 
 class JiraBoard:
@@ -245,17 +252,14 @@ class JiraBoard:
                 "the Jira project key is capital letters, digits and _, like AIR: fix ATLASSIAN_PROJECT_KEY "
                 "in the .env beside airlie.yaml, or story.jira.project"
             )
-        for url, setting, example in (
-            (spec.site, "the Jira site (ATLASSIAN_BASE_URL, story.jira.site)", "https://NAME.atlassian.net"),
-            (spec.api_url, "story.jira.api_url", "https://api.atlassian.com/ex/jira/CLOUD_ID/rest/api/3"),
-        ):
-            problem = _url_problem(url) if url else None
-            if problem:  # the setting is named, never its value: a URL may carry credentials
-                raise BoardError(f"{setting} {problem}, like {example}")
-        self.spec = spec.model_copy(update={"email": None, "token": None})  # whatever spec it was given
-        self.site = spec.site.rstrip("/")
+        self.site = _web_url(spec.site, "ATLASSIAN_BASE_URL / story.jira.site", "https://NAME.atlassian.net")
+        api_url = spec.api_url and _web_url(spec.api_url, "story.jira.api_url", _API_EXAMPLE)
+        self.api = api_url or f"{self.site}/rest/api/3"
+        # whatever spec it was given: no credential, and the site and api_url as the board uses them
+        self.spec = spec.model_copy(
+            update={"email": None, "token": None, "site": self.site, "api_url": api_url or None}
+        )
         self.project = spec.project
-        self.api = (spec.api_url or f"{self.site}/rest/api/3").rstrip("/")
         self.jql = (
             spec.jql or f'project = "{self.project}" AND status = "{spec.statuses.intake}" ORDER BY Rank ASC'
         )
