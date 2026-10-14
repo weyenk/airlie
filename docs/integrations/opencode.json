@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "airlie": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "airlie (local vllm-mlx)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "airlie-local"
+      },
+      "models": {
+        "base": {
+          "name": "Qwen3-Coder-30B-A3B (tools)",
+          "limit": { "context": 131072, "output": 4096 }
+        },
+        "generalist": {
+          "name": "Qwen3.8-27B (tools, vision, thinking)",
+          "limit": { "context": 131072, "output": 4096 }
+        },
+        "small": {
+          "name": "Qwen3-4B (chat)",
+          "limit": { "context": 16384, "output": 2048 }
+        }
+      }
+    }
+  }
+}

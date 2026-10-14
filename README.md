@@ -59,6 +59,11 @@ Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).
 
 ## Using airlie from another client
 
+Terminal agents (OpenCode, Claude Code, Qwen Code) call the engine directly: see
+[`docs/integrations/local-agents.md`](docs/integrations/local-agents.md). VS Code's chat (Local session) and
+Cursor (through a tunnel) are in `docs/integrations/` too.
+
+
 `task serve` starts an OpenAI-compatible server on `127.0.0.1:8090`. Point Claude Code, Qwen Code, Cursor or
 `curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends the role prompt and
 forwards to the engine. `POST /v1/airlie/run` with `{"goal": ..., "repo": "/path", "k": 3}` runs the parallel
