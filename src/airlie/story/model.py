@@ -31,7 +31,8 @@ class Criterion:
     then: str
 
     def line(self) -> str:
-        return f"**{self.id}** Given {self.given}, when {self.when}, then {self.then.rstrip('.')}."
+        stop = "" if self.then.endswith((".", "?", "!")) else "."
+        return f"**{self.id}** Given {self.given}, when {self.when}, then {self.then}{stop}"
 
 
 @dataclass(frozen=True)
@@ -93,8 +94,16 @@ def _text(d: dict[str, Any], key: str, where: str) -> str:
     return v.strip()
 
 
-def _strs(v: Any) -> tuple[str, ...]:
-    return tuple(str(x) for x in v) if isinstance(v, list) else ()
+def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
+    """A list field read as `_str_list` reads one (studio_plan): missing or null is empty, a lone string is a
+    list of one, a list is the str of each item; anything else is a StoryError naming `what`."""
+    if v is None:
+        return ()
+    if isinstance(v, str):
+        return (v,)
+    if isinstance(v, list):
+        return tuple(str(x) for x in v)
+    raise StoryError(f"{what} must be a list of {of}")
 
 
 def parse_story(obj: dict[str, Any] | None) -> Story:
@@ -105,7 +114,9 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
     if obj.get("type") != "story":
         raise StoryError('the JSON object needs "type": "story" (or "blocked" with a reason)')
     raw = obj.get("acceptance")
-    if not isinstance(raw, list) or not raw:
+    if raw is not None and not isinstance(raw, list):
+        raise StoryError("'acceptance' must be a list of criteria")
+    if not raw:
         raise StoryError("a story needs at least one acceptance criterion")
     criteria: list[Criterion] = []
     for n, c in enumerate(raw, 1):
@@ -122,8 +133,8 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
         _text(obj, "title", "the story"),
         _text(obj, "summary", "the story"),
         tuple(criteria),
-        _strs(obj.get("out_of_scope")),
-        _strs(obj.get("assumptions")),
+        _strs(obj.get("out_of_scope"), "'out_of_scope'"),
+        _strs(obj.get("assumptions"), "'assumptions'"),
     )
 
 
@@ -145,7 +156,7 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
         slug = slugify(str(d.get("slug") or title), 30)
         if slug in {x.slug for x in layers}:
             raise StoryError(f"layer slug '{slug}' repeats; give each layer its own slug")
-        acc = _strs(d.get("acceptance"))
+        acc = _strs(d.get("acceptance"), f"layer '{slug}': 'acceptance'", "criterion ids")
         unknown = [a for a in acc if a not in known]
         if unknown:
             raise StoryError(

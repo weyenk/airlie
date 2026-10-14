@@ -5,6 +5,7 @@ import json
 import pytest
 
 from airlie.story.model import (
+    Criterion,
     Layer,
     NotActionable,
     Story,
@@ -72,3 +73,34 @@ def test_slugs_and_branch_names() -> None:
     assert slugify("a" * 50, 10) == "a" * 10 and slugify("-lead") == "lead"
     assert branch_name("AIR-7", "Add avatar upload", "01", "storage") == "AIR-7-add-avatar-upload-01-storage"
     assert branch_name("", "Add avatar upload", "02", "profile") == "add-avatar-upload-02-profile"
+
+
+def test_a_lone_string_is_a_one_item_list_and_null_is_empty() -> None:
+    assert parse_story(GOOD).assumptions == ()
+    assert parse_story({**GOOD, "out_of_scope": "cropping"}).out_of_scope == ("cropping",)
+    assert parse_story({**GOOD, "assumptions": "uses PNG"}).assumptions == ("uses PNG",)
+    assert parse_story({**GOOD, "out_of_scope": None}).out_of_scope == ()
+
+
+def test_a_layer_with_a_lone_string_covers_that_criterion() -> None:
+    story = parse_story({**GOOD, "acceptance": [GOOD["acceptance"][0]]})
+    layer = {"title": "Model", "scope": "models.py", "brief": "b", "acceptance": "AC1"}
+    layers = parse_layers({"layers": [layer]}, story, 3)
+    assert layers == (Layer("model", "Model", "models.py", "b", ("AC1",)),)
+
+
+def test_a_non_list_names_its_field() -> None:
+    with pytest.raises(StoryError, match="'assumptions' must be a list of strings"):
+        parse_story({**GOOD, "assumptions": 5})
+    with pytest.raises(StoryError, match="'acceptance' must be a list of criteria"):
+        parse_story({**GOOD, "acceptance": {"id": "AC1"}})
+    layer = {"title": "Model", "scope": "models.py", "brief": "b", "acceptance": 5}
+    with pytest.raises(StoryError, match="layer 'model': 'acceptance' must be a list of criterion ids"):
+        parse_layers({"layers": [layer]}, parse_story(GOOD), 3)
+
+
+def test_criterion_line_adds_one_stop_unless_there_is_one() -> None:
+    assert Criterion("AC1", "g", "w", "is shown").line() == "**AC1** Given g, when w, then is shown."
+    assert Criterion("AC1", "g", "w", "is shown.").line() == "**AC1** Given g, when w, then is shown."
+    assert Criterion("AC1", "g", "w", "is shown?").line() == "**AC1** Given g, when w, then is shown?"
+    assert Criterion("AC1", "g", "w", "is shown!").line() == "**AC1** Given g, when w, then is shown!"
