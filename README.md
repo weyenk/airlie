@@ -53,6 +53,8 @@ Run `task` to list them. The ones that exist today:
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
 | `task mutate [-- --max-children 6]` / `task mutate:results` | mutation testing (mutmut) over the pure-logic modules listed in `[tool.mutmut]`; survivors mark behaviour no unit test pins down |
+| `task mutate:changed [-- --base origin/main]` | mutation-test only the enrolled files changed since the base ref (`--list` previews); exits 1 on any uncaught mutant |
+| `task ci:static -- --base origin/main` | the pipeline's static gate (`.github/workflows/static-checks.yml`): lint, typecheck, then `mutate:changed`; builds and serves nothing |
 | `task fmt` | auto-format and auto-fix lint |
 
 Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).

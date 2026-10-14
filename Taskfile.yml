@@ -151,6 +151,18 @@ tasks:
     cmds:
       - '{{.RUN}} mutmut results {{.CLI_ARGS}}'
 
+  mutate:changed:
+    desc: "Mutation-test only the enrolled source files changed since a base ref (task mutate:changed -- --base origin/main; --list to preview)"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_changed.py {{.CLI_ARGS}}'
+
+  ci:static:
+    desc: "The pipeline's static gate, nothing built or served: lint, typecheck, then mutation-test the changed files (task ci:static -- --base origin/main)"
+    cmds:
+      - task: lint
+      - task: typecheck
+      - '{{.RUN}} python scripts/mutate_changed.py {{.CLI_ARGS}}'
+
   lint:
     desc: Ruff lint + format check
     cmds:

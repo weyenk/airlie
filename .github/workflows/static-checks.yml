@@ -1,0 +1,42 @@
+# Static gate: lint, types, and mutation testing of the changed files. Nothing is built, no model is loaded.
+name: static-checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: static-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    # Apple Silicon, like the project itself: mlx and vllm-mlx are macOS-only dependencies.
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # mutation testing diffs against the merge base
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Static checks (lint, typecheck, mutation-test the changed files)
+        env:
+          # PRs diff against the target branch; a push to main diffs against the commit before it.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: task ci:static -- --base "$BASE"

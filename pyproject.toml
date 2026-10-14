@@ -87,8 +87,14 @@ only_mutate = [
     "src/airlie/lts/inject.py",
     "src/airlie/tools/fs.py",
     "src/airlie/config/load.py",
+    "src/airlie/config/schema.py",
+    "src/airlie/lts/controller/heuristic.py",
+    "src/airlie/scheduler/slots.py",
+    "src/airlie/tools/shell.py",
+    "src/airlie/tools/sandbox.py",
+    "src/airlie/engine/http_engine.py",
 ]
 pytest_add_cli_args_test_selection = ["tests/unit/"]
 # spawns the MCP echo server as a subprocess, which fails under mutmut's runner; mcp.py is not mutated here
 pytest_add_cli_args = ["--deselect", "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable"]
-also_copy = ["airlie.yaml", "prompts", "evals"]
+also_copy = ["airlie.yaml", "prompts", "evals", "scripts"]
