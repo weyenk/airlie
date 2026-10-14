@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from airlie.config import load_config
@@ -14,6 +16,7 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.router import ChiefRouter, RouteDecision
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator
+from airlie.topology.studio_plan import Plan, PlanError, Subtask
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
@@ -366,3 +369,81 @@ async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> No
     reviews = [r.messages[1].content for r in engine.requests if r.role == "reviewer"]
     assert "+ok" in reviews[0] and "note.txt" not in reviews[0]
     assert "note.txt" in reviews[1] and "+ok" not in reviews[1]
+
+
+# ---- plans from outside the chief (2026-10-14) ----
+
+
+def _git(repo: Path, *args: str) -> str:
+    env = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    out = subprocess.run(["git", *env, *args], cwd=repo, capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+async def test_plan_returns_the_chiefs_plan_without_building_anything(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"chief": [PLAN]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    out = await orch.plan("fix the build", repo=repo)
+    assert out.plan is not None and [s.id for s in out.plan.subtasks] == ["fix", "note"] and not out.failed
+    assert [r.role for r in engine.requests] == ["chief"]
+    assert not (orch.run_dir.path / "studio").exists()
+    kinds = [json.loads(x)["kind"] for x in orch.run_dir.events_path.read_text().splitlines()]
+    assert kinds == ["run_start", "plan", "run_done"]
+
+
+async def test_a_given_plan_skips_the_chief_and_its_roles_beat_the_router(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    given = Plan((), (Subtask("t", "write the tests", "qa"), Subtask("b", "make them pass", "coder", ("t",))))
+
+    class Overrider:  # a router that is sure everything is docs work
+        async def route(self, brief, criteria, hint=None, *, question="role", instructions=""):  # type: ignore[no-untyped-def]
+            return RouteDecision(question, "docs", "docs", "clear", {"docs": 1.0}, 0.99, hint)
+
+    engine = FakeEngine({"qa": [DONE], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=Overrider())
+    report = await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=given, synthesise=False)
+    routes = [e for e in events(report) if e["kind"] == "route"]
+    assert [(r["chosen"], r["decision"]) for r in routes] == [("qa", "pinned"), ("coder", "pinned")]
+    assert "chief" not in {r.role for r in engine.requests}  # no plan call, no synthesis
+    assert report.final_answer.startswith("### t (qa)\ndone") and report.tests == {"studio": True}
+
+
+async def test_a_given_plan_that_cannot_run_raises_before_any_work(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    orch = StudioOrchestrator(cfg_for(tmp_path, max_subtasks=1), FakeEngine({}), router=ChiefRouter())
+    with pytest.raises(PlanError, match="role 'chief'"):
+        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "chief"),)))
+    with pytest.raises(PlanError, match="not in the plan"):
+        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "coder", ("zz",)),)))
+    two = Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "coder")))
+    with pytest.raises(PlanError, match="max_subtasks is 1"):
+        await orch.execute_task("g", repo=repo, plan=two)
+    with pytest.raises(PlanError, match="dependency cycle"):
+        await orch.execute_task("g", repo=repo, plan=Plan((), (Subtask("a", "x", "coder", ("a",)),)))
+    assert not (orch.run_dir.path / "studio").exists()
+
+
+async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    _git(repo, "branch", "layer-00")  # the base: today's HEAD
+    (repo / "later.txt").write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "later")  # HEAD moves past the base
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "docs": [DONE]})
+    one = Plan((), (Subtask("b", "write PASS", "coder"),))
+    orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
+    report = await orch.execute_task(
+        "g", repo=repo, plan=one, base="layer-00", branch="s-01-x", synthesise=False
+    )
+    assert report.winning_branch == "s-01-x"
+    assert _git(repo, "merge-base", "s-01-x", "HEAD") == _git(repo, "rev-parse", "layer-00")
+    assert not (orch.run_dir.path / "studio" / "later.txt").exists()
+    before = _git(repo, "branch", "--format=%(refname:short)")
+    docs = Plan((), (Subtask("d", "describe the repo", "docs"),))
+    detached = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo, plan=docs, detach=True, synthesise=False
+    )
+    assert detached.winning_branch == "(detached)"
+    assert _git(repo, "branch", "--format=%(refname:short)") == before
