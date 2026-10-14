@@ -46,6 +46,8 @@ models:
     estimated_memory_gb: 17
     kv_mb_per_1k_tokens: 192
     tool_call_parser: qwen3_coder
+    reasoning_parser: qwen3      # server-wide flag (taken from the team model): thinking roles on Qwen3.8 return
+                                 # reasoning_content instead of leaking <think> into content for chat clients
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
