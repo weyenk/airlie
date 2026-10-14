@@ -10,6 +10,7 @@ from airlie.story.model import (
     NotActionable,
     Story,
     StoryError,
+    StorySetupError,
     branch_name,
     parse_layers,
     parse_story,
@@ -73,6 +74,20 @@ def test_slugs_and_branch_names() -> None:
     assert slugify("a" * 50, 10) == "a" * 10 and slugify("-lead") == "lead"
     assert branch_name("AIR-7", "Add avatar upload", "01", "storage") == "AIR-7-add-avatar-upload-01-storage"
     assert branch_name("", "Add avatar upload", "02", "profile") == "add-avatar-upload-02-profile"
+    assert branch_name("AIR-7", "Add", "01", "data_model-2") == "AIR-7-add-01-data_model-2"
+
+
+def test_a_branch_name_takes_only_a_checked_issue_key_and_safe_characters() -> None:
+    """The name reaches git and gh as an argument: the sink refuses what a slug or a key never holds."""
+    for ref in ("-D", "AIR-7;id", "$(id)-7", "air-7", "AIR 7"):
+        with pytest.raises(StorySetupError, match="issue key"):
+            branch_name(ref, "Add avatar upload", "01", "storage")
+    for slug in ("../x", "a/b", " "):
+        with pytest.raises(StorySetupError, match="letters, digits"):
+            branch_name("AIR-7", "Add avatar upload", "01", slug)
+    for nn in ("0/1", "0.1", "$1", "0;1"):
+        with pytest.raises(StorySetupError, match="letters, digits"):
+            branch_name("", "Add avatar upload", nn, "storage")
 
 
 def test_a_lone_string_is_a_one_item_list_and_null_is_empty() -> None:

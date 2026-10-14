@@ -1,5 +1,5 @@
 """A story and its layers as the pipeline keeps them, parsed from the product and architect replies with
-errors a role can act on; slugs, branch names and the story exceptions."""
+errors a role can act on; slugs, branch names, the issue-key pattern and the story exceptions."""
 
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ class StorySetupError(RuntimeError):
 
 
 NO_JSON = "no JSON object in the reply; end it with one ```json block"
+ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-\d+", re.ASCII)
+"""A Jira issue key (AIR-7); always matched whole (fullmatch), ASCII only (a digit is 0-9, not any script's).
+It names a story's directory, prefixes its branch names and becomes a URL path, so each of those checks it."""
+_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 @dataclass(frozen=True)
@@ -82,9 +86,18 @@ def slugify(text: str, max_len: int = 40) -> str:
 
 def branch_name(ref: str, story_title: str, nn: str, layer_slug: str) -> str:
     """<issue key>-<story slug>-<NN>-<layer slug> (ai-mode's pr-stack naming). The key keeps its case: GitHub
-    for Jira links branches and PRs by issue key. A written request (ref "") has no prefix."""
+    for Jira links branches and PRs by issue key. A written request (ref "") has no prefix.
+
+    The name goes to git and gh as an argument, so this is where an unchecked part stops: StorySetupError
+    unless `ref` is "" or an issue key and the whole name is letters, digits, "-" and "_" (no leading "-", no
+    slash, dot, space or shell syntax, whatever `nn` and `layer_slug` hold)."""
+    if ref and not ISSUE_KEY.fullmatch(ref):
+        raise StorySetupError(f"a branch name starts with an issue key (AIR-7), not {ref!r}")
     tail = f"{slugify(story_title, 30)}-{nn}-{layer_slug}"
-    return f"{ref}-{tail}" if ref else tail
+    name = f"{ref}-{tail}" if ref else tail
+    if not _BRANCH.fullmatch(name):
+        raise StorySetupError(f"branch name {name!r} may hold only letters, digits, '-' and '_'")
+    return name
 
 
 def _text(d: dict[str, Any], key: str, where: str) -> str:
