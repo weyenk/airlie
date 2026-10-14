@@ -17,3 +17,12 @@ def test_diff_between_and_changed_files(tmp_path: Path) -> None:
     assert changed_files(repo, base) == ["new.py"]
     assert "+x = 1" in diff_between(repo, base, max_chars=1000)
     assert diff_between(repo, base, max_chars=5) == "diff "
+
+
+def test_head_sha(tmp_path: Path) -> None:
+    from airlie.teams.worktree import commit_wip, head_sha
+
+    repo = repo_with_marker_tests(tmp_path)
+    before = head_sha(repo)
+    (repo / "x").write_text("x")
+    assert commit_wip(repo, "wip") == head_sha(repo) != before

@@ -421,7 +421,7 @@ def bench_topology(
         summarize,
         verdict,
     )
-    from airlie.evals import find_task, load_task, materialize
+    from airlie.evals import find_task, grade_dirs, load_task, materialize
 
     cfg = _load(config)
     ids = [t.strip() for t in tasks.split(",") if t.strip()] or sorted(
@@ -441,11 +441,9 @@ def bench_topology(
                 t0 = time.monotonic()
                 report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
                 wall = time.monotonic() - t0
-                graded_ids = {t.team_id for t in report.teams} | ({report.winner} if report.winner else set())
                 graded = {
                     i: task.grade(orch.run_dir.path / i).passed
-                    for i in sorted(graded_ids)
-                    if (orch.run_dir.path / i).is_dir()
+                    for i in grade_dirs(orch.run_dir.path, [t.team_id for t in report.teams], report.winner)
                 }
                 counts = events_counts(report.run_dir.events_path)
                 winner_passed = bool(graded.get(report.winner or "", False))
@@ -718,15 +716,20 @@ def eval_run(
     console.print(f"task [bold]{task.id}[/bold] → {repo}")
     report = asyncio.run(orch.execute_task(task.requirement, repo=repo, test_cmd=task.run_cmd))
     _print_report(report)
+    from airlie.evals import grade_dirs
+
     passed = 0
-    for t in report.teams:
-        g = task.grade(orch.run_dir.path / t.team_id)
+    dirs = grade_dirs(orch.run_dir.path, [t.team_id for t in report.teams], report.winner)
+    if not dirs:
+        console.print("[red]FAIL[/red]: no worktree to grade (no team or winner directory under the run)")
+    for name in dirs:
+        g = task.grade(orch.run_dir.path / name)
         passed += int(g.passed)
         verdict = "[green]PASS[/green]" if g.passed else "[red]FAIL[/red]"
-        console.print(f"[bold]{t.team_id}[/bold]: hidden tests {verdict}")
+        console.print(f"[bold]{name}[/bold]: hidden tests {verdict}")
         if not g.passed:
             console.print(g.output[-1500:], markup=False, highlight=False)
-    console.print(f"{passed}/{len(report.teams)} teams pass the hidden tests")
+    console.print(f"{passed}/{len(dirs)} worktrees pass the hidden tests")
     if passed == 0:
         raise typer.Exit(1)
 

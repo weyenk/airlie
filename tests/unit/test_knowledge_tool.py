@@ -39,3 +39,14 @@ def test_knowledge_empty_dir_and_no_overlap(tmp_path: Path) -> None:
     idx = KnowledgeIndex.build(empty)
     assert idx.size == 0 and idx.search("anything") == []
     assert KnowledgeIndex.build(corpus(tmp_path)).search("zzqx") == []
+
+
+def test_knowledge_survives_token_less_and_non_ascii_files(tmp_path: Path) -> None:
+    k = tmp_path / "k"
+    k.mkdir()
+    (k / "punct.md").write_text("...\n\n---\n")
+    idx = KnowledgeIndex.build(k)
+    assert idx.size == 0 and idx.search("anything") == []
+    (k / "ru.md").write_text("Ограничение частоты входа использует token bucket.\n")
+    idx = KnowledgeIndex.build(k)
+    assert idx.search("частоты")[0].path == "ru.md"

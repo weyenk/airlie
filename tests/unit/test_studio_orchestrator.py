@@ -231,3 +231,138 @@ async def test_delegate_may_depend_on_a_finished_subtask_and_reviews_are_traced(
     assert [t.team_id for t in report.teams] == ["fix", "note", "more"] and report.final_answer == "all done"
     traced = list((report.run_dir.path / "trace" / "fix").glob("review-*.json"))
     assert len(traced) == 1 and json.loads(traced[0].read_text())["verdict"] == "approve"
+
+
+# ---- fix pass after the whole-branch review ----
+
+
+async def test_chief_router_without_a_usable_hint_falls_back_instead_of_raising(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    plan = FakeReply(
+        text=json.dumps(
+            {
+                "type": "plan",
+                "subtasks": [
+                    {"id": "a", "role": "chief", "brief": "do a"},  # unroutable hint
+                    {"id": "b", "brief": "do b"},  # no hint at all
+                    {"id": "t", "role": "qa", "brief": "write tests"},  # qa has a skill library
+                ],
+            }
+        )
+    )
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "unit.md").write_text("---\nsummary: Unit tests\n---\n# unit\n")
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    cfg.roles["qa"].skills = tmp_path / "skills"
+    engine = FakeEngine({"chief": [plan, SYNTH], "coder": [DONE, DONE], "qa": [DONE]})
+    report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
+    assert report.final_answer == "all done"
+    routes = {e["subtask"]: e for e in events(report) if e["kind"] == "route"}
+    assert routes["a"]["chosen"] == "coder" and routes["a"]["decision"] == "fallback"
+    assert routes["b"]["chosen"] == "coder" and routes["b"]["decision"] == "fallback"
+    skill = [e for e in events(report) if e["kind"] == "skill"][0]
+    assert skill["subtask"] == "t" and skill["decision"] == "none"
+
+
+async def test_engine_errors_in_chief_and_reviewer_do_not_kill_the_run(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    # no reviewer script: FakeEngine raises EngineError on the review call
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE]})
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo, test_cmd="./check.sh"
+    )
+    assert report.final_answer == "all done"
+    assert [e["verdict"] for e in events(report) if e["kind"] == "review"] == ["error"]
+    # no chief script at all: the run ends with a readable failure, not a traceback
+    engine = FakeEngine({"coder": [DONE]})
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo
+    )
+    assert not report.any_ok and "engine error" in report.final_answer
+    assert [e["kind"] for e in events(report)].count("plan_error") == 2
+
+
+async def test_delegating_every_round_still_ends_with_a_synthesis(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    delegate = FakeReply(
+        text=json.dumps({"type": "delegate", "subtask": {"id": "x1", "role": "docs", "brief": "more"}})
+    )
+    delegate2 = FakeReply(
+        text=json.dumps({"type": "delegate", "subtask": {"id": "x2", "role": "docs", "brief": "more"}})
+    )
+    cfg = cfg_for(tmp_path, review={"enabled": False}, max_rounds=2)
+    engine = FakeEngine({"chief": [PLAN, delegate, delegate2, SYNTH], "coder": [DONE], "docs": [DONE] * 3})
+    report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
+    assert report.final_answer == "all done"
+    assert [e["kind"] for e in events(report)].count("synthesis") == 1
+    last = [r for r in engine.requests if r.role == "chief"][-1].messages[-1].content
+    assert "synthesis" in last and "delegate" not in last.split("Reply with")[-1]
+
+
+async def test_rejected_delegate_reason_is_fed_back_to_the_chief(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    bad = FakeReply(
+        text=json.dumps(
+            {"type": "delegate", "subtask": {"id": "x", "role": "docs", "brief": "m", "depends_on": ["zz"]}}
+        )
+    )
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    engine = FakeEngine({"chief": [PLAN, bad, SYNTH], "coder": [DONE], "docs": [DONE]})
+    report = await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
+    assert report.final_answer == "all done"
+    third = [r for r in engine.requests if r.role == "chief"][2].messages[-1].content
+    assert "zz" in third and "rejected" in third
+
+
+async def test_plan_rejected_twice_is_a_failed_run_with_feedback(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    bad = FakeReply(
+        text=json.dumps(
+            {"type": "plan", "subtasks": [{"id": "a", "role": "coder", "brief": "x", "depends_on": ["zz"]}]}
+        )
+    )
+    engine = FakeEngine({"chief": [bad, bad]})
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo
+    )
+    assert not report.any_ok and "runnable plan" in report.final_answer and "zz" in report.final_answer
+    second = [r for r in engine.requests if r.role == "chief"][1].messages[-1].content
+    assert "zz" in second
+
+
+async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    cfg.teams.max_steps = 2
+    note2 = FakeReply(
+        tool_calls=[ToolCall("n2", "write_file", json.dumps({"path": "n2.txt", "content": "b\n"}))]
+    )
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2], "docs": [DONE]})
+    await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
+    docs_goal = [r for r in engine.requests if r.role == "docs"][0].messages[1].content
+    assert "FAILED: max_steps" in docs_goal
+
+
+async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    plan = FakeReply(
+        text=json.dumps(
+            {
+                "type": "plan",
+                "subtasks": [
+                    {"id": "a", "role": "coder", "brief": "write PASS"},
+                    {"id": "b", "role": "coder", "brief": "write note", "depends_on": ["a"]},
+                ],
+            }
+        )
+    )
+    note = FakeReply(
+        tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "note.txt", "content": "second\n"}))]
+    )
+    engine = FakeEngine(
+        {"chief": [plan, SYNTH], "coder": [WRITE_PASS, DONE, note, DONE], "reviewer": [APPROVE, APPROVE]}
+    )
+    await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task("g", repo=repo)
+    reviews = [r.messages[1].content for r in engine.requests if r.role == "reviewer"]
+    assert "+ok" in reviews[0] and "note.txt" not in reviews[0]
+    assert "note.txt" in reviews[1] and "+ok" not in reviews[1]

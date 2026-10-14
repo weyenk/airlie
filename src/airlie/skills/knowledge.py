@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rank_bm25 import BM25Okapi
 
-_TOKEN = re.compile(r"[a-z0-9_]+")
+_TOKEN = re.compile(r"\w+")
 
 
 def tokenize(text: str) -> list[str]:
@@ -39,8 +39,8 @@ class Hit:
 
 class KnowledgeIndex:
     def __init__(self, chunks: list[tuple[str, str]]) -> None:
-        self._chunks = chunks
-        self._bm25 = BM25Okapi([tokenize(t) for _, t in chunks]) if chunks else None
+        self._chunks = [(p, t) for p, t in chunks if tokenize(t)]  # BM25 divides by the mean length
+        self._bm25 = BM25Okapi([tokenize(t) for _, t in self._chunks]) if self._chunks else None
 
     @classmethod
     def build(cls, directory: Path, *, chunk_chars: int = 1200) -> KnowledgeIndex:
@@ -63,9 +63,8 @@ class KnowledgeIndex:
         if not q:
             return []
         scores = self._bm25.get_scores(q)
-        ranked = sorted(range(len(self._chunks)), key=lambda i: (-float(scores[i]), i))
-        return [
-            Hit(self._chunks[i][0], float(scores[i]), self._chunks[i][1])
-            for i in ranked[:k]
-            if float(scores[i]) > 0
-        ]
+        qset = set(q)
+        # BM25 scores can be ≤ 0 on tiny corpora (one document: negative idf), so overlap decides membership
+        overlapping = [i for i in range(len(self._chunks)) if qset & set(tokenize(self._chunks[i][1]))]
+        ranked = sorted(overlapping, key=lambda i: (-float(scores[i]), i))
+        return [Hit(self._chunks[i][0], float(scores[i]), self._chunks[i][1]) for i in ranked[: max(1, k)]]

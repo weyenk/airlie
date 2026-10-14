@@ -35,6 +35,10 @@ def diff_last_commit(worktree: Path, max_chars: int) -> str:
     return out[:max_chars]
 
 
+def head_sha(worktree: Path) -> str:
+    return _git(worktree, "rev-parse", "HEAD").stdout.strip()
+
+
 def diff_between(worktree: Path, base_sha: str, max_chars: int) -> str:
     """The diff from `base_sha` to HEAD, capped."""
     out = subprocess.run(

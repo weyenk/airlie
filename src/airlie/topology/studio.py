@@ -12,7 +12,7 @@ from pathlib import Path
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.engine.protocol import Engine
-from airlie.engine.types import ContentPart, GenRequest, Message, image_part
+from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, image_part
 from airlie.obs import EventSink, RunDir
 from airlie.orchestrator import LoggingObserver
 from airlie.repo_map import build_repo_map
@@ -21,7 +21,7 @@ from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
-from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between
+from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.topology.review import Review, Reviewer, nudge_from_review
@@ -77,6 +77,7 @@ class StudioOrchestrator:
         self.images: list[Path] = []
         self.base_sha = ""
         self.worktree: Path | None = None
+        self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         s = cfg.studio
         exclude = {
             s.chief_role,
@@ -121,7 +122,7 @@ class StudioOrchestrator:
             '"inputs"}]}) or, if no specialist is needed, {"type": "answer", "answer": "..."}.'
         )
 
-    def _synthesis_message(self, goal: str) -> str:
+    def _synthesis_message(self, goal: str, *, rejected: str | None = None, final_round: bool = False) -> str:
         lines = [f"## Request\n{goal}", "## Subtask results"]
         for r in self.runs.values():
             res = r.result
@@ -129,10 +130,16 @@ class StudioOrchestrator:
             review = f"; review: {r.review.verdict} ({len(r.review.blocking)} blocking)" if r.review else ""
             text = (res.final_text if res else "")[: self.cfg.studio.result_chars]
             lines.append(f"### {r.subtask.id} ({r.role}; {outcome}{review})\n{text}")
-        lines.append(
-            'Reply with one JSON object: {"type": "synthesis", "answer": "...", "open_questions": [...]} or, '
-            'for one more subtask, {"type": "delegate", "subtask": {"id", "role", "brief", "depends_on"}}.'
-        )
+        if rejected:
+            lines.append(f"Your previous delegate was rejected: {rejected}")
+        synth = 'Reply with one JSON object: {"type": "synthesis", "answer": "...", "open_questions": [...]}'
+        if final_round:
+            lines.append(f"{synth}. No more subtasks can run; synthesise what you have.")
+        else:
+            lines.append(
+                f"{synth} or, for one more subtask, "
+                '{"type": "delegate", "subtask": {"id", "role", "brief", "depends_on"}}.'
+            )
         return "\n\n".join(lines)
 
     # ---- specialists ----
@@ -163,12 +170,26 @@ class StudioOrchestrator:
             r = self.runs.get(d)
             if r and r.result:
                 text = r.result.final_text[: self.cfg.studio.result_chars]
-                parts.append(f"## Result of '{d}' ({r.role})\n{text}")
+                if r.result.ok:
+                    parts.append(f"## Result of '{d}' ({r.role})\n{text}")
+                else:
+                    head = (
+                        f"## Result of '{d}' ({r.role}; FAILED: {r.result.stop_reason}, treat as unreliable)"
+                    )
+                    parts.append(f"{head}\n{text}")
         return "\n\n".join(parts)
+
+    def _fallback_role(self) -> str:
+        team = self.cfg.teams.role
+        return team if team in self.criteria else next(iter(self.criteria))
 
     async def _route(self, s: Subtask) -> tuple[str, RouteDecision]:
         hint = s.role_hint if s.role_hint in self.criteria else None
-        d = await self.router.route(s.brief, self.criteria, hint)
+        try:
+            d = await self.router.route(s.brief, self.criteria, hint)
+        except ValueError as e:  # chief router without a usable hint, or no fallback for an off-set choice
+            role = self._fallback_role()
+            d = RouteDecision("role", None, role, "fallback", {}, 0.0, s.role_hint, detail=str(e))
         self.routing_log.record(s.id, d)
         self.sink.emit(
             "route",
@@ -188,9 +209,13 @@ class StudioOrchestrator:
         skills = load_skills(role.skills)
         if not skills:
             return None, ""
-        d = await self.router.route(
-            s.brief, skill_criteria(skills), None, question="skill", instructions=SKILL_QUESTION
-        )
+        try:
+            d = await self.router.route(
+                s.brief, skill_criteria(skills), None, question="skill", instructions=SKILL_QUESTION
+            )
+        except ValueError:  # a router that needs a hint (chief): run without a guideline
+            self.sink.emit("skill", subtask=s.id, chosen=None, decision="none", confidence=0.0)
+            return None, ""
         self.routing_log.record(f"{s.id}:skill", d)
         self.sink.emit("skill", subtask=s.id, chosen=d.chosen, decision=d.decision, confidence=d.confidence)
         chosen = [k for k in skills if k.name == d.chosen]
@@ -234,13 +259,20 @@ class StudioOrchestrator:
         writes = self._writes(role)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
         ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
-        if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
-            async with self.write_lock, self.sem:
-                run.result = await self.team.run(ctx, self.observer)
-                await self._review_and_fix(run, role, test_cmd, preamble)
-        else:
-            async with self.sem:
-                run.result = await self.team.run(ctx, self.observer)
+        try:
+            if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
+                async with self.write_lock, self.sem:
+                    assert self.worktree is not None
+                    before = head_sha(self.worktree)  # this subtask's own base for the review diff
+                    run.result = await self.team.run(ctx, self.observer)
+                    await self._review_and_fix(run, role, test_cmd, preamble, before)
+            else:
+                async with self.sem:
+                    run.result = await self.team.run(ctx, self.observer)
+        except Exception as e:  # noqa: BLE001 - a broken subtask is reported, never a run-killer
+            run.result = TeamResult(
+                run.subtask.id, False, "engine_error", f"engine error: {type(e).__name__}: {e}", 0, 0, 0, 0.0
+            )
         res = run.result
         assert res is not None
         self.sink.emit(
@@ -254,14 +286,13 @@ class StudioOrchestrator:
         )
 
     async def _review_and_fix(
-        self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str
+        self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
     ) -> None:
         rv = self.cfg.studio.review
         assert self.worktree is not None and run.result is not None
         if not rv.enabled or run.role not in rv.roles:
             return
         reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role])
-        before = self.base_sha
         for round_no in range(rv.rounds + 1):
             commit_wip(self.worktree, f"studio: {run.subtask.id} (round {round_no})")
             files = {
@@ -269,14 +300,17 @@ class StudioOrchestrator:
                 for p in changed_files(self.worktree, before)
                 if (self.worktree / p).is_file()
             }
-            review = await reviewer.review(
-                run.subtask.brief,
-                diff_between(self.worktree, before, rv.diff_chars),
-                run.result.last_test_output[-3000:],
-                files,
-                diff_chars=rv.diff_chars,
-                files_chars=rv.files_chars,
-            )
+            try:
+                review = await reviewer.review(
+                    run.subtask.brief,
+                    diff_between(self.worktree, before, rv.diff_chars),
+                    run.result.last_test_output[-3000:],
+                    files,
+                    diff_chars=rv.diff_chars,
+                    files_chars=rv.files_chars,
+                )
+            except EngineError as e:
+                review = Review("error", (), f"engine error: {e}")
             run.review = review
             self.run_dir.write_trace(
                 f"{run.subtask.id}/review-{round_no}.json",
@@ -337,20 +371,35 @@ class StudioOrchestrator:
         self.base_sha = commit_wip(self.worktree, "studio: base")
         final = ""
         plan: Plan | None = None
+        feedback: str | None = None
         for attempt in range(2):
-            text = await self._chief(self._plan_message(query_text), with_images=True)
+            message = self._plan_message(query_text)
+            if feedback:
+                message += f"\n\nYour previous plan was rejected: {feedback}"
+            try:
+                text = await self._chief(message, with_images=True)
+            except EngineError as e:
+                self.sink.emit("plan_error", attempt=attempt, error=f"engine error: {e}")
+                final = f"engine error: {e}"
+                self.failed = True
+                continue
             parsed = parse_chief(text)
             if isinstance(parsed, Answer):
                 final = parsed.text
+                self.failed = False
                 break
             if isinstance(parsed, Plan):
                 try:
                     schedule(parsed)
                 except PlanError as e:
                     self.sink.emit("plan_error", attempt=attempt, error=str(e))
-                    final = text
+                    feedback = str(e)
+                    final = f"the chief did not produce a runnable plan: {e}"
+                    self.failed = True
                     continue
                 plan = parsed
+                final = ""
+                self.failed = False
                 self.sink.emit(
                     "plan",
                     assumptions=list(plan.assumptions),
@@ -359,25 +408,11 @@ class StudioOrchestrator:
                 )
                 break
             self.sink.emit("plan_error", attempt=attempt, error="no plan or answer in the reply")
-            final = text
+            final = text  # prose is the answer (design §4); not a failure
+            self.failed = False
         if plan is not None:
             await self._run_plan(plan, test_cmd)
-            for round_no in range(self.cfg.studio.max_rounds):
-                text = await self._chief(self._synthesis_message(query_text), with_images=False)
-                parsed = parse_chief(text)
-                if isinstance(parsed, Delegate):
-                    sub = parsed.subtask
-                    unknown = [d for d in sub.depends_on if d not in self.runs]
-                    if unknown or sub.id in self.runs:
-                        why = f"depends on {unknown}" if unknown else f"id '{sub.id}' already used"
-                        self.sink.emit("plan_error", attempt=round_no, error=f"delegate '{sub.id}' {why}")
-                        continue
-                    await self._run_plan(Plan((), (sub,)), test_cmd)
-                    continue
-                final = parsed.answer if isinstance(parsed, Synthesis) else text
-                open_q = list(parsed.open_questions) if isinstance(parsed, Synthesis) else []
-                self.sink.emit("synthesis", chars=len(final), open_questions=open_q)
-                break
+            final = await self._synthesise(query_text, test_cmd)
         passed = await self._tests_pass(test_cmd)
         report = self._report(query_text, final, t0, branch, passed)
         self.sink.emit(
@@ -388,6 +423,37 @@ class StudioOrchestrator:
             tests=passed,
         )
         return report
+
+    async def _synthesise(self, goal: str, test_cmd: str | None) -> str:
+        """Synthesis rounds: a delegate runs one more subtask (its rejection is fed back); the last round
+        forbids delegation so the run always ends with an answer."""
+        rejected: str | None = None
+        rounds = self.cfg.studio.max_rounds
+        for round_no in range(rounds + 1):
+            last = round_no == rounds
+            message = self._synthesis_message(goal, rejected=rejected, final_round=last)
+            try:
+                text = await self._chief(message, with_images=False)
+            except EngineError as e:
+                self.sink.emit("plan_error", attempt=round_no, error=f"engine error: {e}")
+                return f"engine error during synthesis: {e}"
+            parsed = parse_chief(text)
+            if isinstance(parsed, Delegate) and not last:
+                sub = parsed.subtask
+                unknown = [d for d in sub.depends_on if d not in self.runs]
+                if unknown or sub.id in self.runs:
+                    why = f"depends on {unknown}" if unknown else f"id '{sub.id}' already used"
+                    rejected = f"delegate '{sub.id}' {why}"
+                    self.sink.emit("plan_error", attempt=round_no, error=rejected)
+                    continue
+                rejected = None
+                await self._run_plan(Plan((), (sub,)), test_cmd)
+                continue
+            final = parsed.answer if isinstance(parsed, Synthesis) else text
+            open_q = list(parsed.open_questions) if isinstance(parsed, Synthesis) else []
+            self.sink.emit("synthesis", chars=len(final), open_questions=open_q)
+            return final
+        return ""  # unreachable: the last round always returns
 
     async def _tests_pass(self, test_cmd: str | None) -> bool | None:
         if not test_cmd or self.worktree is None or not self.runs:
@@ -410,7 +476,9 @@ class StudioOrchestrator:
         report.winning_branch = branch
         report.tests = {"studio": passed}
         report.scores = {"studio": 1.0 if passed else 0.0}
-        if not teams:
+        if self.failed:
+            report.ok_override = False
+        elif not teams:
             report.ok_override = bool(final)
         lines = [
             f"# airlie studio run {self.run_dir.run_id}",
