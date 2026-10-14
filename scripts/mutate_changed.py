@@ -1,33 +1,50 @@
-"""Mutation-test only the source files a change touches; the pipeline's static-check step.
+"""Run mutation testing over the right set of mutants, and gate on the modules held to a standard.
 
-    uv run python scripts/mutate_changed.py --base origin/main      # what `task mutate:changed` runs
+    uv run python scripts/mutate_changed.py --base origin/main          # changed code and changed tests
+    uv run python scripts/mutate_changed.py --scope enrolled            # every enrolled module
+    uv run python scripts/mutate_changed.py --scope project             # the whole of src/ (the weekly run)
 
-Impacted files = files changed since the merge base with --base (committed, staged, unstaged and untracked)
-that are enrolled in `[tool.mutmut].only_mutate`. Each becomes a mutmut name glob (`airlie.engine.sse.*`), so
-only those mutants run. A change to the mutation setup itself (pyproject.toml, tests/unit/conftest.py) is
-not attributable to one file and runs every enrolled module instead.
+Scopes
+  changed   Two sets of mutants, run together:
+            1. every mutant of an enrolled source file that changed since the merge base with --base
+               (committed, staged, unstaged and untracked), and
+            2. every mutant of any function that a changed or new test file exercises. A new test is
+               only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
+            A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
+            one file and runs every enrolled module instead.
+  enrolled  Every mutant of every enrolled module.
+  project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
-Exit 0 when every mutant of an impacted file is caught (killed, or timed out); 1 when any survives, has no
-covering test, is suspicious or crashed the runner, or when mutmut itself fails (e.g. a red unit test).
-Changed source files that are not enrolled are listed, never failed: enrol a module by adding it to
-`only_mutate` once its tests are thorough."""
+Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. Exit 0 when every selected mutant of an
+enrolled module is caught (killed, or timed out); 1 when one survives, has no covering test, is suspicious
+or crashed the runner, or when mutmut itself fails (a red unit test). Mutants outside the enrolled modules
+are reported, never failed. Run it after the unit tests: a red unit test stops mutmut before it starts."""
 
 from __future__ import annotations
 
 import argparse
+import ast
+import fnmatch
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tomllib
+from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_FILES = {"pyproject.toml", "tests/unit/conftest.py"}
-FAILING = {"survived", "no tests", "suspicious", "segfault", "not checked"}
+UNCAUGHT = {"survived", "no tests", "suspicious", "segfault", "not checked"}
+CAUGHT = {"killed", "timeout", "caught by type check"}
 RESULT_LINE = re.compile(r"^\s*(?P<name>airlie\.\S+): (?P<status>[a-z ]+?)\s*$")
+ZERO_SHA = "0" * 40
 SHOW_LIMIT = 20
+
+
+# ---- what changed ----
 
 
 def git(*args: str) -> list[str]:
@@ -35,8 +52,14 @@ def git(*args: str) -> list[str]:
     return [ln for ln in out.splitlines() if ln]
 
 
+def resolve_base(base: str) -> str:
+    """A push event's `before` is all zeros on a new branch: diff against the parent instead."""
+    return "HEAD~1" if set(base) == {"0"} else base
+
+
 def changed_files(base: str) -> set[str]:
     """Paths changed since the merge base with `base`, working tree and untracked files included."""
+    base = resolve_base(base)
     try:
         merge_base = git("merge-base", base, "HEAD")[0]
     except (subprocess.CalledProcessError, IndexError) as e:
@@ -48,110 +71,238 @@ def changed_files(base: str) -> set[str]:
     return changed | set(git("ls-files", "--others", "--exclude-standard"))
 
 
-def enrolled() -> list[str]:
+# ---- what is enrolled, and how files map to mutants ----
+
+
+def enrolled_files() -> list[str]:
     cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    return list(cfg["tool"]["mutmut"]["only_mutate"])
+    return list(cfg["tool"]["airlie"]["mutation"]["enrolled"])
 
 
-def impacted(changed: set[str], scope: list[str]) -> list[str]:
+def module_name(path: str) -> str:
+    """src/airlie/engine/sse.py -> airlie.engine.sse"""
+    parts = [p for p in Path(path).relative_to("src").with_suffix("").parts if p != "__init__"]
+    return ".".join(parts)
+
+
+def module_glob(path: str) -> str:
+    """src/airlie/engine/sse.py -> airlie.engine.sse.*  (a mutant is airlie.engine.sse.<fn>__mutmut_N)."""
+    return module_name(path) + ".*"
+
+
+def probe_mutant(files: list[str]) -> str | None:
+    """One cheap mutant to run just so mutmut collects coverage stats: `mutmut run` refuses a selection that
+    matches nothing, so the stats-only pass needs a real target. The first top-level function will do."""
+    for f in files:
+        for node in ast.parse((ROOT / f).read_text()).body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                return f"{module_name(f)}.x_{node.name}__mutmut_1"
+    return None
+
+
+def mutant_module(mutant: str) -> str:
+    return mutant.rsplit(".", 1)[0]
+
+
+def impacted_sources(changed: set[str], scope: list[str]) -> list[str]:
     """Enrolled files to test: just the changed ones, or all of them when the setup itself changed."""
     if changed & SETUP_FILES:
         return list(scope)
     return [f for f in scope if f in changed]
 
 
-def module_glob(path: str) -> str:
-    """src/airlie/engine/sse.py -> airlie.engine.sse.*  (a mutant is airlie.engine.sse.<fn>__mutmut_N)."""
-    mod = Path(path).relative_to("src").with_suffix("")
-    parts = [p for p in mod.parts if p != "__init__"]
-    return ".".join(parts) + ".*"
-
-
-def failures(results: str, globs: list[str]) -> list[tuple[str, str]]:
-    """(mutant, status) for every non-caught mutant belonging to one of the tested modules."""
-    prefixes = tuple(g.removesuffix("*") for g in globs)
-    out: list[tuple[str, str]] = []
-    for line in results.splitlines():
-        m = RESULT_LINE.match(line)
-        if m and m["name"].startswith(prefixes) and m["status"] in FAILING:
-            out.append((m["name"], m["status"]))
-    return out
-
-
-def mutmut(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "mutmut", *args], cwd=ROOT, text=True, capture_output=False, check=False
+def changed_tests(changed: set[str]) -> list[str]:
+    return sorted(
+        f
+        for f in changed
+        if f.startswith("tests/") and Path(f).name.startswith("test_") and f.endswith(".py")
     )
 
 
-def summary(lines: list[str]) -> None:
-    print("\n".join(lines))
+def functions_run_by(test_files: list[str], stats: dict[str, object]) -> list[str]:
+    """Mangled names (airlie.mod.x_fn) of the functions the tests in `test_files` execute (mutmut's stats)."""
+    wanted = set(test_files)
+    by_function = stats.get("tests_by_mangled_function_name") or {}
+    assert isinstance(by_function, dict)
+    return sorted(fn for fn, ids in by_function.items() if any(str(i).split("::")[0] in wanted for i in ids))
+
+
+def function_globs(functions: list[str], already: list[str]) -> list[str]:
+    """Mutant globs for `functions`, leaving out those a module glob in `already` selects anyway."""
+    covered = tuple(g.removesuffix("*") for g in already)
+    return [f"{fn}__mutmut_*" for fn in functions if not fn.startswith(covered)]
+
+
+# ---- reading mutmut's results ----
+
+
+def parse_results(results: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in results.splitlines():
+        m = RESULT_LINE.match(line)
+        if m:
+            out[m["name"]] = m["status"]
+    return out
+
+
+def selected(results: dict[str, str], globs: list[str]) -> dict[str, str]:
+    return {n: s for n, s in results.items() if any(fnmatch.fnmatchcase(n, g) for g in globs)}
+
+
+def split_failures(results: dict[str, str], enrolled_modules: set[str]) -> tuple[list[str], list[str]]:
+    """(gating, informational) uncaught mutants: enrolled modules gate, the rest is reported."""
+    bad = sorted(n for n, s in results.items() if s in UNCAUGHT)
+    return [n for n in bad if mutant_module(n) in enrolled_modules], [
+        n for n in bad if mutant_module(n) not in enrolled_modules
+    ]
+
+
+def score_table(results: dict[str, str], enrolled_modules: set[str]) -> list[str]:
+    """Markdown: one row per module, weakest first, then the overall score."""
+    per: dict[str, dict[str, int]] = defaultdict(lambda: {"caught": 0, "total": 0})
+    for name, status in results.items():
+        if status in ("skipped", "not checked"):
+            continue
+        row = per[mutant_module(name)]
+        row["total"] += 1
+        row["caught"] += status in CAUGHT
+    if not per:
+        return []
+    lines = ["| module | caught | mutants | score | gate |", "|---|---:|---:|---:|---|"]
+    for mod, row in sorted(per.items(), key=lambda kv: (kv[1]["caught"] / kv[1]["total"], kv[0])):
+        gate = "enrolled" if mod in enrolled_modules else ""
+        lines.append(
+            f"| {mod} | {row['caught']} | {row['total']} | {row['caught'] / row['total']:.0%} | {gate} |"
+        )
+    caught = sum(r["caught"] for r in per.values())
+    total = sum(r["total"] for r in per.values())
+    lines.append(f"\n**overall: {caught}/{total} caught ({caught / total:.1%})**")
+    return lines
+
+
+# ---- running mutmut ----
+
+
+def mutmut(*args: str) -> int:
+    return subprocess.run([sys.executable, "-m", "mutmut", *args], cwd=ROOT, check=False).returncode
+
+
+def mutmut_out(*args: str) -> str:
+    done = subprocess.run(
+        [sys.executable, "-m", "mutmut", *args], cwd=ROOT, text=True, capture_output=True, check=False
+    )
+    return done.stdout
+
+
+def read_stats() -> dict[str, object]:
+    return json.loads((ROOT / "mutants" / "mutmut-stats.json").read_text())  # type: ignore[no-any-return]
+
+
+def say(lines: list[str], report: Path | None = None) -> None:
+    text = "\n".join(lines)
+    print(text)
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
         with open(target, "a") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write(text + "\n")
+    if report is not None:
+        with open(report, "a") as f:
+            f.write(text + "\n")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--base", default="origin/main", help="ref to diff against (merge base is used)")
+    ap.add_argument("--scope", choices=("changed", "enrolled", "project"), default="changed")
+    ap.add_argument("--base", default="origin/main", help="changed scope: ref to diff against (merge base)")
     ap.add_argument("--max-children", type=int, default=0, help="mutmut workers (0 = mutmut's default)")
-    ap.add_argument("--list", action="store_true", help="print the impacted files and stop")
+    ap.add_argument("--list", action="store_true", help="print what would be tested and stop")
+    ap.add_argument("--report", type=Path, help="also append the markdown summary to this file")
     args = ap.parse_args()
 
-    scope = enrolled()
-    changed = changed_files(args.base)
-    files = impacted(changed, scope)
-    unenrolled = sorted(
-        f for f in changed if f.startswith("src/airlie/") and f.endswith(".py") and f not in scope
-    )
+    scope_files = enrolled_files()
+    enrolled_modules = {module_name(f) for f in scope_files}
+    out: list[str] = [f"### Mutation testing ({args.scope})"]
+    test_files: list[str] = []
 
-    lines = [f"### Mutation testing (base {args.base})"]
-    if changed & SETUP_FILES:
-        touched = ", ".join(sorted(changed & SETUP_FILES))
-        lines.append(f"mutation setup changed ({touched}): testing every enrolled module")
-    if unenrolled:
-        lines.append("changed but not enrolled in `[tool.mutmut].only_mutate` (not checked):")
-        lines += [f"- {f}" for f in unenrolled]
-    if not files:
-        lines.append("no enrolled source file changed; nothing to mutate")
-        summary(lines)
+    if args.scope == "enrolled":
+        sources = list(scope_files)
+    elif args.scope == "project":
+        sources = []
+    else:
+        changed = changed_files(args.base)
+        sources = impacted_sources(changed, scope_files)
+        test_files = changed_tests(changed)
+        out.append(f"base `{resolve_base(args.base)}`")
+        if changed & SETUP_FILES:
+            out.append(
+                f"mutation setup changed ({', '.join(sorted(changed & SETUP_FILES))}): every enrolled module"
+            )
+        unenrolled = sorted(
+            f for f in changed if f.startswith("src/airlie/") and f.endswith(".py") and f not in scope_files
+        )
+        if unenrolled:
+            out += ["changed but not enrolled (not gated):", *[f"- {f}" for f in unenrolled]]
+
+    globs = ["airlie.*"] if args.scope == "project" else [module_glob(f) for f in sources]
+    if sources:
+        out += [f"{len(sources)} source file(s):", *[f"- {f}" for f in sources]]
+    if test_files:
+        out += [f"{len(test_files)} changed test file(s):", *[f"- {f}" for f in test_files]]
+    if not globs and not test_files:
+        out.append("nothing to mutate: no enrolled source and no test file changed")
+        say(out, args.report)
         return 0
-    lines.append(f"testing {len(files)} file(s):")
-    lines += [f"- {f}" for f in files]
     if args.list:
-        summary(lines)
+        say(out, args.report)
         return 0
-    summary(lines)
+    say(out, args.report)
 
-    globs = [module_glob(f) for f in files]
     shutil.rmtree(ROOT / "mutants", ignore_errors=True)
-    run_args = ["run", *(["--max-children", str(args.max_children)] if args.max_children else []), *globs]
-    if mutmut(*run_args).returncode != 0:
-        summary(["mutmut run failed (a red unit test or a crashed run); see the log above"])
+    run_extra = ["--max-children", str(args.max_children)] if args.max_children else []
+    if test_files:
+        # mutmut records which tests execute which functions while it collects stats, so one throwaway
+        # mutant is enough to get that map (and it is run again below if it is selected anyway).
+        probe = probe_mutant(scope_files)
+        if probe is None or mutmut("run", probe) != 0:
+            say(
+                ["mutmut could not collect coverage stats (a red unit test?); see the log above"], args.report
+            )
+            return 1
+        functions = functions_run_by(test_files, read_stats())
+        extra = function_globs(functions, globs)
+        say(
+            [f"the changed tests run {len(functions)} function(s); {len(extra)} outside the files above"],
+            args.report,
+        )
+        globs += extra
+    if not globs:
+        say(["the changed tests execute no source function; nothing to mutate"], args.report)
+        return 0
+
+    if mutmut("run", *run_extra, *globs) != 0:
+        say(["mutmut run failed (a red unit test or a crashed run); see the log above"], args.report)
         return 1
 
-    results = subprocess.run(
-        [sys.executable, "-m", "mutmut", "results"], cwd=ROOT, text=True, capture_output=True, check=False
-    ).stdout
-    bad = failures(results, globs)
-    if not bad:
-        summary(["all mutants of the changed files were caught"])
+    results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
+    gating, info = split_failures(results, enrolled_modules)
+    report = [""]
+    if args.scope == "project" or info:
+        report += score_table(results, enrolled_modules)
+    if info:
+        report.append(
+            f"\n{len(info)} uncaught mutant(s) in modules that are not enrolled (reported, not failed)"
+        )
+    if not gating:
+        report.append("\nall selected mutants of the enrolled modules were caught")
+        say(report, args.report)
         return 0
-    out = [f"{len(bad)} mutant(s) not caught:"]
-    out += [f"- {name}: {status}" for name, status in bad]
-    summary(out)
-    for name, _ in bad[:SHOW_LIMIT]:
-        shown = subprocess.run(
-            [sys.executable, "-m", "mutmut", "show", name],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        ).stdout
-        print(f"\n## {name}\n{shown}")
-    if len(bad) > SHOW_LIMIT:
-        print(f"... and {len(bad) - SHOW_LIMIT} more; run `uv run mutmut show NAME` for each")
+    report.append(f"\n{len(gating)} mutant(s) of enrolled modules not caught:")
+    report += [f"- {n}: {results[n]}" for n in gating]
+    say(report, args.report)
+    for name in gating[:SHOW_LIMIT]:
+        print(f"\n## {name}\n{mutmut_out('show', name)}")
+    if len(gating) > SHOW_LIMIT:
+        print(f"... and {len(gating) - SHOW_LIMIT} more; run `uv run mutmut show NAME` for each")
     return 1
 
 
