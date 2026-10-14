@@ -495,7 +495,15 @@ def test_the_taskfile_does_not_export_dotenv() -> None:
 
 # ---- no secret in a config error (review, 2026-10-14) ----
 # "t0ken-SYNTHETIC" stands in for a Jira token written into airlie.local.yaml. An error, and the traceback of
-# everything it chains, must say where the file is wrong and never repeat what it holds.
+# everything it chains, must say where the file is wrong and never repeat what it holds. A constructor may
+# show a value lower-cased, and a tag can hold a secret of lower-case letters and spaces, so the check is on
+# the lower-cased traceback.
+SECRETS = ("t0ken-synthetic", "synthetic token")
+
+
+def leaks(err: pytest.ExceptionInfo[ConfigError]) -> list[str]:
+    shown = "".join(traceback.format_exception(err.value)).lower()
+    return [s for s in SECRETS if s in shown]
 
 
 @pytest.mark.parametrize(
@@ -504,8 +512,20 @@ def test_the_taskfile_does_not_export_dotenv() -> None:
         pytest.param(
             'story: {jira: {token: "t0ken-SYNTHETIC',
             "not valid YAML at line 1, column 39: while scanning a quoted scalar, "
-            "found unexpected end of stream",
+            "found unexpected end of stream (opened at line 1, column 23)",
             id="unclosed quote",
+        ),
+        pytest.param(
+            'story:\n  jira:\n    site: "t0ken-SYNTHETIC\n    project: AIR\n',
+            "not valid YAML at line 5, column 1: while scanning a quoted scalar, "
+            "found unexpected end of stream (opened at line 3, column 11)",
+            id="quote opened on line 3",
+        ),
+        pytest.param(
+            "story:\n  jira:\n    site: x\n    t0ken-SYNTHETIC\n    project: AIR\n",
+            "not valid YAML at line 5, column 5: while scanning a simple key, "
+            "could not find expected ':' (opened at line 4, column 5)",
+            id="missing colon",
         ),
         pytest.param(
             "story:\n  jira:\n    token: ab: t0ken-SYNTHETIC\n",
@@ -534,9 +554,21 @@ def test_the_taskfile_does_not_export_dotenv() -> None:
             "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
             id="tag",
         ),
+        # a tag may hold a raw ' and a %-escaped ": repr() then quotes it with ' and escapes the inner one
+        pytest.param(
+            "story: {jira: {token: !<%22't0ken-SYNTHETIC> y}}\n",
+            "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
+            id="tag with both quote kinds",
+        ),
+        # a tag may decode to any text in angle brackets: only PyYAML's own token ids are kept
+        pytest.param(
+            "story: {jira: {token: !<%3Csynthetic%20token%3E> y}}\n",
+            "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
+            id="tag in angle brackets",
+        ),
         pytest.param(
             "story: {jira: {token: t0ken-SYNTHETIC\x00}}\n",
-            "not valid YAML: special characters are not allowed",
+            "not valid YAML at character 38: special characters are not allowed",
             id="control character",
         ),
     ],
@@ -549,8 +581,31 @@ def test_a_yaml_error_names_the_place_and_never_quotes_the_source(
     local.write_text(source)
     with pytest.raises(ConfigError) as err:
         load_config(base)
-    assert "t0ken-SYNTHETIC" not in "".join(traceback.format_exception(err.value))
+    assert leaks(err) == []
     assert str(err.value) == f"{local.resolve()}: {reported}"
+
+
+@pytest.mark.parametrize(
+    ("tagged", "error_type"),
+    [
+        ("!!int t0ken-SYNTHETIC", "ValueError"),
+        ("!!float t0ken-SYNTHETIC", "ValueError"),
+        ("!!bool t0ken-SYNTHETIC", "KeyError"),
+        ("!!timestamp t0ken-SYNTHETIC", "AttributeError"),
+        ('!!int ""', "IndexError"),
+    ],
+)
+def test_an_explicit_tag_that_does_not_fit_its_value_names_only_its_error_type(
+    tmp_path: Path, tagged: str, error_type: str
+) -> None:
+    base = write(tmp_path, MINIMAL)
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text("story: {jira: {token: " + tagged + "}}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert leaks(err) == []
+    hint = "a value's explicit tag (!!int, !!float, !!bool …) does not fit it"
+    assert str(err.value) == f"{local.resolve()}: not valid YAML: {hint} ({error_type})"
 
 
 def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path) -> None:
@@ -558,5 +613,5 @@ def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path
     (tmp_path / "airlie.local.yaml").write_text("story: {jira: {api_key: t0ken-SYNTHETIC}}\n")
     with pytest.raises(ConfigError) as err:
         load_config(base)
-    assert "t0ken-SYNTHETIC" not in "".join(traceback.format_exception(err.value))
+    assert leaks(err) == []
     assert str(err.value) == "config invalid:\n  story.jira.api_key: Extra inputs are not permitted"
