@@ -6,7 +6,7 @@
 
 **Architecture:** The studio gains three small abilities: it can return a plan without running it, run a plan given from outside (whose roles are then pinned), and build on a chosen base and branch. `task serve` runs plans, runs and stories as background jobs that clients follow with long polls. A new `airlie.story` package holds the pipeline: product refines the issue into a story, architect splits it into layers, and each layer is one studio run on its own branch (qa writes failing tests, coder makes them pass, the cross-family reviewer checks both, the test command gates the layer). The layers are then stacked with `gh stack` in a worktree of their own and opened as draft PRs. OpenCode gets agents, commands and five `airlie_*` tools that call the serve jobs API.
 
-**Tech Stack:** Python 3.12, uv, pydantic v2, httpx, FastAPI, typer, pytest (asyncio auto); git worktrees; `gh` 2.102 with the `gh-stack` extension v0.2.1; Jira Cloud REST API v3 (HTTP Basic with an API token); Task 3.54 (`dotenv`); OpenCode 1.19 with `@opencode-ai/plugin` 1.18.34 (TypeScript custom tools run by OpenCode's Bun runtime); vllm-mlx 0.5.0 and the model catalog, both unchanged.
+**Tech Stack:** Python 3.12, uv, pydantic v2, httpx, FastAPI, typer, pytest (asyncio auto); git worktrees; `gh` 2.102 with the `gh-stack` extension v0.2.1; Jira Cloud REST API v3 (HTTP Basic with an API token); OpenCode 1.19 with `@opencode-ai/plugin` 1.18.34 (TypeScript custom tools run by OpenCode's Bun runtime); vllm-mlx 0.5.0 and the model catalog, both unchanged.
 
 **Spec:** This plan's own Design section, agreed with Noah in chat on 2026-10-14. It builds on the studio topology (`docs/superpowers/specs/2026-10-13-studio-topology-design.md`). No build-spec page covers stories or OpenCode, so nothing here deviates from the build spec.
 
@@ -33,7 +33,7 @@
 Noah's (2026-10-14):
 - **D1.** The studio is the engine. The CLI and the OpenCode chief are front doors onto it, not separate orchestrators.
 - **D2.** When a story reaches Review its PRs are already pushed and open as drafts. **Only a human merges AI-generated work.** airlie has no merge code path, `gh stack submit --auto` opens drafts, and every OpenCode agent denies `gh pr merge*` and `gh stack merge*`.
-- **D3.** Jira is the board (Jira Cloud, REST API v3); Trello was dropped 2026-10-14. One board kind only: a `Board` protocol, a `NullBoard` for written requests, and `JiraBoard`. The board's columns are the statuses To Do, In Progress, In Review, Blocked and Done. Its site, project and credentials come from `ATLASSIAN_BASE_URL`, `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY` in the checkout's `.env`, which every task loads; each one wins over the same setting in `story.jira`.
+- **D3.** Jira is the board (Jira Cloud, REST API v3); Trello was dropped 2026-10-14. One board kind only: a `Board` protocol, a `NullBoard` for written requests, and `JiraBoard`. The board's columns are the statuses To Do, In Progress, In Review, Blocked and Done. Its site, project and credentials are `ATLASSIAN_BASE_URL`, `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY`. airlie reads them from the `.env` beside `airlie.yaml` itself, in memory, when it builds the board; no Taskfile command loads `.env`, so no subprocess inherits the credentials. A variable already set in the shell wins over `.env`, and both win over the same setting in `story.jira`.
 
 Mine (Noah: say so if any should change):
 - **D4.** A story's SDLC: intake → refine (product: Given/When/Then criteria) → layers (architect: at most `story.max_layers`, every criterion assigned) → each layer built test-first by the studio from a given plan (qa writes the failing tests, coder makes them pass, Muse Glimmer reviews both with one fix round, the story's test command gates the layer) → publish → review. ai-mode's amigos deliberation and an architect review loop over the whole stack are later work.
@@ -66,11 +66,11 @@ A stop leaves `blocked` in the state, a `blocked` event, a comment on the issue,
 - Model output and issue text are data. They are parsed and validated, never executed, and never reach a shell: branch names are slugified (an issue key is checked against `[A-Z][A-Z0-9_]+-\d+` first), and commit messages, PR titles and bodies go to `git`/`gh` as argv or a file.
 - Every stage leaves state, an event and (at the stage boundaries above) a comment on the issue. A stop is a comment, never silence.
 - The person's own checkout is never switched or touched (D6). Studio work happens in worktrees under the state directory.
-- Jira credentials (the account email and the API token) live only in `.env` (git-ignored, one per checkout) or `airlie.local.yaml`. They travel only in the `Authorization` header (HTTP Basic) and never appear in URLs, logs, errors, `task config` or state files. An error names the variables (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_KEY`), never their values. No Taskfile command interpolates them (Task prints every command it runs), and no unit test sees them (`tests/unit/conftest.py`).
+- Jira credentials (the account email and the API token) live only in `.env` beside `airlie.yaml` (git-ignored, one per checkout) or `airlie.local.yaml`. Nothing exports `.env`: there is no Taskfile `dotenv:` and no `source .env`, so the studio's shell tool, the test gate, `gh`, `git` and the engines never inherit the token, and `ps eww` (which shows a same-user process's environment on macOS) never shows it. airlie reads `.env` in memory (`read_dotenv`) and never writes it into `os.environ`. The credentials travel only in the `Authorization` header (HTTP Basic) and never appear in URLs, logs, errors, reprs, `task config` or state files. An error names the variables (`ATLASSIAN_EMAIL`, `ATLASSIAN_API_KEY`) or a `.env` line number, never a value. No unit test sees the variables or reads a real `.env` (`tests/unit/conftest.py`).
 
 ### What Noah provides (the executor asks; it never does these itself)
 
-1. Jira Cloud access, done 2026-10-14: an API token (id.atlassian.com → Security → API tokens) and four variables in the checkout's `.env`: `ATLASSIAN_API_KEY` (the token), `ATLASSIAN_EMAIL`, `ATLASSIAN_BASE_URL` (https://NAME.atlassian.net) and `ATLASSIAN_PROJECT_KEY` (e.g. AIR). The executor never reads, prints or copies `.env`.
+1. Jira Cloud access, done 2026-10-14: an API token (id.atlassian.com → Security → API tokens) and four variables in the `.env` beside `airlie.yaml`: `ATLASSIAN_API_KEY` (the token), `ATLASSIAN_EMAIL`, `ATLASSIAN_BASE_URL` (https://NAME.atlassian.net) and `ATLASSIAN_PROJECT_KEY` (e.g. AIR). airlie reads that file itself; nothing exports it. The executor never reads, prints or copies `.env`.
 2. A board whose columns are the statuses To Do, In Progress, In Review, Blocked and Done (his are), with a workflow that offers a transition into each of the first four.
 3. A sandbox GitHub repository for the first live push and draft PRs, and the Jira issue to run it on (Task 15).
 4. Running `task opencode:install`, which writes into `~/.config/opencode`, and `task story:launchd:install`, which loads the launchd agent.
@@ -87,7 +87,7 @@ Amigos (product + qa + architect agreeing a contract), an architect review loop 
 - `gh` ≥ 2.90 with the `gh-stack` extension (v0.2.1 verified 2026-10-14); git ≥ 2.36. gh-stack interactive commands are never run: `init` always gets branch names, `submit` always gets `--auto`, `view` always gets `--json` (or `--short`), and there is no `switch`/`modify`/`merge` anywhere.
 - OpenCode 1.19 facts, read from the 1.19 binary: agents live in `{agent,agents}/**/*.md` (frontmatter `description, mode, model, temperature, permission`, body = prompt); commands in `{command,commands}/**/*.md` (frontmatter `description, agent`, body uses `$ARGUMENTS`); tools in `{tool,tools}/*.{js,ts}`, each export named `<file>_<export>`; the permission keys include `edit`, `bash`, `task`, and **the last matching rule wins**. A tool asks for a permission with `ctx.ask({permission, patterns, always, metadata})` (`@opencode-ai/plugin` 1.18.34).
 - Jira Cloud REST API v3 facts (2026-10-14): HTTP Basic with `email:API token`; the issue search is `GET /rest/api/3/search/jql` (the old `/search` is removed, and the new one returns only ids unless `fields` names more); a status changes through a transition (`GET`, then `POST issue/{key}/transitions` with the id of the one whose `to.name` is the wanted status); descriptions and comments are Atlassian Document Format (ADF). A scoped API token calls `https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3` instead of the site. Unit tests reach Jira only through `httpx.MockTransport`.
-- `.env` holds real secrets. Never read, print or copy it; plans, tests, logs and docs name its variables only.
+- `.env` holds real secrets. Never read, print or copy it; plans, tests, logs and docs name its variables only. Never export it either (no Taskfile `dotenv:`, no `source .env`, no `os.environ` writes): every subprocess would inherit the token, and the coder's shell tool or text in a Jira issue could then put it in model context and run state.
 - Models unchanged and `mlx-community` only: chief, product and architect on the generalist (Qwen3.8-27B); qa and coder on Qwen3-Coder-30B-A3B; the reviewer is Muse Glimmer 30B (a different family).
 - Only a human merges (D2). Pushing and opening PRs during *verification* (Task 15) still needs Noah's yes naming the repository, and commenting on or moving a Jira issue needs his yes naming the issue, even though the product does both on its own.
 - Never run `task opencode:install`, `task story:launchd:install` or `launchctl` without Noah's yes, and never write Jira credentials anywhere but where Noah puts them.
@@ -99,7 +99,7 @@ Amigos (product + qa + architect agreeing a contract), an architect review loop 
 2. **A plan from outside the chief that cannot run is rejected before any work.** A non-specialist role, a missing dependency, a cycle, too many subtasks, or (over HTTP) a base that is not a commit must each give a readable error (PlanError, or a 400), with no worktree or branch created. Pinned by Task 3 `test_a_given_plan_that_cannot_run_raises_before_any_work` and Task 4 `test_a_plan_or_base_that_cannot_run_is_a_400_and_unknown_jobs_are_404`.
 3. **A role reply with prose and stray braces before its JSON, or with no JSON at all.** The answer is the last fenced block. An unusable reply is retried once with the reason, then the issue is blocked with that reason, never a traceback. Pinned by Task 1 `test_extract_json_block_prefers_the_last_fence` and Task 11 `test_unusable_replies_are_retried_with_feedback_then_stop_the_story`.
 4. **A layer that fails its tests or changes nothing stops the story.** Its branch and worktree stay for inspection. Running the same command again skips the finished stages, moves the issue back to building and rebuilds only that layer, from its base. A git failure stops the story with git's own words. Pinned by Task 11 `test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer`, `test_a_layer_that_changes_nothing_stops_the_story` and `test_a_git_failure_stops_the_story_with_gits_own_words`.
-5. **Jira credentials leak nowhere.** The email and token go only in the `Authorization` header (HTTP Basic): not in request URLs, error messages, `task config` output or state files, and no unit test sees the person's `.env`. Pinned by Task 5 `test_jira_secrets_never_print` and `test_unit_tests_never_see_the_atlassian_variables`, and Task 7 `test_credentials_travel_in_the_header_only`, `test_errors_name_the_status_but_not_the_token` and `test_a_network_failure_is_a_board_error_that_names_the_request`.
+5. **Jira credentials leak nowhere.** The email and token go only in the `Authorization` header (HTTP Basic): not in request URLs, error messages, reprs, `task config` output or state files. Nothing exports `.env`, so no subprocess inherits them, and no unit test sees the variables or a real `.env`. Pinned by Task 5 `test_jira_secrets_never_print`, `test_unit_tests_never_see_the_atlassian_variables` and `test_the_taskfile_does_not_export_dotenv`, and Task 7 `test_credentials_travel_in_the_header_only`, `test_errors_name_the_status_but_not_the_token`, `test_a_network_failure_is_a_board_error_that_names_the_request`, `test_resolving_never_touches_os_environ`, `test_a_malformed_line_is_skipped_and_named_by_its_number_only` and `test_no_credential_reaches_an_error_a_repr_or_task_config`.
 
 ## File Map
 
@@ -111,10 +111,10 @@ Amigos (product + qa + architect agreeing a contract), an architect review loop 
 | `src/airlie/serve/jobs.py` (new) | background jobs and long-poll status over a job's event log |
 | `src/airlie/serve/app.py` (modify) | `POST /v1/airlie/plans|runs|stories`, `GET|DELETE /v1/airlie/jobs/{id}` |
 | `src/airlie/config/schema.py`, `load.py`, `__init__.py` (modify) | `StorySpec`, `JiraSpec`, `JiraStatusesSpec` |
-| `Taskfile.yml` (`dotenv`), `.gitignore`, `tests/unit/conftest.py` (new) | `.env` for every task, kept out of git and out of the unit tests |
+| `.gitignore`, `tests/unit/conftest.py` (new), `Taskfile.yml` (a comment: no `dotenv:`) | `.env` kept out of git and never exported; unit tests never see the `ATLASSIAN_*` variables or a real `.env` |
 | `src/airlie/story/model.py` (new) | story and layer types, parsing with actionable errors, slugs, branch names, exceptions |
 | `src/airlie/story/board.py` (new) | `Card`, `Board` protocol, `NullBoard`, issue references, notes |
-| `src/airlie/story/jira.py` (new) | `JiraBoard`, the `ATLASSIAN_*` environment, ADF to and from text |
+| `src/airlie/story/jira.py` (new) | `JiraBoard`, `read_dotenv` and the `ATLASSIAN_*` resolution (process environment, then `.env` beside `airlie.yaml`, then `story.jira`), ADF to and from text |
 | `src/airlie/story/state.py` (new) | `StoryState` on disk, `story_lock` |
 | `src/airlie/story/briefs.py` (new) | what each specialist is told, a layer's plan, PR title and body |
 | `src/airlie/story/publish.py` (new) | the `gh stack` wrapper (no merge) |
@@ -1166,7 +1166,7 @@ git commit -m "feat(serve): plans and studio runs as background jobs with long-p
 
 ## Phase C: the story pipeline
 
-### Task 5: Config: `story`, `story.jira`, and `.env` for every task
+### Task 5: Config: `story`, `story.jira`, and a `.env` nothing exports
 
 **Files:**
 - Modify: `src/airlie/config/schema.py`, `src/airlie/config/load.py`, `src/airlie/config/__init__.py`, `airlie.yaml`, `airlie.local.example.yaml`, `Taskfile.yml`, `.gitignore`
@@ -1176,12 +1176,12 @@ git commit -m "feat(serve): plans and studio runs as background jobs with long-p
 **Interfaces:**
 - Produces:
   - `JiraStatusesSpec(intake="To Do", building="In Progress", review="In Review", blocked: str | None = "Blocked")`
-  - `JiraSpec(site: str | None = None, project: str | None = None, email: str | None = None, token: SecretStr | None = None, statuses=JiraStatusesSpec(), jql: str | None = None, api_url: str | None = None)`. `site` is like https://NAME.atlassian.net and `project` is a key like AIR. `ATLASSIAN_BASE_URL`, `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY` win over `site`, `project`, `email` and `token`; Task 7's `jira_spec` applies them, and the config never reads the environment itself, so `task config` never shows them. Jira counts as configured once `site` and `project` resolve. `api_url` defaults (in Task 7) to `{site}/rest/api/3` (a scoped token needs `https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3`); `jql` defaults to `project = "<project>" AND status = "<statuses.intake>" ORDER BY Rank ASC`.
+  - `JiraSpec(site: str | None = None, project: str | None = None, email: str | None = None, token: SecretStr | None = None, statuses=JiraStatusesSpec(), jql: str | None = None, api_url: str | None = None)`. `site` is like https://NAME.atlassian.net and `project` is a key like AIR. `ATLASSIAN_BASE_URL`, `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY` win over `site`, `project`, `email` and `token`; Task 7 resolves them (the process environment, then the `.env` beside `airlie.yaml`, then the yaml). The config itself reads neither, so `task config` never shows them. Jira counts as configured once `site` and `project` resolve. `api_url` defaults (in Task 7) to `{site}/rest/api/3` (a scoped token needs `https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3`); `jql` defaults to `project = "<project>" AND status = "<statuses.intake>" ORDER BY Rank ASC`.
   - `StorySpec(repo: Path | None, test_cmd: str | None, trunk="main", remote="origin", topology="studio", max_layers=5, stage_attempts=2, product_role="product", architect_role="architect", tests_role="qa", build_role="coder", jira: JiraSpec = JiraSpec())`
   - `AirlieConfig.story: StorySpec`, with `story.repo` resolved relative to the config file
   - all four exported from `airlie.config`
-  - `Taskfile.yml` loads `.env` (`dotenv: ['.env']`) for every task, a variable already set in the shell winning; `.gitignore` lists `.env`
-  - `tests/unit/conftest.py`: an autouse fixture that removes the four `ATLASSIAN_*` variables from every unit test, so no test sees the person's Jira or reaches it
+  - `.gitignore` lists `.env`, and `Taskfile.yml` gets a comment where a `dotenv:` key would go: nothing exports `.env`, because Task would hand the token to every task's process and so to its children (the coder's shell tool, the test gate, `gh`, `git`, the engines). airlie reads `.env` itself (Task 7).
+  - `tests/unit/conftest.py`: an autouse fixture that removes the four `ATLASSIAN_*` variables from every unit test (the person may export them in their shell), so no test sees the person's Jira or reaches it
 
 - [ ] **Step 1: Write the failing tests** (in `tests/unit/test_config.py`)
 
@@ -1238,13 +1238,23 @@ def test_jira_secrets_never_print(tmp_path: Path) -> None:
 
 def test_unit_tests_never_see_the_atlassian_variables() -> None:
     names = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
-    assert [n for n in names if n in os.environ] == []  # tests/unit/conftest.py removes what .env set
+    # tests/unit/conftest.py removes any the person exported in their shell
+    assert [n for n in names if n in os.environ] == []
+
+
+def test_the_taskfile_does_not_export_dotenv() -> None:
+    # Task would put .env (the Jira token) in the environment of every task's process, and so of the coder's
+    # shell tool, the test gate, gh, git and the engines; airlie reads .env itself, only where it needs it.
+    root = Path(__file__).resolve().parents[2]
+    taskfile = yaml.safe_load((root / "Taskfile.yml").read_text())
+    assert taskfile.get("dotenv") is None
+    assert [name for name, task in taskfile["tasks"].items() if "dotenv" in task] == []
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `task test -- tests/unit/test_config.py -q`
-Expected: 3 FAIL. `test_story_defaults` fails with `AttributeError: 'AirlieConfig' object has no attribute 'story'`, and the other two story tests with `ConfigError` (`story: Extra inputs are not permitted`). `test_unit_tests_never_see_the_atlassian_variables` passes for now: no task loads `.env` until Step 4.
+Expected: 3 FAIL. `test_story_defaults` fails with `AttributeError: 'AirlieConfig' object has no attribute 'story'`, and the other two story tests with `ConfigError` (`story: Extra inputs are not permitted`). The two guards pass already, `test_unit_tests_never_see_the_atlassian_variables` unless your shell exports an `ATLASSIAN_*` variable (Step 4's conftest removes them) and `test_the_taskfile_does_not_export_dotenv` because nothing exports `.env`.
 
 - [ ] **Step 3: Implement the settings**
 
@@ -1317,8 +1327,9 @@ Append to `airlie.yaml`:
 # ---- Stories (task story; docs/integrations/story.md) -------------------------------------------------------------
 # A Jira issue (or --text) → product's story → architect's layers → each layer built test-first by the studio on
 # its own branch → stacked draft PRs (gh stack) → the issue in review. Only a human merges. ATLASSIAN_BASE_URL,
-# ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in .env (every task loads it) say which Jira and
-# who; personal settings (repo, test_cmd) go in airlie.local.yaml.
+# ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY say which Jira and who: export them in the shell or
+# put them in a git-ignored .env beside this file, which airlie reads itself for the Jira settings (a variable already
+# set in the shell wins). Personal settings (repo, test_cmd) go in airlie.local.yaml.
 story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
@@ -1332,8 +1343,9 @@ Append to `airlie.local.example.yaml`:
 ```yaml
 
 # Stories (task story): the repository and its test command. Jira's site, project, email and API token come from
-# ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in .env (git-ignored; every task
-# loads it), which win over the same settings here. Override the rest only when your project differs.
+# ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY, which win over the same settings
+# here: export them in the shell or put them in .env beside airlie.yaml (git-ignored; airlie reads it itself for the
+# Jira settings, and a variable already set in the shell wins). Override the rest only when your project differs.
 # story:
 #   repo: ~/git/myproject
 #   test_cmd: "uv run pytest -q"
@@ -1343,14 +1355,13 @@ Append to `airlie.local.example.yaml`:
 #     api_url: https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3   # only for a scoped API token
 ```
 
-- [ ] **Step 4: Load `.env` in every task, and keep it out of git and out of the unit tests**
+- [ ] **Step 4: Keep `.env` out of git, out of every task's environment, and away from the unit tests**
 
-`.env` holds Noah's real Atlassian token: never read, print or copy it. In `Taskfile.yml`, between `version: '3'` and `vars:` (a blank line on each side), add:
+`.env` holds Noah's real Atlassian token: never read, print or copy it, and never export it. In `Taskfile.yml`, between `version: '3'` and `vars:` (a blank line on each side), add this comment, and no `dotenv:` key:
 
 ```yaml
-# .env (git-ignored, one per checkout) gives every task its variables, e.g. the ATLASSIAN_* Jira settings.
-# A variable already set in the shell wins. No command here interpolates them: Task prints every command it runs.
-dotenv: ['.env']
+# Deliberately no `dotenv:`. Task would export .env, which holds the Jira token, to every task's process and so to its
+# children (the coder's shell tool, the test gate, gh, git, the engines). airlie reads .env beside airlie.yaml itself.
 ```
 
 Append a line `.env` to `.gitignore`.
@@ -1367,8 +1378,8 @@ ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLA
 
 @pytest.fixture(autouse=True)
 def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`task` loads .env, which holds the person's real Jira site and credentials: a unit test must never
-    see them, or a story test would reach their Jira."""
+    """The person may export the ATLASSIAN_* variables in their shell, and they hold their real Jira site and
+    credentials: a unit test must never see them, or a story test would reach their Jira."""
     for name in ATLASSIAN:
         monkeypatch.delenv(name, raising=False)
 ```
@@ -1376,7 +1387,7 @@ def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `task test -- tests/unit/test_config.py -q`
-Expected: all pass, `test_committed_default_config_is_valid` included. `test_unit_tests_never_see_the_atlassian_variables` now runs with `.env` loaded (this checkout's `.env` sets all four variables) and passes because of the conftest.
+Expected: all pass, `test_committed_default_config_is_valid` included.
 
 Run: `git check-ignore -v .env && task --list > /dev/null && echo "Taskfile parses"`
 Expected: `.gitignore:11:.env	.env`, then `Taskfile parses`.
@@ -1385,7 +1396,7 @@ Expected: `.gitignore:11:.env	.env`, then `Taskfile parses`.
 
 ```bash
 git add src/airlie/config airlie.yaml airlie.local.example.yaml Taskfile.yml .gitignore tests/unit/conftest.py tests/unit/test_config.py
-git commit -m "feat(config): story and story.jira settings; .env loaded by every task, git-ignored, kept from unit tests"
+git commit -m "feat(config): story and story.jira settings; .env git-ignored, never exported, kept from unit tests"
 ```
 
 ### Task 6: Story model
@@ -1677,14 +1688,15 @@ git add src/airlie/story tests/unit/test_story_model.py
 git commit -m "feat(story): story and layer model with actionable parse errors, slugs and branch names"
 ```
 
-### Task 7: Boards: Card, NullBoard, JiraBoard
+### Task 7: Boards: Card, NullBoard, JiraBoard, and the `.env` beside airlie.yaml
 
 **Files:**
 - Create: `src/airlie/story/board.py`, `src/airlie/story/jira.py`
+- Modify: `tests/unit/conftest.py` (no unit test reads a real `.env`)
 - Test: `tests/unit/test_story_board.py`
 
 **Interfaces:**
-- Consumes: Task 5 (`JiraSpec`, `JiraStatusesSpec`; `tests/unit/conftest.py` clears the `ATLASSIAN_*` variables before every test).
+- Consumes: Task 5 (`JiraSpec`, `JiraStatusesSpec`; `tests/unit/conftest.py` clears the `ATLASSIAN_*` variables before every test), `tests.unit.test_studio_orchestrator.cfg_for`.
 - Produces (`airlie.story.board`):
   - `Column = Literal["building", "review", "blocked"]`, `NOTE_PREFIX`, `note(text) -> str`, `BoardError(RuntimeError)`, `ISSUE_KEY` (`[A-Z][A-Z0-9_]+-\d+`).
   - `Card(key, id, ref, title, description, url=None, comments=())` with `to_dict()` and the `.resume` property (the command that resumes the story: "`task story -- AIR-7`", or the `--text` hint). `ref: str` is the issue key a person types ("AIR-7") and `""` for a written request; a Jira card's `key`, which names the story directory, is the issue key too, and a text card's is `text-<sha10>`. `id` is Jira's numeric issue id.
@@ -1692,10 +1704,13 @@ git commit -m "feat(story): story and layer model with actionable parse errors, 
   - `Board` Protocol: `async card(ref) -> Card`, `async next_card() -> Card | None`, `async move(card, column)`, `async comment(card, text)`.
   - `NullBoard(stories_dir: Path)`, which writes `stories/<key>/notes.md`.
   - `parse_card_ref(ref: str) -> str`: an issue key, a browse link (https://SITE/browse/AIR-7) or a board link carrying `selectedIssue=AIR-7` gives the key; anything else is a BoardError naming what it accepts.
-- Produces (`airlie.story.jira`):
-  - `ENV` (`story.jira` field → the variable that wins over it), `FIELDS = "summary,description,comment,status"`.
-  - `jira_spec(spec: JiraSpec) -> JiraSpec`: `story.jira` with `ATLASSIAN_BASE_URL`, `ATLASSIAN_PROJECT_KEY`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY` applied over `site`, `project`, `email` and `token`.
-  - `jira_credentials(spec: JiraSpec) -> tuple[str, str]`: (email, token), the environment winning; BoardError names the variables, never a value.
+- Produces (`airlie.story.jira`), where each of the four values resolves from the process environment, then the `.env` beside `airlie.yaml`, then the yaml, and nothing ever writes to `os.environ`:
+  - `SETTINGS` (`site` → `ATLASSIAN_BASE_URL`, `project` → `ATLASSIAN_PROJECT_KEY`), `FIELDS = "summary,description,comment,status"`.
+  - `read_dotenv(path: Path) -> dict[str, str]`, a small pure reader: `KEY=VALUE` lines, an optional `export ` prefix, single or double quotes, `#` comment lines and blank lines; a missing file gives `{}`; `os.environ` is never touched. A malformed line is skipped with a `UserWarning` that names its line number, never its content.
+  - `config_dotenv(cfg) -> dict[str, str]`: the `.env` beside the config file (`cfg.source_path.parent`), read in memory and never exported; `{}` without a config file; a BoardError naming only the path when the file cannot be read. Every unit test stubs it (Step 5).
+  - `jira_spec(spec: JiraSpec, dotenv: Mapping[str, str]) -> JiraSpec`: `story.jira` with `site` and `project` resolved. The credentials stay out of it, so its repr cannot show them.
+  - `jira_credentials(spec: JiraSpec, dotenv: Mapping[str, str]) -> tuple[str, str]`: (email, token) from `ATLASSIAN_EMAIL` and `ATLASSIAN_API_KEY`, then `story.jira.email` and `story.jira.token`; BoardError names the variables, never a value.
+  - `jira_board(cfg) -> JiraBoard | None`: a JiraBoard once the site and project resolve, else None; BoardError when the credentials are missing or only one of site and project resolves. Task 12's `make_board` calls it.
   - `adf_doc(text: str) -> dict[str, Any]`: a paragraph per line, `**bold**` as a strong mark, http(s) URLs as link marks. `adf_text(node: Any) -> str`: ADF as plain text (paragraphs, headings and code blocks as lines, list items as "- " lines, `hardBreak`, a mention by name, an `inlineCard` or a link by its URL, unknown nodes through their content).
   - `JiraBoard(spec: JiraSpec, *, email: str, token: str, transport: httpx.AsyncBaseTransport | None = None)`, with `.site`, `.project`, `.api` (`spec.api_url` or `{site}/rest/api/3`), `.jql`, the Board methods and `async check() -> list[str]`. It raises BoardError when the site or project is missing or the site is not an http(s) URL. Each request is one short-lived `httpx.AsyncClient` through `_send(method, path, **kw)`, which turns an `httpx.HTTPError` into a BoardError naming the method and path only; `_check` turns a 4xx/5xx into a BoardError with the status and Jira's `errorMessages`/`errors`, never a header.
   - `card(ref)`: `GET issue/{key}?fields=summary,description,comment,status`. The description and comments become plain text (`adf_text`), oldest comment first, and airlie's own notes are left out.
@@ -1707,21 +1722,34 @@ git commit -m "feat(story): story and layer model with actionable parse errors, 
 - [ ] **Step 1: Write the failing tests** (`tests/unit/test_story_board.py`)
 
 ```python
-"""Boards: issue references, the NullBoard's notes, and JiraBoard against a recorded Jira Cloud."""
+"""Boards: issue references, the NullBoard's notes, the Jira settings (environment, then .env, then yaml), and
+JiraBoard against a recorded Jira Cloud."""
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from airlie.config import JiraSpec
 from airlie.story.board import BoardError, NullBoard, note, parse_card_ref, text_card
-from airlie.story.jira import JiraBoard, adf_doc, adf_text, jira_credentials, jira_spec
+from airlie.story.jira import (
+    JiraBoard,
+    adf_doc,
+    adf_text,
+    config_dotenv,  # the real lookup: tests/unit/conftest.py stubs airlie.story.jira.config_dotenv
+    jira_board,
+    jira_credentials,
+    jira_spec,
+    read_dotenv,
+)
+from tests.unit.test_studio_orchestrator import cfg_for
 
 SITE = "https://acme.atlassian.net"
 EMAIL, TOKEN = "me@example.org", "t0ken"
@@ -1954,26 +1982,103 @@ async def test_null_board_writes_notes_and_text_cards_are_stable(tmp_path: Path)
         await nb.card("AIR-7")
 
 
-def test_the_environment_wins_and_missing_credentials_are_named(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_dotenv_reads_pairs_exports_quotes_and_comments(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text(
+        "# Jira\n\n"
+        "export ATLASSIAN_EMAIL=me@example.org\n"
+        'ATLASSIAN_API_KEY="t0 ken"\n'
+        f"ATLASSIAN_BASE_URL='{SITE}'\n"
+        "ATLASSIAN_PROJECT_KEY = AIR\n"
+    )
+    assert read_dotenv(env) == {
+        "ATLASSIAN_EMAIL": "me@example.org",
+        "ATLASSIAN_API_KEY": "t0 ken",
+        "ATLASSIAN_BASE_URL": SITE,
+        "ATLASSIAN_PROJECT_KEY": "AIR",
+    }
+    assert read_dotenv(tmp_path / "nowhere" / ".env") == {}
+
+
+def test_a_malformed_line_is_skipped_and_named_by_its_number_only(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text('ATLASSIAN_EMAIL=me@example.org\nnot a pair s3cret-one\nATLASSIAN_API_KEY="s3cret-two\n')
+    with pytest.warns(UserWarning) as caught:
+        values = read_dotenv(env)
+    said = [str(w.message) for w in caught]
+    assert values == {"ATLASSIAN_EMAIL": "me@example.org"}
+    assert len(said) == 2 and "line 2 is not KEY=VALUE" in said[0] and "line 3 is not KEY=VALUE" in said[1]
+    assert not any("s3cret" in m for m in said)
+
+
+def test_the_environment_beats_dotenv_and_dotenv_beats_the_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(BoardError, match="ATLASSIAN_EMAIL and ATLASSIAN_API_KEY") as e:
-        jira_credentials(JiraSpec.model_validate({"token": "only-a-token"}))
-    assert "only-a-token" not in str(e.value)
-    spec = JiraSpec.model_validate(
+        jira_credentials(JiraSpec(), {"ATLASSIAN_EMAIL": "only@example.org"})
+    assert "only@example.org" not in str(e.value)
+    yaml_spec = JiraSpec.model_validate(
         {
-            "site": "https://file.atlassian.net",
-            "project": "FILE",
-            "email": "file@example.org",
-            "token": "file-token",
+            "site": "https://yaml.atlassian.net",
+            "project": "YML",
+            "email": "y@example.org",
+            "token": "yaml-token",
         }
     )
-    assert jira_credentials(spec) == ("file@example.org", "file-token")
-    monkeypatch.setenv("ATLASSIAN_BASE_URL", SITE)
-    monkeypatch.setenv("ATLASSIAN_PROJECT_KEY", "AIR")
-    monkeypatch.setenv("ATLASSIAN_EMAIL", "env@example.org")
+    assert jira_spec(yaml_spec, {}).project == "YML"
+    assert jira_credentials(yaml_spec, {}) == ("y@example.org", "yaml-token")
+    dotenv = {
+        "ATLASSIAN_BASE_URL": SITE,
+        "ATLASSIAN_PROJECT_KEY": "AIR",
+        "ATLASSIAN_EMAIL": "dotenv@example.org",
+        "ATLASSIAN_API_KEY": "dotenv-token",
+    }
+    spec = jira_spec(yaml_spec, dotenv)
+    assert (spec.site, spec.project) == (SITE, "AIR")
+    assert jira_credentials(spec, dotenv) == ("dotenv@example.org", "dotenv-token")
+    monkeypatch.setenv("ATLASSIAN_PROJECT_KEY", "ENV")
     monkeypatch.setenv("ATLASSIAN_API_KEY", "env-token")
-    env = jira_spec(spec)
-    assert (env.site, env.project, env.email) == (SITE, "AIR", "env@example.org")
-    assert jira_credentials(spec) == ("env@example.org", "env-token")
+    assert jira_spec(yaml_spec, dotenv).project == "ENV"
+    assert jira_credentials(yaml_spec, dotenv) == ("dotenv@example.org", "env-token")
+
+
+def test_unit_tests_never_read_a_real_env_file(tmp_path: Path) -> None:
+    cfg = cfg_for(tmp_path)
+    assert cfg.source_path is not None
+    (cfg.source_path.parent / ".env").write_text(f"ATLASSIAN_BASE_URL={SITE}\nATLASSIAN_PROJECT_KEY=AIR\n")
+    assert jira_board(cfg) is None  # the conftest stubs the lookup: no .env reaches a unit test
+    assert config_dotenv(cfg) == {"ATLASSIAN_BASE_URL": SITE, "ATLASSIAN_PROJECT_KEY": "AIR"}
+
+
+def test_resolving_never_touches_os_environ(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = cfg_for(tmp_path)
+    assert cfg.source_path is not None
+    lines = [f"ATLASSIAN_BASE_URL={SITE}", "ATLASSIAN_PROJECT_KEY=AIR", f"ATLASSIAN_EMAIL={EMAIL}"]
+    (cfg.source_path.parent / ".env").write_text("\n".join([*lines, f"ATLASSIAN_API_KEY={TOKEN}", "OTHER=1"]))
+    monkeypatch.setattr("airlie.story.jira.config_dotenv", config_dotenv)  # this test reads its own tmp .env
+    before = dict(os.environ)
+    board = jira_board(cfg)
+    assert board is not None and (board.site, board.project) == (SITE, "AIR")
+    assert dict(os.environ) == before
+
+
+def test_no_credential_reaches_an_error_a_repr_or_task_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secrets = {"ATLASSIAN_EMAIL": "dot@example.org", "ATLASSIAN_API_KEY": "dot-t0ken"}
+    dotenv = {"ATLASSIAN_BASE_URL": SITE, "ATLASSIAN_PROJECT_KEY": "AIR", **secrets}
+    monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: dotenv)
+    cfg = cfg_for(tmp_path)
+    board = jira_board(cfg)
+    assert board is not None
+    shown = [
+        repr(board),
+        repr(jira_spec(cfg.story.jira, dotenv)),
+        yaml.safe_dump(cfg.model_dump(mode="json")),
+    ]
+    del dotenv["ATLASSIAN_API_KEY"]
+    with pytest.raises(BoardError) as e:
+        jira_board(cfg)
+    shown.append(str(e.value))
+    assert [v for v in secrets.values() for text in shown if v in text] == []
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
@@ -2098,54 +2203,99 @@ def parse_card_ref(ref: str) -> str:
 
 ```python
 """JiraBoard: the Board seam over Jira Cloud's REST API v3. The account email and API token travel only in the
-Authorization header (HTTP Basic), never in a URL, a log line or an error message. ATLASSIAN_BASE_URL,
-ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY (from .env, which every task loads) win over
-story.jira. Descriptions and comments are Atlassian Document Format (ADF): read as plain text, written from
-airlie's markdown-ish notes."""
+Authorization header (HTTP Basic), never in a URL, a log line, an error message or a repr.
+
+ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY each come from the process
+environment first, then from the .env beside airlie.yaml, then from story.jira. airlie reads that .env itself,
+in memory: nothing exports it, so no subprocess (the coder's shell tool, the test gate, gh, git, the engines)
+inherits the token. Descriptions and comments are Atlassian Document Format (ADF): read as plain text, written
+from airlie's markdown-ish notes."""
 
 from __future__ import annotations
 
 import base64
 import os
 import re
+import warnings
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import SecretStr
 
-from airlie.config import JiraSpec
+from airlie.config import AirlieConfig, JiraSpec
 from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column, parse_card_ref
 
-ENV = {
-    "site": "ATLASSIAN_BASE_URL",
-    "project": "ATLASSIAN_PROJECT_KEY",
-    "email": "ATLASSIAN_EMAIL",
-    "token": "ATLASSIAN_API_KEY",
-}
-"""story.jira field → the environment variable that wins over it."""
+SETTINGS = {"site": "ATLASSIAN_BASE_URL", "project": "ATLASSIAN_PROJECT_KEY"}
+"""story.jira field → the variable that wins over it (the credentials: ATLASSIAN_EMAIL, ATLASSIAN_API_KEY)."""
 FIELDS = "summary,description,comment,status"
+_PAIR = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _URL = re.compile(r"https?://[^\s<>\"'`]+[^\s<>\"'`.,;:!?)\]]")
 
 
-def jira_spec(spec: JiraSpec) -> JiraSpec:
-    """story.jira with the environment applied: every ATLASSIAN_* variable that is set wins (ENV)."""
-    update: dict[str, Any] = {field: os.environ[var] for field, var in ENV.items() if os.environ.get(var)}
-    if "token" in update:
-        update["token"] = SecretStr(update["token"])
+def read_dotenv(path: Path) -> dict[str, str]:
+    """KEY=VALUE lines of a .env file, with an optional `export ` prefix and single or double quotes; `#`
+    comment lines and blank lines are skipped, and a missing file gives {}. Pure: os.environ is never touched.
+    A malformed line is skipped with a warning that names its number, never its content (it may hold a
+    secret)."""
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _PAIR.fullmatch(line)
+        value = m.group(2).strip() if m else ""
+        quote = value[:1] if value[:1] in ("'", '"') else ""
+        if m is None or (quote and (len(value) < 2 or not value.endswith(quote))):
+            warnings.warn(f"{path}: line {n} is not KEY=VALUE; skipped", stacklevel=2)
+            continue
+        values[m.group(1)] = value[1:-1] if quote else value
+    return values
+
+
+def config_dotenv(cfg: AirlieConfig) -> dict[str, str]:
+    """The .env beside the config file (airlie.yaml), read in memory and never exported; {} without a config
+    file. Every unit test stubs this lookup (tests/unit/conftest.py), so none reads a real .env."""
+    if cfg.source_path is None:
+        return {}
+    path = cfg.source_path.parent / ".env"
+    try:
+        return read_dotenv(path)
+    except OSError as e:
+        raise BoardError(f"cannot read {path} ({type(e).__name__})") from None
+
+
+def _pick(var: str, dotenv: Mapping[str, str]) -> str | None:
+    """`var` from the process environment, else from the .env values."""
+    return os.environ.get(var) or dotenv.get(var) or None
+
+
+def jira_spec(spec: JiraSpec, dotenv: Mapping[str, str]) -> JiraSpec:
+    """story.jira with its site and project resolved: ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY from the
+    process environment, then from `dotenv`, then the yaml. The credentials stay out of it (jira_credentials),
+    so its repr never shows them."""
+    update: dict[str, Any] = {}
+    for field, var in SETTINGS.items():
+        value = _pick(var, dotenv)
+        if value:
+            update[field] = value
     return spec.model_copy(update=update)
 
 
-def jira_credentials(spec: JiraSpec) -> tuple[str, str]:
-    """(email, token), the environment winning. BoardError names the variables, never a value."""
-    s = jira_spec(spec)
-    token = s.token.get_secret_value() if s.token else ""
-    if not s.email or not token:
+def jira_credentials(spec: JiraSpec, dotenv: Mapping[str, str]) -> tuple[str, str]:
+    """(email, token): ATLASSIAN_EMAIL and ATLASSIAN_API_KEY from the process environment, then `dotenv`, then
+    story.jira.email and story.jira.token. BoardError names the variables, never a value."""
+    email = _pick("ATLASSIAN_EMAIL", dotenv) or spec.email
+    token = _pick("ATLASSIAN_API_KEY", dotenv) or (spec.token.get_secret_value() if spec.token else None)
+    if not email or not token:
         raise BoardError(
             "Jira needs your account email and an API token: set ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in "
-            ".env, or story.jira.email and story.jira.token in airlie.local.yaml"
+            "the .env beside airlie.yaml, or story.jira.email and story.jira.token in airlie.local.yaml"
         )
-    return s.email, token
+    return email, token
 
 
 def _text(text: str, marks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2232,7 +2382,7 @@ class JiraBoard:
         if not spec.site or not spec.project:
             raise BoardError(
                 "Jira needs a site and a project key: set ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY in "
-                ".env, or story.jira.site and story.jira.project"
+                "the .env beside airlie.yaml, or story.jira.site and story.jira.project"
             )
         if not spec.site.startswith(("https://", "http://")):
             raise BoardError(
@@ -2336,18 +2486,41 @@ class JiraBoard:
                     f"its statuses: {', '.join(sorted(have))}"
                 )
         return problems
+
+
+def jira_board(cfg: AirlieConfig) -> JiraBoard | None:
+    """A JiraBoard once the Jira site and project resolve (the process environment, then the .env beside
+    airlie.yaml, then story.jira), else None; BoardError names what a half-configured Jira lacks."""
+    dotenv = config_dotenv(cfg)
+    spec = jira_spec(cfg.story.jira, dotenv)
+    if not spec.site and not spec.project:
+        return None
+    email, token = jira_credentials(spec, dotenv)
+    return JiraBoard(spec, email=email, token=token)
 ```
 
-- [ ] **Step 5: Run the tests to see them pass**
+- [ ] **Step 5: Keep the person's real `.env` away from every unit test**
+
+Append to `tests/unit/conftest.py`:
+
+```python
+@pytest.fixture(autouse=True)
+def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """airlie reads the .env beside airlie.yaml: no unit test may read the person's real one. Tests of the
+    reader pass their own tmp paths, and a test of the lookup imports the real config_dotenv itself."""
+    monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: {})
+```
+
+- [ ] **Step 6: Run the tests to see them pass**
 
 Run: `task test -- tests/unit/test_story_board.py -q`
-Expected: all 12 pass. No request leaves the machine: every JiraBoard here runs on `httpx.MockTransport`.
+Expected: all 17 pass. No request leaves the machine (every JiraBoard here runs on `httpx.MockTransport`), and no test reads a `.env` it did not write.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/airlie/story/board.py src/airlie/story/jira.py tests/unit/test_story_board.py
-git commit -m "feat(story): Board seam, NullBoard notes for --text, JiraBoard with header-only credentials"
+git add src/airlie/story/board.py src/airlie/story/jira.py tests/unit/test_story_board.py tests/unit/conftest.py
+git commit -m "feat(story): Board seam, NullBoard notes for --text, JiraBoard reading .env in memory with header-only credentials"
 ```
 
 ### Task 8: Story state and the lock
@@ -3651,7 +3824,7 @@ git commit -m "feat(story): the pipeline: refine, layers, test-first layers on t
     - `story_config(cfg) -> AirlieConfig` (reloads with `story.topology`)
     - `story_problems(cfg) -> list[str]`
     - `resolve(cfg, repo: Path | None, test_cmd: str | None) -> tuple[Path, str]`, raising `StorySetupError`
-    - `make_board(cfg) -> Board`: a `JiraBoard` once the Jira site and project resolve (`jira_spec`: the `ATLASSIAN_*` variables over `story.jira`), else a `NullBoard`; `BoardError` when the credentials are missing or only one of site and project resolves
+    - `make_board(cfg) -> Board`: Task 7's `jira_board(cfg)` (the process environment, then the `.env` beside `airlie.yaml`, then `story.jira`; nothing exported), else a `NullBoard`; `BoardError` when the credentials are missing or only one of site and project resolves
     - `card_for(cfg, ref: str | None, text: str | None) -> tuple[Board, Card]` (async): the issue fetched now, so a bad reference fails before any job starts, or a written request on a `NullBoard`; the CLI and `story_job` share it
     - `make_pipeline(cfg, *, board, repo, test_cmd) -> StoryPipeline`
     - `StoryBusy(RuntimeError)`
@@ -3880,7 +4053,7 @@ from typing import Any
 
 from airlie.config import AirlieConfig, load_config
 from airlie.story.board import Board, BoardError, Card, NullBoard, text_card
-from airlie.story.jira import JiraBoard, jira_credentials, jira_spec
+from airlie.story.jira import JiraBoard, jira_board
 from airlie.story.model import StorySetupError
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.publish import Publisher
@@ -3940,13 +4113,11 @@ def resolve(cfg: AirlieConfig, repo: Path | None, test_cmd: str | None) -> tuple
 
 
 def make_board(cfg: AirlieConfig) -> Board:
-    """A JiraBoard once the Jira site and project resolve (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY, or
-    story.jira), else a NullBoard. BoardError names what a half-configured Jira lacks."""
-    spec = jira_spec(cfg.story.jira)
-    if not spec.site and not spec.project:
-        return NullBoard(stories_dir(cfg))
-    email, token = jira_credentials(spec)
-    return JiraBoard(spec, email=email, token=token)
+    """A JiraBoard once the Jira site and project resolve (jira_board: the process environment, then the .env
+    beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
+    lacks."""
+    board = jira_board(cfg)
+    return board if board is not None else NullBoard(stories_dir(cfg))
 
 
 async def card_for(cfg: AirlieConfig, ref: str | None, text: str | None) -> tuple[Board, Card]:
@@ -4259,7 +4430,7 @@ Add the parameter `story_job: Callable[..., Any] | None = None` to `create_app`,
 - [ ] **Step 9: Run the tests to see them pass**
 
 Run: `task test -- tests/unit/test_story_factory.py tests/unit/test_cli_story.py tests/unit/test_serve_jobs.py -q`
-Expected: all pass. None of them reaches Jira: the conftest clears the `ATLASSIAN_*` variables, so the configs here have no site or project and `make_board` returns a `NullBoard`, except where a test sets the variables itself.
+Expected: all pass. None of them reaches Jira: the conftest clears the `ATLASSIAN_*` variables and stubs the `.env` lookup, so the configs here have no site or project and `make_board` returns a `NullBoard`, except where a test sets the variables itself.
 
 - [ ] **Step 10: Check and commit**
 
@@ -4745,7 +4916,7 @@ issue goes back to *In Progress*, and the failed layer is rebuilt.
 
 1. **An API token.** At id.atlassian.com → Security → API tokens, create one. A scoped token also needs
    `story.jira.api_url` (below).
-2. **`.env`** in the root of this checkout, beside `Taskfile.yml`:
+2. **`.env`** beside `airlie.yaml`, in the root of this checkout:
 
    ```bash
    ATLASSIAN_API_KEY=<the token>
@@ -4754,11 +4925,15 @@ issue goes back to *In Progress*, and the failed layer is rebuilt.
    ATLASSIAN_PROJECT_KEY=AIR
    ```
 
-   `.env` is git-ignored and untracked, so it is never committed (keep it private: `chmod 600 .env`). It
-   belongs to one checkout: a new clone or git worktree needs its own. Every `task` loads it. A variable already
-   set in your shell wins over `.env`, and each variable wins over the same setting in `story.jira` (`site`,
-   `project`, `email`, `token`). The token travels only in the `Authorization` header (HTTP Basic); `task
-   config` never shows it, and errors name the variables, never their values.
+   airlie reads `.env` next to `airlie.yaml` (git-ignored, one per checkout); the shell's variables win. It
+   reads the file itself, in memory, when it builds the board: no task loads or exports it, so the studio's
+   shell tool, the test gate, `gh`, `git` and the engines never inherit your token, and `ps eww` never shows
+   it. Prefer `.env` to exporting these variables in your shell: an exported variable reaches every process
+   the shell starts, and the environment-first order still honours it. `.env` is untracked, so it is never
+   committed (keep it private: `chmod 600 .env`), and a new clone or git worktree needs its own. Each variable
+   wins over the same setting in `story.jira` (`site`, `project`, `email`, `token`). The token travels only in
+   the `Authorization` header (HTTP Basic); `task config` never shows it, and errors name the variables (or a
+   `.env` line number), never their values.
 3. **Statuses.** The board's columns are its workflow's statuses: *To Do*, *In Progress*, *In Review*,
    *Blocked* and *Done*. Moving an issue takes the workflow transition into the wanted status, so the
    workflow must offer one; a move it does not offer stops the story with the statuses it does offer. Other
@@ -4902,7 +5077,7 @@ tools into `~/.config/opencode`. Restart OpenCode after installing, and keep `ta
 Add four rows to the Tasks table after the `task studio` row:
 
 ```markdown
-| `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a Jira issue (a key like `AIR-7`, or its link) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; Jira comes from the `ATLASSIAN_*` variables in `.env` (`docs/integrations/story.md`) |
+| `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a Jira issue (a key like `AIR-7`, or its link) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; Jira comes from the `ATLASSIAN_*` variables in the `.env` beside `airlie.yaml`, which airlie reads itself and never exports (`docs/integrations/story.md`) |
 | `task story:tick` / `task story:check` | one scheduler beat (launchd runs it): build the top *To Do* issue unless a story is in flight / check roles, repo, test command, gh + gh-stack, the Jira credentials, project and statuses |
 | `task story:launchd:install` / `task story:launchd:uninstall` | load / remove the launchd agent that runs `task story:tick` every 15 minutes |
 | `task opencode:install` | copy the OpenCode chief, its subagents, `/studio`, `/story` and the `airlie_*` tools into `~/.config/opencode` |
@@ -5000,8 +5175,8 @@ locally). Also check `gh stack view --json`: layer 01 is built on `origin/<trunk
 the local `<trunk>`. If layer 01 shows `needsRebase: true` because the local trunk is behind, report it with
 the candidate fix (fast-forward the local trunk before building) instead of changing the pipeline.
 
-- [ ] **Step 7: A Jira issue.** The four `ATLASSIAN_*` variables are already in this checkout's `.env` (never
-read or print it). Ask Noah: "Which Jira issue may I run (a test issue in *To Do*), and which sandbox repository
+- [ ] **Step 7: A Jira issue.** The four `ATLASSIAN_*` variables are already in the `.env` beside `airlie.yaml`,
+which airlie reads itself (never read or print it, and never export it). Ask Noah: "Which Jira issue may I run (a test issue in *To Do*), and which sandbox repository
 may its draft PRs go to? The run comments on the issue and moves it *To Do* → *In Progress* → *In Review*."
 Only with the issue and repository he names:
 
