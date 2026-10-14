@@ -25,30 +25,44 @@ from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column,
 SETTINGS = {"site": "ATLASSIAN_BASE_URL", "project": "ATLASSIAN_PROJECT_KEY"}
 """story.jira field → the variable that wins over it (the credentials: ATLASSIAN_EMAIL, ATLASSIAN_API_KEY)."""
 FIELDS = "summary,description,comment,status"
-_PAIR = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
+_PAIR = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")
+_QUOTED = re.compile(r"""(["'])(.*?)\1(?:\s+#.*)?""")  # "value" or 'value', then perhaps  # a comment
+_COMMENT = re.compile(r"\s+#.*")
+_PROJECT = re.compile(r"[A-Z][A-Z0-9_]+", re.ASCII)
+_LOOPBACK = ("127.0.0.1", "::1", "localhost")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _URL = re.compile(r"https?://[^\s<>\"'`]+[^\s<>\"'`.,;:!?)\]]")
 
 
+def _value(raw: str) -> str | None:
+    """What follows the `=` of a .env line. Quoted ('...' or "..."): everything inside, a # too. Bare: up to
+    whitespace and a #, so ATATT3x=Fo0#bar== stays whole. Either may be followed by a ` # comment`. None when
+    a quote does not close, or something other than a comment follows it."""
+    rest = raw.strip()
+    if rest[:1] in ("'", '"'):
+        quoted = _QUOTED.fullmatch(rest)
+        return quoted.group(2) if quoted else None
+    return _COMMENT.sub("", raw, count=1).strip()
+
+
 def read_dotenv(path: Path) -> dict[str, str]:
-    """KEY=VALUE lines of a .env file, with an optional `export ` prefix and single or double quotes; `#`
-    comment lines and blank lines are skipped, and a missing file gives {}. Pure: os.environ is never touched.
-    A value is the rest of its line, so a `# note` after an unquoted value stays in it. A malformed line is
+    """KEY=VALUE lines of a .env file, with an optional `export ` prefix, single or double quotes and a
+    trailing ` # comment` (see _value); `#` comment lines and blank lines are skipped, a leading UTF-8 byte
+    order mark is ignored, and a missing file gives {}. Pure: os.environ is never touched. A malformed line is
     skipped with a warning that names its number, never its content (it may hold a secret)."""
     if not path.is_file():
         return {}
     values: dict[str, str] = {}
-    for n, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+    for n, raw in enumerate(path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         m = _PAIR.fullmatch(line)
-        value = m.group(2).strip() if m else ""
-        quote = value[:1] if value[:1] in ("'", '"') else ""
-        if m is None or (quote and (len(value) < 2 or not value.endswith(quote))):
+        value = _value(m.group(2)) if m else None
+        if m is None or value is None:
             warnings.warn(f"{path}: line {n} is not KEY=VALUE; skipped", stacklevel=2)
             continue
-        values[m.group(1)] = value[1:-1] if quote else value
+        values[m.group(1)] = value
     return values
 
 
@@ -71,9 +85,9 @@ def _pick(var: str, dotenv: Mapping[str, str]) -> str | None:
 
 def jira_spec(spec: JiraSpec, dotenv: Mapping[str, str]) -> JiraSpec:
     """story.jira with its site and project resolved: ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY from the
-    process environment, then from `dotenv`, then the yaml. The credentials stay out of it (jira_credentials),
-    so its repr never shows them."""
-    update: dict[str, Any] = {}
+    process environment, then from `dotenv`, then the yaml. Its email and token are dropped (jira_credentials
+    resolves them from the yaml spec itself), so neither this spec nor the board holding it can show one."""
+    update: dict[str, Any] = {"email": None, "token": None}
     for field, var in SETTINGS.items():
         value = _pick(var, dotenv)
         if value:
@@ -83,8 +97,9 @@ def jira_spec(spec: JiraSpec, dotenv: Mapping[str, str]) -> JiraSpec:
 
 def jira_credentials(spec: JiraSpec, dotenv: Mapping[str, str]) -> tuple[str, str]:
     """(email, token): ATLASSIAN_EMAIL and ATLASSIAN_API_KEY from the process environment, then `dotenv`, then
-    story.jira.email and story.jira.token. BoardError names the variables, never a value."""
-    email = _pick("ATLASSIAN_EMAIL", dotenv) or spec.email
+    story.jira.email and story.jira.token of `spec`, which is the section as loaded (jira_spec drops them).
+    BoardError names the variables, never a value."""
+    email = _pick("ATLASSIAN_EMAIL", dotenv) or (spec.email.get_secret_value() if spec.email else None)
     token = _pick("ATLASSIAN_API_KEY", dotenv) or (spec.token.get_secret_value() if spec.token else None)
     if not email or not token:
         raise BoardError(
@@ -119,33 +134,50 @@ def adf_doc(text: str) -> dict[str, Any]:
     return {"type": "doc", "version": 1, "content": paragraphs}
 
 
+_ADF_DEPTH = 200
+"""How many levels of nodes and node lists adf_text reads. An editor writes a few dozen; deeper is dropped
+instead of recursed into, which Python would end with a RecursionError."""
+
+
 def adf_text(node: Any) -> str:
-    """Plain text from ADF: paragraphs, headings and code blocks are lines, list items "- " lines, a link or a
-    card its URL, a node without content its attrs.text (a mention, an emoji, a status); any other node gives
-    the text of its content."""
-    return _adf(node).strip()
+    """Plain text from ADF: paragraphs, headings and code blocks are lines, list, task and decision items "- "
+    lines, a link or a card its URL, a node without content its attrs.text (a mention, an emoji, a status);
+    any other node gives the text of its content. Anyone who can comment writes ADF, so what is not shaped as
+    ADF reads as empty instead of raising."""
+    return _adf(node, 0).strip()
 
 
-def _adf(node: Any) -> str:
+def _href(marks: Any) -> str | None:
+    """The URL of the first well-formed link mark of a text node."""
+    for mark in marks if isinstance(marks, list) else ():
+        attrs = mark.get("attrs") if isinstance(mark, dict) and mark.get("type") == "link" else None
+        href = attrs.get("href") if isinstance(attrs, dict) else None
+        if isinstance(href, str) and href:
+            return href
+    return None
+
+
+def _adf(node: Any, depth: int) -> str:
+    if depth > _ADF_DEPTH:
+        return ""
     if isinstance(node, str):
         return node
     if isinstance(node, list):
-        return "".join(_adf(n) for n in node)
+        return "".join(_adf(n, depth + 1) for n in node)
     if not isinstance(node, dict):
         return ""
-    kind, attrs = node.get("type"), node.get("attrs") or {}
-    inner = _adf(node.get("content") or [])
+    kind, raw = node.get("type"), node.get("attrs")
+    attrs: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    inner = _adf(node.get("content") or [], depth + 1)
     if kind == "text":
         text = str(node.get("text") or "")
-        links = [
-            (m.get("attrs") or {}).get("href") for m in node.get("marks") or [] if m.get("type") == "link"
-        ]
-        return f"{text} ({links[0]})" if links and links[0] and links[0] != text else text
+        href = _href(node.get("marks"))
+        return f"{text} ({href})" if href and href != text else text
     if kind == "hardBreak":
         return "\n"
     if kind in ("paragraph", "heading", "codeBlock"):
         return inner + "\n"
-    if kind == "listItem":
+    if kind in ("listItem", "taskItem", "decisionItem"):  # a task's or a decision's content is inline text
         return f"- {inner}" if inner.endswith("\n") else f"- {inner}\n"
     if kind in ("inlineCard", "blockCard", "embedCard"):
         return str(attrs.get("url") or "") + ("" if kind == "inlineCard" else "\n")
@@ -164,7 +196,7 @@ def _check(r: httpx.Response, method: str, path: str) -> None:
         return
     try:
         body = r.json()
-    except ValueError:
+    except (ValueError, RecursionError):  # not JSON, or nested deeper than the parser reads
         body = None
     said: list[str] = []
     if isinstance(body, dict):
@@ -184,6 +216,21 @@ def _issue(card: Card) -> str:
     return f"issue/{card.key}"
 
 
+def _url_problem(url: str) -> str | None:
+    """Why `url` is no place to send credentials, or None. The account email and API token go with every
+    request, so it is https://, or http:// to this machine."""
+    low = url.lower()
+    if low.startswith("https://"):
+        return None
+    if not low.startswith("http://"):
+        return "must be a URL"
+    try:
+        host = httpx.URL(url).host  # the host a request would really reach
+    except httpx.InvalidURL:
+        host = ""
+    return None if host in _LOOPBACK else "must be https:// (http:// is only for localhost)"
+
+
 class JiraBoard:
     def __init__(
         self, spec: JiraSpec, *, email: str, token: str, transport: httpx.AsyncBaseTransport | None = None
@@ -193,11 +240,19 @@ class JiraBoard:
                 "Jira needs a site and a project key: set ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY in "
                 "the .env beside airlie.yaml, or story.jira.site and story.jira.project"
             )
-        if not spec.site.startswith(("https://", "http://")):
+        if not _PROJECT.fullmatch(spec.project):  # it becomes URL paths and a quoted JQL value
             raise BoardError(
-                f"the Jira site must be a URL like https://NAME.atlassian.net, not {spec.site!r}"
+                "the Jira project key is capital letters, digits and _, like AIR: fix ATLASSIAN_PROJECT_KEY "
+                "in the .env beside airlie.yaml, or story.jira.project"
             )
-        self.spec = spec
+        for url, setting, example in (
+            (spec.site, "the Jira site (ATLASSIAN_BASE_URL, story.jira.site)", "https://NAME.atlassian.net"),
+            (spec.api_url, "story.jira.api_url", "https://api.atlassian.com/ex/jira/CLOUD_ID/rest/api/3"),
+        ):
+            problem = _url_problem(url) if url else None
+            if problem:  # the setting is named, never its value: a URL may carry credentials
+                raise BoardError(f"{setting} {problem}, like {example}")
+        self.spec = spec.model_copy(update={"email": None, "token": None})  # whatever spec it was given
         self.site = spec.site.rstrip("/")
         self.project = spec.project
         self.api = (spec.api_url or f"{self.site}/rest/api/3").rstrip("/")
@@ -211,8 +266,9 @@ class JiraBoard:
     async def _send(self, method: str, path: str, **kw: Any) -> Any:
         """One request on a short-lived client (a story makes a handful). BoardError when Jira cannot be
         reached (it names the method and path, never a header), does not answer 2xx, or answers something that
-        is not JSON. Nothing is chained to these errors: an httpx exception's .request carries the
-        Authorization header."""
+        is not JSON. Each is raised outside the `except` that saw the cause, so the BoardError holds no httpx
+        exception: its .request carries the Authorization header."""
+        failure = ""
         try:
             async with httpx.AsyncClient(
                 base_url=self.api + "/",
@@ -223,14 +279,17 @@ class JiraBoard:
             ) as client:
                 r = await client.request(method, path, **kw)
         except (httpx.HTTPError, httpx.InvalidURL) as e:
-            raise BoardError(f"Jira {method} {path}: {type(e).__name__}, no reply") from None
+            failure = f"{type(e).__name__}, no reply"
+        if failure:
+            raise BoardError(f"Jira {method} {path}: {failure}")
         _check(r, method, path)
         if not r.content:
             return None
         try:
             return r.json()
-        except ValueError:
-            raise BoardError(f"Jira {method} {path}: {r.status_code}, but the reply is not JSON") from None
+        except (ValueError, RecursionError):  # not JSON, or nested deeper than the parser reads
+            failure = f"{r.status_code}, but the reply is not JSON"
+        raise BoardError(f"Jira {method} {path}: {failure}")
 
     def _card(self, issue: dict[str, Any]) -> Card:
         key = str(issue["key"])
@@ -306,10 +365,11 @@ class JiraBoard:
 
 def jira_board(cfg: AirlieConfig) -> JiraBoard | None:
     """A JiraBoard once the Jira site and project resolve (the process environment, then the .env beside
-    airlie.yaml, then story.jira), else None; BoardError names what a half-configured Jira lacks."""
+    airlie.yaml, then story.jira), else None; BoardError names what a half-configured Jira lacks, or a setting
+    that cannot be used (a project key that is not one, a site that is not https://)."""
     dotenv = config_dotenv(cfg)
     spec = jira_spec(cfg.story.jira, dotenv)
     if not spec.site and not spec.project:
         return None
-    email, token = jira_credentials(spec, dotenv)
+    email, token = jira_credentials(cfg.story.jira, dotenv)  # the yaml's own: the resolved spec has none
     return JiraBoard(spec, email=email, token=token)

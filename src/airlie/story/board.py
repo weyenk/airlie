@@ -15,6 +15,7 @@ from airlie.story.model import ISSUE_KEY as ISSUE_KEY  # defined with the other 
 Column = Literal["building", "review", "blocked"]
 NOTE_PREFIX = "**airlie** · "
 _KEY = ISSUE_KEY.pattern
+_TEXT_KEY = re.compile(r"text-[0-9a-f]{10}")  # what text_card makes
 _BROWSE = re.compile(rf"https?://[^/\s]+/browse/({_KEY})(?:[/?#]\S*)?", re.ASCII)  # ASCII: as ISSUE_KEY
 _SELECTED = re.compile(rf"https?://\S*[?&]selectedIssue=({_KEY})(?:[&#]\S*)?", re.ASCII)
 
@@ -90,6 +91,10 @@ class NullBoard:
         self._note(card, text)
 
     def _note(self, card: Card, text: str) -> None:
+        if not (ISSUE_KEY.fullmatch(card.key) or _TEXT_KEY.fullmatch(card.key)):  # it names a directory
+            raise BoardError(
+                f"the card key {card.key!r} is neither an issue key (AIR-7) nor text-<10 hex digits>"
+            )
         path = self.stories_dir / card.key / "notes.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:

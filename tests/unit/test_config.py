@@ -472,10 +472,12 @@ def test_jira_secrets_never_print(tmp_path: Path) -> None:
         "token": "t0ken",
     }
     cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"jira": jira}}))
-    token = cfg.story.jira.token
+    token, email = cfg.story.jira.token, cfg.story.jira.email
     assert token is not None and token.get_secret_value() == "t0ken"
+    assert email is not None and email.get_secret_value() == "me@example.org"  # the email is a credential too
     shown = yaml.safe_dump(cfg.model_dump(mode="json"))  # what `task config` prints
-    assert "t0ken" not in shown
+    assert "t0ken" not in shown and "me@example.org" not in shown
+    assert "t0ken" not in repr(cfg.story.jira) and "me@example.org" not in repr(cfg.story.jira)
 
 
 def test_unit_tests_never_see_the_atlassian_variables() -> None:

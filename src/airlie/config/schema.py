@@ -276,7 +276,9 @@ class JiraStatusesSpec(Strict):
 class JiraSpec(Strict):
     site: str | None = Field(default=None, description="https://NAME.atlassian.net; ATLASSIAN_BASE_URL wins")
     project: str | None = Field(default=None, description="project key, e.g. AIR; ATLASSIAN_PROJECT_KEY wins")
-    email: str | None = Field(default=None, description="your Atlassian account email; ATLASSIAN_EMAIL wins")
+    email: SecretStr | None = Field(
+        default=None, description="your Atlassian account email (a credential); ATLASSIAN_EMAIL wins"
+    )
     token: SecretStr | None = Field(
         default=None, description="API token; ATLASSIAN_API_KEY wins (keep it in .env, not here)"
     )

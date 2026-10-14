@@ -211,6 +211,70 @@ def test_a_jira_board_needs_a_project_and_a_site_that_is_a_url() -> None:
             JiraBoard(JiraSpec.model_validate(spec), email=EMAIL, token=TOKEN)
 
 
+@pytest.mark.parametrize(
+    "project", ["air", "A", "AIR-1", "AIR 7", 'AIR" OR 1=1', "AI/../R", "AIR\n", "ÅIR", "ATATT3x-pasted"]
+)
+def test_a_project_key_that_is_not_one_is_a_board_error_that_names_the_setting(project: str) -> None:
+    spec = JiraSpec.model_validate({"site": SITE, "project": project})
+    with pytest.raises(BoardError, match=r"ATLASSIAN_PROJECT_KEY.*story\.jira\.project") as e:
+        JiraBoard(spec, email=EMAIL, token=TOKEN)  # it becomes URL paths and a quoted JQL value
+    assert "ATATT3x" not in str(e.value)  # a token pasted on the wrong line is not quoted back
+
+
+def test_a_project_key_is_capital_letters_digits_and_underscores() -> None:
+    for good in ("AIR", "A1", "AB_C9", "X9_"):
+        JiraBoard(JiraSpec.model_validate({"site": SITE, "project": good}), email=EMAIL, token=TOKEN)
+
+
+@pytest.mark.parametrize(
+    "site",
+    [
+        "http://acme.atlassian.net",
+        "http://localhost@evil.test/",  # the host is evil.test
+        "http://127.0.0.1.evil.test",
+        "http://127.0.0.2",
+        "http://[::1",
+        "http://exa mple.com",
+    ],
+)
+def test_an_http_site_that_is_not_this_machine_is_refused_without_being_quoted(site: str) -> None:
+    spec = JiraSpec.model_validate({"site": site, "project": "AIR"})
+    with pytest.raises(BoardError, match=r"ATLASSIAN_BASE_URL.*must be https://") as e:
+        JiraBoard(spec, email=EMAIL, token=TOKEN)  # the Basic header would travel in clear text
+    assert site not in str(e.value)
+
+
+def test_an_api_url_is_held_to_the_same_rule() -> None:
+    for api_url, said in (
+        ("http://api.atlassian.com/ex/jira/c1d2/rest/api/3", "must be https://"),
+        ("http://localhost.evil.test/rest/api/3", "must be https://"),
+        ("api.atlassian.com/ex/jira/c1d2/rest/api/3", "must be a URL"),
+        ("ftp://x.test/rest/api/3", "must be a URL"),
+    ):
+        spec = JiraSpec.model_validate({"site": SITE, "project": "AIR", "api_url": api_url})
+        with pytest.raises(BoardError, match=rf"story\.jira\.api_url {said}") as e:
+            JiraBoard(spec, email=EMAIL, token=TOKEN)
+        assert api_url not in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "site",
+    [
+        "https://acme.atlassian.net",
+        "HTTPS://ACME.atlassian.net/",
+        "http://127.0.0.1:8080",
+        "http://localhost",
+        "http://LOCALHOST:9000/",
+        "http://[::1]:8080",
+    ],
+)
+def test_https_and_an_http_site_on_this_machine_are_accepted(site: str) -> None:
+    JiraBoard(JiraSpec.model_validate({"site": site, "project": "AIR"}), email=EMAIL, token=TOKEN)
+    api_url = "http://127.0.0.1:9/rest/api/3"  # the same for the REST base
+    here = JiraSpec.model_validate({"site": SITE, "project": "AIR", "api_url": api_url})
+    JiraBoard(here, email=EMAIL, token=TOKEN)
+
+
 async def test_a_comment_is_adf_with_strong_and_link_marks() -> None:
     fake = FakeJira()
     b = board(fake)
@@ -266,6 +330,49 @@ def test_adf_text_reads_what_people_write_in_jira() -> None:
     assert adf_text(None) == "" and adf_text(adf_doc(note("x"))) == "airlie · x"
 
 
+def test_adf_text_reads_task_and_decision_items_as_lines() -> None:
+    def item(kind: str, text: str) -> dict[str, Any]:  # their content is inline text, with no paragraph
+        return {"type": kind, "attrs": {"localId": "1"}, "content": [{"type": "text", "text": text}]}
+
+    tasks = {"type": "taskList", "content": [item("taskItem", "PNG only"), item("taskItem", "Max 2 MB")]}
+    decisions = {"type": "decisionList", "content": [item("decisionItem", "Use S3")]}
+    assert adf_text({"type": "doc", "content": [tasks, decisions]}) == "- PNG only\n- Max 2 MB\n- Use S3"
+
+
+def test_adf_text_survives_nodes_that_are_not_shaped_as_adf() -> None:
+    link = {"type": "link", "attrs": {"href": "https://x.io/spec"}}
+    cases: list[tuple[Any, str]] = [
+        ({"type": "mention", "attrs": "x"}, ""),
+        ({"type": "mention", "attrs": ["x"]}, ""),
+        ({"type": "inlineCard", "attrs": ["u"]}, ""),
+        ({"type": "text", "text": "a", "marks": ["strong"]}, "a"),
+        ({"type": "text", "text": "a", "marks": {"type": "link"}}, "a"),
+        ({"type": "text", "text": "a", "marks": 5}, "a"),
+        ({"type": "text", "text": "a", "marks": [{"type": "link", "attrs": "h"}]}, "a"),
+        ({"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"href": ["h"]}}]}, "a"),
+        ({"type": "text", "text": "a", "marks": [None, 5, link]}, "a (https://x.io/spec)"),
+        ({"type": "text", "text": None}, ""),
+        ({"type": "paragraph", "content": 5}, ""),
+        ({"type": "paragraph", "content": [None, 5, "x", {"type": "text", "text": "y"}]}, "xy"),
+        ([None, 5, {"type": "mention", "attrs": {"text": "@Noah"}}], "@Noah"),
+    ]
+    for node, expected in cases:
+        assert adf_text({"type": "doc", "content": [node]}) == expected, node
+    # a nesting no editor writes: past the depth cap its text is dropped, not recursed into
+    deep: dict[str, Any] = {"type": "text", "text": "x"}
+    for _ in range(600):
+        deep = {"type": "bulletList", "content": [deep]}
+    assert adf_text(deep) == ""
+    flat: Any = "x"
+    for _ in range(10000):  # lists in lists count as levels too
+        flat = [flat]
+    assert adf_text(flat) == ""
+    shallow: dict[str, Any] = {"type": "text", "text": "x"}
+    for _ in range(50):
+        shallow = {"type": "bulletList", "content": [shallow]}
+    assert adf_text(shallow) == "x"
+
+
 async def test_next_card_is_the_first_issue_the_intake_query_returns() -> None:
     fake = FakeJira()
     card = await board(fake).next_card()
@@ -313,19 +420,26 @@ async def test_a_board_error_chains_nothing_and_no_traceback_carries_the_credent
             await b.card("AIR-7")
         shown = "".join(traceback.format_exception(e.value))
         assert TOKEN not in shown and basic not in shown and EMAIL not in shown
-        assert e.value.__cause__ is None
+        assert e.value.__cause__ is None and e.value.__context__ is None  # no httpx exception held
         assert "direct cause" not in shown and "During handling" not in shown
 
 
 async def test_a_redirect_or_a_reply_that_is_not_json_is_a_board_error() -> None:
-    spec = JiraSpec.model_validate({"site": "http://acme.atlassian.net", "project": "AIR"})
+    spec = JiraSpec.model_validate({"site": SITE, "project": "AIR"})
     moved = httpx.MockTransport(lambda r: httpx.Response(301, headers={"location": "https://x.test/y"}))
     login = httpx.MockTransport(lambda r: httpx.Response(200, text="<html>Log in</html>"))
     with pytest.raises(BoardError, match=r"Jira GET issue/AIR-7: 301 .*story\.jira\.site") as e:
         await JiraBoard(spec, email=EMAIL, token=TOKEN, transport=moved).card("AIR-7")
     assert "x.test" not in str(e.value)  # redirects are not followed, and a header never reaches a message
-    with pytest.raises(BoardError, match="Jira GET issue/AIR-7: 200, but the reply is not JSON"):
-        await JiraBoard(spec, email=EMAIL, token=TOKEN, transport=login).card("AIR-7")
+    too_deep = httpx.MockTransport(lambda r: httpx.Response(200, text="[" * 20000 + "]" * 20000))
+    for reply in (login, too_deep):  # a page, and JSON nested past what the parser takes
+        with pytest.raises(BoardError, match="Jira GET issue/AIR-7: 200, but the reply is not JSON") as e:
+            await JiraBoard(spec, email=EMAIL, token=TOKEN, transport=reply).card("AIR-7")
+        assert e.value.__cause__ is None and e.value.__context__ is None  # nor the parser's error
+    # the body of an error reply is read too, and may be as deep
+    broken = httpx.MockTransport(lambda r: httpx.Response(500, text="[" * 20000 + "]" * 20000))
+    with pytest.raises(BoardError, match="Jira GET issue/AIR-7: 500 Internal Server Error"):
+        await JiraBoard(spec, email=EMAIL, token=TOKEN, transport=broken).card("AIR-7")
 
 
 async def test_a_site_httpx_cannot_parse_is_a_board_error_that_does_not_quote_it() -> None:
@@ -364,6 +478,22 @@ async def test_a_text_card_resumes_with_its_text_and_the_null_board_has_nothing_
     assert text_card("   ").title == "request" and await NullBoard(tmp_path).next_card() is None
 
 
+async def test_the_null_board_writes_only_under_a_key_it_could_have_made(tmp_path: Path) -> None:
+    nb = NullBoard(tmp_path / "stories")
+    odd_keys = ("../x", "a/b", "", ".", "AIR-7/..", "air-7")
+    odd_text_keys = ("text-XYZ", "text-0123456789a", "text-1234567890\n")
+    for key in (*odd_keys, *odd_text_keys):
+        odd = Card(key, "1", "", "t", "d")
+        with pytest.raises(BoardError, match="card key"):
+            await nb.move(odd, "building")
+        with pytest.raises(BoardError, match="card key"):
+            await nb.comment(odd, "hi")
+    assert list(tmp_path.iterdir()) == []  # not even the stories directory was made
+    for card in (Card("AIR-7", "10007", "AIR-7", "t", "d"), text_card("x")):
+        await nb.comment(card, "ok")
+        assert (tmp_path / "stories" / card.key / "notes.md").is_file()
+
+
 def test_read_dotenv_reads_pairs_exports_quotes_and_comments(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text(
@@ -386,6 +516,48 @@ def test_read_dotenv_keeps_equals_and_hash_signs_inside_a_value(tmp_path: Path) 
     env = tmp_path / ".env"
     env.write_text("ATLASSIAN_API_KEY=ATATT3x=Fo0#bar==\n")  # an API token may hold both
     assert read_dotenv(env) == {"ATLASSIAN_API_KEY": "ATATT3x=Fo0#bar=="}
+
+
+@pytest.mark.parametrize(
+    ("line", "key", "value"),
+    [
+        ("ATLASSIAN_PROJECT_KEY=HDS # my project", "ATLASSIAN_PROJECT_KEY", "HDS"),
+        (f"ATLASSIAN_BASE_URL={SITE} # prod", "ATLASSIAN_BASE_URL", SITE),
+        ('ATLASSIAN_API_KEY="abc-def" # the token', "ATLASSIAN_API_KEY", "abc-def"),
+        ("ATLASSIAN_EMAIL='me@example.org'\t# work", "ATLASSIAN_EMAIL", "me@example.org"),
+        ("export ATLASSIAN_PROJECT_KEY=HDS   # exported", "ATLASSIAN_PROJECT_KEY", "HDS"),
+        ("ATLASSIAN_PROJECT_KEY= # fill me in", "ATLASSIAN_PROJECT_KEY", ""),
+        ('ATLASSIAN_API_KEY="a # b"', "ATLASSIAN_API_KEY", "a # b"),  # a # inside quotes is the value
+        ("ATLASSIAN_API_KEY='x #y' # z \"q\"", "ATLASSIAN_API_KEY", "x #y"),
+        ("ATLASSIAN_API_KEY=ATATT3x=Fo0#bar==", "ATLASSIAN_API_KEY", "ATATT3x=Fo0#bar=="),
+    ],
+    ids=["bare", "url", "double", "single", "export", "empty", "in-double", "in-single", "no-space"],
+)
+def test_read_dotenv_drops_a_comment_after_a_value_but_not_a_hash_inside_one(
+    tmp_path: Path, line: str, key: str, value: str
+) -> None:
+    env = tmp_path / ".env"
+    env.write_text(line + "\n")
+    assert read_dotenv(env) == {key: value}
+
+
+def test_a_quoted_value_followed_by_anything_but_a_comment_is_malformed(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_text(
+        'ATLASSIAN_API_KEY="s3cret-one" s3cret-two\nATLASSIAN_EMAIL="e"#c\nATLASSIAN_PROJECT_KEY=AIR\n'
+    )
+    with pytest.warns(UserWarning) as caught:
+        values = read_dotenv(env)
+    said = [str(w.message) for w in caught]
+    assert values == {"ATLASSIAN_PROJECT_KEY": "AIR"}
+    assert len(said) == 2 and "line 1 is not KEY=VALUE" in said[0] and "line 2 is not KEY=VALUE" in said[1]
+    assert not any("s3cret" in m for m in said)
+
+
+def test_read_dotenv_ignores_a_byte_order_mark_and_reads_windows_line_endings(tmp_path: Path) -> None:
+    env = tmp_path / ".env"
+    env.write_bytes(b"\xef\xbb\xbfATLASSIAN_BASE_URL=" + SITE.encode() + b"\r\nATLASSIAN_PROJECT_KEY=AIR\r\n")
+    assert read_dotenv(env) == {"ATLASSIAN_BASE_URL": SITE, "ATLASSIAN_PROJECT_KEY": "AIR"}
 
 
 def test_a_malformed_line_is_skipped_and_named_by_its_number_only(tmp_path: Path) -> None:
@@ -500,3 +672,37 @@ def test_no_credential_reaches_an_error_a_repr_or_task_config(
         jira_board(cfg)
     shown.append(str(e.value))
     assert [v for v in secrets.values() for text in shown if v in text] == []
+
+
+async def test_a_yaml_email_and_token_sign_in_but_never_reach_the_spec_or_a_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    yaml_spec = JiraSpec.model_validate(
+        {"site": SITE, "project": "AIR", "email": "yaml-me@example.org", "token": "yaml-t0ken"}
+    )
+    resolved = jira_spec(yaml_spec, {})
+    assert (resolved.site, resolved.project, resolved.email, resolved.token) == (SITE, "AIR", None, None)
+    cfg = cfg_for(tmp_path)
+    cfg.story.jira = yaml_spec
+    seen: list[httpx.Request] = []
+
+    async def reply(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=ISSUE)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", reply)  # records, sends nothing
+    board = jira_board(cfg)
+    assert board is not None
+    await board.card("AIR-7")
+    basic = "Basic " + base64.b64encode(b"yaml-me@example.org:yaml-t0ken").decode()
+    assert [r.headers["authorization"] for r in seen] == [basic]  # the yaml credentials still sign in
+    direct = JiraBoard(yaml_spec, email=EMAIL, token=TOKEN)  # even a board built straight from the yaml spec
+    assert [b.spec.email for b in (board, direct)] + [b.spec.token for b in (board, direct)] == [None] * 4
+    shown = [
+        repr(resolved),
+        repr(board),
+        repr(board.spec),
+        repr(direct.spec),
+        yaml.safe_dump(cfg.model_dump(mode="json")),  # what `task config` prints
+    ]
+    assert [v for v in ("yaml-me", "yaml-t0ken") for text in shown if v in text] == []
