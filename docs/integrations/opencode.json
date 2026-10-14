@@ -3,23 +3,74 @@
   "provider": {
     "airlie": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "airlie (local vllm-mlx)",
+      "name": "airlie roles (task serve)",
       "options": {
-        "baseURL": "http://127.0.0.1:8080/v1",
+        "baseURL": "http://127.0.0.1:8090/v1",
         "apiKey": "airlie-local"
       },
       "models": {
-        "base": {
-          "name": "Qwen3-Coder-30B-A3B (tools)",
-          "limit": { "context": 131072, "output": 4096 }
+        "coder": {
+          "name": "coder role: Qwen3-Coder, implement/fix/refactor",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
         },
-        "generalist": {
-          "name": "Qwen3.8-27B (tools, vision, thinking)",
-          "limit": { "context": 131072, "output": 4096 }
+        "architect": {
+          "name": "architect role: Qwen3.8, plans and ADRs",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
         },
-        "small": {
-          "name": "Qwen3-4B (chat)",
-          "limit": { "context": 16384, "output": 2048 }
+        "qa": {
+          "name": "qa role: Qwen3-Coder, tests and edge cases",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "security": {
+          "name": "security role: Qwen3-Coder, threat model and review",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "docs": {
+          "name": "docs role: Qwen3.8, README/changelog/API docs",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "research": {
+          "name": "research role: Qwen3.8, compare and investigate",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "product": {
+          "name": "product role: Qwen3.8, specs and acceptance criteria",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "ux": {
+          "name": "ux role: Qwen3.8 (vision), flows and copy",
+          "limit": {
+            "context": 131072,
+            "output": 2048
+          }
+        },
+        "design": {
+          "name": "design role: Qwen3.8 (vision), visual critique",
+          "limit": {
+            "context": 131072,
+            "output": 2048
+          }
         }
       }
     }

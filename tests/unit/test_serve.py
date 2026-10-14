@@ -280,3 +280,22 @@ def test_raw_catalog_models_are_served_without_a_prompt(tmp_path: Path) -> None:
     assert (
         sent["model"] == "tiny" and sent["messages"][0]["role"] == "user"
     )  # served name, no prompt prepended
+
+
+def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
+    up = FakeUpstream()
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(up))
+    (tmp_path / "coder.md").write_text("---\nsummary: Implement code\n---\n# coder\nUse write_file.")
+    body = {
+        "model": "coder",
+        "messages": [
+            {"role": "system", "content": "You are OpenCode. Tools: write, read, bash."},
+            {"role": "user", "content": "hi"},
+        ],
+    }
+    with TestClient(app) as c:
+        assert c.post("/v1/chat/completions", json=body).status_code == 200
+    sent = json.loads(up.requests[-1].content)["messages"]
+    assert [m["role"] for m in sent] == ["system", "system", "user"]
+    assert sent[0]["content"].startswith("# coder") and "use the tools offered" in sent[0]["content"]
+    assert sent[1]["content"].startswith("You are OpenCode")

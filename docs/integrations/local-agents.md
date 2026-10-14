@@ -1,12 +1,14 @@
 # Terminal coding agents on airlie's local models
 
-These agents call the engine directly from your machine, so nothing leaves it. All of them bring their own
-system prompt and tool set, so point them at the **raw catalog models** on the engine (port 8080), not at the
-role server's prompted roles. Start the engines first: `task restart -- --topology studio` (or `task up`).
+These agents call your machine directly, so nothing leaves it. They bring their own system prompt and tool set.
+Two ways to connect: the **raw catalog models** on the engine (port 8080), or the **roles** on `task serve`
+(port 8090), where the role's prompt is placed in front of the client's own system prompt with a line telling
+the model to use the client's tools. Start the engines first: `task restart -- --topology studio` (or `task up`);
+for roles also `task serve`.
 
 | agent | how it connects | config |
 | --- | --- | --- |
-| **OpenCode** | OpenAI-compatible provider | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists `airlie/base`, `airlie/generalist`, `airlie/small` |
+| **OpenCode** | OpenAI-compatible provider → `task serve` roles | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists `airlie/coder`, `airlie/architect`, `airlie/qa`, `airlie/security`, `airlie/docs`, `airlie/research`, `airlie/product`, `airlie/ux`, `airlie/design` |
 | **Claude Code** | Anthropic-compatible `/v1/messages` (vllm-mlx serves it) | environment variables below |
 | **Qwen Code** | OpenAI-compatible | `OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=airlie-local OPENAI_MODEL=base qwen` |
 
@@ -23,9 +25,11 @@ cd /path/to/project && opencode            # or: opencode run --model airlie/bas
 If you already have an `opencode.json`, merge the `provider.airlie` block into it and set `"model":
 "airlie/base"` (and `agent.build.model`) to make it the default.
 
-Pick `airlie/base` for coding (fast, tool calls parsed by the server), `airlie/generalist` for reasoning or
-screenshots. The `limit.context` values assume the studio profile (`max_kv_size: 131072`); under the single
-profile the engine caps at 65536.
+Pick `airlie/coder` for coding (Qwen3-Coder with the coder persona), `airlie/architect` for a plan,
+`airlie/qa` for tests; the generalist roles (`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
+Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
+assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. To use
+the raw models instead, point `baseURL` at `http://127.0.0.1:8080/v1` and list `base`, `generalist`, `small`.
 
 ## Claude Code
 

@@ -88,8 +88,15 @@ def create_app(
         name = str(body.get("model", ""))
         base, served, headers, prompt = upstream(name)
         msgs = list(body.get("messages") or [])
-        if prompt is not None and (not msgs or msgs[0].get("role") != "system"):
-            msgs = [{"role": "system", "content": prompt}, *msgs]
+        if prompt is not None:
+            if msgs and msgs[0].get("role") == "system":  # a client with its own harness (OpenCode, VS Code)
+                bridge = (
+                    "\n\nYou are running inside a client that provides its own instructions and tools below; "
+                    "use the tools offered in this conversation, not the tool names mentioned above."
+                )
+                msgs = [{"role": "system", "content": prompt.rstrip() + bridge}, *msgs]
+            else:
+                msgs = [{"role": "system", "content": prompt}, *msgs]
         out = {**body, "model": served, "messages": msgs}
         if name in cfg.roles:
             spec = cfg.roles[name]
