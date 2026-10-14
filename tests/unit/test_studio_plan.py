@@ -63,3 +63,10 @@ def test_schedule_rejects_unknown_dependency_and_cycle() -> None:
         schedule(Plan((), (Subtask("a", "x", depends_on=("b",)), Subtask("b", "y", depends_on=("a",)))))
     with pytest.raises(PlanError, match="duplicate"):
         schedule(Plan((), (Subtask("a", "x"), Subtask("a", "y"))))
+
+
+def test_schedule_accepts_dependencies_already_satisfied() -> None:
+    plan = Plan((), (Subtask("more", "x", depends_on=("fix",)),))
+    with pytest.raises(PlanError):
+        schedule(plan)
+    assert [[s.id for s in w] for w in schedule(plan, satisfied=frozenset({"fix"}))] == [["more"]]

@@ -204,3 +204,30 @@ async def test_writers_are_serialised_readers_run_in_parallel(tmp_path: Path) ->
 def test_build_topology_returns_studio(tmp_path: Path) -> None:
     orch = build_topology(cfg_for(tmp_path), FakeEngine({}))
     assert isinstance(orch, StudioOrchestrator)
+
+
+async def test_delegate_may_depend_on_a_finished_subtask_and_reviews_are_traced(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    delegate = FakeReply(
+        text=json.dumps(
+            {
+                "type": "delegate",
+                "subtask": {"id": "more", "role": "docs", "brief": "add a note", "depends_on": ["fix"]},
+            }
+        )
+    )
+    engine = FakeEngine(
+        {
+            "chief": [PLAN, delegate, SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE],
+            "docs": [DONE, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    ev = events(report)
+    assert not [e for e in ev if e["kind"] == "plan_error"]
+    assert [t.team_id for t in report.teams] == ["fix", "note", "more"] and report.final_answer == "all done"
+    traced = list((report.run_dir.path / "trace" / "fix").glob("review-*.json"))
+    assert len(traced) == 1 and json.loads(traced[0].read_text())["verdict"] == "approve"

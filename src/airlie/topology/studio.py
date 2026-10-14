@@ -278,6 +278,10 @@ class StudioOrchestrator:
                 files_chars=rv.files_chars,
             )
             run.review = review
+            self.run_dir.write_trace(
+                f"{run.subtask.id}/review-{round_no}.json",
+                {"verdict": review.verdict, "findings": len(review.findings), "raw": review.raw},
+            )
             self.sink.emit(
                 "review",
                 subtask=run.subtask.id,
@@ -298,7 +302,7 @@ class StudioOrchestrator:
             run.result = await self.team.run(ctx, self.observer)
 
     async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
-        for wave in schedule(plan):
+        for wave in schedule(plan, satisfied=frozenset(self.runs)):
             runs: list[SubtaskRun] = []
             for s in wave:
                 role, d = await self._route(s)
@@ -362,13 +366,13 @@ class StudioOrchestrator:
                 text = await self._chief(self._synthesis_message(query_text), with_images=False)
                 parsed = parse_chief(text)
                 if isinstance(parsed, Delegate):
-                    extra = Plan((), (parsed.subtask,))
-                    try:
-                        schedule(extra)
-                    except PlanError as e:
-                        self.sink.emit("plan_error", attempt=round_no, error=str(e))
+                    sub = parsed.subtask
+                    unknown = [d for d in sub.depends_on if d not in self.runs]
+                    if unknown or sub.id in self.runs:
+                        why = f"depends on {unknown}" if unknown else f"id '{sub.id}' already used"
+                        self.sink.emit("plan_error", attempt=round_no, error=f"delegate '{sub.id}' {why}")
                         continue
-                    await self._run_plan(extra, test_cmd)
+                    await self._run_plan(Plan((), (sub,)), test_cmd)
                     continue
                 final = parsed.answer if isinstance(parsed, Synthesis) else text
                 open_q = list(parsed.open_questions) if isinstance(parsed, Synthesis) else []

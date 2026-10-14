@@ -44,6 +44,13 @@ The design's bar for using studio routing for real work is accuracy ≥ 0.9. Mea
 `clear / ambiguous / low-confidence` policy (gap 0.15, floor 0.5) will route a fair share of tasks through the
 chief's hint; the per-decision log (`runs/<id>/routing.jsonl`) is what to tune the criteria lines against.
 
+## Studio topology (2026-10-13)
+
+`task bench:topology -- --topologies single,studio …` on the studio profile: studio 4/6 vs single 5/6; solved
+wall-clock 441 s vs 60 s; 9 reviews (4 request_changes, 2 approve, 3 unparsable); routing 10/10 as hinted. The
+design's criterion is not met; the per-run analysis and the two defects it exposed are in
+`2026-10-13-topology-bench.md` ("Studio"). Raw: `topology-studio.json`, `routing.json`.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported

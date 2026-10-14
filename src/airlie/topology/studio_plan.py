@@ -89,17 +89,18 @@ def parse_chief(text: str) -> Plan | Synthesis | Delegate | Answer | None:
     return None
 
 
-def schedule(plan: Plan) -> list[list[Subtask]]:
-    """Waves in dependency order; a wave's subtasks are independent of each other."""
+def schedule(plan: Plan, *, satisfied: frozenset[str] = frozenset()) -> list[list[Subtask]]:
+    """Waves in dependency order; a wave's subtasks are independent of each other. `satisfied` names
+    subtasks that already ran (a chief delegate may depend on them)."""
     ids = [s.id for s in plan.subtasks]
     if len(set(ids)) != len(ids):
         raise PlanError(f"duplicate subtask id in {ids}")
     by = {s.id: s for s in plan.subtasks}
     for s in plan.subtasks:
         for d in s.depends_on:
-            if d not in by:
+            if d not in by and d not in satisfied:
                 raise PlanError(f"subtask '{s.id}' depends on '{d}', which is not in the plan")
-    done: set[str] = set()
+    done: set[str] = set(satisfied)
     waves: list[list[Subtask]] = []
     remaining = list(plan.subtasks)
     while remaining:

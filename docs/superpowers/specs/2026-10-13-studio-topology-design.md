@@ -313,6 +313,12 @@ have no single-agent baseline; they are graded pass/fail. The review column repo
 blocking findings, fix rounds and whether the fix round changed the test outcome; the review must not lower
 the pass rate, and its wall-clock (one reviewer call per code subtask, plus fix rounds) is part of the 25 %.
 
+**Result (2026-10-13, first bench, `docs/bench/2026-10-13-topology-bench.md` "Studio").** Not met: pass rate
+0.67 vs the single agent's 0.83 over 6 runs each; solved-run wall-clock 441 s vs 60 s. Routing accuracy 54/54
+on the seed set and 10/10 in the runs. One failure was a studio bug (a chief delegate depending on a finished
+subtask was rejected; fixed), one a coder quality miss. Three of nine reviews were unparsable (Muse answered
+outside the JSON contract). Next steps are Noah's call.
+
 ## 13. Decisions
 
 Decided by Noah (2026-10-13): generalist = `Qwen3.8-27B` (chief + vision); an adversarial reviewer from a
