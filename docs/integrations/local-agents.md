@@ -12,10 +12,16 @@ role server's prompted roles. Start the engines first: `task restart -- --topolo
 
 ## OpenCode
 
+Verified 2026-10-14 (OpenCode 1.19.0): `opencode run --model airlie/base "create hello.txt …, read it back …"`
+wrote the file, read it and answered, through `POST /v1/chat/completions` on the engine.
+
 ```bash
 mkdir -p ~/.config/opencode && cp docs/integrations/opencode.json ~/.config/opencode/opencode.json
-cd /path/to/project && opencode
+cd /path/to/project && opencode            # or: opencode run --model airlie/base "task"
 ```
+
+If you already have an `opencode.json`, merge the `provider.airlie` block into it and set `"model":
+"airlie/base"` (and `agent.build.model`) to make it the default.
 
 Pick `airlie/base` for coding (fast, tool calls parsed by the server), `airlie/generalist` for reasoning or
 screenshots. The `limit.context` values assume the studio profile (`max_kv_size: 131072`); under the single
