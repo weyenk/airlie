@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class Strict(BaseModel):
@@ -266,6 +266,50 @@ class StudioSpec(Strict):
     review: ReviewSpec = Field(default_factory=ReviewSpec)
 
 
+class JiraStatusesSpec(Strict):
+    intake: str = Field(default="To Do", description="issues waiting to be built (story:tick takes the top)")
+    building: str = "In Progress"
+    review: str = "In Review"
+    blocked: str | None = Field(default="Blocked", description="null: a stopped issue stays where it is")
+
+
+class JiraSpec(Strict):
+    site: str | None = Field(default=None, description="https://NAME.atlassian.net; ATLASSIAN_BASE_URL wins")
+    project: str | None = Field(default=None, description="project key, e.g. AIR; ATLASSIAN_PROJECT_KEY wins")
+    email: str | None = Field(default=None, description="your Atlassian account email; ATLASSIAN_EMAIL wins")
+    token: SecretStr | None = Field(
+        default=None, description="API token; ATLASSIAN_API_KEY wins (keep it in .env, not here)"
+    )
+    statuses: JiraStatusesSpec = Field(default_factory=JiraStatusesSpec)
+    jql: str | None = Field(
+        default=None,
+        description='the issues story:tick takes, in order (default: project = "<project>" AND '
+        'status = "<statuses.intake>" ORDER BY Rank ASC)',
+    )
+    api_url: str | None = Field(
+        default=None,
+        description="REST base (default <site>/rest/api/3); a scoped token needs "
+        "https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3",
+    )
+
+
+class StorySpec(Strict):
+    repo: Path | None = Field(default=None, description="repository stories are built in (--repo wins)")
+    test_cmd: str | None = Field(default=None, description="the gate every layer must pass (--test-cmd wins)")
+    trunk: str = Field(default="main", description="the stack's base branch")
+    remote: str = "origin"
+    topology: str = Field(default="studio", description="the profile story runs load")
+    max_layers: int = Field(default=5, ge=1)
+    stage_attempts: int = Field(
+        default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"
+    )
+    product_role: str = "product"
+    architect_role: str = "architect"
+    tests_role: str = "qa"
+    build_role: str = "coder"
+    jira: JiraSpec = Field(default_factory=JiraSpec)
+
+
 TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork", "studio")
 
 
@@ -319,6 +363,7 @@ class AirlieConfig(Strict):
     fork: ForkSpec = Field(default_factory=ForkSpec)
     router: RouterSpec = Field(default_factory=RouterSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
+    story: StorySpec = Field(default_factory=StorySpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----

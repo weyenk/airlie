@@ -4,3 +4,14 @@
 #   main:
 #     kind: openai_http
 #     base_url: http://127.0.0.1:8080/v1
+
+# Stories (task story): the repository and its test command. Jira's site, project, email and API token come from
+# ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in .env (git-ignored; every task
+# loads it), which win over the same settings here. Override the rest only when your project differs.
+# story:
+#   repo: ~/git/myproject
+#   test_cmd: "uv run pytest -q"
+#   jira:
+#     statuses: { review: "Code Review", blocked: null }   # null: a stopped issue stays where it is
+#     jql: 'project = "AIR" AND status = "To Do" AND labels = airlie ORDER BY Rank ASC'
+#     api_url: https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3   # only for a scoped API token

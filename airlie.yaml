@@ -222,3 +222,15 @@ aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 s
 # ---- Host + observability -----------------------------------------------------------------------------------------
 memory: { wired_limit_mb: 106496, os_reserve_gb: 12 }  # docs/wiki/build-spec/01 §1; `task doctor` projects the total
 observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 14 }
+
+# ---- Stories (task story; docs/integrations/story.md) -------------------------------------------------------------
+# A Jira issue (or --text) → product's story → architect's layers → each layer built test-first by the studio on
+# its own branch → stacked draft PRs (gh stack) → the issue in review. Only a human merges. ATLASSIAN_BASE_URL,
+# ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in .env (every task loads it) say which Jira and
+# who; personal settings (repo, test_cmd) go in airlie.local.yaml.
+story:
+  topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
+  trunk: main                      # the stack's base branch
+  max_layers: 5
+  jira:
+    statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }

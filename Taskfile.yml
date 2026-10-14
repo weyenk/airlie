@@ -1,6 +1,10 @@
 # airlie — every action is a task. Run `task` to list them.
 version: '3'
 
+# .env (git-ignored, one per checkout) gives every task its variables, e.g. the ATLASSIAN_* Jira settings.
+# A variable already set in the shell wins. No command here interpolates them: Task prints every command it runs.
+dotenv: ['.env']
+
 vars:
   UV: uv
   RUN: uv run --quiet

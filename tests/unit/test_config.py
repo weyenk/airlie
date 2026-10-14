@@ -1,5 +1,6 @@
 """Config schema: airlie.yaml is validated with path-qualified errors and deep-merged with local overrides."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -433,3 +434,49 @@ def test_named_variant_inherits_the_kind_of_the_profile_it_extends(tmp_path: Pat
     }
     cfg = load_config(write(tmp_path, data), topology="fork-hot")
     assert cfg.topology.kind == "fork" and cfg.teams.max_steps == 3
+
+
+# ---- stories (2026-10-14) ----
+
+
+def test_story_defaults(tmp_path: Path) -> None:
+    s = load_config(write(tmp_path, MINIMAL)).story
+    assert (s.topology, s.trunk, s.remote) == ("studio", "main", "origin")
+    assert (s.max_layers, s.stage_attempts) == (5, 2)
+    roles = (s.product_role, s.architect_role, s.tests_role, s.build_role)
+    assert roles == ("product", "architect", "qa", "coder")
+    assert s.repo is None and s.test_cmd is None
+    j = s.jira
+    assert (j.site, j.project, j.email, j.token, j.jql, j.api_url) == (None,) * 6
+    statuses = (j.statuses.intake, j.statuses.building, j.statuses.review, j.statuses.blocked)
+    assert statuses == ("To Do", "In Progress", "In Review", "Blocked")
+
+
+def test_story_repo_resolves_beside_the_config_and_typos_fail(tmp_path: Path) -> None:
+    jira = {"site": "https://acme.atlassian.net", "project": "AIR", "statuses": {"blocked": None}}
+    cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repo": "../proj", "jira": jira}}))
+    assert cfg.story.repo == (tmp_path / "../proj").resolve()
+    assert (cfg.story.jira.project, cfg.story.jira.statuses.blocked) == ("AIR", None)
+    with pytest.raises(ConfigError, match="story"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"tickets": "x"}}))
+    with pytest.raises(ConfigError, match="story.jira.board"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"jira": {"board": "B1"}}}))
+
+
+def test_jira_secrets_never_print(tmp_path: Path) -> None:
+    jira = {
+        "site": "https://acme.atlassian.net",
+        "project": "AIR",
+        "email": "me@example.org",
+        "token": "t0ken",
+    }
+    cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"jira": jira}}))
+    token = cfg.story.jira.token
+    assert token is not None and token.get_secret_value() == "t0ken"
+    shown = yaml.safe_dump(cfg.model_dump(mode="json"))  # what `task config` prints
+    assert "t0ken" not in shown
+
+
+def test_unit_tests_never_see_the_atlassian_variables() -> None:
+    names = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
+    assert [n for n in names if n in os.environ] == []  # tests/unit/conftest.py removes what .env set
