@@ -171,7 +171,7 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
         raise StoryError(f"{len(raw)} layers; at most {max_layers}: merge the smallest neighbours")
     known = {c.id for c in story.acceptance}
     layers: list[Layer] = []
-    covered: set[str] = set()
+    owner: dict[str, str] = {}
     for n, d in enumerate(raw, 1):
         if not isinstance(d, dict):
             raise StoryError(f"layer {n} must be an object")
@@ -185,10 +185,16 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
             raise StoryError(
                 f"layer '{slug}' names unknown acceptance ids {unknown}; the story has {sorted(known)}"
             )
-        covered |= set(acc)
+        for a in acc:
+            if owner.get(a, slug) != slug:
+                raise StoryError(
+                    f"acceptance {a} is listed under layers '{owner[a]}' and '{slug}'; "
+                    "list each criterion under one layer"
+                )
+            owner[a] = slug
         where = f"layer '{slug}'"
         layers.append(Layer(slug, title, _text(d, "scope", where), _text(d, "brief", where), acc))
-    missing = sorted(known - covered)
+    missing = sorted(known - set(owner))
     if missing:
         raise StoryError(
             f"no layer covers acceptance {missing}; give each criterion to the layer that makes it true"

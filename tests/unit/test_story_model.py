@@ -144,3 +144,23 @@ def test_a_layer_title_is_one_line_of_bounded_length() -> None:
         with pytest.raises(StoryError, match="layer 1 title"):
             parse_layers({"layers": [{**base, "title": title}]}, story, 3)
     assert parse_layers({"layers": [{**base, "title": "x" * 80}]}, story, 3)[0].title == "x" * 80
+
+
+def test_a_criterion_is_listed_under_one_layer_only() -> None:
+    story = parse_story(GOOD)
+    storage = {
+        "slug": "storage",
+        "title": "Storage",
+        "scope": "store.py",
+        "brief": "b",
+        "acceptance": ["AC1"],
+    }
+    profile = {
+        "slug": "profile",
+        "title": "Profile",
+        "scope": "profile.py",
+        "brief": "b",
+        "acceptance": ["AC1", "AC2"],
+    }
+    with pytest.raises(StoryError, match="acceptance AC1 is listed under layers 'storage' and 'profile'"):
+        parse_layers({"layers": [storage, profile]}, story, 3)

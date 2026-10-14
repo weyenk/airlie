@@ -15,6 +15,9 @@ from airlie.topology.studio_plan import Plan, Subtask
 BODY_LIMIT = 60_000
 """GitHub refuses a PR body of 65,536 characters or more; pr_body keeps its text under this many."""
 
+ZWSP = "\N{ZERO WIDTH SPACE}"
+"""Invisible: placed where markup would start, so GitHub reads the text after it as plain text."""
+
 STORY_CONTRACT = """End your reply with one ```json block holding exactly one object:
 {"type": "story", "title": "short imperative title",
  "summary": "two or three sentences: who needs what, and why",
@@ -48,10 +51,16 @@ def _line(text: str, n: int) -> str:
     return _clip(" ".join(CONTROL.sub(" ", text).split()), n)
 
 
+def _mentions(text: str) -> str:
+    """`text` with no live @mention or #123 reference: a zero-width space goes after each "@" and between each
+    "#" and the digit after it, so GitHub links nothing and notifies no one."""
+    return _REFERENCE.sub("#" + ZWSP, text.replace("@", "@" + ZWSP))
+
+
 def _model(text: str) -> str:
-    """Model text with no live mention or link: a zero-width space follows each "@" and goes between a "#" and
-    a digit, so GitHub links nothing and notifies no one."""
-    return _REFERENCE.sub("#\u200b", text.replace("@", "@\u200b"))
+    """Model text in a PR body, rendered by GitHub as Markdown and HTML: `_mentions`, and a zero-width space
+    after each "<", "&" and "[^", so no tag, comment, character reference or footnote forms."""
+    return _mentions(text).replace("<", "<" + ZWSP).replace("&", "&" + ZWSP).replace("[^", "[" + ZWSP + "^")
 
 
 def _quote(text: str, *, model: bool = False) -> list[str]:
@@ -82,8 +91,8 @@ def _fit(lines: list[str], budget: int, more: str, gap: str | None = None) -> li
 
 
 def _cell(value: object) -> str:
-    """A table cell: model text on one line, neutralised, with each pipe escaped so the cell stays whole."""
-    return _line(_model(str(value)), 60).replace("|", "\\|")
+    """A table cell: model text cut to one line, then neutralised, with each pipe escaped to keep one cell."""
+    return _model(_line(str(value), 60)).replace("|", "\\|")
 
 
 def story_text(story: Story) -> str:
@@ -170,8 +179,9 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, tests_role: s
 
 
 def pr_title(story: Story, layers: tuple[Layer, ...], i: int) -> str:
-    """One line of at most 255 characters (GitHub allows 256), with model text neutralised."""
-    return _line(_model(f"[{i + 1}/{len(layers)}] {story.title}: {layers[i].title}"), 255)
+    """One line of at most 255 characters, under GitHub's 256. The title is plain text, so only mentions and
+    references are neutralised, before the cut: the zero-width spaces count toward the limit."""
+    return _line(_mentions(f"[{i + 1}/{len(layers)}] {story.title}: {layers[i].title}"), 255)
 
 
 def pr_body(
@@ -184,23 +194,24 @@ def pr_body(
     test_cmd: str,
 ) -> str:
     """The PR text a reviewer reads. Model text stays in its section: titles, scope and table cells are one
-    line; the brief and criteria are blockquotes, so nothing in them opens a section. The body stays under
-    BODY_LIMIT: findings are cut first, and the stack and the merge line always close it."""
+    line; the brief and criteria are blockquotes; each finding is one bullet. Each body field is cut, then
+    neutralised by `_model`, so GitHub renders no markup from it. The body stays under BODY_LIMIT: findings
+    are cut first, and the stack and the merge line always close it."""
     layer = layers[i]
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     link = f" ([{card.ref or 'issue'}]({card.url}))" if card.url else ""
     criteria = [line for c in owned for line in _quote(f"- {c.line()}", model=True)]
     stack = [
-        f"{j + 1}. #{n} {_line(_model(layers[j].title), 80)}" + (" (this PR)" if j == i else "")
+        f"{j + 1}. #{n} {_model(_line(layers[j].title, 80))}" + (" (this PR)" if j == i else "")
         for j, (n, _) in enumerate(prs)
     ]
     head = [
-        f"**Story:** {_line(_model(story.title), 80)}{link}",
-        f"**Layer {i + 1} of {len(layers)}:** {_line(_model(layer.title), 80)}",
+        f"**Story:** {_model(_line(story.title, 80))}{link}",
+        f"**Layer {i + 1} of {len(layers)}:** {_model(_line(layer.title, 80))}",
         "",
         *_fit(_quote(layer.brief, model=True), 20_000, "> … and {} more lines"),
         "",
-        f"**Scope:** {_line(_model(layer.scope), 300)}",
+        f"**Scope:** {_model(_line(layer.scope, 300))}",
         "",
         "### Acceptance criteria in this layer",
         *(_fit(criteria, 10_000, "> … and {} more lines") or ["- none: an enabling layer"]),
@@ -226,6 +237,7 @@ def pr_body(
         "Built by airlie on local models from the story above; a human reviews and merges.",
     ]
     fixed = sum(len(x) + 1 for x in (*head, *tail))
-    findings = [f"- {_line(_model(str(f)), 500)}" for r in rows for f in r["findings"]]
+    # The leading zero-width space keeps block markup such as "### ", "---" or "1. " inside its bullet.
+    findings = [f"- {ZWSP}{_model(_line(str(f), 500))}" for r in rows for f in r["findings"]]
     shown = _fit(findings, BODY_LIMIT - 1 - fixed, "… and {} more findings", gap="")
     return "\n".join([*head, *(shown or ["- none"]), *tail]) + "\n"

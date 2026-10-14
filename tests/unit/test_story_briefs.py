@@ -1,5 +1,10 @@
 """What each specialist is told, the plan a layer runs, and the PR text a reviewer reads."""
 
+import re
+from typing import Any
+
+import pytest
+
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
     layer_goal,
@@ -34,6 +39,7 @@ ROWS = [
     {"id": "build", "role": "coder", "stop": "done", "review": "approve", "fix_rounds": 0, "findings": []}
 ]
 MERGE_LINE = "Built by airlie on local models from the story above; a human reviews and merges."
+ZW = "\N{ZERO WIDTH SPACE}"
 
 
 def test_refine_brief_quotes_the_card_as_data_and_carries_feedback() -> None:
@@ -168,8 +174,8 @@ def test_model_text_stays_inside_its_section_of_the_pr() -> None:
     assert [x for x in lines if x.startswith("### Stack")] == ["### Stack (review and merge bottom-up)"]
     assert lines[-1] == MERGE_LINE
     assert "| build | coder | done | approve | 1 |" in lines
-    assert "> ```" in lines and "> <!--" in lines and "> ### Stack" in lines
-    assert "- ```" in lines and "- <!-- open" in lines
+    assert "> ```" in lines and "> <" + ZW + "!--" in lines and "> ### Stack" in lines
+    assert "- " + ZW + "```" in lines and "- " + ZW + "<" + ZW + "!-- open" in lines
     assert "AC1" not in body and "> - **AC2** Given a stored avatar" in body
 
 
@@ -187,7 +193,7 @@ def test_long_findings_are_cut_so_the_body_stays_under_the_limit() -> None:
     ]
     body = pr_body(CARD, STORY, LAYERS, 1, rows, PRS, "uv run pytest -q")
     lines = body.splitlines()
-    shown = sum(1 for x in lines if x.startswith("- a long finding"))
+    shown = sum(1 for x in lines if x.startswith("- " + ZW + "a long finding"))
     assert len(body) < 60_000 and 0 < shown < 400
     assert f"… and {400 - shown} more findings" in lines and lines[-1] == MERGE_LINE
 
@@ -223,3 +229,123 @@ def test_a_card_without_a_url_has_no_issue_link() -> None:
     body = pr_body(text_card("Add avatar upload"), STORY, LAYERS, 1, ROWS, PRS, "uv run pytest -q")
     assert body.splitlines()[0] == "**Story:** Add avatar upload"
     assert "](" not in body and "### Reviewer findings to check\n- none" in body
+
+
+def _assert_inert(body: str) -> None:
+    """Every "<" and "&" in the body is followed by a zero-width space, and no footnote opener is left."""
+    assert body.count("<") == body.count("<" + ZW)
+    assert body.count("&") == body.count("&" + ZW)
+    assert "[^" not in body
+
+
+def _assert_structure(body: str) -> None:
+    """One real "### Stack" heading, the three stack entries, and the merge line last."""
+    lines = body.splitlines()
+    assert [x for x in lines if x.startswith("### Stack")] == ["### Stack (review and merge bottom-up)"]
+    assert sum(1 for x in lines if re.match(r"[0-9]+\. #[0-9]+ ", x)) == 3
+    assert lines[-1] == MERGE_LINE
+
+
+def _story(then: str = "it is shown", title: str = "Add avatar upload") -> Story:
+    return Story(
+        title,
+        "Users upload an avatar and see it.",
+        (
+            Criterion("AC1", "a user", "they upload a PNG", "it is stored"),
+            Criterion("AC2", "a stored avatar", "the profile loads", then),
+        ),
+    )
+
+
+def _rows(*findings: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "build",
+            "role": "coder",
+            "stop": "done",
+            "review": "approve",
+            "fix_rounds": 1,
+            "findings": list(findings),
+        }
+    ]
+
+
+ATTACKS: dict[str, tuple[Story, Layer, list[dict[str, Any]]]] = {
+    "unclosed comment": (
+        _story("it is shown <!-- and"),
+        Layer("profile", "Profile", "profile.py", "Show the avatar <!-- unclosed", ("AC2",)),
+        _rows("<!-- open"),
+    ),
+    "closing tags": (
+        _story("it is shown</p></table>"),
+        Layer(
+            "profile",
+            "Profile </li></ol><h3>Stack FORGED</h3>",
+            "profile.py </blockquote></ul>",
+            "Show the avatar.</blockquote></ul></li></ol></p></table>\n<h3>Stack</h3>\n<ul><li>forged",
+            ("AC2",),
+        ),
+        _rows("</li></ol><h3>Stack FORGED</h3>", "</table>"),
+    ),
+    "unclosed details": (
+        _story(title="Add avatar <details>"),
+        Layer("profile", "Profile <details>", "profile.py <details>", "Show the avatar.", ("AC2",)),
+        _rows("ok"),
+    ),
+    "character references": (
+        _story("it is shown &#x40;hex"),
+        Layer("profile", "Profile", "profile.py", "Show &#x40;hex &commat;named &num;14 &#x23;14.", ("AC2",)),
+        _rows("&#x40;x and &num;14 and &#x23;14"),
+    ),
+}
+
+
+@pytest.mark.parametrize("attack", list(ATTACKS))
+def test_each_attack_leaves_one_stack_heading_the_stack_list_and_the_merge_line(attack: str) -> None:
+    story, layer, rows = ATTACKS[attack]
+    body = pr_body(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    _assert_inert(body)
+    _assert_structure(body)
+
+
+def test_no_raw_angle_bracket_or_ampersand_from_model_text_reaches_the_body() -> None:
+    story = _story("it is shown <!-- and &#x40;hex", title="Add avatar <details>")
+    layer = Layer(
+        "profile", "Profile </li>", "profile.py </ul>", "Show <!-- the avatar</p>\n&commat;named", ("AC2",)
+    )
+    rows = _rows("<h3>x</h3> &num;14", "[^1]: note")
+    body = pr_body(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    _assert_inert(body)
+    assert "<" + ZW + "!--" in body and "&" + ZW + "commat;" in body
+
+
+def test_character_references_in_model_text_are_neutralised() -> None:
+    body = pr_body(CARD, _story(), LAYERS, 1, _rows("&#x40;x and &num;14"), PRS, "uv run pytest -q")
+    assert "- " + ZW + "&" + ZW + "#x40;x and &" + ZW + "num;14" in body.splitlines()
+    assert "&#x40;" not in body and "&num;" not in body
+
+
+def test_a_finding_that_starts_with_block_markup_stays_in_its_bullet() -> None:
+    body = pr_body(CARD, _story(), LAYERS, 1, _rows("### Stack", "---", "1. x"), PRS, "uv run pytest -q")
+    assert {"- " + ZW + "### Stack", "- " + ZW + "---", "- " + ZW + "1. x"} <= set(body.splitlines())
+    _assert_structure(body)
+
+
+def test_footnote_openers_in_model_text_are_neutralised() -> None:
+    layer = Layer("profile", "Profile", "profile.py", "See the note [^1].", ("AC2",))
+    body = pr_body(
+        CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("[^1]: a note"), PRS, "uv run pytest -q"
+    )
+    assert "[" + ZW + "^1]" in body and "- " + ZW + "[" + ZW + "^1]: a note" in body.splitlines()
+    assert "[^" not in body
+
+
+def test_the_pr_title_is_plain_text_so_it_keeps_its_markup_characters() -> None:
+    story = Story("Add <b>avatar</b> & more", "Users upload an avatar.", STORY.acceptance)
+    assert pr_title(story, LAYERS, 1) == "[2/3] Add <b>avatar</b> & more: Profile"
+
+
+def test_body_text_is_cut_before_it_is_neutralised() -> None:
+    layer = Layer("profile", "Profile", "a&" * 150, "Show the avatar.", ("AC2",))
+    body = pr_body(CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("ok"), PRS, "uv run pytest -q")
+    assert "**Scope:** " + ("a&" + ZW) * 150 in body
