@@ -1,5 +1,7 @@
 """Chief protocol (spec §5): one JSON object per turn; waves in dependency order."""
 
+import json
+
 import pytest
 
 from airlie.topology.studio_plan import (
@@ -9,7 +11,11 @@ from airlie.topology.studio_plan import (
     PlanError,
     Subtask,
     Synthesis,
+    extract_json_block,
     parse_chief,
+    pin,
+    plan_from_dict,
+    plan_to_dict,
     schedule,
 )
 
@@ -70,3 +76,39 @@ def test_schedule_accepts_dependencies_already_satisfied() -> None:
     with pytest.raises(PlanError):
         schedule(plan)
     assert [[s.id for s in w] for w in schedule(plan, satisfied=frozenset({"fix"}))] == [["more"]]
+
+
+# ---- plan exchange (2026-10-14): a plan leaves the studio, a person edits it, it comes back ----
+
+
+def test_plan_round_trips_through_a_dict() -> None:
+    p = Plan(("a1",), (Subtask("t", "write tests", "qa"), Subtask("b", "build", "coder", ("t",), ("img:1",))))
+    d = plan_to_dict(p)
+    assert d["type"] == "plan" and d["assumptions"] == ["a1"]
+    assert d["subtasks"][1] == {
+        "id": "b",
+        "role": "coder",
+        "brief": "build",
+        "depends_on": ["t"],
+        "inputs": ["img:1"],
+    }
+    assert plan_from_dict(json.loads(json.dumps(d))) == p
+
+
+def test_plan_from_dict_names_the_problem() -> None:
+    with pytest.raises(PlanError, match="non-empty 'subtasks'"):
+        plan_from_dict({"subtasks": []})
+    with pytest.raises(PlanError, match="subtask 2 needs an 'id' and a 'brief'"):
+        plan_from_dict({"subtasks": [{"id": "a", "brief": "x"}, {"id": "b"}]})
+
+
+def test_pin_marks_every_subtask_and_keeps_roles() -> None:
+    p = pin(Plan((), (Subtask("a", "x", "coder"), Subtask("b", "y", "qa"))))
+    assert all(s.pinned for s in p.subtasks) and [s.role_hint for s in p.subtasks] == ["coder", "qa"]
+
+
+def test_extract_json_block_prefers_the_last_fence() -> None:
+    text = 'I read {"not": "this"}.\n```json\n{"a": 1}\n```\nthen\n```json\n{"layers": []}\n```'
+    assert extract_json_block(text) == {"layers": []}
+    assert extract_json_block('plain {"b": 2} text') == {"b": 2}
+    assert extract_json_block("no json here") is None
