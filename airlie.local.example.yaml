@@ -6,8 +6,9 @@
 #     base_url: http://127.0.0.1:8080/v1
 
 # Stories (task story): the repository and its test command. Jira's site, project, email and API token come from
-# ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in .env (git-ignored; every task
-# loads it), which win over the same settings here. Override the rest only when your project differs.
+# ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY, which win over the same settings
+# here: export them in the shell or put them in .env beside airlie.yaml (git-ignored; airlie reads it itself for the
+# Jira settings, and a variable already set in the shell wins). Override the rest only when your project differs.
 # story:
 #   repo: ~/git/myproject
 #   test_cmd: "uv run pytest -q"

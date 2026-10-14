@@ -479,4 +479,14 @@ def test_jira_secrets_never_print(tmp_path: Path) -> None:
 
 def test_unit_tests_never_see_the_atlassian_variables() -> None:
     names = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
-    assert [n for n in names if n in os.environ] == []  # tests/unit/conftest.py removes what .env set
+    # tests/unit/conftest.py removes any the person exported in their shell
+    assert [n for n in names if n in os.environ] == []
+
+
+def test_the_taskfile_does_not_export_dotenv() -> None:
+    # Task would put .env (the Jira token) in the environment of every task's process, and so of the coder's
+    # shell tool, the test gate, gh, git and the engines; airlie reads .env itself, only where it needs it.
+    root = Path(__file__).resolve().parents[2]
+    taskfile = yaml.safe_load((root / "Taskfile.yml").read_text())
+    assert taskfile.get("dotenv") is None
+    assert [name for name, task in taskfile["tasks"].items() if "dotenv" in task] == []

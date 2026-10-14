@@ -1,9 +1,8 @@
 # airlie — every action is a task. Run `task` to list them.
 version: '3'
 
-# .env (git-ignored, one per checkout) gives every task its variables, e.g. the ATLASSIAN_* Jira settings.
-# A variable already set in the shell wins. No command here interpolates them: Task prints every command it runs.
-dotenv: ['.env']
+# Deliberately no `dotenv:`. Task would export .env, which holds the Jira token, to every task's process and so to its
+# children (the coder's shell tool, the test gate, gh, git, the engines). airlie reads .env beside airlie.yaml itself.
 
 vars:
   UV: uv
