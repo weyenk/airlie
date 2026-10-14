@@ -25,6 +25,8 @@ ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-\d+", re.ASCII)
 """A Jira issue key (AIR-7); always matched whole (fullmatch), ASCII only (a digit is 0-9, not any script's).
 It names a story's directory, prefixes its branch names and becomes a URL path, so each of those checks it."""
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+"""A control character or a Unicode line separator. A title or an id holds none; PR text blanks them."""
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,14 @@ def branch_name(ref: str, story_title: str, nn: str, layer_slug: str) -> str:
     return name
 
 
+def _one_line(value: str, what: str, limit: int) -> str:
+    """`value` if it is one line of at most `limit` characters with no control character; else a StoryError
+    naming `what`, so the role's next attempt can fix it."""
+    if len(value) > limit or CONTROL.search(value):
+        raise StoryError(f"{what} must be one line of at most {limit} characters with no control characters")
+    return value
+
+
 def _text(d: dict[str, Any], key: str, where: str) -> str:
     v = d.get(key)
     if not isinstance(v, str) or not v.strip():
@@ -135,7 +145,7 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
     for n, c in enumerate(raw, 1):
         if not isinstance(c, dict):
             raise StoryError(f"acceptance item {n} must be an object with given, when and then")
-        cid = str(c.get("id") or f"AC{n}")
+        cid = _one_line(str(c.get("id") or f"AC{n}"), f"acceptance item {n} id", 20)
         where = f"acceptance {cid}"
         given, when, then = (_text(c, k, where) for k in ("given", "when", "then"))
         criteria.append(Criterion(cid, given, when, then))
@@ -143,7 +153,7 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
     if len(set(ids)) != len(ids):
         raise StoryError(f"acceptance ids repeat ({ids}); give each criterion its own id")
     return Story(
-        _text(obj, "title", "the story"),
+        _one_line(_text(obj, "title", "the story"), "the story title", 80),
         _text(obj, "summary", "the story"),
         tuple(criteria),
         _strs(obj.get("out_of_scope"), "'out_of_scope'"),
@@ -165,7 +175,7 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
     for n, d in enumerate(raw, 1):
         if not isinstance(d, dict):
             raise StoryError(f"layer {n} must be an object")
-        title = _text(d, "title", f"layer {n}")
+        title = _one_line(_text(d, "title", f"layer {n}"), f"layer {n} title", 80)
         slug = slugify(str(d.get("slug") or title), 30)
         if slug in {x.slug for x in layers}:
             raise StoryError(f"layer slug '{slug}' repeats; give each layer its own slug")

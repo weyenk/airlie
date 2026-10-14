@@ -119,3 +119,28 @@ def test_criterion_line_adds_one_stop_unless_there_is_one() -> None:
     assert Criterion("AC1", "g", "w", "is shown.").line() == "**AC1** Given g, when w, then is shown."
     assert Criterion("AC1", "g", "w", "is shown?").line() == "**AC1** Given g, when w, then is shown?"
     assert Criterion("AC1", "g", "w", "is shown!").line() == "**AC1** Given g, when w, then is shown!"
+
+
+def test_a_story_title_or_criterion_id_is_one_line_of_bounded_length() -> None:
+    first, second = GOOD["acceptance"]
+    for patch, named in (
+        ({"title": "Add\navatar upload"}, "the story title"),
+        ({"title": "Add\u2028avatar upload"}, "the story title"),
+        ({"title": "Add avatar\x00upload"}, "the story title"),
+        ({"title": "x" * 81}, "the story title"),
+        ({"acceptance": [{**first, "id": "AC1\n### Stack"}, second]}, "acceptance item 1 id"),
+        ({"acceptance": [{**first, "id": "A" * 21}, second]}, "acceptance item 1 id"),
+    ):
+        with pytest.raises(StoryError, match=named):
+            parse_story({**GOOD, **patch})
+    longest = parse_story({**GOOD, "title": "x" * 80, "acceptance": [{**first, "id": "A" * 20}, second]})
+    assert longest.title == "x" * 80 and longest.acceptance[0].id == "A" * 20
+
+
+def test_a_layer_title_is_one_line_of_bounded_length() -> None:
+    story = parse_story(GOOD)
+    base = {"slug": "model", "scope": "models.py", "brief": "b", "acceptance": ["AC1", "AC2"]}
+    for title in ("Model\n### Stack", "Model\x00", "x" * 81):
+        with pytest.raises(StoryError, match="layer 1 title"):
+            parse_layers({"layers": [{**base, "title": title}]}, story, 3)
+    assert parse_layers({"layers": [{**base, "title": "x" * 80}]}, story, 3)[0].title == "x" * 80
