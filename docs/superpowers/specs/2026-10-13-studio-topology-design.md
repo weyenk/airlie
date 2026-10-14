@@ -317,7 +317,12 @@ the pass rate, and its wall-clock (one reviewer call per code subtask, plus fix 
 0.67 vs the single agent's 0.83 over 6 runs each; solved-run wall-clock 441 s vs 60 s. Routing accuracy 54/54
 on the seed set and 10/10 in the runs. One failure was a studio bug (a chief delegate depending on a finished
 subtask was rejected; fixed), one a coder quality miss. Three of nine reviews were unparsable (Muse answered
-outside the JSON contract). Next steps are Noah's call.
+outside the JSON contract). **Noah's decision (2026-10-13): studio is a different product from the single
+agent (it plans, writes tests and docs, and reviews), so the single agent is a reference column, not a bar.**
+The criterion is restated: studio is kept and benched on the multi-role tasks it exists for (`studio_feature`
+and successors), graded pass/fail by their hidden tests, with the single agent's numbers reported beside them
+for context; routing accuracy ≥ 0.9 stays; the review must not lower the pass rate on those tasks. `single`
+remains the default topology; `studio` is selected per run or by profile.
 
 ## 13. Decisions
 

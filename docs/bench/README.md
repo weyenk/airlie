@@ -48,8 +48,11 @@ chief's hint; the per-decision log (`runs/<id>/routing.jsonl`) is what to tune t
 
 `task bench:topology -- --topologies single,studio …` on the studio profile: studio 4/6 vs single 5/6; solved
 wall-clock 441 s vs 60 s; 9 reviews (4 request_changes, 2 approve, 3 unparsable); routing 10/10 as hinted. The
-design's criterion is not met; the per-run analysis and the two defects it exposed are in
-`2026-10-13-topology-bench.md` ("Studio"). Raw: `topology-studio.json`, `routing.json`.
+design's original criterion is not met; the per-run analysis and the two defects it exposed are in
+`2026-10-13-topology-bench.md` ("Studio"). Raw: `topology-studio.json`, `routing.json`. Noah's call
+(2026-10-13): studio is a different product (plan, tests, docs, review), so the single agent is a reference
+column, not a bar; studio is benched on multi-role tasks (`studio_feature`: 1 of 2 passed, the miss traced to
+the delegate bug fixed the same day), and `single` stays the default topology.
 
 ## Method (`task bench`)
 
