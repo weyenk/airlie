@@ -112,3 +112,14 @@ def test_extract_json_block_prefers_the_last_fence() -> None:
     assert extract_json_block(text) == {"layers": []}
     assert extract_json_block('plain {"b": 2} text') == {"b": 2}
     assert extract_json_block("no json here") is None
+    # a fence quoted inside a JSON string (backslash-n, not a newline) does not end the answer early
+    quoted = '```json\n{"layers": [{"id": "api", "brief": "Add it. Example:\\n```json\\n{...}\\n```"}]}\n```'
+    assert extract_json_block(quoted) == {
+        "layers": [{"id": "api", "brief": "Add it. Example:\n```json\n{...}\n```"}]
+    }
+    # the last fence is cut off at max tokens: no object, not the stale draft above it
+    assert extract_json_block('```json\n{"a": 1}\n```\nrevised:\n```json\n{"layers": [') is None
+    # CRLF after the opener
+    assert extract_json_block('```json\r\n{"a": 1}\r\n```') == {"a": 1}
+    # the last fence holds an array, not an object
+    assert extract_json_block('```json\n{"a": 1}\n```\n```json\n[1, 2]\n```') is None

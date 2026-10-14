@@ -92,14 +92,19 @@ def parse_chief(text: str) -> Plan | Synthesis | Delegate | Answer | None:
     return None
 
 
-_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S | re.I)
+_OPENER = re.compile(r"```json[ \t]*\r?\n", re.I)
 
 
 def extract_json_block(text: str) -> dict[str, Any] | None:
-    """The last ```json fenced object in `text`, else the first bare object (`extract_json`). Roles that think
-    aloud before answering put braces in their prose; the fence marks the answer."""
-    blocks = _FENCE.findall(text)
-    return extract_json(blocks[-1]) if blocks else extract_json(text)
+    """The object under the last ```json fence in `text`, else the first bare object (`extract_json`). Roles
+    that think aloud put braces in their prose, so the last fence marks the answer, and the object's own end,
+    not a closing fence, ends it: a fence quoted in a JSON string follows backslash-n, so it never opens."""
+    openers = list(_OPENER.finditer(text))
+    if not openers:
+        return extract_json(text)
+    start = openers[-1].end()
+    body = text[start:].lstrip()
+    return extract_json(body) if body.startswith("{") else None
 
 
 def plan_to_dict(plan: Plan) -> dict[str, Any]:
