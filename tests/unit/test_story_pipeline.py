@@ -3,6 +3,7 @@ test-first on its own branch → stack → review; stops, notes and resume."""
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import time
@@ -15,6 +16,8 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.router import ChiefRouter
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, text_card
+from airlie.story.briefs import pr_body
+from airlie.story.model import Layer, Story
 from airlie.story.pipeline import StoryPipeline, _reason
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.state import StoryState
@@ -154,6 +157,48 @@ class FailingGh(RecordedGh):
             self.calls.append(args)
             raise PublishError(self.failure)
         return await super().__call__(args, cwd)
+
+
+class ReadingGh(RecordedGh):
+    """A gh that reads each `--body-file` the way gh does: as UTF-8 bytes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bodies: dict[str, str] = {}
+
+    async def __call__(self, args: list[str], cwd: Path) -> str:
+        if args[:3] == ["gh", "pr", "edit"]:
+            self.bodies[args[3]] = Path(args[args.index("--body-file") + 1]).read_bytes().decode("utf-8")
+        return await super().__call__(args, cwd)
+
+
+@pytest.fixture
+def ascii_locale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Text files opened without an encoding are ASCII, as under LC_ALL=C with Python's UTF-8 mode off.
+    pathlib asks io.text_encoding for the default, so that is what this replaces."""
+    monkeypatch.setattr(io, "text_encoding", lambda encoding, stacklevel=2: encoding or "ascii")
+    with pytest.raises(UnicodeEncodeError):  # the simulation holds, or a test that uses it proves nothing
+        (tmp_path / "probe.txt").write_text("\u200b")
+
+
+class RecordingBoard:
+    """A board that keeps its moves and notes in memory (NullBoard writes them to a file)."""
+
+    def __init__(self) -> None:
+        self.moves: list[str] = []
+        self.notes: list[str] = []
+
+    async def card(self, ref: str) -> Card:
+        raise BoardError("not needed here")
+
+    async def next_card(self) -> Card | None:
+        return None
+
+    async def move(self, card: Card, column: Column) -> None:
+        self.moves.append(column)
+
+    async def comment(self, card: Card, text: str) -> None:
+        self.notes.append(text)
 
 
 class DownBoard(NullBoard):
@@ -328,7 +373,8 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert git(repo, "branch", "--list", "AIR-7-*", "--format=%(refname:short)").splitlines() == [a1, a2]
     assert ["gh", "stack", "init", "--base", trunk, a1, a2] in gh.calls
     assert [p["branch"] for p in st.prs] == [a1, a2]
-    first, second = (st.path / "pr-01.md").read_text(), (st.path / "pr-02.md").read_text()
+    first = (st.path / "pr-01.md").read_text(encoding="utf-8")
+    second = (st.path / "pr-02.md").read_text(encoding="utf-8")
     assert "[AIR-7](https://example.atlassian.net/browse/AIR-7)" in first
     assert "minor PASS:1: name it better" in first and "minor profile.txt: say more" in second
     assert "| build | coder | done | approve | 0 |" in first
@@ -343,6 +389,26 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     notes = (st.path / "notes.md").read_text()
     assert "layer 01/02 built: Storage (`./check.sh` passes)" in notes
     assert notes.index("pull/11") < notes.index("pull/12") and "only a human merges" in notes
+
+
+async def test_a_pr_body_is_written_as_utf_8_whatever_the_locale(tmp_path: Path, ascii_locale: None) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    claim = "x" * 600  # cut to one line of 500, which ends in "…"
+    finding = {"severity": "minor", "file": "PASS", "line": 1, "claim": claim, "evidence": "x"}
+    wordy = FakeReply(text=json.dumps({"verdict": "approve", "findings": [finding]}))
+    gh, board = ReadingGh(), RecordingBoard()
+    st = await pipeline(tmp_path, repo, happy_engine(reviewer=[wordy, APPROVE]), gh, board=board).run(ISSUE)
+    assert st.blocked is None and st.stage == "review"  # a body written in ASCII would have stopped it here
+    assert board.moves == ["building", "review"]
+    story, layers = Story.from_dict(st.story), tuple(Layer.from_dict(d) for d in st.layers)
+    prs = [(p["number"], p["url"]) for p in st.prs]
+    for i, pr in enumerate(st.prs):
+        nn = f"{i + 1:02d}"
+        body = pr_body(ISSUE, story, layers, i, st.built[nn]["subtasks"], prs, "./check.sh")
+        assert (st.path / f"pr-{nn}.md").read_bytes().decode("utf-8") == body  # the file, read back as UTF-8
+        assert gh.bodies[pr["branch"]] == body  # and what gh reads from --body-file
+    first = gh.bodies[st.prs[0]["branch"]]
+    assert "\u200b" in first and "…" in first  # the characters that make the encoding matter
 
 
 async def test_the_stop_note_tells_a_person_how_to_resume(tmp_path: Path) -> None:

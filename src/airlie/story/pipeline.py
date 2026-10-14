@@ -300,7 +300,9 @@ class StoryPipeline:
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
-                body.write_text(pr_body(card, story, layers, i, rows, prs, self.test_cmd))
+                # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
+                # whatever encoding the locale makes the default.
+                body.write_text(pr_body(card, story, layers, i, rows, prs, self.test_cmd), encoding="utf-8")
                 await self.publisher.describe(wt, b, pr_title(story, layers, i), body)
         finally:
             remove_worktree(self.repo, wt)
