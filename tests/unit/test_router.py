@@ -123,3 +123,11 @@ async def test_routing_log_writes_one_json_line_per_decision(tmp_path: Path) -> 
     log.record("fix", d)
     rec = json.loads((tmp_path / "routing.jsonl").read_text().splitlines()[0])
     assert rec["subtask"] == "fix" and rec["chosen"] == "qa" and rec["decision"] == "hint"
+
+
+def test_policy_thresholds_are_strict() -> None:
+    # gap exactly at the threshold is not ambiguous; confidence exactly at the minimum is not low
+    assert policy([("a", 0.75), ("b", 0.5)], 0.9, ambiguous_gap=0.25, min_confidence=0.5) == "clear"
+    assert policy([("a", 0.75), ("b", 0.25)], 0.5, ambiguous_gap=0.25, min_confidence=0.5) == "clear"
+    assert policy([("a", 0.75)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "low-confidence"
+    assert policy([("a", 0.5), ("b", 0.5)], 0.1, ambiguous_gap=0.25, min_confidence=0.5) == "ambiguous"

@@ -52,6 +52,7 @@ Run `task` to list them. The ones that exist today:
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
+| `task mutate [-- --max-children 6]` / `task mutate:results` | mutation testing (mutmut) over the pure-logic modules listed in `[tool.mutmut]`; survivors mark behaviour no unit test pins down |
 | `task fmt` | auto-format and auto-fix lint |
 
 Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).

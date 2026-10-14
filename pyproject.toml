@@ -38,6 +38,7 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
     "types-PyYAML",
+    "mutmut>=3.8.0",
 ]
 
 [build-system]
@@ -70,3 +71,20 @@ strict = true
 mypy_path = "src"
 packages = ["airlie"]
 ignore_missing_imports = true
+
+[tool.mutmut]
+# Mutation testing over the pure-logic modules; widen only_mutate as the suite grows (`task mutate`).
+source_paths = ["src"]
+only_mutate = [
+    "src/airlie/router/policy.py",
+    "src/airlie/scheduler/states.py",
+    "src/airlie/tools/decide.py",
+    "src/airlie/tools/jsonargs.py",
+    "src/airlie/engine/output_parse.py",
+    "src/airlie/engine/sse.py",
+    "src/airlie/lts/bank.py",
+]
+pytest_add_cli_args_test_selection = ["tests/unit/"]
+# spawns the MCP echo server as a subprocess, which fails under mutmut's runner; mcp.py is not mutated here
+pytest_add_cli_args = ["--deselect", "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable"]
+also_copy = ["airlie.yaml", "prompts", "evals"]

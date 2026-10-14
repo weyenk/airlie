@@ -19,7 +19,6 @@ async def iter_sse(
     Raises EngineError on an `{"error": …}` frame, on non-JSON data, and (by default) when the stream ends
     without `[DONE]`, so a dropped connection never looks like a clean finish."""
     buf = b""
-    done = False
     async for chunk in byte_chunks:
         buf += chunk
         while b"\n\n" in buf:
@@ -28,7 +27,6 @@ async def iter_sse(
             if data is None:
                 continue
             if data == DONE:
-                done = True
                 return
             obj = _parse(data)
             if isinstance(obj.get("error"), dict):
@@ -43,13 +41,13 @@ async def iter_sse(
             if isinstance(obj.get("error"), dict):
                 raise EngineError(f"engine error: {obj['error'].get('message', obj['error'])}")
             yield obj
-    if require_done and not done:
+    if require_done:
         raise EngineError("stream ended without [DONE]")
 
 
 def _data_of(frame: bytes) -> str | None:
-    lines = [ln for ln in frame.decode("utf-8", "replace").split("\n") if ln and not ln.startswith(":")]
-    data = [ln[5:].lstrip() for ln in lines if ln.startswith("data:")]
+    text = frame.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
+    data = [ln[5:].lstrip() for ln in text.split("\n") if ln.startswith("data:")]
     return "\n".join(data) if data else None
 
 

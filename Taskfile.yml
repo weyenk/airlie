@@ -141,6 +141,16 @@ tasks:
     cmds:
       - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
 
+  mutate:
+    desc: "Mutation testing with mutmut over [tool.mutmut] paths; then `task mutate:results` (task mutate -- --max-children 4)"
+    cmds:
+      - '{{.RUN}} mutmut run {{.CLI_ARGS}}'
+
+  mutate:results:
+    desc: "List surviving mutants (task mutate:results -- --all true); inspect one with `uv run mutmut show NAME`"
+    cmds:
+      - '{{.RUN}} mutmut results {{.CLI_ARGS}}'
+
   lint:
     desc: Ruff lint + format check
     cmds:

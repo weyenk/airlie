@@ -90,3 +90,115 @@ def test_muse_bare_user_turn_through_parse_output() -> None:
 def test_empty_think_block_is_removed_from_text() -> None:
     out = parse_output(model(reasoning_parser="qwen3"), result("<think>\n\n</think>\n\nanswer"))
     assert out.text == "answer"
+
+
+# ---- stubbed parsers: pin the glue (ids, argument coercion, finish reason, text handling) ----
+
+
+class _Info:
+    def __init__(self, calls: list[dict], content: str | None = None) -> None:
+        self.tools_called = bool(calls)
+        self.tool_calls = calls
+        self.content = content
+
+
+class _StubToolParser:
+    def __init__(self, calls: list[dict], content: str | None = None) -> None:
+        self._calls, self._content, self.resets, self.seen = calls, content, 0, []
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def extract_tool_calls(self, text: str, request: object) -> _Info:
+        self.seen.append((text, request))
+        return _Info(self._calls, self._content)
+
+
+class _StubReasoningParser:
+    def __init__(self, reasoning: str | None, content: str | None) -> None:
+        self._out = (reasoning, content)
+
+    def extract_reasoning(self, text: str) -> tuple[str | None, str | None]:
+        return self._out
+
+
+def _stub_tools(monkeypatch, parser: _StubToolParser) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("airlie.engine.output_parse._tool_parser", lambda name: parser)
+
+
+def _stub_reasoning(monkeypatch, reasoning: str | None, content: str | None) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "airlie.engine.output_parse._reasoning_parser", lambda name: _StubReasoningParser(reasoning, content)
+    )
+
+
+def test_given_call_id_is_kept_and_missing_id_is_generated(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    parser = _StubToolParser([{"id": "abc", "name": "a"}, {"name": "b"}, {"id": "", "name": "c"}])
+    _stub_tools(monkeypatch, parser)
+    out = parse_output(model(tool_call_parser="x"), result("go"))
+    assert out.tool_calls[0].id == "abc"
+    for c in out.tool_calls[1:]:
+        assert c.id.startswith("call_") and len(c.id) == len("call_") + 8
+    assert out.tool_calls[1].id != out.tool_calls[2].id
+
+
+def test_argument_coercion_dict_string_and_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    parser = _StubToolParser(
+        [
+            {"name": "a", "arguments": {"path": "x"}},
+            {"name": "b", "arguments": '{"raw": true}'},
+            {"name": "c"},
+        ]
+    )
+    _stub_tools(monkeypatch, parser)
+    out = parse_output(model(tool_call_parser="x"), result("go"))
+    assert [c.arguments for c in out.tool_calls] == ['{"path": "x"}', '{"raw": true}', "{}"]
+    assert [c.name for c in out.tool_calls] == ["a", "b", "c"]
+
+
+def test_parser_is_reset_called_with_text_and_no_request(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    parser = _StubToolParser([{"name": "a"}], content="  leftover \n")
+    _stub_tools(monkeypatch, parser)
+    out = parse_output(model(tool_call_parser="x"), result("the raw text"))
+    assert parser.resets == 1 and parser.seen == [("the raw text", None)]
+    assert out.text == "leftover" and out.finish_reason == "tool_calls"
+
+
+def test_tool_call_with_no_leftover_content_clears_text(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_tools(monkeypatch, _StubToolParser([{"name": "a"}], content=None))
+    assert parse_output(model(tool_call_parser="x"), result("go")).text == ""
+
+
+def test_cancelled_finish_reason_survives_tool_parsing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_tools(monkeypatch, _StubToolParser([{"name": "a"}]))
+    out = parse_output(model(tool_call_parser="x"), result("go", finish_reason="cancelled"))
+    assert out.finish_reason == "cancelled" and len(out.tool_calls) == 1
+
+
+def test_no_tools_called_leaves_text_and_finish_reason(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_tools(monkeypatch, _StubToolParser([], content="ignored"))
+    out = parse_output(model(tool_call_parser="x"), result("plain", finish_reason="length"))
+    assert out.text == "plain" and out.finish_reason == "length" and not out.tool_calls
+
+
+def test_reasoning_with_no_content_empties_text(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_reasoning(monkeypatch, "thinking", None)
+    out = parse_output(model(reasoning_parser="x"), result("<think>thinking</think>"))
+    assert out.reasoning == "thinking" and out.text == ""
+
+
+def test_no_reasoning_and_no_content_keeps_the_text(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_reasoning(monkeypatch, None, None)
+    out = parse_output(model(reasoning_parser="x"), result("untouched"))
+    assert out.reasoning == "" and out.text == "untouched"
+
+
+def test_content_identical_to_text_keeps_the_text(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_reasoning(monkeypatch, None, "same")
+    assert parse_output(model(reasoning_parser="x"), result("same")).text == "same"
+
+
+def test_content_differing_from_text_is_taken_even_without_reasoning(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _stub_reasoning(monkeypatch, None, "cleaned")
+    out = parse_output(model(reasoning_parser="x"), result("raw"))
+    assert out.text == "cleaned" and out.reasoning == ""
