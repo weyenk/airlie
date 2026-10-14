@@ -83,6 +83,10 @@ only_mutate = [
     "src/airlie/engine/output_parse.py",
     "src/airlie/engine/sse.py",
     "src/airlie/lts/bank.py",
+    "src/airlie/router/jev.py",
+    "src/airlie/lts/inject.py",
+    "src/airlie/tools/fs.py",
+    "src/airlie/config/load.py",
 ]
 pytest_add_cli_args_test_selection = ["tests/unit/"]
 # spawns the MCP echo server as a subprocess, which fails under mutmut's runner; mcp.py is not mutated here

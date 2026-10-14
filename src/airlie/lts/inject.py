@@ -15,6 +15,7 @@ from airlie.lts.bank import MemoryEntry
 
 HEADER = "\n[Shared Memory Keys Available]:\n"
 Ranking = Literal["relevance", "recency"]
+DEFAULT_RANKING: Ranking = "relevance"
 
 _WORD = re.compile(r"[a-z0-9_./]+")
 _SPLIT = re.compile(r"[_./]")
@@ -116,11 +117,11 @@ def rank_entries(
     context: str,
     max_keys: int,
     exclude_team: str | None,
-    ranking: Ranking = "relevance",
+    ranking: Ranking = DEFAULT_RANKING,
 ) -> list[RankedKey]:
     """Pick up to max_keys entries for one team. `relevance`: distinct-token overlap between the key (plus the
     head of its value) and the context, newest first among ties; `recency`: newest first, score 0."""
-    if max_keys <= 0:
+    if max_keys <= 0:  # pragma: no mutate  (`< 0` is equivalent: the [:0] slices below are empty too)
         return []
     pool = [e for e in entries if exclude_team is None or e.team_id != exclude_team]
     newest_first = list(reversed(pool))
