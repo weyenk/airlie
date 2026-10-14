@@ -21,7 +21,7 @@ def tokens(text: str) -> set[str]:
 
 def jaccard(a: str, b: str) -> float:
     ta, tb = tokens(a), tokens(b)
-    if not ta or not tb:
+    if not ta or not tb:  # pragma: no mutate  (`and` is equivalent: one empty side already gives 0 / n)
         return 0.0
     return len(ta & tb) / len(ta | tb)
 
@@ -43,6 +43,6 @@ class HeuristicController:
         name = ctx.u_t.name
         if name in PRIVATE_TOOLS:
             return Decision(False, 0.2, "tool_class")
-        if name in SHAREABLE_TOOLS or name.startswith(("mcp.", "echo.")) or "." in name:
+        if name in SHAREABLE_TOOLS or "." in name:
             return Decision(True, 0.8, "tool_class")
         return Decision(False, 0.3, "tool_class")

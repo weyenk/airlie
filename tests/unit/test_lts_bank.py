@@ -72,3 +72,38 @@ async def test_bank_concurrent_adds() -> None:
     await asyncio.gather(add("team-1"), add("team-2"), add("team-3"))
     ids = [e.id for e in bank.entries()]
     assert len(ids) == 150 and len(set(ids)) == 150
+
+
+def test_new_id_counts_from_one_and_follows_the_bank_size() -> None:
+    bank = SharedMemoryBank()
+    assert bank.new_id("team-1", 3) == "mem-team-1-3-1"
+    bank.add_entry(entry(1))
+    assert bank.new_id("team-2", 0) == "mem-team-2-0-2"
+
+
+def test_persist_path_creates_missing_parent_directories(tmp_path: Path) -> None:
+    path = tmp_path / "a" / "b" / "bank.jsonl"
+    bank = SharedMemoryBank(path)
+    bank.add_entry(entry(1))
+    assert path.exists()
+
+
+def test_log_serialises_unknown_types_as_strings(tmp_path: Path) -> None:
+    path = tmp_path / "bank.jsonl"
+    bank = SharedMemoryBank(path)
+    bank._log({"kind": "x", "where": Path("/tmp/p")})
+    assert json.loads(path.read_text())["where"] == "/tmp/p"
+
+
+def test_load_counts_every_cross_team_retrieve_and_skips_unknown_ids(tmp_path: Path) -> None:
+    path = tmp_path / "bank.jsonl"
+    bank = SharedMemoryBank(path)
+    bank.add_entry(entry(1, "team-1"))
+    bank.retrieve_value("mem-1", "team-2")
+    bank.retrieve_value("mem-1", "team-3")
+    bank.retrieve_value("mem-1", "team-1")
+    with path.open("a") as f:
+        f.write(json.dumps({"kind": "retrieve", "entry_id": "ghost", "requesting_team_id": "team-2"}) + "\n")
+    loaded = SharedMemoryBank.load(path)
+    assert loaded.entries()[0].access_count == 2
+    assert len(loaded) == 1

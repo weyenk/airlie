@@ -39,6 +39,7 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
     "types-PyYAML",
+    "mutmut>=3.8.0",
 ]
 
 [build-system]
@@ -71,3 +72,43 @@ strict = true
 mypy_path = "src"
 packages = ["airlie"]
 ignore_missing_imports = true
+
+[tool.mutmut]
+# mutmut mutates all of src/; scripts/mutate_changed.py picks which mutants to run (by name glob).
+source_paths = ["src"]
+pytest_add_cli_args_test_selection = ["tests/unit/"]
+# Kept out of mutation runs only (they still run in the unit stage):
+# - the MCP echo-server test spawns a subprocess, which fails under mutmut's runner;
+# - the torch/peft/safetensors tests are not fork-safe: mutmut forks a worker per mutant, and on macOS torch's
+#   BLAS thread pool and Metal buffers segfault in a forked, multi-threaded process (a crash dialog per mutant).
+pytest_add_cli_args = [
+    "--deselect",
+    "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
+    "--ignore=tests/unit/test_trainer.py",
+    "--ignore=tests/unit/test_learned_controller.py",
+    "--ignore=tests/unit/test_cli_controller.py",
+]
+also_copy = ["airlie.yaml", "prompts", "evals", "scripts", "knowledge", "skills"]
+
+[tool.airlie.mutation]
+# Modules held to "every mutant is caught" (the pipeline and `task mutate:enrolled` fail on a survivor).
+# Enrol a module once its tests are thorough; everything else is reported, never failed.
+enrolled = [
+    "src/airlie/router/policy.py",
+    "src/airlie/scheduler/states.py",
+    "src/airlie/tools/decide.py",
+    "src/airlie/tools/jsonargs.py",
+    "src/airlie/engine/output_parse.py",
+    "src/airlie/engine/sse.py",
+    "src/airlie/lts/bank.py",
+    "src/airlie/router/jev.py",
+    "src/airlie/lts/inject.py",
+    "src/airlie/tools/fs.py",
+    "src/airlie/config/load.py",
+    "src/airlie/config/schema.py",
+    "src/airlie/lts/controller/heuristic.py",
+    "src/airlie/scheduler/slots.py",
+    "src/airlie/tools/shell.py",
+    "src/airlie/tools/sandbox.py",
+    "src/airlie/engine/http_engine.py",
+]

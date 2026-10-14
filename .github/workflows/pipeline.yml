@@ -1,0 +1,155 @@
+# The pipeline, one stage per level of the test pyramid. A stage starts only when the one before it is green.
+#
+#   1 static        lint + types (the same `task static` that runs on every push to origin)
+#   2 lowest level  unit tests, then mutation tests of what changed (after the unit tests, never before)
+#   3 units in concert   functional, contract, integration
+#   4 behavioural        end-to-end, journey
+#   5 environmental      performance, security
+#
+# Stages 3-5 run `task test:<layer>`, which succeeds while tests/<layer>/ is empty; add tests there and the
+# stage starts enforcing them. Nothing here builds or serves the application.
+name: pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- stage 1: static ----
+  static:
+    # Apple Silicon, like the project itself: mlx and vllm-mlx are macOS-only dependencies.
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: task static
+
+  # ---- stage 2: the lowest level of the pyramid ----
+  unit:
+    needs: static
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: task test:unit
+
+  mutation:
+    # After the unit tests: mutmut needs a green suite, and a red one is reported by `unit`, not here.
+    needs: unit
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the merge base with the target branch
+      - uses: ./.github/actions/setup
+      - name: Pick the ref to diff against
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="origin/$BASE_REF" ;;
+            push) base="$BEFORE" ;;
+            *) base="origin/main" ;;
+          esac
+          # a new branch or a force push leaves `before` empty, zeros or unreachable: use the parent commit
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then base="HEAD~1"; fi
+          echo "ref=$base" >> "$GITHUB_OUTPUT"
+      - name: Mutation-test the changed code and the changed tests
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: task mutate:changed -- --base "$BASE" --max-children 3
+
+  # ---- stage 3: units in concert ----
+  functional:
+    needs: [unit, mutation]
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/functional/**/test_*.py') != ''
+      - run: task test:functional
+        if: hashFiles('tests/functional/**/test_*.py') != ''
+
+  contract:
+    needs: [unit, mutation]
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/contract/**/test_*.py') != ''
+      - run: task test:contract
+        if: hashFiles('tests/contract/**/test_*.py') != ''
+
+  integration:
+    needs: [unit, mutation]
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/integration/**/test_*.py') != ''
+      - run: task test:integration
+        if: hashFiles('tests/integration/**/test_*.py') != ''
+
+  # ---- stage 4: behavioural ----
+  e2e:
+    needs: [functional, contract, integration]
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/e2e/**/test_*.py') != ''
+      - run: task test:e2e
+        if: hashFiles('tests/e2e/**/test_*.py') != ''
+
+  journey:
+    needs: [functional, contract, integration]
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/journey/**/test_*.py') != ''
+      - run: task test:journey
+        if: hashFiles('tests/journey/**/test_*.py') != ''
+
+  # ---- stage 5: environmental ----
+  performance:
+    needs: [e2e, journey]
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/performance/**/test_*.py') != ''
+      - run: task test:performance
+        if: hashFiles('tests/performance/**/test_*.py') != ''
+
+  security:
+    needs: [e2e, journey]
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        if: hashFiles('tests/security/**/test_*.py') != ''
+      - run: task test:security
+        if: hashFiles('tests/security/**/test_*.py') != ''

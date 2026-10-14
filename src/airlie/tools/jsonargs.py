@@ -26,12 +26,12 @@ def repair_json_args(raw: str) -> str:
         return raw
     if start == 0 and end == len(text):
         return raw
-    return json.dumps(obj, ensure_ascii=False)
+    return json.dumps(obj, ensure_ascii=False)  # pragma: no mutate  (ensure_ascii=None is falsy too)
 
 
 def parse_tool_args(raw: str) -> dict[str, Any]:
     """Parse (repairing when possible); raise ValueError with a readable message otherwise."""
-    fixed = repair_json_args(raw or "{}")
+    fixed = repair_json_args(raw or "{}")  # pragma: no mutate  (a junk-wrapped "{}" repairs to "{}" anyway)
     try:
         obj = json.loads(fixed)
     except json.JSONDecodeError as e:

@@ -53,9 +53,32 @@ Run `task` to list them. The ones that exist today:
 | `task bench:models` | the same for every catalog model marked `bench: true`, one table |
 | `task bench:compare -- a.json b.json` | per-cell deltas between two saved runs |
 | `task test` / `task test:live` / `task lint` / `task typecheck` / `task check` | unit tests / tests against the running engine / ruff / mypy / lint+types+unit |
+| `task static` | lint + typecheck: stage 1 of the pipeline and the pre-push gate (`task hooks:install`, run by `task setup`) |
+| `task test:unit` / `test:functional` / `test:contract` / `test:integration` / `test:e2e` / `test:journey` / `test:performance` / `test:security` | one layer of the test pyramid, `tests/<layer>/`; a layer with no tests yet succeeds |
+| `task mutate [-- --max-children 6]` / `task mutate:results` | mutation-test every enrolled module (`[tool.airlie.mutation].enrolled`); an uncaught mutant exits 1 |
+| `task mutate:changed [-- --base origin/main]` | the pipeline's mutation step: mutants of the enrolled files changed since the base ref, plus every function a changed or new test executes (`--list` previews) |
+| `task mutate:project` | mutation-test all of `src/airlie` (the weekly run): enrolled modules gate, the rest is printed as a score table, the backlog |
 | `task fmt` | auto-format and auto-fix lint |
 
 Coming per the roadmap: `task events`, `task trace`, `task bench:gaia` (M4b).
+
+## Pipeline
+
+`.github/workflows/pipeline.yml` runs one stage per level of the test pyramid; a stage starts only when the one
+before it is green, and nothing in it builds or serves the application:
+
+1. **static**: `task static` (ruff + mypy). The same command runs before every push to origin (`.githooks/pre-push`).
+2. **lowest level**: `task test:unit`, then `task mutate:changed`. Mutation testing comes after the unit tests
+   and only covers what the change touches: the enrolled source files it modified, and every function that a
+   changed or new test executes, so a new test is held to "the code it runs has its mutants caught".
+3. **units in concert**: functional, contract, integration (`tests/functional`, `tests/contract`, `tests/integration`).
+4. **behavioural**: e2e, journey.
+5. **environmental**: performance, security.
+
+Stages 3 to 5 pass while their `tests/<layer>/` directory is empty and start enforcing as soon as it has tests.
+`.github/workflows/mutation-weekly.yml` runs `task mutate:project` every Monday over the whole project and
+uploads the per-module score table; enrolled modules must be clean, the other modules are the backlog. To
+enrol a module, add its path to `[tool.airlie.mutation].enrolled` once `task mutate:changed` is clean for it.
 
 ## Using airlie from another client
 

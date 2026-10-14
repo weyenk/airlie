@@ -20,15 +20,11 @@ def resolve(ctx: ToolContext, path: str) -> Path:
     if secret_like(Path(path).name):
         raise PermissionError(f"refusing to touch a likely secret file: {path}")
     root = ctx.worktree.resolve()
-    candidate = (root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+    # `root / "/abs"` is "/abs", and resolve() follows every symlink, so one containment check covers
+    # absolute paths, `..` and symlink escapes alike
+    candidate = (root / path).resolve()
     if candidate != root and root not in candidate.parents:
         raise PermissionError(f"path escapes the worktree: {path}")
-    # the final component may not exist yet (write_file); every existing ancestor must still be inside
-    cur = candidate
-    while not cur.exists() and cur != root:
-        cur = cur.parent
-    if cur.resolve() != root and root not in cur.resolve().parents:
-        raise PermissionError(f"path escapes the worktree via symlink: {path}")
     return candidate
 
 

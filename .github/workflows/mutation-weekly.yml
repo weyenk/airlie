@@ -1,0 +1,32 @@
+# Mutation testing over the whole of src/airlie, weekly. The pipeline only mutates what a change touches;
+# this run keeps the rest honest. Enrolled modules must have every mutant caught (the run fails otherwise);
+# every other module is scored in the job summary and the uploaded report, which is the backlog.
+name: mutation-weekly
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    runs-on: macos-14
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Unit tests first (mutmut needs a green suite)
+        run: task test:unit
+      - name: Mutation-test the whole project
+        run: task mutate:project -- --max-children 3 --report mutation-report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: |
+            mutation-report.md
+            mutants/mutmut-stats.json
+          if-no-files-found: ignore

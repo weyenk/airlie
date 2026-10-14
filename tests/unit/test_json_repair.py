@@ -112,3 +112,30 @@ def test_repair_create_result_marks_cut_off_arguments() -> None:
     out = repair_create_result(res)
     args = json.loads(out.content[0].arguments)  # type: ignore[union-attr]
     assert set(args) == {"__truncated__"} and args["__truncated__"].endswith("0" * 20)
+
+
+def test_already_clean_object_is_returned_byte_for_byte() -> None:
+    raw = '{"a":1,  "b":"é"}'
+    assert repair_json_args(raw) == raw
+
+
+def test_repair_keeps_non_ascii_characters() -> None:
+    assert repair_json_args('<call>{"s": "héllo ✓"} trailing') == '{"s": "héllo ✓"}'
+
+
+def test_object_after_a_non_object_prefix_is_not_treated_as_clean() -> None:
+    # starts at offset 1, so the leading char must be dropped even though the object ends the text
+    assert repair_json_args('x{"a":1}') == '{"a": 1}'
+
+
+def test_parse_tool_args_empty_means_no_arguments() -> None:
+    assert parse_tool_args("") == {}
+
+
+def test_parse_tool_args_non_object_message_is_exact() -> None:
+    with pytest.raises(ValueError) as ei:
+        parse_tool_args("[1, 2]")
+    assert str(ei.value) == "tool arguments must be a JSON object"
+    with pytest.raises(ValueError) as ei:
+        parse_tool_args("7")
+    assert str(ei.value) == "tool arguments must be a JSON object"

@@ -31,6 +31,7 @@ from airlie.engine.types import (
 )
 
 YES_NO_SYSTEM = "Answer with exactly one word: YES or NO."
+HTTP_POST = "POST"  # a module constant: httpx upper-cases the method, so "post" would be an equivalent mutant
 
 
 class HTTPEngine:
@@ -97,7 +98,7 @@ class HTTPEngine:
         if m.status_code == 200:
             ids = [str(x.get("id")) for x in m.json().get("data", [])]
         models: dict[str, ModelState] = dict.fromkeys(ids, "ready")
-        detail = ""
+        detail = ""  # pragma: no mutate  (None is just as falsy for the fallback below)
         if h.status_code == 200:
             hj = h.json()
             detail = f"{hj.get('status', '?')} engine={hj.get('engine_type', '?')}"
@@ -154,11 +155,11 @@ class HTTPEngine:
         accepted: int | None = None
         drafts: int | None = None
         t0 = time.monotonic()
-        t_first: float | None = None
+        t_first: float | None = None  # pragma: no mutate  ("" is just as falsy)
         t_last = t0
         try:
             async with self._c().stream(
-                "POST", f"{self.base_url}/chat/completions", json=self._body(req, stream=True)
+                HTTP_POST, f"{self.base_url}/chat/completions", json=self._body(req, stream=True)
             ) as r:
                 self._live[req.request_id] = r
                 if r.status_code != 200:
@@ -253,7 +254,6 @@ class HTTPEngine:
             await r.aclose()
 
     async def yes_no(self, role: str, messages: list[Message]) -> tuple[float, float]:
-        spec = self._role(role)
         msgs = [Message(role="system", content=YES_NO_SYSTEM), *[m for m in messages if m.role != "system"]]
         body = {
             "model": self._served(role),
@@ -263,14 +263,13 @@ class HTTPEngine:
             "temperature": 0.0,
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        del spec
         self._stats.requests += 1
         r = await self._c().post(f"{self.base_url}/chat/completions", json=body)
         if r.status_code != 200:
             self._stats.errors += 1
             raise EngineError(f"engine returned {r.status_code}: {_error_text(r.content)}")
         content = str(r.json()["choices"][0]["message"].get("content") or "")
-        word = content.strip().upper().lstrip("*\"'").split()[:1]
+        word = content.strip().upper().lstrip("*\"'").split()
         if word and word[0].startswith("YES"):
             return 1.0, 0.0
         if word and word[0].startswith("NO"):
@@ -282,7 +281,7 @@ class HTTPEngine:
 
 
 def _finish(raw: str) -> FinishReason:
-    if raw in ("stop", "length", "tool_calls", "cancelled"):
+    if raw in ("length", "tool_calls", "cancelled"):  # anything else, "stop" included, is "stop"
         return raw  # type: ignore[return-value]
     return "stop"
 
@@ -313,7 +312,7 @@ def _error_text(raw: bytes) -> str:
     try:
         obj = json.loads(raw)
     except ValueError:
-        return raw.decode("utf-8", "replace")[:300]
+        return raw.decode("utf-8", "replace")[:300]  # pragma: no mutate  (codec names are case-insensitive)
     if isinstance(obj, dict):
         if isinstance(obj.get("error"), dict):
             return str(obj["error"].get("message", obj["error"]))

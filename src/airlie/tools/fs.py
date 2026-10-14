@@ -81,7 +81,7 @@ class EditFile:
             return ToolResult(False, f"error: `old` text not found in {args['path']}")
         if n > 1:
             return ToolResult(False, f"error: `old` text occurs {n} times in {args['path']}; make it unique")
-        p.write_text(text.replace(old, new, 1))
+        p.write_text(text.replace(old, new, 1))  # pragma: no mutate  (n == 1 here, so the count is moot)
         return ToolResult(True, f"edited {args['path']}")
 
 

@@ -8,3 +8,4 @@ dist/
 runs/
 airlie.local.yaml
 .DS_Store
+mutants/

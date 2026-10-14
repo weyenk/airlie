@@ -1,0 +1,15 @@
+name: setup
+description: uv, Task and the locked dependencies; the same toolchain a developer gets from `task setup`
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+    - uses: arduino/setup-task@v2
+      with:
+        version: 3.x
+        repo-token: ${{ github.token }}
+    - name: Install locked dependencies
+      shell: bash
+      run: uv sync --all-groups --frozen

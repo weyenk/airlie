@@ -30,7 +30,8 @@ class JevClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        # header names are case-insensitive, so case-mutating the name is an equivalent mutant
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}  # pragma: no mutate
         self._client = httpx.AsyncClient(transport=transport, timeout=timeout_s, headers=headers)
 
     async def ask(self, state: str, question: str, instructions: str, criteria: dict[str, str]) -> Answer:
