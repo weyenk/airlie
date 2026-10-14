@@ -487,15 +487,26 @@ def serve(
     config: ConfigOpt = None,
     host: str = "127.0.0.1",
     port: int = 8090,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            envvar="AIRLIE_SERVE_API_KEY",
+            help="require `Authorization: Bearer <key>` on /v1 (set it before exposing the server)",
+        ),
+    ] = None,
 ) -> None:
-    """OpenAI-compatible endpoint in front of airlie: roles as models, plus POST /v1/airlie/run."""
+    """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
     import uvicorn
 
     from airlie.serve import create_app
 
     cfg = _load(config)
-    console.print(f"airlie serve on http://{host}:{port}/v1  (models = roles: {', '.join(cfg.roles)})")
-    uvicorn.run(create_app(cfg), host=host, port=port, log_level="info")
+    raw = [m for m in cfg.models if m not in cfg.roles]
+    console.print(
+        f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
+        f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
+    )
+    uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
 
 
 @bench_app.command("report")

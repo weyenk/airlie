@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from airlie.config import AirlieConfig
@@ -41,18 +41,35 @@ def create_app(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     orchestrator_factory: Callable[..., Any] | None = None,
+    api_key: str | None = None,
 ) -> FastAPI:
+    """`api_key`: when set, every /v1 route needs `Authorization: Bearer <key>` (use it before a tunnel)."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
 
-    def upstream(role: str) -> tuple[str, str, dict[str, str]]:
-        if role not in cfg.roles:
-            raise HTTPException(404, f"unknown role '{role}'; roles: {', '.join(cfg.roles)}")
-        model = cfg.roles[role].model
+    if api_key:
+
+        @app.middleware("http")
+        async def _require_key(request: Request, call_next: Callable[..., Any]) -> Any:
+            if request.url.path.startswith("/v1"):
+                auth = request.headers.get("authorization", "")
+                if auth != f"Bearer {api_key}":
+                    return JSONResponse({"error": "invalid or missing API key"}, status_code=401)
+            return await call_next(request)
+
+    def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
+        """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
+        if name in cfg.roles:
+            model, prompt = cfg.roles[name].model, prompt_text(cfg.roles[name].prompt)
+        elif name in cfg.models:
+            model, prompt = name, None
+        else:
+            known = ", ".join([*cfg.roles, *cfg.models])
+            raise HTTPException(404, f"unknown model '{name}'; roles and catalog models: {known}")
         e = cfg.engines[cfg.engine_for_model(model)]
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
-        return (e.base_url or "").rstrip("/"), e.served_name(model), headers
+        return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -60,22 +77,24 @@ def create_app(
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
+        served = [m for m in cfg.models if m not in cfg.roles]
         return {
             "object": "list",
-            "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in cfg.roles],
+            "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
         }
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any]) -> Any:
-        role = str(body.get("model", ""))
-        base, served, headers = upstream(role)
-        spec = cfg.roles[role]
+        name = str(body.get("model", ""))
+        base, served, headers, prompt = upstream(name)
         msgs = list(body.get("messages") or [])
-        if not msgs or msgs[0].get("role") != "system":
-            msgs = [{"role": "system", "content": prompt_text(spec.prompt)}, *msgs]
+        if prompt is not None and (not msgs or msgs[0].get("role") != "system"):
+            msgs = [{"role": "system", "content": prompt}, *msgs]
         out = {**body, "model": served, "messages": msgs}
-        out.setdefault("max_tokens", spec.max_tokens)
-        out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
+        if name in cfg.roles:
+            spec = cfg.roles[name]
+            out.setdefault("max_tokens", spec.max_tokens)
+            out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
             resp = await client.send(req, stream=True)
