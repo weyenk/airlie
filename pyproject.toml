@@ -76,8 +76,17 @@ ignore_missing_imports = true
 # mutmut mutates all of src/; scripts/mutate_changed.py picks which mutants to run (by name glob).
 source_paths = ["src"]
 pytest_add_cli_args_test_selection = ["tests/unit/"]
-# spawns the MCP echo server as a subprocess, which fails under mutmut's runner; mcp.py is not mutated here
-pytest_add_cli_args = ["--deselect", "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable"]
+# Kept out of mutation runs only (they still run in the unit stage):
+# - the MCP echo-server test spawns a subprocess, which fails under mutmut's runner;
+# - the torch/peft/safetensors tests are not fork-safe: mutmut forks a worker per mutant, and on macOS torch's
+#   BLAS thread pool and Metal buffers segfault in a forked, multi-threaded process (a crash dialog per mutant).
+pytest_add_cli_args = [
+    "--deselect",
+    "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
+    "--ignore=tests/unit/test_trainer.py",
+    "--ignore=tests/unit/test_learned_controller.py",
+    "--ignore=tests/unit/test_cli_controller.py",
+]
 also_copy = ["airlie.yaml", "prompts", "evals", "scripts"]
 
 [tool.airlie.mutation]

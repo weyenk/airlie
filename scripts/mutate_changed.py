@@ -111,6 +111,13 @@ def impacted_sources(changed: set[str], scope: list[str]) -> list[str]:
     return [f for f in scope if f in changed]
 
 
+def mutation_ignored_tests() -> set[str]:
+    """Test files kept out of mutation runs (`--ignore=` in [tool.mutmut].pytest_add_cli_args)."""
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    args = cfg["tool"]["mutmut"].get("pytest_add_cli_args", [])
+    return {a.removeprefix("--ignore=") for a in args if a.startswith("--ignore=")}
+
+
 def changed_tests(changed: set[str]) -> list[str]:
     return sorted(
         f
@@ -232,7 +239,11 @@ def main() -> int:
         changed = changed_files(args.base)
         sources = impacted_sources(changed, scope_files)
         test_files = changed_tests(changed)
+        skipped = [f for f in test_files if f in mutation_ignored_tests()]
+        test_files = [f for f in test_files if f not in skipped]
         out.append(f"base `{resolve_base(args.base)}`")
+        if skipped:
+            out += ["changed tests kept out of mutation runs (not fork-safe):", *[f"- {f}" for f in skipped]]
         if changed & SETUP_FILES:
             out.append(
                 f"mutation setup changed ({', '.join(sorted(changed & SETUP_FILES))}): every enrolled module"

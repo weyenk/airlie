@@ -36,6 +36,12 @@ def test_names_and_globs_are_dotted_modules() -> None:
     assert mc.mutant_module("airlie.lts.bank.xǁSharedMemoryBankǁload__mutmut_3") == "airlie.lts.bank"
 
 
+def test_fork_unsafe_tests_are_listed_from_the_mutmut_config() -> None:
+    ignored = mc.mutation_ignored_tests()
+    assert "tests/unit/test_trainer.py" in ignored
+    assert all(f.startswith("tests/") and (SCRIPT.parents[1] / f).is_file() for f in ignored)
+
+
 def test_only_test_files_count_as_changed_tests() -> None:
     changed = {
         "tests/unit/test_sse.py",
