@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,28 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")  # what PyYAML quotes in a message
+# the quotes safe to keep: one character, one escaped character ('\t'), or PyYAML's own '<token id>'
+_FIXED = re.compile(r".?|\\(?:[abtnvfre'\"\\]|x[0-9a-f]{2}|u[0-9a-f]{4}|U[0-9a-f]{8})|<[a-z ]+>")
+
+
+def _yaml_problem(e: yaml.YAMLError) -> str:
+    """Where and what, never the source text. PyYAML's own str(e) quotes the offending lines, and its messages
+    quote the alias, anchor or tag they choke on: a token may be any of them. Of the quotes only a character
+    (a tab shows as '\\t') and PyYAML's '<token id>' are kept. A reader error has a reason, not a position."""
+    mark = getattr(e, "problem_mark", None)
+    where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+    said = (getattr(e, "context", None), getattr(e, "problem", None) or getattr(e, "reason", None))
+    what = ", ".join(str(s) for s in said if s)
+    what = _QUOTED.sub(lambda q: q[0] if _FIXED.fullmatch(q[0][1:-1]) else "'…'", what)
+    return f"not valid YAML{where}: {what}" if what else f"not valid YAML{where}"
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text()) or {}
     except yaml.YAMLError as e:
-        raise ConfigError(f"{path}: not valid YAML: {e}") from e
+        raise ConfigError(f"{path}: {_yaml_problem(e)}") from None
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: top level must be a mapping")
     return data
@@ -138,7 +156,8 @@ def load_config(
     try:
         cfg = AirlieConfig.model_validate(data)
     except ValidationError as e:
-        raise ConfigError(_format_validation_error(e)) from e
+        # from None: the chained error carries input_value, which can be a token under a mistyped key
+        raise ConfigError(_format_validation_error(e)) from None
     cfg.source_path = path
     base = path.parent
     for role in cfg.roles.values():
