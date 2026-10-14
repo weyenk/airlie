@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from airlie import __version__
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
+from airlie.story.state import StoryState
 
 app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="airlie: parallel agent teams with shared memory."
@@ -31,6 +34,10 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
 app.add_typer(route_app, name="route")
+story_app = typer.Typer(
+    no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
+)
+app.add_typer(story_app, name="story")
 console = Console()
 err = Console(stderr=True)
 
@@ -700,6 +707,163 @@ def studio(
 ) -> None:
     """Run the studio topology (chief → router → specialists → review → synthesis) on a goal."""
     run(goal, repo=repo, k=None, test_cmd=test_cmd, topology="studio", config=config, image=image)
+
+
+# ---- stories (task story / story:tick / story:check) ----
+
+
+def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
+    """asyncio.run(coro), except that SIGTERM and SIGHUP stop it as asyncio.run already stops it on SIGINT:
+    they cancel the main task, so every cleanup runs and publish.run_cmd kills the process group gh runs in.
+    gh has a session of its own, which a signal to airlie does not reach: launchd stops `story:tick` with
+    SIGTERM and a closed terminal sends SIGHUP, and without this a killed airlie leaves a `gh stack submit`
+    pushing. A signal that was ignored when airlie started (nohup) stays ignored. A stop exits with 128 + the
+    signal."""
+    import asyncio
+    import signal
+
+    caught: list[signal.Signals] = []
+
+    def stop(sig: signal.Signals, task: asyncio.Task[Any]) -> None:
+        caught.append(sig)
+        task.cancel()
+
+    async def main() -> T:
+        task = asyncio.current_task()
+        assert task is not None  # asyncio.run runs this as the main task
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is not signal.SIG_IGN:
+                asyncio.get_running_loop().add_signal_handler(sig, stop, sig, task)
+        return await coro
+
+    try:
+        return asyncio.run(main())
+    except asyncio.CancelledError:
+        if not caught:
+            raise
+        err.print(
+            f"[yellow]stopped by {caught[0].name}[/yellow]: `task story -- ISSUE` resumes a stopped story "
+            "from its last finished stage"
+        )
+        raise typer.Exit(128 + caught[0]) from None
+
+
+def _story_cfg(config: Path | None) -> AirlieConfig:
+    from airlie.story.factory import story_config
+
+    try:
+        return story_config(_load(config))
+    except ConfigError as e:
+        err.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1) from None
+
+
+def _fail(problems: list[str]) -> None:
+    """Print every problem and exit 1; no problems, no exit."""
+    for p in problems:
+        err.print(f"[red]{escape(p)}[/red]")
+    if problems:
+        raise typer.Exit(1)
+
+
+def _print_story(st: StoryState) -> None:
+    """The outcome; model and issue text is printed as text, never as Rich markup."""
+    if st.blocked:
+        state = f"[red]blocked[/red] after {st.stage}: {escape(st.blocked)}"
+    else:
+        state = f"[green]{st.stage}[/green]"
+    console.print(f"story {escape(st.path.name)}: {state}", highlight=False)
+    for p in st.prs:
+        console.print(f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False)
+    console.print(
+        f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl", markup=False, highlight=False
+    )
+
+
+@story_app.command("run")
+def story_run(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="Jira issue key (AIR-7) or its link")
+    ] = None,
+    text: Annotated[str | None, typer.Option(help="a written request instead of an issue (no board)")] = None,
+    repo: Annotated[Path | None, typer.Option(help="repository to build in (default: story.repo)")] = None,
+    test_cmd: Annotated[
+        str | None, typer.Option(help="the gate every layer must pass (default: story.test_cmd)")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Refine a Jira issue (or --text) into a story, plan its layers, build each one test-first, open stacked
+    draft PRs. A stopped story resumes from its last finished stage when you run the same command again."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    if (ref is None) == (text is None):
+        err.print("[red]pass an issue (AIR-7 or its link) or --text, not both[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    problems = factory.story_problems(cfg)
+    try:
+        path, cmd = factory.resolve(cfg, repo, test_cmd)
+    except StorySetupError as e:
+        problems.append(str(e))
+    _fail(problems)
+
+    async def go() -> StoryState:
+        board, card = await factory.card_for(cfg, ref, text)
+        return await factory.run_one(cfg, board=board, card=card, repo=path, test_cmd=cmd)
+
+    try:
+        st = _run_stoppable(go())
+    except (factory.StoryBusy, BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1) from None
+    _print_story(st)
+    if st.blocked:
+        raise typer.Exit(1)
+
+
+@story_app.command("tick")
+def story_tick(config: ConfigOpt = None) -> None:
+    """One scheduler beat (launchd runs this): build the top issue of the intake query, unless a story is in
+    flight or the engine is down."""
+    import time
+
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+    try:
+        line = _run_stoppable(factory.tick(cfg))
+    except (BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1) from None
+    # soft_wrap: a log line is one line, whatever the width of the terminal (or of the launchd log)
+    console.print(
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", markup=False, highlight=False, soft_wrap=True
+    )
+
+
+@story_app.command("check")
+def story_check(
+    repo: Annotated[Path | None, typer.Option(help="repository (default: story.repo)")] = None,
+    test_cmd: Annotated[str | None, typer.Option(help="test command (default: story.test_cmd)")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Check what `task story` needs: roles, repo, test command, gh and gh-stack, the Jira project and its
+    statuses."""
+    from airlie.story import factory
+
+    cfg = _story_cfg(config)
+    problems = _run_stoppable(factory.check(cfg, repo, test_cmd))
+    if not problems:
+        console.print('[green]ready[/green]: task story -- ISSUE (or --text "request")')
+        return
+    for p in problems:
+        err.print(f"[red]✗[/red] {escape(p)}")
+    raise typer.Exit(1)
 
 
 @eval_app.command("run")

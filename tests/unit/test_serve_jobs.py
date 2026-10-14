@@ -1,4 +1,4 @@
-"""Serve jobs: plan → edit → run the edited plan in the background, follow it, cancel it."""
+"""Serve jobs: plan → edit → run the edited plan in the background, follow it, cancel it. So are stories."""
 
 from __future__ import annotations
 
@@ -17,9 +17,14 @@ from airlie.obs import EventSink
 from airlie.router import ChiefRouter
 from airlie.serve.app import create_app
 from airlie.serve.jobs import Jobs, read_events
+from airlie.story import factory
+from airlie.story.board import BoardError, text_card
+from airlie.story.model import StorySetupError
+from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_serve import FakeUpstream
+from tests.unit.test_story_pipeline import STORY_ROLES
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, PLAN, RUN, WRITE_PASS, cfg_for
 
 
@@ -164,12 +169,12 @@ def test_a_running_job_can_be_cancelled(tmp_path: Path) -> None:
 
 def test_read_events_follows_the_log_and_stops_at_a_line_still_being_written(tmp_path: Path) -> None:
     log = tmp_path / "events.jsonl"
-    assert read_events(log, 0) == []  # the run has not written anything yet
+    assert read_events(log, 0) == ([], 0)  # the run has not written anything yet
     log.write_text('{"n": 1}\n{"n": 2}\n{"n": 3')  # the writer is part-way through the third line
-    assert read_events(log, 0) == [{"n": 1}, {"n": 2}]
-    assert read_events(log, 1) == [{"n": 2}] and read_events(log, 9) == []
+    assert read_events(log, 0) == ([{"n": 1}, {"n": 2}], 2)  # the cursor stops before that line too
+    assert read_events(log, 1) == ([{"n": 2}], 2) and read_events(log, 9) == ([], 9)
     log.write_text('{"n": 1}\n{"n": 2}\n{"n": 3}\n')
-    assert read_events(log, 2) == [{"n": 3}]
+    assert read_events(log, 2) == ([{"n": 3}], 3)
 
 
 async def test_status_holds_a_long_poll_until_an_event_or_the_end_or_the_wait_is_up(tmp_path: Path) -> None:
@@ -225,3 +230,214 @@ async def test_a_running_job_id_cannot_start_twice_but_an_ended_one_can(tmp_path
     jobs.start("run", "j1", tmp_path / "events.jsonl", quick())
     out = await jobs.status("j1", wait=5)
     assert out is not None and out["state"] == "done" and out["result"] == {"ok": True}
+
+
+def test_a_closed_fragment_in_the_middle_of_the_log_is_skipped_and_the_cursor_moves_past_it(
+    tmp_path: Path,
+) -> None:
+    # a story that was resumed after a crash: the half line the crash left was closed (state.py), and the run
+    # went on writing after it. Stopping at that line would freeze every follower there.
+    log = tmp_path / "events.jsonl"
+    # a fragment, and a line that is no event
+    log.write_text('{"n": 1}\n{"n": 2, "kin\n{"n": 3}\n12\n{"n": 4}\n')
+    assert read_events(log, 0) == ([{"n": 1}, {"n": 3}, {"n": 4}], 5)
+    assert read_events(log, 2) == ([{"n": 3}, {"n": 4}], 5) and read_events(log, 5) == ([], 5)
+    log.write_text('{"n": 1}\n{"n": 2, "kin\n{"n": 3}\n{"n": 4')  # the last line is still being written
+    assert read_events(log, 0) == ([{"n": 1}, {"n": 3}], 3)  # held back, not skipped, and not counted
+    log.write_text('{"n": 1}\n{"n": 2, "kin\n{"n": 3}\n{"n": 4}\n')
+    assert read_events(log, 3) == ([{"n": 4}], 4)
+
+
+def test_the_log_of_a_resumed_story_is_read_past_the_line_its_crash_tore(tmp_path: Path) -> None:
+    story_dir = tmp_path / "text-0123456789"
+    story_dir.mkdir()
+    (story_dir / "events.jsonl").write_text('{"kind": "story_start"}\n{"kind": "sta')  # a crash mid-append
+    st = StoryState.open(story_dir, text_card("avatars"), tmp_path)  # the resume closes the torn line
+    st.emit("stage", stage="intake")
+    events, upto = read_events(story_dir / "events.jsonl", 0)
+    assert [e["kind"] for e in events] == ["story_start", "stage"] and upto == 3
+
+
+async def test_a_follower_gets_the_events_after_a_fragment_and_a_cursor_past_it(tmp_path: Path) -> None:
+    log = tmp_path / "events.jsonl"
+    log.write_text('{"kind": "a"}\n{"kind": "b", "ti\n{"kind": "c"}\n')
+
+    async def work() -> dict[str, Any]:
+        return {}
+
+    jobs = Jobs()
+    jobs.start("story", "j1", log, work())
+    out = await jobs.status("j1", wait=5)
+    assert out is not None and [e["kind"] for e in out["events"]] == ["a", "c"] and out["next"] == 3
+    out = await jobs.status("j1", since=1)  # a follower that had seen "a" only
+    assert out is not None and [e["kind"] for e in out["events"]] == ["c"] and out["next"] == 3
+    out = await jobs.status("j1", since=3)
+    assert out is not None and out["events"] == [] and out["next"] == 3
+
+
+async def test_a_long_poll_that_finds_only_a_fragment_still_moves_the_cursor(tmp_path: Path) -> None:
+    log = tmp_path / "events.jsonl"
+    log.write_text('{"kind": "a"}\n{"kind": "b", "ti\n')
+    release = asyncio.Event()
+
+    async def work() -> dict[str, Any]:
+        await release.wait()
+        return {}
+
+    jobs = Jobs()
+    jobs.start("story", "j1", log, work())
+    out = await jobs.status("j1", since=1, wait=0.3)  # nothing but the fragment after the cursor
+    assert out is not None and out["events"] == [] and out["next"] == 2 and out["state"] == "running"
+    release.set()
+    await jobs.status("j1", since=2, wait=5)
+
+
+# ---- POST /v1/airlie/stories ----
+
+
+def test_the_story_endpoint_starts_a_job_and_rejects_bad_requests(tmp_path: Path) -> None:
+    events = tmp_path / "story-events.jsonl"
+
+    async def fake_story_job(cfg, *, card, text, repo, test_cmd):  # type: ignore[no-untyped-def]
+        if text == "broken":
+            raise StorySetupError("no test command")
+
+        async def work() -> dict[str, Any]:
+            EventSink(events, "s").emit("stage", stage="intake")
+            return {"stage": "review", "blocked": None, "prs": [], "dir": "x"}
+
+        return "story-text-abc", events, work()
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        assert client.post("/v1/airlie/stories", json={}).status_code == 400
+        assert client.post("/v1/airlie/stories", json={"card": "a", "text": "b"}).status_code == 400
+        r = client.post("/v1/airlie/stories", json={"text": "broken"})
+        assert r.status_code == 400 and "no test command" in r.json()["detail"]
+        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": "/x"})
+        assert r.status_code == 202 and r.json() == {"job_id": "story-text-abc", "kind": "story"}
+        done = finish(client, "story-text-abc")
+    assert done["state"] == "done" and done["result"]["stage"] == "review"
+    assert [e["kind"] for e in done["events"]] == ["stage"]
+
+
+def test_the_story_endpoint_passes_the_request_to_the_job_factory(tmp_path: Path) -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        seen.append(kw)
+
+        async def work() -> dict[str, Any]:
+            return {}
+
+        return "story-AIR-7", tmp_path / "events.jsonl", work()
+
+    body = {"card": "AIR-7", "repo": "~/code/app", "test_cmd": "make test"}
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        assert client.post("/v1/airlie/stories", json=body).status_code == 202
+        finish(client, "story-AIR-7")
+        assert client.post("/v1/airlie/stories", json={"card": "AIR-7"}).status_code == 202
+    assert seen == [
+        {"card": "AIR-7", "text": None, "repo": "~/code/app", "test_cmd": "make test"},
+        {"card": "AIR-7", "text": None, "repo": None, "test_cmd": None},
+    ]
+
+
+def test_a_board_that_cannot_give_the_issue_is_a_400(tmp_path: Path) -> None:
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        raise BoardError("not a Jira issue key (AIR-7) or issue link (https://SITE/browse/AIR-7): 'banana'")
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        r = client.post("/v1/airlie/stories", json={"card": "banana"})
+    assert r.status_code == 400 and "not a Jira issue key" in r.json()["detail"]
+
+
+def test_a_story_that_is_already_running_is_a_409_and_an_ended_one_can_start_again(tmp_path: Path) -> None:
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        async def work() -> dict[str, Any]:
+            await asyncio.sleep(3600)
+            return {}
+
+        return "story-AIR-7", tmp_path / "events.jsonl", work()
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        assert client.post("/v1/airlie/stories", json={"card": "AIR-7"}).status_code == 202
+        r = client.post("/v1/airlie/stories", json={"card": "AIR-7"})
+        assert r.status_code == 409 and "already running" in r.json()["detail"]
+        assert (
+            client.get("/v1/airlie/jobs/story-AIR-7").json()["state"] == "running"
+        )  # the first is untouched
+        assert client.delete("/v1/airlie/jobs/story-AIR-7").json()["cancelled"] is True
+        ended = client.get("/v1/airlie/jobs/story-AIR-7", params={"since": 10_000, "wait": 5}).json()
+        assert ended["state"] == "cancelled"
+        again = client.post("/v1/airlie/stories", json={"card": "AIR-7"})  # the same key: the story resumes
+        assert again.status_code == 202
+        assert client.delete("/v1/airlie/jobs/story-AIR-7").json()["cancelled"] is True
+
+
+def test_a_resumed_story_is_followed_past_the_fragment_its_crash_left(tmp_path: Path) -> None:
+    events = tmp_path / "story-events.jsonl"
+    # what a crash left, closed by the resume
+    events.write_text('{"kind": "story_start", "run_id": "s"}\n{"kind": "sta\n')
+
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        async def work() -> dict[str, Any]:
+            EventSink(events, "s").emit("stage", stage="intake")
+            return {"stage": "intake"}
+
+        return "story-text-abc", events, work()
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        client.post("/v1/airlie/stories", json={"text": "avatars"})
+        done = finish(client, "story-text-abc")
+    assert [e["kind"] for e in done["events"]] == ["story_start", "stage"] and done["next"] == 3
+
+
+def test_the_default_story_job_refuses_a_config_without_the_story_roles(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    # app_for's config has the studio roles, but no product or architect
+    with TestClient(app_for(tmp_path, FakeEngine({}))) as client:
+        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo), "test_cmd": "true"})
+        assert r.status_code == 400 and "story.product_role" in r.json()["detail"]
+        assert client.get(f"/v1/airlie/jobs/story-{text_card('avatars').key}").status_code == 404  # no job
+
+
+def test_the_default_story_job_builds_the_story_and_reports_its_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    prs = [{"number": 11, "branch": "b1", "url": "https://github.com/o/r/pull/11"}]
+
+    async def fake_run_one(c, *, board, card, repo, test_cmd):  # type: ignore[no-untyped-def]
+        path = factory.stories_dir(c) / card.key
+        EventSink(path / "events.jsonl", card.key).emit("stage", stage="intake")
+        return StoryState(path=path, card=card.to_dict(), repo=str(repo), stage="review", prs=prs)
+
+    monkeypatch.setattr(factory, "run_one", fake_run_one)
+    key = text_card("avatars").key
+    with TestClient(create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))) as client:
+        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo)})
+        assert r.status_code == 202 and r.json() == {"job_id": f"story-{key}", "kind": "story"}
+        done = finish(client, f"story-{key}")
+    assert done["state"] == "done" and [e["kind"] for e in done["events"]] == ["stage"]
+    assert done["result"] == {
+        "stage": "review",
+        "blocked": None,
+        "prs": prs,
+        "dir": str(factory.stories_dir(cfg) / key),
+    }
+
+
+def test_a_second_story_while_one_is_in_flight_ends_as_a_failed_job_that_says_so(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))
+    with (
+        story_lock(factory.stories_dir(cfg)) as held,
+        TestClient(app) as client,
+    ):  # another story holds the lock
+        assert held
+        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo)})
+        assert r.status_code == 202  # a different story id: nothing is running under it
+        done = finish(client, r.json()["job_id"])
+    assert done["state"] == "failed" and "StoryBusy: another story is in flight" in done["error"]

@@ -30,17 +30,24 @@ class Job:
         return "failed" if self.task.exception() is not None else "done"
 
 
-def read_events(path: Path, since: int) -> list[dict[str, Any]]:
-    """Event lines after the first `since`; stops at a line still being written."""
+def read_events(path: Path, since: int) -> tuple[list[dict[str, Any]], int]:
+    """(events, next): the events in the lines after the first `since`, and the line count a follower asks
+    from next. A complete line (one ending in a newline) that is no event is skipped but counted: a story
+    resumed after a crash has the fragment the crash left in the middle of its log (state.py closes it), and
+    stopping there would freeze every follower. Only a last line without its newline is still being written:
+    it is held back, and not counted."""
     if not path.is_file():
-        return []
-    out: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines()[since:]:
+        return [], since
+    complete = path.read_text().split("\n")[:-1]  # what follows the last newline is not a line yet
+    events: list[dict[str, Any]] = []
+    for line in complete[since:]:
         try:
-            out.append(json.loads(line))
+            event = json.loads(line)
         except ValueError:
-            break
-    return out
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events, max(since, len(complete))
 
 
 class Jobs:
@@ -74,16 +81,16 @@ class Jobs:
         if job is None:
             return None
         deadline = time.monotonic() + max(0.0, wait)
-        events = read_events(job.events_path, since)
+        events, upto = read_events(job.events_path, since)
         while not events and job.state == "running" and time.monotonic() < deadline:
             await asyncio.sleep(0.25)
-            events = read_events(job.events_path, since)
+            events, upto = read_events(job.events_path, since)
         out: dict[str, Any] = {
             "job_id": job.id,
             "kind": job.kind,
             "state": job.state,
             "events": events,
-            "next": since + len(events),
+            "next": upto,
         }
         if out["state"] == "done":
             out["result"] = job.task.result()

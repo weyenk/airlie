@@ -79,6 +79,21 @@ tasks:
     cmds:
       - '{{.RUN}} airlie studio {{.CLI_ARGS}}'
 
+  story:
+    desc: "A Jira issue or --text \"request\" → story → layers → test-first build → stacked draft PRs (task story -- ISSUE [--repo PATH] [--test-cmd CMD]; ISSUE is AIR-7 or its link)"
+    cmds:
+      - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
+
+  story:tick:
+    desc: "Build the top issue of the intake query unless a story is in flight (launchd runs this; docs/integrations/story.md)"
+    cmds:
+      - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
+
+  story:check:
+    desc: "Check what task story needs: roles, repo, test command, gh + gh-stack, the Jira project and its statuses"
+    cmds:
+      - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
+
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
     cmds:

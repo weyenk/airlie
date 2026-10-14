@@ -1,7 +1,8 @@
 """`task serve`: the client-agnostic front door. Any OpenAI-compatible client (Claude Code, Qwen Code, curl)
 can talk to a role by name; `/v1/airlie/run` launches a parallel team run. The jobs API starts a studio plan
-(`/v1/airlie/plans`) or run (`/v1/airlie/runs`) in the background; a client follows the job by long polls on
-`GET /v1/airlie/jobs/{id}?since=N&wait=S` and cancels it with `DELETE`."""
+(`/v1/airlie/plans`), a studio run (`/v1/airlie/runs`) or a story (`/v1/airlie/stories`) in the background; a
+client follows the job by long polls on `GET /v1/airlie/jobs/{id}?since=N&wait=S` and cancels it with
+`DELETE`."""
 
 from __future__ import annotations
 
@@ -20,6 +21,8 @@ from airlie.config import AirlieConfig
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.skills import prompt_text
+from airlie.story.board import BoardError
+from airlie.story.model import StorySetupError
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -78,6 +81,19 @@ class StartRun(PlanRequest):
     synthesise: bool = True
 
 
+class StoryRequest(BaseModel):
+    card: str | None = None
+    text: str | None = None
+    repo: str | None = None
+    test_cmd: str | None = None
+
+
+def _story_job_factory() -> Callable[..., Any]:
+    from airlie.story.factory import story_job
+
+    return story_job
+
+
 def _run_result(report: RunReport) -> dict[str, Any]:
     return {
         "run_id": report.run_id,
@@ -118,12 +134,15 @@ def create_app(
     transport: httpx.AsyncBaseTransport | None = None,
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
+    story_job: Callable[..., Any] | None = None,
 ) -> FastAPI:
-    """`api_key`: when set, every /v1 route needs `Authorization: Bearer <key>` (use it before a tunnel)."""
+    """`api_key`: when set, every /v1 route needs `Authorization: Bearer <key>` (use it before a tunnel).
+    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job)."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     jobs = Jobs()
+    make_story = story_job or _story_job_factory()
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()
@@ -276,6 +295,22 @@ def create_app(
             synthesise=req.synthesise,
         )
         job = jobs.start("run", orch.run_dir.run_id, orch.run_dir.events_path, _finish_run(work))
+        return {"job_id": job.id, "kind": job.kind}
+
+    @app.post("/v1/airlie/stories", status_code=202)
+    async def start_story(req: StoryRequest) -> dict[str, Any]:
+        if (req.card is None) == (req.text is None):
+            raise HTTPException(400, "pass exactly one of card or text")
+        try:
+            job_id, events, work = await make_story(
+                cfg, card=req.card, text=req.text, repo=req.repo, test_cmd=req.test_cmd
+            )
+        except (StorySetupError, BoardError) as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            job = jobs.start("story", job_id, events, work)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
         return {"job_id": job.id, "kind": job.kind}
 
     @app.get("/v1/airlie/jobs/{job_id}")
