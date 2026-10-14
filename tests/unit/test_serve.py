@@ -299,3 +299,56 @@ def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
     assert [m["role"] for m in sent] == ["system", "system", "user"]
     assert sent[0]["content"].startswith("# coder") and "use the tools offered" in sent[0]["content"]
     assert sent[1]["content"].startswith("You are OpenCode")
+
+
+class IdlessToolStream:
+    """An upstream whose streamed tool-call deltas carry no id/type (what broke OpenCode's AI SDK)."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        frames = [
+            {"choices": [{"index": 0, "delta": {"content": "I'll look."}, "finish_reason": None}]},
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": ""}}]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '{"pattern": "*.html"}'}}]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+
+def test_streamed_tool_calls_always_carry_an_id_and_type(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(IdlessToolStream()))
+    body = {"model": "base", "stream": True, "messages": [{"role": "user", "content": "find html"}]}
+    with TestClient(app) as c:
+        text = c.post("/v1/chat/completions", json=body).text
+    frames = [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
+    calls = [tc for f in frames for ch in f["choices"] for tc in ch["delta"].get("tool_calls", [])]
+    assert len(calls) == 2
+    assert all(isinstance(tc["id"], str) and tc["id"].startswith("call_") for tc in calls)
+    assert calls[0]["id"] == calls[1]["id"] and all(tc["type"] == "function" for tc in calls)
+    assert frames[0]["choices"][0]["delta"]["content"] == "I'll look." and text.rstrip().endswith(
+        "data: [DONE]"
+    )

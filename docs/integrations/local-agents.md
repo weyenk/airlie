@@ -8,7 +8,7 @@ for roles also `task serve`.
 
 | agent | how it connects | config |
 | --- | --- | --- |
-| **OpenCode** | OpenAI-compatible provider → `task serve` roles | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists `airlie/coder`, `airlie/architect`, `airlie/qa`, `airlie/security`, `airlie/docs`, `airlie/research`, `airlie/product`, `airlie/ux`, `airlie/design` |
+| **OpenCode** | OpenAI-compatible provider → `task serve` (roles and raw models) | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists the roles `coder`, `architect`, `qa`, `security`, `docs`, `research`, `product`, `ux`, `design` and the raw models `base`, `generalist`, `small` |
 | **Claude Code** | Anthropic-compatible `/v1/messages` (vllm-mlx serves it) | environment variables below |
 | **Qwen Code** | OpenAI-compatible | `OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=airlie-local OPENAI_MODEL=base qwen` |
 
@@ -28,8 +28,10 @@ If you already have an `opencode.json`, merge the `provider.airlie` block into i
 Pick `airlie/coder` for coding (Qwen3-Coder with the coder persona), `airlie/architect` for a plan,
 `airlie/qa` for tests; the generalist roles (`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
 Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
-assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. To use
-the raw models instead, point `baseURL` at `http://127.0.0.1:8080/v1` and list `base`, `generalist`, `small`.
+assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. `base`,
+`generalist` and `small` are the raw models (no persona). Everything goes through `task serve` rather than the
+engine directly because the role server also repairs streamed tool-call chunks that arrive without an `id`
+(vllm-mlx occasionally sends them; OpenCode's AI SDK rejects them with "Expected 'id' to be a string").
 
 ## Claude Code
 

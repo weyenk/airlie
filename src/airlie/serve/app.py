@@ -3,6 +3,8 @@ can talk to a role by name; `/v1/airlie/run` launches a parallel team run."""
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,37 @@ from pydantic import BaseModel
 
 from airlie.config import AirlieConfig
 from airlie.skills import prompt_text
+
+
+class ToolCallStreamRepair:
+    """Give every streamed tool-call delta an `id` and `type`. vllm-mlx sometimes streams a call's deltas
+    without them (seen 2026-10-14 when Qwen3-Coder opened a call with a bare `<function=...>`), and the
+    Vercel AI SDK behind OpenCode rejects such a chunk ("Expected 'id' to be a string")."""
+
+    def __init__(self) -> None:
+        self.ids: dict[tuple[int, int], str] = {}
+
+    def frame(self, frame: bytes) -> bytes:
+        text = frame.decode("utf-8", "replace")
+        if not text.startswith("data: {") or '"tool_calls"' not in text:
+            return frame
+        try:
+            obj = json.loads(text[6:])
+        except ValueError:
+            return frame
+        changed = False
+        for choice in obj.get("choices") or []:
+            for tc in (choice.get("delta") or {}).get("tool_calls") or []:
+                key = (int(choice.get("index", 0)), int(tc.get("index", 0)))
+                if tc.get("id"):
+                    self.ids.setdefault(key, str(tc["id"]))
+                else:
+                    tc["id"] = self.ids.setdefault(key, f"call_{uuid.uuid4().hex[:24]}")
+                    changed = True
+                if not tc.get("type"):
+                    tc["type"] = "function"
+                    changed = True
+        return f"data: {json.dumps(obj)}".encode() if changed else frame
 
 
 class RunRequest(BaseModel):
@@ -107,9 +140,16 @@ def create_app(
             resp = await client.send(req, stream=True)
 
             async def gen() -> AsyncIterator[bytes]:
+                repair = ToolCallStreamRepair()
+                buf = b""
                 try:
                     async for chunk in resp.aiter_bytes():
-                        yield chunk
+                        buf += chunk
+                        while b"\n\n" in buf:
+                            frame, buf = buf.split(b"\n\n", 1)
+                            yield repair.frame(frame) + b"\n\n"
+                    if buf:
+                        yield repair.frame(buf)
                 finally:
                     await resp.aclose()
 

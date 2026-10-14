@@ -3,76 +3,98 @@
   "provider": {
     "airlie": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "airlie roles (task serve)",
+      "name": "airlie",
       "options": {
         "baseURL": "http://127.0.0.1:8090/v1",
         "apiKey": "airlie-local"
       },
       "models": {
         "coder": {
-          "name": "coder role: Qwen3-Coder, implement/fix/refactor",
+          "name": "coder",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "architect": {
-          "name": "architect role: Qwen3.8, plans and ADRs",
+          "name": "architect",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "qa": {
-          "name": "qa role: Qwen3-Coder, tests and edge cases",
+          "name": "qa",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "security": {
-          "name": "security role: Qwen3-Coder, threat model and review",
+          "name": "security",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "docs": {
-          "name": "docs role: Qwen3.8, README/changelog/API docs",
+          "name": "docs",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "research": {
-          "name": "research role: Qwen3.8, compare and investigate",
+          "name": "research",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "product": {
-          "name": "product role: Qwen3.8, specs and acceptance criteria",
+          "name": "product",
           "limit": {
             "context": 131072,
             "output": 4096
           }
         },
         "ux": {
-          "name": "ux role: Qwen3.8 (vision), flows and copy",
+          "name": "ux",
           "limit": {
             "context": 131072,
             "output": 2048
           }
         },
         "design": {
-          "name": "design role: Qwen3.8 (vision), visual critique",
+          "name": "design",
           "limit": {
             "context": 131072,
+            "output": 2048
+          }
+        },
+        "base": {
+          "name": "base",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "generalist": {
+          "name": "generalist",
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        },
+        "small": {
+          "name": "small",
+          "limit": {
+            "context": 16384,
             "output": 2048
           }
         }
       }
     }
-  }
+  },
+  "model": "airlie/coder"
 }
