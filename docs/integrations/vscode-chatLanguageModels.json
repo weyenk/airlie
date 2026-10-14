@@ -2,7 +2,7 @@
   {
     "name": "airlie engine (vllm-mlx, raw models)",
     "vendor": "customendpoint",
-    "apiKey": "${input:airlieApiKey}",
+    "apiKey": "airlie-local",
     "apiType": "chat-completions",
     "models": [
       {
@@ -60,7 +60,7 @@
   {
     "name": "airlie roles (task serve)",
     "vendor": "customendpoint",
-    "apiKey": "${input:airlieApiKey}",
+    "apiKey": "airlie-local",
     "apiType": "chat-completions",
     "models": [
       {
