@@ -10,9 +10,11 @@ import pytest
 import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.config.schema import TOPOLOGY_KINDS
 from tests.unit.test_config import MINIMAL, write
 
 ROLES = "['aggregator', 'coder', 'judge', 'summarizer']"
+KINDS = ", ".join(TOPOLOGY_KINDS)
 
 
 def valid(tmp_path: Path) -> dict[str, Any]:
@@ -185,12 +187,12 @@ def test_unknown_topology_messages_list_the_choices(tmp_path: Path) -> None:
     path = write(tmp_path, MINIMAL)
     with pytest.raises(ConfigError) as ei:
         load_config(path, topology="zzz")
-    assert str(ei.value) == "unknown topology 'zzz'; use one of single, teams, fork"
+    assert str(ei.value) == f"unknown topology 'zzz'; use one of {KINDS}"
     data = copy.deepcopy(MINIMAL)
     data["topology"] = {"profiles": {"slow": {}, "fast": {"topology": {"kind": "single"}}}}
     with pytest.raises(ConfigError) as ei:
         load_config(write(tmp_path, data), topology="zzz")
-    assert str(ei.value) == "unknown topology 'zzz'; use one of single, teams, fork or a profile (fast, slow)"
+    assert str(ei.value) == f"unknown topology 'zzz'; use one of {KINDS} or a profile (fast, slow)"
 
 
 def test_a_profile_with_an_unknown_kind_is_reported_where_it_is_declared(tmp_path: Path) -> None:
@@ -198,6 +200,51 @@ def test_a_profile_with_an_unknown_kind_is_reported_where_it_is_declared(tmp_pat
     data["topology"] = {"profiles": {"odd": {"topology": {"kind": "bogus"}}}}
     with pytest.raises(ConfigError) as ei:
         load_config(write(tmp_path, data), topology="odd")
-    assert str(ei.value) == (
-        "topology.profiles.odd.topology.kind 'bogus' is unknown; use one of single, teams, fork"
-    )
+    assert str(ei.value) == f"topology.profiles.odd.topology.kind 'bogus' is unknown; use one of {KINDS}"
+
+
+# ---- role skills/knowledge directories and the studio topology ----
+
+
+def test_role_skills_and_knowledge_must_be_directories(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    (tmp_path / "skills").mkdir()
+    data["roles"]["coder"]["skills"] = str(tmp_path / "skills")
+    data["roles"]["coder"]["knowledge"] = str(tmp_path / "know")
+    data["roles"]["judge"]["skills"] = str(tmp_path / "no-skills")
+    assert problems(data) == [
+        f"roles.coder.knowledge: {tmp_path / 'know'} is not a directory",
+        f"roles.judge.skills: {tmp_path / 'no-skills'} is not a directory",
+    ]
+    (tmp_path / "know").mkdir()
+    (tmp_path / "no-skills").mkdir()
+    assert problems(data) == []
+
+
+def test_role_skills_and_knowledge_paths_resolve_relative_to_the_config(tmp_path: Path) -> None:
+    data = copy.deepcopy(MINIMAL)
+    (tmp_path / "docs" / "kb").mkdir(parents=True)
+    (tmp_path / "docs" / "sk").mkdir()
+    data["roles"]["coder"]["knowledge"] = "docs/kb"
+    data["roles"]["coder"]["skills"] = "docs/sk"
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.roles["coder"].knowledge == (tmp_path / "docs" / "kb").resolve()
+    assert cfg.roles["coder"].skills == (tmp_path / "docs" / "sk").resolve()
+    assert cfg.roles["judge"].knowledge is None and cfg.roles["judge"].skills is None
+
+
+def test_studio_roles_are_checked_only_for_the_studio_topology(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    data["studio"] = {"chief_role": "nope", "review": {"role": "nope2", "roles": ["coder", "nopeA", "nopeB"]}}
+    assert problems(data) == []  # topology.kind is teams: the studio block is not in play
+    data["topology"] = {"kind": "studio"}
+    assert problems(data) == [
+        f"studio.chief_role names 'nope', which is not in roles ({ROLES})",
+        f"studio.review.role names 'nope2', which is not in roles ({ROLES})",
+        f"studio.review.roles names 'nopeA', which is not in roles ({ROLES})",
+        f"studio.review.roles names 'nopeB', which is not in roles ({ROLES})",
+    ]
+    data["studio"]["review"]["enabled"] = False
+    assert problems(data) == [f"studio.chief_role names 'nope', which is not in roles ({ROLES})"]
+    data["studio"] = {"chief_role": "coder", "review": {"role": "judge", "roles": ["coder", "qa"]}}
+    assert problems(data) == [f"studio.review.roles names 'qa', which is not in roles ({ROLES})"]

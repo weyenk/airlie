@@ -88,7 +88,7 @@ pytest_add_cli_args = [
     "--ignore=tests/unit/test_learned_controller.py",
     "--ignore=tests/unit/test_cli_controller.py",
 ]
-also_copy = ["airlie.yaml", "prompts", "evals", "scripts"]
+also_copy = ["airlie.yaml", "prompts", "evals", "scripts", "knowledge", "skills"]
 
 [tool.airlie.mutation]
 # Modules held to "every mutant is caught" (the pipeline and `task mutate:enrolled` fail on a survivor).
