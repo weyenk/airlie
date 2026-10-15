@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -539,7 +540,9 @@ async def test_a_poison_issue_is_set_aside_and_the_next_tick_builds_the_issue_be
         ),
         (("repo:o",), "the label 'repo:o' is not repo:<owner>/<name>"),
         (("repo:o/missing",), "no checkout of o/missing in "),
+        (("repo:o/twin",), "(story.repos_root) is named twin in some case: "),
         (("repo:o/plain",), "/plain is not a git repository: clone o/plain there"),
+        (("repo:o/bare",), "/bare has no remote 'origin' (story.remote): add it with git -C "),
         (
             ("repo:o/stray",),
             "/stray is not a checkout of o/stray: its remote 'origin' (story.remote) is 'git@",
@@ -551,9 +554,22 @@ async def test_an_issue_whose_repository_cannot_be_used_is_told_why_and_moved_ou
 ) -> None:
     board = QueueBoard(replace(POISON, labels=labels), NEXT)
     cfg, gh = queue_setup(tmp_path, monkeypatch, board)
-    (cfg.story.repos_root / "plain").mkdir()  # a directory, not a clone
-    stray = checkout_of(cfg.story.repos_root, "o/stray")
+    root = cfg.story.repos_root
+    (root / "plain").mkdir()  # a directory, not a clone
+    git(root, "init", "-q", "bare")  # a clone with no remote
+    stray = checkout_of(root, "o/stray")
     git(stray, "remote", "set-url", "origin", "git@github.com:o/repo.git")  # a clone of another repository
+    for name in ("twin", "TWIN"):  # one directory where names are case-insensitive (APFS), else two
+        (root / name).mkdir(exist_ok=True)
+    real = Path.iterdir
+
+    def listing(self: Path) -> Iterator[Path]:  # story.repos_root as a case-sensitive volume lists it
+        found = {p.name: p for p in real(self)}
+        if self == root:
+            found.setdefault("TWIN", self / "TWIN")
+        yield from found.values()
+
+    monkeypatch.setattr(Path, "iterdir", listing)
 
     line = await tick(cfg)
     assert line.startswith("AIR-7 Avatar upload: cannot start (") and says in line and "\n" not in line
