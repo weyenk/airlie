@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import pytest
 
 from airlie.engine import EngineHealth
 from airlie.story import factory
-from airlie.story.board import BoardError, Card, Column, NullBoard, text_card
+from airlie.story.board import NOTE_PREFIX, BoardError, Card, Column, NullBoard, text_card
 from airlie.story.factory import (
     StoryBusy,
     card_for,
@@ -327,6 +328,241 @@ async def test_a_tick_with_a_board_needs_a_repository_and_a_test_command(
     monkeypatch.setattr(factory, "make_board", lambda cfg: Intake(TOP))
     with pytest.raises(StorySetupError, match="no repository"):
         await tick(cfg)
+
+
+# ---- a poison issue: a story that cannot be opened must not hold up the issues behind it ----
+
+
+class QueueBoard:
+    """A board with an intake query: its issues in rank order, each in a column. Moves and notes are kept; a
+    call named in `refuse` raises BoardError, as Jira does when it is down."""
+
+    def __init__(
+        self, *cards: Card, refuse: tuple[str, ...] = (), says: str = "500 Internal Server Error"
+    ) -> None:
+        self.cards = {c.key: c for c in cards}
+        self.column: dict[str, str] = {c.key: "intake" for c in cards}
+        self.notes: dict[str, list[str]] = {c.key: [] for c in cards}
+        self.refuse = refuse
+        self.says = says  # what a refused call is told
+        self.searches = 0
+
+    async def card(self, ref: str) -> Card:
+        return self.cards[ref]
+
+    async def next_card(self) -> Card | None:
+        self.searches += 1
+        return next((c for c in self.cards.values() if self.column[c.key] == "intake"), None)
+
+    async def move(self, card: Card, column: Column) -> None:
+        if "move" in self.refuse:
+            raise BoardError(f"Jira POST issue/{card.key}/transitions: {self.says}")
+        self.column[card.key] = column
+
+    async def comment(self, card: Card, text: str) -> None:
+        if "comment" in self.refuse:
+            raise BoardError(f"Jira POST issue/{card.key}/comment: {self.says}")
+        self.notes[card.key].append(text)
+
+
+POISON = Card("AIR-7", "10007", "AIR-7", "Avatar upload", "")
+NEXT = Card("AIR-8", "10008", "AIR-8", "Avatar upload", "Users want avatars")
+
+
+def queue_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, board: QueueBoard, *, blocked: str | None = "Blocked"
+) -> tuple[Any, RecordedGh]:
+    """A tick over `board`, in which every story builds on a fresh FakeEngine with a recorded gh."""
+    repo = repo_with_marker_tests(tmp_path)
+    story = {
+        "repo": str(repo),
+        "test_cmd": "./check.sh",
+        "trunk": git(repo, "branch", "--show-current"),
+        "jira": {"statuses": {"blocked": blocked}},
+    }
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
+    gh = RecordedGh()
+    monkeypatch.setattr(factory, "make_board", lambda cfg: board)
+    monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
+    monkeypatch.setattr(factory, "Publisher", lambda *, remote: Publisher(remote=remote, run=gh))
+    return cfg, gh
+
+
+def poison_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    board: QueueBoard,
+    *,
+    how: str = "damaged",
+    blocked: str | None = "Blocked",
+) -> tuple[Any, RecordedGh]:
+    """queue_setup, where the top issue, AIR-7, has a story state that cannot be opened (`how`: a damaged
+    state.json, or one started in another repository)."""
+    cfg, gh = queue_setup(tmp_path, monkeypatch, board, blocked=blocked)
+    state = stories_dir(cfg) / POISON.key
+    if how == "damaged":
+        state.mkdir(parents=True)
+        (state / "state.json").write_text("{ not json")
+    else:  # a story that was started in another repository, then stopped
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        StoryState.open(state, POISON, elsewhere)
+    return cfg, gh
+
+
+@pytest.mark.parametrize(
+    ("how", "blocked", "column", "says"),
+    [("damaged", "Blocked", "blocked", "is damaged"), ("elsewhere", None, "building", "started in")],
+)
+async def test_a_poison_issue_is_set_aside_and_the_next_tick_builds_the_issue_behind_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, blocked: str | None, column: str, says: str
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, gh = poison_setup(tmp_path, monkeypatch, board, how=how, blocked=blocked)
+
+    line = await tick(cfg)  # the top issue's story cannot be opened
+    assert line.startswith("AIR-7 Avatar upload: cannot start (") and says in line and "\n" not in line
+    assert board.column == {"AIR-7": column, "AIR-8": "intake"}  # out of the intake query; AIR-8 untouched
+    [text] = board.notes["AIR-7"]
+    assert text.startswith(NOTE_PREFIX) and says in text
+    assert "Needs a person" in text and "`task story -- AIR-7`" in text
+    assert ("story.jira.statuses.blocked is off" in text) == (blocked is None)
+    assert gh.calls == []
+    if how == "damaged":
+        assert (stories_dir(cfg) / "AIR-7" / "state.json").read_text() == "{ not json"  # left for the person
+
+    assert await tick(cfg) == "AIR-8 Avatar upload: review"  # the next tick takes the issue behind it
+    assert board.column == {"AIR-7": column, "AIR-8": "review"}
+    assert await tick(cfg) == "idle: no issue matches the intake query"
+    assert board.searches == 3 and board.notes["AIR-7"] == [text]  # AIR-7 was not looked at again
+
+
+@pytest.mark.parametrize("refuse", [("comment",), ("move",), ("comment", "move")])
+async def test_a_board_that_refuses_the_note_or_the_move_is_named_in_the_line_and_does_not_fail_the_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refuse: tuple[str, ...]
+) -> None:
+    board = QueueBoard(POISON, NEXT, refuse=refuse)
+    cfg, _ = poison_setup(tmp_path, monkeypatch, board)
+    line = await tick(cfg)  # no exception: a failing board is no second failure
+    assert line.startswith("AIR-7 Avatar upload: cannot start (")
+    note_failed = "the note failed (BoardError: Jira POST issue/AIR-7/comment: 500"
+    move_failed = "the move to blocked failed (BoardError: Jira POST issue/AIR-7/transitions: 500"
+    assert (note_failed in line) == ("comment" in refuse) and (move_failed in line) == ("move" in refuse)
+    # each call is made whatever the other did
+    assert (board.notes["AIR-7"] != []) == ("comment" not in refuse)
+    assert (board.column["AIR-7"] == "blocked") == ("move" not in refuse)
+
+
+async def test_what_a_refusing_board_said_is_masked_and_cut_in_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a cut keeps the beginning of a text and its end: the password is in the end
+    said = "500 " + "y" * 300 + " https://me:s3cret@acme.atlassian.net/x"
+    board = QueueBoard(POISON, NEXT, refuse=("comment",), says=said)
+    cfg, _ = poison_setup(tmp_path, monkeypatch, board)
+    line = await tick(cfg)
+    assert "s3cret" not in line and "https://***@acme.atlassian.net" in line
+    assert "…" in line and len(line) < 1000
+
+
+async def test_the_reason_posted_for_a_poison_issue_is_masked_and_cut_like_a_stop_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, _ = poison_setup(tmp_path, monkeypatch, board, how="elsewhere")
+    state_file = stories_dir(cfg) / POISON.key / "state.json"
+    data = json.loads(state_file.read_text())
+    data["repo"] = "https://me:s3cret@git.example.org/r.git/" + "x" * 3000  # where it was started
+    state_file.write_text(json.dumps(data))
+    line = await tick(cfg)
+    [text] = board.notes["AIR-7"]
+    for shown in (line, text):
+        assert "s3cret" not in shown and "https://***@git.example.org" in shown
+        assert "…" in shown and len(shown) < 1500  # cut: the reason alone could be 3,000 characters
+
+
+async def test_only_a_story_that_cannot_be_opened_is_set_aside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, _ = poison_setup(tmp_path, monkeypatch, board)
+
+    class Broken:
+        async def run(self, card: Card) -> StoryState:
+            raise RuntimeError("a bug in the pipeline")
+
+    monkeypatch.setattr(factory, "make_pipeline", lambda cfg, *, board, repo, test_cmd: Broken())
+    with pytest.raises(RuntimeError, match="a bug in the pipeline"):  # a bug is not hidden as a poison issue
+        await tick(cfg)
+    assert board.column["AIR-7"] == "intake" and board.notes["AIR-7"] == []
+
+
+# ---- a finished story whose issue is back in To Do must not hold up the issues behind it either ----
+
+
+async def test_an_issue_put_back_in_to_do_after_its_story_finished_goes_to_review_and_the_next_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = QueueBoard(POISON, NEXT)  # AIR-7 is the issue whose story is built first
+    cfg, gh = queue_setup(tmp_path, monkeypatch, board)
+
+    assert await tick(cfg) == "AIR-7 Avatar upload: review"  # built; the pipeline moved the issue to review
+    assert board.column == {"AIR-7": "review", "AIR-8": "intake"}
+    told = list(board.notes["AIR-7"])
+    assert not any("already in review" in text for text in told)  # a story that has just finished is not
+    pushed = list(gh.calls)  # told it had finished before
+
+    board.column["AIR-7"] = "intake"  # a person puts the issue back in To Do
+    line = await tick(cfg)  # nothing is left to do for it, and nothing would move it
+    assert line.startswith("AIR-7 Avatar upload: already in review (nothing to do); noted on the issue, ")
+    assert line.endswith("moved to review") and "\n" not in line
+    assert board.column == {"AIR-7": "review", "AIR-8": "intake"}
+    assert len(board.notes["AIR-7"]) == len(told) + 1
+    text = board.notes["AIR-7"][-1]
+    pulls = "https://github.com/o/r/pull/11 https://github.com/o/r/pull/12"
+    assert text.startswith(NOTE_PREFIX) and f"this story is already in review: {pulls}; airlie has" in text
+    assert "nothing more to do" in text and "is not built again" in text
+    assert str(stories_dir(cfg) / "AIR-7") in text  # where its state is
+    assert gh.calls == pushed  # nothing was pushed or opened again
+
+    assert await tick(cfg) == "AIR-8 Avatar upload: review"  # the next tick takes the issue behind it
+    assert board.column == {"AIR-7": "review", "AIR-8": "review"}
+    assert await tick(cfg) == "idle: no issue matches the intake query"
+    assert board.searches == 4
+
+
+@pytest.mark.parametrize("contents", ["[]", "{}", '"review"', "12"])
+async def test_a_state_file_of_the_wrong_shape_is_a_poison_issue_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, _ = queue_setup(tmp_path, monkeypatch, board)
+    (stories_dir(cfg) / "AIR-7").mkdir(parents=True)
+    (stories_dir(cfg) / "AIR-7" / "state.json").write_text(contents)  # JSON, but no story state
+    line = await tick(cfg)  # the stage is read before the run: that read must not be what crashes the tick
+    assert "cannot start" in line and "is damaged" in line
+    assert board.column == {"AIR-7": "blocked", "AIR-8": "intake"}
+
+
+@pytest.mark.parametrize("refuse", [("comment",), ("move",), ("comment", "move")])
+async def test_a_board_that_refuses_the_note_or_the_move_does_not_fail_a_tick_on_a_finished_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refuse: tuple[str, ...]
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, _ = queue_setup(tmp_path, monkeypatch, board)
+    await tick(cfg)
+    told = len(board.notes["AIR-7"])
+    board.column["AIR-7"] = "intake"
+    board.refuse = refuse  # the board goes down
+
+    line = await tick(cfg)  # no exception
+    assert line.startswith("AIR-7 Avatar upload: already in review (nothing to do); ")
+    note_failed = "the note failed (BoardError: Jira POST issue/AIR-7/comment: 500"
+    move_failed = "the move to review failed (BoardError: Jira POST issue/AIR-7/transitions: 500"
+    assert (note_failed in line) == ("comment" in refuse) and (move_failed in line) == ("move" in refuse)
+    # each call is made whatever the other did
+    assert (len(board.notes["AIR-7"]) == told + 1) == ("comment" not in refuse)
+    assert (board.column["AIR-7"] == "review") == ("move" not in refuse)
 
 
 # ---- story_job: what POST /v1/airlie/stories starts ----

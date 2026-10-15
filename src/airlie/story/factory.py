@@ -3,15 +3,16 @@ studio over the HTTP engine, gh, the pipeline and the one-story lock."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig, ConfigError, load_config
-from airlie.story.board import Board, BoardError, Card, NullBoard, text_card
+from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.jira import JiraBoard, jira_board
 from airlie.story.model import StorySetupError
-from airlie.story.pipeline import StoryPipeline
+from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Publisher
 from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator, specialists
@@ -122,9 +123,78 @@ async def run_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path, te
         return await make_pipeline(cfg, board=board, repo=repo, test_cmd=test_cmd).run(card)
 
 
+def _why(e: Exception) -> str:
+    """What a board said when it refused a call, masked and cut short, for the line a tick logs."""
+    return _cap(_redact_urls(f"{type(e).__name__}: {e}"), 200)
+
+
+async def _note_and_move(board: Board, card: Card, text: str, column: Column) -> str:
+    """A note on the issue and then a move to `column`, as two calls, as the pipeline's stops make them: a
+    note the board refuses does not keep the issue where it is, and the other way round. Neither raises (a
+    board that fails must not make a tick fail twice); what happened is returned, for the line a tick logs."""
+    told: list[str] = []
+    try:
+        await board.comment(card, note(text))
+        told.append("noted on the issue")
+    except Exception as err:  # noqa: BLE001
+        told.append(f"the note failed ({_why(err)})")
+    try:
+        await board.move(card, column)
+        told.append(f"moved to {column}")
+    except Exception as err:  # noqa: BLE001
+        told.append(f"the move to {column} failed ({_why(err)})")
+    return ", ".join(told)
+
+
+async def _set_aside(cfg: AirlieConfig, board: Board, card: Card, e: StorySetupError) -> str:
+    """The story of `card` cannot be opened (its state is damaged, or was started in another repository), and
+    no later tick will change that. The issue would stay at the top of the intake query and every tick would
+    stop on it, so nothing behind it would ever be built: it is told why and moved out of intake, to blocked,
+    or to building when story.jira.statuses.blocked is off (a board leaves an issue where it is for a column
+    that is off). Best effort: a board that fails is named in the line, and the tick still ends."""
+    reason = _cap(_redact_urls(str(e)))  # masked, then cut: as every stop reason is
+    statuses = cfg.story.jira.statuses
+    column: Column = "blocked" if statuses.blocked is not None else "building"
+    text = f"cannot be picked up: {reason}\nNeeds a person: fix that, then resume with {card.resume}."
+    if column == "building":
+        text += (
+            f" story.jira.statuses.blocked is off, so the issue was moved to '{statuses.building}' "
+            "to keep story:tick from taking it again."
+        )
+    return (
+        f"{card.ref} {card.title}: cannot start ({reason}); {await _note_and_move(board, card, text, column)}"
+    )
+
+
+def _stage_before(cfg: AirlieConfig, card: Card) -> str | None:
+    """The stage the story of `card` had finished before this beat, from its state.json; None when there is no
+    state or it cannot be read (the run then starts the story, or says what is wrong with the file)."""
+    try:
+        return str(json.loads((stories_dir(cfg) / card.key / "state.json").read_text())["stage"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+async def _already_in_review(board: Board, card: Card, st: StoryState) -> str:
+    """The story of `card` reached review earlier, and its issue is in intake again (it was put back in To
+    Do): a run has nothing to do and nothing moves the issue, so every tick would take it again and nothing
+    behind it would ever be built. It is told so and moved to review. Best effort, as _set_aside is."""
+    links = " ".join(str(p["url"]) for p in st.prs)
+    text = (
+        f"this story is already in review{': ' + links if links else ''}; airlie has nothing more to do.\n"
+        f"A finished story is not built again; its state is in {st.path}."
+    )
+    return (
+        f"{card.ref} {card.title}: already in review (nothing to do); "
+        f"{await _note_and_move(board, card, text, 'review')}"
+    )
+
+
 async def tick(cfg: AirlieConfig) -> str:
     """One scheduler beat: build the top issue of the intake query, unless a story is in flight or the engine
-    is down. Returns one line for the log."""
+    is down. Returns one line for the log. An issue that a run leaves in intake would hold up the ones behind
+    it, so it is moved out: one whose story cannot be opened (_set_aside), or whose story has finished
+    (_already_in_review)."""
     board = make_board(cfg)
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
@@ -141,10 +211,19 @@ async def tick(cfg: AirlieConfig) -> str:
         card = await board.next_card()
         if card is None:
             return "idle: no issue matches the intake query"
-        st = await make_pipeline(cfg, board=board, repo=repo, test_cmd=test_cmd).run(card)
-        outcome = f"blocked ({st.blocked})" if st.blocked else st.stage
+        finished = _stage_before(cfg, card) == "review"  # then the run below has nothing to do
+        try:
+            st = await make_pipeline(cfg, board=board, repo=repo, test_cmd=test_cmd).run(card)
+        except StorySetupError as e:
+            line = await _set_aside(cfg, board, card, e)
+        else:
+            if finished and st.stage == "review":
+                line = await _already_in_review(board, card, st)
+            else:
+                outcome = f"blocked ({st.blocked})" if st.blocked else st.stage
+                line = f"{card.ref} {card.title}: {outcome}"
         # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
-        return " ".join(f"{card.ref} {card.title}: {outcome}".split())
+        return " ".join(line.split())
 
 
 async def story_job(

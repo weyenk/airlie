@@ -16,7 +16,12 @@ from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 from airlie.story.state import StoryState
 
 app = typer.Typer(
-    no_args_is_help=True, add_completion=False, help="airlie: parallel agent teams with shared memory."
+    no_args_is_help=True,
+    add_completion=False,
+    # No traceback lists the locals of its frames, whatever the default of the Typer that is installed:
+    # jira_board's are the account email and the API token.
+    pretty_exceptions_show_locals=False,
+    help="airlie: parallel agent teams with shared memory.",
 )
 config_app = typer.Typer(no_args_is_help=True, help="Inspect configuration.")
 app.add_typer(config_app, name="config")
@@ -717,12 +722,20 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
     they cancel the main task, so every cleanup runs and publish.run_cmd kills the process group gh runs in.
     gh has a session of its own, which a signal to airlie does not reach: launchd stops `story:tick` with
     SIGTERM and a closed terminal sends SIGHUP, and without this a killed airlie leaves a `gh stack submit`
-    pushing. A signal that was ignored when airlie started (nohup) stays ignored. A stop exits with 128 + the
-    signal."""
+    pushing. A signal that was ignored when airlie started (nohup) stays ignored, the handlers that were there
+    are put back when the run ends, and off the main thread, where none can be installed, this is asyncio.run.
+    A stop exits with 128 + the signal, whether or not its notice could be written."""
     import asyncio
+    import io
     import signal
+    import sys
+    import threading
 
     caught: list[signal.Signals] = []
+    found: dict[signal.Signals, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        found = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    ours = [sig for sig, handler in found.items() if handler is not signal.SIG_IGN]
 
     def stop(sig: signal.Signals, task: asyncio.Task[Any]) -> None:
         caught.append(sig)
@@ -731,9 +744,8 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
     async def main() -> T:
         task = asyncio.current_task()
         assert task is not None  # asyncio.run runs this as the main task
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            if signal.getsignal(sig) is not signal.SIG_IGN:
-                asyncio.get_running_loop().add_signal_handler(sig, stop, sig, task)
+        for sig in ours:
+            asyncio.get_running_loop().add_signal_handler(sig, stop, sig, task)
         return await coro
 
     try:
@@ -741,11 +753,20 @@ def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
     except asyncio.CancelledError:
         if not caught:
             raise
-        err.print(
-            f"[yellow]stopped by {caught[0].name}[/yellow]: `task story -- ISSUE` resumes a stopped story "
-            "from its last finished stage"
-        )
+        try:
+            err.print(
+                f"[yellow]stopped by {caught[0].name}[/yellow]: "
+                "`task story -- ISSUE` resumes a stopped story from its last finished stage"
+            )
+        except (OSError, SystemExit):  # nobody reads stderr (a hung-up terminal); Rich exits on a broken pipe
+            # What stderr refused stays in Python's buffer, and flushing it at exit would fail again and make
+            # the status 120: it is given somewhere to go.
+            sys.stderr = io.StringIO()
         raise typer.Exit(128 + caught[0]) from None
+    finally:
+        for sig in ours:  # asyncio.run has put the default back; this puts back what was there
+            if found[sig] is not None:
+                signal.signal(sig, found[sig])
 
 
 def _story_cfg(config: Path | None) -> AirlieConfig:
@@ -754,29 +775,34 @@ def _story_cfg(config: Path | None) -> AirlieConfig:
     try:
         return story_config(_load(config))
     except ConfigError as e:
-        err.print(f"[red]{escape(str(e))}[/red]")
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
 
 
 def _fail(problems: list[str]) -> None:
     """Print every problem and exit 1; no problems, no exit."""
     for p in problems:
-        err.print(f"[red]{escape(p)}[/red]")
+        err.print(f"[red]{escape(p)}[/red]", emoji=False)
     if problems:
         raise typer.Exit(1)
 
 
 def _print_story(st: StoryState) -> None:
-    """The outcome; model and issue text is printed as text, never as Rich markup."""
+    """The outcome; model and issue text is printed as text, never as Rich markup or emoji codes."""
     if st.blocked:
         state = f"[red]blocked[/red] after {st.stage}: {escape(st.blocked)}"
     else:
         state = f"[green]{st.stage}[/green]"
-    console.print(f"story {escape(st.path.name)}: {state}", highlight=False)
+    console.print(f"story {escape(st.path.name)}: {state}", highlight=False, emoji=False)
     for p in st.prs:
-        console.print(f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False)
+        console.print(
+            f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False, emoji=False
+        )
     console.print(
-        f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl", markup=False, highlight=False
+        f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl",
+        markup=False,
+        highlight=False,
+        emoji=False,
     )
 
 
@@ -816,7 +842,7 @@ def story_run(
     try:
         st = _run_stoppable(go())
     except (factory.StoryBusy, BoardError, StorySetupError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]")
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
     _print_story(st)
     if st.blocked:
@@ -838,11 +864,15 @@ def story_tick(config: ConfigOpt = None) -> None:
     try:
         line = _run_stoppable(factory.tick(cfg))
     except (BoardError, StorySetupError) as e:
-        err.print(f"[red]{escape(str(e))}[/red]")
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
     # soft_wrap: a log line is one line, whatever the width of the terminal (or of the launchd log)
     console.print(
-        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", markup=False, highlight=False, soft_wrap=True
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}",
+        markup=False,
+        highlight=False,
+        emoji=False,
+        soft_wrap=True,
     )
 
 
@@ -862,7 +892,7 @@ def story_check(
         console.print('[green]ready[/green]: task story -- ISSUE (or --text "request")')
         return
     for p in problems:
-        err.print(f"[red]✗[/red] {escape(p)}")
+        err.print(f"[red]✗[/red] {escape(p)}", emoji=False)
     raise typer.Exit(1)
 
 
