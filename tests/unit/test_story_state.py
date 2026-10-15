@@ -91,12 +91,22 @@ def test_a_crash_between_the_sync_and_the_rename_leaves_the_old_state(
         b"",  # emptied by a crash
         b'{"card": {"key": "text-',  # cut short mid-write
         b"\x00" * 64,  # NUL-filled, as some filesystems leave a file after a crash
+        b'{"stage": "\xff\xfe"}',  # bytes that are not UTF-8 text
         b"[]",  # valid JSON, but not an object
         b'{"stage": "new"}',  # an object missing its required fields
         b'{"card": {}, "repo": "r", "stage": "new", "unknown": 1}',  # a key this version does not know
         b'{"card": {}, "repo": "r", "stage": "deploy"}',  # a stage this version does not know
     ],
-    ids=["empty", "truncated", "nul-filled", "list", "missing-field", "unknown-key", "unknown-stage"],
+    ids=[
+        "empty",
+        "truncated",
+        "nul-filled",
+        "not-text",
+        "list",
+        "missing-field",
+        "unknown-key",
+        "unknown-stage",
+    ],
 )
 def test_a_damaged_state_file_is_a_readable_stop_that_names_the_story(tmp_path: Path, damaged: bytes) -> None:
     card = text_card("x")

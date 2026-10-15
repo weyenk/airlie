@@ -30,6 +30,10 @@ def _end_a_torn_line(events: Path) -> None:
             f.write(b"\n")
 
 
+def _damaged(f: Path, why: str) -> StorySetupError:
+    return StorySetupError(f"{f} is damaged ({why}); delete it to start the story over")
+
+
 @dataclass
 class StoryState:
     """stories/<card key>/state.json. `stage` is the last stage that finished. `built` maps a layer number
@@ -63,15 +67,15 @@ class StoryState:
                 f"{f} cannot be read ({e.strerror or type(e).__name__}); fix that, or delete it to start "
                 "the story over"
             ) from None
+        except ValueError as e:  # bytes that are not text (UnicodeDecodeError)
+            raise _damaged(f, type(e).__name__) from None
         if text is not None:
             try:
                 st = cls(path=path, **json.loads(text))
             except (ValueError, TypeError) as e:
-                raise StorySetupError(
-                    f"{f} is damaged ({type(e).__name__}); delete it to start the story over"
-                ) from None
+                raise _damaged(f, type(e).__name__) from None
             if st.stage not in STAGES:
-                raise StorySetupError(f"{f} is damaged (unknown stage); delete it to start the story over")
+                raise _damaged(f, "unknown stage")
             if st.repo != str(repo):
                 raise StorySetupError(
                     f"this story was started in {st.repo}; resume it there (--repo {st.repo}) "
