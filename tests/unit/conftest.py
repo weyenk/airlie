@@ -16,6 +16,7 @@ import pytest
 os.environ.setdefault("NO_PROXY", "*")
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,25 @@ def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """airlie reads the .env beside airlie.yaml: no unit test may read the person's real one. Tests of the
     reader pass their own tmp paths, and a test of the lookup imports the real config_dotenv itself."""
     monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: {})
+
+
+@pytest.fixture(autouse=True)
+def _no_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This checkout's airlie.local.yaml holds the person's own settings (their repository, their Jira): no
+    unit test may read it. A test of the committed airlie.yaml gives load_config a local path that does not
+    exist."""
+    from airlie.config import load
+
+    real, local = load._read_yaml, ROOT / "airlie.local.yaml"
+
+    def guarded(path: Path) -> dict[str, object]:
+        if path.resolve() == local.resolve():
+            raise AssertionError(
+                f"a unit test read {local}: give load_config a local path that does not exist"
+            )
+        return real(path)
+
+    monkeypatch.setattr(load, "_read_yaml", guarded)
 
 
 @pytest.fixture

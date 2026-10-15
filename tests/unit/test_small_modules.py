@@ -202,7 +202,8 @@ def test_quote_joins_shell_quoted_words() -> None:
 
 
 def test_engine_for_model_raises_keyerror_naming_the_model() -> None:
-    cfg = load_config(Path(__file__).resolve().parents[2] / "airlie.yaml")
+    root = Path(__file__).resolve().parents[2]
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     with pytest.raises(KeyError) as ei:
         cfg.engine_for_model("ghost")
     assert ei.value.args == ("ghost",)

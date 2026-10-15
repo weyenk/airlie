@@ -27,6 +27,7 @@ from tests.unit.test_studio_orchestrator import cfg_for
 
 ROOT = Path(__file__).resolve().parents[2]
 OC = ROOT / "docs/integrations/opencode"
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 
 
 def front(path: Path) -> tuple[dict[str, Any], str]:
@@ -67,7 +68,7 @@ def verdict(rules: dict[str, str], command: str) -> str:
 
 
 def test_agents_use_models_task_serve_lists() -> None:
-    cfg = load_config(ROOT / "airlie.yaml")
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     served = {*cfg.roles, *cfg.models}
     agents = {p.stem: front(p)[0] for p in (OC / "agent").glob("*.md")}
     assert set(agents) == {"chief", "architect", "coder", "qa", "docs"}
@@ -168,7 +169,7 @@ def test_the_mcp_server_calls_only_routes_serve_has() -> None:
     src = (ROOT / "src/airlie/serve/mcp_server.py").read_text()
     used = set(re.findall(r'"(/v1/airlie/[a-z]+)', src))
     assert used == {"/v1/airlie/plans", "/v1/airlie/runs", "/v1/airlie/jobs", "/v1/airlie/stories"}
-    cfg = load_config(ROOT / "airlie.yaml")
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     app = create_app(cfg, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
     paths = {getattr(r, "path", "") for r in app.routes}
     for u in used:

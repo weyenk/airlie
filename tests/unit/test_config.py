@@ -164,7 +164,7 @@ def test_local_override_is_optional(tmp_path: Path) -> None:
 
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
-    cfg = load_config(root / "airlie.yaml")
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
     assert {"base", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "vllm_mlx"
