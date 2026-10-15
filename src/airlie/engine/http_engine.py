@@ -203,13 +203,13 @@ class HTTPEngine:
                             slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                             fn = tc.get("function") or {}
                             if tc.get("id"):
+                                if slot["id"] and str(tc["id"]) != slot["id"]:
+                                    slot["arguments"] = ""  # vllm-mlx re-sends a finished call under a new id
                                 slot["id"] = slot["id"] or str(tc["id"])
                             if fn.get("name"):
                                 slot["name"] = str(fn["name"])
-                            if fn.get("arguments"):
-                                # vllm-mlx sends whole arguments (possibly twice); OpenAI sends fragments
-                                args = str(fn["arguments"])
-                                slot["arguments"] = args if args.startswith("{") else slot["arguments"] + args
+                            if fn.get("arguments"):  # fragments, in order (a value may well start with "{")
+                                slot["arguments"] += str(fn["arguments"])
                         if choice.get("finish_reason"):
                             finish = str(choice["finish_reason"])
         except EngineError as e:
