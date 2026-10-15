@@ -163,13 +163,17 @@ node scripts/run-impacted-tests.mjs
   `}`), joined with `&&`: an inline `# comment` ends at its own line, the first command that fails fails the layer
   and nothing after it runs, and a `cd` carries over to the commands after it. Notes and PR bodies show them as
   they read, joined with ` && `. CRLF line ends are fine.
-- **One command per line:** a line that ends in a `\` would go on onto the next one, and that is refused: the
-  story stops before refine, and the note names the line.
+- **One command per line:** a line that `sh` would read on into the next one is refused: one that ends in a `\`, `&&`,
+  `||` or `|`, or leaves a quote (`'`, `"` or a backtick) or a parenthesis open. The story stops before refine, and
+  the note names the line. What a `# comment` holds, or a quote, does not count: `make test # see a \` is one command.
 - **Read from the trunk:** `AGENTS.md` is read with git from the story's base commit (the remote's trunk as
   fetched when the story started), never from a worktree: a model that edits `AGENTS.md` in its layer, or an
   uncommitted edit in your checkout, changes nothing, and neither does an object a model replaced with `git
   replace` (airlie's git reads no replacement). A symbolic link to another file of the commit is followed; one
   that leaves the repository, or leads to no file of the commit, stops the story with a note that says which.
+- **What runs is the layer's:** the commands are the trunk's, but they run in the layer's worktree, so they run its
+  own scripts (a `package.json` script, `scripts/*.mjs`, a Makefile target). A layer that changes one of them shows
+  that change in its PR diff, for the reviewer to weigh.
 - **When:** at the start of the story, once its repository and base commit are known and before refine, so a
   repository without a gate costs no model time.
 - **Kept for the story's whole life:** the commands and the blob of `AGENTS.md` they came from are kept in
@@ -257,10 +261,11 @@ note work the other way round: they are posted before their stage is saved, so w
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them;
-- the trunk cannot be fetched (`story.trunk` is not on the remote, or the remote does not answer): a story builds
-  only on the remote's trunk, fetched into `origin/<trunk>` by a refspec that names it (no fetch refspec the
-  repository's configuration names is used), never on the local trunk, which a model's shell can move. Run it
-  again once the remote answers;
+- the trunk cannot be fetched (`story.trunk` is not on the remote, or the remote does not answer): a story builds only
+  on the remote's trunk, fetched into `refs/remotes/origin/<trunk>` by a refspec that names both ends (no fetch
+  refspec the repository's configuration names is used) and read by that full name. It never builds on the local
+  trunk, or on a tag or a local branch named `origin/<trunk>` (which git reads first for that short name), since a
+  model's shell can move or make any of them. Run it again once the remote answers;
 - `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira refuses a move;
 - publishing as the bot: the remote is not a github.com repository, the app is not installed on it or its key is
   wrong (each stops the story before any model works, and says how to fix it), or the remote now leads somewhere

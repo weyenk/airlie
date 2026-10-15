@@ -346,10 +346,11 @@ def _check_trunk_and_gate(
     cfg: AirlieConfig, path: Path, who: str, test_cmd: str | None, blocked: str, out: Checked
 ) -> None:
     """The trunk a story in `path` would build on, the remote's as last fetched (a story fetches it first,
-    and never builds on the local one), and the test gate it would have: a person's `test_cmd`, else the one
-    AGENTS.md lists there (`who` names the repository, `blocked` the story, in a problem)."""
+    and never builds on the local one), read by its full name as a story reads it (StoryPipeline._base), and
+    the test gate it would have: a person's `test_cmd`, else the one AGENTS.md lists there (`who` names the
+    repository, `blocked` the story, in a problem)."""
     ref = f"{cfg.story.remote}/{cfg.story.trunk}"
-    sha = rev_parse(path, ref)
+    sha = rev_parse(path, f"refs/remotes/{ref}")
     if sha is None:
         out.notes.append(
             f"trunk: {ref} has not been fetched into {path}: a story fetches it first, and reads its test "

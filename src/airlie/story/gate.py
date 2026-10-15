@@ -37,6 +37,9 @@ _NO_PARAGRAPH = re.compile(
 """A list item, a block quote or a thematic break: no paragraph, so no Setext heading, is made of it."""
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+_QUOTES = "'\"`"
+_WORD_ENDS = " \t;&|()<>"
+"""What ends a word in sh: after one of these, as at the start of a line, a # begins a comment."""
 
 
 def gate_command(commands: Sequence[str]) -> str:
@@ -108,9 +111,33 @@ def _paragraph_line(line: str, paragraph: list[str]) -> bool:
 
 
 def _continues(command: str) -> bool:
-    """`command` goes on onto the next line: it ends in an odd number of backslashes (an even number is
-    escaped backslashes)."""
-    return (len(command) - len(command.rstrip("\\"))) % 2 == 1
+    """`command` goes on onto the next line, as sh reads it: it ends in a backslash that is not escaped, it
+    leaves a quote (' " or `) or a parenthesis open, or it ends in &&, || or |. A comment (a # that begins a
+    word) is not read, and neither is what is quoted or escaped (a backslash escapes the character after it,
+    but not inside single quotes)."""
+    code: list[str] = []  # what sh reads as code, every quoted or escaped character as an x
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and quote != "'":
+            if i + 1 == len(command):
+                return True  # it escapes the newline: the next line goes on this one
+            i += 1
+            code.append("x")
+        elif quote is not None:
+            quote = None if c == quote else quote
+            code.append("x")
+        elif c in _QUOTES:
+            quote = c
+            code.append("x")
+        elif c == "#" and (not code or code[-1] in _WORD_ENDS):
+            break
+        else:
+            code.append(c)
+        i += 1
+    text = "".join(code).rstrip()
+    return quote is not None or text.count("(") > text.count(")") or text.endswith(("&&", "|"))
 
 
 def gate_commands(markdown: str) -> tuple[str, ...]:

@@ -78,7 +78,9 @@ class StoryState:
         """The state at `path`, or a new one. A state that cannot be used (it cannot be read, it is damaged,
         or it belongs to another repository) is a StorySetupError that names state.json: deleting that file,
         not the directory, starts the story over and keeps its events, notes and PR bodies. So is an event log
-        that cannot be read and appended to (_open_events): every stage appends to it.
+        that cannot be read and appended to (_open_events): every stage appends to it. Damaged is anything but
+        the JSON of a story state, a stage that is none, and a repository, stage or pinned GitHub repository
+        that is not text: each is compared or looked up here, and must not fail as anything else.
 
         `github_repo` is the "owner/name" the repository's remote names now, as written (None: none on
         github.com). A story keeps the one it was started with (or first opened with) and publishes there
@@ -99,6 +101,10 @@ class StoryState:
                 st = cls(path=path, **json.loads(text))
             except (ValueError, TypeError) as e:
                 raise _damaged(f, type(e).__name__) from None
+            for name in ("repo", "stage", "github_repo"):
+                value = getattr(st, name)
+                if not isinstance(value, str) and (name != "github_repo" or value is not None):
+                    raise _damaged(f, f"its {name} is not text")
             if st.stage not in STAGES:
                 raise _damaged(f, "unknown stage")
             if st.repo != str(repo):

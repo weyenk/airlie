@@ -1576,6 +1576,11 @@ async def test_a_gate_edited_in_the_persons_checkout_or_in_a_layers_worktree_is_
             "the Test gate section of its AGENTS.md continues a command onto the next line "
             "('pytest -q \\\\')",
         ),
+        (
+            "## Test gate\n\n```sh\npnpm install &&\npnpm test\n```\n",
+            "the Test gate section of its AGENTS.md continues a command onto the next line "
+            "('pnpm install &&')",
+        ),
     ],
 )
 async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model_works(
@@ -1724,3 +1729,62 @@ async def test_a_story_whose_layers_are_all_built_publishes_without_reading_a_ga
     st = await pipeline(tmp_path, repo, FakeEngine(), test_cmd=None).run(card)
     assert st.blocked is None and st.stage == "review" and st.gate is None
     assert "Tests: `./check.sh` passes on this branch." in (st.path / "pr-02.md").read_text(encoding="utf-8")
+
+
+async def test_a_layer_whose_state_kept_no_gate_is_published_with_a_tests_line_that_names_no_command(
+    tmp_path: Path,
+) -> None:
+    """A state written before each built layer kept its gate: publishing does not fail on it, and the PR names
+    no command, since the state cannot say which one the layer passed."""
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("Let users upload an avatar")
+    st = await pipeline(tmp_path, repo, happy_engine(), FailingGh("the network fell over")).run(card)
+    assert st.stage == "build" and st.blocked is not None
+    saved = json.loads((st.path / "state.json").read_text())
+    for row in saved["built"].values():
+        del row["gate"]
+    (st.path / "state.json").write_text(json.dumps(saved))
+    st = await pipeline(tmp_path, repo, FakeEngine()).run(card)
+    assert st.blocked is None and st.stage == "review"
+    for n in (1, 2):
+        body = (st.path / f"pr-0{n}.md").read_text(encoding="utf-8")
+        assert "Tests: the story's test gate passes on this branch." in body and "Tests: `" not in body
+
+
+# ---- a ref a model's shell made under a short name picks neither a base nor a gate ----
+
+
+@pytest.mark.parametrize("kind", ["tag", "branch"])
+async def test_a_tag_or_a_branch_named_like_the_remote_trunk_picks_neither_the_base_nor_the_gate(
+    tmp_path: Path, kind: str
+) -> None:
+    """For the short name origin/<trunk>, git reads refs/tags/origin/<trunk>, then refs/heads/origin/<trunk>,
+    before refs/remotes/origin/<trunk>; a model's shell can make either from a layer's worktree (refs are
+    shared). The story reads the remote-tracking branch by its full name."""
+    repo = gated(tmp_path)  # the trunk's gate: ./check.sh
+    trunk = git(repo, "branch", "--show-current")
+    fetched = git(repo, "rev-parse", trunk)  # what the fetch brings: the recorded gh mirrors the trunk
+    layer = tmp_path / "layer"
+    git(repo, "worktree", "add", "-q", "--detach", str(layer))
+    commit_file(layer, "AGENTS.md", agents_md("true"), "a weaker gate")
+    git(layer, kind, f"origin/{trunk}")  # at the weaker commit
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(text_card("avatars"))
+    assert st.base == {"ref": f"origin/{trunk}", "sha": fetched}
+    assert st.gate is not None and st.gate["commands"] == ["./check.sh"]
+    assert st.blocked is None and st.stage == "review"
+
+
+async def test_a_tag_named_like_a_layers_branch_is_not_the_next_layers_base(tmp_path: Path) -> None:
+    """Layer 02 is built on layer 01's branch, read by its full name: for the short name, git reads a tag of
+    that name first, and a model's shell can make one (at the trunk, here, where layer 01's work is not)."""
+    repo = repo_with_marker_tests(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    card = text_card("Let users upload an avatar")
+    first = happy_engine(qa=[DONE, DONE], coder=[WRITE_PASS, RUN, DONE, DONE], reviewer=[APPROVE, APPROVE])
+    st = await pipeline(tmp_path, repo, first).run(card)
+    assert list(st.built) == ["01"] and st.blocked is not None and "changed nothing" in st.blocked
+    git(repo, "tag", B1, trunk)
+    again = FakeEngine({"qa": [DONE], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    st = await pipeline(tmp_path, repo, again).run(card)
+    assert st.blocked is None and st.stage == "review"
+    git(repo, "merge-base", "--is-ancestor", f"refs/heads/{B1}", f"refs/heads/{B2}")  # on layer 01's work

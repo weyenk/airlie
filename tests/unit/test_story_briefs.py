@@ -376,3 +376,9 @@ def test_a_finding_saved_with_a_lone_surrogate_still_makes_a_body_that_can_be_wr
     body = pr_body(text_card("x"), STORY, LAYERS, 0, rows, [(11, "https://github.com/o/r/pull/11")], "t")
     assert "half \N{REPLACEMENT CHARACTER} of a pair" in body
     body.encode("utf-8")
+
+
+def test_a_layer_whose_gate_is_not_known_has_a_tests_line_that_names_no_command() -> None:
+    """A layer built before each layer kept the gate it passed: the PR cannot say which command that was."""
+    body = pr_body(CARD, STORY, LAYERS, 1, ROWS, PRS, None)
+    assert "Tests: the story's test gate passes on this branch." in body and "Tests: `" not in body

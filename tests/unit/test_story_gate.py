@@ -77,8 +77,26 @@ def test_a_cd_carries_over_to_the_commands_after_it_and_a_brace_can_be_an_argume
     assert done.returncode == 0 and done.stdout.split() == ["}", "{"]
 
 
-@pytest.mark.parametrize("line", ["pytest -q \\", "pytest -q \\\\\\", "  make test\\  "])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "pytest -q \\",
+        "pytest -q \\\\\\",
+        "  make test\\  ",
+        "pnpm install &&",
+        "make lint ||",
+        "cat test.log |",
+        "make check&&  ",
+        "make test | # and then",
+        'echo "a quote left open',
+        "echo 'it",
+        "echo `date",
+        "echo $(date",
+    ],
+)
 def test_a_command_continued_onto_the_next_line_is_refused_and_named(line: str) -> None:
+    """Each command runs on its own (gate_command): a line that sh would read on into the next one, through
+    a last backslash or operator, or a quote or parenthesis it leaves open, is refused."""
     text = f"## Test gate\n```sh\nuv sync\n{line}\n  --maxfail=1\n```\n"
     with pytest.raises(NoTestGate) as e:
         gate_commands(text)
@@ -86,6 +104,24 @@ def test_a_command_continued_onto_the_next_line_is_refused_and_named(line: str) 
         "the Test gate section of its AGENTS.md continues a command onto the next line "
         f"({line.strip()!r}): put each command on one line"
     )
+
+
+def test_an_operator_quote_or_backslash_that_does_not_reach_the_next_line_is_no_continuation() -> None:
+    """sh reads each of these as one whole command: an operator in the middle of the line, in quotes, in a
+    comment or escaped; quotes and parentheses closed on the line; a comment that ends in a backslash."""
+    commands = (
+        "make a && make b || make c | tee log",
+        "make test # then a && b |",
+        "echo 'a && b |' \"c ||\"",
+        "grep -c a\\|",
+        "echo 'x \\'",
+        "make test # it's done \\",
+        'test $((1 + 2)) -eq 3 && echo "$(date)"',
+        "echo $# ${#x}",
+        'echo "a"#b \\\\',
+    )
+    text = "## Test gate\n```sh\n" + "".join(f"{c}\n" for c in commands) + "```\n"
+    assert gate_commands(text) == commands
 
 
 def test_a_line_that_ends_in_an_escaped_backslash_or_a_comment_that_does_is_no_continuation() -> None:
@@ -160,9 +196,13 @@ def test_crlf_line_ends_and_a_byte_order_mark_are_read_as_lines() -> None:
 
 def test_tilde_fences_and_longer_fences_close_only_on_their_own_kind() -> None:
     assert gate_commands("## Test gate\n~~~sh\nmake test\n~~~\n") == ("make test",)
-    text = "## Test gate\n````sh\nmake a\n```\nmake b\n~~~~\n````\nafter\n"
-    assert gate_commands(text) == ("make a", "```", "make b", "~~~~")
-    assert gate_commands("## Test gate\n~~~\nmake a\n```\n~~~\n") == ("make a", "```")
+    text = "## Test gate\n~~~~sh\nmake a\n~~~\nmake b\n````\n~~~~\nafter\n"
+    assert gate_commands(text) == ("make a", "~~~", "make b", "````")
+    assert gate_commands("## Test gate\n```\nmake a\n~~~\n```\n") == ("make a", "~~~")
+    # three backticks do not close a block opened with four: they are a command, one that sh reads on (an
+    # open backtick), so it is refused
+    with pytest.raises(NoTestGate, match="next line \\('```'\\)"):
+        gate_commands("## Test gate\n````sh\nmake a\n```\nmake b\n````\nafter\n")
 
 
 def test_an_unclosed_block_runs_to_the_end() -> None:

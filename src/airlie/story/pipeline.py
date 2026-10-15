@@ -236,12 +236,14 @@ class StoryPipeline:
 
     async def _base(self, st: StoryState) -> dict[str, str]:
         """The commit the story builds on, resolved once and kept in the state: the remote's trunk, fetched
-        now (`_trunk_ref`). Refine and layers read the code at it and its test gate is read from it, layer 01
-        is built on it, and a resume reads and builds on that same commit whatever the remote has moved on
-        to."""
+        now (`_trunk_ref`) and read by its full name, refs/remotes/<remote>/<trunk>. For the short name
+        <remote>/<trunk> (the one kept, to show), git reads a tag or a local branch of that name first, and a
+        model's shell can make either. Refine and layers read the code at it and its test gate is read from
+        it, layer 01 is built on it, and a resume reads and builds on that same commit whatever the remote has
+        moved on to."""
         if st.base is None:
             ref = await self._trunk_ref(st)
-            sha = rev_parse(self.repo, ref)
+            sha = rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
             if sha is None:  # a fetch that succeeded leaves it there: something removed it since
                 raise StoryBlocked(
                     f"the trunk '{ref}' does not exist in {self.repo} after it was fetched; run the story "
@@ -398,7 +400,7 @@ class StoryPipeline:
             base_ref, base_sha = base["ref"], base["sha"]
         else:
             base_ref = str(st.built[f"{i:02d}"]["branch"])
-            found = rev_parse(self.repo, base_ref)
+            found = rev_parse(self.repo, f"refs/heads/{base_ref}")  # for the short name, a tag comes first
             if found is None:
                 raise StoryBlocked(f"layer {nn}: its base '{base_ref}' does not exist in {self.repo}")
             base_sha = found
@@ -465,7 +467,9 @@ class StoryPipeline:
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
-                text = pr_body(card, story, layers, i, rows, prs, st.built[f"{i + 1:02d}"]["gate"])
+                # the gate this layer passed: a state from before layers kept theirs has none to name
+                gate = st.built[f"{i + 1:02d}"].get("gate")
+                text = pr_body(card, story, layers, i, rows, prs, gate)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")

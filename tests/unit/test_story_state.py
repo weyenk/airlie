@@ -334,3 +334,31 @@ def test_a_story_without_a_github_repository_takes_the_one_it_is_next_opened_wit
     assert (
         st.github_repo == "o/r" and json.loads((story_dir / "state.json").read_text())["github_repo"] == "o/r"
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("github_repo", 7),
+        ("github_repo", ["o/r"]),
+        ("repo", 12),
+        ("repo", None),
+        ("stage", 3),
+        ("stage", None),
+    ],
+)
+def test_a_state_whose_repository_pin_or_stage_is_not_text_is_damaged(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """A StorySetupError, as for any damaged file (tick sets the issue aside), not an AttributeError that
+    would escape every beat."""
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo", github_repo="o/r")
+    data = json.loads((story_dir / "state.json").read_text())
+    (story_dir / "state.json").write_text(json.dumps({**data, field: value}))
+    with pytest.raises(StorySetupError) as e:
+        StoryState.open(story_dir, card, tmp_path / "repo", github_repo="o/r")
+    assert str(e.value) == (
+        f"{story_dir / 'state.json'} is damaged (its {field} is not text); delete it to start the story over"
+    )

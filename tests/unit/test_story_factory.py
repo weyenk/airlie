@@ -470,8 +470,9 @@ def poison_setup(
     blocked: str | None = "Blocked",
 ) -> tuple[Any, RecordedGh]:
     """queue_setup, where the top issue, AIR-7, has a story state that cannot be opened (`how`: a damaged
-    state.json, one that cannot be read, an event log that cannot be appended to, a checkout whose remote no
-    longer names the issue's repository, or a story started in another repository)."""
+    state.json, one that cannot be read, an event log that cannot be appended to, one whose pinned repository
+    is a number, a checkout whose remote no longer names the issue's repository, or a story started in another
+    repository)."""
     cfg, gh = queue_setup(tmp_path, monkeypatch, board, blocked=blocked)
     state = stories_dir(cfg) / POISON.key
     poison = (cfg.story.repos_root / "poison").resolve()
@@ -484,6 +485,10 @@ def poison_setup(
     elif how == "read-only events":  # a good event log that no event can be appended to
         StoryState.open(state, POISON, poison).finish("intake")
         (state / "events.jsonl").chmod(0o444)
+    elif how == "pin not text":  # the repository it is pinned to is a number: damaged, not a crash
+        StoryState.open(state, POISON, poison, github_repo="o/poison").finish("intake")
+        saved = json.loads((state / "state.json").read_text())
+        (state / "state.json").write_text(json.dumps({**saved, "github_repo": 7}))
     elif how == "moved remote":  # started for o/poison; its checkout's remote names another repository now
         StoryState.open(state, POISON, poison, github_repo="o/poison").finish("intake")
         git(poison, "remote", "set-url", "origin", "git@github.com:evil/other.git")
@@ -500,6 +505,7 @@ def poison_setup(
         ("damaged", "Blocked", "blocked", "/AIR-7/state.json is damaged"),
         ("unreadable", "Blocked", "blocked", "/AIR-7/state.json cannot be read (Permission denied)"),
         ("read-only events", "Blocked", "blocked", "/AIR-7/events.jsonl cannot be read and appended to"),
+        ("pin not text", "Blocked", "blocked", "/AIR-7/state.json is damaged (its github_repo is not text)"),
         ("moved remote", "Blocked", "blocked", "/poison is not a checkout of o/poison: its remote 'origin'"),
         ("elsewhere", None, "building", "started in"),
     ],
@@ -992,6 +998,32 @@ async def test_check_with_an_issue_shows_its_repository_its_trunk_as_last_fetche
     problems, notes = await check(cfg, mine, " make check ", "AIR-7")
     assert problems == [] and notes[0].startswith(f"AIR-7 is for o/repo (its repo: label): {mine.resolve()},")
     assert "test gate: make check (--test-cmd)" in notes
+
+
+@pytest.mark.parametrize("kind", ["tag", "branch"])
+async def test_check_reads_the_remote_trunk_by_its_full_name_whatever_was_made_under_its_short_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A tag or a local branch named origin/<trunk>, which a model's shell can make from a layer's worktree,
+    is what git reads first for that short name: check shows the remote-tracking branch, and its gate."""
+    repo = checkout_of(tmp_path / "git", "o/repo", "make test")
+    trunk = git(repo, "branch", "--show-current")
+    fetched = git(repo, "rev-parse", f"refs/remotes/origin/{trunk}")
+    layer = tmp_path / "layer"
+    git(repo, "worktree", "add", "-q", "--detach", str(layer))
+    commit_file(layer, "AGENTS.md", agents_md("true"), "a weaker gate")
+    git(layer, kind, f"origin/{trunk}")  # at the weaker commit
+    story = {"repos_root": str(tmp_path / "git"), "trunk": trunk}
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(FakeJira()))
+    monkeypatch.setattr(JiraBoard, "check", no_jira_problems)
+    monkeypatch.setattr(factory, "Publisher", fake_publisher([], []))
+    problems, notes = await check(cfg, None, None, "AIR-7")
+    assert problems == []
+    assert notes[1:] == [
+        f"trunk: origin/{trunk} at {fetched[:12]}, as last fetched (a story fetches it first)",
+        f"test gate (AGENTS.md at origin/{trunk}): make test",
+    ]
 
 
 async def test_check_with_an_issue_that_would_be_blocked_says_why(

@@ -341,8 +341,36 @@ def test_the_story_endpoint_passes_the_request_to_the_job_factory(tmp_path: Path
         assert callable(kw.pop("running"))  # what tells it a job of the same story is running
     assert seen == [
         {"card": None, "text": "avatars", "repo": "~/code/app"},
-        {"card": "AIR-7", "text": None, "repo": " "},  # a blank repo is none
+        {"card": "AIR-7", "text": None, "repo": None},  # a blank repo is none
     ]
+
+
+@pytest.mark.parametrize("body", [{"card": "AIR-7", "repo": " "}, {"text": "avatars", "repo": "\t "}])
+def test_a_blank_repo_is_no_repository_all_the_way_to_the_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    """Not a path made of blanks (no git repository there: a 400). An issue's story is placed by its label
+    and a written request's in story.repo, as when the request names no repo."""
+    from tests.unit.test_story_board import FakeJira
+    from tests.unit.test_story_board import board as jira_board_for
+    from tests.unit.test_story_pipeline import checkout_of
+
+    repo = checkout_of(tmp_path / "git", "o/repo")  # FakeJira's AIR-7 is labelled repo:o/repo
+    story = {"repos_root": str(tmp_path / "git"), "repo": str(repo)}
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(FakeJira()))
+    given: list[Path | None] = []
+
+    async def builds(c: Any, *, board: Any, card: Any, repo: Path | None = None) -> StoryState:
+        given.append(repo)
+        return StoryState(path=tmp_path / "s", card=card.to_dict(), repo=str(repo), stage="review")
+
+    monkeypatch.setattr(factory, "run_one", builds)
+    with TestClient(create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))) as client:
+        r = client.post("/v1/airlie/stories", json=body)
+        assert r.status_code == 202, r.json()
+        assert finish(client, r.json()["job_id"])["state"] == "done"
+    assert given == [None]
 
 
 def test_an_issues_story_with_a_repo_is_refused_only_a_person_on_the_cli_may_move_it(tmp_path: Path) -> None:

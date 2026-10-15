@@ -194,13 +194,15 @@ def pr_body(
     i: int,
     rows: list[dict[str, Any]],
     prs: list[tuple[int, str]],
-    test_cmd: str,
+    test_cmd: str | None,
 ) -> str:
     """The PR text a reviewer reads. Model text stays in its section: titles, scope and table cells are one
     line; the brief and criteria are blockquotes; each finding is one bullet. Each body field is cut, then
     neutralised by `_model`, so GitHub renders no markup from it. The body stays under BODY_LIMIT: findings
-    are cut first, and the stack and the merge line always close it."""
+    are cut first, and the stack and the merge line always close it. `test_cmd` is the gate the layer passed,
+    as shown; None names no command (a layer built before each layer kept its gate)."""
     layer = layers[i]
+    passed = f"`{test_cmd}`" if test_cmd is not None else "the story's test gate"
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     link = f" ([{card.ref or 'issue'}]({card.url}))" if card.url else ""
     criteria = [line for c in owned for line in _quote(f"- {c.line()}", model=True)]
@@ -228,7 +230,7 @@ def pr_body(
             for r in rows
         ),
         "",
-        f"Tests: `{test_cmd}` passes on this branch.",
+        f"Tests: {passed} passes on this branch.",
         "",
         "### Reviewer findings to check",
     ]
