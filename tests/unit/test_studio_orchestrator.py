@@ -342,6 +342,78 @@ async def test_plan_rejected_twice_is_a_failed_run_with_feedback(tmp_path: Path)
     assert "zz" in second
 
 
+# ---- a chief reply cut off at max_tokens (HDS-3 follow-up, 2026-10-15) ----
+
+CHIEF_CUT = FakeReply(reasoning="The plan needs three layers. No, four. ", finish_reason="length")
+CHIEF_WHY = (
+    "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
+    "raise roles.chief.max_tokens above its thinking_budget (8192)"
+)
+
+
+def chief_as_hds_3(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """The config with the chief as the first live story had its architect: thinking on, a budget of 8192 and
+    room for only 4096 tokens."""
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    chief = cfg.roles["chief"]
+    chief.thinking, chief.thinking_budget, chief.max_tokens = True, 8192, 4096
+    return cfg
+
+
+async def test_a_chief_reply_cut_off_with_no_visible_text_fails_the_run_saying_why(tmp_path: Path) -> None:
+    """It used to parse as "no plan or answer": the run ended with an empty answer and no reason."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"chief": [CHIEF_CUT, CHIEF_CUT]})
+    orch = StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo)
+    assert report.final_answer == f"engine error: {CHIEF_WHY}" and not report.any_ok and not report.teams
+    errors = [e["error"] for e in events(report) if e["kind"] == "plan_error"]
+    assert errors == [f"engine error: {CHIEF_WHY}"] * 2  # asked twice, as for any engine error
+
+
+async def test_the_plan_door_reports_a_cut_off_chief_as_failed_with_why(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"chief": [CHIEF_CUT, CHIEF_CUT]})
+    out = await StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter()).plan(
+        "g", repo=repo
+    )
+    assert out.plan is None and out.failed and out.answer == f"engine error: {CHIEF_WHY}"
+
+
+async def test_a_chief_reply_cut_off_in_synthesis_is_an_error_answer_not_an_empty_one(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {"chief": [PLAN, CHIEF_CUT], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+    )
+    orch = StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    assert report.final_answer == f"engine error during synthesis: {CHIEF_WHY}"
+    assert report.any_ok and report.tests == {"studio": True}  # what was built is still in the report
+
+
+async def test_a_chief_reply_cut_off_with_text_is_handled_as_before(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    half = FakeReply(text="Split it into three lay", reasoning="Three layers. ", finish_reason="length")
+    out = await StudioOrchestrator(
+        chief_as_hds_3(tmp_path), FakeEngine({"chief": [half, half]}), router=ChiefRouter()
+    ).plan("g", repo=repo)
+    assert (out.plan, out.answer, out.failed) == (
+        None,
+        "Split it into three lay",
+        False,
+    )  # prose is the answer
+
+
+async def test_a_chief_reply_that_stopped_with_no_text_is_handled_as_before(tmp_path: Path) -> None:
+    """Only a reply that max_tokens ended is an error: one that stopped by itself keeps its handling."""
+    repo = repo_with_marker_tests(tmp_path)
+    quiet = FakeReply(reasoning="All of it was thinking. ", finish_reason="stop")
+    out = await StudioOrchestrator(
+        chief_as_hds_3(tmp_path), FakeEngine({"chief": [quiet, quiet]}), router=ChiefRouter()
+    ).plan("g", repo=repo)
+    assert (out.plan, out.answer, out.failed) == (None, "", False)
+
+
 async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, review={"enabled": False})

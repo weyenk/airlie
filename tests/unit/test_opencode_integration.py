@@ -206,6 +206,23 @@ def test_opencode_gets_the_tools_from_airlie_mcp_not_from_a_tool_file() -> None:
     assert entry == opencode_entry(Path(entry["command"][4]))  # what install writes; the checkout is yours
 
 
+def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking() -> None:
+    """OpenCode sends a model's limit.output as max_tokens through task serve, and max_tokens caps the
+    thinking and the reply together (HDS-3, 2026-10-15): a thinking model needs the room airlie.yaml gives its
+    role, and the sample's output must stay below its context."""
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")  # whose kv size the contexts assume
+    sample = json.loads((ROOT / "docs/integrations/opencode.json").read_text())
+    models = sample["provider"]["airlie"]["models"]
+    thinking = {n: r for n, r in cfg.roles.items() if r.thinking and r.thinking_budget is not None}
+    wanted = {n: r.max_tokens for n, r in thinking.items() if n in models}  # the roles the sample lists
+    for model in {r.model for r in thinking.values()}:  # and the raw model they run on
+        wanted[model] = max(r.max_tokens for r in thinking.values() if r.model == model)
+    assert wanted == {"architect": 16384, "research": 16384, "generalist": 16384}
+    for name, tokens in wanted.items():
+        limit = models[name]["limit"]
+        assert tokens <= limit["output"] < limit["context"], name
+
+
 def test_a_story_that_stopped_is_a_done_job_with_the_reason_in_its_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

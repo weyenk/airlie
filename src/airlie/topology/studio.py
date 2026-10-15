@@ -21,6 +21,7 @@ from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
+from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
@@ -140,7 +141,11 @@ class StudioOrchestrator:
             max_tokens=role.max_tokens,
             thinking=role.thinking,
         )
-        return (await self.engine.generate(req)).text
+        res = await self.engine.generate(req)
+        if res.finish_reason == "length" and not res.text.strip():
+            # max_tokens ended it with nothing to read (all thinking): an error saying so, not an empty reply
+            raise EngineError(cut_off_text(role_name, role, thinking=bool(res.reasoning.strip())))
+        return res.text
 
     def _roles_table(self) -> str:
         return "\n".join(f"- {name}: {summary}" for name, summary in self.criteria.items())

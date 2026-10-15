@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
+from typing import Any
 
+import pytest
 from autogen_agentchat.messages import ToolCallExecutionEvent, ToolCallRequestEvent
 from autogen_core import FunctionCall
-from autogen_core.models import FunctionExecutionResult
+from autogen_core.models import CreateResult, FunctionExecutionResult, RequestUsage
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from airlie.config import RoleSpec
 from airlie.engine import ToolCall
-from airlie.teams.autogen_team import build_function_tools, build_model_client, pair_steps
+from airlie.scheduler import SlotScheduler
+from airlie.teams import NullObserver, TeamContext
+from airlie.teams.autogen_team import AutoGenTeam, build_function_tools, build_model_client, pair_steps
 from airlie.tools import ToolContext, ToolRegistry
 
 
@@ -178,3 +184,124 @@ async def test_registry_tool_reports_cut_off_arguments(tmp_path: Path) -> None:
     (write,) = build_function_tools(reg)
     with pytest.raises(ToolError, match="cut off.*shorter"):
         await write.run_json({"__truncated__": "0000000000"}, cancellation_token=None)  # type: ignore[arg-type]
+
+
+# ---- a reply cut off at max_tokens is not a finished answer (HDS-3 follow-up, 2026-10-15) ----
+
+USAGE = RequestUsage(prompt_tokens=10, completion_tokens=64)
+
+
+def reply(finish: Any, content: Any = "", thought: str | None = None) -> CreateResult:
+    return CreateResult(finish_reason=finish, content=content, usage=USAGE, cached=False, thought=thought)
+
+
+def scripted_team(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *replies: CreateResult, **role_fields: Any
+) -> tuple[AutoGenTeam, TeamContext]:
+    """The real AutoGenTeam, agent and repairing client, with the OpenAI client under them replaced by a
+    script of results (no network)."""
+    script = deque(replies)
+
+    async def create(self: Any, messages: Any, **kwargs: Any) -> CreateResult:
+        return script.popleft()
+
+    monkeypatch.setattr(OpenAIChatCompletionClient, "create", create)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "a.py").write_text("x = 1\n")
+    (tmp_path / "p.md").write_text("You are the architect.")
+    role = RoleSpec(
+        prompt=tmp_path / "p.md", model="base", **{"thinking": False, "max_tokens": 64, **role_fields}
+    )
+    ctx = TeamContext(
+        team_id="team-1",
+        goal="plan the layers",
+        role=role,
+        tools=ToolRegistry.builtin(["read_file"], ToolContext(worktree=wt)),
+        worktree=wt,
+        role_name="architect",
+        scheduler=SlotScheduler(1),
+    )
+    return AutoGenTeam("http://127.0.0.1:1/v1", "base"), ctx
+
+
+async def test_autogen_a_reply_cut_off_with_no_visible_text_is_not_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cut = reply("length", thought="Let me read the files again.")
+    team, ctx = scripted_team(tmp_path, monkeypatch, cut, thinking=True, thinking_budget=100, max_tokens=64)
+    result = await team.run(ctx, NullObserver())
+    assert result.ok is False and result.stop_reason == "cut_off" and result.steps == 0
+    assert result.final_text == (
+        "the reply was cut off at max_tokens (64) before it ended, still thinking; "
+        "raise roles.architect.max_tokens above its thinking_budget (100)"
+    )
+    assert result.completion_tokens == 64
+
+
+async def test_autogen_a_cut_off_reply_that_has_text_keeps_it_and_is_marked_cut_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team, ctx = scripted_team(tmp_path, monkeypatch, reply("length", "The plan has three lay"))
+    result = await team.run(ctx, NullObserver())
+    assert (result.ok, result.stop_reason, result.final_text) == (False, "cut_off", "The plan has three lay")
+
+
+async def test_autogen_a_cut_off_reply_without_thinking_says_only_what_to_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team, ctx = scripted_team(tmp_path, monkeypatch, reply("length", "  "))
+    result = await team.run(ctx, NullObserver())
+    assert result.stop_reason == "cut_off"
+    assert (
+        result.final_text
+        == "the reply was cut off at max_tokens (64) before it ended; raise roles.architect.max_tokens"
+    )
+
+
+async def test_autogen_a_reply_that_stopped_by_itself_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team, ctx = scripted_team(tmp_path, monkeypatch, reply("stop", "All done.", thought="Thinking."))
+    result = await team.run(ctx, NullObserver())
+    assert (result.ok, result.stop_reason, result.final_text) == (True, "done", "All done.")
+
+
+async def test_autogen_a_tool_call_is_unaffected_by_a_length_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    call = reply("length", [FunctionCall(id="c1", name="read_file", arguments='{"path": "a.py"}')])
+    team, ctx = scripted_team(tmp_path, monkeypatch, call, reply("stop", "Read it."))
+    result = await team.run(ctx, NullObserver())
+    assert (result.ok, result.stop_reason, result.final_text, result.steps) == (True, "done", "Read it.", 1)
+
+
+async def test_autogen_the_client_remembers_how_each_reply_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autogen_core.models import UserMessage
+
+    from airlie.teams.autogen_client import RepairingOpenAIClient
+
+    script = deque([reply("length"), reply("stop", "ok")])
+
+    async def create(self: Any, messages: Any, **kwargs: Any) -> CreateResult:
+        return script.popleft()
+
+    async def create_stream(self: Any, messages: Any, **kwargs: Any) -> Any:
+        yield "partial "
+        yield reply("length", "partial ")
+
+    monkeypatch.setattr(OpenAIChatCompletionClient, "create", create)
+    monkeypatch.setattr(OpenAIChatCompletionClient, "create_stream", create_stream)
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)
+    client = build_model_client("http://127.0.0.1:1/v1", "base", role, api_key=None)
+    assert isinstance(client, RepairingOpenAIClient) and client.last_finish_reason == ""
+    messages = [UserMessage(content="hi", source="user")]
+    await client.create(messages)
+    assert client.last_finish_reason == "length"
+    await client.create(messages)
+    assert client.last_finish_reason == "stop"
+    items = [item async for item in client.create_stream(messages)]
+    assert isinstance(items[-1], CreateResult) and client.last_finish_reason == "length"

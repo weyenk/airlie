@@ -20,7 +20,7 @@
           "name": "architect",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "qa": {
@@ -48,7 +48,7 @@
           "name": "research",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "product": {
@@ -83,7 +83,7 @@
           "name": "generalist",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "small": {
