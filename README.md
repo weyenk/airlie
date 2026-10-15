@@ -42,8 +42,12 @@ Run `task` to list them. The ones that exist today:
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: the vllm-mlx process (`main`, all catalog models in its registry) and the llama-server process serving Kev (`decision`, `/v1/systemone`); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
-| `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
 | `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
+| `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a Jira issue (a key like `AIR-7`, or its link) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; Jira comes from the `ATLASSIAN_*` variables in the `.env` beside `airlie.yaml`, which airlie reads itself and never exports (`docs/integrations/story.md`) |
+| `task story:tick` / `task story:check` | one scheduler beat (what the launchd agent runs): build the top *To Do* issue unless a story is in flight / check roles, repo, test command, gh + gh-stack, the Jira credentials, project and statuses |
+| `task story:launchd:install` / `task story:launchd:uninstall` | load / remove the launchd agent that runs the story tick (`airlie story tick`) every 15 minutes |
+| `task opencode:install` | copy the OpenCode chief, its subagents, `/studio`, `/story` and the `airlie_*` tools into `~/.config/opencode` |
 | `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the Kev router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
 | `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
@@ -67,7 +71,12 @@ Cursor (through a tunnel) are in `docs/integrations/` too.
 `task serve` starts an OpenAI-compatible server on `127.0.0.1:8090`. Point Claude Code, Qwen Code, Cursor or
 `curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends the role prompt and
 forwards to the engine. `POST /v1/airlie/run` with `{"goal": ..., "repo": "/path", "k": 3}` runs the parallel
-teams and returns the aggregated answer and winning branch.
+teams and returns the aggregated answer and winning branch. The jobs API (`/v1/airlie/plans`, `/runs`, `/stories`)
+starts studio plans, studio runs and stories in the background and is followed by long polls
+([`docs/integrations/story.md`](docs/integrations/story.md)). **Without `--api-key`, any program on this machine can
+call every route, including the ones that start stories, which push branches and open draft PRs:** run
+`task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API_KEY`) to require `Authorization: Bearer SECRET`. A
+`task serve` that is already running must be restarted to get the jobs API.
 
 ## How a run works
 

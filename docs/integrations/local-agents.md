@@ -8,7 +8,7 @@ for roles also `task serve`.
 
 | agent | how it connects | config |
 | --- | --- | --- |
-| **OpenCode** | OpenAI-compatible provider → `task serve` (roles and raw models) | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists the roles `coder`, `architect`, `qa`, `security`, `docs`, `research`, `product`, `ux`, `design` and the raw models `base`, `generalist`, `small` |
+| **OpenCode** | OpenAI-compatible provider → `task serve` (roles and raw models) | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists the roles `coder`, `architect`, `qa`, `security`, `docs`, `research`, `product`, `ux`, `design` and the raw models `base`, `generalist`, `small`; `task opencode:install` adds the `chief` agent with subagents, `/studio`, `/story` and the `airlie_*` tools |
 | **Claude Code** | Anthropic-compatible `/v1/messages` (vllm-mlx serves it) | environment variables below |
 | **Qwen Code** | OpenAI-compatible | `OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=airlie-local OPENAI_MODEL=base qwen` |
 
@@ -32,6 +32,34 @@ assume the studio profile (`max_kv_size: 131072`); under the single profile the 
 `generalist` and `small` are the raw models (no persona). Everything goes through `task serve` rather than the
 engine directly because the role server also repairs streamed tool-call chunks that arrive without an `id`
 (vllm-mlx occasionally sends them; OpenCode's AI SDK rejects them with "Expected 'id' to be a string").
+
+### The chief: delegation, the studio and stories
+
+`task opencode:install` copies a `chief` agent (switch to it with Tab), four subagents, two commands and five
+tools (`airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel`, `airlie_story`) into `~/.config/opencode`.
+Restart OpenCode after installing, and keep `task serve` running. The files are copies: run the task again after
+you update them.
+
+- The **chief** runs on the raw `generalist` (Qwen3.8). It never edits files. It hands small changes to a
+  subagent with OpenCode's `task` tool: `coder`, `qa`, `docs` or `architect`, each on its role model, so `task
+  serve` supplies the persona.
+- **Features:** `/studio <goal>` (or just ask). `airlie_plan` returns the studio chief's plan; you approve or
+  edit it; `airlie_run` builds it on a new branch (the roles you approved are pinned); `airlie_status` follows
+  it, and `airlie_cancel` stops it.
+- **Stories:** `/story <Jira issue key or link | request>` runs the story pipeline (`story.md`) and ends in
+  stacked draft PRs. The story is built in the repository OpenCode is open in. A story that stops is a finished
+  job whose result carries the reason, so `airlie_status` shows `stopped: <reason>` and the chief reports it as
+  stopped, with the reason instead of PR links.
+- A test command the model picks for `airlie_run` or `airlie_story` runs in a shell, so OpenCode asks you
+  first, as it does for any bash command.
+- No agent can merge: each one denies `gh pr merge*`, `gh stack merge*` and `gh api*` (a pull request can also
+  be merged through the API).
+- The tools call `task serve` at `http://127.0.0.1:8090` (`AIRLIE_URL` in OpenCode's environment changes it).
+  Without `--api-key`, any program on this machine can use that server, and its jobs API starts studio runs and
+  stories that push branches and open draft PRs; start it with `task serve -- --api-key SECRET`, put the same
+  secret in `AIRLIE_SERVE_API_KEY` for OpenCode and in the `apiKey` of the `airlie` provider in `opencode.json`.
+- A `task serve` that is already running was started before the jobs API existed and answers 404 to these tools:
+  restart it on this code once the branch is merged.
 
 ## Claude Code
 
@@ -59,6 +87,7 @@ reliably than Claude does, so expect more retries on complex edits. `generalist`
 
 ## The studio
 
-None of these run the studio: it is a topology, not a chat model. For a whole feature use
+A chat model does not run the studio: it is a topology, not a model. OpenCode's `chief` starts it for you
+(`/studio`, above); from the other agents, for a whole feature use
 `task studio -- "goal" --repo /path/to/project --test-cmd "pytest -q"` and review the resulting
 `airlie/<run>/studio` branch.

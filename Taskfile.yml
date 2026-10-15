@@ -85,7 +85,7 @@ tasks:
       - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
 
   story:tick:
-    desc: "Build the top issue of the intake query unless a story is in flight (launchd runs this; docs/integrations/story.md)"
+    desc: "One scheduler beat by hand: build the top issue of the intake query unless a story is in flight (the launchd agent runs the same command; docs/integrations/story.md)"
     cmds:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 
@@ -93,6 +93,22 @@ tasks:
     desc: "Check what task story needs: roles, repo, test command, gh + gh-stack, the Jira project and its statuses"
     cmds:
       - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
+
+  story:launchd:install:
+    desc: "Load the launchd agent that runs the story tick (airlie story tick) every 15 minutes from this checkout (docs/integrations/story.md)"
+    cmds:
+      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/story-tick.plist > ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - echo "loaded; the log is ~/.local/state/airlie/story-tick.log"
+
+  story:launchd:uninstall:
+    desc: "Unload the story pickup launchd agent and remove its plist"
+    cmds:
+      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist
 
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
