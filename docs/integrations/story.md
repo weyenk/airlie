@@ -1,7 +1,8 @@
 # Stories: a Jira issue → stacked draft PRs
 
 `task story` takes a Jira issue (or a written request) through the whole loop on your local models and stops
-at a stack of draft pull requests for you to review. **Only a human merges.**
+at a stack of draft pull requests for you to review. **Only a human merges:** airlie has no merge path (see *What
+stops a merge*).
 
 | stage | who | what you get |
 | --- | --- | --- |
@@ -119,20 +120,24 @@ issue's description.
 
 ## When a story stops
 
-A stop is never silent. The issue gets `stopped after '<stage>': <reason>` and `Resume: ...`, and goes to *Blocked*
-(with `blocked: null` it stays in *In Progress*). The stage is the last one that finished, so the failure is in the
-next one:
+A stop is never silent. The issue gets `stopped after '<stage>': <reason>` and `Resume: ...`, and goes to *Blocked*.
+With `blocked: null` it is left where it was: in *In Progress* once the story was picked up, but still in *To Do* if
+the pick-up itself failed, and then every beat tries it again. The stage is the last one that finished, so the
+failure is in the next one:
 
 | stopped after | the failure was in |
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, say) |
 | `'intake'` | refining the story (or finding the trunk) |
-| `'refine'` | planning the layers |
-| `'layers'` | building a layer |
+| `'refine'` | planning the layers, or posting the story's comment |
+| `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
 | `'publish'` | telling the issue: the PRs are open |
 
-The reason is cut to 800 characters, and a `user:password@` in a URL is masked. The usual reasons:
+A stage is saved before its comment is posted, so a comment that Jira refuses stops the story as `after 'refine'` or
+`after 'layers'` (the reason names Jira) and costs no work: the story, the plan and the built layers are kept, and
+the model is not asked again. The reason is cut to 800 characters, and a `user:password@` in a URL is masked. The
+usual reasons:
 
 - product says the request cannot be built as written, and names the decision a person must make: edit the issue
   or comment on it;
@@ -155,16 +160,24 @@ kills the `gh` it started so nothing keeps pushing, comments `stopped by a signa
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and
 exits. The tick takes *To Do* issues, so its next beat resumes the story from its last finished stage.
 
-**A killed airlie** (SIGKILL, a crash, a power cut) cannot say so: the issue stays in *In Progress* with no stop
-comment. Run the same command to resume.
+**A killed airlie** (SIGKILL, a crash, a power cut) cannot say so: the issue stays where the last step left it
+(normally *In Progress*), with no stop comment. Run the same command to resume.
 
 ## From OpenCode
 
-`/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). It
-starts the same pipeline through `task serve` and follows it with `airlie_status`, and the story is built in the
-repository OpenCode is open in. A story that stops is a finished job whose result carries the reason, so the chief
-reports it as stopped, with the reason instead of PR links, and says it resumes when the same command runs again.
-Every OpenCode agent denies `gh api*` as well as `gh pr merge*` and `gh stack merge*`.
+`/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). The
+chief calls `airlie_story`, a tool of the `airlie mcp` server that `task opencode:install` registers in OpenCode's
+`opencode.json`; it starts the same pipeline through `task serve`, and the chief follows it with `airlie_status`. The
+story is built in the git repository `airlie mcp` was started in, or in the `repo` the tool is given, or else in
+`story.repo`. `airlie_story` passes on a test command only if it is `story.test_cmd` or a line of `AIRLIE_TEST_CMDS`
+in the server's environment, and refuses any other. A story that stops is a finished job whose result carries the
+reason, so the chief reports it as stopped, with the reason instead of PR links, and says it resumes when the same
+command runs again.
+
+**Give `/story` an issue key or link, or a short request of your own, and do not paste an issue's body:** OpenCode
+runs `` !`cmd` `` spans in a command's arguments, so pasted text can run a shell command.
+
+How far OpenCode's rules go in keeping an agent from merging is under *What stops a merge*.
 
 ## Over HTTP (`task serve`)
 
@@ -188,8 +201,8 @@ process: restarting it forgets them, and the story's directory stays.
 **Without `--api-key`, `task serve` lets any program on this machine start stories**, which push branches and open
 draft PRs, and the request's `test_cmd` runs in a shell. Start it with `task serve -- --api-key SECRET` (it also
 reads `AIRLIE_SERVE_API_KEY`) to require `Authorization: Bearer SECRET` on every `/v1` route. OpenCode then needs the
-same secret: `AIRLIE_SERVE_API_KEY` in its environment for the `airlie_*` tools, and `apiKey` in the `airlie`
-provider of `opencode.json`.
+same secret twice: `AIRLIE_SERVE_API_KEY` in the `environment` of the `mcp.airlie` entry of its `opencode.json` (for
+the `airlie_*` tools; see `local-agents.md`), and `apiKey` in the `airlie` provider (for chat).
 
 **A `task serve` that is already running (port 8090) must be restarted on this code.** It was started before the
 jobs API and stories existed, so it answers 404 to `/v1/airlie/plans`, `/runs`, `/stories` and `/jobs`. Stop it
@@ -229,7 +242,9 @@ Each beat appends one line to the log: a timestamp, then one of
 | `AIR-7 <title>: cannot start (...)` | the story could not be opened; set aside (below) |
 | `AIR-7 <title>: already in review (nothing to do) ...` | a finished story's issue was in *To Do*; moved on (below) |
 
-A beat that launchd stopped writes `stopped by SIGTERM: ...` instead, without the timestamp.
+A beat that fails instead of finishing writes its message with no timestamp: the error itself (no `story.repo` or
+`story.test_cmd`, a role that is not a specialist, Jira refusing the credentials or not answering; `task
+story:check` names what is missing), or `stopped by SIGTERM: ...` when launchd stopped it.
 
 An issue that a beat leaves in *To Do* is taken again by every later beat, and nothing behind it would ever be built.
 So the tick moves two kinds of issue out of *To Do*:
@@ -249,10 +264,20 @@ So the tick moves two kinds of issue out of *To Do*:
 - PRs: drafts, titled `[n/total] <story>: <layer>`, each with a link to the issue, the layer's criteria, a table of
   how it was built, the reviewer's findings to check, and the stack. Review and merge bottom-up. Text the models
   wrote is defused (a zero-width space goes after `@`, `<` and `&`, and between `#` and the digits after it), so a PR
-  notifies no one, links no issue and renders no HTML from it.
+  notifies no one, links no `#123` reference and renders no HTML from it.
 - Commits: one per layer, authored by `airlie <airlie@local>`, so AI work is visible in history. The PRs are opened
   with your own `gh` login.
 - The issue: the comments and moves in *What you see on the issue* and *When a story stops*.
+
+## What stops a merge
+
+airlie has no code that merges, and the PRs it opens are drafts. In OpenCode, the agents
+airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`) deny the commands
+`gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That guards against a
+model's slip, not against a determined one: the rules match the command line, so a wrapper such as
+`sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands, and the
+studio's own coder has a shell tool that these rules do not govern at all. What really stops a merge is GitHub:
+branch protection on the trunk (required reviews) and the scope of the token your `gh` login uses.
 
 ## Not yet
 
