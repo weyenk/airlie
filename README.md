@@ -206,3 +206,10 @@ sudo sysctl iogpu.wired_limit_mb=106496
 ```
 
 `task doctor` tells you if it is missing.
+
+## License
+
+airlie is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, change and
+share it for any noncommercial purpose: personal projects, hobby work, research, education, or a charity or
+public body. Using it in or for a company needs a separate commercial license; ask via
+[github.com/weyenk](https://github.com/weyenk).
