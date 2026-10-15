@@ -114,6 +114,15 @@ tasks:
     cmds:
       - cloudflared tunnel --url http://127.0.0.1:8090 {{.CLI_ARGS}}
 
+  opencode:install:
+    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story, and the airlie_* tools into ~/.config/opencode (restart OpenCode after)"
+    cmds:
+      - mkdir -p ~/.config/opencode/agent ~/.config/opencode/command ~/.config/opencode/tool
+      - cp docs/integrations/opencode/agent/*.md ~/.config/opencode/agent/
+      - cp docs/integrations/opencode/command/*.md ~/.config/opencode/command/
+      - cp docs/integrations/opencode/tool/airlie.ts ~/.config/opencode/tool/
+      - echo "installed; restart OpenCode. The tools need 'task serve' running."
+
   bench:lts:
     desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"
     cmds:
