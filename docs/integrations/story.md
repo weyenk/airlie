@@ -24,7 +24,7 @@ running the same command again resumes it (see *When a story stops*).
 
 1. **An API token.** At id.atlassian.com → Security → API tokens, create one. A scoped token also needs
    `story.jira.api_url` (below).
-2. **`.env`** beside `airlie.yaml`, in the root of this checkout:
+2. **`~/.config/airlie/.env`**, one file for every checkout (keep it private: `chmod 600`):
 
    ```bash
    ATLASSIAN_API_KEY=<the token>
@@ -33,19 +33,21 @@ running the same command again resumes it (see *When a story stops*).
    ATLASSIAN_PROJECT_KEY=AIR
    ```
 
-   airlie reads `.env` itself, in memory, when it builds the board: no task loads or exports it, so the studio's
-   shell tool, the test gate, `gh`, `git` and the engines never inherit your token, and `ps eww` does not show
-   it. **Prefer `.env` to exporting these variables in your shell:** an exported variable reaches every process
-   the shell starts, and a variable that is already set in the shell still wins over `.env`. The file is
-   git-ignored, so it is never committed (keep it private: `chmod 600 .env`). Lines are `KEY=VALUE`, with an
-   optional `export ` prefix, quotes and a trailing ` # comment`; a line that is none of those is skipped with a
-   warning that names its number. Each variable wins over the same setting in `story.jira` (`site`, `project`,
-   `email`, `token`). The token travels only in the `Authorization` header (HTTP Basic); `task config` never shows
-   it, and errors name the variables (or a `.env` line number), never their values.
+   To move a `.env` you keep beside `airlie.yaml` there:
+   `mkdir -p ~/.config/airlie && mv <checkout>/.env ~/.config/airlie/.env && chmod 600 ~/.config/airlie/.env`.
+   A `.env` beside `airlie.yaml` still works (git-ignored, and one per checkout: a new clone or git worktree has
+   none). Each variable is looked up in the process environment, then in the checkout's `.env`, then in
+   `~/.config/airlie/.env`, then in `story.jira` (`site`, `project`, `email`, `token`): the first that has it
+   wins. airlie warns when group or others can read `~/.config/airlie/.env`.
 
-   **`.env` is one per checkout.** A new clone or git worktree has none, so the checkout you merge into (your main
-   one) needs its own, and so does whichever checkout runs `task serve` or the launchd agent: each reads the
-   `.env` beside the `airlie.yaml` it was started from.
+   airlie reads these files itself, in memory, when it builds the board: no task loads or exports them, so the
+   studio's shell tool, the test gate, `gh`, `git` and the engines never inherit your token, and `ps eww` does not
+   show it. **Prefer the file to exporting these variables in your shell:** an exported variable reaches every
+   process the shell starts, and a variable that is already set in the shell wins over both files. Lines are
+   `KEY=VALUE`, with an optional `export ` prefix, quotes and a trailing ` # comment`; a line that is none of
+   those is skipped with a warning that names its number. The token travels only in the `Authorization` header
+   (HTTP Basic); `task config` never shows it, and errors name the variables (or a file and line number), never
+   their values.
 3. **Statuses.** airlie moves the issue between *To Do* (intake), *In Progress*, *In Review* and *Blocked*; *Done*
    is yours, after the merge. Moving an issue takes the workflow transition into the wanted status, so the
    workflow must offer one from where the issue is; a move it does not offer stops the story with the statuses it
@@ -130,7 +132,7 @@ failure is in the next one:
 
 | stopped after | the failure was in |
 | --- | --- |
-| `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment) |
+| `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
 | `'intake'` | refining the story (or finding the trunk) |
 | `'refine'` | planning the layers, or posting the story's comment |
 | `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
@@ -151,9 +153,9 @@ note work the other way round: they are posted before their stage is saved, so w
   the comment names them;
 - `story.trunk` does not exist in the repository, `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira
   refuses a move;
-- publishing as the bot: the remote is not a github.com repository (the story stops before anything runs), or the
-  app is not installed on it, or its key is wrong (the layers stop before they are built; the stop says how to fix
-  it).
+- publishing as the bot: the remote is not a github.com repository, the app is not installed on it or its key is
+  wrong (each stops the story before any model works, and says how to fix it), or the remote now leads somewhere
+  else than the repository the story is pinned to (a step refuses; see *Publishing as a bot*).
 
 **Resume** by fixing the cause and running the same command again (`task story -- AIR-7`; for a request, the same
 `--text`). Finished stages are skipped, the issue goes back to *In Progress* with `resumed after '<stage>'`, and only
@@ -230,7 +232,8 @@ renders `docs/integrations/story-tick.plist` with this checkout's path and your 
   puts `uv`, `gh` and `git` on the PATH, but only from the files a login shell reads (`~/.zshenv`, `~/.zprofile`,
   `/etc/zprofile`), not from `~/.zshrc`.
 - **Install it from the checkout you keep** (your main one, not a temporary worktree). The beat reads that
-  checkout's `airlie.yaml`, `airlie.local.yaml` (`story.repo` and `story.test_cmd` must be set there) and `.env`.
+  checkout's `airlie.yaml`, `airlie.local.yaml` (`story.repo` and `story.test_cmd` must be set there) and `.env`
+  (or `~/.config/airlie/.env`).
 - **It never starts the engines:** run `task restart -- --topology studio` first, or the beat logs `engine down`.
 - **It runs only while you are logged in.** launchd skips a beat while the Mac sleeps and while the previous beat is
   still running, and a beat that takes an issue runs the whole story. Installing again, or uninstalling, while a
@@ -244,7 +247,7 @@ Each beat appends one line to the log: a timestamp, then one of
 | `idle: no issue matches the intake query` | nothing in *To Do* (or nothing `story.jira.jql` returns) |
 | `busy: a story is in flight` | another `task story`, tick or `task serve` story holds the lock |
 | `engine down: start it with ...` | the engines are not up |
-| `no board configured (...)` | no Jira site and project in the environment, this checkout's `.env` or `story.jira` |
+| `no board configured (...)` | no Jira site and project in the environment, this checkout's `.env`, `~/.config/airlie/.env` or `story.jira` |
 | `AIR-7 <title>: review` | the story finished: PRs open, the issue in *In Review* |
 | `AIR-7 <title>: blocked (<reason>)` | the story stopped; see *When a story stops* |
 | `AIR-7 <title>: cannot start (...)` | the story could not be opened; set aside (below) |
@@ -257,10 +260,11 @@ story:check` names what is missing), or `stopped by SIGTERM: ...` when launchd s
 An issue that a beat leaves in *To Do* is taken again by every later beat, and nothing behind it would ever be built.
 So the tick moves two kinds of issue out of *To Do*:
 
-- **A story it cannot open** (its `state.json` cannot be read or is damaged, or the story was started in another
-  repository): the issue gets `cannot be picked up: <reason>` and `Needs a person`, and goes to *Blocked* (to
-  *In Progress* when `blocked: null`, with a note that says so). The reason names the `state.json` and says whether
-  to fix or delete it, or to resume the story in the repository it was started in.
+- **A story it cannot open** (its `state.json` cannot be read or is damaged, its `events.jsonl` cannot be appended
+  to, the story was started in another repository, or the remote no longer names the GitHub repository the story
+  publishes to): the issue gets `cannot be picked up: <reason>` and `Needs a person`, and goes to *Blocked* (to
+  *In Progress* when `blocked: null`, with a note that says so). The reason names the file and says whether to fix
+  or delete it, to resume the story in the repository it was started in, or to point the remote back.
 - **A story that already finished**, whose issue was put back in *To Do*: nothing is built again. The issue gets
   `this story is already in review` with the PR links, and moves to *In Review*.
 
@@ -288,24 +292,35 @@ can refuse.
    permissions *Contents* and *Pull requests* read and write (*Metadata* read comes with them), no webhook (untick
    *Active*), and no *Workflows* permission. Generate a private key, save it as `~/.config/airlie/github-app.pem`
    and keep it to yourself: `chmod 600 ~/.config/airlie/github-app.pem`.
-2. **Install it on the story repository only** (the app's page → *Install App* → *Only select repositories*).
+2. **Install it on the repositories stories publish to** (the app's page → *Install App*). *Only select
+   repositories* keeps it away from the others; an installation on all of them works too (each story is pinned to
+   one repository, below), and `task story:check` says when it can reach them all.
 3. **Set `story.github_app.app_id`** to the app's id, in `airlie.local.yaml` (this checkout's `airlie.yaml` names
    Noah's app). `key_file` is the key's path (`~` is expanded when it is read) and `api_url` GitHub's API.
-4. `task story:check` mints a token and prints `publishing to OWNER/REPO as <app>[bot]`; it warns of a key that
-   group or others can read, and names what the installation or the token lacks. gh needs no login of yours, but gh
-   and gh-stack must be installed.
+4. `task story:check` mints a token and prints `publishing to OWNER/REPO as <app>[bot]`. It names what the
+   installation or the token lacks, and warns of a key that group or others can read, of permissions the app
+   holds beyond contents, pull requests and metadata, and of an installation on all your repositories. It also
+   names a rule, yours or the repository's (`url.<base>.insteadOf`, `pushInsteadOf`, a `pushurl`), that would send
+   the bot's fetch or push anywhere but `https://github.com/OWNER/REPO`: a common global one,
+   `url.git@github.com:.insteadOf https://github.com/`, does, and the bot cannot use SSH. gh needs no login of
+   yours, but gh and gh-stack must be installed.
 
 What changes:
 
 - The PRs are opened by `<app>[bot]`, and each layer's commit is authored and committed by it
   (`<id>+<app>[bot]@users.noreply.github.com`, which GitHub shows as the bot). Without the *Workflows*
   permission, a layer that changes `.github/workflows/` cannot be pushed: the story stops at publish and says so.
-- Your credentials are not used. Each step gets a token minted at its start, for the story's repository alone,
-  valid for an hour and kept nowhere (not in the state, an event or a file); gh gets an empty configuration
-  directory of the step's own, so it never reads your login or the keychain; there is no SSH agent and no git
-  over SSH: GitHub's SSH URLs (`git@github.com:`, `ssh://git@github.com/`) are fetched and pushed over HTTPS, and
-  git uses HTTPS and nothing else. The repository is the one the remote's URL names when a run starts, before any
-  model works in it (the URL as written, before any `insteadOf`).
+- Your credentials are not used. Each step gets a token minted at its start, for the story's repository alone and
+  with contents and pull requests write alone (whatever more the app holds), valid for an hour and kept nowhere
+  (not in the state, an event or a file); gh gets an empty configuration directory of the step's own, so it never
+  reads your login or the keychain; there is no SSH agent and no git over SSH: GitHub's SSH URLs
+  (`git@github.com:`, `ssh://git@github.com/`) are fetched and pushed over HTTPS, and git uses HTTPS and nothing
+  else. An app that cannot get a token stops the story before any model works.
+- **Each story is pinned to one repository:** the one its remote named, as written (before any `insteadOf`), when
+  the story started; `state.json` keeps it. Before every step airlie works out where git would fetch from and push
+  to, with every rule applied, and refuses anything but that repository's `https://github.com/` URL, before a token
+  is minted. A later run that finds the remote naming another repository, or none, cannot open the story, and
+  `task story:tick` sets the issue aside (*Blocked*, with the reason).
 - **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
   its tokens, from merging. A private repository on GitHub Free cannot have one: there the bot could merge, and the
   only guard is that airlie has no code that merges.
@@ -320,26 +335,54 @@ an empty configuration), no SSH agent, no git over SSH, no git credential helper
 `AIRLIE_SERVE_API_KEY`. So a model cannot `gh pr merge` or `git push` through its environment and its tools; only
 airlie's publish steps push.
 
-A model can still write the repository's git configuration (`.git/config`, which every worktree shares), and
-airlie's own git reads it. So airlie gives its own git these settings on the command line, which outranks the
-repository's configuration:
+A model can still write the repository's git configuration (`.git/config`, which every worktree shares) and its
+files, and airlie's own git reads them. So airlie gives its own git these settings on the command line or in its
+environment, which outrank the repository's configuration:
 
 - its commits, the squash and every publish step: no repository hook (`core.hooksPath`) and no fsmonitor;
-- the publish steps: no credential helper but yours, as your global and system configuration name them, or, as
-  the bot, gh's alone, for github.com; no ssh command but yours (`core.sshCommand` from your global or system
-  configuration, else `ssh`) or, as the bot, none (`GIT_SSH_COMMAND=false`); no askpass and no prompt
-  (`GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT`);
-- as the bot, also: a token for the story's repository alone, and git over HTTPS only.
+- every publish step, as you or as the bot:
+  - no credential helper but yours, as your global and system configuration name them, or, as the bot, gh's
+    alone, for github.com; no ssh command but yours (`core.sshCommand` from your global or system configuration,
+    else `ssh`) or, as the bot, none (`GIT_SSH_COMMAND=false`); no askpass and no prompt (`GIT_ASKPASS`,
+    `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT`);
+  - no command that lists an alternate's refs (`core.alternateRefsCommand`), no proxy (`http.proxy`,
+    `remote.<name>.proxy` and `GIT_PROXY_COMMAND`, all empty: a proxy `HTTPS_PROXY` names is off too), no list of
+    addresses for hosts (`http.curloptResolve`), the TLS check on (`http.sslVerify`), and no going into
+    submodules (`fetch.recurseSubmodules`, `push.recurseSubmodules`, `submodule.recurse`);
+  - transports: as you, local, SSH and HTTPS remotes only (`GIT_ALLOW_PROTOCOL=file:ssh:https`: no `ext::`,
+    `git://` or remote helper); as the bot, HTTPS only;
+- as the bot, also: a token for the story's repository alone, minted per step with contents and pull requests
+  write alone; a step that refuses unless git would fetch from and push to that repository's own URL; and the TLS
+  check and the address list given again for that exact URL.
 
-A push still reads the rest of the repository's configuration: the remote's URLs (`remote.<name>.url` and
-`pushurl`), `url.<base>.insteadOf` and `pushInsteadOf`, and git's other settings. As you, a model that redirects
-the remote has your branches pushed where it points, with your credentials, and a command it names for a remote
-on this machine (`remote.<name>.receivepack`) runs with your environment. As the bot, a redirect to another
-GitHub repository is refused (the token covers the story's repository alone), one to another host gets no
-credential, and a remote on this machine is refused with the rest of what is not HTTPS.
+What planted repository configuration can still do during a publish step:
 
-None of this is an OS sandbox: those processes still run as your macOS user, and a model that deliberately goes
-after what is stored for that user (the keychain, `~/.ssh`, the app's key) is not stopped by it.
+- **As you,** where the remote points is the repository's to say. A model that rewrites it during a run has that
+  run push your branches there, with your credentials (for a remote on github.com, the next run finds another
+  repository and sets the story aside). Settings for your remote's exact URL (`http.<url>.sslVerify`,
+  `http.<url>.curloptResolve`) outrank the general ones above, so over HTTPS a model that also leaves a listener
+  running on this machine could read what your credential helper sends.
+- **As the bot,** git's other settings still apply, but as far as these settings and the URL check reach, none
+  can send the token anywhere but GitHub's address for the story's repository: the proxy is off, the address list
+  empty and TLS checked for that exact URL, and any other URL is refused.
+- **Either way,** a filter or a diff driver that a committed `.gitattributes` names (`filter.<driver>.clean`,
+  `smudge`, `process`) runs with the step's environment if the step's git reads the working tree's files.
+  gh-stack's `init`, `push` and `view` were seen not to (a planted clean filter did not run); `submit` talks to
+  GitHub and was not checked.
+
+The backstop is GitHub: the token's scope (one repository, one hour, contents and pull requests write) and a
+ruleset on the trunk. None of this is an OS sandbox either: those processes still run as your macOS user, and a
+model that deliberately goes after what is stored for that user (the keychain, `~/.ssh`, the app's key) is not
+stopped by it.
+
+Publishing as you ignores a `core.sshCommand` or `credential.helper` in the repository's own configuration, so a
+deploy key set up there for one repository stops being used. To keep one, put those settings in a file your
+global configuration includes for that repository's directory, which airlie reads as yours:
+
+```ini
+[includeIf "gitdir:~/git/myproject/"]
+    path = ~/.gitconfig-myproject
+```
 
 In OpenCode, the agents airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`)
 deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That

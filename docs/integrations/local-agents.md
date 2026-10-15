@@ -72,12 +72,14 @@ running. The agent and command files are copies: run the task again after you up
   shell, its `run_tests` and `git` tools and the test gate start without your credentials (no gh token or login,
   no SSH agent, no git credential helper, no `ATLASSIAN_*`), so a model there cannot naively `gh pr merge` or
   `git push` as you. It can write the repository's git configuration, which airlie's own git reads: airlie pins
-  hooks, fsmonitor, credential helpers, the ssh command and askpass over it, but a push still follows the
-  remote's URLs and `insteadOf` from it (`story.md`, *What stops a merge*, says what each way of publishing does
-  then). None of that is an OS sandbox: a model that deliberately goes after what your macOS user stores (the
-  keychain, `~/.ssh`) is not stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that only
-  you can update, which can refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing as a
-  bot*) but not when it publishes as you.
+  hooks, fsmonitor, credential helpers, the ssh command, askpass, proxies, address lists, the TLS check,
+  alternates, submodules and the transports over it. As the bot, each publish step also refuses any URL but the
+  story's repository and uses a token for that repository alone; as you, a push still goes where the remote
+  points, and a setting for the remote's exact URL still applies (`story.md`, *What stops a merge*, says exactly
+  what remains). None of that is an OS sandbox: a model that deliberately goes after what your macOS user stores
+  (the keychain, `~/.ssh`) is not stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that
+  only you can update, which can refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing
+  as a bot*) but not when it publishes as you.
 - Without `--api-key`, any program on this machine can use `task serve`, and its jobs API starts studio runs (they
   commit on a local branch) and stories (they push branches and open draft PRs). Start it with
   `task serve -- --api-key SECRET`, and give OpenCode the same secret in the `airlie` provider's `apiKey` (chat)

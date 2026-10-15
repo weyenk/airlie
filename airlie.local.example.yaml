@@ -7,9 +7,10 @@
 
 # Stories (task story): the repository and its test command. Jira's site, project, email and API token come from
 # ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY, which win over the same settings
-# here. Put them in .env beside airlie.yaml (git-ignored; airlie reads it itself and exports nothing) rather than
-# exporting them in the shell: an exported variable reaches every child process. A variable already set in the shell
-# still wins over .env. Override the rest only when your project differs.
+# here. Put them in ~/.config/airlie/.env (chmod 600; one for every checkout) or a .env beside airlie.yaml (git-
+# ignored; it wins over the other); airlie reads them itself and exports nothing. Prefer that to exporting them in
+# the shell: an exported variable reaches every child process, and one already set in the shell wins over both
+# files. Override the rest only when your project differs. Publishing as your own GitHub App: story.github_app.
 # story:
 #   repo: ~/git/myproject
 #   test_cmd: "uv run pytest -q"
@@ -17,3 +18,6 @@
 #     statuses: { review: "Code Review", blocked: null }   # null: a stopped issue stays where it is
 #     jql: 'project = "AIR" AND status = "To Do" AND labels = airlie ORDER BY Rank ASC'
 #     api_url: https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3   # only for a scoped API token
+#   github_app:
+#     app_id: 1234567                     # your app's id (docs/integrations/story.md, Publishing as a bot)
+#     key_file: ~/.config/airlie/github-app.pem
