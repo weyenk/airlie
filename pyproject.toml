@@ -27,6 +27,7 @@ dependencies = [
     "autogen-agentchat>=0.7", # spec 01 §2: AutoGen team orchestrator
     "autogen-ext[openai]>=0.7",
     "rank-bm25>=0.2.2",
+    "pyjwt[crypto]>=2.10", # story.github_app: the JWT a GitHub App signs with its key
 ]
 
 [project.scripts]

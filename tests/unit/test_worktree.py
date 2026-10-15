@@ -149,3 +149,36 @@ def test_delete_branch_raises_when_git_refuses(tmp_path: Path) -> None:
     add_worktree(repo, tmp_path / "wt", branch="busy")
     with pytest.raises(subprocess.CalledProcessError):
         delete_branch(repo, "busy")
+
+
+@pytest.mark.parametrize("author", [None, ("app-bot[bot]", "41+app-bot[bot]@users.noreply.github.com")])
+def test_the_squash_is_authored_and_committed_by_who_it_names_whatever_the_environment_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, author: tuple[str, str] | None
+) -> None:
+    """airlie by default; a GitHub App's bot when the story publishes as one. GIT_AUTHOR_* and
+    GIT_COMMITTER_* would win over user.name and user.email (ledger L64)."""
+    from airlie.teams.worktree import add_worktree, head_sha, squash_since
+
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Someone Else")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "someone@else.example")
+    repo = repo_with_marker_tests(tmp_path)
+    base = head_sha(repo)
+    wt = add_worktree(repo, tmp_path / "wt", branch="layer-01", start_point=base)
+    (wt / "a.txt").write_text("a\n")
+    sha = squash_since(wt, base, "story: layer one", author=author)
+    name, email = author or ("airlie", "airlie@local")
+    assert git(wt, "log", "-1", "--format=%an|%ae|%cn|%ce", sha) == f"{name}|{email}|{name}|{email}"
+    assert git(wt, "log", "-1", "--format=%s", sha) == "story: layer one"
+
+
+def test_remote_url_is_the_first_url_as_written(tmp_path: Path) -> None:
+    from airlie.teams.worktree import remote_url
+
+    repo = repo_with_marker_tests(tmp_path)
+    assert remote_url(repo, "origin") is None
+    git(repo, "remote", "add", "origin", "git@github.com:o/r.git")
+    git(repo, "config", "url.https://github.com/elsewhere/.insteadOf", "git@github.com:o/")  # not applied
+    git(repo, "remote", "set-url", "--add", "origin", "git@github.com:evil/other.git")  # a second: not read
+    assert remote_url(repo, "origin") == "git@github.com:o/r.git"
+    assert remote_url(repo, "upstream") is None

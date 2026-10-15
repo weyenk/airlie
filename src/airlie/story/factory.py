@@ -10,10 +10,11 @@ from typing import Any
 
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
+from airlie.story.github_app import GitHubApp
 from airlie.story.jira import JiraBoard, jira_board
 from airlie.story.model import StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
-from airlie.story.publish import Publisher
+from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -98,6 +99,13 @@ async def card_for(cfg: AirlieConfig, ref: str | None, text: str | None) -> tupl
     return NullBoard(stories_dir(cfg)), text_card(text or "")
 
 
+def github_app(cfg: AirlieConfig) -> GitHubApp | None:
+    """The app of story.github_app once its app_id is set (the publish steps then act as its bot), else None
+    (they act as you, with your gh login and SSH key)."""
+    spec = cfg.story.github_app
+    return GitHubApp(spec) if spec.app_id is not None else None
+
+
 def _engine(cfg: AirlieConfig) -> Any:
     from airlie.cli import _http_engine  # the CLI owns engine construction
 
@@ -110,7 +118,7 @@ def make_pipeline(cfg: AirlieConfig, *, board: Board, repo: Path, test_cmd: str)
         cfg,
         board=board,
         studio=lambda: StudioOrchestrator(cfg, engine),
-        publisher=Publisher(remote=cfg.story.remote),
+        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg)),
         repo=repo,
         test_cmd=test_cmd,
     )
@@ -248,16 +256,19 @@ async def story_job(
     return f"story-{c.key}", stories_dir(scfg) / c.key / "events.jsonl", work()
 
 
-async def check(cfg: AirlieConfig, repo: Path | None, test_cmd: str | None) -> list[str]:
-    """Everything `task story:check` reports: roles, repository and test command, gh and gh-stack, Jira."""
-    problems = story_problems(cfg)
+async def check(cfg: AirlieConfig, repo: Path | None, test_cmd: str | None) -> Checked:
+    """Everything `task story:check` reports: roles, repository and test command, gh and gh-stack, who
+    publishes (your gh login, or story.github_app's bot), Jira."""
+    problems, notes = story_problems(cfg), []
     path: Path | None = None
     try:
         path, _ = resolve(cfg, repo, test_cmd)
     except StorySetupError as e:
         problems.append(str(e))
     if path is not None and not _unusable_ref(cfg.story.remote):  # reported above; git is not handed it
-        problems += await Publisher(remote=cfg.story.remote).check(path)
+        found = await Publisher(remote=cfg.story.remote, app=github_app(cfg)).check(path)
+        problems += found.problems
+        notes += found.notes
     try:
         board = make_board(cfg)
     except BoardError as e:
@@ -265,4 +276,4 @@ async def check(cfg: AirlieConfig, repo: Path | None, test_cmd: str | None) -> l
     else:
         if isinstance(board, JiraBoard):
             problems += await board.check()
-    return problems
+    return Checked(problems, notes)

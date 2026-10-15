@@ -91,7 +91,7 @@ tasks:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 
   story:check:
-    desc: "Check what task story needs: roles, repo, test command, gh + gh-stack, the Jira project and its statuses"
+    desc: "Check what task story needs: roles, repo, test command, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses"
     cmds:
       - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
 

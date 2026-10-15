@@ -454,6 +454,44 @@ def test_story_defaults(tmp_path: Path) -> None:
     assert statuses == ("To Do", "In Progress", "In Review", "Blocked")
 
 
+def test_github_app_defaults_to_your_own_login_and_takes_an_app_id(tmp_path: Path) -> None:
+    app = load_config(write(tmp_path, MINIMAL)).story.github_app
+    assert (app.app_id, app.key_file, app.api_url) == (
+        None,
+        Path("~/.config/airlie/github-app.pem"),  # expanded at use, not here
+        "https://api.github.com",
+    )
+    spec = {"app_id": 5332832, "key_file": "~/keys/bot.pem", "api_url": "http://127.0.0.1:8080"}
+    app = load_config(write(tmp_path, {**MINIMAL, "story": {"github_app": spec}})).story.github_app
+    assert (app.app_id, app.key_file, app.api_url) == (
+        5332832,
+        Path("~/keys/bot.pem"),
+        "http://127.0.0.1:8080",
+    )
+
+
+@pytest.mark.parametrize(
+    ("spec", "says"),
+    [
+        ({"app_id": 0}, "story.github_app.app_id: Input should be greater than or equal to 1"),
+        ({"app_id": "five"}, "story.github_app.app_id: Input should be a valid integer"),
+        ({"private_key": "x"}, "story.github_app.private_key: Extra inputs are not permitted"),
+    ],
+)
+def test_a_github_app_setting_that_cannot_be_used_is_named(
+    tmp_path: Path, spec: dict[str, object], says: str
+) -> None:
+    with pytest.raises(ConfigError) as e:
+        load_config(write(tmp_path, {**MINIMAL, "story": {"github_app": spec}}))
+    assert says in str(e.value)
+
+
+def test_the_committed_config_publishes_as_airlies_bot() -> None:
+    root = Path(__file__).resolve().parents[2]
+    app = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml").story.github_app
+    assert app.app_id == 5332832 and app.key_file == Path("~/.config/airlie/github-app.pem")
+
+
 def test_story_repo_resolves_beside_the_config_and_typos_fail(tmp_path: Path) -> None:
     jira = {"site": "https://acme.atlassian.net", "project": "AIR", "statuses": {"blocked": None}}
     cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repo": "../proj", "jira": jira}}))

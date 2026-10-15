@@ -61,11 +61,13 @@ running the same command again resumes it (see *When a story stops*).
      test_cmd: "uv run pytest -q"
    ```
 
-5. **GitHub:** `gh auth status`, and `gh extension install github/gh-stack`. Optionally, install the *GitHub
-   for Jira* app for the repository: branch names start with the issue key, so the issue lists its branches
-   and pull requests.
-6. `task story:check` lists anything still missing: roles, repository, test command, gh, gh-stack, the remote, the
-   Jira credentials, the project and its statuses. It prints `ready` when nothing is.
+5. **GitHub:** `gh extension install github/gh-stack`, and either `gh auth status` (the PRs are yours) or a
+   GitHub App whose bot publishes for you (*Publishing as a bot*, below). Optionally, install the *GitHub for
+   Jira* app for the repository: branch names start with the issue key, so the issue lists its branches and pull
+   requests.
+6. `task story:check` lists anything still missing: roles, repository, test command, gh, gh-stack, the remote, your
+   gh login or the bot's app, the Jira credentials, the project and its statuses. It prints `ready` when nothing
+   is.
 
 A scoped API token reaches Jira through `https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3`; set that as
 `story.jira.api_url` (https://NAME.atlassian.net/_edge/tenant_info shows the cloud id).
@@ -81,6 +83,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `tests_role`, `build_role` | `product`, `architect`, `qa`, `coder` | which role does what |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
+| `story.github_app.app_id`, `key_file`, `api_url` | none, `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); none: with your gh login and SSH key |
 
 ## Run one
 
@@ -147,7 +150,10 @@ note work the other way round: they are posted before their stage is saved, so w
 - a layer changed nothing, or `story.test_cmd` fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them;
 - `story.trunk` does not exist in the repository, `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira
-  refuses a move.
+  refuses a move;
+- publishing as the bot: the remote is not a github.com repository (the story stops before anything runs), or the
+  app is not installed on it, or its key is wrong (the layers stop before they are built; the stop says how to fix
+  it).
 
 **Resume** by fixing the cause and running the same command again (`task story -- AIR-7`; for a request, the same
 `--text`). Finished stages are skipped, the issue goes back to *In Progress* with `resumed after '<stage>'`, and only
@@ -267,9 +273,42 @@ So the tick moves two kinds of issue out of *To Do*:
   how it was built, the reviewer's findings to check, and the stack. Review and merge bottom-up. Text the models
   wrote is defused (a zero-width space goes after `@`, `<` and `&`, and between `#` and the digits after it), so a PR
   notifies no one, links no `#123` reference and renders no HTML from it.
-- Commits: one per layer, authored by `airlie <airlie@local>`, so AI work is visible in history. The PRs are opened
-  with your own `gh` login.
+- Commits: one per layer, authored and committed by `airlie <airlie@local>`, or by the bot when you publish as one,
+  so AI work is visible in history. The PRs are opened with your own `gh` login, or by the bot.
 - The issue: the comments and moves in *What you see on the issue* and *When a story stops*.
+
+## Publishing as a bot
+
+By default the publish steps (the trunk fetch, `gh stack init` and `submit`, each `gh pr view` and `gh pr edit`) run
+with your own `gh` login and SSH key: the PRs are yours, and a ruleset that lets you merge lets anything holding
+your login merge too. With `story.github_app.app_id` set, they run as a GitHub App's bot instead, which a ruleset
+can refuse.
+
+1. **Create a GitHub App** (GitHub → Settings → Developer settings → GitHub Apps → New GitHub App): repository
+   permissions *Contents* and *Pull requests* read and write (*Metadata* read comes with them), no webhook (untick
+   *Active*), and no *Workflows* permission. Generate a private key, save it as `~/.config/airlie/github-app.pem`
+   and keep it to yourself: `chmod 600 ~/.config/airlie/github-app.pem`.
+2. **Install it on the story repository only** (the app's page → *Install App* → *Only select repositories*).
+3. **Set `story.github_app.app_id`** to the app's id, in `airlie.local.yaml` (this checkout's `airlie.yaml` names
+   Noah's app). `key_file` is the key's path (`~` is expanded when it is read) and `api_url` GitHub's API.
+4. `task story:check` mints a token and prints `publishing to OWNER/REPO as <app>[bot]`; it warns of a key that
+   group or others can read, and names what the installation or the token lacks. gh needs no login of yours, but gh
+   and gh-stack must be installed.
+
+What changes:
+
+- The PRs are opened by `<app>[bot]`, and each layer's commit is authored and committed by it
+  (`<id>+<app>[bot]@users.noreply.github.com`, which GitHub shows as the bot). Without the *Workflows*
+  permission, a layer that changes `.github/workflows/` cannot be pushed: the story stops at publish and says so.
+- Your credentials are not used. Each step gets a token minted at its start, for the story's repository alone,
+  valid for an hour and kept nowhere (not in the state, an event or a file); gh gets an empty configuration
+  directory of the step's own, so it never reads your login or the keychain; there is no SSH agent and no git
+  over SSH: GitHub's SSH URLs (`git@github.com:`, `ssh://git@github.com/`) are fetched and pushed over HTTPS, and
+  git uses HTTPS and nothing else. The repository is the one the remote's URL names when a run starts, before any
+  model works in it (the URL as written, before any `insteadOf`).
+- **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
+  its tokens, from merging. A private repository on GitHub Free cannot have one: there the bot could merge, and the
+  only guard is that airlie has no code that merges.
 
 ## What stops a merge
 
@@ -278,11 +317,29 @@ airlie has no code that merges, and the PRs it opens are drafts.
 In a story (and in any studio run), whatever runs code a model chose or wrote starts without your credentials: the
 coder's shell, `run_tests` and `git` tools, and the test gate. They get no gh token and no gh login (gh points at
 an empty configuration), no SSH agent, no git over SSH, no git credential helper, and none of `ATLASSIAN_*` or
-`AIRLIE_SERVE_API_KEY`. So a model cannot `gh pr merge` or `git push` as you through its environment and its
-tools; only airlie's publish step pushes, with your credentials. airlie's own git (its commits, the squash, the
-push) runs no repository hook and no fsmonitor, so nothing a model plants in the repository runs inside it. This
-is not an OS sandbox: those processes still run as your macOS user, and a model that deliberately goes after what
-is stored for that user (the keychain, `~/.ssh`) is not stopped by it.
+`AIRLIE_SERVE_API_KEY`. So a model cannot `gh pr merge` or `git push` through its environment and its tools; only
+airlie's publish steps push.
+
+A model can still write the repository's git configuration (`.git/config`, which every worktree shares), and
+airlie's own git reads it. So airlie gives its own git these settings on the command line, which outranks the
+repository's configuration:
+
+- its commits, the squash and every publish step: no repository hook (`core.hooksPath`) and no fsmonitor;
+- the publish steps: no credential helper but yours, as your global and system configuration name them, or, as
+  the bot, gh's alone, for github.com; no ssh command but yours (`core.sshCommand` from your global or system
+  configuration, else `ssh`) or, as the bot, none (`GIT_SSH_COMMAND=false`); no askpass and no prompt
+  (`GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT`);
+- as the bot, also: a token for the story's repository alone, and git over HTTPS only.
+
+A push still reads the rest of the repository's configuration: the remote's URLs (`remote.<name>.url` and
+`pushurl`), `url.<base>.insteadOf` and `pushInsteadOf`, and git's other settings. As you, a model that redirects
+the remote has your branches pushed where it points, with your credentials, and a command it names for a remote
+on this machine (`remote.<name>.receivepack`) runs with your environment. As the bot, a redirect to another
+GitHub repository is refused (the token covers the story's repository alone), one to another host gets no
+credential, and a remote on this machine is refused with the rest of what is not HTTPS.
+
+None of this is an OS sandbox: those processes still run as your macOS user, and a model that deliberately goes
+after what is stored for that user (the keychain, `~/.ssh`, the app's key) is not stopped by it.
 
 In OpenCode, the agents airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`)
 deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That
@@ -290,8 +347,8 @@ guards against a model's slip, not against a determined one: the rules match the
 as `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands and runs
 with your full environment (OpenCode's shells are not airlie's).
 
-What really stops a merge is GitHub: branch protection on the trunk (required reviews) and the scope of the token
-your `gh` login uses.
+What really stops a merge is GitHub: a ruleset (or branch protection) on the trunk that only you can update. It
+can refuse a bot but not you: publish as a bot (above), and it keeps everything but you from merging.
 
 ## Not yet
 

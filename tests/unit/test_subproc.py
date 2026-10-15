@@ -27,6 +27,7 @@ from airlie.repo_map import build_repo_map
 from airlie.subproc import (
     CREDENTIALS,
     NO_PROMPTS,
+    NO_SSH,
     agent_env,
     gh_config_dir,
     url_credential_helpers,
@@ -116,6 +117,8 @@ def test_the_agent_environment_drops_the_credentials_and_resets_each_helper(plan
     env = agent_env()
     assert [name for name in CREDENTIALS if name in env] == []
     assert {name: env[name] for name in NO_PROMPTS} == NO_PROMPTS
+    assert NO_PROMPTS == {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false", "SSH_ASKPASS": "false"}
+    assert {name: env[name] for name in NO_SSH} == NO_SSH == {"GIT_SSH_COMMAND": "false"}
     assert env["GH_CONFIG_DIR"] == str(gh_config_dir())
     assert env["PATH"] == os.environ["PATH"] and env["GIT_CONFIG_GLOBAL"] == str(planted)  # the rest is kept
     # the URL-specific helper first, then the plain one: each set to empty empties the list of helpers

@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from airlie import cli
 from airlie.story import factory
 from airlie.story.board import BoardError
+from airlie.story.publish import Checked
 from airlie.story.state import StoryState, story_lock
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_board import FakeJira
@@ -205,7 +206,7 @@ def test_check_is_ready_when_nothing_is_missing(tmp_path: Path, monkeypatch: pyt
 
     async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
         seen.append((repo, test_cmd))
-        return []
+        return Checked([], [])
 
     monkeypatch.setattr(factory, "check", fake_check)
     args = ["story", "check", "--repo", str(tmp_path), "--test-cmd", "make test", "--config"]
@@ -214,9 +215,23 @@ def test_check_is_ready_when_nothing_is_missing(tmp_path: Path, monkeypatch: pyt
     assert seen == [(tmp_path, "make test")]
 
 
+def test_check_prints_its_notes_and_is_ready_when_they_are_all_it_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = ["warning: /k.pem is readable by group or others: chmod 600 it", "publishing to o/r as app[bot]"]
+
+    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
+        return Checked([], notes)
+
+    monkeypatch.setattr(factory, "check", fake_check)
+    r = runner.invoke(cli.app, ["story", "check", "--config", str(story_cfg(tmp_path))])
+    assert r.exit_code == 0
+    assert r.output.splitlines() == [*notes, 'ready: task story -- ISSUE (or --text "request")']
+
+
 def test_check_prints_each_problem_as_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
-        return ["gh is not logged in: run `gh auth login`", "project AIR has no status '[/x]'"]
+        return Checked(["gh is not logged in: run `gh auth login`", "project AIR has no status '[/x]'"], [])
 
     monkeypatch.setattr(factory, "check", fake_check)
     r = runner.invoke(cli.app, ["story", "check", "--config", str(story_cfg(tmp_path))])
@@ -240,7 +255,7 @@ def test_every_story_command_runs_its_coroutine_so_that_a_signal_stops_it(
         return "idle: no issue matches the intake query"
 
     async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
-        return []
+        return Checked([], [])
 
     monkeypatch.setattr(cli, "_run_stoppable", spy)
     monkeypatch.setattr(factory, "run_one", fake_run_one)
@@ -279,7 +294,7 @@ sys.argv = sys.argv[:1]  # typer parses what is left
 signal.signal(signal.SIGHUP, signal.SIG_IGN if hangup == "nohup" else signal.SIG_DFL)
 
 from airlie.cli import _run_stoppable
-from airlie.story.publish import run_cmd
+from airlie.story.publish import PersonGit, person_env, run_cmd
 
 if stderr == "hung-up":  # a terminal that hung up: every write and flush to it fails, as on a dead pty
     import errno
@@ -297,7 +312,7 @@ if stderr == "hung-up":  # a terminal that hung up: every write and flush to it 
 
 async def work():
     try:
-        await run_cmd(["sh", "-c", shell], Path("."))
+        await run_cmd(["sh", "-c", shell], Path("."), person_env(PersonGit()))
     finally:
         print("cleaned up", flush=True)
 
@@ -538,7 +553,7 @@ def test_the_tick_line_and_the_check_problems_print_as_typed_not_as_emoji(
         return "AIR-7 :warning: Avatar upload: blocked (:x: tests fail)"
 
     async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
-        return [":warning: project AIR has no status ':x:'"]
+        return Checked([":warning: project AIR has no status ':x:'"], [":x: a note"])
 
     monkeypatch.setattr(factory, "tick", fake_tick)
     monkeypatch.setattr(factory, "check", fake_check)
@@ -548,7 +563,7 @@ def test_the_tick_line_and_the_check_problems_print_as_typed_not_as_emoji(
     literal(r.output, ":warning: Avatar upload", "(:x: tests fail)")
     r = runner.invoke(cli.app, ["story", "check", "--config", p])
     assert r.exit_code == 1
-    literal(r.output, ":warning: project AIR", "no status ':x:'")
+    literal(r.output, ":warning: project AIR", "no status ':x:'", ":x: a note")
 
 
 # ---- a crash never prints the locals of the frames it passed through ----

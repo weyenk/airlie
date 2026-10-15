@@ -38,13 +38,10 @@ CREDENTIALS = (
 )
 """Not in an agent's environment: gh's tokens, airlie's Jira settings, serve's API key and the SSH agent."""
 
-NO_PROMPTS = {
-    "GIT_TERMINAL_PROMPT": "0",
-    "GIT_SSH_COMMAND": "false",  # git over SSH (git@github.com:...) fails at once instead of reaching a key
-    "GIT_ASKPASS": "false",
-    "SSH_ASKPASS": "false",
-}
-"""git and ssh in an agent's environment: no prompt for a password, and no SSH transport."""
+NO_PROMPTS = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false", "SSH_ASKPASS": "false"}
+"""git and ssh never prompt for a password: in an agent's environment, and in publishing's (both ways)."""
+NO_SSH = {"GIT_SSH_COMMAND": "false"}
+"""git over SSH (git@github.com:...) fails at once instead of reaching a key. It outranks core.sshCommand."""
 
 NO_HOOKS = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"))
 """airlie's own git: no hook runs (there is none under /dev/null) and no fsmonitor."""
@@ -107,19 +104,20 @@ def url_credential_helpers() -> tuple[str, ...]:
 
 def agent_env() -> dict[str, str]:
     """The environment for code a model chose or wrote: airlie's own without CREDENTIALS, gh pointed at an
-    empty configuration directory, git and ssh unable to prompt or to use SSH (NO_PROMPTS), and every git
-    credential helper reset. An empty `credential.helper` empties the list of helpers, and so does each
+    empty configuration directory, git and ssh unable to prompt (NO_PROMPTS) or to use SSH (NO_SSH), and every
+    git credential helper reset. An empty `credential.helper` empties the list of helpers, and so does each
     `credential.<url>.helper` set to empty."""
     env = {name: value for name, value in os.environ.items() if name not in CREDENTIALS}
     env.update(NO_PROMPTS)
+    env.update(NO_SSH)
     env["GH_CONFIG_DIR"] = str(gh_config_dir())
     resets = [*url_credential_helpers(), "credential.helper"]
     return with_git_config(env, [(key, "") for key in resets])
 
 
 def without_hooks(env: Mapping[str, str]) -> dict[str, str]:
-    """`env` with NO_HOOKS: for airlie's own git and gh that publish (they keep the person's credentials),
-    which must run nothing a model planted in the repository."""
+    """`env` with NO_HOOKS: for airlie's own git and gh that publish (with the person's credentials, or a
+    GitHub App's token), which must run nothing a model planted in the repository."""
     return with_git_config(env, NO_HOOKS)
 
 

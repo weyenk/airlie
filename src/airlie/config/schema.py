@@ -295,6 +295,22 @@ class JiraSpec(Strict):
     )
 
 
+class GitHubAppSpec(Strict):
+    """story.github_app: publish as a GitHub App's bot (docs/integrations/story.md, Publishing as a bot)."""
+
+    app_id: int | None = Field(
+        default=None, ge=1, description="set: publish as the app's bot; null: with your gh login and SSH key"
+    )
+    key_file: Path = Field(
+        default=Path("~/.config/airlie/github-app.pem"),
+        description="the app's private key (PEM, keep it 0600); expanded at use, never logged",
+    )
+    api_url: str = Field(
+        default="https://api.github.com",
+        description="GitHub's REST API: https://, or http:// on this machine (tests); no user or password",
+    )
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(default=None, description="repository stories are built in (--repo wins)")
     test_cmd: str | None = Field(default=None, description="the gate every layer must pass (--test-cmd wins)")
@@ -310,6 +326,7 @@ class StorySpec(Strict):
     tests_role: str = "qa"
     build_role: str = "coder"
     jira: JiraSpec = Field(default_factory=JiraSpec)
+    github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
 
 
 TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork", "studio")

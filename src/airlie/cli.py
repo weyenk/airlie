@@ -947,16 +947,18 @@ def story_check(
     test_cmd: Annotated[str | None, typer.Option(help="test command (default: story.test_cmd)")] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Check what `task story` needs: roles, repo, test command, gh and gh-stack, the Jira project and its
-    statuses."""
+    """Check what `task story` needs: roles, repo, test command, gh and gh-stack, who publishes (your gh
+    login, or story.github_app's bot), the Jira project and its statuses."""
     from airlie.story import factory
 
     cfg = _story_cfg(config)
-    problems = _run_stoppable(factory.check(cfg, repo, test_cmd))
-    if not problems:
+    checked = _run_stoppable(factory.check(cfg, repo, test_cmd))
+    for n in checked.notes:
+        console.print(n, markup=False, highlight=False, emoji=False)
+    if not checked.problems:
         console.print('[green]ready[/green]: task story -- ISSUE (or --text "request")')
         return
-    for p in problems:
+    for p in checked.problems:
         err.print(f"[red]✗[/red] {escape(p)}", emoji=False)
     raise typer.Exit(1)
 

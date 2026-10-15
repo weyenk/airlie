@@ -16,6 +16,7 @@ from airlie.story.factory import (
     StoryBusy,
     card_for,
     check,
+    github_app,
     make_board,
     make_pipeline,
     resolve,
@@ -25,9 +26,10 @@ from airlie.story.factory import (
     story_problems,
     tick,
 )
+from airlie.story.github_app import GitHubApp
 from airlie.story.jira import JiraBoard
 from airlie.story.model import StorySetupError
-from airlie.story.publish import Publisher
+from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
@@ -145,7 +147,9 @@ async def test_run_one_builds_the_story_with_the_pipeline_and_lets_go_of_the_loc
     )
     gh = RecordedGh()
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
-    monkeypatch.setattr(factory, "Publisher", lambda *, remote: Publisher(remote=remote, run=gh))
+    monkeypatch.setattr(
+        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+    )
     card = text_card("Let users upload an avatar")
     st = await run_one(cfg, board=NullBoard(stories_dir(cfg)), card=card, repo=repo, test_cmd="./check.sh")
     assert st.stage == "review" and st.blocked is None and [p["number"] for p in st.prs] == [11, 12]
@@ -384,7 +388,9 @@ def queue_setup(
     gh = RecordedGh()
     monkeypatch.setattr(factory, "make_board", lambda cfg: board)
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
-    monkeypatch.setattr(factory, "Publisher", lambda *, remote: Publisher(remote=remote, run=gh))
+    monkeypatch.setattr(
+        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+    )
     return cfg, gh
 
 
@@ -639,14 +645,14 @@ async def test_a_story_topology_that_does_not_load_is_a_setup_problem_not_a_cras
 # ---- check: everything `task story:check` reports ----
 
 
-def fake_publisher(problems: list[str], seen: list[tuple[str, Path]]) -> Any:
+def fake_publisher(problems: list[str], seen: list[tuple[str, Path]], notes: list[str] | None = None) -> Any:
     class Fake:
-        def __init__(self, *, remote: str = "origin") -> None:
+        def __init__(self, *, remote: str = "origin", app: GitHubApp | None = None) -> None:
             self.remote = remote
 
-        async def check(self, repo: Path) -> list[str]:
+        async def check(self, repo: Path) -> Checked:
             seen.append((self.remote, repo))
-            return problems
+            return Checked(problems, notes or [])
 
     return Fake
 
@@ -657,11 +663,11 @@ async def test_check_without_a_repository_does_not_ask_gh_anything(
     seen: list[tuple[str, Path]] = []
     monkeypatch.setattr(factory, "Publisher", fake_publisher(["gh asked"], seen))
     cfg = cfg_for(tmp_path)  # no product or architect, no repository, no test command
-    problems = await check(cfg, None, None)
+    problems, notes = await check(cfg, None, None)
     assert [p for p in problems if "story.product_role" in p] and [
         p for p in problems if "no repository" in p
     ]
-    assert seen == [] and "gh asked" not in problems
+    assert seen == [] and "gh asked" not in problems and notes == []
 
 
 async def test_check_adds_what_publishing_and_jira_need(
@@ -671,7 +677,7 @@ async def test_check_adds_what_publishing_and_jira_need(
     seen: list[tuple[str, Path]] = []
     monkeypatch.setattr(factory, "Publisher", fake_publisher(["gh is not logged in"], seen))
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"remote": "upstream"}})
-    assert await check(cfg, repo, "./check.sh") == ["gh is not logged in"]
+    assert await check(cfg, repo, "./check.sh") == (["gh is not logged in"], [])
     assert seen == [("upstream", repo.resolve())]
 
     async def jira_check(self: JiraBoard) -> list[str]:
@@ -682,7 +688,7 @@ async def test_check_adds_what_publishing_and_jira_need(
     monkeypatch.setenv("ATLASSIAN_PROJECT_KEY", "AIR")
     monkeypatch.setenv("ATLASSIAN_EMAIL", "me@example.org")
     monkeypatch.setenv("ATLASSIAN_API_KEY", "t0ken")
-    problems = await check(cfg, repo, "./check.sh")
+    problems, _ = await check(cfg, repo, "./check.sh")
     assert problems == [
         "gh is not logged in",
         "project AIR has no status 'Blocked' (story.jira.statuses.blocked)",
@@ -696,7 +702,7 @@ async def test_check_does_not_hand_git_a_remote_it_would_read_as_an_option(
     seen: list[tuple[str, Path]] = []
     monkeypatch.setattr(factory, "Publisher", fake_publisher(["asked"], seen))
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"remote": "--upload-pack=x"}})
-    problems = await check(cfg, repo, "./check.sh")
+    problems, _ = await check(cfg, repo, "./check.sh")
     assert len(problems) == 1 and "story.remote" in problems[0] and seen == []
 
 
@@ -709,5 +715,41 @@ async def test_check_reports_a_half_configured_jira_instead_of_raising(
     monkeypatch.setenv("ATLASSIAN_EMAIL", "me@example.org")
     monkeypatch.setenv("ATLASSIAN_API_KEY", "t0ken")
     cfg = cfg_for(tmp_path, roles=STORY_ROLES)
-    problems = await check(cfg, repo, "./check.sh")
+    problems, _ = await check(cfg, repo, "./check.sh")
     assert len(problems) == 1 and "ATLASSIAN_PROJECT_KEY" in problems[0]
+
+
+# ---- who publishes ----
+
+
+def test_the_publisher_acts_as_the_app_only_once_its_app_id_is_set(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
+    assert (
+        github_app(cfg) is None
+        and make_pipeline(cfg, board=NullBoard(tmp_path), repo=repo, test_cmd="x").publisher.app is None
+    )
+    key = tmp_path / "app.pem"
+    cfg = cfg_for(
+        tmp_path,
+        roles=STORY_ROLES,
+        extra={"story": {"remote": "up", "github_app": {"app_id": 7, "key_file": str(key)}}},
+    )
+    app = github_app(cfg)
+    assert isinstance(app, GitHubApp) and (app.app_id, app.key_file, app.api_url) == (
+        7,
+        key,
+        "https://api.github.com",
+    )
+    publisher = make_pipeline(cfg, board=NullBoard(tmp_path), repo=repo, test_cmd="x").publisher
+    assert isinstance(publisher.app, GitHubApp) and publisher.app.app_id == 7 and publisher.remote == "up"
+
+
+async def test_check_passes_on_what_the_publisher_notes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    seen: list[tuple[str, Path]] = []
+    notes = ["publishing to o/r as app[bot]"]
+    monkeypatch.setattr(factory, "Publisher", fake_publisher([], seen, notes))
+    assert await check(cfg_for(tmp_path, roles=STORY_ROLES), repo, "./check.sh") == ([], notes)

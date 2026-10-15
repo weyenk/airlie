@@ -7,7 +7,7 @@ import asyncio
 import json
 import subprocess
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +18,18 @@ from airlie.report import RunReport
 from airlie.router import ChiefRouter
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
+from airlie.story.github_app import GitHubApp
 from airlie.story.model import Layer, Story
 from airlie.story.pipeline import StoryPipeline, _layers_note, _reason, _running
-from airlie.story.publish import Publisher, PublishError
+from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
 from airlie.teams.worktree import add_worktree
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
+from tests.unit.github_helpers import FakeGitHub, fake_app
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
+from tests.unit.test_story_board import FakeJira
+from tests.unit.test_story_board import board as jira_board_for
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, ROLES, RUN, WRITE_PASS, cfg_for
 
 STORY_ROLES = {
@@ -71,14 +75,22 @@ B1, B2 = "add-avatar-upload-01-storage", "add-avatar-upload-02-profile"
 
 
 class RecordedGh:
-    """Stands in for gh: records every command and answers `gh pr view` with numbered PRs."""
+    """Stands in for gh: records every command and its environment and answers `gh pr view` with numbered PRs.
+    git (the trunk fetch) runs for real, unless `real_git` is off: as the bot, the remote is GitHub."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, real_git: bool = True) -> None:
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str]] = []
         self.numbers: dict[str, int] = {}
+        self.real_git = real_git
 
-    async def __call__(self, args: list[str], cwd: Path) -> str:
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
         self.calls.append(args)
+        self.envs.append(dict(env))
+        if args[0] == "git":
+            if not self.real_git:
+                raise PublishError(f"`{' '.join(args)}` exited 128: no network in a unit test")
+            return await run_cmd(args, cwd, env)
         if args[:3] == ["gh", "stack", "view"]:
             raise PublishError("not a stack yet")
         if args[:3] == ["gh", "pr", "view"]:
@@ -97,14 +109,16 @@ def pipeline(
     board: Board | None = None,
     studio: type[StudioOrchestrator] = StudioOrchestrator,
     test_cmd: str = "./check.sh",
+    app: GitHubApp | None = None,
+    roles: dict[str, tuple[str, list[str] | None]] = STORY_ROLES,
 ) -> StoryPipeline:
     settings = {"trunk": git(repo, "branch", "--show-current"), **(story or {})}
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": settings})
+    cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings})
     return StoryPipeline(
         cfg,
         board=board or NullBoard(cfg.observability.state_dir / "stories"),
         studio=lambda: studio(cfg, engine, router=ChiefRouter()),
-        publisher=Publisher(run=gh or RecordedGh()),
+        publisher=Publisher(run=gh or RecordedGh(), app=app),
         repo=repo,
         test_cmd=test_cmd,
     )
@@ -160,11 +174,11 @@ class FailingGh(RecordedGh):
         super().__init__()
         self.failure = failure
 
-    async def __call__(self, args: list[str], cwd: Path) -> str:
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
         if args[:3] == ["gh", "stack", "submit"]:
             self.calls.append(args)
             raise PublishError(self.failure)
-        return await super().__call__(args, cwd)
+        return await super().__call__(args, cwd, env)
 
 
 class ReadingGh(RecordedGh):
@@ -174,10 +188,10 @@ class ReadingGh(RecordedGh):
         super().__init__()
         self.bodies: dict[str, str] = {}
 
-    async def __call__(self, args: list[str], cwd: Path) -> str:
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
         if args[:3] == ["gh", "pr", "edit"]:
             self.bodies[args[3]] = Path(args[args.index("--body-file") + 1]).read_bytes().decode("utf-8")
-        return await super().__call__(args, cwd)
+        return await super().__call__(args, cwd, env)
 
 
 class RecordingBoard:
@@ -550,17 +564,15 @@ async def test_the_trunk_ref_is_the_remote_branch_when_there_is_one_else_the_loc
     assert len(kinds(events, "fetch_failed")) == 1
 
 
-async def test_a_failed_fetch_event_masks_url_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_failed_fetch_event_masks_url_credentials(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
 
-    async def refuses(args: list[str], cwd: Path) -> str:
-        url = "https://user:secret@example.com/o/r.git"
-        raise PublishError(f"`git fetch -q origin main` exited 128: fatal: repository '{url}/' not found")
+    class Refuses(RecordedGh):
+        async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+            url = "https://user:secret@example.com/o/r.git"
+            raise PublishError(f"`git fetch -q origin main` exited 128: fatal: repository '{url}/' not found")
 
-    monkeypatch.setattr("airlie.story.pipeline.run_cmd", refuses)
-    pipe = pipeline(tmp_path, repo, FakeEngine())
+    pipe = pipeline(tmp_path, repo, FakeEngine(), Refuses())
     st = StoryState.open(tmp_path / "s", text_card("x"), pipe.repo)
     await pipe._trunk_ref(st)
     [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
@@ -1198,3 +1210,151 @@ async def test_a_layer_run_that_crashes_is_on_record_with_the_runs_that_finished
     assert len(st.runs) == 3 and st.attempt is not None  # refine, layers, and the layer that died
     assert [e["studio_run"] for e in kinds(st.path / "events.jsonl", "layer_start")] == st.runs[2:]
     assert json.loads((st.path / "state.json").read_text())["runs"] == st.runs
+
+
+# ---- publishing as a GitHub App's bot ----
+
+PLANT = "git config remote.origin.url git@github.com:evil/other.git && ./check.sh"
+"""A test command that redirects the remote from inside the build: model-written code runs in the test gate,
+and the repository's git configuration is shared by every worktree."""
+
+
+def on_github(tmp_path: Path) -> Path:
+    repo = repo_with_marker_tests(tmp_path)
+    git(repo, "remote", "add", "origin", "git@github.com:o/r.git")
+    return repo
+
+
+def files_under(*roots: Path) -> str:
+    """Every file under `roots`, as text: where a token must never be."""
+    return "".join(
+        f.read_text(errors="replace") for root in roots for f in sorted(root.rglob("*")) if f.is_file()
+    )
+
+
+async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_the_bot_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ghp_the_persons_own")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/the-persons-agent.sock")
+    repo = on_github(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    github, gh = FakeGitHub(), RecordedGh(real_git=False)  # no fetch reaches GitHub from a unit test
+    pipe = pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github), test_cmd=PLANT)
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    # the model redirected the remote during the build; every token is still for o/r alone
+    assert git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"
+    assert github.asked("GET").count("/api/repos/o/r/installation") == 1
+    assert "/api/repos/evil/other/installation" not in github.asked("GET")
+    assert github.minted_for() == [["r"]] * 8  # the fetch, the bot's identity, then six publish steps
+    # each step's own token: the fetch, the stack (its view and its init), the submit, each PR's view and edit
+    assert [c[:3] for c in gh.calls] == [
+        ["git", "fetch", "-q"],
+        ["gh", "stack", "view"],
+        ["gh", "stack", "init"],
+        ["gh", "stack", "submit"],
+        ["gh", "pr", "view"],
+        ["gh", "pr", "view"],
+        ["gh", "pr", "edit"],
+        ["gh", "pr", "edit"],
+    ]
+    assert [e["GH_TOKEN"] for e in gh.envs] == [github.tokens[i] for i in (0, 2, 2, 3, 4, 5, 6, 7)]
+    assert all("SSH_AUTH_SOCK" not in e and e["GIT_SSH_COMMAND"] == "false" for e in gh.envs)
+    # the layers are the bot's commits, author and committer
+    bot = "airlie-bot-test[bot]|9919+airlie-bot-test[bot]@users.noreply.github.com"
+    for branch in (B1, B2):
+        assert git(repo, "log", "-1", "--format=%an|%ae%n%cn|%ce", branch).splitlines() == [bot, bot]
+    assert git(repo, "log", "--format=%s", f"{trunk}..{B1}") == "Add avatar upload: Storage (01/02)"
+    # and no token is kept: not in the state, an event, a PR body, a note, or the repository's config
+    kept = files_under(st.path) + (repo / ".git" / "config").read_text()
+    assert not [t for t in [*github.tokens, *github.jwts] if t in kept]
+    assert kinds(st.path / "events.jsonl", "fetch_failed")[0]["error"].endswith("no network in a unit test")
+
+
+async def test_as_the_bot_a_token_a_command_prints_reaches_no_error_state_event_or_jira_comment(
+    tmp_path: Path,
+) -> None:
+    """gh and git can echo what they authenticate with; run_cmd masks the step's token before a PublishError
+    carries it to the stop reason, the state, the events and the issue."""
+    repo = on_github(tmp_path)
+    github = FakeGitHub()
+
+    class Leaky(RecordedGh):
+        async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+            if args[0] == "git":
+                said = "fatal: unable to access https://x-access-token:$GH_TOKEN@github.com/o/r.git/"
+            elif args[:3] == ["gh", "stack", "submit"]:
+                said = "remote: Permission to o/r.git denied to token $GH_TOKEN"
+            else:
+                return await super().__call__(args, cwd, env)
+            self.calls.append(args)
+            return await run_cmd(["sh", "-c", f'echo "{said}" >&2; exit 1'], cwd, env)
+
+    jira = FakeJira()
+    st = await pipeline(
+        tmp_path, repo, happy_engine(), Leaky(), board=jira_board_for(jira), app=fake_app(tmp_path, github)
+    ).run(ISSUE)
+    assert st.stage == "build" and st.blocked is not None
+    assert "denied to token ***" in st.blocked
+    [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
+    assert "x-access-token:***@github.com" in failed["error"] or "https://***@github.com" in failed["error"]
+    comments = [r.content.decode() for r in jira.requests if r.url.path.endswith("/comment")]
+    assert any("denied to token ***" in c for c in comments)
+    secrets = [*github.tokens, *github.jwts]
+    assert len(github.tokens) >= 3 and not [
+        t for t in secrets if t in files_under(st.path) + "".join(comments)
+    ]
+
+
+async def test_a_bot_that_cannot_publish_to_the_remote_stops_the_story_before_any_work(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    git(repo, "remote", "add", "origin", "git@gitlab.com:o/r.git")
+    engine, github = happy_engine(), FakeGitHub()
+    st = await pipeline(tmp_path, repo, engine, app=fake_app(tmp_path, github)).run(text_card("avatars"))
+    assert st.stage == "new" and st.blocked is not None
+    assert st.blocked.startswith(
+        "PublishError: story.remote 'origin': 'git@gitlab.com:o/r.git' is not a github"
+    )
+    assert engine.requests == [] and github.requests == []
+
+
+async def test_a_bot_that_cannot_be_found_stops_the_story_before_a_layer_is_built(tmp_path: Path) -> None:
+    repo = on_github(tmp_path)
+    engine = happy_engine()
+    app = fake_app(tmp_path, FakeGitHub(installed=("o/elsewhere",)))
+    st = await pipeline(tmp_path, repo, engine, RecordedGh(real_git=False), app=app).run(text_card("avatars"))
+    assert st.stage == "layers" and st.blocked is not None
+    assert "the GitHub App airlie-bot-test is not installed on o/r" in st.blocked
+    assert {r.role for r in engine.requests} == {"product", "architect"}  # no layer was started
+    assert st.built == {} and st.attempt is None and git(repo, "branch", "--list", f"{B1}*") == ""
+
+
+async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_works(tmp_path: Path) -> None:
+    """A resume has its base already, so it fetches nothing first; product's turn comes before any layer. A
+    product with a shell redirects the remote in it, and the bot still publishes to o/r alone."""
+    repo = on_github(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    card = text_card("avatars")
+    stories = pipeline(tmp_path, repo, FakeEngine()).stories_dir
+    st = StoryState.open(stories / card.key, card, repo.resolve())
+    st.base = {"ref": trunk, "sha": git(repo, "rev-parse", trunk)}
+    st.finish("intake")  # started, and stopped before refine
+    redirect = "git config remote.origin.url git@github.com:evil/other.git"
+    plant = FakeReply(tool_calls=[ToolCall("p", "shell", json.dumps({"cmd": redirect}))])
+    roles = {**STORY_ROLES, "product": (STORY_ROLES["product"][0], ["read_file", "list_dir", "shell"])}
+    github = FakeGitHub(installed=("o/r", "evil/other"))  # the app could mint for either
+    gh = RecordedGh(real_git=False)
+    pipe = pipeline(
+        tmp_path, repo, happy_engine(product=[plant, STORY]), gh, app=fake_app(tmp_path, github), roles=roles
+    )
+    st = await pipe.run(card)
+    assert st.blocked is None and st.stage == "review"
+    assert (
+        git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"
+    )  # the product's turn ran
+    assert gh.calls[0][:3] == ["gh", "stack", "view"]  # nothing was fetched before it
+    assert "/api/repos/evil/other/installation" not in github.asked("GET")
+    assert github.minted_for() == [["r"]] * len(github.tokens)

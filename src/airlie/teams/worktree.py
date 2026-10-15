@@ -3,20 +3,30 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(
+    repo: Path, *args: str, check: bool = True, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """airlie's own git. It runs no hook and no fsmonitor (NO_HOOKS: a model can plant either in the
-    repository it works in) and gets the agent environment, since it needs no credential."""
+    repository it works in) and gets the agent environment, since it needs no credential, plus `env`."""
     return subprocess.run(
-        ["git", *NO_HOOKS_ARGS, *args], cwd=repo, capture_output=True, text=True, check=check, env=agent_env()
+        ["git", *NO_HOOKS_ARGS, *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=check,
+        env={**agent_env(), **(env or {})},
     )
 
 
-_ENV = ["-c", "user.name=airlie", "-c", "user.email=airlie@local"]
+AIRLIE = ("airlie", "airlie@local")
+"""Who commits in a worktree: the studio's WIP rounds, and a layer's commit unless a GitHub App's bot does."""
+_ENV = ["-c", f"user.name={AIRLIE[0]}", "-c", f"user.email={AIRLIE[1]}"]
 
 
 def add_worktree(repo: Path, path: Path, *, branch: str | None, start_point: str | None = None) -> Path:
@@ -49,12 +59,20 @@ def delete_branch(repo: Path, branch: str) -> None:
     _git(repo, "branch", "-D", branch)
 
 
-def squash_since(worktree: Path, base_sha: str, message: str) -> str:
-    """Everything since `base_sha`, committed or not, as one commit by airlie; returns its sha. A stacked PR
-    then shows one reviewable commit instead of the studio's WIP rounds."""
+def squash_since(
+    worktree: Path, base_sha: str, message: str, *, author: tuple[str, str] | None = None
+) -> str:
+    """Everything since `base_sha`, committed or not, as one commit; returns its sha. A stacked PR then shows
+    one reviewable commit instead of the studio's WIP rounds. `author` (name, email), airlie by default (a
+    GitHub App's bot when the story publishes as one), is its author and its committer, whatever
+    GIT_AUTHOR_* or GIT_COMMITTER_* in the environment say: they would win over user.name and user.email."""
+    name, email = author or AIRLIE
+    who = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email}
+    who |= {"GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     _git(worktree, *_ENV, "add", "-A")
     _git(worktree, "reset", "-q", "--soft", base_sha)
-    _git(worktree, *_ENV, "commit", "-q", "-m", message)
+    identity = ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    _git(worktree, *identity, "commit", "-q", "-m", message, env=who)
     return head_sha(worktree)
 
 
@@ -82,6 +100,13 @@ def diff_between(worktree: Path, base_sha: str, max_chars: int) -> str:
 def changed_files(worktree: Path, base_sha: str) -> list[str]:
     out = _git(worktree, "diff", "--name-only", base_sha, "HEAD", check=False).stdout
     return [line for line in out.splitlines() if line]
+
+
+def remote_url(repo: Path, remote: str) -> str | None:
+    """The first URL `remote` is configured with (remote.<name>.url as written: no insteadOf applied), or None
+    when it has none."""
+    urls = _git(repo, "config", "--get-all", f"remote.{remote}.url", check=False).stdout.splitlines()
+    return urls[0] if urls else None
 
 
 def remove_worktree(repo: Path, path: Path) -> None:

@@ -28,7 +28,7 @@ from airlie.story.model import (
     parse_layers,
     parse_story,
 )
-from airlie.story.publish import Publisher, PublishError, run_cmd
+from airlie.story.publish import Publisher, PublishError
 from airlie.story.state import STAGES, StoryState
 from airlie.teams.worktree import (
     changed_files,
@@ -169,6 +169,9 @@ class StoryPipeline:
         st = StoryState.open(self.stories_dir / card.key, card, self.repo)
         st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
         try:
+            # before any model works in this run: what it plants in the repository's git configuration later
+            # changes neither the repository the bot publishes to nor the person's own git settings
+            self.publisher.prepare(self.repo)
             if st.done("intake") and not st.done("review"):
                 # It was started and stopped (blocked, or cancelled and put back in intake, or killed): back
                 # to building while the rest is built. A blocked story stays blocked on disk until the issue
@@ -310,7 +313,7 @@ class StoryPipeline:
         """The remote's trunk, fetched first; the local trunk when the fetch fails (an event, not a stop) or
         the remote has no such branch."""
         try:
-            await run_cmd(["git", "fetch", "-q", self.s.remote, self.s.trunk], self.repo)
+            await self.publisher.fetch(self.repo, self.s.trunk)
         except PublishError as e:
             st.emit("fetch_failed", remote=self.s.remote, trunk=self.s.trunk, error=_redact_urls(str(e)))
             return self.s.trunk
@@ -332,6 +335,8 @@ class StoryPipeline:
         nn, total = f"{i + 1:02d}", f"{len(layers):02d}"
         if nn in st.built:
             return
+        # who commits the layer, found before it is built: a bot that cannot be found costs no build
+        author = await self.publisher.author(self.repo)
         layer = layers[i]
         self._clear_attempt(st)
         if i == 0:
@@ -376,7 +381,7 @@ class StoryPipeline:
             raise StoryBlocked(
                 f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{_kept(wt, branch)}"
             )
-        sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})")
+        sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
         remove_worktree(self.repo, wt)
         st.built[nn] = {"branch": branch, "sha": sha, "run_id": report.run_id, "subtasks": _rows(orch)}
         st.attempt = None
