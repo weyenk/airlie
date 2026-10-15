@@ -184,8 +184,9 @@ Everything is in [`airlie.yaml`](airlie.yaml); copy `airlie.local.example.yaml` 
 overrides (deep-merged, gitignored). Every seam is a key there: engines (`vllm_mlx` managed process, a
 `llama_server` managed process for one GGUF such as Kev, or any `openai_http` server), the model catalog (pinned
 Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser` /
-`reasoning_parser` name the vllm-mlx parser classes airlie runs on each model's output when
-`engines.<e>.server_parsers` is false), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
+`reasoning_parser` name the parser classes, vllm-mlx's or airlie's own (`qwen3_xml_raw`, `muse_glimmer`, which
+the managed engine loads at start), that run on each model's output, in the engine or, when
+`engines.<e>.server_parsers` is false, in airlie), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
 or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
 `studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds). A role may
 declare `tools` (a subset of the builtins plus `decide` and `search_knowledge`), `skills` (a directory of

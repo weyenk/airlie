@@ -329,6 +329,49 @@ async def test_tool_call_fragments_are_assembled_per_index_in_order() -> None:
     assert (res.finish_reason, res.raw_finish) == ("tool_calls", "tool_calls")
 
 
+async def test_an_argument_fragment_that_starts_with_a_brace_is_appended() -> None:
+    """A streamed value chunk may start with `{` (an f-string, a dict literal); it continues the call
+    (2026-10-14: `{self.id}` replaced everything before it and the call lost its path)."""
+    frames = [
+        frame({"tool_calls": [tc(0, "a", "write_file", '{"path": "x.py", "content": "f\\"')]}),
+        frame({"tool_calls": [tc(0, None, None, "{self.id}")]}),
+        frame({"tool_calls": [tc(0, None, None, ' {}\\""}')]}, "tool_calls"),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    res = await e.generate(req())
+    assert res.tool_calls == [
+        ToolCall("a", "write_file", '{"path": "x.py", "content": "f\\"{self.id} {}\\""}')
+    ]
+
+
+async def test_fragments_repeating_the_same_id_are_appended() -> None:
+    frames = [
+        frame({"tool_calls": [tc(0, "a", "f", '{"o": ')]}),
+        frame({"tool_calls": [tc(0, "a", None, '{"b": 2}}')]}, "tool_calls"),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    assert (await e.generate(req())).tool_calls == [ToolCall("a", "f", '{"o": {"b": 2}}')]
+
+
+async def test_a_call_resent_whole_under_a_new_id_is_kept_once() -> None:
+    """vllm-mlx 0.5.0 repeats a finished call (same index, new id, whole arguments): keep it once."""
+    frames = [
+        frame({"tool_calls": [tc(0, "a", "read_file", '{"path": "README.md"}')]}),
+        frame({"tool_calls": [tc(0, "b", "read_file", '{"path": "README.md"}')]}, "tool_calls"),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    assert (await e.generate(req())).tool_calls == [ToolCall("a", "read_file", '{"path": "README.md"}')]
+
+
+async def test_an_id_arriving_after_the_first_fragment_keeps_the_arguments() -> None:
+    frames = [
+        frame({"tool_calls": [tc(0, None, "f", '{"a": ')]}),
+        frame({"tool_calls": [tc(0, "x", None, "1}")]}, "tool_calls"),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    assert (await e.generate(req())).tool_calls == [ToolCall("x", "f", '{"a": 1}')]
+
+
 async def test_tool_call_defaults_index_zero_and_stringifies_ids() -> None:
     e, _ = make({CHAT: sse(frame({"tool_calls": [{"id": 7, "function": {"name": "f"}}]}, "stop"))})
     res = await e.generate(req())

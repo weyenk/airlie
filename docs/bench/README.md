@@ -70,6 +70,7 @@ the delegate bug fixed the same day), and `single` stays the default topology.
 
 | File | Model | Notes |
 | --- | --- | --- |
+| `2026-10-14-qwen3-coder-tool-calls.md` | base (Qwen3-Coder) and the Qwen3 XML tool format | why tool calls arrived corrupted (vllm-mlx 0.5.0's `qwen3_coder` parser + airlie's stream assembly), the replayed options, and the `qwen3_xml_raw` fix |
 | `2026-10-12-engine-bench.md` | base vs qwen38 | tables, comparison and interpretation |
 | `2026-10-13-topology-bench.md` / `topology.json` | single vs K=3 teams vs fork-when-stuck, 3 tasks × 3 repeats, native loop | single matches K=3 on pass rate at 45 % of the wall-clock; fork loses (trigger too early, best-effort picks quitters); default → single |
 | `2026-10-12-lts-bench-bigger-v2.md` / `lts-bigger-v2.json` | round 2: background admission + ranked injection, 3 repeats | admission wait gone, still +28 % per step from the injected block; 0 retrievals; runs dominated by solve/no-solve; criterion not met |

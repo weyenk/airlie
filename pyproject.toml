@@ -111,4 +111,6 @@ enrolled = [
     "src/airlie/tools/shell.py",
     "src/airlie/tools/sandbox.py",
     "src/airlie/engine/http_engine.py",
+    "src/airlie/engine/parsers/qwen3_xml_raw.py",
+    "src/airlie/engine/vllm_mlx_serve.py",
 ]

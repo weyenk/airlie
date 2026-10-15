@@ -6,13 +6,14 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 from __future__ import annotations
 
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall, image_part
 from airlie.skills import prompt_text
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
+from airlie.tools.jsonargs import history_arguments
 
 
 def _goal_message(goal: str, worktree_hint: str, team_id: str = "", preamble: str | None = None) -> str:
@@ -120,7 +121,8 @@ class NativeTeam:
                 stop = "done"
                 break
             calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
-            messages.append(Message(role="assistant", content=res.text, tool_calls=tuple(calls)))
+            replay = tuple(replace(c, arguments=history_arguments(c.arguments)) for c in calls)
+            messages.append(Message(role="assistant", content=res.text, tool_calls=replay))
             for call in calls:
                 steps += 1
                 async with ctx.scheduler.tool_stall(ctx.team_id):

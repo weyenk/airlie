@@ -270,6 +270,19 @@ async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -
     assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]
 
 
+async def test_a_call_whose_arguments_do_not_parse_is_replayed_without_them(tmp_path: Path) -> None:
+    runaway = '{"path": "a.py", "content": "def f():\\n    return compute(1, 2, 3) if'
+    engine = FakeEngine(
+        {"coder": [FakeReply(tool_calls=[ToolCall("c1", "write_file", runaway)]), FakeReply(text="done")]}
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    await team.run(ctx, rec)
+    assert rec.steps[0].u_t.arguments == runaway  # the trace keeps what the model sent
+    assert "were cut off" in rec.steps[0].o_t  # and the model is told why nothing happened
+    assert engine.requests[1].messages[2].tool_calls == (ToolCall("c1", "write_file", "{}"),)
+
+
 def test_dump_and_load_messages_keep_parts() -> None:
     from airlie.engine import ContentPart, Message
     from airlie.teams.native_team import dump_messages, load_messages

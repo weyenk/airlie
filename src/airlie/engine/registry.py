@@ -1,6 +1,7 @@
 """Generate vllm-mlx's `--models-config` registry and the `vllm-mlx serve` argv from airlie.yaml.
 
-Flag names follow vllm-mlx 0.5.0 (`vllm-mlx serve --help`); values follow docs/wiki/build-spec/02 §1."""
+Flag names follow vllm-mlx 0.5.0 (`vllm-mlx serve --help`); values follow docs/wiki/build-spec/02 §1.
+The server starts through `SERVE_ENTRY`: vllm-mlx's CLI with airlie's parsers registered first."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import yaml
 from airlie.config import AirlieConfig, ModelSpec
 
 SnapshotResolver = Callable[[ModelSpec], Path]
+SERVE_ENTRY = ["python", "-m", "airlie.engine.vllm_mlx_serve"]  # run by the runner inside `uv run`
 
 
 def build_registry(cfg: AirlieConfig, engine_name: str, snapshot_dir: SnapshotResolver) -> dict[str, Any]:
@@ -76,7 +78,7 @@ def build_serve_command(cfg: AirlieConfig, engine_name: str, registry_path: Path
     e = cfg.engines[engine_name]
     team_model = cfg.models[cfg.roles[cfg.teams.role].model]
     argv = [
-        "vllm-mlx", "serve",
+        *SERVE_ENTRY, "serve",
         "--models-config", str(registry_path),
         "--host", e.host,
         "--port", str(e.port),
