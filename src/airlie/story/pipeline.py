@@ -6,6 +6,8 @@ merges: nothing here can."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import subprocess
 import traceback
@@ -14,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig
-from airlie.story.board import Board, Card, note
+from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
 from airlie.story.model import (
     Layer,
@@ -26,7 +28,7 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.publish import Publisher, PublishError, run_cmd
-from airlie.story.state import StoryState
+from airlie.story.state import STAGES, StoryState
 from airlie.teams.worktree import (
     changed_files,
     checkout_worktree,
@@ -40,6 +42,11 @@ from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
 StudioFactory = Callable[[], StudioOrchestrator]
+
+REASON_CHARS = 800
+"""A stop reason is cut to this many characters before it is stored, logged or posted (`_block`)."""
+CANCEL_NOTE_S = 10.0
+"""How long a story that is being cancelled waits for its last note to reach the board."""
 
 _URL_USERINFO = re.compile(r"(?<=://)[^/\s]*@")
 """What follows "://" up to the last "@" before a "/" or a space. Nothing is matched before the "://", so the
@@ -73,19 +80,61 @@ def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
     return rows
 
 
+def _story_note(story: Story) -> str:
+    """What the issue is told once refine has finished: the story and its criteria."""
+    return "\n".join([f"story: {story.title}", *(f"- {c.line()}" for c in story.acceptance)])
+
+
+def _layers_note(layers: tuple[Layer, ...]) -> str:
+    """What the issue is told once the layers are planned: each, bottom first, with the criteria it owns."""
+    lines = ["layers, bottom first:"]
+    for n, layer in enumerate(layers, 1):
+        owns = ", ".join(layer.acceptance) or "enabling: no criterion"
+        lines.append(f"{n}. {layer.title} ({owns})")
+    return "\n".join(lines)
+
+
+def _kept(wt: Path, branch: str) -> str:
+    """What a stop at a layer says about the worktree and branch it leaves: they are for a person to look at,
+    and the next run removes them."""
+    return (
+        f"; its worktree is kept at {wt} (branch {branch}) for inspection. "
+        "The next run removes that worktree and branch before it rebuilds the layer: "
+        "copy anything you want to keep first."
+    )
+
+
+def _running(st: StoryState) -> str:
+    """The stage a story is in the middle of: the one after the last that finished."""
+    return STAGES[min(STAGES.index(st.stage) + 1, len(STAGES) - 1)]
+
+
 def _redact_urls(text: str) -> str:
     """`text` with the user and password of any URL masked (https://user:secret@host → https://***@host):
     git echoes the remote's URL, and a stop reason is posted to Jira."""
     return _URL_USERINFO.sub("***@", text)
 
 
+def _cap(text: str, limit: int = REASON_CHARS) -> str:
+    """`text`, or when it is longer than `limit` its first quarter and its end around a "…" (`limit` in all):
+    a failed command says what it was doing first and why it failed last."""
+    if len(text) <= limit:
+        return text
+    head = limit // 4
+    return f"{text[:head]}…{text[len(text) - (limit - head - 1) :]}"
+
+
 def _reason(e: Exception) -> str:
-    """Why the story stopped, for the note: a failed git helper says what git said. URL credentials are masked
-    before the text is cut, so a cut through a password leaves no piece of it."""
+    """Why the story stopped, for the note: a failed git helper says what git said. `_block` masks and cuts
+    it, as it does every reason."""
     if isinstance(e, subprocess.CalledProcessError):
-        said = _redact_urls(str(e.stderr or e.stdout or "").strip())[-800:]
-        return f"`{_redact_urls(' '.join(str(a) for a in e.cmd))}` exited {e.returncode}: {said}"
-    return _redact_urls(f"{type(e).__name__}: {e}")
+        said = str(e.stderr or e.stdout or "").strip()
+        return f"`{' '.join(str(a) for a in e.cmd)}` exited {e.returncode}: {said}"
+    return f"{type(e).__name__}: {e}"
+
+
+def _board_error(st: StoryState, call: str, e: Exception) -> None:
+    st.emit("board_error", call=call, error=_redact_urls(f"{type(e).__name__}: {e}"))
 
 
 class StoryPipeline:
@@ -107,31 +156,42 @@ class StoryPipeline:
         # so a second spelling of the same repository would refuse a legitimate resume.
         self.repo = repo.resolve()
         self.test_cmd = test_cmd
+        self._shown_cmd = _redact_urls(test_cmd)  # what a note or a PR says; `test_cmd` is what runs
         self.stories_dir = cfg.observability.state_dir / "stories"
 
     async def run(self, card: Card) -> StoryState:
         """Run, or resume, the story for `card`. A stop leaves `blocked` set; nothing is raised for it. Only a
         state that cannot be used at all (StorySetupError from StoryState.open: a damaged file, another
-        repository) is raised, before anything runs."""
+        repository) is raised, before anything runs. A cancel (a signal, a job cancelled) puts the issue back
+        in intake with a note, keeps the state, and is raised again."""
         st = StoryState.open(self.stories_dir / card.key, card, self.repo)
         st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
-        stopped = st.blocked
-        st.blocked = None
-        st.save()
         try:
-            if stopped is not None and st.done("intake"):
-                # it sat in blocked: back to building while the rest is built
+            if st.done("intake") and not st.done("review"):
+                # It was started and stopped (blocked, or cancelled and put back in intake, or killed): back
+                # to building while the rest is built. A blocked story stays blocked on disk until the issue
+                # has moved, so a run killed right here is resumed the same way again.
                 await self.board.move(card, "building")
                 await self.board.comment(card, note(f"resumed after '{st.stage}'"))
+                if st.blocked is not None:
+                    st.blocked = None
+                    st.save()
             await self._intake(st, card)
+            await self._base(st)
             story = await self._refine(st, card)
-            layers = await self._layers(st, story)
+            layers = await self._layers(st, card, story)
             for i in range(len(layers)):
                 await self._build(st, card, story, layers, i)
+            if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
+                st.finish("build")
             await self._publish(st, card, story, layers)
             await self._finish(st, card)
         except StoryBlocked as e:
             await self._block(st, card, str(e))
+        except asyncio.CancelledError:
+            st.emit("cancelled", stage=st.stage, during=_running(st))
+            await self._say_cancelled(st, card)
+            raise
         except Exception as e:  # noqa: BLE001 - every failure ends as a note on the issue, never a silent stop
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, card, _reason(e))
@@ -146,19 +206,44 @@ class StoryPipeline:
         await self.board.comment(card, note(f"picked this up; progress in {st.path / 'events.jsonl'}"))
         st.finish("intake")
 
+    async def _base(self, st: StoryState) -> dict[str, str]:
+        """The commit the story builds on, resolved once and kept in the state: the remote's trunk, fetched,
+        else the local one. Refine and layers read the code at it, layer 01 is built on it, and a resume reads
+        and builds on that same commit whatever the remote has moved on to."""
+        if st.base is None:
+            ref = await self._trunk_ref(st)
+            sha = rev_parse(self.repo, ref)
+            if sha is None:
+                raise StoryBlocked(
+                    f"the trunk '{ref}' does not exist in {self.repo}; "
+                    "story.trunk names the branch the stack is built on"
+                )
+            st.base = {"ref": ref, "sha": sha}
+            st.save()
+        return st.base
+
     async def _ask(self, st: StoryState, stage: str, role: str, brief: str) -> str:
-        """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree
-        (removed after), no synthesis."""
+        """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
+        the story's base (removed after, even when the studio raises), no synthesis."""
         plan = Plan((), (Subtask(stage, brief, role),))
         orch = self.studio()
+        base = st.base or {}
+        st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
+        st.save()
+        st.emit(
+            "run", stage=stage, studio_run=orch.run_dir.run_id, base=base.get("ref"), base_sha=base.get("sha")
+        )
         try:
             report = await orch.execute_task(
-                f"{stage}: {st.card['title']}", repo=self.repo, plan=plan, detach=True, synthesise=False
+                f"{stage}: {st.card['title']}",
+                repo=self.repo,
+                plan=plan,
+                base=base.get("sha"),
+                detach=True,
+                synthesise=False,
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
-        st.runs.append(report.run_id)
-        st.emit("run", stage=stage, run_id=report.run_id)
         team = report.teams[0] if report.teams else None
         if team is None or not team.ok:
             raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
@@ -200,9 +285,11 @@ class StoryPipeline:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
         st.story = story.to_dict()
         st.finish("refine")
+        # after the finish, so a note that cannot be posted never has the model asked again
+        await self.board.comment(card, note(_story_note(story)))
         return story
 
-    async def _layers(self, st: StoryState, story: Story) -> tuple[Layer, ...]:
+    async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
         layers = await self._usable(
@@ -215,6 +302,7 @@ class StoryPipeline:
         )
         st.layers = [x.to_dict() for x in layers]
         st.finish("layers")
+        await self.board.comment(card, note(_layers_note(layers)))
         return layers
 
     async def _trunk_ref(self, st: StoryState) -> str:
@@ -245,19 +333,32 @@ class StoryPipeline:
             return
         layer = layers[i]
         self._clear_attempt(st)
-        base = await self._trunk_ref(st) if i == 0 else str(st.built[f"{i:02d}"]["branch"])
-        base_sha = rev_parse(self.repo, base)
-        if base_sha is None:
-            raise StoryBlocked(f"layer {nn}: its base '{base}' does not exist in {self.repo}")
+        if i == 0:
+            base = await self._base(st)
+            base_ref, base_sha = base["ref"], base["sha"]
+        else:
+            base_ref = str(st.built[f"{i:02d}"]["branch"])
+            found = rev_parse(self.repo, base_ref)
+            if found is None:
+                raise StoryBlocked(f"layer {nn}: its base '{base_ref}' does not exist in {self.repo}")
+            base_sha = found
         branch = branch_name(card.ref, story.title, nn, layer.slug)
         orch = self.studio()
         wt = orch.run_dir.path / "studio"
+        st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
         if rev_parse(self.repo, f"refs/heads/{branch}") is None:
             # only a branch this attempt makes is recorded: a resume deletes what the attempt left, and a
             # branch that was already there (git then refuses to make it) is not airlie's to delete
             st.attempt = {"layer": nn, "branch": branch, "worktree": str(wt)}
-            st.save()
-        st.emit("layer_start", layer=nn, branch=branch, base=base, run_id=orch.run_dir.run_id)
+        st.save()
+        st.emit(
+            "layer_start",
+            layer=nn,
+            branch=branch,
+            base=base_ref,
+            base_sha=base_sha,
+            studio_run=orch.run_dir.run_id,
+        )
         report = await orch.execute_task(
             layer_goal(story, layers, i),
             repo=self.repo,
@@ -267,23 +368,21 @@ class StoryPipeline:
             branch=branch,
             synthesise=False,
         )
-        st.runs.append(report.run_id)
         commit_wip(wt, f"studio: {branch} (final)")
         if not changed_files(wt, base_sha):
-            raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing; its worktree is kept at {wt}")
+            raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing{_kept(wt, branch)}")
         if report.tests.get("studio") is not True:
-            why = f"`{self.test_cmd}` fails on {branch}; its worktree is kept at {wt}"
-            raise StoryBlocked(f"layer {nn} ({layer.title}): {why}")
+            raise StoryBlocked(
+                f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{_kept(wt, branch)}"
+            )
         sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})")
         remove_worktree(self.repo, wt)
         st.built[nn] = {"branch": branch, "sha": sha, "run_id": report.run_id, "subtasks": _rows(orch)}
         st.attempt = None
         st.save()
         st.emit("layer_built", layer=nn, branch=branch, sha=sha)
-        built = f"layer {nn}/{total} built: {layer.title} (`{self.test_cmd}` passes)"
+        built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
         await self.board.comment(card, note(built))
-        if len(st.built) == len(layers):
-            st.finish("build")
 
     async def _publish(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> None:
         if st.done("publish"):
@@ -300,9 +399,10 @@ class StoryPipeline:
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
+                text = pr_body(card, story, layers, i, rows, prs, self._shown_cmd)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
-                body.write_text(pr_body(card, story, layers, i, rows, prs, self.test_cmd), encoding="utf-8")
+                body.write_text(text, encoding="utf-8")
                 await self.publisher.describe(wt, b, pr_title(story, layers, i), body)
         finally:
             remove_worktree(self.repo, wt)
@@ -323,12 +423,36 @@ class StoryPipeline:
         st.finish("review")
 
     async def _block(self, st: StoryState, card: Card, reason: str) -> None:
+        """Every stop ends here: the reason is masked and then cut (once, for all of them), kept in the state
+        and the events, posted as a note, and the issue moved to blocked. The note and the move are separate
+        calls, so a note that fails does not keep the issue out of Blocked."""
+        # masked first: a cut through a password would leave a piece of it
+        reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
         st.emit("blocked", stage=st.stage, reason=reason)
-        stopped = f"stopped after '{st.stage}': {reason}\nResume: {card.resume}."
+        await self._tell(st, card, f"stopped after '{st.stage}': {reason}\nResume: {card.resume}.", "blocked")
+
+    async def _tell(self, st: StoryState, card: Card, text: str, column: Column) -> None:
+        """A note on the issue and then a move to `column`, as two calls: a board that is down must not hide
+        the note, and a note that fails must not keep the issue where it was. Neither failure raises; each is
+        an event."""
         try:
-            await self.board.comment(card, note(stopped))
-            await self.board.move(card, "blocked")
-        except Exception as e:  # noqa: BLE001 - a board that is down must not hide the reason
-            st.emit("board_error", error=f"{type(e).__name__}: {e}")
+            await self.board.comment(card, note(text))
+        except Exception as e:  # noqa: BLE001
+            _board_error(st, "comment", e)
+        try:
+            await self.board.move(card, column)
+        except Exception as e:  # noqa: BLE001
+            _board_error(st, "move", e)
+
+    async def _say_cancelled(self, st: StoryState, card: Card) -> None:
+        """The story was stopped from outside, and `tick` takes only issues in intake: the issue is told so
+        and put back there, and the next run resumes the story from its state. Best effort: the board gets
+        CANCEL_NOTE_S for it, and whatever it does, the cancel goes on."""
+        text = (
+            f"stopped by a signal or a cancel during '{_running(st)}'; "
+            "it is back in To Do and the next run resumes it"
+        )
+        with contextlib.suppress(Exception):  # the time is up; the shielded note and move go on without us
+            await asyncio.wait_for(asyncio.shield(self._tell(st, card, text, "intake")), CANCEL_NOTE_S)

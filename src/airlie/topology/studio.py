@@ -475,8 +475,9 @@ class StudioOrchestrator:
 
         `plan` replaces the chief's plan and pins its roles (PlanError before any work when it cannot run).
         `base` is the worktree's start point (default HEAD), `branch` its new branch (default
-        airlie/<run>/studio), `detach` gives it none (read-only work). `synthesise=False` skips the chief's
-        closing call: the answer is then each subtask's own result."""
+        airlie/<run>/studio), `detach` gives it none (read-only work). The repo map is built from that
+        worktree, so every role sees the code it builds on, not the checkout it was started from.
+        `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result."""
         given = pin(plan) if plan is not None else None
         if given is not None:
             self.check_plan(given)
@@ -490,10 +491,10 @@ class StudioOrchestrator:
             orchestrator="studio",
             given_plan=given is not None,
         )
-        self._prepare(repo, test_cmd)
         name = None if detach else (branch or f"airlie/{self.run_dir.run_id}/studio")
         self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
         self.base_sha = commit_wip(self.worktree, "studio: base")
+        self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given
         final = ""
         if given is not None:

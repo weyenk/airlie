@@ -12,7 +12,8 @@ from typing import Any, Literal, Protocol
 
 from airlie.story.model import ISSUE_KEY as ISSUE_KEY  # defined with the other story types; exported here too
 
-Column = Literal["building", "review", "blocked"]
+Column = Literal["intake", "building", "review", "blocked"]
+"""The board's columns. Intake is where `story:tick` takes its issues, and where a cancelled one goes back."""
 NOTE_PREFIX = "**airlie** · "
 _KEY = ISSUE_KEY.pattern
 _TEXT_KEY = re.compile(r"text-[0-9a-f]{10}")  # what text_card makes
@@ -97,7 +98,7 @@ class NullBoard:
             )
         path = self.stories_dir / card.key / "notes.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
+        with path.open("a", encoding="utf-8") as f:  # airlie's own notes start with a "·"
             f.write(f"- {time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
 
 

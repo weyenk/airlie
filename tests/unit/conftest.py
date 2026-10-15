@@ -1,5 +1,8 @@
 """Shared unit-test fixtures."""
 
+import io
+from pathlib import Path
+
 import pytest
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
@@ -18,3 +21,14 @@ def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """airlie reads the .env beside airlie.yaml: no unit test may read the person's real one. Tests of the
     reader pass their own tmp paths, and a test of the lookup imports the real config_dotenv itself."""
     monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: {})
+
+
+@pytest.fixture
+def ascii_locale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Text files opened without an encoding are ASCII, as under LC_ALL=C with Python's UTF-8 mode off.
+    pathlib asks io.text_encoding for the default, so that is what this replaces. A test that uses it shows
+    that the code under test names its encoding: Python here is built in UTF-8 mode, where forgetting to
+    would not fail."""
+    monkeypatch.setattr(io, "text_encoding", lambda encoding, stacklevel=2: encoding or "ascii")
+    with pytest.raises(UnicodeEncodeError):  # the simulation holds, or a test that uses it proves nothing
+        (tmp_path / "probe.txt").write_text("\u200b")

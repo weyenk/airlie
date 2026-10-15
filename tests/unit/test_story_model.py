@@ -1,6 +1,7 @@
 """Story and layer replies: parsing, errors a role can act on, slugs and branch names."""
 
 import json
+import re
 
 import pytest
 
@@ -164,3 +165,47 @@ def test_a_criterion_is_listed_under_one_layer_only() -> None:
     }
     with pytest.raises(StoryError, match="acceptance AC1 is listed under layers 'storage' and 'profile'"):
         parse_layers({"layers": [storage, profile]}, story, 3)
+
+
+BAD = json.loads('"a\\ud800b"')  # what a JSON reply with an unpaired surrogate escape decodes to
+PAIR = json.loads('"\\ud83d\\ude00"')  # a pair of escapes is one character: nothing to refuse
+
+
+def test_a_lone_surrogate_is_refused_in_every_field_a_story_reply_writes() -> None:
+    first, second = GOOD["acceptance"]
+    for patch, named in (
+        ({"title": BAD}, "the story: 'title'"),
+        ({"summary": BAD}, "the story: 'summary'"),
+        ({"out_of_scope": [BAD]}, "'out_of_scope'"),
+        ({"assumptions": BAD}, "'assumptions'"),
+        ({"acceptance": [{**first, "id": BAD}, second]}, "acceptance item 1 id"),
+        ({"acceptance": [{**first, "given": BAD}, second]}, "acceptance AC1: 'given'"),
+        ({"acceptance": [{**first, "when": BAD}, second]}, "acceptance AC1: 'when'"),
+        ({"acceptance": [first, {**second, "then": BAD}]}, "acceptance AC2: 'then'"),
+    ):
+        with pytest.raises(StoryError, match=re.escape(named) + ".*lone surrogate"):
+            parse_story({**GOOD, **patch})
+    with pytest.raises(StoryError, match=r"the blocked 'reason' .*lone surrogate"):  # not a NotActionable
+        parse_story({"type": "blocked", "reason": BAD})
+    ok = parse_story({**GOOD, "title": PAIR, "summary": PAIR, "assumptions": [PAIR]})
+    assert ok.title == PAIR and ok.assumptions == (PAIR,)
+
+
+def test_a_lone_surrogate_is_refused_in_every_field_a_layer_reply_writes() -> None:
+    story = parse_story(GOOD)
+    layer = {
+        "slug": "model",
+        "title": "Model",
+        "scope": "models.py",
+        "brief": "b",
+        "acceptance": ["AC1", "AC2"],
+    }
+    for patch, named in (
+        ({"title": BAD}, "layer 1: 'title'"),
+        ({"scope": BAD}, "layer 'model': 'scope'"),
+        ({"brief": BAD}, "layer 'model': 'brief'"),
+        ({"acceptance": ["AC1", BAD]}, "layer 'model': 'acceptance'"),
+    ):
+        with pytest.raises(StoryError, match=re.escape(named) + ".*lone surrogate"):
+            parse_layers({"layers": [{**layer, **patch}]}, story, 3)
+    assert parse_layers({"layers": [{**layer, "brief": PAIR}]}, story, 3)[0].brief == PAIR

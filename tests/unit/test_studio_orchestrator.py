@@ -473,3 +473,36 @@ async def test_base_and_branch_place_the_worktree_and_detach_leaves_no_branch(tm
     )
     assert detached.winning_branch == "(detached)"
     assert _git(repo, "branch", "--format=%(refname:short)") == before
+
+
+async def test_the_repo_map_is_of_the_worktree_the_roles_build_on_not_of_the_persons_checkout(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "feature_only.py").write_text("def only_on_feature() -> None: ...\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "feature")  # the person's checkout has moved on from the base
+    cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
+    look = Plan((), (Subtask("d", "describe the repo", "docs"),))
+
+    def goal_message(engine: FakeEngine) -> str:  # the first user message starts with the repo map
+        return next(r for r in engine.requests if r.role == "docs").messages[1].content
+
+    at_base = FakeEngine({"docs": [DONE]})
+    orch = StudioOrchestrator(cfg, at_base, router=ChiefRouter())
+    await orch.execute_task("g", repo=repo, plan=look, base=base, detach=True, synthesise=False)
+    seen = goal_message(at_base)
+    assert seen.startswith("[Repository map]") and "check.sh" in seen and "feature_only.py" not in seen
+    assert orch.preamble is not None and "feature_only.py" not in orch.preamble
+    # with no base the worktree starts at HEAD, so the map follows the worktree, not a fixed copy of the repo
+    at_head = FakeEngine({"docs": [DONE]})
+    await StudioOrchestrator(cfg, at_head, router=ChiefRouter()).execute_task(
+        "g", repo=repo, plan=look, detach=True, synthesise=False
+    )
+    assert "feature_only.py" in goal_message(at_head)
+    # a plan has no worktree: its map is of the checkout it is asked about
+    chief = FakeEngine({"chief": [FakeReply(text=json.dumps({"type": "answer", "answer": "x"}))]})
+    await StudioOrchestrator(cfg, chief, router=ChiefRouter()).plan("g", repo=repo)
+    assert "feature_only.py" in chief.requests[0].messages[1].content

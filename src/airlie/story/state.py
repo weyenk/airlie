@@ -34,7 +34,8 @@ def _end_a_torn_line(events: Path) -> None:
 class StoryState:
     """stories/<card key>/state.json. `stage` is the last stage that finished. `built` maps a layer number
     ("01") to its branch, commit, run and subtask rows. `attempt` is a layer that stopped part-way: its branch
-    and worktree stay for inspection until a resume rebuilds it."""
+    and worktree stay for inspection until a resume rebuilds it. `base` is the commit the story builds on, as
+    {"ref": "origin/main", "sha": ...}: resolved once, so a resume reads and builds on the same code."""
 
     path: Path
     card: dict[str, Any]
@@ -44,6 +45,7 @@ class StoryState:
     layers: list[dict[str, Any]] | None = None
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt: dict[str, str] | None = None
+    base: dict[str, str] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None

@@ -151,3 +151,17 @@ def test_finish_refuses_a_stage_that_is_not_one(tmp_path: Path) -> None:
         st.finish("deploy")
     assert st.stage == "new" and (story_dir / "state.json").read_bytes() == before
     assert not (story_dir / "events.jsonl").exists()
+
+
+def test_the_base_a_story_builds_on_is_kept_and_a_state_file_from_before_it_has_none(tmp_path: Path) -> None:
+    card = text_card("Let users upload an avatar")
+    where = tmp_path / card.key
+    st = StoryState.open(where, card, tmp_path / "repo")
+    assert st.base is None
+    st.base = {"ref": "origin/main", "sha": "abc123"}
+    st.save()
+    assert StoryState.open(where, card, tmp_path / "repo").base == {"ref": "origin/main", "sha": "abc123"}
+    old = json.loads((where / "state.json").read_text())
+    del old["base"]  # a state file as an earlier airlie wrote it
+    (where / "state.json").write_text(json.dumps(old))
+    assert StoryState.open(where, card, tmp_path / "repo").base is None

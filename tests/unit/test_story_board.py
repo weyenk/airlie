@@ -176,6 +176,20 @@ async def test_move_takes_the_transition_to_the_wanted_status() -> None:
     assert [r.method for r in there.requests] == ["GET"]  # already in review: nothing to do
 
 
+async def test_an_issue_is_put_back_in_the_intake_status_for_story_tick_to_find() -> None:
+    working = FakeJira(current="In Progress")
+    card = await board(working).card("AIR-7")
+    await board(working).move(card, "intake")
+    post = working.requests[-1]
+    assert (post.method, post.url.path) == ("POST", "/rest/api/3/issue/AIR-7/transitions")
+    assert json.loads(post.content) == {
+        "transition": {"id": "11"}
+    }  # "Back to do": to To Do, the default intake
+    back = FakeJira(current="In Progress")
+    await board(back, intake="to do").move(card, "intake")  # the status name is story.jira.statuses.intake
+    assert json.loads(back.requests[-1].content) == {"transition": {"id": "11"}}
+
+
 async def test_a_status_out_of_reach_is_named_and_a_switched_off_column_is_skipped() -> None:
     card = await board(FakeJira()).card("AIR-7")
     with pytest.raises(BoardError, match="'Code Review'.*Blocked, In Progress, In Review, To Do"):
@@ -556,10 +570,21 @@ async def test_null_board_writes_notes_and_text_cards_are_stable(tmp_path: Path)
     nb = NullBoard(tmp_path)
     await nb.move(a, "building")
     await nb.comment(a, note("layer 01/02 built"))
+    await nb.move(a, "intake")
     text = (tmp_path / a.key / "notes.md").read_text()
-    assert "moved to building" in text and "layer 01/02 built" in text
+    assert "moved to building" in text and "layer 01/02 built" in text and "moved to intake" in text
     with pytest.raises(BoardError, match="--text"):
         await nb.card("AIR-7")
+
+
+async def test_the_null_board_writes_its_notes_as_utf_8_whatever_the_locale(
+    tmp_path: Path, ascii_locale: None
+) -> None:
+    card = text_card("avatars")
+    nb = NullBoard(tmp_path / "stories")
+    await nb.comment(card, note("layer 01/02 built: Storage \u2713"))  # airlie's own prefix holds a "·" too
+    written = (tmp_path / "stories" / card.key / "notes.md").read_bytes().decode("utf-8")
+    assert "**airlie** \u00b7 layer 01/02 built: Storage \u2713\n" in written
 
 
 async def test_a_text_card_resumes_with_its_text_and_the_null_board_has_nothing_next(tmp_path: Path) -> None:

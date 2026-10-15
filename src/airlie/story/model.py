@@ -27,6 +27,9 @@ It names a story's directory, prefixes its branch names and becomes a URL path, 
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 """A control character or a Unicode line separator. A title or an id holds none; PR text blanks them."""
+SURROGATE = re.compile(r"[\ud800-\udfff]")
+"""A lone UTF-16 surrogate: a JSON "\\ud800" escape that is not half of a pair. It cannot be encoded as UTF-8,
+so a title, a commit message, a PR body or a note that held one would fail wherever it is written."""
 
 
 @dataclass(frozen=True)
@@ -102,9 +105,21 @@ def branch_name(ref: str, story_title: str, nn: str, layer_slug: str) -> str:
     return name
 
 
+def _encodable(value: str, what: str) -> str:
+    """`value` if UTF-8 can encode it; else a StoryError naming `what`, so the role writes the character
+    itself instead of half of an escape."""
+    if SURROGATE.search(value):
+        raise StoryError(
+            f"{what} holds a lone surrogate (a \\ud800-\\udfff escape that is not half of a pair); "
+            "write the character itself"
+        )
+    return value
+
+
 def _one_line(value: str, what: str, limit: int) -> str:
     """`value` if it is one line of at most `limit` characters with no control character; else a StoryError
     naming `what`, so the role's next attempt can fix it."""
+    _encodable(value, what)
     if len(value) > limit or CONTROL.search(value):
         raise StoryError(f"{what} must be one line of at most {limit} characters with no control characters")
     return value
@@ -114,7 +129,7 @@ def _text(d: dict[str, Any], key: str, where: str) -> str:
     v = d.get(key)
     if not isinstance(v, str) or not v.strip():
         raise StoryError(f"{where} needs a non-empty '{key}'")
-    return v.strip()
+    return _encodable(v.strip(), f"{where}: '{key}'")
 
 
 def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
@@ -123,9 +138,9 @@ def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
     if v is None:
         return ()
     if isinstance(v, str):
-        return (v,)
+        return (_encodable(v, what),)
     if isinstance(v, list):
-        return tuple(str(x) for x in v)
+        return tuple(_encodable(str(x), what) for x in v)
     raise StoryError(f"{what} must be a list of {of}")
 
 
@@ -133,7 +148,7 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") == "blocked":
-        raise NotActionable(str(obj.get("reason") or "no reason given"))
+        raise NotActionable(_encodable(str(obj.get("reason") or "no reason given"), "the blocked 'reason'"))
     if obj.get("type") != "story":
         raise StoryError('the JSON object needs "type": "story" (or "blocked" with a reason)')
     raw = obj.get("acceptance")
