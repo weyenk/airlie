@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config, profile_configs
+from airlie.config.load import _yaml_problem
 
 MINIMAL: dict = {
     "version": 1,
@@ -551,6 +552,17 @@ def leaks(err: pytest.ExceptionInfo[ConfigError]) -> list[str]:
             "not valid YAML at line 1, column 23: found undefined alias '…'",
             id="alias",
         ),
+        pytest.param(  # two characters are already too many to keep
+            "story: {jira: {token: *ab}}\n",
+            "not valid YAML at line 1, column 23: found undefined alias '…'",
+            id="two-character alias",
+        ),
+        pytest.param(  # one of PyYAML's own token ids, which is kept
+            "story: {jira: {token: t0ken-SYNTHETIC}\n",
+            "not valid YAML at line 2, column 1: while parsing a flow mapping, expected ',' or '}', but got "
+            "'<stream end>' (opened at line 1, column 8)",
+            id="unclosed flow mapping",
+        ),
         pytest.param(
             "story: {jira: {token: !t0ken-SYNTHETIC x}}\n",
             "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
@@ -585,6 +597,18 @@ def test_a_yaml_error_names_the_place_and_never_quotes_the_source(
         load_config(base)
     assert leaks(err) == []
     assert str(err.value) == f"{local.resolve()}: {reported}"
+
+
+def test_a_yaml_error_without_text_or_with_one_mark_is_reported_without_inventing_either() -> None:
+    m = yaml.Mark("airlie.yaml", 0, 2, 4, None, None)
+    scanning, end = "while scanning a quoted scalar", "found unexpected end of stream"
+    same_place = yaml.MarkedYAMLError(context=scanning, context_mark=m, problem=end, problem_mark=m)
+    assert (
+        _yaml_problem(same_place) == f"not valid YAML at line 3, column 5: {scanning}, {end}"
+    )  # opened there
+    only_opened = yaml.MarkedYAMLError(context=scanning, context_mark=m)
+    assert _yaml_problem(only_opened) == f"not valid YAML: {scanning} (opened at line 3, column 5)"
+    assert _yaml_problem(yaml.YAMLError()) == "not valid YAML"  # nothing to say: nothing after it
 
 
 @pytest.mark.parametrize(
