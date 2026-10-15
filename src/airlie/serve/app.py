@@ -71,13 +71,19 @@ class ToolCallStreamRepair:
 
 
 def _no_call_stops(reply: Any) -> Any:
-    """A whole (not streamed) reply, with "stop" for the finish_reason "tool_calls" of a choice that holds no
-    call with an id and a name, as ToolCallStreamRepair does for a stream."""
+    """A whole (not streamed) reply, repaired as ToolCallStreamRepair repairs a stream: a call without an id
+    or a type gets one, and the finish_reason "tool_calls" of a choice that holds no call with a name becomes
+    "stop"."""
     choices = reply.get("choices") if isinstance(reply, dict) else None
     for choice in choices or []:
         calls = (choice.get("message") or {}).get("tool_calls") or []
-        whole = [c for c in calls if c.get("id") and (c.get("function") or {}).get("name")]
-        if choice.get("finish_reason") == "tool_calls" and not whole:
+        for call in calls:
+            if not call.get("id"):
+                call["id"] = f"call_{uuid.uuid4().hex[:24]}"
+            if not call.get("type"):
+                call["type"] = "function"
+        named = [c for c in calls if (c.get("function") or {}).get("name")]
+        if choice.get("finish_reason") == "tool_calls" and not named:
             choice["finish_reason"] = "stop"
     return reply
 

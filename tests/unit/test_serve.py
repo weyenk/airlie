@@ -410,7 +410,10 @@ def test_a_stream_that_ends_for_tool_calls_without_a_named_call_ends_as_stop(
     [
         (None, "stop"),
         ([], "stop"),
-        ([{"type": "function", "function": {"name": "glob", "arguments": "{}"}}], "stop"),  # no id
+        (
+            [{"type": "function", "function": {"name": "glob", "arguments": "{}"}}],
+            "tool_calls",
+        ),  # given an id
         ([{"id": "call_1", "type": "function", "function": {"arguments": "{}"}}], "stop"),  # no name
         (
             [{"id": "call_1", "type": "function", "function": {"name": "glob", "arguments": "{}"}}],
@@ -432,3 +435,27 @@ def test_a_reply_that_ends_for_tool_calls_without_a_whole_call_ends_as_stop(
         return httpx.Response(200, json=reply)
 
     assert finish_reasons(tmp_path, answer, stream=False) == [finish]
+
+
+def test_a_whole_reply_gives_a_call_without_an_id_or_a_type_both_as_a_stream_does(tmp_path: Path) -> None:
+    calls = [
+        {"function": {"name": "glob", "arguments": "{}"}},
+        {"id": "", "type": "function", "function": {"name": "read", "arguments": "{}"}},
+        {"id": "call_kept", "type": "function", "function": {"name": "grep", "arguments": "{}"}},
+    ]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        message = {"role": "assistant", "content": "", "tool_calls": calls}
+        return httpx.Response(
+            200, json={"choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}]}
+        )
+
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(answer))
+    body = {"model": "base", "messages": [{"role": "user", "content": "find html"}]}
+    with TestClient(app) as c:
+        [choice] = c.post("/v1/chat/completions", json=body).json()["choices"]
+    got = choice["message"]["tool_calls"]
+    assert choice["finish_reason"] == "tool_calls"
+    assert [c["id"].startswith("call_") and len(c["id"]) == 29 for c in got[:2]] == [True, True]
+    assert got[0]["id"] != got[1]["id"] and got[2]["id"] == "call_kept"
+    assert [c["type"] for c in got] == ["function"] * 3
