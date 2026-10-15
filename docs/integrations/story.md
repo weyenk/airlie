@@ -263,6 +263,10 @@ note work the other way round: they are posted before their stage is saved, so w
 - product says the request cannot be built as written, and names the decision a person must make: edit the issue
   or comment on it;
 - a model's reply was unusable after `story.stage_attempts` tries (the last problem is the reason);
+- a role's reply was cut off at its `max_tokens` before it ended (a thinking role that used all of it thinking, say):
+  the reason reads `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens`
+  to raise. A thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has
+  not;
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them;

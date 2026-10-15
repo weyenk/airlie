@@ -203,6 +203,10 @@ guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
 
+A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
+caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
+A reply the engine cuts off at `max_tokens` ends its turn as `cut_off`, never as a finished answer.
+
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.
 

@@ -115,10 +115,13 @@ class RoleSpec(Strict):
     prompt: Path
     model: str
     max_context: int = 65536
-    max_tokens: int = 8192
+    max_tokens: int = Field(
+        default=16384,
+        description="cap on the whole reply, thinking included: keep it above thinking_budget when thinking",
+    )
     sampling: Sampling = Field(default_factory=Sampling)
     thinking: bool = True
-    thinking_budget: int | None = Field(default=16384, description="cap on reasoning tokens; None = uncapped")
+    thinking_budget: int | None = Field(default=8192, description="cap on reasoning tokens; None = uncapped")
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
@@ -437,6 +440,13 @@ class AirlieConfig(Strict):
                 if not hosts:
                     problems.append(f"router.model '{rm}' must be served by a llama_server engine")
         for rname, r in self.roles.items():
+            if r.thinking and r.thinking_budget is not None and r.max_tokens <= r.thinking_budget:
+                problems.append(
+                    f"roles.{rname}.max_tokens ({r.max_tokens}) must be larger than "
+                    f"roles.{rname}.thinking_budget ({r.thinking_budget}): max_tokens caps the thinking and "
+                    "the answer together, so the model can think its way to the cap and never answer. "
+                    "Raise max_tokens, lower thinking_budget, or set thinking_budget: null (no cap)"
+                )
             if r.model not in self.models:
                 problems.append(
                     f"roles.{rname}.model names '{r.model}', which is not in models ({sorted(self.models)})"

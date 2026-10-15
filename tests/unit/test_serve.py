@@ -103,6 +103,63 @@ def test_chat_completion_streams_through(tmp_path: Path) -> None:
     assert b'"content":"hi"' in body and b"[DONE]" in body
 
 
+class CutOffUpstream:
+    """An engine whose reply reached max_tokens while the model was still thinking: no content and a
+    finish_reason of "length" (HDS-3, 2026-10-15)."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        body = json.loads(request.content)
+        if body.get("stream"):
+            sse = (
+                b'data: {"choices":[{"index":0,"delta":{"reasoning_content":"Let me think"},'
+                b'"finish_reason":null}]}\n\n'
+                b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\n'
+                b'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":4096}}\n\n'
+                b"data: [DONE]\n\n"
+            )
+            return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+        message = {"role": "assistant", "content": "", "reasoning_content": "Let me think"}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": message, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 4096},
+                "model": body["model"],
+            },
+        )
+
+
+def test_a_reply_cut_off_at_max_tokens_is_returned_with_finish_reason_length_not_an_error(
+    tmp_path: Path,
+) -> None:
+    up, c = CutOffUpstream(), cfg(tmp_path)
+    app = create_app(c, transport=httpx.MockTransport(up))
+    r = TestClient(app).post(
+        "/v1/chat/completions", json={"model": "coder", "messages": [{"role": "user", "content": "yo"}]}
+    )
+    assert r.status_code == 200
+    choice = r.json()["choices"][0]
+    assert choice["finish_reason"] == "length" and choice["message"]["content"] == ""
+    assert choice["message"]["reasoning_content"] == "Let me think"  # what the engine sent is passed on
+    assert json.loads(up.requests[0].content)["max_tokens"] == c.roles["coder"].max_tokens  # the role's own
+
+
+def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(CutOffUpstream()))
+    with TestClient(app).stream(
+        "POST",
+        "/v1/chat/completions",
+        json={"model": "coder", "stream": True, "messages": [{"role": "user", "content": "yo"}]},
+    ) as r:
+        assert r.status_code == 200
+        body = b"".join(r.iter_bytes())
+    assert b'"finish_reason":"length"' in body and b"[DONE]" in body
+
+
 def test_unknown_role_is_404(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).post("/v1/chat/completions", json={"model": "ghost", "messages": []})
@@ -137,6 +194,31 @@ def test_run_endpoint_uses_orchestrator_factory(tmp_path: Path) -> None:
     assert r.status_code == 200
     j = r.json()
     assert j["winner"] == "team-1" and j["final_answer"] == "did it" and j["teams"][0]["team_id"] == "team-1"
+
+
+def test_run_endpoint_reports_a_team_cut_off_at_max_tokens_as_not_ok_with_why(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    why = "the reply was cut off at max_tokens (4096) before it ended; raise roles.coder.max_tokens"
+
+    class Stub:
+        def __init__(self) -> None:
+            self.run_dir = RunDir.create(c.observability.state_dir, "s2")
+
+        async def execute_task(self, goal, *, repo, test_cmd=None):
+            cut = TeamResult("team-1", False, "cut_off", why, 0, 1, 4096, 10.0)
+            return RunReport("s2", self.run_dir, goal, [cut], 20.0, winner="team-1", final_answer=why)
+
+    app = create_app(
+        c, transport=httpx.MockTransport(FakeUpstream()), orchestrator_factory=lambda cfg, k: Stub()
+    )
+    r = TestClient(app).post("/v1/airlie/run", json={"goal": "g", "repo": str(repo), "k": 1})
+    assert r.status_code == 200
+    assert r.json()["final_answer"] == why
+    assert r.json()["teams"] == [
+        {"team_id": "team-1", "ok": False, "stop_reason": "cut_off", "steps": 0, "final_text": why}
+    ]
 
 
 def test_run_endpoint_passes_topology_to_factory(tmp_path: Path) -> None:

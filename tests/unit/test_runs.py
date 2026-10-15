@@ -239,6 +239,43 @@ async def test_stop_on_first_pass_cancels_other_teams(tmp_path: Path) -> None:
     assert any(e["kind"] == "early_stop" and e["winner"] == "team-1" for e in events)
 
 
+async def test_a_single_agent_cut_off_at_max_tokens_is_reported_as_cut_off_not_done(tmp_path: Path) -> None:
+    repo = git_repo(tmp_path)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    for r in ("coder", "summarizer", "judge", "aggregator"):
+        (cfg_dir / f"{r}.md").write_text("x")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
+            for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
+        "tools": {"builtin": ["write_file"]},
+        "lts": {"enabled": False},
+        "aggregator": {"kind": "test_score"},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
+    cfg = load_config(cfg_dir / "airlie.yaml")
+    engine = FakeEngine({"coder": [FakeReply(reasoning="Thinking, still. ", finish_reason="length")]})
+    report = await ParallelAgentTeamOrchestrator(cfg, engine, run_id="r12").execute_task("do it", repo=repo)
+    [team] = report.teams
+    assert (team.ok, team.stop_reason) == (False, "cut_off") and not report.any_ok
+    assert "the reply was cut off at max_tokens" in report.final_answer  # what the person reads
+    md = (report.run_dir.path / "report.md").read_text()
+    assert "| team-1 | no | cut_off | 0 |" in md
+    done = [
+        e
+        for e in map(json.loads, report.run_dir.events_path.read_text().splitlines())
+        if e["kind"] == "team_done"
+    ]
+    assert (done[0]["ok"], done[0]["stop_reason"]) == (False, "cut_off")
+
+
 # ---- fork-when-stuck worktree helpers ----
 
 

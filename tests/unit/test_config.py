@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from airlie.config import AirlieConfig, ConfigError, load_config, profile_configs
+from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config, profile_configs
 from airlie.config.load import _yaml_problem
 
 MINIMAL: dict = {
@@ -172,6 +172,119 @@ def test_committed_default_config_is_valid() -> None:
         assert m.revision, f"models.{name} must pin a revision"
     for role in cfg.roles:
         assert cfg.engine_for_role(role) == "main"
+
+
+# ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
+
+ROOT = Path(__file__).resolve().parents[2]
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
+
+
+def with_coder(**coder: object) -> dict:
+    """MINIMAL with `coder` set over the schema defaults."""
+    return {**MINIMAL, "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], **coder}}}
+
+
+def no_room(role: str, max_tokens: int, budget: int) -> str:
+    return (
+        rf"roles\.{role}\.max_tokens \({max_tokens}\) must be larger than "
+        rf"roles\.{role}\.thinking_budget \({budget}\)"
+    )
+
+
+def test_a_role_given_only_a_prompt_and_a_model_has_room_to_answer(tmp_path: Path) -> None:
+    role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
+    assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384)
+
+
+def test_the_room_is_checked_after_a_profile_is_merged(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=False, max_tokens=4096),
+        "topology": {
+            "kind": "single",
+            "profiles": {
+                "think": {"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}},
+                "roomy": {
+                    "roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 16384}}
+                },
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p).roles["coder"].thinking is False  # the file on its own is fine
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)) as e:
+        load_config(p, topology="think")
+    assert str(e.value).startswith("config invalid:\n  roles.coder.max_tokens (4096)")
+    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+
+
+def test_a_profile_that_lowers_max_tokens_below_a_thinking_budget_is_checked_too(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=True, thinking_budget=8192, max_tokens=16384),
+        "topology": {
+            "kind": "single",
+            "profiles": {
+                "short": {"roles": {"coder": {"max_tokens": 2048}}},
+                "unthinking": {"roles": {"coder": {"thinking": False, "max_tokens": 2048}}},
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p).roles["coder"].max_tokens == 16384
+    with pytest.raises(ConfigError, match=no_room("coder", 2048, 8192)):
+        load_config(p, topology="short")
+    assert load_config(p, topology="unthinking").roles["coder"].max_tokens == 2048
+
+
+def test_a_profile_can_give_a_role_the_room_the_file_leaves_it(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=True, thinking_budget=8192, max_tokens=4096),
+        "topology": {"kind": "single", "profiles": {"roomy": {"roles": {"coder": {"max_tokens": 16384}}}}},
+    }
+    p = write(tmp_path, data)
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+        load_config(p)
+    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+
+
+def test_the_room_is_checked_after_the_local_overrides_are_merged(tmp_path: Path) -> None:
+    base = write(tmp_path, with_coder(thinking=False, max_tokens=4096))
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}}))
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+        load_config(base, local)
+    local.write_text(
+        yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 9000}}})
+    )
+    assert load_config(base, local).roles["coder"].max_tokens == 9000
+
+
+def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    variants = [*TOPOLOGY_KINDS, *(n for n in base.topology.profiles if n not in TOPOLOGY_KINDS)]
+    assert "studio-qwen38" in variants  # the profile whose coder thinks
+    for name in variants:
+        try:
+            cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=name)
+        except ConfigError as e:
+            pytest.fail(f"airlie.yaml does not load under '{name}': {e}")
+        for rname, role in cfg.roles.items():
+            if role.thinking and role.thinking_budget is not None:
+                assert role.max_tokens >= role.thinking_budget + 8192, f"{name}: roles.{rname}"
+
+
+def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_with() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
+    for name in ("chief", "architect", "research"):
+        role = cfg.roles[name]
+        assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
+    coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen38").roles["coder"]
+    assert (coder.model, coder.thinking, coder.thinking_budget, coder.max_tokens) == (
+        "generalist",
+        True,
+        8192,
+        16384,
+    )
 
 
 # ---- M0 Task 2: catalog fields ----

@@ -135,13 +135,15 @@ roles:
     thinking: false
     sampling: { temperature: 0.7, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
   # ---- studio roles (design 2026-10-13): specialists are prompts over three models; summaries route them ----
-  chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [], max_context: 131072, max_tokens: 4096, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 4096, thinking: true, thinking_budget: 8192, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  # A thinking role's max_tokens caps its thinking AND its answer, so it stays above thinking_budget: 16384 here is 8192
+  # to think with and up to 8192 to answer. Config load refuses a thinking role without that room (HDS-3, 2026-10-15).
+  chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [], max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   product:      { prompt: prompts/roles/product.md, model: generalist, tools: [read_file, list_dir], max_tokens: 4096, thinking: false, max_steps: 8, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   ux:           { prompt: prompts/roles/ux.md, model: generalist, tools: [], vision: true, max_tokens: 2048, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   design:       { prompt: prompts/roles/design.md, model: generalist, tools: [], vision: true, max_tokens: 2048, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   docs:         { prompt: prompts/roles/docs.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge], knowledge: knowledge/research, max_tokens: 4096, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   qa:           { prompt: prompts/roles/qa.md, model: base, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], skills: skills/qa, max_tokens: 4096, thinking: false, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   security:     { prompt: prompts/roles/security.md, model: base, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [], max_context: 131072, max_tokens: 2048, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
@@ -200,7 +202,7 @@ topology:
       studio: { parallel: 3 }
     studio-qwen38:                 # the bench variant: Qwen3.8-27B in the coder seat (design §3)
       extends: studio
-      roles: { coder: { model: generalist, thinking: true, thinking_budget: 8192 } }
+      roles: { coder: { model: generalist, thinking: true, thinking_budget: 8192, max_tokens: 16384 } }
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck

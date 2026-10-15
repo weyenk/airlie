@@ -82,6 +82,25 @@ def events(report):  # type: ignore[no-untyped-def]
     return [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
 
 
+async def test_a_trunk_whose_reply_is_cut_off_ends_the_run_with_why_instead_of_forking(
+    tmp_path: Path,
+) -> None:
+    """HDS-3 (2026-10-15): a reply cut off at max_tokens is not "done", and it is not stuck: more branches
+    would run into the same cap. The run ends, unsuccessfully, saying what to raise."""
+    engine = FakeEngine(
+        {"coder": [WRITE_NOTE, FakeReply(reasoning="Thinking, still. ", finish_reason="length")] + [RUN] * 6}
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f9")
+    report = await orch.execute_task(
+        "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    [trunk] = report.teams
+    assert (trunk.team_id, trunk.ok, trunk.stop_reason, trunk.steps) == ("trunk", False, "cut_off", 1)
+    assert not report.any_ok and "the reply was cut off at max_tokens" in report.final_answer
+    assert not [e for e in events(report) if e["kind"] == "fork_point"] and len(engine.requests) == 2
+    assert [e["stop_reason"] for e in events(report) if e["kind"] == "branch_done"] == ["cut_off"]
+
+
 async def test_trunk_forks_after_two_failures_and_passing_child_wins(tmp_path: Path) -> None:
     # Replies are consumed in request order: trunk (note, run, run) → fork → children interleave.
     # One child writes PASS and runs the tests (pass) and finishes; the other only runs failing tests

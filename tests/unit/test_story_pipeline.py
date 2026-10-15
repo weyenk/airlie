@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.router import ChiefRouter
@@ -380,6 +381,35 @@ async def test_unusable_replies_are_retried_with_feedback_then_stop_the_story(tm
     second = [r for r in engine.requests if r.role == "product"][1].messages[1].content
     assert "could not be used" in second and "JSON" in second
     assert len(kinds(st.path / "events.jsonl", "retry")) == 2
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [
+        FakeReply(reasoning="Let me read the files once more. ", finish_reason="length"),
+        FakeReply(text='Here it is.\n```json\n{"layers": [{"slug": "storage", "ti', finish_reason="length"),
+    ],
+    ids=["still thinking", "half a json block"],
+)
+async def test_an_architect_cut_off_at_max_tokens_is_named_not_blamed_on_the_json(
+    tmp_path: Path, cut: FakeReply
+) -> None:
+    """HDS-3 (2026-10-15): the architect thought until max_tokens, the loop took the empty text for its answer
+    and the story stopped with "no JSON object in the reply". A reply that was cut off says that instead."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"product": [STORY], "architect": [cut, cut]})
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    room = RoleSpec.model_fields["max_tokens"].default
+    why = (
+        f"the architect did not finish: the reply was cut off at max_tokens ({room}) before it ended; "
+        "raise roles.architect.max_tokens"
+    )
+    assert st.stage == "refine" and st.blocked == f"architect did not produce a usable layer plan: {why}"
+    assert [e["error"] for e in kinds(st.path / "events.jsonl", "retry")] == [why, why]
+    second = [r for r in engine.requests if r.role == "architect"][1].messages[1].content
+    assert f"Your previous reply could not be used: {why}." in second
+    assert "cut off at max_tokens" in (st.path / "notes.md").read_text()  # the person is told on the board
+    assert "no JSON object" not in (st.path / "events.jsonl").read_text()
 
 
 async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_path: Path) -> None:

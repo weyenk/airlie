@@ -355,6 +355,29 @@ async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -
     assert "FAILED: max_steps" in docs_goal
 
 
+async def test_a_subtask_whose_reply_is_cut_off_failed_and_its_dependents_and_the_chief_are_told(
+    tmp_path: Path,
+) -> None:
+    """HDS-3 (2026-10-15): a reply cut off at max_tokens is not a finished one. The subtask failed, the report
+    and the events say how, the next brief says its result is unreliable, and the chief sees why."""
+    repo = repo_with_marker_tests(tmp_path)
+    cut = FakeReply(reasoning="Thinking about the fix. ", finish_reason="length")
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [cut], "docs": [DONE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path, review={"enabled": False}), engine, router=ChiefRouter())
+    report = await orch.execute_task("g", repo=repo)
+    fix, note = report.teams
+    assert (fix.ok, fix.stop_reason) == (False, "cut_off") and (note.ok, note.stop_reason) == (True, "done")
+    assert "the reply was cut off at max_tokens" in fix.final_text
+    done = [e for e in events(report) if e["kind"] == "subtask_done"][0]
+    assert (done["subtask"], done["ok"], done["stop_reason"]) == ("fix", False, "cut_off")
+    docs_goal = [r for r in engine.requests if r.role == "docs"][0].messages[1].content
+    assert "FAILED: cut_off, treat as unreliable" in docs_goal and "cut off at max_tokens" in docs_goal
+    asked = [r for r in engine.requests if r.role == "chief"][1].messages[-1].content
+    assert "### fix (coder; cut_off, 0 steps)" in asked and "cut off at max_tokens" in asked
+    assert "| fix | coder |" in (report.run_dir.path / "report.md").read_text()
+    assert report.any_ok  # the other subtask finished; the cut-off one is in the table, not hidden
+
+
 async def test_each_review_sees_only_its_own_subtasks_diff(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     plan = FakeReply(

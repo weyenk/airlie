@@ -33,6 +33,7 @@ from airlie.story.model import (
 )
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.state import STAGES, StoryState
+from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
     changed_files,
     checkout_worktree,
@@ -299,6 +300,8 @@ class StoryPipeline:
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
         team = report.teams[0] if report.teams else None
+        if team is not None and team.stop_reason == "cut_off":  # unfinished, with text or without: say so
+            raise StoryError(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
         if team is None or not team.ok:
             raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
         return team.final_text
