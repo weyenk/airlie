@@ -21,6 +21,7 @@ from airlie.engine.process import RealRunner
 from airlie.engine.registry import build_serve_command
 
 ROOT = Path(__file__).resolve().parents[2]
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
 ENTRY = ["python", "-m", "airlie.engine.vllm_mlx_serve"]
 
 
@@ -84,7 +85,7 @@ def test_serve_without_a_tool_parser_starts(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_the_serve_command_starts_vllm_mlx_through_airlie_entry_point() -> None:
-    argv = build_serve_command(load_config(ROOT / "airlie.yaml"), "main", Path("/r.yaml"))
+    argv = build_serve_command(load_config(ROOT / "airlie.yaml", NO_LOCAL), "main", Path("/r.yaml"))
     assert argv[: len(ENTRY) + 3] == [*ENTRY, "serve", "--models-config", "/r.yaml"]
 
 
@@ -108,7 +109,7 @@ def test_the_engine_runs_inside_the_project_environment(
 @pytest.mark.parametrize("topology", [None, "studio", "studio-qwen38"])
 def test_the_shipped_engine_parser_keeps_code_intact(topology: str | None) -> None:
     """The parser airlie.yaml gives the engine keeps an indented `<<` line exactly (bench 2026-10-14)."""
-    cfg = load_config(ROOT / "airlie.yaml", topology=topology)
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=topology)
     argv = build_serve_command(cfg, "main", Path("/r.yaml"))
     parsers.ensure_registered()
     parser = ToolParserManager.get_tool_parser(argv[argv.index("--tool-call-parser") + 1])()
@@ -124,7 +125,7 @@ def test_every_parser_named_in_airlie_yaml_resolves() -> None:
     from vllm_mlx.reasoning import get_parser
 
     parsers.ensure_registered()
-    for m in load_config(ROOT / "airlie.yaml").models.values():
+    for m in load_config(ROOT / "airlie.yaml", NO_LOCAL).models.values():
         if m.tool_call_parser:
             ToolParserManager.get_tool_parser(m.tool_call_parser)
         if m.reasoning_parser:
