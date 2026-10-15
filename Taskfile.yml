@@ -132,7 +132,7 @@ tasks:
       - cloudflared tunnel --url http://127.0.0.1:8090 {{.CLI_ARGS}}
 
   opencode:install:
-    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story into ~/.config/opencode and add the airlie MCP server (the airlie_* tools) to its opencode.json, after a backup (restart OpenCode after)"
+    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story into ~/.config/opencode and add the airlie MCP server (the airlie_* tools) to its opencode.json, after a backup when it changes the file (restart OpenCode after)"
     cmds:
       - mkdir -p ~/.config/opencode/agent ~/.config/opencode/command
       - cp docs/integrations/opencode/agent/*.md ~/.config/opencode/agent/

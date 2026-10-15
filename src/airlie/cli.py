@@ -49,7 +49,8 @@ console = Console()
 err = Console(stderr=True)
 
 ConfigOpt = Annotated[
-    Path | None, typer.Option("--config", "-c", help="path to airlie.yaml (default: search upwards)")
+    Path | None,
+    typer.Option("--config", "-c", help="path to airlie.yaml (default: AIRLIE_CONFIG, else search upwards)"),
 ]
 
 
@@ -531,8 +532,8 @@ def mcp_serve(
         typer.Option(
             "--config",
             "-c",
-            help="airlie.yaml whose story.test_cmd the tools accept (default: search upwards, else this "
-            "checkout's)",
+            help="airlie.yaml whose story.test_cmd the tools accept (default: AIRLIE_CONFIG, else search "
+            "upwards, else this checkout's)",
         ),
     ] = None,
 ) -> None:
@@ -551,7 +552,11 @@ def mcp_serve(
 @mcp_app.command("config")
 def mcp_config(
     install: Annotated[
-        bool, typer.Option("--install", help="merge it into ~/.config/opencode/opencode.json, after a backup")
+        bool,
+        typer.Option(
+            "--install",
+            help="merge it into ~/.config/opencode/opencode.json, after a backup when it changes the file",
+        ),
     ] = False,
 ) -> None:
     """Print the entry OpenCode needs to start this server (`mcp.airlie`), or --install it."""

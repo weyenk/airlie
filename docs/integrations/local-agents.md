@@ -14,9 +14,9 @@ for roles also `task serve`.
 
 ## OpenCode
 
-Verified 2026-10-14 on OpenCode 1.19.0 (a 1.19-era result; the same check on 2.0 is pending, and see the known
-issues at the end of this section): `opencode run --model airlie/base "create hello.txt …, read it back …"` wrote
-the file, read it and answered, through `POST /v1/chat/completions` on the engine.
+Verified 2026-10-14 on OpenCode 1.19.0 (a 1.19-era result; tried on OpenCode 2.0.29: tool calls fail, see the
+known issues at the end of this section): `opencode run --model airlie/base "create hello.txt …, read it back …"`
+wrote the file, read it and answered, through `POST /v1/chat/completions` on the engine.
 
 ```bash
 mkdir -p ~/.config/opencode && cp docs/integrations/opencode.json ~/.config/opencode/opencode.json
@@ -129,8 +129,8 @@ starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` an
 
 Found in a live sandbox check on OpenCode 2.0.29 on 2026-10-15, and open:
 
-- End-to-end tool calls on local models currently fail with `OpenAI Chat tool call delta is missing id or name`.
-  The engine's Qwen3-Coder tool-call parser drops malformed calls, and a fix is in progress separately.
+- End-to-end tool calls on local models can fail with `OpenAI Chat tool call delta is missing id or name`.
+  The engine's Qwen3-Coder tool-call parser drops malformed calls, and a fix is proposed separately.
 - `opencode run --agent chief` used the config's default model rather than the agent's `airlie/generalist`; to be
   rechecked in the TUI.
 

@@ -31,10 +31,15 @@ from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, pl
 class ToolCallStreamRepair:
     """Give every streamed tool-call delta an `id` and `type`. vllm-mlx sometimes streams a call's deltas
     without them (seen 2026-10-14 when Qwen3-Coder opened a call with a bare `<function=...>`), and the
-    Vercel AI SDK behind OpenCode rejects such a chunk ("Expected 'id' to be a string")."""
+    Vercel AI SDK behind OpenCode rejects such a chunk ("Expected 'id' to be a string").
+
+    A choice that ends with finish_reason "tool_calls" but sent no call with a name (the engine's parser
+    dropped a malformed one) ends with "stop" instead: OpenCode 2.0 fails the turn otherwise ("OpenAI Chat
+    tool call delta is missing id or name"), while a "stop" reaches it as a reply with no tool call."""
 
     def __init__(self) -> None:
         self.ids: dict[tuple[int, int], str] = {}
+        self.named: set[int] = set()  # the choices that sent a tool call with a name (every call has an id)
 
     def frame(self, frame: bytes) -> bytes:
         text = frame.decode("utf-8", "replace")
@@ -46,8 +51,9 @@ class ToolCallStreamRepair:
             return frame
         changed = False
         for choice in obj.get("choices") or []:
+            n = int(choice.get("index", 0))
             for tc in (choice.get("delta") or {}).get("tool_calls") or []:
-                key = (int(choice.get("index", 0)), int(tc.get("index", 0)))
+                key = (n, int(tc.get("index", 0)))
                 if tc.get("id"):
                     self.ids.setdefault(key, str(tc["id"]))
                 else:
@@ -56,7 +62,24 @@ class ToolCallStreamRepair:
                 if not tc.get("type"):
                     tc["type"] = "function"
                     changed = True
+                if (tc.get("function") or {}).get("name"):
+                    self.named.add(n)
+            if choice.get("finish_reason") == "tool_calls" and n not in self.named:
+                choice["finish_reason"] = "stop"
+                changed = True
         return f"data: {json.dumps(obj)}".encode() if changed else frame
+
+
+def _no_call_stops(reply: Any) -> Any:
+    """A whole (not streamed) reply, with "stop" for the finish_reason "tool_calls" of a choice that holds no
+    call with an id and a name, as ToolCallStreamRepair does for a stream."""
+    choices = reply.get("choices") if isinstance(reply, dict) else None
+    for choice in choices or []:
+        calls = (choice.get("message") or {}).get("tool_calls") or []
+        whole = [c for c in calls if c.get("id") and (c.get("function") or {}).get("name")]
+        if choice.get("finish_reason") == "tool_calls" and not whole:
+            choice["finish_reason"] = "stop"
+    return reply
 
 
 class RunRequest(BaseModel):
@@ -233,7 +256,7 @@ def create_app(
         r = await client.post(f"{base}/chat/completions", json=out, headers=headers)
         if r.status_code != 200:
             raise HTTPException(r.status_code, r.text[:500])
-        return r.json()
+        return _no_call_stops(r.json())
 
     @app.post("/v1/airlie/run")
     async def run(req: RunRequest) -> dict[str, Any]:

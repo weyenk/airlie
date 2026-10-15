@@ -119,10 +119,12 @@ def started(out: str) -> str:
 
 
 async def until_ended(client: Client, job: str) -> list[str]:
-    """Every status answer for `job` until its state is no longer running."""
+    """Every status answer for `job` until its state is no longer running; a job that never ends fails the
+    test within a minute instead of holding up the suite."""
     outs: list[str] = []
-    while not outs or outs[-1].startswith(f"{job}: running"):
-        outs.append(text(await client.call_tool("status", {"job_id": job, "wait": 10})))
+    with anyio.fail_after(60):
+        while not outs or outs[-1].startswith(f"{job}: running"):
+            outs.append(text(await client.call_tool("status", {"job_id": job, "wait": 10})))
     return outs
 
 
@@ -277,7 +279,8 @@ async def test_a_call_cancelled_during_its_post_still_learns_the_job_id_and_stop
         server = build_server(http, test_cmds=[], cwd=repo)
         async with anyio.create_task_group() as tg:
             tg.start_soon(server.call_tool, "run", {"goal": "g", "plan": ONE})
-            await serve.posted.wait()  # the job started; the answer to the POST is still on its way
+            with anyio.fail_after(10):
+                await serve.posted.wait()  # the job started; the answer to the POST is still on its way
             tg.cancel_scope.cancel()
             serve.hold.set()
         job = serve.jobs[0]
@@ -424,7 +427,8 @@ async def test_each_tool_answers_within_the_call_budget_when_serve_hangs(
     repo = repo_with_marker_tests(tmp_path)
     async with connected(Hung(starts), repo) as client:
         t0 = anyio.current_time()
-        out = text(await client.call_tool(tool, args))
+        with anyio.fail_after(10):  # a tool that waits on the hung serve fails here, not after its hour
+            out = text(await client.call_tool(tool, args))
         took = anyio.current_time() - t0
     assert says in out and took < 1.0 + 0.25, (took, out)
 
@@ -570,6 +574,27 @@ def test_install_follows_a_symlinked_config_and_keeps_the_link(tmp_path: Path) -
     assert link.is_symlink() and json.loads(real.read_text())["mcp"]["airlie"] == opencode_entry(
         tmp_path / "airlie"
     )
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["file", "symlink to it"])
+def test_install_leaves_a_read_only_config_as_it_is(tmp_path: Path, linked: bool) -> None:
+    """A new file moved into place would replace even a file the person made read-only."""
+    real = tmp_path / "dotfiles/opencode.json"
+    real.parent.mkdir()
+    real.write_text('{"mcp": {}}\n')
+    real.chmod(0o444)
+    path = tmp_path / "opencode.json" if linked else real
+    if linked:
+        path.symlink_to(real)
+    with pytest.raises(InstallError) as e:
+        install_opencode(path, tmp_path / "airlie")
+    assert str(e.value).startswith(f'{path} is read-only, so airlie left it as it is: add "airlie": {{')
+    assert real.read_text() == '{"mcp": {}}\n' and stat.S_IMODE(real.stat().st_mode) == 0o444
+    assert [p.name for p in real.parent.iterdir()] == ["opencode.json"]  # no backup, no new file beside it
+    real.chmod(0o644)
+    install_opencode(path, tmp_path / "airlie")
+    real.chmod(0o444)
+    assert "unchanged" in install_opencode(path, tmp_path / "airlie")  # nothing to write: nothing refused
 
 
 def test_install_from_a_temporary_worktree_says_to_run_it_from_the_main_checkout(tmp_path: Path) -> None:

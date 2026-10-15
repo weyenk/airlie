@@ -4,9 +4,12 @@ the role→served-model mapping; /v1/airlie/run launches a team run."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -352,3 +355,80 @@ def test_streamed_tool_calls_always_carry_an_id_and_type(tmp_path: Path) -> None
     assert frames[0]["choices"][0]["delta"]["content"] == "I'll look." and text.rstrip().endswith(
         "data: [DONE]"
     )
+    assert frames[-1]["choices"][0]["finish_reason"] == "tool_calls"  # a call with a name was sent
+
+
+def stream_of(
+    *deltas: dict[str, Any], finish: str = "tool_calls"
+) -> Callable[[httpx.Request], httpx.Response]:
+    """An upstream that streams one choice: `deltas`, then a last frame that ends it with `finish`."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        frames = [{"choices": [{"index": 0, "delta": d, "finish_reason": None}]} for d in deltas]
+        frames.append({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
+        body = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+    return answer
+
+
+def finish_reasons(
+    tmp_path: Path, upstream: Callable[[httpx.Request], httpx.Response], stream: bool
+) -> list[str]:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(upstream))
+    body = {"model": "base", "stream": stream, "messages": [{"role": "user", "content": "find html"}]}
+    with TestClient(app) as c:
+        r = c.post("/v1/chat/completions", json=body)
+    if not stream:
+        return [ch["finish_reason"] for ch in r.json()["choices"]]
+    frames = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: {")]
+    return [ch["finish_reason"] for f in frames for ch in f["choices"] if ch["finish_reason"]]
+
+
+@pytest.mark.parametrize(
+    "deltas",
+    [
+        (),  # the parser dropped the malformed call: nothing was sent
+        ({"content": "<function=glob>"},),  # the call's text came through as text
+        ({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]},),  # arguments, but no name
+    ],
+    ids=["no call", "text only", "no name"],
+)
+def test_a_stream_that_ends_for_tool_calls_without_a_named_call_ends_as_stop(
+    tmp_path: Path, deltas: tuple[dict[str, Any], ...]
+) -> None:
+    """OpenCode 2.0 fails the whole turn on a "tool_calls" with no call ("OpenAI Chat tool call delta is
+    missing id or name"); a "stop" reaches it as a reply."""
+    assert finish_reasons(tmp_path, stream_of(*deltas), stream=True) == ["stop"]
+    named = {"tool_calls": [{"index": 0, "function": {"name": "glob", "arguments": "{}"}}]}
+    assert finish_reasons(tmp_path, stream_of(*deltas, named), stream=True) == ["tool_calls"]
+    assert finish_reasons(tmp_path, stream_of(*deltas, finish="length"), stream=True) == ["length"]
+
+
+@pytest.mark.parametrize(
+    ("calls", "finish"),
+    [
+        (None, "stop"),
+        ([], "stop"),
+        ([{"type": "function", "function": {"name": "glob", "arguments": "{}"}}], "stop"),  # no id
+        ([{"id": "call_1", "type": "function", "function": {"arguments": "{}"}}], "stop"),  # no name
+        (
+            [{"id": "call_1", "type": "function", "function": {"name": "glob", "arguments": "{}"}}],
+            "tool_calls",
+        ),
+    ],
+    ids=["none", "empty", "no id", "no name", "whole"],
+)
+def test_a_reply_that_ends_for_tool_calls_without_a_whole_call_ends_as_stop(
+    tmp_path: Path, calls: list[dict[str, Any]] | None, finish: str
+) -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "",
+            **({"tool_calls": calls} if calls is not None else {}),
+        }
+        reply = {"choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}]}
+        return httpx.Response(200, json=reply)
+
+    assert finish_reasons(tmp_path, answer, stream=False) == [finish]

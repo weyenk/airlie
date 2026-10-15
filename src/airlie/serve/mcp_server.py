@@ -335,9 +335,9 @@ def build_server(
         repo: Annotated[str | None, Field(description=REPO)] = None,
     ) -> str:
         """Ask the airlie studio's chief for a plan (subtasks, roles, dependencies) for a goal in the
-        repository. Nothing is built. Waits up to 45 seconds; if the chief is still planning then, it returns
-        the job id: call airlie_status with it until the plan comes. Show the plan to the person and wait
-        for their approval before airlie_run."""
+        repository. Nothing is built. Waits about 40 seconds; if the chief is still planning then, it
+        returns the job id: call airlie_status with it until the plan comes. Show the plan to the person and
+        wait for their approval before airlie_run."""
         body = {"goal": goal, "repo": repository(repo, needed=True), "test_cmd": _given(test_cmd)}
 
         async def work(call: _Call) -> str:
@@ -498,7 +498,8 @@ def install_opencode(path: Path, project: Path) -> str:
     missing file is created. A file that changes is first copied beside itself to
     `<name>.<YYYYmmdd-HHMMSS>.bak` (its mode kept: it may hold keys), then replaced whole by a file written
     beside it, so a write that fails never truncates it. A file that is not a JSON object, or whose entry is
-    not one, is refused (InstallError) and left as it is. Installing from a temporary worktree warns."""
+    not one, or that is read-only, is refused (InstallError) and left as it is. Installing from a temporary
+    worktree warns."""
     entry = opencode_entry(project)
     warning = (
         f"\nWarning: {project} is a temporary worktree checkout; it disappears once its branch is merged, "
@@ -532,6 +533,8 @@ def install_opencode(path: Path, project: Path) -> str:
         )
     if new == old:
         return f"{path} unchanged: it already starts the airlie MCP server{warning}"
+    if not os.access(path.resolve(), os.W_OK):  # the move into place would replace even a read-only file
+        raise InstallError(f"{path} is read-only, so airlie left it as it is: {by_hand}")
     backup = _backup(path)
     data["mcp"] = {**servers, "airlie": new}
     _replace_json(path, data)
