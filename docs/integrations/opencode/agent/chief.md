@@ -13,6 +13,7 @@ permission:
     "gh pr view*": allow
     "gh stack view --json*": allow
     "gh stack view --short*": allow
+    "gh api*": deny
     "gh pr merge*": deny
     "gh stack merge*": deny
   task:
@@ -37,8 +38,12 @@ Pick the smallest way to get the request done:
   Then call airlie_run with the goal and the approved plan as JSON, and follow it with airlie_status until the
   state is done, failed or cancelled. Report the branch, whether the tests passed, and what is left open.
 - A Jira issue (a key like AIR-7, or its link), or "turn this into stacked PRs": call airlie_story with the
-  issue as card (or the request as text), then follow it with airlie_status. Report each stage in one line and
-  finish with the PR links, bottom first.
+  issue as card (or the request as text), then follow it with airlie_status until the state is done, stopped,
+  failed or cancelled. Report each stage in one line and finish with the PR links, bottom first. A story that
+  stops is still a done job, but airlie_status shows "stopped: <reason>" because the result has `blocked` set:
+  that story has stopped and has not finished. Report the `result.blocked` reason instead of PR links, and say
+  that it resumes from its last finished stage when the person fixes the cause and the same command runs again
+  (or `task story -- <KEY>`).
 
 Only a human merges: never merge a pull request or a stack, and never push unless the person asks. Keep your
 replies short.

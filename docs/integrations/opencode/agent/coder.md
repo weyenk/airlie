@@ -6,6 +6,7 @@ permission:
   bash:
     "*": allow
     "git push*": ask
+    "gh api*": deny
     "gh pr merge*": deny
     "gh stack merge*": deny
 ---
