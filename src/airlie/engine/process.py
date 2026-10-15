@@ -20,6 +20,7 @@ import psutil
 
 from airlie.config import AirlieConfig, ModelSpec
 from airlie.engine.registry import (
+    SERVE_ENTRY,
     build_llama_command,
     build_registry,
     build_serve_command,
@@ -50,11 +51,11 @@ class ProcessHealth:
 
 
 class RealRunner:
-    """Spawns `uv run vllm-mlx …` detached from the CLI so it survives `task up` returning."""
+    """Spawns the engine detached from the CLI so it survives `task up`; vllm-mlx runs inside `uv run`."""
 
     def spawn(self, argv: list[str], log_path: Path, cwd: Path) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["uv", "run", "--quiet", *argv] if argv[:1] == ["vllm-mlx"] else list(argv)
+        cmd = ["uv", "run", "--quiet", *argv] if argv[: len(SERVE_ENTRY)] == SERVE_ENTRY else list(argv)
         with log_path.open("ab") as log:
             proc = subprocess.Popen(
                 cmd,

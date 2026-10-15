@@ -79,8 +79,15 @@ def test_write_registry_round_trips(tmp_path: Path) -> None:
 
 def test_serve_command_pins_spec_launch_parameters(tmp_path: Path) -> None:
     argv = build_serve_command(cfg(tmp_path), "main", Path("/state/models.yaml"))
-    assert argv[:4] == ["vllm-mlx", "serve", "--models-config", "/state/models.yaml"]
-    pairs = dict(zip(argv[4::2], argv[5::2], strict=False))
+    assert argv[:6] == [
+        "python",
+        "-m",
+        "airlie.engine.vllm_mlx_serve",
+        "serve",
+        "--models-config",
+        "/state/models.yaml",
+    ]
+    pairs = dict(zip(argv[6::2], argv[7::2], strict=False))
     flags = set(argv)
     assert pairs["--host"] == "127.0.0.1"
     assert pairs["--port"] == "8080"
