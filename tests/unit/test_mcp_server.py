@@ -22,7 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from typer.testing import CliRunner
 
 from airlie.cli import app as cli
-from airlie.engine import FakeEngine
+from airlie.engine import FakeEngine, FakeReply
 from airlie.serve import mcp_server
 from airlie.serve.app import create_app
 from airlie.serve.mcp_server import (
@@ -51,6 +51,18 @@ class Hang(FakeEngine):
 
     async def generate(self, req, on_token=None):  # type: ignore[no-untyped-def]
         await anyio.sleep(3600)
+
+
+class Gate(FakeEngine):
+    """Answers as scripted, but each answer waits for `open`: planning that takes as long as the test says."""
+
+    def __init__(self, scripts: dict[str, list[FakeReply]]) -> None:
+        super().__init__(scripts)
+        self.open = anyio.Event()
+
+    async def generate(self, req, on_token=None):  # type: ignore[no-untyped-def]
+        await self.open.wait()
+        return await super().generate(req, on_token)
 
 
 class Serve(httpx.AsyncBaseTransport):
@@ -135,7 +147,7 @@ async def test_the_server_lists_five_tools_with_these_arguments(tmp_path: Path) 
     assert {t.name: shape(t.input_schema) for t in tools} == {
         "plan": {"goal": "string", "test_cmd": "string?", "repo": "string?"},
         "run": {"goal": "string", "plan": "object?", "test_cmd": "string?", "repo": "string?"},
-        "status": {"job_id": "string", "wait": "number=120"},
+        "status": {"job_id": "string", "wait": "number=45.0"},
         "cancel": {"job_id": "string"},
         "story": {"card": "string?", "text": "string?", "test_cmd": "string?", "repo": "string?"},
     }
@@ -168,6 +180,32 @@ async def test_a_plan_comes_back_as_a_table_and_json_and_the_approved_plan_build
         ("/v1/airlie/plans", {"goal": "fix the build", "repo": where, "test_cmd": "./check.sh"}),
         ("/v1/airlie/runs", {"goal": "fix the build", "repo": where, "test_cmd": "./check.sh", "plan": plan}),
     ]
+
+
+async def test_planning_that_outlasts_the_window_hands_back_its_job_and_status_shows_the_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mcp_server, "PLAN_WINDOW_S", 0.5)  # 45 s in use: inside a client's 60 s per call
+    repo = repo_with_marker_tests(tmp_path)
+    answer = FakeReply(text=json.dumps({"type": "answer", "answer": "it is 42"}))
+    engine = Gate({"chief": [PLAN, answer]})
+    async with connected(Serve(app_for(tmp_path, engine)), repo) as client:
+        with anyio.fail_after(10):  # the window ends the call, not the planning
+            out = text(await client.call_tool("plan", {"goal": "fix the build"}))
+        job, _, rest = out.partition(": ")
+        assert rest.startswith("still planning. Call airlie_status with this job id"), out
+        engine.open.set()  # the chief answers now
+        done = (await until_ended(client, job))[-1]
+        assert done.startswith(f"{job}: done\n") and "| fix | coder | make the check pass | - |" in done
+        plan = json.loads(done.split("\nPlan JSON for airlie_run:\n", 1)[1])  # what airlie_run takes
+        assert [s["id"] for s in plan["subtasks"]] == ["fix", "note"] and "Result:" not in done
+        engine.open = anyio.Event()
+        job, _, rest = text(await client.call_tool("plan", {"goal": "what is 6 x 7?"})).partition(": ")
+        assert rest.startswith("still planning")
+        engine.open.set()
+        done = (await until_ended(client, job))[-1]
+    assert done.startswith(f"{job}: done\n")
+    assert done.endswith("\n\nThe chief answered without a plan:\n\nit is 42")
 
 
 async def test_status_reports_a_story_that_stopped_as_stopped_with_its_reason(
@@ -314,7 +352,8 @@ async def test_the_api_key_goes_only_to_an_https_or_loopback_airlie_and_nowhere_
     assert r.is_error and ": 307" in text(r) and hops == ["http://127.0.0.1:8090/v1/airlie/jobs/x"]
 
 
-async def test_status_waits_120_seconds_by_default_and_never_more_than_240(tmp_path: Path) -> None:
+async def test_status_waits_45_seconds_by_default_and_never_more_than_50(tmp_path: Path) -> None:
+    # an MCP client may give a call only 60 s (the TypeScript SDK's default)
     asked: list[float] = []
 
     def serve(request: httpx.Request) -> httpx.Response:
@@ -325,7 +364,7 @@ async def test_status_waits_120_seconds_by_default_and_never_more_than_240(tmp_p
     async with connected(httpx.MockTransport(serve), tmp_path) as client:
         for args in ({}, {"wait": 9999}, {"wait": -5}, {"wait": 30}):
             await client.call_tool("status", {"job_id": "j", **args})
-    assert asked == [120, 240, 0, 30]
+    assert asked == [45, 50, 0, 30]
 
 
 async def test_an_airlie_that_is_not_running_is_reported_with_how_to_start_it(tmp_path: Path) -> None:

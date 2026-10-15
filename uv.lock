@@ -75,7 +75,7 @@ requires-dist = [
     { name = "autogen-ext", extras = ["openai"], specifier = ">=0.7" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28" },
-    { name = "mcp", specifier = ">=1.2" },
+    { name = "mcp", specifier = ">=2.3" },
     { name = "mlx", marker = "sys_platform == 'darwin'", specifier = ">=0.32.2" },
     { name = "mlx-lm", specifier = "==0.32.0" },
     { name = "numpy", specifier = ">=2.1" },

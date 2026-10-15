@@ -31,8 +31,12 @@ log = logging.getLogger(__name__)
 DEFAULT_URL = "http://127.0.0.1:8090"
 CHECKOUT = Path(__file__).resolve().parents[3]  # the airlie checkout this runs from (uv installs it editable)
 OPENCODE_SCHEMA = "https://opencode.ai/config.json"
-POLL_TIMEOUT = httpx.Timeout(300.0, connect=10.0)  # above the longest wait a tool asks for (240 s)
-POST_TIMEOUT_S = 60.0  # a POST is shielded from cancellation, so it is bounded
+# An MCP client may give a call 60 s (the TypeScript SDK's default), so every tool answers in about 45.
+PLAN_WINDOW_S = 45.0  # airlie_plan waits this long for the plan (its POST included), then hands back the job
+STATUS_WAIT_S = 45.0  # airlie_status's default long poll; a longer `wait` is capped at STATUS_WAIT_MAX_S
+STATUS_WAIT_MAX_S = 50.0
+POLL_TIMEOUT = httpx.Timeout(55.0, connect=10.0)  # above the longest long poll, below a client's 60 s
+POST_TIMEOUT_S = 30.0  # a POST is shielded from cancellation, so it is bounded
 STOP_TIMEOUT_S = 5.0
 FIELD_CHARS = 160
 NO_KEY = (
@@ -190,12 +194,14 @@ def _event_line(event: dict[str, Any]) -> str:
 
 def _status_text(job_id: str, r: dict[str, Any]) -> str:
     """`<job>: <state>` (a done job whose result is blocked is a story that stopped: `stopped: <reason>`),
-    the new events, then the result or the error once the job has ended."""
+    the new events, then the result or the error once the job has ended (a plan as airlie_plan shows it)."""
     result = r.get("result")
     blocked = result.get("blocked") if r.get("state") == "done" and isinstance(result, dict) else None
     state = f"stopped: {_one_line(str(blocked))}" if blocked else str(r.get("state"))
     out = [f"{job_id}: {state}", *(_event_line(e) for e in r.get("events") or [])]
-    if result is not None:
+    if isinstance(result, dict) and r.get("kind") == "plan":
+        out += ["", _plan_outcome(result)]
+    elif result is not None:
         out += ["", "Result:", json.dumps(result, indent=1, ensure_ascii=False)]
     if r.get("error"):
         out += ["", f"Error: {r['error']}"]
@@ -212,6 +218,15 @@ def _plan_table(plan: dict[str, Any]) -> str:
     assumptions = [f"- {a}" for a in plan.get("assumptions") or []]
     tail = ["", "Assumptions:", *assumptions] if assumptions else []
     return "\n".join(["| id | role | brief | depends on |", "| --- | --- | --- | --- |", *rows, *tail])
+
+
+def _plan_outcome(result: dict[str, Any]) -> str:
+    """A finished plan job as the person and airlie_run need it: the table and the plan's JSON, or the
+    chief's answer when it answered instead of planning."""
+    if result.get("type") == "answer":
+        return f"The chief answered without a plan:\n\n{result.get('answer')}"
+    plan = result.get("plan") or {}
+    return f"{_plan_table(plan)}\n\nPlan JSON for airlie_run:\n{json.dumps(plan, ensure_ascii=False)}"
 
 
 def build_server(
@@ -263,24 +278,27 @@ def build_server(
         repo: Annotated[str | None, Field(description=REPO)] = None,
     ) -> str:
         """Ask the airlie studio's chief for a plan (subtasks, roles, dependencies) for a goal in the
-        repository. Nothing is built. Show the plan to the person and wait for their approval before
-        airlie_run."""
+        repository. Nothing is built. Waits up to 45 seconds; if the chief is still planning then, it returns
+        the job id: call airlie_status with it until the plan comes. Show the plan to the person and wait
+        for their approval before airlie_run."""
         body = {"goal": goal, "repo": repository(repo, needed=True), "test_cmd": _given(test_cmd)}
+        deadline = anyio.current_time() + PLAN_WINDOW_S
         job_id = await serve.start("/v1/airlie/plans", body)
         try:
-            r = await serve.follow(job_id, 60)
-            while r.get("state") == "running":
-                r = await serve.follow(job_id, 60)
+            r = await serve.follow(job_id, max(deadline - anyio.current_time(), 0.0))
+            while r.get("state") == "running" and (left := deadline - anyio.current_time()) > 0:
+                r = await serve.follow(job_id, left)
         except anyio.get_cancelled_exc_class():
             await serve.stop(job_id)
             raise
+        if r.get("state") == "running":  # the job goes on; airlie_status shows the plan when it ends
+            return (
+                f"{job_id}: still planning. Call airlie_status with this job id; when planning ends it shows "
+                "the plan (or the chief's answer)."
+            )
         if r.get("state") != "done":
             raise ToolError(f"planning {r.get('state')}: {r.get('error') or ''}")
-        result = r.get("result") or {}
-        if result.get("type") == "answer":
-            return f"The chief answered without a plan:\n\n{result.get('answer')}"
-        plan_json = json.dumps(result["plan"], ensure_ascii=False)
-        return f"{_plan_table(result['plan'])}\n\nPlan JSON for airlie_run:\n{plan_json}"
+        return _plan_outcome(r.get("result") or {})
 
     @server.tool(name="run", structured_output=False)
     async def run_tool(
@@ -305,14 +323,15 @@ def build_server(
 
     @server.tool(name="status", structured_output=False)
     async def status_tool(
-        job_id: Annotated[str, Field(description="the id airlie_run or airlie_story returned")],
-        wait: Annotated[float, Field(description="seconds to wait for news, at most 240")] = 120,
+        job_id: Annotated[str, Field(description="the id airlie_plan, airlie_run or airlie_story returned")],
+        wait: Annotated[float, Field(description="seconds to wait for news, at most 50")] = STATUS_WAIT_S,
     ) -> str:
-        """Follow an airlie job (a studio run or a story): what happened since the last call, and the result
-        once it ends. Waits up to `wait` seconds (default 120) for news; call it again until the state is
-        done, stopped, failed or cancelled. A story that stops ends as a done job whose result has `blocked`
-        set; the state then reads "stopped: <reason>": it did not finish."""
-        return _status_text(job_id, await serve.follow(job_id, min(max(wait, 0.0), 240.0)))
+        """Follow an airlie job (a plan, a studio run or a story): what happened since the last call, and the
+        result once it ends (a plan as airlie_plan shows it). Waits up to `wait` seconds (default 45, at most
+        50) for news; call it again until the state is done, stopped, failed or cancelled. A story that stops
+        ends as a done job whose result has `blocked` set; the state then reads "stopped: <reason>": it did
+        not finish."""
+        return _status_text(job_id, await serve.follow(job_id, min(max(wait, 0.0), STATUS_WAIT_MAX_S)))
 
     @server.tool(name="cancel", structured_output=False)
     async def cancel_tool(job_id: Annotated[str, Field(description="the job to stop")]) -> str:

@@ -36,8 +36,9 @@ Pick the smallest way to get the request done:
 - A small change (one or two files): hand it to one subagent with the task tool. coder changes code, qa writes
   tests, docs writes documentation, architect plans or reviews a design. Give a self-contained brief: the goal,
   the files, and how to check the result.
-- A feature, or anything with several steps: use the studio. Call airlie_plan with the goal and show the plan
-  as it comes back (the table and its assumptions). Stop and wait for the person to approve it or change it.
+- A feature, or anything with several steps: use the studio. Call airlie_plan with the goal; if it says it is
+  still planning, call airlie_status with its job id until the plan comes. Show the plan as it comes back (the
+  table and its assumptions). Stop and wait for the person to approve it or change it.
   Then call airlie_run with the goal and the approved plan as JSON, and follow it with airlie_status until the
   state is done, failed or cancelled. Report the branch, whether the tests passed, and what is left open.
 - A Jira issue (a key like AIR-7, or its link), or "turn this into stacked PRs": call airlie_story with the

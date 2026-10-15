@@ -147,6 +147,14 @@ async def test_the_commands_and_the_chief_name_only_tools_the_mcp_server_lists()
     assert set(re.findall(r"airlie_\w+", front(OC / "agent/chief.md")[1])) <= tools
 
 
+def test_the_chief_and_studio_follow_a_plan_still_being_made_with_airlie_status() -> None:
+    """airlie_plan answers within 45 s (an MCP client may give a call only 60); a longer planning comes back
+    as a job id, and airlie_status shows the plan when it ends."""
+    for p in (OC / "agent/chief.md", OC / "command/studio.md"):
+        body = " ".join(front(p)[1].split())
+        assert "if it says it is still planning, call airlie_status with its job id" in body, p.name
+
+
 def test_opencode_gets_the_tools_from_airlie_mcp_not_from_a_tool_file() -> None:
     assert not (OC / "tool").exists()  # OpenCode 2.0 runs no tool files
     cmds = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]["opencode:install"]["cmds"]
