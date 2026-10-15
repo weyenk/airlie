@@ -23,6 +23,7 @@ import pytest
 from airlie.story import publish
 from airlie.story.publish import (
     BOT_GIT,
+    PINNED,
     CannotStart,
     PersonGit,
     Publisher,
@@ -31,7 +32,7 @@ from airlie.story.publish import (
     person_env,
     run_cmd,
 )
-from airlie.subproc import NO_HOOKS, url_credential_helpers
+from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
 from tests.unit.git_helpers import git
 from tests.unit.github_helpers import BOT, FakeGitHub, fake_app, fake_gh
@@ -370,10 +371,10 @@ def pairs(env: Mapping[str, str]) -> list[tuple[str, str]]:
 
 @pytest.fixture
 def own_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A git configuration of the test's own in place of the person's: no system file, and a global file
-    (returned) that sends any HTTPS request to a closed port on this machine, so a slip reaches no remote."""
+    """A git configuration of the test's own in place of the person's: no system file, and an empty global
+    file (returned). A test that runs git over HTTPS keeps it on this machine with `offline`."""
     config = tmp_path / "global-gitconfig"
-    config.write_text("[http]\n\tproxy = http://127.0.0.1:9\n")
+    config.write_text("")
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     for name in (
@@ -501,6 +502,11 @@ def test_without_git_your_settings_are_none(tmp_path: Path, monkeypatch: pytest.
     assert PersonGit.read(tmp_path) == PersonGit("ssh", ())
 
 
+URL = "https://github.com/o/r.git"
+LOOPBACK = "github.com:443:127.0.0.1"
+"""Where a test sends github.com: nothing listens on this machine's port 443, so a request fails at once."""
+
+
 def repo_on_github(tmp_path: Path, url: str = "git@github.com:o/r.git") -> Path:
     repo = repo_with_marker_tests(tmp_path)
     git(repo, "remote", "add", "origin", url)
@@ -538,7 +544,7 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
     repo = repo_on_github(tmp_path)
     p = Publisher(run=rec, app=fake_app(tmp_path, github))
     p.prepare(repo)
-    await every_step(p, repo, tmp_path)
+    await every_step(p, repo, repo)  # the publish worktree is one of the repository's: it has the remote
     cmds = [c[:3] for c, _ in rec.calls]
     assert cmds == [
         ["git", "fetch", "-q"],
@@ -554,7 +560,15 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
     for env in rec.envs:
         assert [n for n in ("GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_ENTERPRISE_TOKEN") if n in env] == []
         assert env["GIT_SSH_COMMAND"] == "false" and env["GIT_ALLOW_PROTOCOL"] == "https"
-        assert pairs(env)[-6:] == [*NO_HOOKS, *BOT_GIT]
+        assert env["GIT_PROXY_COMMAND"] == ""
+        assert pairs(env)[-16:] == [
+            *NO_HOOKS,
+            *BOT_GIT,
+            *PINNED,
+            ("remote.origin.proxy", ""),
+            (f"http.{URL}.curloptResolve", ""),  # again for the one URL the step fetches from and pushes to
+            (f"http.{URL}.sslVerify", "true"),
+        ]
     gh_dirs = {e["GH_CONFIG_DIR"] for e in rec.envs}
     assert len(gh_dirs) == 5 and str(tmp_path / "your-gh") not in gh_dirs  # one per step, never yours
     assert rec.gh_dirs == [([], 0o700)] * 6  # empty and private while it runs
@@ -579,45 +593,119 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     assert len(rec.envs) == 6
     for env in rec.envs:
         assert {name: env[name] for name in yours_} == yours_
-        assert "GIT_ALLOW_PROTOCOL" not in env and "GIT_SSH_COMMAND" not in env
-        assert pairs(env) == [*NO_HOOKS, ("core.sshCommand", "ssh"), ("credential.helper", "")]
+        assert env["GIT_ALLOW_PROTOCOL"] == "file:ssh:https" and "GIT_SSH_COMMAND" not in env
+        assert env["GIT_PROXY_COMMAND"] == ""
+        assert pairs(env) == [
+            *NO_HOOKS,
+            ("core.sshCommand", "ssh"),
+            ("credential.helper", ""),
+            *PINNED,
+            ("remote.origin.proxy", ""),
+        ]
     assert p.repository is None  # nothing is minted, and no repository is pinned
 
 
 async def test_a_step_whose_token_cannot_be_minted_runs_nothing_and_says_why(tmp_path: Path) -> None:
     github, rec = FakeGitHub(installed=("o/elsewhere",)), Recorded()
+    repo = repo_on_github(tmp_path)
     p = Publisher(run=rec, app=fake_app(tmp_path, github))
-    p.prepare(repo_on_github(tmp_path))
+    p.prepare(repo)
     with pytest.raises(PublishError) as e:
-        await p.submit(tmp_path)
+        await p.submit(repo)
     assert str(e.value).startswith("the GitHub App airlie-bot-test is not installed on o/r: install it")
     assert e.value.__cause__ is None and e.value.__context__ is None and rec.calls == []
 
 
 @pytest.mark.parametrize(
-    ("planted", "value"),
+    ("remote", "planted", "value", "said"),
     [
-        ("url.https://github.com/evil/other.insteadOf", "git@github.com:o/r"),
-        ("remote.origin.pushurl", "git@github.com:evil/other.git"),
+        (
+            "git@github.com:o/r.git",
+            "url.https://github.com/evil/other.insteadOf",
+            "git@github.com:o/r",
+            "fetch from",
+        ),
+        ("git@github.com:o/r.git", "remote.origin.pushurl", "git@github.com:evil/other.git", "push to"),
+        (
+            "git@github.com:o/r.git",
+            "remote.origin.pushurl",
+            "https://github.com/o/r.git/",
+            "push to",
+        ),  # same repo
+        (
+            URL,
+            "url.git@github.com:.pushInsteadOf",
+            "https://github.com/",
+            "push to",
+        ),  # a rule many people have
     ],
 )
-async def test_the_bot_publishes_to_the_repository_the_remote_names_whatever_a_model_redirects(
-    tmp_path: Path, own_git: Path, planted: str, value: str
+async def test_as_the_bot_a_step_refuses_a_remote_that_does_not_lead_to_its_repository(
+    tmp_path: Path, own_git: Path, remote: str, planted: str, value: str, said: str
 ) -> None:
-    """The token covers the story's repository alone, so a push redirected to another one is refused."""
-    repo = repo_on_github(tmp_path)
+    """A redirect a model planted (or a rule of yours) is refused before a token is minted or a command runs.
+    The token would cover the story's repository alone anyway, but another URL of it could have http.<url>.*
+    settings of its own that the step's pins do not reach."""
+    repo = repo_on_github(tmp_path, remote)
     git(repo, "config", planted, value)  # before prepare: it reads the remote's URL as written
-    pushes_to = git_in(repo, bot_env("ghs_t", tmp_path / "gh"), "remote", "get-url", "--push", "origin")
-    assert pushes_to.stdout == "https://github.com/evil/other.git\n"  # the redirect holds for git
     github, rec = FakeGitHub(installed=("o/r", "evil/other")), Recorded()
     p = Publisher(run=rec, app=fake_app(tmp_path, github))
     p.prepare(repo)
-    assert p.repository == "o/r"  # and the token does not follow it
-    git(repo, "remote", "set-url", "origin", "git@github.com:evil/other.git")  # after it: changes nothing
+    assert p.repository == "o/r"  # and no token follows the redirect
+    with pytest.raises(
+        PublishError, match=f"^the remote 'origin' would {said} [^ ]+, not https://github.com/o/r: "
+    ):
+        await p.submit(repo)
+    assert rec.calls == [] and github.minted_for() == []
+
+
+async def test_as_the_bot_a_step_refuses_a_remote_rewritten_after_prepare(
+    tmp_path: Path, own_git: Path
+) -> None:
+    repo = repo_on_github(tmp_path)
+    github, rec = FakeGitHub(installed=("o/r", "evil/other")), Recorded()
+    p = Publisher(run=rec, app=fake_app(tmp_path, github))
+    p.prepare(repo)
+    git(repo, "remote", "set-url", "origin", "git@github.com:evil/other.git")  # a model, during the build
+    with pytest.raises(
+        PublishError, match="would fetch from https://github.com/evil/other.git, not https://github"
+    ):
+        await p.fetch(repo, "main")
+    assert rec.calls == [] and github.minted_for() == []
+
+
+async def test_as_the_bot_a_step_pins_tls_and_addresses_for_each_url_it_uses(
+    tmp_path: Path, own_git: Path
+) -> None:
+    """A URL-specific http.<url>.* setting outranks a general one; the step gives its own for each URL."""
+    repo = repo_on_github(tmp_path)
+    git(repo, "config", f"http.{URL}.sslVerify", "false")
+    git(repo, "config", f"http.{URL}.curloptResolve", "github.com:443:127.0.0.3")
+    rec = Recorded()
+    p = Publisher(run=rec, app=fake_app(tmp_path, FakeGitHub()))
+    p.prepare(repo)
     await p.submit(repo)
-    assert github.asked("GET") == ["/api/app", "/api/repos/o/r/installation"] and github.minted_for() == [
-        ["r"]
-    ]
+    [env] = rec.envs
+    verify = git_in(repo, env, "config", "--get-urlmatch", "http.sslverify", URL).stdout
+    said = curl_said(repo, offline(env, URL), "ls-remote", "origin")
+    assert verify == "true\n" and "127.0.0.3" not in said and "Trying 127.0.0.1:443" in said
+    plain_verify = git_in(repo, dict(os.environ), "config", "--get-urlmatch", "http.sslverify", URL).stdout
+    assert plain_verify == "false\n"  # the control
+
+
+def test_prepare_holds_the_remote_to_an_expected_repository(tmp_path: Path) -> None:
+    """The seam for a repository named elsewhere (an issue's label): without one, the remote as written."""
+    repo = repo_on_github(tmp_path, "git@github.com:O/R.git")
+    p = Publisher(run=Recorded(), app=fake_app(tmp_path, FakeGitHub()))
+    p.prepare(repo, expected="o/r")  # GitHub's names are any case
+    assert p.repository == "O/R"
+    with pytest.raises(PublishError) as e:
+        p.prepare(repo, expected="o/other")
+    assert str(e.value) == "story.remote 'origin' names O/R, not o/other: the story publishes to o/other"
+    you = Publisher(run=Recorded())
+    you.prepare(repo, expected="o/r")
+    with pytest.raises(PublishError, match="names O/R, not o/other"):
+        you.prepare(repo, expected="o/other")
 
 
 async def test_prepare_names_a_remote_the_bot_cannot_publish_to(tmp_path: Path) -> None:
@@ -774,3 +862,234 @@ async def test_the_bots_identity_comes_from_the_app_and_yours_is_none(tmp_path: 
     failing = Publisher(run=Recorded(), app=fake_app(tmp_path, FakeGitHub(installed=())))
     with pytest.raises(PublishError, match="is not installed on o/r"):
         await failing.author(repo)
+
+
+# ---- what a model can plant in .git/config for a publish step's git (fix round 1, I1) ----
+
+
+def offline(env: Mapping[str, str], *urls: str) -> dict[str, str]:
+    """`env` with github.com resolved to 127.0.0.1 after everything else in it, in general and for each of
+    `urls` (a URL-specific entry outranks a general one), so no request leaves this machine; and without
+    NO_PROXY (the unit tests set it to *), so git uses a proxy when one is configured."""
+    out = {name: value for name, value in env.items() if name.lower() != "no_proxy"}
+    return with_git_config(
+        out, [("http.curloptResolve", LOOPBACK), *((f"http.{u}.curloptResolve", LOOPBACK) for u in urls)]
+    )
+
+
+def curl_said(cwd: Path, env: Mapping[str, str], *args: str) -> str:
+    """What curl reported doing for `git <args>` under `env`: where it tried to connect, and the addresses
+    it was given for github.com."""
+    done = git_in(cwd, {**env, "GIT_CURL_VERBOSE": "1"}, *args)
+    return "\n".join(line for line in done.stderr.splitlines() if "Trying" in line or "to DNS cache" in line)
+
+
+def both_ways(tmp_path: Path, as_who: str) -> dict[str, str]:
+    """A publish step's environment, as you or as the bot (for a remote named origin)."""
+    return yours() if as_who == "you" else bot_env("ghs_t", tmp_path / "gh")
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+@pytest.mark.parametrize("planted", ["http.proxy", "remote.origin.proxy", f"http.{URL}.proxy"])
+async def test_a_publish_step_uses_no_proxy_a_model_planted(
+    tmp_path: Path, own_git: Path, as_who: str, planted: str
+) -> None:
+    """A proxy sees what git sends through it; with a TLS check turned off as well, that is the step's
+    credentials. remote.<name>.proxy outranks http.proxy, and a URL-specific http.<url>.proxy outranks a
+    general one, so each is planted on its own."""
+    repo = repo_on_github(tmp_path, URL)
+    git(repo, "config", planted, "http://127.0.0.1:9")
+    said = curl_said(repo, offline(both_ways(tmp_path, as_who), URL), "ls-remote", "origin")
+    assert (
+        "Trying 127.0.0.1:443" in said and "Trying 127.0.0.1:9" not in said
+    )  # straight to (stand-in) GitHub
+    plain = curl_said(repo, offline(dict(os.environ), URL), "ls-remote", "origin")
+    assert "Trying 127.0.0.1:9" in plain  # the control: plain git goes through the planted proxy
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+async def test_a_publish_step_resolves_github_without_a_list_a_model_planted(
+    tmp_path: Path, own_git: Path, as_who: str
+) -> None:
+    repo = repo_on_github(tmp_path, URL)
+    git(repo, "config", "http.curloptResolve", "github.com:443:127.0.0.3")  # where a listener would wait
+    said = curl_said(repo, offline(both_ways(tmp_path, as_who), URL), "ls-remote", "origin")
+    assert "127.0.0.3" not in said and "Added github.com:443:127.0.0.1 to DNS cache" in said
+    plain = curl_said(repo, offline(dict(os.environ), URL), "ls-remote", "origin")
+    assert "127.0.0.3" in plain  # the control
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+def test_a_publish_step_checks_tls_whatever_a_model_planted(
+    tmp_path: Path, own_git: Path, as_who: str
+) -> None:
+    repo = repo_on_github(tmp_path, URL)
+    git(repo, "config", "http.sslVerify", "false")
+    verify = ["config", "--get-urlmatch", "http.sslverify", URL]
+    pinned = git_in(repo, both_ways(tmp_path, as_who), *verify).stdout
+    plain = git_in(repo, dict(os.environ), *verify).stdout
+    assert (pinned, plain) == ("true\n", "false\n")  # plain git: the control
+
+
+def with_alternates(tmp_path: Path, marks: Path) -> Path:
+    """A clone whose origin (a local bare repository) has moved on since, with an objects/info/alternates
+    and a core.alternateRefsCommand planted: git runs that command while it fetches."""
+    remote, seed, alt = tmp_path / "alt-remote.git", tmp_path / "alt-seed", tmp_path / "alt.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    for name in ("one", "two"):
+        (seed / name).write_text(name)
+        git(seed, "add", name)
+        git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", name)
+        git(seed, "push", "-q", str(remote), "main")
+        if name == "one":
+            git(tmp_path, "clone", "-q", str(remote), str(tmp_path / "alt-repo"))
+            git(tmp_path, "clone", "-q", "--bare", str(remote), str(alt))
+    repo = tmp_path / "alt-repo"
+    (repo / ".git/objects/info/alternates").write_text(f"{alt / 'objects'}\n")
+    said = 'echo "alternateRefsCommand GH_TOKEN=$GH_TOKEN SSH_AUTH_SOCK=$SSH_AUTH_SOCK"'
+    git(repo, "config", "core.alternateRefsCommand", f"{said} >> {shlex.quote(str(marks))}; true")
+    return repo
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+async def test_a_publish_steps_fetch_runs_no_alternate_refs_command_a_model_planted(
+    tmp_path: Path, own_git: Path, marks: Path, monkeypatch: pytest.MonkeyPatch, as_who: str
+) -> None:
+    """It would run with the step's environment: your SSH agent, or the bot's token. The bot fetches only
+    over HTTPS, so a local remote stands in for GitHub's (the alternates are read the same way)."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/the-persons-agent.sock")
+    repo = with_alternates(tmp_path, marks)
+    env = both_ways(tmp_path, as_who)
+    if as_who == "the bot":
+        env["GIT_ALLOW_PROTOCOL"] = "https:file"
+    assert git_in(repo, env, "fetch", "-q", "origin", "main").returncode == 0
+    assert logged(marks) == []
+    git_in(repo, dict(os.environ), "fetch", "-q", "origin", "main")  # the control: plain git runs it
+    assert "alternateRefsCommand GH_TOKEN= SSH_AUTH_SOCK=/tmp/the-persons-agent.sock" in logged(marks)
+
+
+def transports(tmp_path: Path, marks: Path) -> tuple[Path, Path]:
+    """A repository with an ext:: remote (and protocol.ext.allow=always) and a git:// remote on this machine
+    (and a core.gitProxy) planted: each names a command git runs itself, with the step's environment."""
+    repo = repo_with_marker_tests(tmp_path)
+    planted = run_script(tmp_path / "transport.sh", f'echo "ran $*" >> {shlex.quote(str(marks))}\nexit 1')
+    git(repo, "config", "remote.viaext.url", f"ext::{planted} %S")
+    git(repo, "config", "protocol.ext.allow", "always")
+    git(repo, "config", "remote.viagit.url", "git://127.0.0.1:9/o/r.git")
+    git(repo, "config", "core.gitProxy", str(planted))
+    return repo, planted
+
+
+async def test_as_you_git_uses_no_transport_beyond_local_ssh_and_https(
+    tmp_path: Path, own_git: Path, marks: Path
+) -> None:
+    repo, _ = transports(tmp_path, marks)
+    env = yours()
+    assert env["GIT_ALLOW_PROTOCOL"] == "file:ssh:https"  # local remotes and SSH still work (tests above)
+    for remote, transport in (("viaext", "ext"), ("viagit", "git")):
+        out = git_in(repo, env, "ls-remote", remote)
+        assert out.returncode != 0 and f"transport '{transport}' not allowed" in out.stderr
+    assert logged(marks) == []
+    for remote in ("viaext", "viagit"):  # the control: plain git runs both
+        git_in(repo, dict(os.environ), "ls-remote", remote)
+    assert len(logged(marks)) == 2
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+async def test_a_publish_step_runs_no_git_proxy_a_model_planted_even_where_git_is_allowed(
+    tmp_path: Path, own_git: Path, marks: Path, as_who: str
+) -> None:
+    """core.gitProxy is the first one git reads, so only GIT_PROXY_COMMAND (empty) outranks a planted one."""
+    repo, _ = transports(tmp_path, marks)
+    env = {**both_ways(tmp_path, as_who), "GIT_ALLOW_PROTOCOL": "git"}
+    assert env["GIT_PROXY_COMMAND"] == ""
+    out = git_in(repo, env, "ls-remote", "viagit")  # straight to 127.0.0.1:9, where nothing listens
+    assert out.returncode != 0 and logged(marks) == []
+
+
+# ---- story check as the bot: where git would really fetch and push (fix round 1, M1) ----
+
+ELSEWHERE = (
+    "a url.<base>.insteadOf or pushInsteadOf (yours or the repository's) or a remote.origin.pushurl sends it "
+    "there, and the bot fetches and pushes only over HTTPS, and only to o/r"
+)
+
+
+@pytest.mark.parametrize(
+    ("rule", "said"),
+    [
+        ('[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n', "fetch from git@github.com:o/r.git"),
+        (
+            '[url "git@github.com:"]\n\tpushInsteadOf = https://github.com/\n',
+            "push to git@github.com:o/r.git",
+        ),
+    ],
+)
+async def test_check_as_the_bot_names_a_rule_of_yours_that_sends_github_over_ssh(
+    tmp_path: Path, own_git: Path, rule: str, said: str
+) -> None:
+    """A common global rule: the bot's git reads your global configuration too, and cannot use SSH."""
+    own_git.write_text(rule)
+    repo = repo_on_github(tmp_path, URL)
+    found = await Publisher(run=Recorded(), app=fake_app(tmp_path, FakeGitHub())).check(repo)
+    assert f"the remote 'origin' would {said}, not https://github.com/o/r: {ELSEWHERE}" in found.problems
+
+
+async def test_check_as_the_bot_names_a_pushurl_a_model_planted(tmp_path: Path, own_git: Path) -> None:
+    repo = repo_on_github(tmp_path)
+    git(repo, "config", "remote.origin.pushurl", "https://me:hunter2@github.com/evil/other.git")
+    found = await Publisher(run=Recorded(), app=fake_app(tmp_path, FakeGitHub())).check(repo)
+    shown = "https://***@github.com/evil/other.git"  # the password masked
+    assert found.problems == [
+        f"the remote 'origin' would push to {shown}, not https://github.com/o/r: {ELSEWHERE}"
+    ]
+    assert found.notes == ["publishing to o/r as airlie-bot-test[bot]"]  # the app itself is fine
+
+
+@pytest.mark.parametrize("planted", ["fetch.recurseSubmodules", "submodule.recurse"])
+async def test_a_publish_steps_fetch_does_not_go_into_a_submodule(
+    tmp_path: Path, own_git: Path, marks: Path, planted: str
+) -> None:
+    """A submodule has a configuration and a remote of its own, out of reach of the step's checks: a planted
+    recursion would have its git fetch from there, with the step's environment. Here its remote is on this
+    machine with a planted uploadpack, which git runs itself."""
+    allow_file = ["-c", "protocol.file.allow=always"]  # git's default keeps local submodules out
+    sub_remote = tmp_path / "sub.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(sub_remote))
+    seed = tmp_path / "sub-seed"
+    git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "s")
+    git(seed, "push", "-q", str(sub_remote), "main")
+    remote = tmp_path / "super.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    repo = repo_with_marker_tests(tmp_path)
+    git(repo, *allow_file, "submodule", "add", "-q", str(sub_remote), "sub")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "sub")
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "-q", "origin", "HEAD:main")
+    receiver = run_script(
+        tmp_path / "upload.sh", f"echo 'submodule uploadpack' >> {shlex.quote(str(marks))}\nexit 1"
+    )
+    git(repo / "sub", "config", "remote.origin.uploadpack", str(receiver))
+    git(repo, "config", planted, "true" if planted == "submodule.recurse" else "yes")
+    git_in(repo, yours(), *allow_file, "fetch", "-q", "origin")
+    assert logged(marks) == []
+    git_in(repo, dict(os.environ), *allow_file, "fetch", "-q", "origin")  # the control: plain git goes in
+    assert logged(marks) == ["submodule uploadpack"]
+
+
+def test_your_settings_for_one_repository_can_come_from_an_include_for_its_directory(
+    tmp_path: Path, own_git: Path
+) -> None:
+    """The way to keep a per-repository deploy key (a core.sshCommand or credential.helper of the repository's
+    own is not used): a file your global configuration includes for that repository's directory."""
+    repo = repo_with_marker_tests(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    just_here = tmp_path / "gitconfig-project"
+    just_here.write_text("[core]\n\tsshCommand = ssh -i ~/.ssh/deploy-key\n[credential]\n\thelper = store\n")
+    own_git.write_text(f'[includeIf "gitdir:{repo.resolve()}/"]\n\tpath = {just_here}\n')
+    assert PersonGit.read(repo) == PersonGit("ssh -i ~/.ssh/deploy-key", (("credential.helper", "store"),))
+    assert PersonGit.read(other) == PersonGit()  # another repository: not included

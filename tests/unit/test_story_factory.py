@@ -403,8 +403,8 @@ def poison_setup(
     blocked: str | None = "Blocked",
 ) -> tuple[Any, RecordedGh]:
     """queue_setup, where the top issue, AIR-7, has a story state that cannot be opened (`how`: a damaged
-    state.json, one that cannot be read, an event log that cannot be appended to, or a story started in
-    another repository)."""
+    state.json, one that cannot be read, an event log that cannot be appended to, a remote that no longer
+    names the GitHub repository the story publishes to, or a story started in another repository)."""
     cfg, gh = queue_setup(tmp_path, monkeypatch, board, blocked=blocked)
     state = stories_dir(cfg) / POISON.key
     if how == "damaged":
@@ -416,6 +416,8 @@ def poison_setup(
     elif how == "read-only events":  # a good event log that no event can be appended to
         StoryState.open(state, POISON, Path(cfg.story.repo).resolve()).finish("intake")
         (state / "events.jsonl").chmod(0o444)
+    elif how == "moved remote":  # started for o/r; the remote names no GitHub repository now
+        StoryState.open(state, POISON, Path(cfg.story.repo).resolve(), github_repo="o/r").finish("intake")
     else:  # a story that was started in another repository, then stopped
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -429,6 +431,7 @@ def poison_setup(
         ("damaged", "Blocked", "blocked", "/AIR-7/state.json is damaged"),
         ("unreadable", "Blocked", "blocked", "/AIR-7/state.json cannot be read (Permission denied)"),
         ("read-only events", "Blocked", "blocked", "/AIR-7/events.jsonl cannot be read and appended to"),
+        ("moved remote", "Blocked", "blocked", "this story publishes to o/r, but the remote now names no"),
         ("elsewhere", None, "building", "started in"),
     ],
 )

@@ -17,13 +17,13 @@ import json
 import os
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-from airlie.story.github_app import GitHubApp, GitHubAppError, repo_slug
+from airlie.story.github_app import GitHubApp, GitHubAppError, masked, repo_slug
 from airlie.subproc import NO_PROMPTS, agent_env, kill_group, with_git_config, without_hooks
 from airlie.teams.worktree import remote_url
 
@@ -35,6 +35,24 @@ _HEAD, _TAIL = 200, 600  # how much of a failed command's output a PublishError 
 
 QUIET = {"GH_STACK_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 """gh and gh-stack: no update notice and no prompt."""
+NO_GIT_PROXY = {"GIT_PROXY_COMMAND": ""}
+"""No proxy command for git://. git takes the first core.gitProxy it reads, so the repository's would outrank
+one given on the command line; the variable, even empty, outranks them all."""
+PINNED = (
+    ("core.alternateRefsCommand", "true"),
+    ("http.proxy", ""),
+    ("http.curloptResolve", ""),
+    ("http.sslVerify", "true"),
+    ("fetch.recurseSubmodules", "false"),
+    ("push.recurseSubmodules", "no"),
+    ("submodule.recurse", "false"),
+)
+"""Settings of the repository's that would have a publish step's git run a command or send its credentials
+elsewhere, given back their safe values over it: the command git runs to list an alternate's refs while it
+fetches (`true` lists none), a proxy (empty: none, whatever HTTPS_PROXY says), a list of addresses for hosts
+(empty: none), the TLS check, and going into submodules (each has a configuration and a remote of its own). A
+URL-specific http.<url>.* setting outranks these general ones, so as the bot they are given again for each URL
+the step uses (bot_env); remote.<name>.proxy outranks http.proxy and is given for the step's remote."""
 _HELPER_KEYS = r"^credential\.(.+\.)?helper$"
 """credential.helper and every credential.<url>.helper."""
 _NO = ("", "0", "false", "no", "off")
@@ -107,25 +125,70 @@ def _your_config(repo: Path, scope: str, *query: str) -> str:
     return done.stdout if done.returncode == 0 else ""
 
 
-def person_env(person: PersonGit) -> dict[str, str]:
+def _pins(remote: str, urls: Iterable[str] = ()) -> list[tuple[str, str]]:
+    """PINNED; no proxy for `remote`; and the address list and the TLS check again for each of `urls`."""
+    exact = [("curloptResolve", ""), ("sslVerify", "true")]
+    return [
+        *PINNED,
+        (f"remote.{remote}.proxy", ""),
+        *((f"http.{url}.{k}", v) for url in urls for k, v in exact),
+    ]
+
+
+def person_env(person: PersonGit, remote: str = "origin") -> dict[str, str]:
     """A publish step as you: your environment (your gh login, your SSH agent) with no prompt, git running no
-    hook or fsmonitor, and your own core.sshCommand and credential helpers pinned over whatever the
-    repository's configuration says (command-line configuration outranks it; the empty helper resets the list
-    first)."""
-    env = without_hooks({**os.environ, **QUIET, **NO_PROMPTS})
+    hook or fsmonitor and no transport but local, SSH and HTTPS ones, and your own core.sshCommand and
+    credential helpers pinned over whatever the repository's configuration says (command-line configuration
+    outranks it; the empty helper resets the list first), then PINNED for `remote`."""
+    env = {**os.environ, **QUIET, **NO_PROMPTS, **NO_GIT_PROXY, "GIT_ALLOW_PROTOCOL": "file:ssh:https"}
     pins = [("core.sshCommand", person.ssh_command), ("credential.helper", ""), *person.helpers]
-    return with_git_config(env, pins)
+    return with_git_config(without_hooks(env), [*pins, *_pins(remote)])
 
 
-def bot_env(token: str, gh_dir: Path) -> dict[str, str]:
+def bot_env(token: str, gh_dir: Path, remote: str = "origin", urls: Iterable[str] = ()) -> dict[str, str]:
     """A publish step as the bot: the agent environment (none of your credentials: no gh token or login, no
     SSH agent, no git over SSH, every credential helper reset, no prompt), then the step's token as GH_TOKEN,
-    `gh_dir` (empty, the step's own) as gh's configuration, git limited to HTTPS, no hook or fsmonitor, and
-    BOT_GIT."""
+    `gh_dir` (empty, the step's own) as gh's configuration, git limited to HTTPS, no hook or fsmonitor,
+    BOT_GIT, and PINNED for `remote` and for each of `urls`, the URLs it fetches from and pushes to."""
     env = agent_env()
     env.update(QUIET)
+    env.update(NO_GIT_PROXY)
     env.update({"GH_TOKEN": token, "GH_CONFIG_DIR": str(gh_dir), "GIT_ALLOW_PROTOCOL": "https"})
-    return with_git_config(without_hooks(env), BOT_GIT)
+    return with_git_config(without_hooks(env), [*BOT_GIT, *_pins(remote, urls)])
+
+
+def effective_urls(cwd: Path, remote: str, env: Mapping[str, str]) -> tuple[list[str], list[str]]:
+    """Where `remote` fetches from and pushes to under `env`, as git works them out (insteadOf,
+    pushInsteadOf and pushurl applied, the repository's included); nothing when git cannot say."""
+
+    def ask(*args: str) -> list[str]:
+        try:
+            done = subprocess.run(
+                ["git", *args], cwd=cwd, env=dict(env), capture_output=True, text=True, timeout=10
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return done.stdout.split() if done.returncode == 0 else []
+
+    return ask("ls-remote", "--get-url", remote), ask("remote", "get-url", "--push", "--all", remote)
+
+
+def misdirected(repository: str, remote: str, fetch: list[str], push: list[str]) -> list[str]:
+    """What is wrong with where the bot's git would fetch from (`fetch`) and push to (`push`): anything but
+    https://github.com/<repository>, with or without .git."""
+    home = f"https://github.com/{repository}"
+    problems: list[str] = []
+    for what, urls in (("fetch from", fetch), ("push to", push)):
+        if not urls:
+            problems.append(f"git cannot say where the remote '{remote}' would {what}")
+        for url in urls:
+            if url.lower() not in (home.lower(), f"{home}.git".lower()):
+                problems.append(
+                    f"the remote '{remote}' would {what} {masked(url)}, not {home}: a url.<base>.insteadOf "
+                    f"or pushInsteadOf (yours or the repository's) or a remote.{remote}.pushurl sends it "
+                    f"there, and the bot fetches and pushes only over HTTPS, and only to {repository}"
+                )
+    return problems
 
 
 def _mask(text: str, env: Mapping[str, str]) -> str:
@@ -195,11 +258,29 @@ class Publisher:
         """As the bot: the "owner/name" every token is scoped to (prepare)."""
         self._person: PersonGit | None = None
 
-    def prepare(self, repo: Path) -> None:
+    def github_repo_of(self, repo: Path) -> str | None:
+        """The "owner/name" the remote's URL names as written (no insteadOf applied); None when `repo` has no
+        such remote or its URL is not a github.com repository."""
+        url = remote_url(repo, self.remote)
+        try:
+            return repo_slug(url) if url is not None else None
+        except GitHubAppError:
+            return None
+
+    def prepare(self, repo: Path, expected: str | None = None) -> None:
         """Read, once per run and before a model works in it, what publishing from `repo` uses: as the bot,
         the GitHub repository the remote's URL names (as written: no insteadOf applied), the one repository
         each token covers; as you, your own git settings. What a model plants in the repository's
-        configuration later changes neither."""
+        configuration later changes neither. With `expected` ("owner/name", any case: the repository a story
+        was started for, or one named elsewhere), the remote as written must name that repository."""
+        if expected is not None:
+            named = self.github_repo_of(repo)
+            if named is None or named.lower() != expected.lower():
+                named = named or "no github.com repository"
+                raise PublishError(
+                    f"story.remote '{self.remote}' names {named}, not {expected}: "
+                    f"the story publishes to {expected}"
+                )
         if self.app is None:
             self._person = PersonGit.read(repo)
             return
@@ -229,17 +310,24 @@ class Publisher:
         if self.app is None:
             if self._person is None:
                 self.prepare(cwd)
-            yield person_env(self._person or PersonGit())
+            yield person_env(self._person or PersonGit(), self.remote)
             return
         app, repository = self._as_bot(cwd)
+        with tempfile.TemporaryDirectory(prefix="airlie-bot-gh-") as gh_dir:
+            # where git would go, before a token exists: anywhere but the repository is refused
+            fetch, push = effective_urls(cwd, self.remote, bot_env("", Path(gh_dir), self.remote))
+            wrong = misdirected(repository, self.remote, fetch, push)
+            if wrong:
+                raise PublishError(wrong[0])
+            token = await self._token(app, repository)
+            yield bot_env(token, Path(gh_dir), self.remote, urls=dict.fromkeys([*fetch, *push]))
+
+    @staticmethod
+    async def _token(app: GitHubApp, repository: str) -> str:
         try:
-            token = (await app.token(repository)).token
+            return (await app.token(repository)).token
         except GitHubAppError as e:
             failure = str(e)
-        else:
-            with tempfile.TemporaryDirectory(prefix="airlie-bot-gh-") as gh_dir:
-                yield bot_env(token, Path(gh_dir))
-            return
         raise PublishError(failure)  # outside the handler: nothing is chained
 
     async def author(self, repo: Path) -> tuple[str, str] | None:
@@ -306,7 +394,7 @@ class Publisher:
         if self.app is None:
             needs.insert(0, (["gh", "auth", "status"], "gh is not logged in: run `gh auth login`"))
             self.prepare(repo)
-            env = person_env(self._person or PersonGit())
+            env = person_env(self._person or PersonGit(), self.remote)
         else:  # none of these needs a credential, and none gets one
             env = without_hooks({**agent_env(), **QUIET})
         problems: list[str] = []
@@ -328,5 +416,7 @@ class Publisher:
             app, repository = self._as_bot(repo)
         except PublishError as e:
             return Checked([*problems, str(e)], [])
+        with tempfile.TemporaryDirectory(prefix="airlie-bot-gh-") as gh_dir:
+            fetch, push = effective_urls(repo, self.remote, bot_env("", Path(gh_dir), self.remote))
         found, notes = await app.check(repository)
-        return Checked([*problems, *found], notes)
+        return Checked([*problems, *misdirected(repository, self.remote, fetch, push), *found], notes)

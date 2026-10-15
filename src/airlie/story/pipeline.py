@@ -166,12 +166,17 @@ class StoryPipeline:
         state that cannot be used at all (StorySetupError from StoryState.open: a damaged file, another
         repository) is raised, before anything runs. A cancel (a signal, a job cancelled) puts the issue back
         in intake with a note, keeps the state, and is raised again."""
-        st = StoryState.open(self.stories_dir / card.key, card, self.repo)
+        # the GitHub repository the remote names now, as written: a story publishes only to the one it was
+        # started with, so a remote rewritten since (by a model, say) is a story that cannot be opened
+        here = self.publisher.github_repo_of(self.repo)
+        st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
         st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
         try:
             # before any model works in this run: what it plants in the repository's git configuration later
-            # changes neither the repository the bot publishes to nor the person's own git settings
-            self.publisher.prepare(self.repo)
+            # changes neither the repository the bot publishes to nor the person's own git settings; and an
+            # app that cannot get a token (for the layers' author) stops the story before any model works
+            self.publisher.prepare(self.repo, expected=st.github_repo)
+            await self.publisher.author(self.repo)
             if st.done("intake") and not st.done("review"):
                 # It was started and stopped (blocked, or cancelled and put back in intake, or killed): back
                 # to building while the rest is built. A blocked story stays blocked on disk until the issue

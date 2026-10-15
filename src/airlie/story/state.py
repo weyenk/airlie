@@ -67,13 +67,18 @@ class StoryState:
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None
+    github_repo: str | None = None
 
     @classmethod
-    def open(cls, path: Path, card: Card, repo: Path) -> StoryState:
+    def open(cls, path: Path, card: Card, repo: Path, github_repo: str | None = None) -> StoryState:
         """The state at `path`, or a new one. A state that cannot be used (it cannot be read, it is damaged,
         or it belongs to another repository) is a StorySetupError that names state.json: deleting that file,
         not the directory, starts the story over and keeps its events, notes and PR bodies. So is an event log
-        that cannot be read and appended to (_open_events): every stage appends to it."""
+        that cannot be read and appended to (_open_events): every stage appends to it.
+
+        `github_repo` is the "owner/name" the repository's remote names now, as written (None: none on
+        github.com). A story keeps the one it was started with (or first opened with) and publishes there
+        only: a later run that finds another one, or none, is a StorySetupError too."""
         f = path / "state.json"
         try:
             text = f.read_text() if f.is_file() else None
@@ -96,13 +101,35 @@ class StoryState:
                     f"this story was started in {st.repo}; resume it there (--repo {st.repo}) "
                     f"or delete {f} to start over"
                 )
+            st._hold(github_repo)
             _open_events(path)
             return st
         path.mkdir(parents=True, exist_ok=True)
         _open_events(path)  # a deleted state file can leave its event log behind
-        st = cls(path=path, card=card.to_dict(), repo=str(repo))
+        st = cls(path=path, card=card.to_dict(), repo=str(repo), github_repo=github_repo)
         st.save()
         return st
+
+    def _hold(self, github_repo: str | None) -> None:
+        """Keep the repository this story publishes to: the first it is opened with, then only that one."""
+        f = self.path / "state.json"
+        if self.github_repo is None:
+            if github_repo is None:
+                return
+            self.github_repo = github_repo
+            try:
+                self.save()
+            except OSError as e:
+                why = e.strerror or type(e).__name__
+            else:
+                return
+            raise StorySetupError(f"{f} cannot be written ({why}); fix that, or delete it to start over")
+        if github_repo is None or github_repo.lower() != self.github_repo.lower():
+            raise StorySetupError(
+                f"{f}: this story publishes to {self.github_repo}, but the remote now names "
+                f"{github_repo or 'no github.com repository'}; point the remote back at {self.github_repo}, "
+                f"or delete {f} to start the story over"
+            )
 
     def save(self) -> None:
         """The new bytes are synced before the rename and the directory after it, so a crash leaves the old

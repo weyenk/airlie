@@ -19,7 +19,7 @@ from airlie.router import ChiefRouter
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
-from airlie.story.model import Layer, Story
+from airlie.story.model import Layer, Story, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _layers_note, _reason, _running
 from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
@@ -1240,14 +1240,12 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
     repo = on_github(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     github, gh = FakeGitHub(), RecordedGh(real_git=False)  # no fetch reaches GitHub from a unit test
-    pipe = pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github), test_cmd=PLANT)
-    st = await pipe.run(text_card("avatars"))
-    assert st.blocked is None and st.stage == "review"
-    # the model redirected the remote during the build; every token is still for o/r alone
-    assert git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"
+    st = await pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github)).run(
+        text_card("x")
+    )
+    assert st.blocked is None and st.stage == "review" and st.github_repo == "o/r"
     assert github.asked("GET").count("/api/repos/o/r/installation") == 1
-    assert "/api/repos/evil/other/installation" not in github.asked("GET")
-    assert github.minted_for() == [["r"]] * 8  # the fetch, the bot's identity, then six publish steps
+    assert github.minted_for() == [["r"]] * 8  # the bot's identity, the fetch, then six publish steps
     # each step's own token: the fetch, the stack (its view and its init), the submit, each PR's view and edit
     assert [c[:3] for c in gh.calls] == [
         ["git", "fetch", "-q"],
@@ -1259,7 +1257,7 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
         ["gh", "pr", "edit"],
         ["gh", "pr", "edit"],
     ]
-    assert [e["GH_TOKEN"] for e in gh.envs] == [github.tokens[i] for i in (0, 2, 2, 3, 4, 5, 6, 7)]
+    assert [e["GH_TOKEN"] for e in gh.envs] == [github.tokens[i] for i in (1, 2, 2, 3, 4, 5, 6, 7)]
     assert all("SSH_AUTH_SOCK" not in e and e["GIT_SSH_COMMAND"] == "false" for e in gh.envs)
     # the layers are the bot's commits, author and committer
     bot = "airlie-bot-test[bot]|9919+airlie-bot-test[bot]@users.noreply.github.com"
@@ -1270,6 +1268,27 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
     kept = files_under(st.path) + (repo / ".git" / "config").read_text()
     assert not [t for t in [*github.tokens, *github.jwts] if t in kept]
     assert kinds(st.path / "events.jsonl", "fetch_failed")[0]["error"].endswith("no network in a unit test")
+
+
+async def test_as_the_bot_a_remote_a_model_redirects_during_the_build_stops_the_story_at_publish(
+    tmp_path: Path,
+) -> None:
+    """The test gate runs model-written code, which can rewrite the shared .git/config. Publishing then
+    refuses before a token is minted for it, and the next run cannot open the story: tick sets it aside."""
+    repo = on_github(tmp_path)
+    github, gh = FakeGitHub(installed=("o/r", "evil/other")), RecordedGh(real_git=False)
+    pipe = pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github), test_cmd=PLANT)
+    st = await pipe.run(text_card("avatars"))
+    assert git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"  # the redirect ran
+    assert st.stage == "build" and st.blocked is not None
+    assert "the remote 'origin' would fetch from https://github.com/evil/other.git, not" in st.blocked
+    assert [c[:2] for c in gh.calls] == [["git", "fetch"]]  # nothing of gh's
+    assert github.minted_for() == [["r"], ["r"]]  # the identity and the fetch, both before the build
+    assert "/api/repos/evil/other/installation" not in github.asked("GET")
+    with pytest.raises(
+        StorySetupError, match="this story publishes to o/r, but the remote now names evil/other"
+    ):
+        await pipe.run(text_card("avatars"))
 
 
 async def test_as_the_bot_a_token_a_command_prints_reaches_no_error_state_event_or_jira_comment(
@@ -1321,25 +1340,27 @@ async def test_a_bot_that_cannot_publish_to_the_remote_stops_the_story_before_an
     assert engine.requests == [] and github.requests == []
 
 
-async def test_a_bot_that_cannot_be_found_stops_the_story_before_a_layer_is_built(tmp_path: Path) -> None:
+async def test_a_bot_that_cannot_be_found_stops_the_story_before_any_model_works(tmp_path: Path) -> None:
+    """Who commits the layers is asked for right after prepare: an app that cannot get a token stops the
+    story before refine, not after refine and the layer plan."""
     repo = on_github(tmp_path)
-    engine = happy_engine()
+    engine, gh = happy_engine(), RecordedGh(real_git=False)
     app = fake_app(tmp_path, FakeGitHub(installed=("o/elsewhere",)))
-    st = await pipeline(tmp_path, repo, engine, RecordedGh(real_git=False), app=app).run(text_card("avatars"))
-    assert st.stage == "layers" and st.blocked is not None
+    st = await pipeline(tmp_path, repo, engine, gh, app=app).run(text_card("avatars"))
+    assert st.stage == "new" and st.blocked is not None
     assert "the GitHub App airlie-bot-test is not installed on o/r" in st.blocked
-    assert {r.role for r in engine.requests} == {"product", "architect"}  # no layer was started
-    assert st.built == {} and st.attempt is None and git(repo, "branch", "--list", f"{B1}*") == ""
+    assert engine.requests == [] and gh.calls == []  # no model, not even the fetch
 
 
 async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_works(tmp_path: Path) -> None:
     """A resume has its base already, so it fetches nothing first; product's turn comes before any layer. A
-    product with a shell redirects the remote in it, and the bot still publishes to o/r alone."""
+    product with a shell redirects the remote in it: the run pinned o/r before, so no token is ever minted
+    for the other repository, and publishing refuses."""
     repo = on_github(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     card = text_card("avatars")
     stories = pipeline(tmp_path, repo, FakeEngine()).stories_dir
-    st = StoryState.open(stories / card.key, card, repo.resolve())
+    st = StoryState.open(stories / card.key, card, repo.resolve(), github_repo="o/r")
     st.base = {"ref": trunk, "sha": git(repo, "rev-parse", trunk)}
     st.finish("intake")  # started, and stopped before refine
     redirect = "git config remote.origin.url git@github.com:evil/other.git"
@@ -1347,14 +1368,18 @@ async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_w
     roles = {**STORY_ROLES, "product": (STORY_ROLES["product"][0], ["read_file", "list_dir", "shell"])}
     github = FakeGitHub(installed=("o/r", "evil/other"))  # the app could mint for either
     gh = RecordedGh(real_git=False)
-    pipe = pipeline(
-        tmp_path, repo, happy_engine(product=[plant, STORY]), gh, app=fake_app(tmp_path, github), roles=roles
+    app = fake_app(tmp_path, github)
+    st = await pipeline(tmp_path, repo, happy_engine(product=[plant, STORY]), gh, app=app, roles=roles).run(
+        card
     )
-    st = await pipe.run(card)
-    assert st.blocked is None and st.stage == "review"
     assert (
         git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"
     )  # the product's turn ran
-    assert gh.calls[0][:3] == ["gh", "stack", "view"]  # nothing was fetched before it
+    assert (
+        st.stage == "build"
+        and st.blocked is not None
+        and "would fetch from https://github.com/evil" in st.blocked
+    )
+    assert gh.calls == []  # nothing was fetched before it, and nothing published after it
     assert "/api/repos/evil/other/installation" not in github.asked("GET")
     assert github.minted_for() == [["r"]] * len(github.tokens)

@@ -45,10 +45,15 @@ def key_file(tmp_path: Path, name: str = "app", mode: int = 0o600) -> Path:
     return path
 
 
+LEVEL = {"read": 1, "write": 2, "admin": 3}
+
+
 class FakeGitHub:
     """GitHub's REST API as GitHubApp uses it: the app (APP_ID, SLUG; its JWT must verify with the public half
-    of rsa_key()), its installation on `installed` repositories, whose tokens may cover the names in
-    `covered`, a new token for every mint (`tokens`), and the bot's user. Every request is kept."""
+    of rsa_key()) holding `permissions`, its installation on `installed` repositories (`selection`: "all" or
+    "selected"), whose tokens may cover the names in `covered` and as much of `permissions` as a mint asks
+    for, a new token for every mint (`tokens`), and the bot's user. `granted` replaces what a token is said to
+    hold. Every request is kept."""
 
     def __init__(
         self,
@@ -56,10 +61,14 @@ class FakeGitHub:
         installed: tuple[str, ...] = ("o/r",),
         covered: tuple[str, ...] | None = None,
         permissions: dict[str, str] | None = None,
+        selection: str = "selected",
+        granted: dict[str, str] | None = None,
     ) -> None:
         self.installed = installed
         self.covered = covered if covered is not None else tuple(r.split("/")[1] for r in installed)
         self.permissions = WRITE if permissions is None else permissions
+        self.selection = selection
+        self.granted = granted
         self.requests: list[httpx.Request] = []
         self.tokens: list[str] = []
         self.jwts: list[str] = []
@@ -91,28 +100,36 @@ class FakeGitHub:
             return httpx.Response(401, json={"message": "Integration not found"})
         self.jwts.append(bearer)
         if method == "GET" and path == "/app":
-            return httpx.Response(
-                200, json={"id": APP_ID, "slug": SLUG, "html_url": f"https://github.com/apps/{SLUG}"}
-            )
+            app = {"id": APP_ID, "slug": SLUG, "html_url": f"https://github.com/apps/{SLUG}"}
+            return httpx.Response(200, json={**app, "permissions": self.permissions})
         repo = re.fullmatch(r"/repos/([^/]+/[^/]+)/installation", path)
         if method == "GET" and repo:
             if repo[1] in self.installed:
-                return httpx.Response(200, json={"id": INSTALLATION, "app_slug": SLUG})
+                found = {"id": INSTALLATION, "app_slug": SLUG, "repository_selection": self.selection}
+                return httpx.Response(200, json=found)
             return httpx.Response(404, json={"message": "Not Found"})
         if method == "POST" and path == f"/app/installations/{INSTALLATION}/access_tokens":
-            names = json.loads(request.content).get("repositories") or []
+            asked = json.loads(request.content)
+            names, wanted = asked.get("repositories") or [], asked.get("permissions")
             if not names or any(n not in self.covered for n in names):
                 message = (
                     "There is at least one repository that does not exist or is not accessible to the parent "
                     "installation."
                 )
                 return httpx.Response(422, json={"message": message})
+            if wanted and any(
+                LEVEL[v] > LEVEL.get(self.permissions.get(k, ""), 0) for k, v in wanted.items()
+            ):
+                return httpx.Response(
+                    422, json={"message": "The permissions requested are not granted to this installation."}
+                )
             token = f"ghs_PLANTED{len(self.tokens):02d}" + "q7Zx" * 8
             self.tokens.append(token)
+            holds = {**wanted, "metadata": "read"} if wanted else self.permissions
             body: dict[str, Any] = {
                 "token": token,
                 "expires_at": "2026-10-15T13:00:00Z",
-                "permissions": self.permissions,
+                "permissions": self.granted if self.granted is not None else holds,
                 "repository_selection": "selected",
                 "repositories": [{"name": n} for n in names],
             }
@@ -127,6 +144,11 @@ class FakeGitHub:
         """The `repositories` of every token request, in order."""
         posts = [r for r in self.requests if r.method == "POST"]
         return [json.loads(r.content).get("repositories") for r in posts]
+
+    def minted_with(self) -> list[dict[str, str] | None]:
+        """The `permissions` of every token request, in order (None: not asked for)."""
+        posts = [r for r in self.requests if r.method == "POST"]
+        return [json.loads(r.content).get("permissions") for r in posts]
 
 
 def app_spec(tmp_path: Path, **spec: Any) -> GitHubAppSpec:

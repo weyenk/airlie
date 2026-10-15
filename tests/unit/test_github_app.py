@@ -18,6 +18,7 @@ from tests.unit.github_helpers import (
     BOT,
     INSTALLATION,
     SLUG,
+    WRITE,
     FakeGitHub,
     app_spec,
     fake_app,
@@ -268,9 +269,28 @@ async def test_a_repository_the_installation_does_not_cover_is_a_422_that_says_s
     with pytest.raises(GitHubAppError) as e:
         await fake_app(tmp_path, github).token("o/r")
     assert str(e.value) == (
-        f"the installation of the GitHub App {SLUG} does not cover o/r (422 There is at least one repository "
-        "that does not exist or is not accessible to the parent installation.): add o/r to it at "
+        f"the GitHub App {SLUG} cannot get a token for o/r with contents and pull_requests write (422 There "
+        "is at least one repository that does not exist or is not accessible to the parent installation.): "
+        f"give the app those permissions, and add o/r to its installation at "
         f"https://github.com/apps/{SLUG}/installations/new"
+    )
+    no_secret_in(e.value, github)
+
+
+async def test_a_token_is_asked_for_with_contents_and_pull_requests_write_alone(tmp_path: Path) -> None:
+    """Whatever more the app holds, its tokens carry only what publishing uses."""
+    github = FakeGitHub(permissions={**WRITE, "workflows": "write", "administration": "write"})
+    token = await fake_app(tmp_path, github).token("o/r")
+    assert github.minted_with() == [{"contents": "write", "pull_requests": "write"}]
+    assert dict(token.permissions) == {"contents": "write", "pull_requests": "write", "metadata": "read"}
+
+
+async def test_an_app_without_a_permission_publishing_uses_cannot_get_a_token(tmp_path: Path) -> None:
+    github = FakeGitHub(permissions={"contents": "write", "metadata": "read"})
+    with pytest.raises(GitHubAppError) as e:
+        await fake_app(tmp_path, github).token("o/r")
+    assert "(422 The permissions requested are not granted to this installation.): give the app" in str(
+        e.value
     )
     no_secret_in(e.value, github)
 
@@ -401,24 +421,50 @@ async def test_check_names_what_the_installation_lacks(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("permissions", "lacking"),
+    ("granted", "lacking"),
     [
         ({"contents": "read", "pull_requests": "write", "metadata": "read"}, "contents"),
         ({"contents": "write", "metadata": "read"}, "pull_requests"),
         ({}, "contents and pull_requests"),
     ],
 )
-async def test_check_names_the_write_permissions_the_token_lacks(
-    tmp_path: Path, permissions: dict[str, str], lacking: str
+async def test_check_names_the_write_permissions_a_token_came_without(
+    tmp_path: Path, granted: dict[str, str], lacking: str
 ) -> None:
-    app = fake_app(tmp_path, FakeGitHub(permissions=permissions))
+    """Should GitHub mint a token with less than it was asked for, check says what is missing."""
+    app = fake_app(tmp_path, FakeGitHub(granted=granted))
     problems, notes = await app.check("o/r")
-    have = ", ".join(f"{k}: {v}" for k, v in sorted(permissions.items())) or "none"
+    have = ", ".join(f"{k}: {v}" for k, v in sorted(granted.items())) or "none"
     assert problems == [
         f"the app's token for o/r lacks write on {lacking} (it has {have}): give the app Contents and Pull "
         "requests write, then approve that on its installation"
     ]
     assert notes == []
+
+
+async def test_check_says_when_the_app_cannot_get_the_permissions_publishing_uses(tmp_path: Path) -> None:
+    app = fake_app(tmp_path, FakeGitHub(permissions={"contents": "write", "metadata": "read"}))
+    problems, notes = await app.check("o/r")
+    assert len(problems) == 1 and "The permissions requested are not granted" in problems[0] and notes == []
+
+
+async def test_check_warns_of_what_the_app_holds_beyond_what_publishing_uses(tmp_path: Path) -> None:
+    held = {**WRITE, "workflows": "write", "administration": "read"}
+    problems, notes = await fake_app(tmp_path, FakeGitHub(permissions=held)).check("o/r")
+    assert problems == [] and notes == [
+        "warning: the app holds permissions publishing does not use (administration: read, workflows: "
+        "write); its tokens are minted with contents and pull_requests write alone, but its key could mint "
+        "more",
+        f"publishing to o/r as {SLUG}[bot]",
+    ]
+
+
+async def test_check_warns_when_the_installation_reaches_every_repository(tmp_path: Path) -> None:
+    problems, notes = await fake_app(tmp_path, FakeGitHub(selection="all")).check("o/r")
+    assert problems == [] and notes == [
+        "warning: the bot can reach all your repositories; publishing is pinned to o/r",
+        f"publishing to o/r as {SLUG}[bot]",
+    ]
 
 
 def test_nothing_in_the_app_merges() -> None:

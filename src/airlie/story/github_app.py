@@ -34,6 +34,8 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9-]*", re.ASCII)
 _USERINFO = re.compile(r"(?<=://)[^/\s]*@")
 _SAID = 200
 """How much of GitHub's own message an error keeps."""
+PUBLISHES = {"contents": "write", "pull_requests": "write"}
+"""What every token is minted with, whatever more the app holds: pushing the layers and opening the PRs."""
 
 
 class GitHubAppError(RuntimeError):
@@ -58,14 +60,20 @@ class BotIdentity(NamedTuple):
     email: str
 
 
+def masked(url: str) -> str:
+    """`url` with any user and password masked (https://user:secret@host → https://***@host)."""
+    return _USERINFO.sub("***@", url)
+
+
 def repo_slug(remote_url: str) -> str:
     """The "owner/name" of a github.com remote: git@github.com:o/r, ssh://git@github.com/o/r or
     https://github.com/o/r, each with or without .git. Anything else is a GitHubAppError that shows the URL
     with any user and password masked."""
     m = _REMOTE.fullmatch(remote_url.strip())
     if m is None or m[2] in (".", ".."):
-        shown = _USERINFO.sub("***@", remote_url)
-        raise GitHubAppError(f"{shown!r} is not a github.com repository URL: the bot publishes to {_FORMS}")
+        raise GitHubAppError(
+            f"{masked(remote_url)!r} is not a github.com repository URL: the bot publishes to {_FORMS}"
+        )
     return f"{m[1]}/{m[2]}"
 
 
@@ -108,7 +116,8 @@ class GitHubApp:
         self._transport = transport
         self._clock = clock
         self._slug: str | None = None
-        self._installations: dict[str, int] = {}
+        self._holds: dict[str, str] = {}  # the app's permissions, as GET /app says
+        self._installations: dict[str, tuple[int, str]] = {}  # repository: (id, repository_selection)
         self._identity: BotIdentity | None = None
 
     def _jwt(self) -> str:
@@ -189,20 +198,24 @@ class GitHubApp:
         return found if isinstance(found, int) and not isinstance(found, bool) else None
 
     async def slug(self) -> str:
-        """The app's slug (GET /app, as the app): its bot is `<slug>[bot]`, and its install link names it."""
+        """The app's slug (GET /app, as the app): its bot is `<slug>[bot]`, and its install link names it. The
+        reply's permissions, what the app holds, are kept too."""
         if self._slug is None:
             bearer = self._jwt()
             r = await self._call("GET", "app", bearer)
             if not r.is_success:
                 raise self._refused(r, "GET", "app", bearer)
-            slug = self._json(r, "GET", "app").get("slug")
+            body = self._json(r, "GET", "app")
+            slug, holds = body.get("slug"), body.get("permissions")
             if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
                 raise GitHubAppError(f"GitHub GET app: {r.status_code}, but the reply has no usable slug")
+            self._holds = {str(k): str(v) for k, v in holds.items()} if isinstance(holds, dict) else {}
             self._slug = slug
         return self._slug
 
-    async def _installation(self, repo: str) -> int:
-        """The id of the app's installation on `repo` (GET /repos/{owner}/{name}/installation, as the app)."""
+    async def _installation(self, repo: str) -> tuple[int, str]:
+        """The id of the app's installation on `repo` (GET /repos/{owner}/{name}/installation, as the app),
+        and which repositories it covers ("all", or "selected")."""
         if repo not in self._installations:
             slug = await self.slug()
             path, bearer = f"repos/{repo}/installation", self._jwt()
@@ -214,23 +227,27 @@ class GitHubApp:
                 )
             if not r.is_success:
                 raise self._refused(r, "GET", path, bearer)
-            found = self._id(self._json(r, "GET", path))
+            body = self._json(r, "GET", path)
+            found = self._id(body)
             if found is None:
                 raise GitHubAppError(f"GitHub GET {path}: {r.status_code}, but the reply has no id")
-            self._installations[repo] = found
+            self._installations[repo] = (found, str(body.get("repository_selection") or ""))
         return self._installations[repo]
 
     async def token(self, repo: str) -> InstallationToken:
-        """A token of the app's installation for `repo` ("owner/name") and no other repository (POST
-        /app/installations/{id}/access_tokens with that one repository, as the app). It lasts an hour."""
-        installation = await self._installation(repo)
+        """A token of the app's installation for `repo` ("owner/name") and no other repository, with
+        PUBLISHES and nothing more (POST /app/installations/{id}/access_tokens, as the app). It lasts an
+        hour."""
+        installation, _ = await self._installation(repo)
         slug = await self.slug()
         path, bearer = f"app/installations/{installation}/access_tokens", self._jwt()
-        r = await self._call("POST", path, bearer, json={"repositories": [repo.split("/", 1)[1]]})
+        wanted = {"repositories": [repo.split("/", 1)[1]], "permissions": PUBLISHES}
+        r = await self._call("POST", path, bearer, json=wanted)
         if r.status_code == 422:
             raise GitHubAppError(
-                f"the installation of the GitHub App {slug} does not cover {repo} ({self._said(r, bearer)}): "
-                f"add {repo} to it at https://github.com/apps/{slug}/installations/new"
+                f"the GitHub App {slug} cannot get a token for {repo} with contents and pull_requests write "
+                f"({self._said(r, bearer)}): give the app those permissions, and add {repo} to its "
+                f"installation at https://github.com/apps/{slug}/installations/new"
             )
         if not r.is_success:
             raise self._refused(r, "POST", path, bearer)
@@ -281,5 +298,14 @@ class GitHubApp:
                 f"the app's token for {repo} lacks write on {' and '.join(lacking)} (it has {have}): give "
                 "the app Contents and Pull requests write, then approve that on its installation"
             ], notes
+        more = {k: v for k, v in sorted(self._holds.items()) if k not in (*PUBLISHES, "metadata")}
+        if more:
+            held = ", ".join(f"{k}: {v}" for k, v in more.items())
+            notes.append(
+                f"warning: the app holds permissions publishing does not use ({held}); its tokens are minted "
+                "with contents and pull_requests write alone, but its key could mint more"
+            )
+        if (await self._installation(repo))[1] == "all":
+            notes.append(f"warning: the bot can reach all your repositories; publishing is pinned to {repo}")
         notes.append(f"publishing to {repo} as {bot.name}")
         return [], notes
