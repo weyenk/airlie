@@ -237,7 +237,7 @@ async def test_an_app_that_is_not_installed_on_the_repository_says_so_with_the_i
     with pytest.raises(GitHubAppError) as e:
         await fake_app(tmp_path, github).token("o/r")
     assert str(e.value) == (
-        f"the GitHub App {SLUG} is not installed on o/r: install it on that repository (only that one) at "
+        f"the GitHub App {SLUG} is not installed on o/r: install it on o/r (or on all your repositories) at "
         f"https://github.com/apps/{SLUG}/installations/new"
     )
     no_secret_in(e.value, github)

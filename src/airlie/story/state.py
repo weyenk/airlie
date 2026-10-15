@@ -78,7 +78,8 @@ class StoryState:
 
         `github_repo` is the "owner/name" the repository's remote names now, as written (None: none on
         github.com). A story keeps the one it was started with (or first opened with) and publishes there
-        only: a later run that finds another one, or none, is a StorySetupError too."""
+        only: until it has published, a later run that finds another one, or none, is a StorySetupError
+        too."""
         f = path / "state.json"
         try:
             text = f.read_text() if f.is_file() else None
@@ -111,8 +112,11 @@ class StoryState:
         return st
 
     def _hold(self, github_repo: str | None) -> None:
-        """Keep the repository this story publishes to: the first it is opened with, then only that one."""
+        """Keep the repository this story publishes to: the first it is opened with, then only that one, until
+        it has published (its PRs are open: nothing is published again, wherever the remote points now)."""
         f = self.path / "state.json"
+        if self.done("publish"):
+            return
         if self.github_repo is None:
             if github_repo is None:
                 return

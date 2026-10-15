@@ -1386,3 +1386,28 @@ async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_w
     assert gh.calls == []  # nothing was fetched before it, and nothing published after it
     assert "/api/repos/evil/other/installation" not in github.asked("GET")
     assert github.minted_for() == [["r"]] * len(github.tokens)
+
+
+@pytest.mark.parametrize("moved", [False, True], ids=["same remote", "remote moved"])
+@pytest.mark.parametrize("stage", ["publish", "review"])
+async def test_a_story_that_has_published_needs_no_working_app_nor_its_remote(
+    tmp_path: Path, stage: str, moved: bool
+) -> None:
+    """Its PRs are open. The run that tells the issue (or a tick that finds the issue in To Do again) asks
+    GitHub nothing, and the repository its remote names no longer matters: nothing is published again."""
+    repo = on_github(tmp_path)
+    card = text_card("avatars")
+    gh, app = RecordedGh(real_git=False), fake_app(tmp_path, FakeGitHub())
+    first = await pipeline(tmp_path, repo, happy_engine(), gh, app=app).run(card)
+    assert first.stage == "review" and first.github_repo == "o/r"
+    if stage == "publish":  # the PR links never reached the issue: the next run posts them
+        first.stage = "publish"
+        first.save()
+    if moved:
+        git(repo, "remote", "set-url", "origin", "git@github.com:o/moved.git")
+    github = FakeGitHub(installed=())  # an app that cannot get a token now
+    after = RecordedGh(real_git=False)
+    st = await pipeline(tmp_path, repo, FakeEngine(), after, app=fake_app(tmp_path, github)).run(card)
+    assert st.blocked is None and st.stage == "review"
+    assert github.requests == [] and after.calls == []
+    assert "stopped after" not in (st.path / "notes.md").read_text()

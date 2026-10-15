@@ -222,8 +222,8 @@ class GitHubApp:
             r = await self._call("GET", path, bearer)
             if r.status_code == 404:
                 raise GitHubAppError(
-                    f"the GitHub App {slug} is not installed on {repo}: install it on that repository "
-                    f"(only that one) at https://github.com/apps/{slug}/installations/new"
+                    f"the GitHub App {slug} is not installed on {repo}: install it on {repo} (or on all your "
+                    f"repositories) at https://github.com/apps/{slug}/installations/new"
                 )
             if not r.is_success:
                 raise self._refused(r, "GET", path, bearer)

@@ -172,11 +172,13 @@ class StoryPipeline:
         st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
         st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
         try:
-            # before any model works in this run: what it plants in the repository's git configuration later
-            # changes neither the repository the bot publishes to nor the person's own git settings; and an
-            # app that cannot get a token (for the layers' author) stops the story before any model works
-            self.publisher.prepare(self.repo, expected=st.github_repo)
-            await self.publisher.author(self.repo)
+            if not st.done("publish"):  # a layer to build, or the stack to publish: GitHub comes into it
+                # before any model works in this run: what it plants in the repository's git configuration
+                # later changes neither the repository the bot publishes to nor the person's own git
+                # settings; and an app that cannot get a token (for the layers' author) stops the story
+                # before any model works
+                self.publisher.prepare(self.repo, expected=st.github_repo)
+                await self.publisher.author(self.repo)
             if st.done("intake") and not st.done("review"):
                 # It was started and stopped (blocked, or cancelled and put back in intake, or killed): back
                 # to building while the rest is built. A blocked story stays blocked on disk until the issue
