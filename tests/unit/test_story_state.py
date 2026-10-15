@@ -210,7 +210,7 @@ def test_finish_refuses_a_stage_that_is_not_one(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="'deploy' is not a stage"):
         st.finish("deploy")
     assert st.stage == "new" and (story_dir / "state.json").read_bytes() == before
-    assert not (story_dir / "events.jsonl").exists()
+    assert (story_dir / "events.jsonl").read_bytes() == b""  # made when the story was opened; no event
 
 
 def test_the_base_a_story_builds_on_is_kept_and_a_state_file_from_before_it_has_none(tmp_path: Path) -> None:
@@ -225,3 +225,66 @@ def test_the_base_a_story_builds_on_is_kept_and_a_state_file_from_before_it_has_
     del old["base"]  # a state file as an earlier airlie wrote it
     (where / "state.json").write_text(json.dumps(old))
     assert StoryState.open(where, card, tmp_path / "repo").base is None
+
+
+@pytest.mark.parametrize(
+    "how",
+    ["mode 000", "mode 444, a torn last line", "mode 444, intact", "a directory"],
+)
+def test_an_event_log_that_cannot_be_read_and_appended_to_is_a_readable_stop_that_names_it(
+    tmp_path: Path, how: str
+) -> None:
+    """Not a raw OSError at open, nor at the first event after the story started: a tick sets the issue
+    aside, as it does one whose state cannot be read."""
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("intake")
+    events = story_dir / "events.jsonl"
+    if how == "a directory":
+        events.unlink()
+        events.mkdir()
+    elif how == "mode 000":
+        events.chmod(0)
+    else:
+        if "torn" in how:
+            with events.open("a") as f:
+                f.write('{"ts": 1.0, "kind": "sta')
+        events.chmod(0o444)
+    try:
+        with pytest.raises(StorySetupError) as e:
+            StoryState.open(story_dir, card, tmp_path / "repo")
+    finally:
+        if events.is_file():
+            events.chmod(0o644)
+    said = "Is a directory" if how == "a directory" else "Permission denied"
+    assert str(e.value) == (
+        f"{events} cannot be read and appended to ({said}); fix that, or move it away to start a new "
+        "event log"
+    )
+    assert e.value.__cause__ is None and e.value.__suppress_context__ is False and e.value.__context__ is None
+
+
+def test_an_event_log_left_without_its_state_is_checked_too(tmp_path: Path) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo").finish("intake")
+    (story_dir / "state.json").unlink()  # starting over keeps the event log
+    (story_dir / "events.jsonl").chmod(0o444)
+    try:
+        with pytest.raises(StorySetupError, match="events.jsonl cannot be read and appended to"):
+            StoryState.open(story_dir, card, tmp_path / "repo")
+    finally:
+        (story_dir / "events.jsonl").chmod(0o644)
+
+
+def test_an_event_log_is_made_when_a_story_is_opened_and_an_intact_one_is_left_as_it_is(
+    tmp_path: Path,
+) -> None:
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    st = StoryState.open(story_dir, card, tmp_path / "repo")
+    assert (story_dir / "events.jsonl").read_bytes() == b""
+    st.finish("intake")
+    before = (story_dir / "events.jsonl").read_bytes()
+    StoryState.open(story_dir, card, tmp_path / "repo")
+    assert (story_dir / "events.jsonl").read_bytes() == before and before.endswith(b"\n")

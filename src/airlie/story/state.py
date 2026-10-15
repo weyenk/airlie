@@ -18,16 +18,30 @@ from airlie.story.model import StorySetupError
 STAGES = ("new", "intake", "refine", "layers", "build", "publish", "review")
 
 
-def _end_a_torn_line(events: Path) -> None:
-    """End a torn last line (a crash mid-append) so the next event starts its own line."""
-    if not events.is_file() or events.stat().st_size == 0:
-        return
-    with events.open("rb") as f:
+def _ready_to_append(events: Path) -> None:
+    """Open the event log for reading and appending, as every event appends to it (it is made when missing),
+    and end a torn last line (a crash mid-append) so the next event starts its own line. An OSError when it
+    cannot be read or appended to: the first event would raise it, after the story had started."""
+    with events.open("a+b") as f:
+        if f.seek(0, os.SEEK_END) == 0:
+            return
         f.seek(-1, os.SEEK_END)
-        ends_clean = f.read(1) == b"\n"
-    if not ends_clean:
-        with events.open("ab") as f:
+        if f.read(1) != b"\n":
             f.write(b"\n")
+
+
+def _open_events(path: Path) -> None:
+    """_ready_to_append for the story at `path`, or a StorySetupError that names events.jsonl."""
+    events = path / "events.jsonl"
+    try:
+        _ready_to_append(events)
+    except OSError as e:
+        why = e.strerror or type(e).__name__
+    else:
+        return
+    raise StorySetupError(  # outside the handler: nothing is chained
+        f"{events} cannot be read and appended to ({why}); fix that, or move it away to start a new event log"
+    )
 
 
 def _damaged(f: Path, why: str) -> StorySetupError:
@@ -58,7 +72,8 @@ class StoryState:
     def open(cls, path: Path, card: Card, repo: Path) -> StoryState:
         """The state at `path`, or a new one. A state that cannot be used (it cannot be read, it is damaged,
         or it belongs to another repository) is a StorySetupError that names state.json: deleting that file,
-        not the directory, starts the story over and keeps its events, notes and PR bodies."""
+        not the directory, starts the story over and keeps its events, notes and PR bodies. So is an event log
+        that cannot be read and appended to (_open_events): every stage appends to it."""
         f = path / "state.json"
         try:
             text = f.read_text() if f.is_file() else None
@@ -81,10 +96,10 @@ class StoryState:
                     f"this story was started in {st.repo}; resume it there (--repo {st.repo}) "
                     f"or delete {f} to start over"
                 )
-            _end_a_torn_line(path / "events.jsonl")
+            _open_events(path)
             return st
         path.mkdir(parents=True, exist_ok=True)
-        _end_a_torn_line(path / "events.jsonl")  # a deleted state file can leave its event log behind
+        _open_events(path)  # a deleted state file can leave its event log behind
         st = cls(path=path, card=card.to_dict(), repo=str(repo))
         st.save()
         return st

@@ -397,7 +397,8 @@ def poison_setup(
     blocked: str | None = "Blocked",
 ) -> tuple[Any, RecordedGh]:
     """queue_setup, where the top issue, AIR-7, has a story state that cannot be opened (`how`: a damaged
-    state.json, one that cannot be read, or one started in another repository)."""
+    state.json, one that cannot be read, an event log that cannot be appended to, or a story started in
+    another repository)."""
     cfg, gh = queue_setup(tmp_path, monkeypatch, board, blocked=blocked)
     state = stories_dir(cfg) / POISON.key
     if how == "damaged":
@@ -406,6 +407,9 @@ def poison_setup(
     elif how == "unreadable":  # a good state file that airlie may not read
         StoryState.open(state, POISON, Path(cfg.story.repo).resolve())
         (state / "state.json").chmod(0)
+    elif how == "read-only events":  # a good event log that no event can be appended to
+        StoryState.open(state, POISON, Path(cfg.story.repo).resolve()).finish("intake")
+        (state / "events.jsonl").chmod(0o444)
     else:  # a story that was started in another repository, then stopped
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -418,6 +422,7 @@ def poison_setup(
     [
         ("damaged", "Blocked", "blocked", "/AIR-7/state.json is damaged"),
         ("unreadable", "Blocked", "blocked", "/AIR-7/state.json cannot be read (Permission denied)"),
+        ("read-only events", "Blocked", "blocked", "/AIR-7/events.jsonl cannot be read and appended to"),
         ("elsewhere", None, "building", "started in"),
     ],
 )
