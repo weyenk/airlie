@@ -1581,6 +1581,11 @@ async def test_a_gate_edited_in_the_persons_checkout_or_in_a_layers_worktree_is_
             "the Test gate section of its AGENTS.md continues a command onto the next line "
             "('pnpm install &&')",
         ),
+        (
+            "## Test gate\n\n```sh\nmake lint & make test\n```\n",
+            "the Test gate section of its AGENTS.md runs a command in the background with & "
+            "('make lint & make test')",
+        ),
     ],
 )
 async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model_works(

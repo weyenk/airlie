@@ -37,9 +37,11 @@ _NO_PARAGRAPH = re.compile(
 """A list item, a block quote or a thematic break: no paragraph, so no Setext heading, is made of it."""
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
-_QUOTES = "'\"`"
 _WORD_ENDS = " \t;&|()<>"
 """What ends a word in sh: after one of these, as at the start of a line, a # begins a comment."""
+_TWO = ("&&", "||", "&>", ">&", "<&")
+"""The operators of two characters that hold an & or a |: none of them puts a command in the background."""
+_CLOSER = {'"': '"', "`": "`", "${": "}"}
 
 
 def gate_command(commands: Sequence[str]) -> str:
@@ -110,34 +112,68 @@ def _paragraph_line(line: str, paragraph: list[str]) -> bool:
     return bool(paragraph) or not line.startswith(("    ", "\t"))
 
 
-def _continues(command: str) -> bool:
-    """`command` goes on onto the next line, as sh reads it: it ends in a backslash that is not escaped, it
-    leaves a quote (' " or `) or a parenthesis open, or it ends in &&, || or |. A comment (a # that begins a
-    word) is not read, and neither is what is quoted or escaped (a backslash escapes the character after it,
-    but not inside single quotes)."""
-    code: list[str] = []  # what sh reads as code, every quoted or escaped character as an x
-    quote: str | None = None
+def _read_line(command: str) -> tuple[bool, bool]:
+    """How sh reads `command`: whether it goes on onto the next line (it ends in a backslash that is not
+    escaped, or in &&, || or |, or it leaves a quote, a backtick, a parenthesis, $(, ${ or $(( open), and
+    whether it puts a command in the background (a control operator &: not one of &&, >&, <&, &>, and not
+    quoted, escaped, in a comment, in ${...} or in $((...))). A # that begins a word begins a comment, and a
+    backslash escapes the character after it, but not in single quotes."""
+    opened: list[str] = []  # what is open, innermost last: a quote, `, $(, (, ${, $(( or a ( inside $((
+    ends_in_operator = background = in_word = False
     i = 0
     while i < len(command):
-        c = command[i]
-        if c == "\\" and quote != "'":
-            if i + 1 == len(command):
-                return True  # it escapes the newline: the next line goes on this one
+        top, c = (opened[-1] if opened else ""), command[i]
+        if top == "'":  # nothing but the closing quote is special in single quotes
+            if c == "'":
+                opened.pop()
             i += 1
-            code.append("x")
-        elif quote is not None:
-            quote = None if c == quote else quote
-            code.append("x")
-        elif c in _QUOTES:
-            quote = c
-            code.append("x")
-        elif c == "#" and (not code or code[-1] in _WORD_ENDS):
-            break
-        else:
-            code.append(c)
-        i += 1
-    text = "".join(code).rstrip()
-    return quote is not None or text.count("(") > text.count(")") or text.endswith(("&&", "|"))
+            continue
+        if c == "\\":
+            if i + 1 == len(command):
+                return True, background  # it escapes the newline: the next line goes on this one
+            i, in_word, ends_in_operator = i + 2, True, False
+            continue
+        if c == _CLOSER.get(top):
+            opened.pop()
+            i, in_word = i + 1, True
+            continue
+        start = next((o for o in ("$((", "$(", "${") if command.startswith(o, i)), None)
+        if start is None and (c == "`" or c in "'\"" and top != '"'):
+            start = c
+        if start is not None:
+            opened.append(start)
+            i += len(start)
+            in_word, ends_in_operator = start not in ("$(", "`"), False  # after $( or `, commands begin
+            continue
+        if top in ('"', "${"):  # the rest of a double-quoted string or a ${...} is text
+            i += 1
+            continue
+        if top in ("$((", "a("):  # arithmetic: & and | are its operators, and ( ) nest
+            if c == "(":
+                opened.append("a(")
+            elif c == ")" and top == "a(":
+                opened.pop()
+            elif command.startswith("))", i) and top == "$((":
+                opened.pop()
+                i += 1
+            i += 1
+            continue
+        # commands: the line itself, ( ... ), $( ... ) or ` ... `
+        if c == "#" and not in_word and top != "`":
+            break  # a comment, to the end of the line
+        token = next((t for t in _TWO if command.startswith(t, i)), c)
+        if token == "(":
+            opened.append("(")
+        elif token == ")" and top in ("(", "$("):
+            opened.pop()
+        elif token == "&":
+            background = True
+        if not token.isspace():
+            ends_in_operator = token in ("&&", "||", "|")
+        # a $(...) is part of a word, a ( ... ) is not
+        in_word = token[-1] not in _WORD_ENDS or (token == ")" and top == "$(")
+        i += len(token)
+    return bool(opened) or ends_in_operator, background
 
 
 def gate_commands(markdown: str) -> tuple[str, ...]:
@@ -145,8 +181,8 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     line of = or -), whose text is "Test gate" (in any case): the lines of the first fenced block (``` or ~~~)
     after it and before the next heading of its level or a higher one, but blank lines and those that start
     with #, each trimmed. NoTestGate when there is no such heading, no command under it, or a command that
-    goes on onto the next line (each is run on its own: gate_command). A heading inside a code block is code,
-    and CRLF line ends are read as lines."""
+    goes on onto the next line or that runs one in the background (each is run on its own, and must pass:
+    gate_command). A heading inside a code block is code, and CRLF line ends are read as lines."""
     level: int | None = None  # the Test gate heading's, once it is found
     fence: tuple[str, int] | None = None  # the open code block's
     block: list[str] | None = None  # the lines of the gate's block, once it opened
@@ -185,12 +221,19 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     commands = tuple(c for c in (x.strip() for x in block or ()) if c and not c.startswith("#"))
     if not commands:
         raise NoTestGate(NO_COMMAND)
-    going_on = next((c for c in commands if _continues(c)), None)
-    if going_on is not None:
-        raise NoTestGate(
-            "the Test gate section of its AGENTS.md continues a command onto the next line "
-            f"({_quoted(going_on)}): put each command on one line"
-        )
+    for command in commands:
+        goes_on, background = _read_line(command)
+        if goes_on:
+            raise NoTestGate(
+                "the Test gate section of its AGENTS.md continues a command onto the next line "
+                f"({_quoted(command)}): put each command on one line"
+            )
+        if background:
+            raise NoTestGate(
+                "the Test gate section of its AGENTS.md runs a command in the background with & "
+                f"({_quoted(command)}), so its result would never reach the gate: run each command in the "
+                "foreground"
+            )
     return commands
 
 

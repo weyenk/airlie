@@ -130,6 +130,50 @@ def test_a_line_that_ends_in_an_escaped_backslash_or_a_comment_that_does_is_no_c
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        "make test &",
+        "make test&",
+        "make lint & make test",
+        "make a && make b &",
+        "curl -fsS http://localhost:8080/health?a=1&b=2",
+        "( make test & )",
+        "echo $(make test &)",
+    ],
+)
+def test_a_command_put_in_the_background_is_refused_and_named(line: str) -> None:
+    """A control operator & runs the command before it in the background, and that command's result never
+    reaches the gate: `{ false &` newline `}` succeeds."""
+    text = f"## Test gate\n```sh\nuv sync\n{line}\n```\n"
+    with pytest.raises(NoTestGate) as e:
+        gate_commands(text)
+    assert str(e.value) == (
+        "the Test gate section of its AGENTS.md runs a command in the background with & "
+        f"({line!r}), so its result would never reach the gate: run each command in the foreground"
+    )
+
+
+def test_an_ampersand_that_is_no_control_operator_is_allowed() -> None:
+    """&& and the redirections (2>&1, >&2, <&0, &>file, &>>file) are not the control operator &, and neither
+    is an & that is quoted, escaped, in a comment, in ${...} or in $((...))."""
+    commands = (
+        "make test 2>&1",
+        "make test >&2",
+        "make test <&0",
+        "make test &>test.log",
+        "make test &>>test.log",
+        "make a && make b 2>&1 | tee log",
+        "echo 'a & b' \"c & d\" e\\&f",
+        "make test # in CI & locally",
+        "test $((7 & 1)) -eq 1",
+        "echo ${x//&/and}",
+        "echo \"$(echo 'a & b')\"",
+    )
+    text = "## Test gate\n```sh\n" + "".join(f"{c}\n" for c in commands) + "```\n"
+    assert gate_commands(text) == commands
+
+
+@pytest.mark.parametrize(
     "heading",
     ["# Test gate", "## Test gate", "###### Test gate", "## test GATE", "##   Test gate  ", "   ## Test gate",
      "## Test gate ##", "### Test gate ###   "],
