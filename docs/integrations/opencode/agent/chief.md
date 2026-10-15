@@ -7,9 +7,12 @@ permission:
   edit: deny
   bash:
     "*": ask
-    "git status *": allow
-    "git diff *": allow
-    "git log *": allow
+    "git status": allow
+    "git status --short": allow
+    "git diff": allow
+    "git diff --stat": allow
+    "git diff --cached": allow
+    "git log --oneline -20": allow
     "gh pr view *": allow
     "gh stack view --json*": allow
     "gh stack view --short*": allow

@@ -106,7 +106,9 @@
         "--project",
         "/path/to/airlie",
         "airlie",
-        "mcp"
+        "mcp",
+        "--config",
+        "/path/to/airlie/airlie.yaml"
       ],
       "environment": {
         "AIRLIE_URL": "http://127.0.0.1:8090"

