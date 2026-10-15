@@ -35,6 +35,12 @@ _HEAD, _TAIL = 200, 600  # how much of a failed command's output a PublishError 
 
 QUIET = {"GH_STACK_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 """gh and gh-stack: no update notice and no prompt."""
+PERSON_TRANSPORTS = "ssh:https"
+"""The transports publishing as you allows (GIT_ALLOW_PROTOCOL): SSH and HTTPS remotes, and no remote on this
+machine. For a remote that is a path, git runs the receivepack or uploadpack command the repository's
+configuration names, with your environment, and takes the first one it reads, so nothing given on the command
+line outranks a planted one. Not a setting: only unit tests that publish to a local bare repository widen
+it."""
 NO_GIT_PROXY = {"GIT_PROXY_COMMAND": ""}
 """No proxy command for git://. git takes the first core.gitProxy it reads, so the repository's would outrank
 one given on the command line; the variable, even empty, outranks them all."""
@@ -137,10 +143,10 @@ def _pins(remote: str, urls: Iterable[str] = ()) -> list[tuple[str, str]]:
 
 def person_env(person: PersonGit, remote: str = "origin") -> dict[str, str]:
     """A publish step as you: your environment (your gh login, your SSH agent) with no prompt, git running no
-    hook or fsmonitor and no transport but local, SSH and HTTPS ones, and your own core.sshCommand and
-    credential helpers pinned over whatever the repository's configuration says (command-line configuration
-    outranks it; the empty helper resets the list first), then PINNED for `remote`."""
-    env = {**os.environ, **QUIET, **NO_PROMPTS, **NO_GIT_PROXY, "GIT_ALLOW_PROTOCOL": "file:ssh:https"}
+    hook or fsmonitor and no transport but PERSON_TRANSPORTS, and your own core.sshCommand and credential
+    helpers pinned over whatever the repository's configuration says (command-line configuration outranks it;
+    the empty helper resets the list first), then PINNED for `remote`."""
+    env = {**os.environ, **QUIET, **NO_PROMPTS, **NO_GIT_PROXY, "GIT_ALLOW_PROTOCOL": PERSON_TRANSPORTS}
     pins = [("core.sshCommand", person.ssh_command), ("credential.helper", ""), *person.helpers]
     return with_git_config(without_hooks(env), [*pins, *_pins(remote)])
 

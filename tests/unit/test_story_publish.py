@@ -225,7 +225,9 @@ async def test_a_publish_step_runs_with_prompts_askpass_and_update_notices_off(
 
 
 @pytest.mark.parametrize("hooks", ["hooks directory", "relative core.hooksPath"])
-async def test_a_push_runs_no_pre_push_hook_a_model_planted(tmp_path: Path, hooks: str) -> None:
+async def test_a_push_runs_no_pre_push_hook_a_model_planted(
+    tmp_path: Path, local_remotes: None, hooks: str
+) -> None:
     """Publishing keeps the person's credentials, so it must run nothing a model's shell left in the
     repository; the push itself still happens."""
     repo = repo_with_marker_tests(tmp_path)
@@ -319,7 +321,9 @@ def _gh_stack() -> bool:
 
 
 @pytest.mark.skipif(not _gh_stack(), reason="needs gh with the gh-stack extension")
-async def test_real_gh_stack_adopts_the_layers_without_moving_the_persons_checkout(tmp_path: Path) -> None:
+async def test_real_gh_stack_adopts_the_layers_without_moving_the_persons_checkout(
+    tmp_path: Path, local_remotes: None
+) -> None:
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     repo = repo_with_marker_tests(tmp_path)
@@ -593,7 +597,7 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     assert len(rec.envs) == 6
     for env in rec.envs:
         assert {name: env[name] for name in yours_} == yours_
-        assert env["GIT_ALLOW_PROTOCOL"] == "file:ssh:https" and "GIT_SSH_COMMAND" not in env
+        assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https" and "GIT_SSH_COMMAND" not in env
         assert env["GIT_PROXY_COMMAND"] == ""
         assert pairs(env) == [
             *NO_HOOKS,
@@ -954,7 +958,12 @@ def with_alternates(tmp_path: Path, marks: Path) -> Path:
 
 @pytest.mark.parametrize("as_who", ["you", "the bot"])
 async def test_a_publish_steps_fetch_runs_no_alternate_refs_command_a_model_planted(
-    tmp_path: Path, own_git: Path, marks: Path, monkeypatch: pytest.MonkeyPatch, as_who: str
+    tmp_path: Path,
+    local_remotes: None,
+    own_git: Path,
+    marks: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    as_who: str,
 ) -> None:
     """It would run with the step's environment: your SSH agent, or the bot's token. The bot fetches only
     over HTTPS, so a local remote stands in for GitHub's (the alternates are read the same way)."""
@@ -981,12 +990,12 @@ def transports(tmp_path: Path, marks: Path) -> tuple[Path, Path]:
     return repo, planted
 
 
-async def test_as_you_git_uses_no_transport_beyond_local_ssh_and_https(
+async def test_as_you_git_uses_no_transport_but_ssh_and_https(
     tmp_path: Path, own_git: Path, marks: Path
 ) -> None:
     repo, _ = transports(tmp_path, marks)
     env = yours()
-    assert env["GIT_ALLOW_PROTOCOL"] == "file:ssh:https"  # local remotes and SSH still work (tests above)
+    assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https"  # SSH still works (tests above); local remotes do not
     for remote, transport in (("viaext", "ext"), ("viagit", "git")):
         out = git_in(repo, env, "ls-remote", remote)
         assert out.returncode != 0 and f"transport '{transport}' not allowed" in out.stderr
@@ -1049,7 +1058,7 @@ async def test_check_as_the_bot_names_a_pushurl_a_model_planted(tmp_path: Path, 
 
 @pytest.mark.parametrize("planted", ["fetch.recurseSubmodules", "submodule.recurse"])
 async def test_a_publish_steps_fetch_does_not_go_into_a_submodule(
-    tmp_path: Path, own_git: Path, marks: Path, planted: str
+    tmp_path: Path, local_remotes: None, own_git: Path, marks: Path, planted: str
 ) -> None:
     """A submodule has a configuration and a remote of its own, out of reach of the step's checks: a planted
     recursion would have its git fetch from there, with the step's environment. Here its remote is on this
@@ -1093,3 +1102,43 @@ def test_your_settings_for_one_repository_can_come_from_an_include_for_its_direc
     own_git.write_text(f'[includeIf "gitdir:{repo.resolve()}/"]\n\tpath = {just_here}\n')
     assert PersonGit.read(repo) == PersonGit("ssh -i ~/.ssh/deploy-key", (("credential.helper", "store"),))
     assert PersonGit.read(other) == PersonGit()  # another repository: not included
+
+
+# ---- as you: no remote on this machine (fix round 2, I1) ----
+
+
+@pytest.mark.parametrize(
+    ("where", "command", "action"),
+    [
+        ("remote.origin.pushurl", "remote.origin.receivepack", ["push", "origin", "HEAD:refs/heads/layer"]),
+        ("remote.origin.url", "remote.origin.uploadpack", ["fetch", "origin"]),
+    ],
+)
+def test_as_you_a_remote_on_this_machine_is_refused_so_its_planted_command_never_runs(
+    tmp_path: Path,
+    own_git: Path,
+    marks: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    command: str,
+    action: list[str],
+) -> None:
+    """For a remote that is a path, git runs the receivepack or uploadpack the repository's configuration
+    names itself, with your environment (your SSH agent), and takes the first one it reads: no setting given
+    on the command line can outrank a planted one. Publishing as you allows SSH and HTTPS remotes only."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/the-persons-agent.sock")
+    repo = repo_on_github(tmp_path)  # the story's remote, as written
+    local = tmp_path / "local.git"
+    git(tmp_path, "init", "-q", "--bare", str(local))
+    git(repo, "config", where, str(local))
+    planted = run_script(
+        tmp_path / "planted.sh",
+        f'echo "ran SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> {shlex.quote(str(marks))}\nexit 1',
+    )
+    git(repo, "config", command, str(planted))
+    env = yours()
+    refused = git_in(repo, env, *action).stderr
+    assert "transport 'file' not allowed" in refused and logged(marks) == []
+    assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https"
+    git_in(repo, dict(os.environ), *action)  # the control: plain git runs it, with your agent
+    assert logged(marks) == ["ran SSH_AUTH_SOCK=/tmp/the-persons-agent.sock"]

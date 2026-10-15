@@ -57,6 +57,13 @@ def _no_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def local_remotes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publishing as you also reaches a remote on this machine: for a test that publishes to (or fetches from)
+    a local bare repository. airlie itself allows SSH and HTTPS remotes only (publish.PERSON_TRANSPORTS)."""
+    monkeypatch.setattr("airlie.story.publish.PERSON_TRANSPORTS", "file:ssh:https")
+
+
+@pytest.fixture
 def ascii_locale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Text files opened without an encoding are ASCII, as under LC_ALL=C with Python's UTF-8 mode off.
     pathlib asks io.text_encoding for the default, so that is what this replaces. A test that uses it shows

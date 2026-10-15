@@ -528,7 +528,7 @@ async def test_a_layer_plan_that_leaves_a_criterion_unowned_is_sent_back_once(tm
     assert "no layer covers acceptance ['AC2']" in asked[1].messages[1].content
 
 
-async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path) -> None:
+async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path, local_remotes: None) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     news = advance_origin(tmp_path, repo)
@@ -546,6 +546,7 @@ async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path) -> N
 
 async def test_the_trunk_ref_is_the_remote_branch_when_there_is_one_else_the_local_trunk(
     tmp_path: Path,
+    local_remotes: None,
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
@@ -845,7 +846,9 @@ async def test_refine_and_layers_read_the_trunk_not_the_persons_checkout(tmp_pat
     assert git(repo, "branch", "--show-current") == "feature" and git(repo, "status", "--porcelain") == ""
 
 
-async def test_a_resume_builds_on_the_base_the_story_started_from_not_on_a_newer_one(tmp_path: Path) -> None:
+async def test_a_resume_builds_on_the_base_the_story_started_from_not_on_a_newer_one(
+    tmp_path: Path, local_remotes: None
+) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     news = advance_origin(tmp_path, repo)
