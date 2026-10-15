@@ -349,26 +349,30 @@ environment, which outrank the repository's configuration:
     `remote.<name>.proxy` and `GIT_PROXY_COMMAND`, all empty: a proxy `HTTPS_PROXY` names is off too), no list of
     addresses for hosts (`http.curloptResolve`), the TLS check on (`http.sslVerify`), and no going into
     submodules (`fetch.recurseSubmodules`, `push.recurseSubmodules`, `submodule.recurse`);
-  - transports: as you, local, SSH and HTTPS remotes only (`GIT_ALLOW_PROTOCOL=file:ssh:https`: no `ext::`,
-    `git://` or remote helper); as the bot, HTTPS only;
+  - transports: as you, SSH and HTTPS remotes only (`GIT_ALLOW_PROTOCOL=ssh:https`: no remote on this machine,
+    whose `receivepack` or `uploadpack` command git would run itself, and no `ext::`, `git://` or remote
+    helper); as the bot, HTTPS only;
 - as the bot, also: a token for the story's repository alone, minted per step with contents and pull requests
   write alone; a step that refuses unless git would fetch from and push to that repository's own URL; and the TLS
   check and the address list given again for that exact URL.
 
 What planted repository configuration can still do during a publish step:
 
-- **As you,** where the remote points is the repository's to say. A model that rewrites it during a run has that
-  run push your branches there, with your credentials (for a remote on github.com, the next run finds another
-  repository and sets the story aside). Settings for your remote's exact URL (`http.<url>.sslVerify`,
-  `http.<url>.curloptResolve`) outrank the general ones above, so over HTTPS a model that also leaves a listener
-  running on this machine could read what your credential helper sends.
+- **As you,** where the remote points is the repository's to say, within those transports: a rewritten remote or
+  `pushurl` on this machine is refused, so no command it names runs, but one on another SSH or HTTPS host is not.
+  A model that rewrites it during a run has that run push your branches there, with your credentials (for a
+  remote on github.com, the next run finds another repository and sets the story aside). Settings for your
+  remote's exact URL (`http.<url>.sslVerify`, `http.<url>.curloptResolve`) outrank the general ones above, so
+  over HTTPS a model that also leaves a listener running on this machine could read what your credential helper
+  sends.
 - **As the bot,** git's other settings still apply, but as far as these settings and the URL check reach, none
   can send the token anywhere but GitHub's address for the story's repository: the proxy is off, the address list
   empty and TLS checked for that exact URL, and any other URL is refused.
-- **Either way,** a filter or a diff driver that a committed `.gitattributes` names (`filter.<driver>.clean`,
-  `smudge`, `process`) runs with the step's environment if the step's git reads the working tree's files.
-  gh-stack's `init`, `push` and `view` were seen not to (a planted clean filter did not run); `submit` talks to
-  GitHub and was not checked.
+- **Either way,** a filter or a diff driver that attributes name (`filter.<driver>.clean`, `smudge`, `process`)
+  runs with the step's environment if the step's git reads the working tree's files; the attributes can come from
+  a committed `.gitattributes`, from `.git/info/attributes`, or from a file a planted `core.attributesFile` names.
+  gh-stack's `init`, `push` and `view` were seen not to read them (a planted clean filter did not run); `submit`
+  talks to GitHub and was not checked.
 
 The backstop is GitHub: the token's scope (one repository, one hour, contents and pull requests write) and a
 ruleset on the trunk. None of this is an OS sandbox either: those processes still run as your macOS user, and a
