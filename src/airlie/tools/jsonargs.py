@@ -39,3 +39,14 @@ def parse_tool_args(raw: str) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise ValueError("tool arguments must be a JSON object")
     return obj
+
+
+def history_arguments(raw: str) -> str:
+    """The arguments a conversation replays: what the tool ran with, or `{}` when it could not run.
+    vllm-mlx replays unparseable arguments as `{"value": "<string>"}`, and the model copies that junk into its
+    next call."""
+    try:
+        args = parse_tool_args(raw)
+    except ValueError:
+        return "{}"
+    return json.dumps(args, ensure_ascii=False)  # pragma: no mutate  (ensure_ascii=None is falsy too)

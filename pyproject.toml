@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Multi-agent build system on Apple Silicon: parallel agent teams over an in-process MLX engine with Learning-to-Share memory"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-license = { text = "MIT" }
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
     # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
     "mlx>=0.32.2; sys_platform == 'darwin'",
@@ -125,4 +125,6 @@ enrolled = [
     "src/airlie/tools/shell.py",
     "src/airlie/tools/sandbox.py",
     "src/airlie/engine/http_engine.py",
+    "src/airlie/engine/parsers/qwen3_xml_raw.py",
+    "src/airlie/engine/vllm_mlx_serve.py",
 ]

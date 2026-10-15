@@ -1,0 +1,13 @@
+I'll create the file `cmp.py` with the specified content using the `write_file` function.
+
+<function=write_file>
+<parameter=path>
+cmp.py
+</parameter>
+<parameter=content>
+def check(a, b, c, d):
+    if a < b and c & d:
+        return "GOOD"
+    return "<none>"
+</parameter>
+</function>

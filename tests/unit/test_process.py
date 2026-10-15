@@ -83,9 +83,9 @@ async def test_start_writes_registry_spawns_and_waits_for_preloaded_models(tmp_p
     p = proc(tmp_path, runner, FakeProber(health=[False, True], models=[["base"], ["base", "small"]]))
     h = await p.start(timeout_s=5)
     argv, log = runner.spawned[0]
-    assert argv[:2] == ["vllm-mlx", "serve"]
-    assert Path(argv[3]).is_file()  # the generated registry
-    assert yaml.safe_load(Path(argv[3]).read_text())["models"][1]["name"] == "small"
+    assert argv[:4] == ["python", "-m", "airlie.engine.vllm_mlx_serve", "serve"]
+    assert Path(argv[5]).is_file()  # the generated registry
+    assert yaml.safe_load(Path(argv[5]).read_text())["models"][1]["name"] == "small"
     assert log == tmp_path / "state" / "engines" / "main" / "server.log"
     assert (tmp_path / "state" / "engines" / "main" / "pid").read_text().strip() == "4242"
     assert h.ok and h.models == {"base": "ready", "small": "ready"}

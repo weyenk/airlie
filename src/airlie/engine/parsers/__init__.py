@@ -13,7 +13,9 @@ def ensure_registered() -> None:
     from vllm_mlx.tool_parsers import ToolParserManager
 
     from airlie.engine.parsers.muse_glimmer import MuseGlimmerReasoningParser, MuseGlimmerToolParser
+    from airlie.engine.parsers.qwen3_xml_raw import Qwen3XmlRawToolParser
 
     register_parser("muse_glimmer", MuseGlimmerReasoningParser)
     ToolParserManager.register_module("muse_glimmer", MuseGlimmerToolParser)
+    ToolParserManager.register_module("qwen3_xml_raw", Qwen3XmlRawToolParser)
     _done = True

@@ -10,7 +10,7 @@ from autogen_core.models import CreateResult, RequestUsage
 
 from airlie.engine import ToolCall
 from airlie.teams.autogen_client import repair_create_result
-from airlie.tools.jsonargs import parse_tool_args, repair_json_args
+from airlie.tools.jsonargs import history_arguments, parse_tool_args, repair_json_args
 
 
 def test_valid_json_is_untouched() -> None:
@@ -36,6 +36,22 @@ def test_truncated_json_is_left_for_the_caller_to_report() -> None:
 def test_parse_tool_args_rejects_non_objects() -> None:
     with pytest.raises(ValueError):
         parse_tool_args("[1, 2]")
+
+
+def test_history_keeps_the_arguments_the_tool_ran_with() -> None:
+    assert (
+        history_arguments('{"path": "x.py", "content": "d = {}\\n"}}')
+        == '{"path": "x.py", "content": "d = {}\\n"}'
+    )
+    assert history_arguments('{"t": "über"}') == '{"t": "über"}'
+
+
+def test_history_replays_unparseable_arguments_as_an_empty_object() -> None:
+    """vllm-mlx replays arguments it cannot parse as `{"value": "<string>"}`; the model then copies that
+    junk into its next call, one escaping level deeper each turn (run 20261014-165050-e4ef)."""
+    assert history_arguments('{"path": "x.py", "content": "def f():') == "{}"
+    assert history_arguments("[1, 2]") == "{}"
+    assert history_arguments("") == "{}"
 
 
 def test_repair_create_result_fixes_args_and_keeps_the_first_call() -> None:
