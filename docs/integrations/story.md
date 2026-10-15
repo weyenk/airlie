@@ -264,12 +264,13 @@ note work the other way round: they are posted before their stage is saved, so w
   or comment on it;
 - a model's reply was unusable after `story.stage_attempts` tries (the last problem is the reason);
 - a role's reply was cut off at its `max_tokens` before it ended (a thinking role that used all of it thinking, say):
-  the reason reads `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens`
-  to raise. A thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has
-  not;
+  the story stops at once, since another try would meet the same cap. The reason reads
+  `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens` to raise. A
+  thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has not;
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
-  the comment names them;
+  the comment names them. When a subtask's reply in that layer was cut off at its `max_tokens`, the comment names the
+  subtask and the `roles.<role>.max_tokens` to raise;
 - the trunk cannot be fetched (`story.trunk` is not on the remote, or the remote does not answer): a story builds only
   on the remote's trunk, fetched into `refs/remotes/origin/<trunk>` by a refspec that names both ends (no fetch
   refspec the repository's configuration names is used) and read by that full name. It never builds on the local

@@ -135,6 +135,27 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     assert report.final_answer == "all done"
 
 
+async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_review_that_says_why(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cut = FakeReply(reasoning="Checking the diff. ", finish_reason="length")
+    engine = FakeEngine(
+        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [cut]}
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    why = (
+        "engine error: the reply was cut off at max_tokens (16384) before it ended, still thinking; "
+        "raise roles.reviewer.max_tokens"
+    )
+    review = orch.runs["fix"].review
+    assert review is not None and (review.verdict, review.raw) == ("error", why)
+    assert [e["verdict"] for e in events(report) if e["kind"] == "review"] == ["error"]
+    trace = json.loads((report.run_dir.path / "trace" / "fix" / "review-0.json").read_text())
+    assert trace["raw"] == why and orch.runs["fix"].fix_rounds == 0  # no blocking findings, no fix round
+
+
 async def test_unparsable_review_skips_the_fix_round(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
@@ -391,17 +412,62 @@ async def test_a_chief_reply_cut_off_in_synthesis_is_an_error_answer_not_an_empt
     assert report.any_ok and report.tests == {"studio": True}  # what was built is still in the report
 
 
-async def test_a_chief_reply_cut_off_with_text_is_handled_as_before(tmp_path: Path) -> None:
+CHIEF_WHY_TEXT = (  # a reply with text was not still thinking when it was cut off
+    "the reply was cut off at max_tokens (4096) before it ended; "
+    "raise roles.chief.max_tokens above its thinking_budget (8192)"
+)
+HALF_PLAN = (
+    'I will split it.\n```json\n{"type": "plan", '
+    '"subtasks": [{"id": "fix", "role": "coder", "brief": "make the che'
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Split it into three lay", HALF_PLAN],
+    ids=["prose cut off in a sentence", "a plan block cut off inside its json"],
+)
+async def test_a_chief_reply_cut_off_before_it_parses_fails_like_one_with_no_text(
+    tmp_path: Path, text: str
+) -> None:
+    """A truncated plan block parses to nothing and used to be taken for a prose answer (design §4)."""
     repo = repo_with_marker_tests(tmp_path)
-    half = FakeReply(text="Split it into three lay", reasoning="Three layers. ", finish_reason="length")
+    half = FakeReply(text=text, reasoning="Three layers. ", finish_reason="length")
+    engine = FakeEngine({"chief": [half, half]})
+    out = await StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter()).plan(
+        "g", repo=repo
+    )
+    assert (out.plan, out.answer, out.failed) == (None, f"engine error: {CHIEF_WHY_TEXT}", True)
+
+
+async def test_a_chief_synthesis_cut_off_inside_its_json_is_an_error_answer(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    half = FakeReply(
+        text='{"type": "synthesis", "answer": "All done and the tests pa', finish_reason="length"
+    )
+    engine = FakeEngine(
+        {"chief": [PLAN, half], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+    )
+    orch = StudioOrchestrator(chief_as_hds_3(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    assert report.final_answer == f"engine error during synthesis: {CHIEF_WHY_TEXT}"
+
+
+async def test_a_chief_reply_cut_off_after_a_whole_plan_or_answer_keeps_its_handling(tmp_path: Path) -> None:
+    """What parses is an answer or a plan, however the reply ended: the cut-off was after it."""
+    repo = repo_with_marker_tests(tmp_path)
+    answer = FakeReply(
+        text='{"type": "answer", "answer": "Use the cache."}\nAnd I would also men', finish_reason="length"
+    )
     out = await StudioOrchestrator(
-        chief_as_hds_3(tmp_path), FakeEngine({"chief": [half, half]}), router=ChiefRouter()
+        chief_as_hds_3(tmp_path), FakeEngine({"chief": [answer]}), router=ChiefRouter()
     ).plan("g", repo=repo)
-    assert (out.plan, out.answer, out.failed) == (
-        None,
-        "Split it into three lay",
-        False,
-    )  # prose is the answer
+    assert (out.plan, out.answer, out.failed) == (None, "Use the cache.", False)
+    plan = FakeReply(text=PLAN.text + "\nThat covers it, and I would als", finish_reason="length")
+    out = await StudioOrchestrator(
+        chief_as_hds_3(tmp_path), FakeEngine({"chief": [plan]}), router=ChiefRouter()
+    ).plan("g", repo=repo)
+    assert out.plan is not None and [s.id for s in out.plan.subtasks] == ["fix", "note"] and not out.failed
 
 
 async def test_a_chief_reply_that_stopped_with_no_text_is_handled_as_before(tmp_path: Path) -> None:

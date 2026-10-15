@@ -100,6 +100,16 @@ def _layers_note(layers: tuple[Layer, ...]) -> str:
     return "\n".join(lines)
 
 
+def _cut_off(orch: StudioOrchestrator) -> str:
+    """What a stop at a layer adds when a subtask's reply was cut off at max_tokens, a likely reason the layer
+    changed nothing or its tests fail: each such subtask and what to raise ("" when none was)."""
+    return "".join(
+        f"; subtask '{r.subtask.id}' ({r.role}): {cut_off_text(r.role, orch.cfg.roles[r.role])}"
+        for r in orch.runs.values()
+        if r.result is not None and r.result.stop_reason == "cut_off"
+    )
+
+
 def _kept(wt: Path, branch: str) -> str:
     """What a stop at a layer says about the worktree and branch it leaves: they are for a person to look at,
     and the next run removes them."""
@@ -300,8 +310,10 @@ class StoryPipeline:
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
         team = report.teams[0] if report.teams else None
-        if team is not None and team.stop_reason == "cut_off":  # unfinished, with text or without: say so
-            raise StoryError(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
+        if team is not None and team.stop_reason == "cut_off":
+            # unfinished, with text or without. Another try with the same config meets the same cap, so the
+            # story stops here (a StoryError would be retried, with its text in the model's prompt)
+            raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
         if team is None or not team.ok:
             raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
         return team.final_text
@@ -316,7 +328,8 @@ class StoryPipeline:
         parse: Callable[[str], T],
     ) -> T:
         """Ask `role` until `parse` accepts the reply: an unusable one (StoryError) goes back with the reason,
-        story.stage_attempts tries in all, then the story stops with the last reason."""
+        story.stage_attempts tries in all, then the story stops with the last reason. A reply cut off at
+        max_tokens is not asked again (`_ask`): the story stops at once."""
         feedback: str | None = None
         for _ in range(self.s.stage_attempts):
             try:
@@ -434,11 +447,12 @@ class StoryPipeline:
             synthesise=False,
         )
         commit_wip(wt, f"studio: {branch} (final)")
+        cut = _cut_off(orch)
         if not changed_files(wt, base_sha):
-            raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing{_kept(wt, branch)}")
+            raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing{cut}{_kept(wt, branch)}")
         if report.tests.get("studio") is not True:
             raise StoryBlocked(
-                f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{_kept(wt, branch)}"
+                f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{_kept(wt, branch)}"
             )
         sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
         remove_worktree(self.repo, wt)

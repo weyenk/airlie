@@ -38,10 +38,11 @@ Each role's prompt is prepended to OpenCode's own system prompt by `task serve`.
 assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. The thinking
 models (`architect`, `research`, `generalist`) have `limit.output` 16384, as their `max_tokens` in `airlie.yaml`:
 OpenCode sends it as `max_tokens`, which caps the thinking and the reply together, so at 4096 they could spend it
-all thinking and return an empty reply (`finish_reason: "length"`). `base`, `generalist` and `small` are the raw
-models (no persona). Everything goes through `task serve` rather than the engine directly because the role server
-also repairs streamed tool-call chunks that arrive without an `id` (vllm-mlx occasionally sends them; OpenCode's AI
-SDK rejects them with "Expected 'id' to be a string").
+all thinking and return an empty reply (`finish_reason: "length"`). `task serve` also sends a thinking role's
+`thinking_budget`, so it stops thinking at the budget and keeps the rest for the reply. `base`, `generalist` and
+`small` are the raw models (no persona). Everything goes through `task serve` rather than the engine directly
+because the role server also repairs streamed tool-call chunks that arrive without an `id` (vllm-mlx occasionally
+sends them; OpenCode's AI SDK rejects them with "Expected 'id' to be a string").
 
 ### The chief: delegation, the studio and stories
 

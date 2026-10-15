@@ -253,6 +253,9 @@ def create_app(
             spec = cfg.roles[name]
             out.setdefault("max_tokens", spec.max_tokens)
             out.setdefault("chat_template_kwargs", {"enable_thinking": bool(spec.thinking)})
+            # as HTTPEngine sends it: a thinking role is bounded by its budget, not only by max_tokens
+            if spec.thinking and spec.thinking_budget:
+                out.setdefault("thinking_budget", spec.thinking_budget)
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
             resp = await client.send(req, stream=True)

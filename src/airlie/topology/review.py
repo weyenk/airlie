@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
-from airlie.engine.types import GenRequest, Message
+from airlie.engine.types import EngineError, GenRequest, Message
 from airlie.skills import prompt_text
+from airlie.teams.protocol import cut_off_text
 from airlie.topology.studio_plan import extract_json
 
 VERDICTS = ("approve", "request_changes")
@@ -109,6 +110,8 @@ class Reviewer:
             thinking=self.role.thinking,
         )
         res = await self.engine.generate(req)
+        if res.finish_reason == "length" and not res.text.strip():  # no verdict because max_tokens ended it
+            raise EngineError(cut_off_text(self.role_name, self.role, thinking=bool(res.reasoning.strip())))
         return parse_review(res.text)
 
 

@@ -160,6 +160,35 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
     assert b'"finish_reason":"length"' in body and b"[DONE]" in body
 
 
+def test_a_role_that_thinks_and_has_a_budget_is_bounded_by_it_not_only_by_max_tokens(tmp_path: Path) -> None:
+    """HTTPEngine sends the budget with every thinking request; a client of task serve (OpenCode) now gets the
+    same."""
+    up, c = FakeUpstream(), cfg(tmp_path)
+    c.roles["coder"].thinking = False  # does not think: no budget to send
+    c.roles["summarizer"].thinking_budget = None  # thinks, uncapped: none either
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
+    ask = {"messages": [{"role": "user", "content": "yo"}]}
+    # judge thinks with the default budget; base is a raw model, not a role
+    for model in ("judge", "coder", "summarizer", "base"):
+        assert client.post("/v1/chat/completions", json={"model": model, **ask}).status_code == 200
+    budgets = [json.loads(r.content).get("thinking_budget") for r in up.requests]
+    assert budgets == [c.roles["judge"].thinking_budget, None, None, None]
+    assert budgets[0] == 8192
+
+
+def test_a_client_that_names_its_own_thinking_budget_keeps_it_and_a_stream_gets_the_role_s(
+    tmp_path: Path,
+) -> None:
+    up = FakeUpstream()
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
+    ask = {"messages": [{"role": "user", "content": "yo"}]}
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
+    with client.stream("POST", "/v1/chat/completions", json={"model": "judge", "stream": True, **ask}) as r:
+        assert r.status_code == 200
+        b"".join(r.iter_bytes())
+    assert [json.loads(x.content)["thinking_budget"] for x in up.requests] == [100, 8192]
+
+
 def test_unknown_role_is_404(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     r = TestClient(app).post("/v1/chat/completions", json={"model": "ghost", "messages": []})

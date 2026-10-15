@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+
 from airlie.config import RoleSpec
-from airlie.engine import FakeEngine, FakeReply
+from airlie.engine import EngineError, FakeEngine, FakeReply
 from airlie.topology.review import Reviewer, nudge_from_review, parse_review, review_message
 
 RC = (
@@ -41,6 +43,31 @@ async def test_reviewer_calls_the_role_once_without_tools(tmp_path: Path) -> Non
     assert (
         req.tools is None and req.messages[0].content == "You review." and "diff" in req.messages[1].content
     )
+
+
+async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_not_an_unparsable_review(
+    tmp_path: Path,
+) -> None:
+    """max_tokens ended the reply before the verdict: that is not "unparsable", it is a cut-off (HDS-3)."""
+    (tmp_path / "reviewer.md").write_text("You review.")
+    cut = FakeReply(reasoning="Let me check each file. ", finish_reason="length")
+    role = RoleSpec(prompt=tmp_path / "reviewer.md", model="m", thinking=False, max_tokens=512)
+    with pytest.raises(EngineError) as e:
+        await Reviewer(FakeEngine({"reviewer": [cut]}), "reviewer", role).review("fix it", "diff", "tail", {})
+    assert str(e.value) == (
+        "the reply was cut off at max_tokens (512) before it ended, still thinking; "
+        "raise roles.reviewer.max_tokens"
+    )
+
+
+async def test_a_reviewer_reply_that_has_text_or_stopped_by_itself_is_read_as_before(tmp_path: Path) -> None:
+    (tmp_path / "reviewer.md").write_text("You review.")
+    role = RoleSpec(prompt=tmp_path / "reviewer.md", model="m", thinking=False, max_tokens=512)
+    half = FakeReply(text='{"verdict": "request_chan', finish_reason="length")
+    quiet = FakeReply(reasoning="All of it was thinking. ", finish_reason="stop")
+    for reply, raw in ((half, '{"verdict": "request_chan'), (quiet, "")):
+        r = await Reviewer(FakeEngine({"reviewer": [reply]}), "reviewer", role).review("fix it", "d", "t", {})
+        assert (r.verdict, r.findings, r.raw) == ("unparsable", (), raw)
 
 
 def test_nudge_lists_blocking_findings_with_lines() -> None:

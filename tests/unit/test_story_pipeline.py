@@ -383,33 +383,49 @@ async def test_unusable_replies_are_retried_with_feedback_then_stop_the_story(tm
     assert len(kinds(st.path / "events.jsonl", "retry")) == 2
 
 
-@pytest.mark.parametrize(
-    "cut",
-    [
-        FakeReply(reasoning="Let me read the files once more. ", finish_reason="length"),
-        FakeReply(text='Here it is.\n```json\n{"layers": [{"slug": "storage", "ti', finish_reason="length"),
-    ],
-    ids=["still thinking", "half a json block"],
+CUT_THINKING = FakeReply(reasoning="Let me read the files once more. ", finish_reason="length")
+CUT_IN_JSON = FakeReply(
+    text='Here it is.\n```json\n{"layers": [{"slug": "storage", "ti', finish_reason="length"
 )
-async def test_an_architect_cut_off_at_max_tokens_is_named_not_blamed_on_the_json(
+
+
+def cut_off_why(role: str) -> str:
+    """What the story says of a reply of `role` that was cut off: the stage roles in these tests have the
+    schema's default max_tokens. It does not say "still thinking": the result of the turn does not tell it."""
+    room = RoleSpec.model_fields["max_tokens"].default
+    return f"the reply was cut off at max_tokens ({room}) before it ended; raise roles.{role}.max_tokens"
+
+
+@pytest.mark.parametrize("cut", [CUT_THINKING, CUT_IN_JSON], ids=["still thinking", "half a json block"])
+async def test_an_architect_cut_off_at_max_tokens_stops_the_story_at_once_and_is_named(
     tmp_path: Path, cut: FakeReply
 ) -> None:
     """HDS-3 (2026-10-15): the architect thought until max_tokens, the loop took the empty text for its answer
-    and the story stopped with "no JSON object in the reply". A reply that was cut off says that instead."""
+    and the story stopped with "no JSON object in the reply". Now the cut-off is named. The same config meets
+    the same cap, so the architect is not asked again though attempts are left."""
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"product": [STORY], "architect": [cut, cut]})
-    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
-    room = RoleSpec.model_fields["max_tokens"].default
-    why = (
-        f"the architect did not finish: the reply was cut off at max_tokens ({room}) before it ended; "
-        "raise roles.architect.max_tokens"
-    )
-    assert st.stage == "refine" and st.blocked == f"architect did not produce a usable layer plan: {why}"
-    assert [e["error"] for e in kinds(st.path / "events.jsonl", "retry")] == [why, why]
-    second = [r for r in engine.requests if r.role == "architect"][1].messages[1].content
-    assert f"Your previous reply could not be used: {why}." in second
+    engine = FakeEngine({"product": [STORY], "architect": [cut, cut, cut]})
+    st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
+    assert st.stage == "refine" and st.blocked == f"the architect did not finish: {cut_off_why('architect')}"
+    assert [r.role for r in engine.requests].count("architect") == 1
+    assert not kinds(st.path / "events.jsonl", "retry")
     assert "cut off at max_tokens" in (st.path / "notes.md").read_text()  # the person is told on the board
     assert "no JSON object" not in (st.path / "events.jsonl").read_text()
+
+
+async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_after_one_stops_the_story(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    replies = [FakeReply(text="Sounds good to me."), CUT_THINKING, LAYERS]
+    engine = FakeEngine({"product": [STORY], "architect": replies})
+    st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
+    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
+    assert len(asked) == 2 and st.blocked == f"the architect did not finish: {cut_off_why('architect')}"
+    assert (
+        "could not be used" in asked[1] and "no JSON object" in asked[1]
+    )  # the model is told what was wrong
+    assert "roles." not in asked[1] and "max_tokens" not in asked[1]  # in its own terms, not the operator's
 
 
 async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_path: Path) -> None:
@@ -447,6 +463,48 @@ async def test_a_layer_that_changes_nothing_stops_the_story(tmp_path: Path) -> N
     )
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and "changed nothing" in st.blocked
+
+
+async def test_a_layer_that_changed_nothing_names_the_subtasks_whose_reply_was_cut_off(
+    tmp_path: Path,
+) -> None:
+    """A subtask cut off at max_tokens is a likely reason a layer changed nothing, or fails its tests."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(qa=[DONE], coder=[CUT_THINKING], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None and st.blocked.startswith(
+        "layer 01 (Storage) changed nothing; "
+        f"subtask 'build' (coder): {cut_off_why('coder')}; its worktree is kept at "
+    )
+
+
+async def test_a_layer_names_every_subtask_whose_reply_was_cut_off_in_run_order(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(qa=[CUT_THINKING], coder=[CUT_THINKING], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None and st.blocked.startswith(
+        "layer 01 (Storage) changed nothing; "
+        f"subtask 'tests' (qa): {cut_off_why('qa')}; "
+        f"subtask 'build' (coder): {cut_off_why('coder')}; its worktree is kept at "
+    )
+
+
+async def test_a_layer_whose_tests_fail_names_the_subtask_whose_reply_was_cut_off(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(qa=[DONE], coder=[NOTE, CUT_THINKING], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None and st.blocked.startswith(
+        f"layer 01 (Storage): `./check.sh` fails on {B1}; "
+        f"subtask 'build' (coder): {cut_off_why('coder')}; its worktree is kept at "
+    )
+
+
+async def test_a_layer_stop_with_no_cut_off_subtask_says_nothing_of_one(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(qa=[DONE], coder=[DONE], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None
+    assert st.blocked.startswith("layer 01 (Storage) changed nothing; its worktree is kept at ")
 
 
 async def test_a_git_failure_stops_the_story_with_gits_own_words(tmp_path: Path) -> None:

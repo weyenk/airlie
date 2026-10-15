@@ -142,9 +142,14 @@ class StudioOrchestrator:
             thinking=role.thinking,
         )
         res = await self.engine.generate(req)
-        if res.finish_reason == "length" and not res.text.strip():
-            # max_tokens ended it with nothing to read (all thinking): an error saying so, not an empty reply
-            raise EngineError(cut_off_text(role_name, role, thinking=bool(res.reasoning.strip())))
+        if res.finish_reason == "length":
+            # max_tokens ended it. With nothing to read (all thinking), or a plan, answer or synthesis cut off
+            # inside its json (which parses to nothing, and would be taken for a prose answer), it is no reply
+            empty = not res.text.strip()
+            if empty or parse_chief(res.text) is None:
+                raise EngineError(
+                    cut_off_text(role_name, role, thinking=empty and bool(res.reasoning.strip()))
+                )
         return res.text
 
     def _roles_table(self) -> str:
