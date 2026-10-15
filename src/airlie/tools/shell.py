@@ -86,6 +86,8 @@ class Git:
         argv = [str(a) for a in (args.get("args") or [])]
         if not argv:
             return ToolResult(False, "error: git needs arguments")
+        if argv[0].startswith("-"):  # -c k=v, -C dir, --git-dir ...: the subcommand after them goes unchecked
+            return ToolResult(False, "error: git's own options are not allowed: start with the subcommand")
         if argv[0] in GIT_DENY:
             return ToolResult(False, f"error: git {argv[0]} is not allowed inside a team worktree")
         return await run_cmd(

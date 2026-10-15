@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from airlie.engine import ToolCall
-from airlie.tools import ToolContext, ToolRegistry, resolve
+from airlie.tools import ToolContext, ToolRegistry, ToolResult, resolve
 from tests.unit.proc_helpers import eventually, running, unique_sleep
 
 
@@ -148,6 +148,37 @@ async def test_git_status_and_diff(tmp_path: Path) -> None:
     assert r.ok and "n.txt" in r.output
     r = await reg.call(ToolCall("3", "git", '{"args": ["push"]}'))
     assert not r.ok and "not allowed" in r.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "alias.p=push", "p"],  # an alias the deny list never sees
+        ["-c", "core.sshCommand=sh -c id", "fetch"],
+        ["-C", "..", "push"],
+        ["--git-dir=../other/.git", "status"],
+        ["--no-pager", "log"],
+        ["--", "status"],
+        ["-"],
+    ],
+)
+async def test_git_refuses_its_own_options_before_the_subcommand(tmp_path: Path, args: list[str]) -> None:
+    """The deny list reads the subcommand: anything in front of it would get a denied one past it."""
+    c = ctx(tmp_path)
+    os.system(f"cd {c.worktree} && git init -q")
+    r = await ToolRegistry.builtin(["git"], c).call(ToolCall("1", "git", json.dumps({"args": args})))
+    assert r == ToolResult(False, "error: git's own options are not allowed: start with the subcommand")
+
+
+async def test_git_takes_options_after_the_subcommand(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    os.system(
+        f"cd {c.worktree} && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m i"
+    )
+    r = await ToolRegistry.builtin(["git"], c).call(
+        ToolCall("1", "git", '{"args": ["log", "-1", "--format=%s"]}')
+    )
+    assert r.ok and r.output.strip() == "i"
 
 
 def test_schemas_expose_every_registered_tool(tmp_path: Path) -> None:
