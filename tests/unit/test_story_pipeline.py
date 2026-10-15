@@ -986,7 +986,8 @@ async def test_a_finding_that_holds_half_an_escape_reaches_neither_the_state_nor
         text='{"verdict": "approve", "findings": [{"severity": "minor", "file": "store.py", "line": 3, '
         '"claim": "half \\ud83d of a pair"}]}'
     )
-    st = await pipeline(tmp_path, repo, happy_engine(reviewer=[odd, APPROVE]), gh).run(text_card("avatars"))
+    engine = happy_engine(reviewer=[odd, APPROVE])
+    st = await asyncio.wait_for(pipeline(tmp_path, repo, engine, gh).run(text_card("avatars")), 120)
     assert st.blocked is None and st.stage == "review"  # published
     shown = "minor store.py:3: half \N{REPLACEMENT CHARACTER} of a pair"
     assert [f for row in st.built["01"]["subtasks"] for f in row["findings"]] == [shown]
@@ -1152,7 +1153,7 @@ async def test_a_cancel_while_a_stop_is_told_to_the_board_still_puts_the_issue_b
     assert (cancelled["stage"], cancelled["during"]) == ("intake", "refine")
     assert len(kinds(events, "blocked")) == 1 and kinds(events, "story_done") == []
     again = RecordingBoard()  # the next run (the tick takes it from intake) resumes it
-    st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
+    st = await asyncio.wait_for(pipeline(tmp_path, repo, happy_engine(), board=again).run(card), 120)
     assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'intake'"))]
     assert st.blocked is None and st.stage == "review"
 

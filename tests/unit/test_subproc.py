@@ -37,6 +37,7 @@ from airlie.teams import TeamResult
 from airlie.teams.worktree import commit_wip
 from airlie.tools import ToolContext, ToolRegistry
 from airlie.topology.studio import StudioOrchestrator
+from tests.unit.proc_helpers import eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import cfg_for as fork_cfg
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_studio_orchestrator import cfg_for as studio_cfg
@@ -76,6 +77,25 @@ def credential_fill(env: dict[str, str], cwd: Path) -> subprocess.CompletedProce
     )
 
 
+def helpers(env: dict[str, str], cwd: Path, url: str = URL) -> list[str]:
+    """The credential helpers git would ask for `url` under `env`: each value of credential.helper and of
+    credential.<url>.helper, in the order git reads them, where an empty one empties the list."""
+    out = subprocess.run(
+        ["git", "config", "--get-regexp", r"^credential\..*helper$"],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout
+    listed: list[str] = []
+    for line in out.splitlines():
+        key, _, value = line.partition(" ")
+        if key in ("credential.helper", f"credential.{url}.helper"):
+            listed = [*listed, value] if value else []
+    return listed
+
+
 def config_pairs(env: dict[str, str]) -> list[tuple[str, str]]:
     return [
         (env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"])
@@ -89,6 +109,7 @@ def test_the_planted_helpers_answer_a_process_with_airlies_own_environment(
     """The control: without the agent environment, the helpers hand out a password."""
     out = credential_fill(dict(os.environ), tmp_path)
     assert out.returncode == 0 and "password=planted-secret" in out.stdout
+    assert helpers(dict(os.environ), tmp_path) == [HELPER, HELPER]
 
 
 def test_the_agent_environment_drops_the_credentials_and_resets_each_helper(planted: Path) -> None:
@@ -166,7 +187,7 @@ def test_without_hooks_keeps_the_credentials_and_adds_its_two_settings_last() ->
 def test_the_gh_directory_is_one_private_empty_directory_per_process() -> None:
     first = gh_config_dir()
     assert gh_config_dir() == first and first.is_dir() and os.listdir(first) == []
-    assert stat.S_IMODE(first.stat().st_mode) == 0o700
+    assert first.name.startswith("airlie-gh-") and stat.S_IMODE(first.stat().st_mode) == 0o700
     shutil.rmtree(first)  # gone from under it: it makes another
     second = gh_config_dir()
     assert second != first and second.is_dir() and os.listdir(second) == []
@@ -179,6 +200,59 @@ def test_only_the_process_that_made_the_gh_directory_removes_it(tmp_path: Path) 
     assert made.is_dir()
     subproc._remove(os.getpid(), made)
     assert not made.exists()
+    subproc._remove(os.getpid(), made)  # already gone (removed by hand): no error at exit
+
+
+def test_the_gh_directory_goes_when_its_process_exits_and_not_when_a_fork_of_it_does() -> None:
+    script = (
+        "import os, sys\n"
+        "from airlie.subproc import gh_config_dir\n"
+        "made = gh_config_dir()\n"
+        "if os.fork() == 0:\n"
+        "    sys.exit(0)  # a forked worker ends and runs its exit handlers\n"
+        "os.wait()\n"
+        "print(made, made.is_dir())\n"
+    )
+    import airlie
+
+    assert gh_config_dir().is_dir()  # called here too: a mutation run then knows this test covers it
+    here = str(Path(airlie.__file__).parents[1])  # this airlie, the one under test
+    env = {**os.environ, "PYTHONPATH": here}
+    out = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    made, alive = out.stdout.split()
+    assert alive == "True" and not Path(made).exists(), out.stderr
+
+
+async def test_killing_a_group_that_is_already_gone_is_no_error() -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "true", stdout=asyncio.subprocess.PIPE, start_new_session=True
+    )
+    await asyncio.wait_for(proc.wait(), 10)  # reaped: there is no group left to kill
+    await asyncio.wait_for(subproc.kill_group(proc), 10)
+
+
+async def test_draining_stops_when_a_process_outside_the_group_holds_the_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command can start something in a session of its own, out of reach of killpg, that keeps the
+    command's output pipe open: the drain gives up after DRAIN_S instead of waiting for it."""
+    monkeypatch.setattr(subproc, "DRAIN_S", 0.5)
+    sleeper = unique_sleep()
+    escape = (
+        f"import subprocess, time; subprocess.Popen({sleeper.split()!r}, start_new_session=True); "
+        "time.sleep(30)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", escape, stdout=asyncio.subprocess.PIPE, start_new_session=True
+    )
+    try:
+        assert await eventually(lambda: running(f"^{sleeper}"))
+        started = time.monotonic()
+        await asyncio.wait_for(subproc.kill_group(proc), 10)
+        assert time.monotonic() - started < 3 and await eventually(lambda: proc.returncode is not None)
+    finally:
+        subprocess.run(["pkill", "-f", f"^{sleeper}"], capture_output=True)
+        await asyncio.wait_for(proc.wait(), 10)  # the pipe closes with the sleep: nothing is left open
 
 
 # ---- every place that starts one ----
@@ -276,6 +350,7 @@ async def test_a_process_that_runs_model_code_has_no_credential_and_cannot_get_o
     env = json.loads(dumped.read_text())
     assert [name for name in CREDENTIALS if name in env] == []
     assert os.listdir(env["GH_CONFIG_DIR"]) == []
+    assert helpers(env, tmp_path) == []
     started = time.monotonic()
     fill = credential_fill(env, tmp_path)  # what the process gets when it asks git for a password
     assert fill.returncode != 0 and "planted" not in fill.stdout + fill.stderr
