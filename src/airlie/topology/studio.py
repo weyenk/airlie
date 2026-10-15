@@ -24,6 +24,7 @@ from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
+from airlie.tools.shell import run_cmd
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
     Answer,
@@ -554,17 +555,14 @@ class StudioOrchestrator:
         return ""  # unreachable: the last round always returns
 
     async def _tests_pass(self, test_cmd: str | None) -> bool | None:
+        """The test gate. The test command loads the code the roles wrote, so it runs as run_tests runs it
+        (tools.shell.run_cmd): with the agent environment, and killed with all it started on a timeout or a
+        cancel."""
         if not test_cmd or self.worktree is None or not self.runs:
             return None
-        proc = await asyncio.create_subprocess_shell(
-            test_cmd, cwd=self.worktree, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        try:
-            await asyncio.wait_for(proc.communicate(), timeout=self.cfg.tools.shell_timeout_s)
-        except TimeoutError:
-            proc.kill()
-            return False
-        return proc.returncode == 0
+        tools = self.cfg.tools
+        ctx = ToolContext(self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd)
+        return (await run_cmd(test_cmd, ctx, shell=True)).ok
 
     def _report(self, goal: str, final: str, t0: float, branch: str, passed: bool | None) -> RunReport:
         teams = [r.result for r in self.runs.values() if r.result is not None]

@@ -10,13 +10,21 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+from airlie.subproc import NO_HOOKS_ARGS, agent_env
+
 HEADER = "[Repository map]"
 TRUNCATED = "\n[map truncated]"
 
 
 def _tracked(repo: Path) -> list[Path]:
+    # airlie's own git in a checkout a model may have worked in: reading the index can run an fsmonitor
     out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", *NO_HOOKS_ARGS, "ls-files", "-z"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=agent_env(),
     ).stdout
     return sorted(Path(p) for p in out.split("\0") if p)
 

@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +19,7 @@ from airlie.story import publish
 from airlie.story.publish import CannotStart, Publisher, PublishError, run_cmd
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
 from tests.unit.git_helpers import git
+from tests.unit.proc_helpers import eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 
@@ -41,26 +40,6 @@ class Recorded:
         if args[:3] == ["gh", "pr", "view"]:
             return json.dumps({"number": 7, "url": "https://github.com/o/r/pull/7"})
         return ""
-
-
-def _running(pattern: str) -> bool:
-    """Whether some process has `pattern` in its command line."""
-    return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
-
-
-async def _eventually(check: Callable[[], bool], within: float = 5.0) -> bool:
-    """`check` turned true within `within` seconds (a killed process is reaped a moment later)."""
-    deadline = time.monotonic() + within
-    while not check():
-        if time.monotonic() > deadline:
-            return False
-        await asyncio.sleep(0.05)
-    return True
-
-
-def _sleeper() -> str:
-    """A `sleep 30` that no other process on the machine has the command line of."""
-    return f"sleep 30.{random.randrange(10**8, 10**9)}"
 
 
 async def test_stack_submit_describe_run_in_the_publish_worktree_and_open_drafts(tmp_path: Path) -> None:
@@ -214,6 +193,29 @@ async def test_run_cmd_runs_the_command_with_prompts_and_update_notices_off(tmp_
     assert await run_cmd(["sh", "-c", script], tmp_path) == "0 1 1\n"
 
 
+@pytest.mark.parametrize("hooks", ["hooks directory", "relative core.hooksPath"])
+async def test_a_push_runs_no_pre_push_hook_a_model_planted(tmp_path: Path, hooks: str) -> None:
+    """Publishing keeps the person's credentials, so it must run nothing a model's shell left in the
+    repository; the push itself still happens."""
+    repo = repo_with_marker_tests(tmp_path)
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    git(repo, "remote", "add", "origin", str(remote))
+    hook = repo / ".git" / "hooks" / "pre-push"
+    if hooks == "relative core.hooksPath":
+        git(repo, "config", "core.hooksPath", ".hooks")
+        hook = repo / ".hooks" / "pre-push"
+    hook.parent.mkdir(exist_ok=True)
+    mark = tmp_path / "pre-push ran"
+    hook.write_text(f"#!/bin/sh\ntouch '{mark}'\n")
+    hook.chmod(0o755)
+    await asyncio.wait_for(run_cmd(["git", "push", "-q", "origin", "HEAD:refs/heads/layer"], repo), 60)
+    assert not mark.exists()
+    assert git(remote, "rev-parse", "layer") == git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/plain")  # the control: plain git runs the hook
+    assert mark.exists()
+
+
 async def test_run_cmd_kills_and_reaps_a_command_that_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,22 +241,22 @@ async def test_run_cmd_kills_what_the_command_started_when_it_times_out(
     """gh runs the gh-stack extension and that runs git, all holding gh's pipes: killing gh alone leaves them
     running, and waiting for gh then waits for them."""
     monkeypatch.setattr("airlie.story.publish._TIMEOUT_S", 1)
-    sleeper = _sleeper()
+    sleeper = unique_sleep()
     started = time.monotonic()
     with pytest.raises(PublishError, match=r"timed out after 1 s"):
         await asyncio.wait_for(run_cmd(["sh", "-c", f"{sleeper} & wait"], tmp_path), timeout=10)
     assert time.monotonic() - started < 5  # it did not sit out the sleep
-    assert await _eventually(lambda: not _running(sleeper))  # and the sleep is not left running
+    assert await eventually(lambda: not running(sleeper))  # and the sleep is not left running
 
 
 async def test_run_cmd_kills_what_the_command_started_when_its_caller_is_cancelled(tmp_path: Path) -> None:
-    sleeper = _sleeper()
+    sleeper = unique_sleep()
     task = asyncio.create_task(run_cmd(["sh", "-c", f"{sleeper} & wait"], tmp_path))
-    assert await _eventually(lambda: _running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
+    assert await eventually(lambda: running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=10)  # at once, not when the sleep has run its 30 s out
-    assert await _eventually(lambda: not _running(sleeper))
+    assert await eventually(lambda: not running(sleeper))
 
 
 async def test_a_command_that_cannot_start_is_a_publish_error_so_check_can_report_it(

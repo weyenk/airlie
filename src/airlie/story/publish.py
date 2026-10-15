@@ -5,12 +5,12 @@ top branch (gh-stack v0.2.1, seen 2026-10-14). There is no merge here, by design
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
-import signal
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
+
+from airlie.subproc import kill_group, without_hooks
 
 Runner = Callable[[list[str], Path], Awaitable[str]]
 _TIMEOUT_S = 600
@@ -41,20 +41,14 @@ def _ends(text: str) -> str:
     return text if len(text) <= _HEAD + _TAIL else f"{text[:_HEAD]}…{text[-_TAIL:]}"
 
 
-async def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGKILL the command and everything it started, then reap it. `wait` returns only once every holder of
-    the command's pipes is gone, so a child left running would hold it up (and go on pushing)."""
-    with contextlib.suppress(ProcessLookupError):  # nothing of it is left
-        os.killpg(proc.pid, signal.SIGKILL)
-    await proc.wait()
-
-
 async def run_cmd(args: list[str], cwd: Path) -> str:
     """Run one command without a terminal (gh and git never prompt) and return its stdout. It runs in a
     process group of its own (gh starts the gh-stack extension, which starts git): a timeout, or the caller
-    being cancelled, kills all of them."""
+    being cancelled, kills all of them. It keeps the person's credentials (it pushes), so every git in it
+    runs no repository hook and no fsmonitor (subproc.NO_HOOKS, given through the environment so it also
+    reaches the git that gh-stack runs)."""
     quiet = {"GH_STACK_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0"}
-    env = {**os.environ, **quiet}
+    env = without_hooks({**os.environ, **quiet})
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -70,10 +64,10 @@ async def run_cmd(args: list[str], cwd: Path) -> str:
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT_S)
     except TimeoutError:
-        await _kill_group(proc)
+        await kill_group(proc)
         raise PublishError(f"`{' '.join(args)}` timed out after {_TIMEOUT_S} s") from None
     except BaseException:  # cancelled: nothing of the command may outlive its caller
-        await _kill_group(proc)
+        await kill_group(proc)
         raise
     if proc.returncode != 0:
         # masked before it is cut: a cut through a token would leave a piece of it that no longer matches

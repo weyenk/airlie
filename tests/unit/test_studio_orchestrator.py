@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from airlie.router import ChiefRouter, RouteDecision
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
+from tests.unit.proc_helpers import eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
@@ -506,3 +508,32 @@ async def test_the_repo_map_is_of_the_worktree_the_roles_build_on_not_of_the_per
     chief = FakeEngine({"chief": [FakeReply(text=json.dumps({"type": "answer", "answer": "x"}))]})
     await StudioOrchestrator(cfg, chief, router=ChiefRouter()).plan("g", repo=repo)
     assert "feature_only.py" in chief.requests[0].messages[1].content
+
+
+# ---- the test gate ----
+
+
+def gate(tmp_path: Path, timeout_s: float) -> StudioOrchestrator:
+    """A studio whose test gate runs in `tmp_path` and gives the test command `timeout_s`."""
+    tools = {"builtin": ["read_file"], "shell_timeout_s": timeout_s}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"tools": tools}), FakeEngine({}))
+    orch.worktree, orch.runs = tmp_path, {"done": None}  # type: ignore[dict-item]  # the gate runs after a subtask
+    return orch
+
+
+async def test_the_test_gate_kills_what_the_test_command_started_when_it_times_out(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    started = time.monotonic()
+    assert await asyncio.wait_for(gate(tmp_path, 1)._tests_pass(f"{sleeper} & wait"), 20) is False
+    assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
+    assert await eventually(lambda: not running(sleeper))
+
+
+async def test_cancelling_the_test_gate_kills_what_the_test_command_started(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    task = asyncio.create_task(gate(tmp_path, 60)._tests_pass(f"{sleeper} & wait"))
+    assert await eventually(lambda: running(f"^{sleeper}"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)
+    assert await eventually(lambda: not running(sleeper))

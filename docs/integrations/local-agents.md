@@ -67,9 +67,13 @@ running. The agent and command files are copies: run the task again after you up
 - **What stops a merge.** The agents airlie installs (the chief and its four subagents) deny `gh api*`,
   `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That guards against a model's
   slip, not against a determined one: the rules match the command line, so a wrapper such as
-  `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands, and the
-  studio's own coder has a shell tool that these rules do not govern at all. What really stops a merge is GitHub:
-  branch protection on the trunk (required reviews) and the scope of the token your `gh` login uses.
+  `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands and has
+  your full environment. The studio's own coder has a shell tool that these rules do not govern at all, but that
+  shell, its `run_tests` and `git` tools and the test gate start without your credentials (no gh token or login,
+  no SSH agent, no git credential helper, no `ATLASSIAN_*`), so a model there cannot naively `gh pr merge` or
+  `git push` as you. That is not an OS sandbox: a model that deliberately goes after what your macOS user stores
+  (the keychain, `~/.ssh`) is not stopped by it (`story.md`, *What stops a merge*). What really stops a merge is
+  GitHub: branch protection on the trunk (required reviews) and the scope of the token your `gh` login uses.
 - Without `--api-key`, any program on this machine can use `task serve`, and its jobs API starts studio runs (they
   commit on a local branch) and stories (they push branches and open draft PRs). Start it with
   `task serve -- --api-key SECRET`, and give OpenCode the same secret in the `airlie` provider's `apiKey` (chat)

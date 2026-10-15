@@ -273,13 +273,25 @@ So the tick moves two kinds of issue out of *To Do*:
 
 ## What stops a merge
 
-airlie has no code that merges, and the PRs it opens are drafts. In OpenCode, the agents
-airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`) deny the commands
-`gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That guards against a
-model's slip, not against a determined one: the rules match the command line, so a wrapper such as
-`sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands, and the
-studio's own coder has a shell tool that these rules do not govern at all. What really stops a merge is GitHub:
-branch protection on the trunk (required reviews) and the scope of the token your `gh` login uses.
+airlie has no code that merges, and the PRs it opens are drafts.
+
+In a story (and in any studio run), whatever runs code a model chose or wrote starts without your credentials: the
+coder's shell, `run_tests` and `git` tools, and the test gate. They get no gh token and no gh login (gh points at
+an empty configuration), no SSH agent, no git over SSH, no git credential helper, and none of `ATLASSIAN_*` or
+`AIRLIE_SERVE_API_KEY`. So a model cannot `gh pr merge` or `git push` as you through its environment and its
+tools; only airlie's publish step pushes, with your credentials. airlie's own git (its commits, the squash, the
+push) runs no repository hook and no fsmonitor, so nothing a model plants in the repository runs inside it. This
+is not an OS sandbox: those processes still run as your macOS user, and a model that deliberately goes after what
+is stored for that user (the keychain, `~/.ssh`) is not stopped by it.
+
+In OpenCode, the agents airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`)
+deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That
+guards against a model's slip, not against a determined one: the rules match the command line, so a wrapper such
+as `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands and runs
+with your full environment (OpenCode's shells are not airlie's).
+
+What really stops a merge is GitHub: branch protection on the trunk (required reviews) and the scope of the token
+your `gh` login uses.
 
 ## Not yet
 

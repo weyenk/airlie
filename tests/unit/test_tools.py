@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from airlie.engine import ToolCall
 from airlie.tools import ToolContext, ToolRegistry, resolve
+from tests.unit.proc_helpers import eventually, running, unique_sleep
 
 
 def ctx(tmp_path: Path, **kw) -> ToolContext:
@@ -87,6 +91,45 @@ async def test_shell_timeout(tmp_path: Path) -> None:
     reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=0.3))
     r = await reg.call(ToolCall("1", "shell", '{"cmd": "sleep 5"}'))
     assert not r.ok and "timed out after 0.3" in r.output
+
+
+def shell_call(cmd: str) -> ToolCall:
+    return ToolCall("1", "shell", json.dumps({"cmd": cmd}))
+
+
+async def test_a_shell_timeout_kills_what_the_command_started(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    started = time.monotonic()
+    reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=1))
+    r = await asyncio.wait_for(reg.call(shell_call(f"{sleeper} & wait")), 20)
+    assert not r.ok and "timed out after 1s" in r.output
+    assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
+    assert await eventually(lambda: not running(sleeper))  # and the sleep is not left running
+
+
+async def test_cancelling_a_shell_call_kills_what_the_command_started(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=60))
+    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
+    assert await eventually(lambda: running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
+    assert await eventually(lambda: not running(sleeper))
+
+
+async def test_a_command_reads_no_stdin_so_it_never_waits_on_the_persons_terminal(tmp_path: Path) -> None:
+    read, write = os.pipe()  # airlie's stdin: one that never ends, as a terminal nobody types into
+    saved = os.dup(0)
+    os.dup2(read, 0)
+    try:
+        reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=5))
+        r = await asyncio.wait_for(reg.call(shell_call("cat; echo read to the end; echo to stderr >&2")), 20)
+    finally:
+        os.dup2(saved, 0)
+        for fd in (saved, read, write):
+            os.close(fd)
+    assert r.ok and r.output == "read to the end\nto stderr\n"  # stderr is part of the output
 
 
 async def test_run_tests_uses_configured_command(tmp_path: Path) -> None:
