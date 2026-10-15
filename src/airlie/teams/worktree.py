@@ -10,7 +10,11 @@ from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 
 def _git(
-    repo: Path, *args: str, check: bool = True, env: Mapping[str, str] | None = None
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    env: Mapping[str, str] | None = None,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """airlie's own git. It runs no hook and no fsmonitor (NO_HOOKS: a model can plant either in the
     repository it works in) and gets the agent environment, since it needs no credential, plus `env`."""
@@ -21,6 +25,7 @@ def _git(
         text=True,
         check=check,
         env={**agent_env(), **(env or {})},
+        input=stdin,
     )
 
 
@@ -100,6 +105,25 @@ def diff_between(worktree: Path, base_sha: str, max_chars: int) -> str:
 def changed_files(worktree: Path, base_sha: str) -> list[str]:
     out = _git(worktree, "diff", "--name-only", base_sha, "HEAD", check=False).stdout
     return [line for line in out.splitlines() if line]
+
+
+def show_file(repo: Path, commit: str, path: str) -> tuple[str, str] | None:
+    """The file at `path` in `commit`, from git's objects (never a worktree): its blob's sha and its text,
+    read as UTF-8. A symbolic link to another file of the commit is followed; None when the commit has no
+    file there (nothing, a directory, or a link that leaves the commit or leads nowhere)."""
+    found = _git(
+        repo, "cat-file", "--batch-check", "--follow-symlinks", stdin=f"{commit}:{path}\n", check=False
+    ).stdout.split()
+    if len(found) != 3 or found[1] != "blob":  # "<sha> blob <size>"; else missing, a tree, a link out
+        return None
+    data = subprocess.run(
+        ["git", *NO_HOOKS_ARGS, "cat-file", "blob", found[0]],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+        env=agent_env(),
+    ).stdout
+    return found[0], data.decode("utf-8", errors="replace")
 
 
 def remote_url(repo: Path, remote: str) -> str | None:

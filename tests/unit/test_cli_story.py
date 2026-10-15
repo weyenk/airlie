@@ -25,12 +25,14 @@ from typer.testing import CliRunner
 from airlie import cli
 from airlie.story import factory
 from airlie.story.board import BoardError
-from airlie.story.publish import Checked
+from airlie.story.jira import JiraBoard
+from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
+from tests.unit.git_helpers import git
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_board import FakeJira
 from tests.unit.test_story_board import board as jira_board_for
-from tests.unit.test_story_pipeline import STORY_ROLES
+from tests.unit.test_story_pipeline import STORY_ROLES, checkout_of
 from tests.unit.test_studio_orchestrator import cfg_for
 
 runner = CliRunner()
@@ -65,7 +67,9 @@ def test_run_names_what_is_missing(tmp_path: Path) -> None:
 
 def test_a_text_story_prints_its_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    p = story_cfg(tmp_path, test_cmd="./check.sh")
+    p = story_cfg(
+        tmp_path, test_cmd="pytest -q"
+    )  # airlie_run's: a story's gate is AGENTS.md's, or --test-cmd
     seen: dict[str, object] = {}
 
     async def fake_run_one(cfg, *, board, card, repo, test_cmd):  # type: ignore[no-untyped-def]
@@ -79,11 +83,13 @@ def test_a_text_story_prints_its_prs(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert r.exit_code == 0, r.output
     assert seen == {
         "card": "Let users upload an avatar",
-        "repo": repo.resolve(),
-        "test_cmd": "./check.sh",
+        "repo": repo,
+        "test_cmd": None,
         "board": "NullBoard",
     }
     assert "pull/11" in r.output
+    r = runner.invoke(cli.app, [*args, "--test-cmd", "make check"])
+    assert r.exit_code == 0 and seen["test_cmd"] == "make check"  # a person's command wins
 
 
 def test_a_blocked_story_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,14 +124,14 @@ def test_an_issue_is_fetched_through_the_board_and_built(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    p = story_cfg(tmp_path, test_cmd="./check.sh", repo=str(repo))
+    p = story_cfg(tmp_path, repo=str(repo))  # a written request's: an issue's repository is its label
     jira = FakeJira()
     jira_board = jira_board_for(jira)
     monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board)
-    seen: list[tuple[object, str, str]] = []
+    seen: list[tuple[object, ...]] = []
 
     async def fake_run_one(cfg, *, board, card, repo, test_cmd):  # type: ignore[no-untyped-def]
-        seen.append((board, card.key, card.title))
+        seen.append((board, card.key, card.title, card.labels, repo, test_cmd))
         return StoryState(path=tmp_path / "s", card=card.to_dict(), repo=str(repo), stage="review")
 
     monkeypatch.setattr(factory, "run_one", fake_run_one)
@@ -133,7 +139,19 @@ def test_an_issue_is_fetched_through_the_board_and_built(
         cli.app, ["story", "run", "https://acme.atlassian.net/browse/AIR-7", "--config", str(p)]
     )
     assert r.exit_code == 0, r.output
-    assert seen == [(jira_board, "AIR-7", "Avatar upload")]
+    assert seen == [(jira_board, "AIR-7", "Avatar upload", ("repo:o/repo", "frontend"), None, None)]
+
+
+def test_an_issue_without_a_repository_is_told_why_and_the_run_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = story_cfg(tmp_path, repos_root=str(tmp_path / "git"))  # no checkout of o/repo in it
+    jira = FakeJira()
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(jira))
+    r = runner.invoke(cli.app, ["story", "run", "AIR-7", "--config", str(p)])
+    assert r.exit_code == 1 and "no checkout of o/repo in" in r.output and "Traceback" not in r.output
+    posted = [r.url.path for r in jira.requests if r.method == "POST"]
+    assert posted == ["/rest/api/3/issue/AIR-7/comment", "/rest/api/3/issue/AIR-7/transitions"]
 
 
 def test_an_issue_without_a_jira_project_points_to_text(tmp_path: Path) -> None:
@@ -202,17 +220,60 @@ def test_a_tick_needs_the_story_roles(tmp_path: Path) -> None:
 
 
 def test_check_is_ready_when_nothing_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[tuple[Path | None, str | None]] = []
+    seen: list[tuple[Path | None, str | None, str | None]] = []
 
-    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
-        seen.append((repo, test_cmd))
+    async def fake_check(cfg, repo, test_cmd, ref=None):  # type: ignore[no-untyped-def]
+        seen.append((repo, test_cmd, ref))
         return Checked([], [])
 
     monkeypatch.setattr(factory, "check", fake_check)
     args = ["story", "check", "--repo", str(tmp_path), "--test-cmd", "make test", "--config"]
     r = runner.invoke(cli.app, [*args, str(story_cfg(tmp_path))])
-    assert r.exit_code == 0 and "ready" in r.output
-    assert seen == [(tmp_path, "make test")]
+    assert (
+        r.exit_code == 0 and r.output.splitlines()[-1] == 'ready: task story -- ISSUE (or --text "request")'
+    )
+    assert seen == [(tmp_path, "make test", None)]
+    r = runner.invoke(cli.app, ["story", "check", "AIR-7", "--config", str(story_cfg(tmp_path))])
+    assert r.exit_code == 0 and r.output.splitlines()[-1] == "ready: task story -- AIR-7"
+    assert seen[-1] == (None, None, "AIR-7")
+
+
+def test_check_with_an_issue_prints_its_repository_trunk_and_gate_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = checkout_of(tmp_path / "git", "o/repo", "uv sync", "uv run pytest -q")
+    trunk = git(repo, "branch", "--show-current")
+    sha = git(repo, "rev-parse", trunk)
+    p = story_cfg(tmp_path, repos_root=str(tmp_path / "git"), trunk=trunk)
+    jira = FakeJira()
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(jira))
+
+    async def jira_is_fine(self: object) -> list[str]:
+        return []
+
+    async def publishing_is_fine(self: Publisher, repo: Path) -> Checked:
+        return Checked([], [])
+
+    monkeypatch.setattr(JiraBoard, "check", jira_is_fine)
+    monkeypatch.setattr(Publisher, "check", publishing_is_fine)  # gh is not asked anything here
+    r = runner.invoke(cli.app, ["story", "check", "AIR-7", "--config", str(p)])
+    assert r.exit_code == 0, r.output
+    assert r.output.splitlines() == [
+        f"AIR-7 is for o/repo (its repo: label): {repo.resolve()}, whose remote 'origin' is "
+        "git@github.com:o/repo.git",
+        f"trunk: {trunk} at {sha[:12]}, as last fetched (a story fetches it first)",
+        f"test gate (AGENTS.md at {trunk}): uv sync && uv run pytest -q",
+        "ready: task story -- AIR-7",
+    ]
+    assert [r.method for r in jira.requests] == ["GET"]  # no note, no move
+    assert not (tmp_path / "state" / "stories").exists()  # no story state
+
+    git(repo, "rm", "-q", "AGENTS.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "no gate")
+    r = runner.invoke(cli.app, ["story", "check", "AIR-7", "--config", str(p)])
+    assert r.exit_code == 1
+    assert f"✗ AIR-7 would be blocked: o/repo has no test gate on {trunk} (" in r.output
+    assert "it has no AGENTS.md. Add a `## Test gate` section" in r.output
 
 
 def test_check_prints_its_notes_and_is_ready_when_they_are_all_it_found(
@@ -220,7 +281,7 @@ def test_check_prints_its_notes_and_is_ready_when_they_are_all_it_found(
 ) -> None:
     notes = ["warning: /k.pem is readable by group or others: chmod 600 it", "publishing to o/r as app[bot]"]
 
-    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_check(cfg, repo, test_cmd, ref=None):  # type: ignore[no-untyped-def]
         return Checked([], notes)
 
     monkeypatch.setattr(factory, "check", fake_check)
@@ -230,7 +291,7 @@ def test_check_prints_its_notes_and_is_ready_when_they_are_all_it_found(
 
 
 def test_check_prints_each_problem_as_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_check(cfg, repo, test_cmd, ref=None):  # type: ignore[no-untyped-def]
         return Checked(["gh is not logged in: run `gh auth login`", "project AIR has no status '[/x]'"], [])
 
     monkeypatch.setattr(factory, "check", fake_check)
@@ -254,7 +315,7 @@ def test_every_story_command_runs_its_coroutine_so_that_a_signal_stops_it(
     async def fake_tick(cfg):  # type: ignore[no-untyped-def]
         return "idle: no issue matches the intake query"
 
-    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_check(cfg, repo, test_cmd, ref=None):  # type: ignore[no-untyped-def]
         return Checked([], [])
 
     monkeypatch.setattr(cli, "_run_stoppable", spy)
@@ -552,7 +613,7 @@ def test_the_tick_line_and_the_check_problems_print_as_typed_not_as_emoji(
     async def fake_tick(cfg):  # type: ignore[no-untyped-def]
         return "AIR-7 :warning: Avatar upload: blocked (:x: tests fail)"
 
-    async def fake_check(cfg, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_check(cfg, repo, test_cmd, ref=None):  # type: ignore[no-untyped-def]
         return Checked([":warning: project AIR has no status ':x:'"], [":x: a note"])
 
     monkeypatch.setattr(factory, "tick", fake_tick)

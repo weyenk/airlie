@@ -5,15 +5,17 @@
 #     kind: openai_http
 #     base_url: http://127.0.0.1:8080/v1
 
-# Stories (task story): the repository and its test command. Jira's site, project, email and API token come from
+# Stories (task story): an issue is built in the repository its repo:<owner>/<name> label names, its clone under
+# story.repos_root (default ~/git), and every layer passes the "## Test gate" of that repository's AGENTS.md;
+# story.repo is only for written requests (--text). Jira's site, project, email and API token come from
 # ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY, which win over the same settings
 # here. Put them in ~/.config/airlie/.env (chmod 600; one for every checkout) or a .env beside airlie.yaml (git-
 # ignored; it wins over the other); airlie reads them itself and exports nothing. Prefer that to exporting them in
 # the shell: an exported variable reaches every child process, and one already set in the shell wins over both
 # files. Override the rest only when your project differs. Publishing as your own GitHub App: story.github_app.
 # story:
-#   repo: ~/git/myproject
-#   test_cmd: "uv run pytest -q"
+#   repos_root: ~/src                     # where your clones are, if not in ~/git
+#   repo: ~/git/myproject                 # a written request's repository
 #   jira:
 #     statuses: { review: "Code Review", blocked: null }   # null: a stopped issue stays where it is
 #     jql: 'project = "AIR" AND status = "To Do" AND labels = airlie ORDER BY Rank ASC'

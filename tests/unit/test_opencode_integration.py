@@ -212,10 +212,12 @@ def test_a_story_that_stopped_is_a_done_job_with_the_reason_in_its_result(
     """What airlie_status's `stopped:` line rests on: serve does not fail the job of a story that stops (is
     blocked). The job is `done` and `result.blocked` holds the reason, so the state alone says nothing."""
     repo = repo_with_marker_tests(tmp_path)
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
     reason = "layer 01 (Schema) changed nothing; its worktree is kept for inspection"
 
-    async def stopped(c: Any, *, board: Any, card: Any, repo: Path, test_cmd: str) -> StoryState:
+    async def stopped(
+        c: Any, *, board: Any, card: Any, repo: Path | None = None, test_cmd: str | None = None
+    ) -> StoryState:
         path = factory.stories_dir(c) / card.key
         return StoryState(path=path, card=card.to_dict(), repo=str(repo), stage="layers", blocked=reason)
 

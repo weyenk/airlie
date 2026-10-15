@@ -43,6 +43,9 @@ class Card:
     description: str
     url: str | None = None
     comments: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    """The issue's labels; its repo:<owner>/<name> label names the repository (story/checkout.py). A written
+    request has none."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

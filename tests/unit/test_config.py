@@ -492,6 +492,20 @@ def test_the_committed_config_publishes_as_airlies_bot() -> None:
     assert app.app_id == 5332832 and app.key_file == Path("~/.config/airlie/github-app.pem")
 
 
+def test_story_repos_root_is_your_git_directory_unless_set_and_resolves_like_a_path_of_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # ~ is this test's own, never the person's
+    assert load_config(write(tmp_path, MINIMAL)).story.repos_root == (tmp_path / "home" / "git").resolve()
+    for given, expected in (
+        ("~/src", tmp_path / "home" / "src"),
+        ("../repos", tmp_path / ".." / "repos"),  # from the config's directory, as story.repo is
+        (str(tmp_path / "abs" / ".." / "elsewhere"), tmp_path / "elsewhere"),
+    ):
+        cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repos_root": given}}))
+        assert cfg.story.repos_root == expected.resolve(), given
+
+
 def test_story_repo_resolves_beside_the_config_and_typos_fail(tmp_path: Path) -> None:
     jira = {"site": "https://acme.atlassian.net", "project": "AIR", "statuses": {"blocked": None}}
     cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repo": "../proj", "jira": jira}}))

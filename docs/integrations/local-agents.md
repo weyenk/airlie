@@ -59,8 +59,10 @@ running. The agent and command files are copies: run the task again after you up
   edit it; `airlie_run` builds it on a new branch, committed locally (the roles you approved are pinned);
   `airlie_status` follows it, and `airlie_cancel` stops it.
 - **Stories:** `/story <Jira issue key or link | request>` runs the story pipeline (`story.md`) and ends in
-  stacked draft PRs. A story that stops is a finished job whose result carries the reason, so `airlie_status` shows
-  `stopped: <reason>` and the chief reports it as stopped, with the reason instead of PR links.
+  stacked draft PRs. An issue is built in the repository its `repo:<owner>/<name>` label names, and every layer
+  must pass the `## Test gate` of that repository's `AGENTS.md`. A story that stops is a finished job whose result
+  carries the reason, so `airlie_status` shows `stopped: <reason>` and the chief reports it as stopped, with the
+  reason instead of PR links.
 - **Give `/story` an issue key or link, or a short request of your own, and `/studio` a short goal in your own
   words. Do not paste an issue's body, or any text you did not write, into either:** OpenCode runs `` !`cmd` ``
   spans in a command's arguments, so pasted text can run a shell command.
@@ -76,10 +78,11 @@ running. The agent and command files are copies: run the task again after you up
   alternates, submodules and the transports over it. As the bot, each publish step also refuses any URL but the
   story's repository and uses a token for that repository alone; as you, a remote on this machine is refused
   (SSH and HTTPS only), but a push still goes where the remote points on those, and a setting for the remote's
-  exact URL still applies (`story.md`, *What stops a merge*, says exactly what remains). None of that is an OS sandbox: a model that deliberately goes after what your macOS user stores
-  (the keychain, `~/.ssh`) is not stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that
-  only you can update, which can refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing
-  as a bot*) but not when it publishes as you.
+  exact URL still applies (`story.md`, *What stops a merge*, says exactly what remains). None of that is an OS
+  sandbox: a model that deliberately goes after what your macOS user stores (the keychain, `~/.ssh`) is not
+  stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that only you can update, which can
+  refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing as a bot*) but not when it
+  publishes as you.
 - Without `--api-key`, any program on this machine can use `task serve`, and its jobs API starts studio runs (they
   commit on a local branch) and stories (they push branches and open draft PRs). Start it with
   `task serve -- --api-key SECRET`, and give OpenCode the same secret in the `airlie` provider's `apiKey` (chat)
@@ -110,17 +113,18 @@ starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` an
   checkout then.
 - **Environment.** `airlie mcp` reads three variables, which you set in the `environment` object of its entry:
   `AIRLIE_URL` (`task serve`'s address), `AIRLIE_SERVE_API_KEY` (sent as `Authorization: Bearer`, and only to an
-  `https` or loopback `AIRLIE_URL`) and `AIRLIE_TEST_CMDS` (test commands the tools accept, one per line). Installing
-  again keeps what you put there; it only resets `type` and `command`.
-- **Config.** The installed command pins `--config <this checkout>/airlie.yaml`, so `story.test_cmd` is the one in
-  that file (with its `airlie.local.yaml`) wherever OpenCode runs, never an `airlie.yaml` that happens to be above
-  the project. An entry made by hand without `--config` takes `AIRLIE_CONFIG`, else an `airlie.yaml` above where
-  `airlie mcp` runs, else this checkout's own.
-- **Test commands.** `airlie_run` and `airlie_story` pass on a `test_cmd` only if it is `story.test_cmd` or a line of
+  `https` or loopback `AIRLIE_URL`) and `AIRLIE_TEST_CMDS` (test commands `airlie_run` accepts, one per line).
+  Installing again keeps what you put there; it only resets `type` and `command`.
+- **Config.** The installed command pins `--config <this checkout>/airlie.yaml`, so the `story.test_cmd` that
+  `airlie_run` accepts is the one in that file (with its `airlie.local.yaml`) wherever OpenCode runs, never an
+  `airlie.yaml` that happens to be above the project. An entry made by hand without `--config` takes
+  `AIRLIE_CONFIG`, else an `airlie.yaml` above where `airlie mcp` runs, else this checkout's own.
+- **Test commands.** `airlie_run` passes on a `test_cmd` only if it is `story.test_cmd` or a line of
   `AIRLIE_TEST_CMDS`; any other is refused, because the command runs in a shell on this machine and a model must not
   choose it. Left out, `airlie_run` uses `story.test_cmd`, else the first `AIRLIE_TEST_CMDS` line, and with neither
-  the run has no test gate; `airlie_story` uses `story.test_cmd` (a story with none configured is refused). The
-  chief's file also sets `airlie_run` and `airlie_story` to `ask`; the refusal does not depend on that prompt.
+  the run has no test gate. `airlie_story` takes no `test_cmd` at all: a story's gate is the `## Test gate` of its
+  repository's `AGENTS.md`, read from the trunk (`story.md`, *The test gate*). The chief's file also sets
+  `airlie_run` and `airlie_story` to `ask`; the refusal does not depend on that prompt.
 - **Time.** An MCP client may cut a call off at 60 s, so every tool returns within about 45 s, even when
   `task serve` hangs. `airlie_plan` waits for the plan for most of that (its request included); when the chief is
   still planning it returns the job id ("still planning"), and the chief calls `airlie_status` with it until the
@@ -129,7 +133,8 @@ starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` an
   the job when it knows its id and points at `airlie_status`, and after a request to start a job that timed out
   it warns that the job may have started anyway.
 - **Repository.** The tools work in the git repository `airlie mcp` was started in, or in the `repo` they are
-  given; `airlie_story` falls back to `story.repo`.
+  given; for a written request `airlie_story` falls back to `story.repo`. For a Jira issue, `airlie_story` sends a
+  `repo` only when it is given one: the issue's `repo:` label names its repository.
 
 #### Known issues
 

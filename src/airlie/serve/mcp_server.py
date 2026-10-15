@@ -1,8 +1,8 @@
 """`airlie mcp`: the studio and the story pipeline as MCP tools over stdio, for OpenCode (2.0 runs no tool
 files) and any other MCP client (Claude Code, VS Code). Each tool is a thin client of `task serve`'s jobs API:
-plan (the person approves it), run, story, status, cancel. A test command the model chose is refused unless
-the person configured it, a call the client cancels stops the job it started, and every call ends within
-CALL_BUDGET_S however slow serve is."""
+plan (the person approves it), run, story, status, cancel. A run's test command is refused unless the person
+configured it, and a story takes none (its gate is its repository's AGENTS.md); a call the client cancels
+stops the job it started, and every call ends within CALL_BUDGET_S however slow serve is."""
 
 from __future__ import annotations
 
@@ -48,6 +48,11 @@ NO_KEY = (
     " loopback AIRLIE_URL)"
 )
 REPO = "path of the git repository to work in (default: the one airlie mcp was started in)"
+STORY_REPO = (
+    "for a written request, the path of the git repository to build in (default: the one airlie mcp was "
+    "started in, else story.repo); for a Jira issue leave it out: its repo:<owner>/<name> label names the "
+    "repository"
+)
 ONLY_CONFIGURED = (
     "Leave it out unless the person names one: only a command they configured "
     "(story.test_cmd, AIRLIE_TEST_CMDS) is accepted"
@@ -110,9 +115,9 @@ def _no_news(job_id: str) -> str:
 
 
 def allowed_test_cmds(cfg: AirlieConfig | None, env: Mapping[str, str]) -> list[str]:
-    """The test commands the person configured, and so the only ones run and story pass on: story.test_cmd,
-    then each line of AIRLIE_TEST_CMDS (blank lines skipped, surrounding spaces dropped). The first is the
-    one a run uses when the model names none."""
+    """The test commands the person configured, and so the only ones run passes on: story.test_cmd, then
+    each line of AIRLIE_TEST_CMDS (blank lines skipped, surrounding spaces dropped). The first is the one a
+    run uses when the model names none."""
     configured = [
         cfg.story.test_cmd if cfg is not None else None,
         *env.get("AIRLIE_TEST_CMDS", "").splitlines(),
@@ -270,10 +275,10 @@ def build_server(
     http: httpx.AsyncClient, *, test_cmds: Sequence[str], cwd: Path, no_config: str = ""
 ) -> MCPServer[Any]:
     """The MCP server "airlie" with the tools plan, run, status, cancel and story (in OpenCode: airlie_plan
-    and so on), each a client of serve through `http`. `test_cmds` are the only test commands run and story
-    pass on, and the first is what a run uses when the model names none; the git work tree of `cwd` (where
-    the client started airlie mcp) is the default repository; `no_config` says why story.test_cmd could not
-    be read, when it could not."""
+    and so on), each a client of serve through `http`. `test_cmds` are the only test commands run passes on,
+    and the first is what it uses when the model names none; the git work tree of `cwd` (where the client
+    started airlie mcp) is the default repository, but for a Jira issue's story; `no_config` says why
+    story.test_cmd could not be read, when it could not."""
     serve = _Serve(http)
     allowed = list(test_cmds)
     run_default = allowed[0] if allowed else None
@@ -429,21 +434,19 @@ def build_server(
     async def story_tool(
         card: Annotated[str | None, Field(description="Jira issue key (AIR-7) or its link")] = None,
         text: Annotated[str | None, Field(description="the request, when there is no card")] = None,
-        test_cmd: Annotated[
-            str | None,
-            Field(description="command every layer must pass (default: story.test_cmd). " + ONLY_CONFIGURED),
-        ] = None,
-        repo: Annotated[str | None, Field(description=REPO + ", else story.repo")] = None,
+        repo: Annotated[str | None, Field(description=STORY_REPO)] = None,
     ) -> str:
-        """Run the story pipeline in the repository: a Jira issue (key like AIR-7, or its link) or a written
-        request is refined into a story, split into layers, built test-first one branch per layer, and opened
-        as stacked draft PRs (the issue moves to In Review). Only a human merges. Returns a job id for
-        airlie_status."""
+        """Run the story pipeline: a Jira issue (key like AIR-7, or its link) or a written request is refined
+        into a story, split into layers, built test-first one branch per layer, and opened as stacked draft
+        PRs (the issue moves to In Review). An issue is built in the repository its repo:<owner>/<name> label
+        names; every layer must pass the Test gate of that repository's AGENTS.md. Only a human merges.
+        Returns a job id for airlie_status."""
         card, text = _given(card), _given(text)
         if (card is None) == (text is None):
             raise ToolError("pass exactly one of card or text")
-        cmd = checked(test_cmd, left_out="use story.test_cmd")
-        body = {"card": card, "text": text, "repo": repository(repo, needed=False), "test_cmd": cmd}
+        # an issue's repository is its label: the work tree airlie mcp runs in is sent only when named
+        where = repository(repo, needed=False) if text is not None or _given(repo) else None
+        body = {"card": card, "text": text, "repo": where}
 
         async def work(call: _Call) -> str:  # the POST may wait for Jira: it gets the whole call's time
             return _started(await serve.start("/v1/airlie/stories", body, call))
@@ -454,7 +457,7 @@ def build_server(
 
 
 def guard_config(config: Path | None) -> tuple[AirlieConfig | None, str]:
-    """The airlie config whose story.test_cmd the tools accept, or None and why it did not load: --config
+    """The airlie config whose story.test_cmd airlie_run accepts, or None and why it did not load: --config
     (what OpenCode's entry passes: this checkout's airlie.yaml), else AIRLIE_CONFIG or an airlie.yaml above
     the directory airlie mcp runs in, else this checkout's own."""
     try:

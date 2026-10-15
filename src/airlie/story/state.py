@@ -53,7 +53,9 @@ class StoryState:
     """stories/<card key>/state.json. `stage` is the last stage that finished. `built` maps a layer number
     ("01") to its branch, commit, run and subtask rows. `attempt` is a layer that stopped part-way: its branch
     and worktree stay for inspection until a resume rebuilds it. `base` is the commit the story builds on, as
-    {"ref": "origin/main", "sha": ...}: resolved once, so a resume reads and builds on the same code."""
+    {"ref": "origin/main", "sha": ...}: resolved once, so a resume reads and builds on the same code. `gate`
+    is the test gate read from AGENTS.md at that commit, as {"commands": [...], "agents_md": <its blob sha>}:
+    read once, so every layer of the story, resumed or not, passes the same commands."""
 
     path: Path
     card: dict[str, Any]
@@ -64,6 +66,7 @@ class StoryState:
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt: dict[str, str] | None = None
     base: dict[str, str] | None = None
+    gate: dict[str, Any] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None

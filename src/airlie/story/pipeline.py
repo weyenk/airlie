@@ -1,5 +1,6 @@
 """The story pipeline: an issue → product's story → architect's layers → each layer built test-first by the
-studio on its own branch, gated by the test command → a gh stack of draft PRs → the issue in review.
+studio on its own branch, gated by the repository's test gate (its AGENTS.md at the story's base commit, or a
+person's --test-cmd) → a gh stack of draft PRs → the issue in review.
 
 Every stage leaves state, an event and a note on the issue; a stop is a note, never silence. Only a human
 merges: nothing here can."""
@@ -18,10 +19,12 @@ from typing import Any
 from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
+from airlie.story.gate import missing_gate, read_gate
 from airlie.story.model import (
     SURROGATE,
     Layer,
     NotActionable,
+    NoTestGate,
     Story,
     StoryError,
     branch_name,
@@ -148,8 +151,12 @@ class StoryPipeline:
         studio: StudioFactory,
         publisher: Publisher,
         repo: Path,
-        test_cmd: str,
+        test_cmd: str | None = None,
+        github_repo: str | None = None,
     ) -> None:
+        """`test_cmd` is a person's (--test-cmd): it wins over the repository's test gate, and a blank one is
+        none. `github_repo` is the "owner/name" an issue's repo: label names (None for a written request): the
+        story is pinned to it and publishes there only."""
         self.s = cfg.story
         self.board = board
         self.studio = studio
@@ -157,8 +164,10 @@ class StoryPipeline:
         # One spelling of the path for the state and every git call: StoryState.open compares it verbatim,
         # so a second spelling of the same repository would refuse a legitimate resume.
         self.repo = repo.resolve()
-        self.test_cmd = test_cmd
-        self._shown_cmd = _redact_urls(test_cmd)  # what a note or a PR says; `test_cmd` is what runs
+        self.person_cmd = (test_cmd or "").strip() or None
+        self.test_cmd = self.person_cmd or ""  # what runs: the story's gate, once _gate has found it
+        self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
+        self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
 
     async def run(self, card: Card) -> StoryState:
@@ -166,9 +175,10 @@ class StoryPipeline:
         state that cannot be used at all (StorySetupError from StoryState.open: a damaged file, another
         repository) is raised, before anything runs. A cancel (a signal, a job cancelled) puts the issue back
         in intake with a note, keeps the state, and is raised again."""
-        # the GitHub repository the remote names now, as written: a story publishes only to the one it was
-        # started with, so a remote rewritten since (by a model, say) is a story that cannot be opened
-        here = self.publisher.github_repo_of(self.repo)
+        # the GitHub repository the story is for: the issue's label, else (a written request) the one the
+        # remote names now, as written. A story publishes only to the one it was started with, so a remote
+        # rewritten since (by a model, say) is a story that cannot be opened.
+        here = self.github_repo or self.publisher.github_repo_of(self.repo)
         st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
         st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
         try:
@@ -189,7 +199,9 @@ class StoryPipeline:
                     st.blocked = None
                     st.save()
             await self._intake(st, card)
-            await self._base(st)
+            base = await self._base(st)
+            if not st.done("publish"):  # a layer to build, or PR bodies to write: both name the gate
+                self._gate(st, base)
             story = await self._refine(st, card)
             layers = await self._layers(st, card, story)
             for i in range(len(layers)):
@@ -232,6 +244,28 @@ class StoryPipeline:
             st.base = {"ref": ref, "sha": sha}
             st.save()
         return st.base
+
+    def _gate(self, st: StoryState, base: dict[str, str]) -> None:
+        """The command every layer must pass: a person's --test-cmd, else the story's test gate. The gate is
+        read once, from the AGENTS.md of the story's base commit (never from a worktree, which a model
+        writes), and kept in the state: the story keeps it for its whole life, whatever AGENTS.md says later.
+        A repository with no gate there stops the story, before any model works."""
+        if self.person_cmd is not None:
+            cmd = self.person_cmd
+        else:
+            if st.gate is None:
+                try:
+                    gate = read_gate(self.repo, base["sha"])
+                except NoTestGate as e:
+                    who = self.github_repo or st.github_repo or str(self.repo)
+                    raise StoryBlocked(missing_gate(who, base["ref"], base["sha"], str(e))) from None
+                st.gate = {"commands": list(gate.commands), "agents_md": gate.blob}
+                st.save()
+                shown = [_redact_urls(c) for c in gate.commands]
+                st.emit("gate", commands=shown, agents_md=gate.blob, base=base)
+            cmd = " && ".join(st.gate["commands"])
+        self.test_cmd = cmd
+        self._shown_cmd = _redact_urls(cmd)
 
     async def _ask(self, st: StoryState, stage: str, role: str, brief: str) -> str:
         """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at

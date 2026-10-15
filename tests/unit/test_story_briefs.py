@@ -65,6 +65,16 @@ def test_a_layer_with_criteria_is_tests_first_then_build() -> None:
     assert len(schedule(plan)) == 2
 
 
+def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
+    for i in (1, 2):  # a layer that owns criteria (tests first), and an enabling one
+        plan = layer_plan(STORY, LAYERS, i, tests_role="qa", build_role="coder")
+        build = plan.subtasks[-1]
+        assert build.id == "build"
+        [line] = [x for x in build.brief.splitlines() if "AGENTS.md" in x]
+        assert line == "Follow AGENTS.md at the repository root, if it has one."
+        assert "AGENTS.md" not in plan.subtasks[0].brief or plan.subtasks[0] is build
+
+
 def test_story_text_and_layer_goal_name_the_story_and_its_layer() -> None:
     text = story_text(STORY)
     assert text.startswith("## Story: Add avatar upload\n") and "- **AC1** Given a user" in text

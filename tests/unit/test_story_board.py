@@ -50,6 +50,10 @@ ISSUE = {
         "summary": "Avatar upload",
         "description": doc("Users want avatars"),
         "status": {"name": "To Do"},
+        "labels": [
+            "repo:o/repo",
+            "frontend",
+        ],  # the repository: a checkout named "repo" (test_story_checkout)
         "comment": {  # oldest first, as Jira returns them
             "comments": [
                 {"body": adf_doc(note("picked this up"))},
@@ -151,6 +155,17 @@ async def test_card_reads_fields_and_comments_but_not_airlies_own_notes() -> Non
     assert card.resume == "`task story -- AIR-7`"
 
 
+async def test_a_card_carries_the_issues_labels_and_only_those_that_are_text() -> None:
+    card = await board(FakeJira()).card("AIR-7")
+    assert card.labels == ("repo:o/repo", "frontend")
+    assert card.to_dict()["labels"] == ("repo:o/repo", "frontend")  # kept in the story's state with the card
+    jira = board(FakeJira())
+    for labels, kept in ((None, ()), ("repo:o/r", ()), (["repo:o/r", 7, None, {"x": 1}], ("repo:o/r",))):
+        issue = {**ISSUE, "fields": {**ISSUE["fields"], "labels": labels}}
+        assert jira._card(issue).labels == kept
+    assert text_card("avatars").labels == ()  # a written request has none
+
+
 async def test_credentials_travel_in_the_header_only() -> None:
     fake = FakeJira()
     b = board(fake)
@@ -163,7 +178,7 @@ async def test_credentials_travel_in_the_header_only() -> None:
     first = fake.requests[0].url
     assert (first.path, first.params["fields"]) == (
         "/rest/api/3/issue/AIR-7",
-        "summary,description,comment,status",
+        "summary,description,comment,status,labels",
     )
 
 
@@ -485,8 +500,10 @@ async def test_next_card_is_the_first_issue_the_intake_query_returns() -> None:
     fake = FakeJira()
     card = await board(fake).next_card()
     assert card is not None and card.key == "AIR-7" and card.comments == ("PNG only", "Max 2 MB")
+    assert card.labels == ("repo:o/repo", "frontend")
     q = fake.requests[0].url
     assert (q.path, q.params["maxResults"]) == ("/rest/api/3/search/jql", "1")
+    assert q.params["fields"] == "summary,description,comment,status,labels"
     assert q.params["jql"] == 'project = "AIR" AND status = "To Do" ORDER BY Rank ASC'
     api = "https://api.atlassian.com/ex/jira/c1d2/rest/api/3"  # a scoped token's endpoint
     spec = JiraSpec.model_validate({"site": SITE, "project": "AIR", "jql": "labels = airlie", "api_url": api})
@@ -601,6 +618,7 @@ async def test_a_text_card_resumes_with_its_text_and_the_null_board_has_nothing_
         "description": "Let users upload an avatar",
         "url": None,
         "comments": (),
+        "labels": (),
     }
     assert text_card("   ").title == "request" and await NullBoard(tmp_path).next_card() is None
 

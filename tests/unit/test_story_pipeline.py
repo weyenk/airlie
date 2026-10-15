@@ -16,6 +16,7 @@ import pytest
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.router import ChiefRouter
+from airlie.story import pipeline as pipeline_module
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
@@ -108,10 +109,13 @@ def pipeline(
     story: dict[str, object] | None = None,
     board: Board | None = None,
     studio: type[StudioOrchestrator] = StudioOrchestrator,
-    test_cmd: str = "./check.sh",
+    test_cmd: str | None = "./check.sh",
     app: GitHubApp | None = None,
     roles: dict[str, tuple[str, list[str] | None]] = STORY_ROLES,
+    github_repo: str | None = None,
 ) -> StoryPipeline:
+    """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
+    `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
     settings = {"trunk": git(repo, "branch", "--show-current"), **(story or {})}
     cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings})
     return StoryPipeline(
@@ -121,6 +125,7 @@ def pipeline(
         publisher=Publisher(run=gh or RecordedGh(), app=app),
         repo=repo,
         test_cmd=test_cmd,
+        github_repo=github_repo,
     )
 
 
@@ -1228,6 +1233,47 @@ def on_github(tmp_path: Path) -> Path:
     return repo
 
 
+def agents_md(*commands: str) -> str:
+    """An AGENTS.md whose Test gate lists `commands`, one per line."""
+    gate = "".join(f"{c}\n" for c in commands)
+    intro = "# Agents\n\nRead the README first.\n\n## Test gate\n\n"
+    return f"{intro}```sh\n# every change passes these\n{gate}```\n"
+
+
+def commit_file(repo: Path, name: str, text: str, message: str | None = None) -> str:
+    """`name` with `text`, committed on the branch `repo` is on; returns the commit."""
+    (repo / name).write_text(text)
+    git(repo, "add", name)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message or name)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def checkout_of(root: Path, github_repo: str, *gate: str) -> Path:
+    """A clone of github.com/<github_repo> in `root`, named after it, as repo_with_marker_tests makes one (its
+    tests pass once a file named PASS exists), with an AGENTS.md whose Test gate runs `gate` (./check.sh by
+    default) and an SSH remote, origin, that names the repository."""
+    repo = root / github_repo.split("/")[1]
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("hi\n")
+    (repo / "check.sh").write_text(
+        "#!/bin/sh\nif [ -f PASS ]; then echo '1 passed'; exit 0; fi\necho '1 failed'; exit 1\n"
+    )
+    (repo / "check.sh").chmod(0o755)
+    (repo / "AGENTS.md").write_text(agents_md(*(gate or ("./check.sh",))))
+    git(repo, "init", "-q")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    git(repo, "remote", "add", "origin", f"git@github.com:{github_repo}.git")
+    return repo
+
+
+def gated(tmp_path: Path, *commands: str) -> Path:
+    """repo_with_marker_tests with an AGENTS.md whose Test gate runs `commands` (./check.sh by default)."""
+    repo = repo_with_marker_tests(tmp_path)
+    commit_file(repo, "AGENTS.md", agents_md(*(commands or ("./check.sh",))))
+    return repo
+
+
 def files_under(*roots: Path) -> str:
     """Every file under `roots`, as text: where a token must never be."""
     return "".join(
@@ -1411,3 +1457,159 @@ async def test_a_story_that_has_published_needs_no_working_app_nor_its_remote(
     assert st.blocked is None and st.stage == "review"
     assert github.requests == [] and after.calls == []
     assert "stopped after" not in (st.path / "notes.md").read_text()
+
+
+# ---- the test gate comes from AGENTS.md at the story's base commit ----
+
+
+async def test_without_a_persons_command_the_gate_is_read_from_agents_md_once_and_kept(
+    tmp_path: Path,
+) -> None:
+    repo = gated(tmp_path, "test -f README.md", "./check.sh")
+    trunk = git(repo, "branch", "--show-current")
+    blob = git(repo, "rev-parse", f"{trunk}:AGENTS.md")
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(
+        text_card("Let users upload an avatar")
+    )
+    assert st.blocked is None and st.stage == "review"
+    assert st.gate == {"commands": ["test -f README.md", "./check.sh"], "agents_md": blob}
+    [read] = kinds(st.path / "events.jsonl", "gate")
+    assert (read["commands"], read["agents_md"], read["base"]) == (st.gate["commands"], blob, st.base)
+    log = [json.loads(x)["kind"] for x in (st.path / "events.jsonl").read_text().splitlines()]
+    assert log[:5] == ["story_start", "stage", "fetch_failed", "gate", "run"]  # after the base, before refine
+    gate = "test -f README.md && ./check.sh"  # the studio's one command, as before
+    assert f"layer 01/02 built: Storage (`{gate}` passes)" in (st.path / "notes.md").read_text()
+    assert f"Tests: `{gate}` passes on this branch." in (st.path / "pr-01.md").read_text()
+
+
+async def test_a_gate_edited_in_the_persons_checkout_or_in_a_layers_worktree_is_not_the_gate(
+    tmp_path: Path,
+) -> None:
+    """AGENTS.md is read from the base commit: the person's own uncommitted edit and a model's edit of the
+    layer's copy (a weaker gate) change nothing. The layer is held to ./check.sh, and fails it."""
+    repo = gated(tmp_path)
+    (repo / "AGENTS.md").write_text(agents_md("true"))  # in the person's checkout, not committed
+    weaken = FakeReply(
+        tool_calls=[
+            ToolCall("w", "write_file", json.dumps({"path": "AGENTS.md", "content": agents_md("true")}))
+        ]
+    )
+    engine = happy_engine(qa=[DONE], coder=[weaken, DONE], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine, test_cmd=None).run(text_card("avatars"))
+    assert st.gate is not None and st.gate["commands"] == ["./check.sh"]
+    assert st.stage == "layers" and st.blocked is not None and "`./check.sh` fails on" in st.blocked
+    assert st.attempt is not None
+    assert "true" in (Path(st.attempt["worktree"]) / "AGENTS.md").read_text()  # the layer did weaken its copy
+
+
+@pytest.mark.parametrize(
+    ("agents", "problem"),
+    [
+        (None, "it has no AGENTS.md"),
+        ("# Agents\n\nNo gate here.\n", "its AGENTS.md has no Test gate section"),
+        (
+            "## Test gate\n\n```sh\n# none yet\n```\n",
+            "the Test gate section of its AGENTS.md lists no command",
+        ),
+    ],
+)
+async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model_works(
+    tmp_path: Path, agents: str | None, problem: str
+) -> None:
+    repo = on_github(tmp_path)
+    if agents is not None:
+        commit_file(repo, "AGENTS.md", agents)
+    trunk = git(repo, "branch", "--show-current")
+    sha = git(repo, "rev-parse", trunk)
+    board, engine = RecordingBoard(), happy_engine()
+    pipe = pipeline(
+        tmp_path, repo, engine, RecordedGh(real_git=False), board=board, test_cmd=None, github_repo="o/r"
+    )
+    st = await pipe.run(ISSUE)
+    assert st.stage == "intake" and st.gate is None and engine.requests == []
+    assert st.blocked is not None and st.blocked.startswith(
+        f"o/r has no test gate on {trunk} ({sha[:12]}): {problem}"
+    )
+    assert "Add a `## Test gate` section to AGENTS.md at the repository root" in st.blocked
+    assert "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```" in st.blocked
+    assert board.moves == ["building", "blocked"]  # out of intake, so the queue moves on
+    assert board.notes[-1].startswith(f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on {trunk}")
+
+
+async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = gated(tmp_path)
+    reads: list[str] = []
+    real = pipeline_module.read_gate
+
+    def counted(repo: Path, commit: str) -> Any:
+        reads.append(commit)
+        return real(repo, commit)
+
+    monkeypatch.setattr(pipeline_module, "read_gate", counted)
+    card = text_card("Let users upload an avatar")
+    first = FakeEngine(
+        {
+            "product": [STORY],
+            "architect": [LAYERS],
+            "qa": [DONE],
+            "coder": [NOTE, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    st = await pipeline(tmp_path, repo, first, test_cmd=None).run(card)
+    assert st.stage == "layers" and st.blocked is not None and "`./check.sh` fails" in st.blocked
+    assert st.base is not None and reads == [st.base["sha"]]
+    commit_file(repo, "AGENTS.md", agents_md("false"), "a stricter gate on the trunk")  # the trunk moves on
+    again = FakeEngine(
+        {"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
+    )
+    st = await pipeline(tmp_path, repo, again, test_cmd=None).run(card)
+    assert st.blocked is None and st.stage == "review"
+    assert len(reads) == 1 and st.gate is not None and st.gate["commands"] == ["./check.sh"]  # not read again
+
+
+@pytest.mark.parametrize("given", ["./check.sh", "  ./check.sh  "])
+async def test_a_persons_test_command_wins_over_agents_md_which_is_then_not_read(
+    tmp_path: Path, given: str
+) -> None:
+    repo = gated(tmp_path, "false")  # a gate no layer passes
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=given).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review" and st.gate is None
+    assert kinds(st.path / "events.jsonl", "gate") == []
+    assert "layer 02/02 built: Profile (`./check.sh` passes)" in (st.path / "notes.md").read_text()
+
+
+async def test_a_blank_test_command_is_none_and_agents_md_gates_the_story(tmp_path: Path) -> None:
+    repo = gated(tmp_path, "false")
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=" \t").run(text_card("avatars"))
+    assert st.gate is not None and st.gate["commands"] == ["false"]
+    assert st.blocked is not None and "`false` fails on" in st.blocked
+
+
+# ---- the issue's label is the repository the story is pinned to ----
+
+
+async def test_the_issues_label_is_the_repository_the_story_is_pinned_to_and_publishes_to(
+    tmp_path: Path,
+) -> None:
+    repo = on_github(tmp_path)  # its remote names o/r
+    github, gh = FakeGitHub(), RecordedGh(real_git=False)
+    app = fake_app(tmp_path, github)
+    st = await pipeline(tmp_path, repo, happy_engine(), gh, app=app, github_repo="O/R").run(ISSUE)
+    assert st.blocked is None and st.stage == "review"
+    assert st.github_repo == "O/R"  # as the label spells it; GitHub's names are any case
+    assert github.minted_for() == [["r"]] * len(github.tokens) and len(github.tokens) == 8
+
+
+async def test_a_remote_that_is_not_the_labels_repository_stops_the_story_before_any_work(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    git(repo, "remote", "add", "origin", "git@github.com:o/other.git")
+    engine, gh = happy_engine(), RecordedGh(real_git=False)
+    st = await pipeline(tmp_path, repo, engine, gh, github_repo="o/r").run(ISSUE)
+    assert st.stage == "new" and st.blocked is not None
+    assert "story.remote 'origin' names o/other, not o/r" in st.blocked
+    assert engine.requests == [] and gh.calls == []

@@ -298,9 +298,9 @@ async def test_a_long_poll_that_finds_only_a_fragment_still_moves_the_cursor(tmp
 def test_the_story_endpoint_starts_a_job_and_rejects_bad_requests(tmp_path: Path) -> None:
     events = tmp_path / "story-events.jsonl"
 
-    async def fake_story_job(cfg, *, card, text, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_story_job(cfg, *, card, text, repo):  # type: ignore[no-untyped-def]
         if text == "broken":
-            raise StorySetupError("no test command")
+            raise StorySetupError("no repository")
 
         async def work() -> dict[str, Any]:
             EventSink(events, "s").emit("stage", stage="intake")
@@ -312,7 +312,7 @@ def test_the_story_endpoint_starts_a_job_and_rejects_bad_requests(tmp_path: Path
         assert client.post("/v1/airlie/stories", json={}).status_code == 400
         assert client.post("/v1/airlie/stories", json={"card": "a", "text": "b"}).status_code == 400
         r = client.post("/v1/airlie/stories", json={"text": "broken"})
-        assert r.status_code == 400 and "no test command" in r.json()["detail"]
+        assert r.status_code == 400 and "no repository" in r.json()["detail"]
         r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": "/x"})
         assert r.status_code == 202 and r.json() == {"job_id": "story-text-abc", "kind": "story"}
         done = finish(client, "story-text-abc")
@@ -331,15 +331,34 @@ def test_the_story_endpoint_passes_the_request_to_the_job_factory(tmp_path: Path
 
         return "story-AIR-7", tmp_path / "events.jsonl", work()
 
-    body = {"card": "AIR-7", "repo": "~/code/app", "test_cmd": "make test"}
+    body = {"card": "AIR-7", "repo": "~/code/app"}
     with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
         assert client.post("/v1/airlie/stories", json=body).status_code == 202
         finish(client, "story-AIR-7")
         assert client.post("/v1/airlie/stories", json={"card": "AIR-7"}).status_code == 202
     assert seen == [
-        {"card": "AIR-7", "text": None, "repo": "~/code/app", "test_cmd": "make test"},
-        {"card": "AIR-7", "text": None, "repo": None, "test_cmd": None},
+        {"card": "AIR-7", "text": None, "repo": "~/code/app"},
+        {"card": "AIR-7", "text": None, "repo": None},
     ]
+
+
+@pytest.mark.parametrize("extra", [{"test_cmd": "true"}, {"test_cmd": None}, {"gate": "true"}])
+def test_a_story_request_that_names_a_test_command_is_refused_not_ignored(
+    tmp_path: Path, extra: dict[str, Any]
+) -> None:
+    """A story's gate is its repository's AGENTS.md: a request cannot name one, and one that tries learns so
+    rather than having its command silently dropped."""
+    called: list[dict[str, Any]] = []
+
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        called.append(kw)
+        raise AssertionError("never reached")
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        r = client.post("/v1/airlie/stories", json={"card": "AIR-7", **extra})
+    assert r.status_code == 422 and called == []
+    [problem] = r.json()["detail"]
+    assert problem["loc"] == ["body", next(iter(extra))] and problem["type"] == "extra_forbidden"
 
 
 def test_a_board_that_cannot_give_the_issue_is_a_400(tmp_path: Path) -> None:
@@ -396,7 +415,7 @@ def test_the_default_story_job_refuses_a_config_without_the_story_roles(tmp_path
     repo = repo_with_marker_tests(tmp_path)
     # app_for's config has the studio roles, but no product or architect
     with TestClient(app_for(tmp_path, FakeEngine({}))) as client:
-        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo), "test_cmd": "true"})
+        r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo)})
         assert r.status_code == 400 and "story.product_role" in r.json()["detail"]
         assert client.get(f"/v1/airlie/jobs/story-{text_card('avatars').key}").status_code == 404  # no job
 
@@ -405,10 +424,11 @@ def test_the_default_story_job_builds_the_story_and_reports_its_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
     prs = [{"number": 11, "branch": "b1", "url": "https://github.com/o/r/pull/11"}]
 
-    async def fake_run_one(c, *, board, card, repo, test_cmd):  # type: ignore[no-untyped-def]
+    async def fake_run_one(c, *, board, card, repo=None, test_cmd=None):  # type: ignore[no-untyped-def]
+        assert test_cmd is None  # the story's gate is its AGENTS.md's
         path = factory.stories_dir(c) / card.key
         EventSink(path / "events.jsonl", card.key).emit("stage", stage="intake")
         return StoryState(path=path, card=card.to_dict(), repo=str(repo), stage="review", prs=prs)
@@ -430,7 +450,7 @@ def test_the_default_story_job_builds_the_story_and_reports_its_result(
 
 def test_a_second_story_while_one_is_in_flight_ends_as_a_failed_job_that_says_so(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
     app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))
     with (
         story_lock(factory.stories_dir(cfg)) as held,

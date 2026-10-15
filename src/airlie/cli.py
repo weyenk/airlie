@@ -532,7 +532,7 @@ def mcp_serve(
         typer.Option(
             "--config",
             "-c",
-            help="airlie.yaml whose story.test_cmd the tools accept (default: AIRLIE_CONFIG, else search "
+            help="airlie.yaml whose story.test_cmd airlie_run accepts (default: AIRLIE_CONFIG, else search "
             "upwards, else this checkout's)",
         ),
     ] = None,
@@ -871,20 +871,27 @@ def _print_story(st: StoryState) -> None:
     )
 
 
+REPO_HELP = (
+    "repository to build in: a written request's (default: story.repo); for an issue, in place of the "
+    "checkout its repo: label names in story.repos_root (its remote must still name that repository)"
+)
+TEST_CMD_HELP = "the gate every layer must pass, in place of the Test gate of the repository's AGENTS.md"
+
+
 @story_app.command("run")
 def story_run(
     ref: Annotated[
         str | None, typer.Argument(metavar="ISSUE", help="Jira issue key (AIR-7) or its link")
     ] = None,
     text: Annotated[str | None, typer.Option(help="a written request instead of an issue (no board)")] = None,
-    repo: Annotated[Path | None, typer.Option(help="repository to build in (default: story.repo)")] = None,
-    test_cmd: Annotated[
-        str | None, typer.Option(help="the gate every layer must pass (default: story.test_cmd)")
-    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Refine a Jira issue (or --text) into a story, plan its layers, build each one test-first, open stacked
-    draft PRs. A stopped story resumes from its last finished stage when you run the same command again."""
+    draft PRs. An issue is built in the repository its repo:<owner>/<name> label names, gated by the Test gate
+    of that repository's AGENTS.md. A stopped story resumes from its last finished stage when you run the same
+    command again."""
     from airlie.story import factory
     from airlie.story.board import BoardError
     from airlie.story.model import StorySetupError
@@ -894,15 +901,16 @@ def story_run(
         raise typer.Exit(2)
     cfg = _story_cfg(config)
     problems = factory.story_problems(cfg)
-    try:
-        path, cmd = factory.resolve(cfg, repo, test_cmd)
-    except StorySetupError as e:
-        problems.append(str(e))
+    if text is not None:  # its repository is known now: a missing one fails before anything runs
+        try:
+            factory.written_repo(cfg, repo)
+        except StorySetupError as e:
+            problems.append(str(e))
     _fail(problems)
 
     async def go() -> StoryState:
         board, card = await factory.card_for(cfg, ref, text)
-        return await factory.run_one(cfg, board=board, card=card, repo=path, test_cmd=cmd)
+        return await factory.run_one(cfg, board=board, card=card, repo=repo, test_cmd=test_cmd)
 
     try:
         st = _run_stoppable(go())
@@ -943,23 +951,36 @@ def story_tick(config: ConfigOpt = None) -> None:
 
 @story_app.command("check")
 def story_check(
-    repo: Annotated[Path | None, typer.Option(help="repository (default: story.repo)")] = None,
-    test_cmd: Annotated[str | None, typer.Option(help="test command (default: story.test_cmd)")] = None,
+    ref: Annotated[
+        str | None,
+        typer.Argument(
+            metavar="[ISSUE]",
+            help="a Jira issue (AIR-7 or its link): check its repo: label, checkout, remote, trunk and gate",
+        ),
+    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Check what `task story` needs: roles, repo, test command, gh and gh-stack, who publishes (your gh
-    login, or story.github_app's bot), the Jira project and its statuses."""
+    """Check what `task story` needs: roles; for ISSUE, the repository its label names (the checkout, its
+    remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
+    who publishes (your gh login, or story.github_app's bot), the Jira project and its statuses. No model runs
+    and nothing is written."""
     from airlie.story import factory
 
     cfg = _story_cfg(config)
-    checked = _run_stoppable(factory.check(cfg, repo, test_cmd))
+    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
+    # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
     for n in checked.notes:
-        console.print(n, markup=False, highlight=False, emoji=False)
+        console.print(n, markup=False, highlight=False, emoji=False, soft_wrap=True)
     if not checked.problems:
-        console.print('[green]ready[/green]: task story -- ISSUE (or --text "request")')
+        then = (
+            escape(f"task story -- {ref}") if ref is not None else 'task story -- ISSUE (or --text "request")'
+        )
+        console.print(f"[green]ready[/green]: {then}", highlight=False, emoji=False, soft_wrap=True)
         return
     for p in checked.problems:
-        err.print(f"[red]✗[/red] {escape(p)}", emoji=False)
+        err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
     raise typer.Exit(1)
 
 

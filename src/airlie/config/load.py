@@ -201,6 +201,7 @@ def load_config(
     cfg.observability.state_dir = cfg.observability.state_dir.expanduser()
     if cfg.story.repo is not None:
         cfg.story.repo = (base / cfg.story.repo.expanduser()).resolve()
+    cfg.story.repos_root = (base / cfg.story.repos_root.expanduser()).resolve()
     if cfg.lts.controller.adapter_path is not None:
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
     problems = cfg.validate_references()

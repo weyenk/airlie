@@ -20,6 +20,17 @@ class StorySetupError(RuntimeError):
     """Something a story needs is missing: the repository, the test command, a role, a matching state."""
 
 
+class RepositoryError(StorySetupError):
+    """The repository a Jira story is for cannot be used: its repo:<owner>/<name> label is missing, repeated,
+    malformed or changed since the story started, or the checkout it names is missing, repeated or a clone of
+    another repository. The message is for the issue, which is told and leaves intake."""
+
+
+class NoTestGate(Exception):
+    """A repository has no test gate at a commit: no AGENTS.md, no Test gate section in it, or no command in
+    that section's block. The message says which."""
+
+
 NO_JSON = "no JSON object in the reply; end it with one ```json block"
 ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-\d+", re.ASCII)
 """A Jira issue key (AIR-7); always matched whole (fullmatch), ASCII only (a digit is 0-9, not any script's).

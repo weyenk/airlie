@@ -163,8 +163,9 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, tests_role: s
         f"Later layers (not yours; leave their work alone): {later}"
     )
     build = (
-        f"{context}\n\n{layer.brief}\n\nStay inside this layer's scope. Run run_tests until the whole suite "
-        "passes, then stop with two or three sentences on what you changed."
+        f"{context}\n\n{layer.brief}\n\nFollow AGENTS.md at the repository root, if it has one.\n"
+        "Stay inside this layer's scope. Run run_tests until the whole suite passes, then stop with two or "
+        "three sentences on what you changed."
     )
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     if not owned:

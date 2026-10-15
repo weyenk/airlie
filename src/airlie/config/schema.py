@@ -312,8 +312,21 @@ class GitHubAppSpec(Strict):
 
 
 class StorySpec(Strict):
-    repo: Path | None = Field(default=None, description="repository stories are built in (--repo wins)")
-    test_cmd: str | None = Field(default=None, description="the gate every layer must pass (--test-cmd wins)")
+    repo: Path | None = Field(
+        default=None,
+        description="the repository a written request (--text) is built in (--repo wins); a Jira issue's "
+        "comes from its repo:<owner>/<name> label",
+    )
+    repos_root: Path = Field(
+        default=Path("~/git"),
+        description="where a Jira issue's repo:<owner>/<name> label finds its checkout: the directory named "
+        "<name>, in any case",
+    )
+    test_cmd: str | None = Field(
+        default=None,
+        description="a test command airlie_run accepts (its default); a story's gate comes from its "
+        "repository's AGENTS.md",
+    )
     trunk: str = Field(default="main", description="the stack's base branch")
     remote: str = "origin"
     topology: str = Field(default="studio", description="the profile story runs load")

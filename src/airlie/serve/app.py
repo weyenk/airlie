@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from airlie.config import AirlieConfig
 from airlie.report import RunReport
@@ -111,10 +111,16 @@ class StartRun(PlanRequest):
 
 
 class StoryRequest(BaseModel):
+    """A story: an issue (`card`) or a written request (`text`), and `repo`: a written request's repository,
+    or for an issue the checkout to use in place of the one its repo: label names. Its test gate is the
+    repository's AGENTS.md, never the request's: a request that names one (test_cmd), or anything else, is
+    refused (422) rather than quietly ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+
     card: str | None = None
     text: str | None = None
     repo: str | None = None
-    test_cmd: str | None = None
 
 
 def _story_job_factory() -> Callable[..., Any]:
@@ -331,9 +337,7 @@ def create_app(
         if (req.card is None) == (req.text is None):
             raise HTTPException(400, "pass exactly one of card or text")
         try:
-            job_id, events, work = await make_story(
-                cfg, card=req.card, text=req.text, repo=req.repo, test_cmd=req.test_cmd
-            )
+            job_id, events, work = await make_story(cfg, card=req.card, text=req.text, repo=req.repo)
         except (StorySetupError, BoardError) as e:
             raise HTTPException(400, str(e)) from e
         try:

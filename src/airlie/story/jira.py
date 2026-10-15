@@ -26,7 +26,7 @@ from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column,
 
 SETTINGS = {"site": "ATLASSIAN_BASE_URL", "project": "ATLASSIAN_PROJECT_KEY"}
 """story.jira field → the variable that wins over it (the credentials: ATLASSIAN_EMAIL, ATLASSIAN_API_KEY)."""
-FIELDS = "summary,description,comment,status"
+FIELDS = "summary,description,comment,status,labels"
 _PAIR = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")
 _QUOTED = re.compile(r"""(["'])(.*?)\1(?:\s+#.*)?""")  # "value" or 'value', then perhaps  # a comment
 _COMMENT = re.compile(r"\s+#.*")
@@ -321,6 +321,7 @@ class JiraBoard:
             raise BoardError(f"Jira returned an issue key airlie cannot use: {key!r}")
         f = issue.get("fields") or {}
         texts = [adf_text(c.get("body")) for c in (f.get("comment") or {}).get("comments") or []]
+        labels = f.get("labels")
         return Card(
             key=key,
             id=str(issue["id"]),
@@ -331,6 +332,7 @@ class JiraBoard:
             comments=tuple(
                 t for t in texts if t and not t.startswith(_OWN)
             ),  # oldest first, as Jira lists them
+            labels=tuple(x for x in labels if isinstance(x, str)) if isinstance(labels, list) else (),
         )
 
     async def card(self, ref: str) -> Card:
