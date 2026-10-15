@@ -131,13 +131,15 @@ tasks:
       - cloudflared tunnel --url http://127.0.0.1:8090 {{.CLI_ARGS}}
 
   opencode:install:
-    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story, and the airlie_* tools into ~/.config/opencode (restart OpenCode after)"
+    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story into ~/.config/opencode and add the airlie MCP server (the airlie_* tools) to its opencode.json, after a backup (restart OpenCode after)"
     cmds:
-      - mkdir -p ~/.config/opencode/agent ~/.config/opencode/command ~/.config/opencode/tool
+      - mkdir -p ~/.config/opencode/agent ~/.config/opencode/command
       - cp docs/integrations/opencode/agent/*.md ~/.config/opencode/agent/
       - cp docs/integrations/opencode/command/*.md ~/.config/opencode/command/
-      - cp docs/integrations/opencode/tool/airlie.ts ~/.config/opencode/tool/
-      - echo "installed; restart OpenCode. The tools need 'task serve' running."
+      # the tool file an earlier install copied: OpenCode 2.0 does not run it, airlie mcp has its tools
+      - rm -f ~/.config/opencode/tool/airlie.ts
+      - '{{.RUN}} airlie mcp config --install'
+      - echo "installed; restart OpenCode. The airlie_* tools need 'task serve' running."
 
   bench:lts:
     desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"

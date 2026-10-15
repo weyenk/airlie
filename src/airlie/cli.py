@@ -43,6 +43,8 @@ story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
 app.add_typer(story_app, name="story")
+mcp_app = typer.Typer()  # its help is mcp_serve's docstring
+app.add_typer(mcp_app, name="mcp")
 console = Console()
 err = Console(stderr=True)
 
@@ -519,6 +521,58 @@ def serve(
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
     uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
+
+
+@mcp_app.callback(invoke_without_command=True)
+def mcp_serve(
+    ctx: typer.Context,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="airlie.yaml whose story.test_cmd the tools accept (default: search upwards, else this "
+            "checkout's)",
+        ),
+    ] = None,
+) -> None:
+    """airlie as an MCP server: `airlie mcp` serves the tools plan, run, status, cancel and story over stdio
+    for OpenCode or any MCP client, which starts it. The tools call `task serve` at AIRLIE_URL (default
+    http://127.0.0.1:8090); `airlie mcp config` prints or installs OpenCode's entry for it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    import asyncio
+
+    from airlie.serve.mcp_server import serve_stdio
+
+    asyncio.run(serve_stdio(config))
+
+
+@mcp_app.command("config")
+def mcp_config(
+    install: Annotated[
+        bool, typer.Option("--install", help="merge it into ~/.config/opencode/opencode.json, after a backup")
+    ] = False,
+) -> None:
+    """Print the entry OpenCode needs to start this server (`mcp.airlie`), or --install it."""
+    import json
+
+    from airlie.serve.mcp_server import (
+        CHECKOUT,
+        InstallError,
+        install_opencode,
+        opencode_config,
+        opencode_entry,
+    )
+
+    if not install:
+        typer.echo(json.dumps({"mcp": {"airlie": opencode_entry(CHECKOUT)}}, indent=2))
+        return
+    try:
+        typer.echo(install_opencode(opencode_config(), CHECKOUT))
+    except InstallError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", soft_wrap=True, emoji=False)
+        raise typer.Exit(1) from None
 
 
 @bench_app.command("report")

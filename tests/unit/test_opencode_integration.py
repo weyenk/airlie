@@ -1,8 +1,10 @@
 """The OpenCode front door stays in step with airlie: agents name models task serve lists, nothing can merge,
-the chief cannot edit, the tool calls routes that exist, the commands name tools the tool file exports."""
+the chief cannot edit, delegates only to agents that cannot merge and runs only read-only git and gh, the MCP
+server calls routes that exist, and the commands name tools the server lists."""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from airlie.config import load_config
 from airlie.serve.app import create_app
+from airlie.serve.mcp_server import airlie_http, build_server, opencode_entry
 from airlie.story import factory
 from airlie.story.state import StoryState
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
@@ -31,9 +34,19 @@ def front(path: Path) -> tuple[dict[str, Any], str]:
     return yaml.safe_load(meta), body.strip()
 
 
-def tool_body(ts: str, name: str) -> str:
-    """The source of `export const <name> = tool(` up to the next export."""
-    return ts.split(f"export const {name} = tool(", 1)[1].split("export const", 1)[0]
+def opencode_glob(pattern: str) -> re.Pattern[str]:
+    """A permission pattern as OpenCode 2.0 compiles it: anchored, dotAll, `*` is `.*`, `?` is `.`, and a
+    trailing " *" may be left out ("git diff *" is git diff with or without arguments, not git difftool)."""
+    tail = pattern.endswith(" *")
+    body = pattern[:-2] if tail else pattern
+    rx = "".join(".*" if c == "*" else "." if c == "?" else re.escape(c) for c in body)
+    return re.compile(f"^{rx}{'( .*)?' if tail else ''}$", re.DOTALL)
+
+
+def decision(rules: dict[str, str], subject: str) -> str:
+    """OpenCode's verdict on a command (or a subagent): the last rule that matches wins, and none asks."""
+    hits = [verdict for pattern, verdict in rules.items() if opencode_glob(pattern).match(subject)]
+    return hits[-1] if hits else "ask"
 
 
 def test_agents_use_models_task_serve_lists() -> None:
@@ -56,16 +69,64 @@ def test_no_agent_can_merge_and_the_chief_cannot_edit() -> None:
         assert list(bash)[-3:] == ["gh api*", "gh pr merge*", "gh stack merge*"], p.name
         assert bash["gh api*"] == bash["gh pr merge*"] == bash["gh stack merge*"] == "deny", p.name
     chief = front(OC / "agent/chief.md")[0]["permission"]
-    assert chief["edit"] == "deny" and chief["task"]["*"] == "deny"
-    allowed = {k for k, v in chief["task"].items() if v == "allow"}
-    assert allowed == {"architect", "coder", "qa", "docs", "explore"}
+    assert chief["edit"] == "deny"
     views = [k for k, v in chief["bash"].items() if k.startswith("gh stack view") and v == "allow"]
     assert views == ["gh stack view --json*", "gh stack view --short*"]  # the bare view is interactive
 
 
-def test_the_tool_calls_only_routes_serve_has() -> None:
-    ts = (OC / "tool/airlie.ts").read_text()
-    used = set(re.findall(r'["`](/v1/airlie/[a-z]+)', ts))
+def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
+    meta, body = front(OC / "agent/chief.md")
+    task = meta["permission"]["task"]
+    assert list(task)[0] == "*" and task["*"] == "deny"  # first, so that each allow after it wins
+    # OpenCode's own subagents: explore allows every shell command and denies no merge
+    assert decision(task, "explore") == decision(task, "general") == "deny" and "explore" not in body
+    allowed = [name for name in task if decision(task, name) == "allow"]
+    assert sorted(allowed) == ["architect", "coder", "docs", "qa"]
+    for name in allowed:
+        path = OC / "agent" / f"{name}.md"
+        assert path.is_file(), name
+        bash = front(path)[0]["permission"]["bash"]
+        assert bash["gh api*"] == bash["gh pr merge*"] == bash["gh stack merge*"] == "deny", name
+        assert list(bash)[-2:] == ["gh pr merge*", "gh stack merge*"], name
+
+
+@pytest.mark.parametrize(
+    ("command", "verdict"),
+    [
+        ("git status", "allow"),
+        ("git status --short", "allow"),
+        ("git diff", "allow"),
+        ("git diff HEAD~1", "allow"),
+        ("git log --oneline -5", "allow"),
+        ("gh pr view 3", "allow"),
+        ("gh stack view --json", "allow"),
+        ("git difftool -y -x touch", "ask"),  # "git diff *" is word-bounded: not git difftool
+        ("git statusx", "ask"),
+        ("gh stack view", "ask"),  # interactive: it hangs a shell with no terminal
+        ("git diff --output=x", "deny"),  # writes a file
+        ("git diff HEAD --output x", "deny"),
+        ("git log -p --output=x", "deny"),
+        ("gh pr merge 3 --squash", "deny"),
+        ("gh stack merge", "deny"),
+        ("gh api -X PUT repos/o/r/pulls/3/merge", "deny"),
+    ],
+)
+def test_the_chief_shell_runs_read_only_git_and_gh_and_nothing_that_writes_or_merges(
+    command: str, verdict: str
+) -> None:
+    assert decision(front(OC / "agent/chief.md")[0]["permission"]["bash"], command) == verdict
+
+
+def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None:
+    # beside the server's own test_cmd check. How OpenCode keys an MCP tool's permission is a best guess
+    # (the tool's name, airlie_<tool>), checked live in Task 15
+    permission = front(OC / "agent/chief.md")[0]["permission"]
+    assert permission["airlie_run"] == permission["airlie_story"] == "ask"
+
+
+def test_the_mcp_server_calls_only_routes_serve_has() -> None:
+    src = (ROOT / "src/airlie/serve/mcp_server.py").read_text()
+    used = set(re.findall(r'"(/v1/airlie/[a-z]+)', src))
     assert used == {"/v1/airlie/plans", "/v1/airlie/runs", "/v1/airlie/jobs", "/v1/airlie/stories"}
     cfg = load_config(ROOT / "airlie.yaml")
     app = create_app(cfg, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
@@ -74,28 +135,32 @@ def test_the_tool_calls_only_routes_serve_has() -> None:
         assert any(p == u or p.startswith(u + "/") for p in paths), u
 
 
-def test_commands_run_on_the_chief_and_name_exported_tools() -> None:
-    ts = (OC / "tool/airlie.ts").read_text()
-    tools = {f"airlie_{m}" for m in re.findall(r"^export const (\w+) = tool\(", ts, re.M)}
+async def test_the_commands_and_the_chief_name_only_tools_the_mcp_server_lists() -> None:
+    async with airlie_http({}) as http:
+        listed = await build_server(http, test_cmds=[], cwd=ROOT).list_tools()
+    tools = {f"airlie_{t.name}" for t in listed}  # OpenCode names an MCP tool <server>_<tool>
     assert tools == {"airlie_plan", "airlie_run", "airlie_status", "airlie_cancel", "airlie_story"}
     for p in (OC / "command").glob("*.md"):
         meta, body = front(p)
         assert meta["agent"] == "chief" and "$ARGUMENTS" in body, p.name
         assert set(re.findall(r"airlie_\w+", body)) <= tools, p.name
+    assert set(re.findall(r"airlie_\w+", front(OC / "agent/chief.md")[1])) <= tools
 
 
-def test_a_test_command_the_model_chose_needs_the_persons_ok() -> None:
-    ts = (OC / "tool/airlie.ts").read_text()
-    assert 'permission: "bash"' in ts
-    for name in ("run", "story"):  # the tools whose test_cmd airlie runs
-        body = ts.split(f"export const {name} = tool(", 1)[1].split("export const", 1)[0]
-        assert body.index("await approve(args.test_cmd, ctx)") < body.index('await call("POST"'), name
+def test_opencode_gets_the_tools_from_airlie_mcp_not_from_a_tool_file() -> None:
+    assert not (OC / "tool").exists()  # OpenCode 2.0 runs no tool files
+    cmds = yaml.safe_load((ROOT / "Taskfile.yml").read_text())["tasks"]["opencode:install"]["cmds"]
+    assert not any(c.startswith("cp") and "tool" in c for c in cmds)
+    assert "{{.RUN}} airlie mcp config --install" in cmds
+    sample = json.loads((ROOT / "docs/integrations/opencode.json").read_text())
+    entry = sample["mcp"]["airlie"]
+    assert entry == opencode_entry(Path(entry["command"][4]))  # what install writes; the checkout is yours
 
 
 def test_a_story_that_stopped_is_a_done_job_with_the_reason_in_its_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What the tool's `stopped:` status line rests on: serve does not fail the job of a story that stops (is
+    """What airlie_status's `stopped:` line rests on: serve does not fail the job of a story that stops (is
     blocked). The job is `done` and `result.blocked` holds the reason, so the state alone says nothing."""
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh"}})
@@ -112,23 +177,9 @@ def test_a_story_that_stopped_is_a_done_job_with_the_reason_in_its_result(
     assert done["state"] == "done" and done["result"]["blocked"] == reason and done["result"]["prs"] == []
 
 
-def test_a_story_that_stopped_is_reported_as_stopped_not_done() -> None:
-    """The status line of a done job whose result is blocked says `stopped: <reason>`; the chief and /story
-    report that reason (not PR links) and how the story resumes."""
-    status = tool_body((OC / "tool/airlie.ts").read_text(), "status")
-    assert 'r.state === "done"' in status and "r.result?.blocked" in status and "`stopped: " in status
+def test_the_chief_and_story_report_a_story_that_stopped_and_how_it_resumes() -> None:
+    """airlie_status shows a done job whose result is blocked as `stopped: <reason>` (test_mcp_server); the
+    chief and /story report that reason, not PR links, and how the story resumes."""
     for p in (OC / "agent/chief.md", OC / "command/story.md"):
         body = front(p)[1]
         assert "result.blocked" in body and "stopped" in body and "task story -- <KEY>" in body, p.name
-
-
-def test_an_abort_stops_the_job_the_tool_started() -> None:
-    """OpenCode aborts a tool call on Esc. airlie_plan waits for its job; airlie_run and airlie_story only
-    start one. Each POSTs without the abort signal, so the job's id always comes back, and stops that job
-    (best-effort; the call is reported cancelled, not unreachable) when the call was aborted meanwhile."""
-    ts = (OC / "tool/airlie.ts").read_text()
-    for name in ("plan", "run", "story"):
-        body = tool_body(ts, name)
-        assert re.search(r'await call\("POST", "/v1/airlie/\w+", body\)', body), name  # no signal
-        assert f'throw await cancelled("airlie_{name}", ' in body and "ctx.abort.aborted" in body, name
-    assert 'call("DELETE"' in ts.split("async function cancelled(", 1)[1].split("\n}\n", 1)[0]
