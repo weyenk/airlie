@@ -30,7 +30,7 @@ async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> Too
         proc.kill()
         await proc.wait()
         return ToolResult(False, f"error: command timed out after {ctx.shell_timeout_s:g}s")
-    text = out.decode("utf-8", "replace")
+    text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
     rc = proc.returncode or 0
     body = cap(text, ctx.output_cap_chars)
     if rc != 0:

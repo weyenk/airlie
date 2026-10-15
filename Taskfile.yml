@@ -22,6 +22,7 @@ tasks:
       - '{{.UV}} sync --all-groups'
       - cmd: test -f airlie.local.yaml || cp airlie.local.example.yaml airlie.local.yaml
         silent: true
+      - task: hooks:install
       - echo "ready — try 'task doctor'"
 
   doctor:
@@ -196,6 +197,31 @@ tasks:
     cmds:
       - '{{.RUN}} pytest -m live {{.CLI_ARGS}}'
 
+  mutate:
+    desc: "Mutation-test every enrolled module (task mutate -- --max-children 6); weakest spots: task mutate:results"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_changed.py --scope enrolled {{.CLI_ARGS}}'
+
+  mutate:changed:
+    desc: "Mutation-test the enrolled files changed since a base ref, plus every function the changed tests run (task mutate:changed -- --base origin/main; --list previews)"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_changed.py --scope changed {{.CLI_ARGS}}'
+
+  mutate:project:
+    desc: "Mutation-test all of src/airlie (the weekly run): enrolled modules gate, the rest is the backlog table"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_changed.py --scope project {{.CLI_ARGS}}'
+
+  mutate:results:
+    desc: "List surviving mutants of the last run (task mutate:results -- --all true); inspect one with `uv run mutmut show NAME`"
+    cmds:
+      - '{{.RUN}} mutmut results {{.CLI_ARGS}}'
+
+  hooks:install:
+    desc: "Run the static checks before every push (git pre-push hook from .githooks/)"
+    cmds:
+      - git config core.hooksPath .githooks
+
   lint:
     desc: Ruff lint + format check
     cmds:
@@ -212,6 +238,52 @@ tasks:
     desc: mypy (strict) over src/airlie
     cmds:
       - '{{.RUN}} mypy'
+
+  static:
+    desc: "Stage 1 of the pipeline and the pre-push gate: lint + typecheck, nothing executed"
+    cmds:
+      - task: lint
+      - task: typecheck
+
+  test:unit:
+    desc: "Stage 2: the lowest level of the pyramid (tests/unit)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py unit {{.CLI_ARGS}}'
+
+  test:functional:
+    desc: "Stage 3, units in concert: functional tests (tests/functional)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py functional {{.CLI_ARGS}}'
+
+  test:contract:
+    desc: "Stage 3, units in concert: contract tests (tests/contract)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py contract {{.CLI_ARGS}}'
+
+  test:integration:
+    desc: "Stage 3, units in concert: integration tests (tests/integration)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py integration {{.CLI_ARGS}}'
+
+  test:e2e:
+    desc: "Stage 4, behavioural: end-to-end tests (tests/e2e)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py e2e {{.CLI_ARGS}}'
+
+  test:journey:
+    desc: "Stage 4, behavioural: user-journey tests (tests/journey)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py journey {{.CLI_ARGS}}'
+
+  test:performance:
+    desc: "Stage 5, environmental: performance tests (tests/performance)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py performance {{.CLI_ARGS}}'
+
+  test:security:
+    desc: "Stage 5, environmental: security tests (tests/security)"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py security {{.CLI_ARGS}}'
 
   check:
     desc: lint + typecheck + unit tests

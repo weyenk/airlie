@@ -87,7 +87,8 @@ def attach_decide(
 ) -> bool:
     """Add `decide` when a llama_server engine serves router.model; False (and no tool) otherwise."""
     m = cfg.router.model
-    if m is None or m not in cfg.models:
+    # `and` here is an equivalent mutant: the KeyError below also ends in False
+    if m is None or m not in cfg.models:  # pragma: no mutate
         return False
     try:
         e = cfg.engines[cfg.engine_for_model(m)]

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Static checks (lint + types) before anything reaches origin. Installed by `task hooks:install`.
+# Skip once with `git push --no-verify`. The pipeline runs the same `task static` as its first stage.
+if ! command -v task >/dev/null 2>&1; then
+  echo "pre-push: 'task' not found (https://taskfile.dev); skipping static checks" >&2
+  exit 0
+fi
+exec task static

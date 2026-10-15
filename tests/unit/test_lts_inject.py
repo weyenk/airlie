@@ -193,3 +193,91 @@ def test_render_entries_keeps_spec_lines_and_inlines_chosen_values() -> None:
     assert "x" * 100 in text and "x" * 101 not in text  # inlined, capped
     assert "[truncated" in text
     assert text.count("Value") == 1  # only the chosen id is inlined
+
+
+# ---- boundaries and exact rendering (mutation-testing follow-up) ----
+
+
+def entry(i: int, key: str, value: str = "v", team: str = "team-1") -> MemoryEntry:
+    return MemoryEntry(id=f"mem-{i}", team_id=team, step_num=i, summary_key=key, raw_value=value)
+
+
+def test_render_keys_max_keys_boundaries() -> None:
+    summaries = [("mem-1", "one"), ("mem-2", "two")]
+    assert render_keys(summaries, max_keys=0) == ""
+    assert render_keys(summaries, max_keys=-1) == ""
+    assert render_keys(summaries, max_keys=1) == "\n[Shared Memory Keys Available]:\n- Key [mem-2]: two"
+
+
+def test_rank_entries_max_keys_boundaries() -> None:
+    from airlie.lts.inject import rank_entries
+
+    entries = [entry(1, "alpha"), entry(2, "beta")]
+    assert rank_entries(entries, context="alpha", max_keys=0, exclude_team=None) == []
+    assert rank_entries(entries, context="alpha", max_keys=-1, exclude_team=None) == []
+    one = rank_entries(entries, context="alpha", max_keys=1, exclude_team=None)
+    assert [r.entry.id for r in one] == ["mem-1"]
+
+
+def test_rank_entries_defaults_to_relevance_over_recency() -> None:
+    from airlie.lts.inject import rank_entries
+
+    entries = [entry(1, "parser handles quoted fields"), entry(2, "unrelated gardening note")]
+    ranked = rank_entries(entries, context="the quoted parser fields", max_keys=2, exclude_team=None)
+    assert [r.entry.id for r in ranked] == ["mem-1", "mem-2"]  # relevance beats newest-first
+    assert [r.score for r in ranked] == [3.0, 0.0]
+
+
+def test_recency_scores_are_float_zero() -> None:
+    from airlie.lts.inject import rank_entries
+
+    ranked = rank_entries(
+        [entry(1, "a"), entry(2, "b")], context="x", max_keys=2, exclude_team=None, ranking="recency"
+    )
+    assert [r.score for r in ranked] == [0.0, 0.0] and all(isinstance(r.score, float) for r in ranked)
+
+
+def test_token_length_boundary_counts_three_letter_words_but_not_two() -> None:
+    from airlie.lts.inject import rank_entries
+
+    entries = [entry(1, "abc abcd xy")]
+    ranked = rank_entries(entries, context="abc abcd xy", max_keys=1, exclude_team=None)
+    assert ranked[0].score == 2.0  # "abc" (3) and "abcd" (4) count; "xy" (2) does not
+
+
+def test_render_entries_exact_text_with_and_without_inlined_value() -> None:
+    from airlie.lts.inject import RankedKey, render_entries
+
+    ranked = [RankedKey(entry(1, "first", "VALUE"), 1.0), RankedKey(entry(2, "second", "other"), 0.0)]
+    text = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=100)
+    assert text == (
+        "\n[Shared Memory Keys Available]:\n"
+        "- Key [mem-1]: first\n"
+        "  Value:\n  ```\nVALUE\n  ```\n"
+        "- Key [mem-2]: second"
+    )
+    assert render_entries([], inline_ids=set(), inline_chars=100) == ""
+
+
+def test_render_entries_inline_chars_boundaries() -> None:
+    from airlie.lts.inject import RankedKey, render_entries
+
+    ranked = [RankedKey(entry(1, "first", "ABCDE"), 1.0)]
+    assert "Value" not in render_entries(ranked, inline_ids={"mem-1"}, inline_chars=0)
+    assert "Value" not in render_entries(ranked, inline_ids={"mem-1"}, inline_chars=-5)
+    one = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=1)
+    assert one.endswith("  Value:\n  ```\nA\n  ```\n  [truncated: 4 more chars; retrieve_value for the rest]")
+
+
+def test_render_entries_truncation_notice_only_when_something_was_cut() -> None:
+    from airlie.lts.inject import RankedKey, render_entries
+
+    ranked = [RankedKey(entry(1, "first", "ABCDE"), 1.0)]
+    exact = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=5)
+    assert exact.endswith("  Value:\n  ```\nABCDE\n  ```") and "truncated" not in exact
+    longer = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=50)
+    assert longer.endswith("ABCDE\n  ```") and "truncated" not in longer
+    cut_by_one = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=4)
+    assert cut_by_one.endswith("ABCD\n  ```\n  [truncated: 1 more chars; retrieve_value for the rest]")
+    cut = render_entries(ranked, inline_ids={"mem-1"}, inline_chars=3)
+    assert "[truncated: 2 more chars;" in cut

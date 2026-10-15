@@ -1,9 +1,19 @@
-"""Shared unit-test fixtures."""
+"""Unit-test environment and shared fixtures.
+
+macOS: httpx builds its proxy map from the system configuration (`_scproxy` -> SCDynamicStore) unless a
+`*_proxy` variable is set. That CoreFoundation call segfaults in a forked, multi-threaded process, which is
+how mutmut runs every mutant, and each crash raises a "Python quit unexpectedly" dialog. A mutant that makes
+a test build a real HTTP client (e.g. `transport=None`) was enough to trigger it. Setting NO_PROXY makes
+`urllib.request.getproxies()` take the environment path and never touch SystemConfiguration. Unit tests never
+use a proxy, so nothing else changes."""
 
 import io
+import os
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("NO_PROXY", "*")
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
 
@@ -31,4 +41,4 @@ def ascii_locale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     would not fail."""
     monkeypatch.setattr(io, "text_encoding", lambda encoding, stacklevel=2: encoding or "ascii")
     with pytest.raises(UnicodeEncodeError):  # the simulation holds, or a test that uses it proves nothing
-        (tmp_path / "probe.txt").write_text("\u200b")
+        (tmp_path / "probe.txt").write_text("​")
