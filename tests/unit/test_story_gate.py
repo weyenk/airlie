@@ -153,15 +153,44 @@ def test_a_command_put_in_the_background_is_refused_and_named(line: str) -> None
     )
 
 
+AMP_REDIRECT = (
+    ", which only bash reads that way (the gate runs in sh, where it can put the command in the background): "
+    "write > file 2>&1, or >> file 2>&1 for &>>"
+)
+PIPE_BOTH = ", which only bash reads (the gate runs in sh): write 2>&1 | instead"
+
+
+@pytest.mark.parametrize(
+    ("line", "does", "instead"),
+    [
+        ("make test &>test.log", "redirects with &>", AMP_REDIRECT),
+        ("make test &>>test.log", "redirects with &>", AMP_REDIRECT),
+        ("make test &>/dev/null && make lint", "redirects with &>", AMP_REDIRECT),
+        ("make test |& tee test.log", "pipes with |&", PIPE_BOTH),
+    ],
+)
+def test_a_redirection_or_a_pipe_only_bash_reads_is_refused_with_what_sh_reads(
+    line: str, does: str, instead: str
+) -> None:
+    """The gate runs in sh: in dash, `cmd &>file` is `cmd &` then `>file` (the command in the background, and
+    the gate passes), and |& is no operator of sh's."""
+    text = f"## Test gate\n```sh\nuv sync\n{line}\n```\n"
+    with pytest.raises(NoTestGate) as e:
+        gate_commands(text)
+    assert str(e.value) == f"the Test gate section of its AGENTS.md {does} ({line!r}){instead}"
+
+
 def test_an_ampersand_that_is_no_control_operator_is_allowed() -> None:
-    """&& and the redirections (2>&1, >&2, <&0, &>file, &>>file) are not the control operator &, and neither
-    is an & that is quoted, escaped, in a comment, in ${...} or in $((...))."""
+    """&& and the redirections sh reads (2>&1, >&2, <&0, and what the refusals of bash's &>, &>> and |& say to
+    write) are not the control operator &, and neither is an & that is quoted, escaped, in a comment, in
+    ${...} or in $((...))."""
     commands = (
         "make test 2>&1",
         "make test >&2",
         "make test <&0",
-        "make test &>test.log",
-        "make test &>>test.log",
+        "make test > test.log 2>&1",
+        "make test >> test.log 2>&1",
+        "make test 2>&1 | tee test.log",
         "make a && make b 2>&1 | tee log",
         "echo 'a & b' \"c & d\" e\\&f",
         "make test # in CI & locally",

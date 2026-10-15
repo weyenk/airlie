@@ -166,9 +166,11 @@ node scripts/run-impacted-tests.mjs
 - **One command per line:** a line that `sh` would read on into the next one is refused: one that ends in a `\`, `&&`,
   `||` or `|`, or leaves a quote (`'`, `"` or a backtick) or a parenthesis open. The story stops before refine, and
   the note names the line. What a `# comment` holds, or a quote, does not count: `make test # see a \` is one command.
-- **In the foreground:** a line that runs a command in the background with `&` (`make lint & make test`, or an `&` at
-  the end) is refused the same way, since that command's result would never reach the gate. `&&` and the redirections
-  `2>&1`, `>&2`, `<&0`, `&>file` and `&>>file` are fine, and so is an `&` that is quoted, escaped or in a comment.
+- **In the foreground, in `sh`:** a line that runs a command in the background with `&` (`make lint & make test`, or
+  an `&` at the end) is refused the same way, since that command's result would never reach the gate. So are bash's
+  `&>file`, `&>>file` and `|&`: the gate runs in `sh`, and in dash `cmd &>file` is `cmd &` then `>file`, the command
+  in the background. Write `> file 2>&1`, `>> file 2>&1` and `2>&1 |`; the note says so. `&&`, `2>&1`, `>&2` and `<&0`
+  are fine, and so is an `&` that is quoted, escaped or in a comment.
 - **Read from the trunk:** `AGENTS.md` is read with git from the story's base commit (the remote's trunk as
   fetched when the story started), never from a worktree: a model that edits `AGENTS.md` in its layer, or an
   uncommitted edit in your checkout, changes nothing, and neither does an object a model replaced with `git
@@ -202,7 +204,7 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 | no directory named `<name>` in `story.repos_root`, or two (on a case-sensitive volume) | the root, and for none the `git clone` command that puts it there |
 | that directory is not a git repository, has no `story.remote`, or its remote names another repository | which, with the clone or `git remote add` command to run, or the URL found and the one the label wants |
 | the label changed after the story started | from what to what |
-| no test gate on the trunk: no `AGENTS.md` (or a link out of the repository, or to nothing), no `Test gate` section, no command in its block, a command continued onto the next line, or one run in the background with `&` | the repository, the trunk and its commit, and what to add, with a three-line example |
+| no test gate on the trunk: no `AGENTS.md` (or a link out of the repository, or to nothing), no `Test gate` section, no command in its block, a command continued onto the next line, one run in the background with `&`, or bash's `&>`, `&>>` or `|&` | the repository, the trunk and its commit, and what to add, with a three-line example |
 | the trunk cannot be fetched | why, and to run the story again: it builds only on the remote's trunk |
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets

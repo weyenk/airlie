@@ -39,8 +39,23 @@ _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
 _WORD_ENDS = " \t;&|()<>"
 """What ends a word in sh: after one of these, as at the start of a line, a # begins a comment."""
-_TWO = ("&&", "||", "&>", ">&", "<&")
-"""The operators of two characters that hold an & or a |: none of them puts a command in the background."""
+_TWO = ("&&", "||", "|&", "&>", ">&", "<&")
+"""The operators of two characters that hold an & or a |."""
+_REFUSED = {
+    "&": (
+        "runs a command in the background with &",
+        ", so its result would never reach the gate: run each command in the foreground",
+    ),
+    "&>": (
+        "redirects with &>",
+        ", which only bash reads that way (the gate runs in sh, where it can put the command in the "
+        "background): write > file 2>&1, or >> file 2>&1 for &>>",
+    ),
+    "|&": ("pipes with |&", ", which only bash reads (the gate runs in sh): write 2>&1 | instead"),
+}
+"""The operators a gate line may not hold, as (what the line does, what to write instead): sh puts the command
+before a control operator & in the background, and its result never reaches the gate; &> (and &>>) and |& are
+bash's, and in dash `cmd &>file` is `cmd &` then `>file`."""
 _CLOSER = {'"': '"', "`": "`", "${": "}"}
 
 
@@ -112,14 +127,16 @@ def _paragraph_line(line: str, paragraph: list[str]) -> bool:
     return bool(paragraph) or not line.startswith(("    ", "\t"))
 
 
-def _read_line(command: str) -> tuple[bool, bool]:
+def _read_line(command: str) -> tuple[bool, str | None]:
     """How sh reads `command`: whether it goes on onto the next line (it ends in a backslash that is not
-    escaped, or in &&, || or |, or it leaves a quote, a backtick, a parenthesis, $(, ${ or $(( open), and
-    whether it puts a command in the background (a control operator &: not one of &&, >&, <&, &>, and not
-    quoted, escaped, in a comment, in ${...} or in $((...))). A # that begins a word begins a comment, and a
-    backslash escapes the character after it, but not in single quotes."""
+    escaped, or in &&, || or |, or it leaves a quote, a backtick, a parenthesis, $(, ${ or $(( open), and the
+    first operator of _REFUSED in it (a control operator &, not one of &&, >& or <&; &>, which &>> begins
+    with; |&), None when there is none. Nothing quoted, escaped, in a comment, in ${...} or in $((...)) is an
+    operator. A # that begins a word begins a comment, and a backslash escapes the character after it, but
+    not in single quotes."""
     opened: list[str] = []  # what is open, innermost last: a quote, `, $(, (, ${, $(( or a ( inside $((
-    ends_in_operator = background = in_word = False
+    refused: str | None = None
+    ends_in_operator = in_word = False
     i = 0
     while i < len(command):
         top, c = (opened[-1] if opened else ""), command[i]
@@ -130,7 +147,7 @@ def _read_line(command: str) -> tuple[bool, bool]:
             continue
         if c == "\\":
             if i + 1 == len(command):
-                return True, background  # it escapes the newline: the next line goes on this one
+                return True, refused  # it escapes the newline: the next line goes on this one
             i, in_word, ends_in_operator = i + 2, True, False
             continue
         if c == _CLOSER.get(top):
@@ -166,14 +183,14 @@ def _read_line(command: str) -> tuple[bool, bool]:
             opened.append("(")
         elif token == ")" and top in ("(", "$("):
             opened.pop()
-        elif token == "&":
-            background = True
+        elif token in _REFUSED and refused is None:
+            refused = token
         if not token.isspace():
             ends_in_operator = token in ("&&", "||", "|")
         # a $(...) is part of a word, a ( ... ) is not
         in_word = token[-1] not in _WORD_ENDS or (token == ")" and top == "$(")
         i += len(token)
-    return bool(opened) or ends_in_operator, background
+    return bool(opened) or ends_in_operator, refused
 
 
 def gate_commands(markdown: str) -> tuple[str, ...]:
@@ -181,8 +198,9 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     line of = or -), whose text is "Test gate" (in any case): the lines of the first fenced block (``` or ~~~)
     after it and before the next heading of its level or a higher one, but blank lines and those that start
     with #, each trimmed. NoTestGate when there is no such heading, no command under it, or a command that
-    goes on onto the next line or that runs one in the background (each is run on its own, and must pass:
-    gate_command). A heading inside a code block is code, and CRLF line ends are read as lines."""
+    goes on onto the next line, that runs one in the background, or that holds bash's &>, &>> or |& (each is
+    run on its own in sh, and must pass: gate_command). A heading inside a code block is code, and CRLF line
+    ends are read as lines."""
     level: int | None = None  # the Test gate heading's, once it is found
     fence: tuple[str, int] | None = None  # the open code block's
     block: list[str] | None = None  # the lines of the gate's block, once it opened
@@ -222,18 +240,15 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     if not commands:
         raise NoTestGate(NO_COMMAND)
     for command in commands:
-        goes_on, background = _read_line(command)
+        goes_on, refused = _read_line(command)
         if goes_on:
             raise NoTestGate(
                 "the Test gate section of its AGENTS.md continues a command onto the next line "
                 f"({_quoted(command)}): put each command on one line"
             )
-        if background:
-            raise NoTestGate(
-                "the Test gate section of its AGENTS.md runs a command in the background with & "
-                f"({_quoted(command)}), so its result would never reach the gate: run each command in the "
-                "foreground"
-            )
+        if refused is not None:
+            does, instead = _REFUSED[refused]
+            raise NoTestGate(f"the Test gate section of its AGENTS.md {does} ({_quoted(command)}){instead}")
     return commands
 
 
