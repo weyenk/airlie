@@ -51,11 +51,12 @@ def _damaged(f: Path, why: str) -> StorySetupError:
 @dataclass
 class StoryState:
     """stories/<card key>/state.json. `stage` is the last stage that finished. `built` maps a layer number
-    ("01") to its branch, commit, run and subtask rows. `attempt` is a layer that stopped part-way: its branch
-    and worktree stay for inspection until a resume rebuilds it. `base` is the commit the story builds on, as
-    {"ref": "origin/main", "sha": ...}: resolved once, so a resume reads and builds on the same code. `gate`
-    is the test gate read from AGENTS.md at that commit, as {"commands": [...], "agents_md": <its blob sha>}:
-    read once, so every layer of the story, resumed or not, passes the same commands."""
+    ("01") to its branch, commit, run, subtask rows and the gate it passed (as shown: its PR names it).
+    `attempt` is a layer that stopped part-way: its branch and worktree stay for inspection until a resume
+    rebuilds it. `base` is the commit the story builds on, as {"ref": "origin/main", "sha": ...}: resolved
+    once, so a resume reads and builds on the same code. `gate` is the test gate read from AGENTS.md at that
+    commit, as {"commands": [...], "agents_md": <its blob sha>}: read once, so every layer built without a
+    person's --test-cmd, resumed or not, passes the same commands."""
 
     path: Path
     card: dict[str, Any]

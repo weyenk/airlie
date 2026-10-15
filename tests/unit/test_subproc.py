@@ -179,12 +179,17 @@ def test_git_configuration_is_added_after_the_entries_already_in_the_environment
         assert with_git_config({"GIT_CONFIG_COUNT": bogus}, [("airlie.c", "1")])["GIT_CONFIG_COUNT"] == "1"
 
 
-def test_without_hooks_keeps_the_credentials_and_adds_its_two_settings_last() -> None:
+def test_without_hooks_keeps_the_credentials_and_adds_its_settings_last() -> None:
     env = without_hooks(
         {"GH_TOKEN": "t", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "c"}
     )
     assert env["GH_TOKEN"] == "t"
-    assert config_pairs(env) == [("a.b", "c"), ("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false")]
+    assert config_pairs(env) == [
+        ("a.b", "c"),
+        ("core.hooksPath", "/dev/null"),
+        ("core.fsmonitor", "false"),
+        ("core.useReplaceRefs", "false"),  # no object a model replaced with `git replace`
+    ]
 
 
 def test_the_gh_directory_is_one_private_empty_directory_per_process() -> None:

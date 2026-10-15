@@ -107,23 +107,35 @@ def changed_files(worktree: Path, base_sha: str) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
-def show_file(repo: Path, commit: str, path: str) -> tuple[str, str] | None:
-    """The file at `path` in `commit`, from git's objects (never a worktree): its blob's sha and its text,
-    read as UTF-8. A symbolic link to another file of the commit is followed; None when the commit has no
-    file there (nothing, a directory, or a link that leaves the commit or leads nowhere)."""
-    found = _git(
+def find_file(repo: Path, commit: str, path: str) -> tuple[str, str]:
+    """What `path` is in `commit`, from git's objects (never a worktree), a symbolic link to another file of
+    the commit followed: ("blob", its sha) for a file; ("symlink", where it points) for a link out of the
+    commit; ("dangling" | "loop" | "notdir", "") for a link that leads to no file of it; ("tree" | "commit",
+    its sha) for a directory or a submodule; ("missing", "") when there is nothing there."""
+    out = _git(
         repo, "cat-file", "--batch-check", "--follow-symlinks", stdin=f"{commit}:{path}\n", check=False
-    ).stdout.split()
-    if len(found) != 3 or found[1] != "blob":  # "<sha> blob <size>"; else missing, a tree, a link out
-        return None
+    ).stdout
+    first, _, rest = out.partition("\n")
+    words = first.split()
+    if words[:1] == ["symlink"]:  # "symlink <size>", then the link's target on a line of its own
+        return "symlink", rest.removesuffix("\n")
+    if words[:1] in (["dangling"], ["loop"], ["notdir"]):
+        return words[0], ""
+    if len(words) == 3:  # "<sha> <type> <size>"
+        return words[1], words[0]
+    return "missing", ""
+
+
+def read_blob(repo: Path, sha: str) -> str:
+    """The blob `sha` as text, read as UTF-8 (anything else replaced)."""
     data = subprocess.run(
-        ["git", *NO_HOOKS_ARGS, "cat-file", "blob", found[0]],
+        ["git", *NO_HOOKS_ARGS, "cat-file", "blob", sha],
         cwd=repo,
         capture_output=True,
         check=True,
         env=agent_env(),
     ).stdout
-    return found[0], data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def remote_url(repo: Path, remote: str) -> str | None:

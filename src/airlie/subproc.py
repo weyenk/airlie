@@ -6,9 +6,10 @@ run_tests and git tools, and the test gates. It holds no GitHub, SSH or Jira cre
 not an OS sandbox: the process still runs as the person's macOS user, and a model that deliberately goes
 after what is stored for that user (the keychain, ~/.ssh) is not stopped by it.
 
-airlie's own git runs no repository hook and no fsmonitor (`NO_HOOKS`): a model can plant either in the
-repository it works in, and git would run them inside airlie's commit or push. `kill_group` stops a command
-and everything it started."""
+airlie's own git runs no repository hook and no fsmonitor, and reads no object through `git replace`
+(`NO_HOOKS`): a model can plant any of them in the repository it works in, and git would run a hook inside
+airlie's commit or push, or show airlie a planted commit or file in place of the real one. `kill_group` stops
+a command and everything it started."""
 
 from __future__ import annotations
 
@@ -43,8 +44,9 @@ NO_PROMPTS = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false", "SSH_ASKPASS":
 NO_SSH = {"GIT_SSH_COMMAND": "false"}
 """git over SSH (git@github.com:...) fails at once instead of reaching a key. It outranks core.sshCommand."""
 
-NO_HOOKS = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"))
-"""airlie's own git: no hook runs (there is none under /dev/null) and no fsmonitor."""
+NO_HOOKS = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"), ("core.useReplaceRefs", "false"))
+"""airlie's own git: no hook runs (there is none under /dev/null), no fsmonitor, and no refs/replace object
+stands in for another (a model's `git replace` in any worktree reaches every other: refs are shared)."""
 NO_HOOKS_ARGS = tuple(arg for key, value in NO_HOOKS for arg in ("-c", f"{key}={value}"))
 """NO_HOOKS as git's -c options."""
 
@@ -117,7 +119,8 @@ def agent_env() -> dict[str, str]:
 
 def without_hooks(env: Mapping[str, str]) -> dict[str, str]:
     """`env` with NO_HOOKS: for airlie's own git and gh that publish (with the person's credentials, or a
-    GitHub App's token), which must run nothing a model planted in the repository."""
+    GitHub App's token), which must run nothing a model planted in the repository and read no object it
+    replaced."""
     return with_git_config(env, NO_HOOKS)
 
 

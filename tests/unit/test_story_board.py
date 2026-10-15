@@ -50,10 +50,8 @@ ISSUE = {
         "summary": "Avatar upload",
         "description": doc("Users want avatars"),
         "status": {"name": "To Do"},
-        "labels": [
-            "repo:o/repo",
-            "frontend",
-        ],  # the repository: a checkout named "repo" (test_story_checkout)
+        # the repository: a checkout named "repo" (test_story_checkout)
+        "labels": ["repo:o/repo", "frontend"],
         "comment": {  # oldest first, as Jira returns them
             "comments": [
                 {"body": adf_doc(note("picked this up"))},

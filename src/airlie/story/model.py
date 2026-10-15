@@ -26,6 +26,11 @@ class RepositoryError(StorySetupError):
     another repository. The message is for the issue, which is told and leaves intake."""
 
 
+class StoryRunning(RuntimeError):
+    """A story whose job already runs in this server (POST /v1/airlie/stories): a second start is refused
+    before its issue is told or moved."""
+
+
 class NoTestGate(Exception):
     """A repository has no test gate at a commit: no AGENTS.md, no Test gate section in it, or no command in
     that section's block. The message says which."""

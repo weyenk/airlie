@@ -127,14 +127,18 @@ does not count), names that repository on github.com, as `git@github.com:<owner>
 `ssh://git@github.com/<owner>/<name>.git` or `https://github.com/<owner>/<name>.git` (`.git` optional, any case).
 
 - `task story -- AIR-7 --repo PATH` builds in PATH instead (another clone, say); its remote must still name the
-  label's repository.
+  label's repository. Only a person's `--repo` does this: `airlie_story` and `POST /v1/airlie/stories` refuse a
+  repository with an issue.
 - A written request (`--text`) has no labels: it is built in `--repo`, else `story.repo`. `story.repo` is for
   written requests only, and an issue never uses it. A written request is pinned to the repository its remote
   names, as written, when it starts (*Publishing as a bot*).
 - The label is also the repository the story is pinned to and publishes to. A label changed after the story
-  started (to another repository, to none, or to several) stops it: the issue gets `the issue's repo: label
-  changed after its story started, from repo:A to repo:B` and is set aside (below). Put the label back, or delete
-  the story's `state.json` to start over.
+  started (to another repository, to none, or to several) stops it until it has published: the issue gets `the
+  issue's repo: label changed after its story started, from repo:A to repo:B` and is set aside (below). Put the
+  label back, or delete the story's `state.json` to start over.
+- Once a story has published (its PRs are open), nothing is built or published again: it runs in the checkout it
+  recorded and looks at neither its label nor that checkout, so a label tidied or a clone moved since still lets it
+  post its PR links and move the issue to *In Review*.
 
 ## The test gate: `AGENTS.md`
 
@@ -151,23 +155,31 @@ node scripts/run-impacted-tests.mjs
 ```
 ~~~
 
-- **Where:** the first heading, at any level (`#` to `######`), whose text is `Test gate`, in any case; then the
-  first fenced code block (```` ``` ```` or `~~~`) after it and before the next heading of its level or a higher
-  one.
-- **The commands:** each line of that block that is not blank and does not start with `#` is one command, one per
-  line (no `\` continuation lines). They run in order, in the layer's worktree and without your credentials,
-  joined with ` && `: the first that fails fails the layer. CRLF line ends are fine.
-- **Read from the trunk:** `AGENTS.md` is read with git from the story's base commit (the trunk as fetched when the
-  story started), never from a worktree: a model that edits `AGENTS.md` in its layer, or an uncommitted edit in
-  your checkout, changes nothing. A symbolic link to another file of the commit is followed.
+- **Where:** the first heading whose text is `Test gate`, in any case: at any level written with `#` (`#` to
+  `######`), or a `Test gate` line underlined with `=` or `-`; then the first fenced code block (```` ``` ```` or
+  `~~~`) after it and before the next heading of its level or a higher one.
+- **The commands:** each line of that block that is not blank and does not start with `#` is one command. They run
+  in order, in the layer's worktree and without your credentials, each in a group of its own (`{ cmd`, a newline,
+  `}`), joined with `&&`: an inline `# comment` ends at its own line, the first command that fails fails the layer
+  and nothing after it runs, and a `cd` carries over to the commands after it. Notes and PR bodies show them as
+  they read, joined with ` && `. CRLF line ends are fine.
+- **One command per line:** a line that ends in a `\` would go on onto the next one, and that is refused: the
+  story stops before refine, and the note names the line.
+- **Read from the trunk:** `AGENTS.md` is read with git from the story's base commit (the remote's trunk as
+  fetched when the story started), never from a worktree: a model that edits `AGENTS.md` in its layer, or an
+  uncommitted edit in your checkout, changes nothing, and neither does an object a model replaced with `git
+  replace` (airlie's git reads no replacement). A symbolic link to another file of the commit is followed; one
+  that leaves the repository, or leads to no file of the commit, stops the story with a note that says which.
 - **When:** at the start of the story, once its repository and base commit are known and before refine, so a
   repository without a gate costs no model time.
 - **Kept for the story's whole life:** the commands and the blob of `AGENTS.md` they came from are kept in
   `state.json` (`gate`). Every resume uses that gate, whatever `AGENTS.md` says by then; to give a story the new
-  one, delete its `state.json` and start it over.
-- **`--test-cmd`** on `task story` wins over `AGENTS.md` for that run (it is not kept: the next run without it
-  uses the story's gate). Nothing else gives a story its gate: `POST /v1/airlie/stories` and `airlie_story` take
-  no test command, and `story.test_cmd` and `AIRLIE_TEST_CMDS` are only for `airlie_run`.
+  one, delete its `state.json` and start it over. Each built layer keeps the gate it passed, and its PR names
+  that one.
+- **`--test-cmd`** on `task story` wins over `AGENTS.md` for that run (it is not kept: the next run without it uses
+  the story's gate). A story whose layers are all built reads no gate: publishing needs none. Nothing else gives a
+  story its gate: `POST /v1/airlie/stories` and `airlie_story` take no test command, and `story.test_cmd` and
+  `AIRLIE_TEST_CMDS` are only for `airlie_run`.
 - The coder's brief for each layer says to follow `AGENTS.md` at the repository root.
 
 ## What stops a story before it starts
@@ -183,19 +195,22 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 | no directory named `<name>` in `story.repos_root`, or two (on a case-sensitive volume) | the root, and for none the `git clone` command that puts it there |
 | that directory is not a git repository, has no `story.remote`, or its remote names another repository | which, with the clone or `git remote add` command to run, or the URL found and the one the label wants |
 | the label changed after the story started | from what to what |
-| no test gate on the trunk: no `AGENTS.md`, no `Test gate` section, or no command in its block | the repository, the trunk and its commit, and what to add, with a three-line example |
+| no test gate on the trunk: no `AGENTS.md` (or a link out of the repository, or to nothing), no `Test gate` section, no command in its block, or a command continued onto the next line | the repository, the trunk and its commit, and what to add, with a three-line example |
+| the trunk cannot be fetched | why, and to run the story again: it builds only on the remote's trunk |
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets
 `cannot be picked up: <reason>` and `Needs a person: fix that, then resume with ...`, and moves to *Blocked* (to
 *In Progress* when `story.jira.statuses.blocked` is null, with a note that says so, to keep `task story:tick` from
 taking it again). `task story` and `POST /v1/airlie/stories` tell the issue the same way, then say why (exit 1, or a
-400). A missing gate is found once the story has started and fetched its trunk: the story stops after `'intake'`
-like any other stop, and the issue goes to *Blocked* (with `blocked: null` it stays in *In Progress*, where the
-pick-up put it). To retry, fix the cause and move the issue back to *To Do*, or run `task story -- AIR-7`.
+400). A missing gate, or a trunk that cannot be fetched, is found once the story has started: the story stops
+after `'intake'` like any other stop, and the issue goes to *Blocked* (with `blocked: null` it stays in *In
+Progress*, where the pick-up put it). To retry, fix the cause and move the issue back to *To Do*, or run `task story
+-- AIR-7`.
 
 `task story:check -- AIR-7` shows all of it without running anything: the label, the checkout and its remote, the
-trunk as last fetched, and the gate, or the reason the story would be blocked. No model runs, nothing is fetched,
-and nothing is written or posted.
+remote's trunk as last fetched (`origin/main`; one never fetched is a note, since a story fetches it first), and the
+gate there, or the reason the story would be blocked. A story that has published is left alone, and check says so.
+No model runs, nothing is fetched, and nothing is written or posted.
 
 ## What you see on the issue
 
@@ -223,7 +238,7 @@ failure is in the next one:
 | stopped after | the failure was in |
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
-| `'intake'` | refining the story, or finding the trunk or its test gate |
+| `'intake'` | refining the story, or fetching the trunk or reading its test gate |
 | `'refine'` | planning the layers, or posting the story's comment |
 | `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
@@ -242,8 +257,11 @@ note work the other way round: they are posted before their stage is saved, so w
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them;
-- `story.trunk` does not exist in the repository, `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira
-  refuses a move;
+- the trunk cannot be fetched (`story.trunk` is not on the remote, or the remote does not answer): a story builds
+  only on the remote's trunk, fetched into `origin/<trunk>` by a refspec that names it (no fetch refspec the
+  repository's configuration names is used), never on the local trunk, which a model's shell can move. Run it
+  again once the remote answers;
+- `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira refuses a move;
 - publishing as the bot: the remote is not a github.com repository, the app is not installed on it or its key is
   wrong (each stops the story before any model works, and says how to fix it), or the remote now leads somewhere
   else than the repository the story is pinned to (a step refuses; see *Publishing as a bot*).
@@ -270,8 +288,8 @@ exits. The tick takes *To Do* issues, so its next beat resumes the story from it
 `/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). The
 chief calls `airlie_story`, a tool of the `airlie mcp` server that `task opencode:install` registers in OpenCode's
 `opencode.json`; it starts the same pipeline through `task serve`, and the chief follows it with `airlie_status`. An
-issue is built in the repository its `repo:` label names (the tool sends a `repo` only when it is given one); a
-written request in the git repository `airlie mcp` was started in, or in the `repo` the tool is given, or else in
+issue is built in the repository its `repo:` label names (the tool refuses a `repo` with an issue); a written
+request in the git repository `airlie mcp` was started in, or in the `repo` the tool is given, or else in
 `story.repo`. `airlie_story` takes no test command: the gate is the repository's `AGENTS.md`. A story that stops is
 a finished job whose result carries the reason, so the chief reports it as stopped, with the reason instead of PR
 links, and says it resumes when the same command runs again.
@@ -289,19 +307,20 @@ curl -s 'http://127.0.0.1:8090/v1/airlie/jobs/story-AIR-7?since=0&wait=60'
 curl -s -X DELETE http://127.0.0.1:8090/v1/airlie/jobs/story-AIR-7
 ```
 
-`POST /v1/airlie/stories` takes exactly one of `card` (an issue key or link) or `text`, and optionally `repo`: a
-written request's repository (`story.repo` otherwise), or for an issue the checkout to use in place of the one its
-label names. A body with anything else, such as a `test_cmd`, is a `422`: a story's gate is its repository's
-`AGENTS.md`, never the request's. It answers `202` with `{"job_id": "story-AIR-7", "kind": "story"}`. A bad issue
-reference, or a story that cannot start (no repository for a written request, an issue whose label or checkout
-cannot be used, a role that is not a specialist), is a `400` with the reason before anything runs; an issue whose
-label or checkout cannot be used is also told so, and moved out of *To Do* (*What stops a story before it starts*).
-The same story already running is a `409`. `GET /v1/airlie/jobs/{id}?since=N&wait=S` holds its reply until there is
-a new event, the job ends or `S` seconds pass (at most 300), and answers `state` (`running`, `done`, `failed`,
-`cancelled`), `events`, `next` (pass it as the next `since`) and, at the end, `result` or `error`. A story that
-stops is a `done` job whose `result.blocked` holds the reason (`result` also has `stage`, `prs` and `dir`); a second
-story while one is in flight is accepted and then fails with `StoryBusy`. `DELETE` cancels, as above. Jobs live in
-the `task serve` process: restarting it forgets them, and the story's directory stays.
+`POST /v1/airlie/stories` takes exactly one of `card` (an issue key or link) or `text`, and optionally `repo`, a
+written request's repository (`story.repo` otherwise). A `repo` with a `card` is a `422`: an issue's repository is its
+label, and only a person's `task story --repo` builds it elsewhere. A body with anything else, such as a `test_cmd`,
+is a `422` too: a story's gate is its repository's `AGENTS.md`, never the request's. It answers `202` with `{"job_id":
+"story-AIR-7", "kind": "story"}`. A bad issue reference, or a story that cannot start (no repository for a written
+request, an issue whose label or checkout cannot be used, a role that is not a specialist), is a `400` with the reason
+before anything runs; an issue whose label or checkout cannot be used is also told so, and moved out of *To Do* (*What
+stops a story before it starts*). The same story already running is a `409`, decided before anything is posted to its
+issue or the issue is moved. `GET /v1/airlie/jobs/{id}?since=N&wait=S` holds its reply until there is a new event, the
+job ends or `S` seconds pass (at most 300), and answers `state` (`running`, `done`, `failed`, `cancelled`), `events`,
+`next` (pass it as the next `since`) and, at the end, `result` or `error`. A story that stops is a `done` job whose
+`result.blocked` holds the reason (`result` also has `stage`, `prs` and `dir`); a second story while one is in flight
+is accepted and then fails with `StoryBusy`. `DELETE` cancels, as above. Jobs live in the `task serve` process:
+restarting it forgets them, and the story's directory stays.
 
 **Without `--api-key`, `task serve` lets any program on this machine start stories**, which push branches and open
 draft PRs. Start it with `task serve -- --api-key SECRET` (it also reads `AIRLIE_SERVE_API_KEY`) to require
@@ -355,10 +374,10 @@ specialist, Jira refusing the credentials or not answering; `task story:check` n
 An issue that a beat leaves in *To Do* is taken again by every later beat, and nothing behind it would ever be built.
 So the tick moves two kinds of issue out of *To Do*:
 
-- **A story it cannot place or open:** the issue's label or the checkout it names cannot be used (*What stops a
-  story before it starts*), or its `state.json` cannot be read or is damaged, its `events.jsonl` cannot be
-  appended to, the story was started in another repository, or (for a written request, until it has published)
-  the remote no longer names the GitHub repository the story publishes to. The issue gets `cannot be picked up:
+- **A story it cannot place or open:** until it has published, the issue's label or the checkout it names cannot
+  be used (*What stops a story before it starts*), or the remote no longer names the GitHub repository the story
+  publishes to; or its `state.json` cannot be read or is damaged, its `events.jsonl` cannot be appended to, or the
+  story was started in another repository. The issue gets `cannot be picked up:
   <reason>` and `Needs a person`, and goes to *Blocked* (to *In Progress* when `blocked: null`, with a note that
   says so). The reason says what to fix: the label, the checkout or its remote, or the file (fix it or delete
   it), or to resume the story in the repository it was started in.
@@ -416,10 +435,9 @@ What changes:
 - **Each story is pinned to one repository:** an issue's is the one its `repo:` label names; a written request's,
   the one its remote named, as written (before any `insteadOf`), when the story started. `state.json` keeps it.
   Before every step airlie works out where git would fetch from and push to, with every rule applied, and refuses
-  anything but that repository's `https://github.com/` URL, before a token is minted. A later run that finds the
-  remote naming another repository, or none, cannot open the story until it has published (an issue's checkout is
-  checked at every run: *Which repository*), and `task story:tick` sets the issue aside (*Blocked*, with the
-  reason).
+  anything but that repository's `https://github.com/` URL, before a token is minted. Until the story has
+  published, a later run that finds the remote naming another repository, or none, cannot open the story, and
+  `task story:tick` sets the issue aside (*Blocked*, with the reason).
 - **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
   its tokens, from merging. A private repository on GitHub Free cannot have one: there the bot could merge, and the
   only guard is that airlie has no code that merges.
@@ -438,7 +456,9 @@ A model can still write the repository's git configuration (`.git/config`, which
 files, and airlie's own git reads them. So airlie gives its own git these settings on the command line or in its
 environment, which outrank the repository's configuration:
 
-- its commits, the squash and every publish step: no repository hook (`core.hooksPath`) and no fsmonitor;
+- its commits, the squash, what it reads (the trunk's `AGENTS.md`, the remote) and every publish step: no
+  repository hook (`core.hooksPath`), no fsmonitor, and no object a model replaced with `git replace`
+  (`core.useReplaceRefs`: `refs/replace` is shared by every worktree);
 - every publish step, as you or as the bot:
   - no credential helper but yours, as your global and system configuration name them, or, as the bot, gh's
     alone, for github.com; no ssh command but yours (`core.sshCommand` from your global or system configuration,
@@ -460,8 +480,8 @@ What planted repository configuration can still do during a publish step:
 - **As you,** where the remote points is the repository's to say, within those transports: a rewritten remote or
   `pushurl` on this machine is refused, so no command it names runs, but one on another SSH or HTTPS host is not.
   A model that rewrites it during a run has that run push your branches there, with your credentials (for a
-  remote on github.com, the next run finds another repository and sets the story aside: an issue's at every run,
-  a written request's until it has published). Settings for your remote's exact URL (`http.<url>.sslVerify`,
+  remote on github.com, the next run finds another repository and, until the story has published, sets it
+  aside). Settings for your remote's exact URL (`http.<url>.sslVerify`,
   `http.<url>.curloptResolve`) outrank the general ones above, so over HTTPS a model that also leaves a listener
   running on this machine could read what your credential helper sends.
 - **As the bot,** git's other settings still apply, but as far as these settings and the URL check reach, none

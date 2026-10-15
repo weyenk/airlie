@@ -21,7 +21,7 @@ from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, Nul
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
 from airlie.story.model import Layer, Story, StorySetupError
-from airlie.story.pipeline import StoryPipeline, _layers_note, _reason, _running
+from airlie.story.pipeline import StoryBlocked, StoryPipeline, _layers_note, _reason, _running
 from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
 from airlie.teams.worktree import add_worktree
@@ -77,21 +77,33 @@ B1, B2 = "add-avatar-upload-01-storage", "add-avatar-upload-02-profile"
 
 class RecordedGh:
     """Stands in for gh: records every command and its environment and answers `gh pr view` with numbered PRs.
-    git (the trunk fetch) runs for real, unless `real_git` is off: as the bot, the remote is GitHub."""
+    The trunk fetch (the one git command) is `fetch`: "mirror" (the default) acts as a remote whose trunk is
+    the local one, setting the ref the fetch's refspec names to that branch, with no remote and no network;
+    "real" runs git (a local bare remote, with local_remotes); "down" fails, as a remote that does not
+    answer."""
 
-    def __init__(self, *, real_git: bool = True) -> None:
+    def __init__(self, *, fetch: str = "mirror") -> None:
         self.calls: list[list[str]] = []
         self.envs: list[dict[str, str]] = []
         self.numbers: dict[str, int] = {}
-        self.real_git = real_git
+        self.fetch = fetch
 
     async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
         self.calls.append(args)
         self.envs.append(dict(env))
         if args[0] == "git":
-            if not self.real_git:
+            if self.fetch == "real":
+                return await run_cmd(args, cwd, env)
+            if self.fetch == "down":
                 raise PublishError(f"`{' '.join(args)}` exited 128: no network in a unit test")
-            return await run_cmd(args, cwd, env)
+            source, _, target = args[-1].removeprefix("+").partition(":")
+            found = subprocess.run(
+                ["git", "rev-parse", "--verify", "-q", source], cwd=cwd, capture_output=True, text=True
+            ).stdout.strip()
+            if not found:
+                raise PublishError(f"`{' '.join(args)}` exited 128: fatal: couldn't find remote ref {source}")
+            git(cwd, "update-ref", target, found)
+            return ""
         if args[:3] == ["gh", "stack", "view"]:
             raise PublishError("not a stack yet")
         if args[:3] == ["gh", "pr", "view"]:
@@ -466,7 +478,7 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert len(st.runs) == 4  # refine, layers, then one run per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
     assert [e["kind"] for e in log] == [
-        *("story_start", "stage", "fetch_failed"),  # intake, then the trunk (no remote here), once
+        *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
         *("layer_start", "layer_built", "layer_start", "layer_built", "stage"),  # build
         *("published", "stage", "stage", "story_done"),  # publish, review
@@ -538,7 +550,7 @@ async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path, loca
     trunk = git(repo, "branch", "--show-current")
     news = advance_origin(tmp_path, repo)
     mine = git(repo, "rev-parse", trunk)
-    st = await pipeline(tmp_path, repo, happy_engine()).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, happy_engine(), RecordedGh(fetch="real")).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", news, B1)  # fails unless layer 01 sits on the fetched trunk
     assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"  # the layer's own change, not NEWS
@@ -549,28 +561,61 @@ async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path, loca
     assert (first["base"], first["base_sha"]) == (f"origin/{trunk}", news)
 
 
-async def test_the_trunk_ref_is_the_remote_branch_when_there_is_one_else_the_local_trunk(
+async def test_the_trunk_is_the_remote_branch_just_fetched_and_a_fetch_that_fails_is_a_stop(
     tmp_path: Path,
     local_remotes: None,
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
-    pipe = pipeline(tmp_path, repo, FakeEngine())
+    pipe = pipeline(tmp_path, repo, FakeEngine(), RecordedGh(fetch="real"))
     st = StoryState.open(tmp_path / "s", text_card("x"), pipe.repo)
-    events = st.path / "events.jsonl"
-    assert await pipe._trunk_ref(st) == trunk  # no remote: the fetch fails, which is an event, not a stop
-    [failed] = kinds(events, "fetch_failed")
+    with pytest.raises(StoryBlocked, match=f"^the trunk {trunk} could not be fetched from origin"):
+        await pipe._trunk_ref(st)  # no remote: no trunk to build on, and the local one is no stand-in
+    [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
     assert failed["remote"] == "origin" and failed["trunk"] == trunk and "origin" in failed["error"]
-    advance_origin(tmp_path, repo)
+    news = advance_origin(tmp_path, repo)
     assert await pipe._trunk_ref(st) == f"origin/{trunk}"
-    # fetched, but with no remote-tracking branch to build on (no fetch refspec): the local trunk, no event
+    assert git(repo, "rev-parse", f"origin/{trunk}") == news
+
+
+async def test_a_trunk_that_cannot_be_fetched_stops_the_story_before_any_model_and_says_to_run_it_again(
+    tmp_path: Path,
+) -> None:
+    repo = gated(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    board, engine = RecordingBoard(), happy_engine()
+    pipe = pipeline(tmp_path, repo, engine, RecordedGh(fetch="down"), board=board, test_cmd=None)
+    st = await pipe.run(ISSUE)
+    assert st.stage == "intake" and st.base is None and st.gate is None and engine.requests == []
+    assert st.blocked is not None
+    assert st.blocked.startswith(f"the trunk {trunk} could not be fetched from origin")
+    assert "no network in a unit test" in st.blocked and "run the story again" in st.blocked
+    assert board.moves == ["building", "blocked"]
+    stop = f"{NOTE_PREFIX}stopped after 'intake': the trunk {trunk} could not be fetched"
+    assert board.notes[-1].startswith(stop)
+
+
+async def test_a_story_builds_on_the_fetched_remote_trunk_never_on_a_local_one_a_model_moved(
+    tmp_path: Path, local_remotes: None
+) -> None:
+    """A model's shell can move the local trunk (a weaker gate, say) and plant a fetch refspec that maps
+    nothing, so a plain `git fetch origin main` leaves origin/main where it was, or nowhere. The fetch names
+    the one ref it updates, and the story builds on it and reads its gate there, or stops."""
+    repo = gated(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    news = advance_origin(tmp_path, repo)  # the remote's trunk: the gate is ./check.sh
+    commit_file(repo, "AGENTS.md", agents_md("true"), "the local trunk, moved to a weaker gate")
     git(repo, "update-ref", "-d", f"refs/remotes/origin/{trunk}")
-    git(repo, "config", "--unset-all", "remote.origin.fetch")
-    assert await pipe._trunk_ref(st) == trunk
-    assert len(kinds(events, "fetch_failed")) == 1
+    planted = "+refs/heads/nothing:refs/remotes/origin/nothing"
+    git(repo, "config", "--replace-all", "remote.origin.fetch", planted)
+    gh = RecordedGh(fetch="real")
+    st = await pipeline(tmp_path, repo, happy_engine(), gh, test_cmd=None).run(text_card("avatars"))
+    assert st.base == {"ref": f"origin/{trunk}", "sha": news}
+    assert st.gate is not None and st.gate["commands"] == ["./check.sh"]
+    assert st.blocked is None and st.stage == "review"
 
 
-async def test_a_failed_fetch_event_masks_url_credentials(tmp_path: Path) -> None:
+async def test_a_failed_fetch_is_masked_in_its_event_and_in_the_stop_reason(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
 
     class Refuses(RecordedGh):
@@ -578,11 +623,10 @@ async def test_a_failed_fetch_event_masks_url_credentials(tmp_path: Path) -> Non
             url = "https://user:secret@example.com/o/r.git"
             raise PublishError(f"`git fetch -q origin main` exited 128: fatal: repository '{url}/' not found")
 
-    pipe = pipeline(tmp_path, repo, FakeEngine(), Refuses())
-    st = StoryState.open(tmp_path / "s", text_card("x"), pipe.repo)
-    await pipe._trunk_ref(st)
+    st = await pipeline(tmp_path, repo, FakeEngine(), Refuses()).run(text_card("x"))
     [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
-    assert "https://***@example.com/o/r.git/" in failed["error"] and "secret" not in failed["error"]
+    for said in (failed["error"], st.blocked or ""):
+        assert "https://***@example.com/o/r.git/" in said and "secret" not in said
 
 
 def test_a_stop_reason_is_what_git_said() -> None:
@@ -859,14 +903,14 @@ async def test_a_resume_builds_on_the_base_the_story_started_from_not_on_a_newer
     news = advance_origin(tmp_path, repo)
     card = text_card("avatars")
     broken = happy_engine(qa=[DONE], coder=[NOTE, DONE], reviewer=[APPROVE])  # layer 01's tests stay red
-    st = await pipeline(tmp_path, repo, broken).run(card)
+    st = await pipeline(tmp_path, repo, broken, RecordedGh(fetch="real")).run(card)
     assert st.stage == "layers" and st.blocked is not None
     assert st.base == {"ref": f"origin/{trunk}", "sha": news}
     later = push_news(tmp_path, trunk, "LATER")  # the remote moves on while the story is stopped
     again = FakeEngine(
         {"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
     )
-    st = await pipeline(tmp_path, repo, again).run(card)
+    st = await pipeline(tmp_path, repo, again, RecordedGh(fetch="real")).run(card)
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", news, B1)  # layer 01 was rebuilt on the same base
     with pytest.raises(subprocess.CalledProcessError):  # the newer commit was never fetched
@@ -879,7 +923,9 @@ async def test_a_trunk_that_does_not_exist_stops_the_story_before_any_model_is_a
     engine = happy_engine()
     st = await pipeline(tmp_path, repo, engine, story={"trunk": "nonesuch"}).run(text_card("avatars"))
     assert st.stage == "intake" and st.base is None
-    assert st.blocked is not None and st.blocked.startswith("the trunk 'nonesuch' does not exist in ")
+    assert st.blocked is not None
+    assert st.blocked.startswith("the trunk nonesuch could not be fetched from origin")
+    assert "couldn't find remote ref refs/heads/nonesuch" in st.blocked
     assert engine.requests == []
 
 
@@ -1251,7 +1297,7 @@ def commit_file(repo: Path, name: str, text: str, message: str | None = None) ->
 def checkout_of(root: Path, github_repo: str, *gate: str) -> Path:
     """A clone of github.com/<github_repo> in `root`, named after it, as repo_with_marker_tests makes one (its
     tests pass once a file named PASS exists), with an AGENTS.md whose Test gate runs `gate` (./check.sh by
-    default) and an SSH remote, origin, that names the repository."""
+    default), an SSH remote, origin, that names the repository, and origin/<trunk> where its trunk is."""
     repo = root / github_repo.split("/")[1]
     repo.mkdir(parents=True)
     (repo / "README.md").write_text("hi\n")
@@ -1264,6 +1310,8 @@ def checkout_of(root: Path, github_repo: str, *gate: str) -> Path:
     git(repo, "add", "-A")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
     git(repo, "remote", "add", "origin", f"git@github.com:{github_repo}.git")
+    trunk = git(repo, "branch", "--show-current")
+    git(repo, "update-ref", f"refs/remotes/origin/{trunk}", trunk)  # as a clone has it: fetched when cloned
     return repo
 
 
@@ -1288,7 +1336,7 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/the-persons-agent.sock")
     repo = on_github(tmp_path)
     trunk = git(repo, "branch", "--show-current")
-    github, gh = FakeGitHub(), RecordedGh(real_git=False)  # no fetch reaches GitHub from a unit test
+    github, gh = FakeGitHub(), RecordedGh()  # no fetch reaches GitHub from a unit test
     st = await pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github)).run(
         text_card("x")
     )
@@ -1316,7 +1364,8 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
     # and no token is kept: not in the state, an event, a PR body, a note, or the repository's config
     kept = files_under(st.path) + (repo / ".git" / "config").read_text()
     assert not [t for t in [*github.tokens, *github.jwts] if t in kept]
-    assert kinds(st.path / "events.jsonl", "fetch_failed")[0]["error"].endswith("no network in a unit test")
+    fetch = ["git", "fetch", "-q", "--refmap=", "origin", f"+refs/heads/{trunk}:refs/remotes/origin/{trunk}"]
+    assert gh.calls[0] == fetch and st.base is not None and st.base["ref"] == f"origin/{trunk}"
 
 
 async def test_as_the_bot_a_remote_a_model_redirects_during_the_build_stops_the_story_at_publish(
@@ -1325,7 +1374,7 @@ async def test_as_the_bot_a_remote_a_model_redirects_during_the_build_stops_the_
     """The test gate runs model-written code, which can rewrite the shared .git/config. Publishing then
     refuses before a token is minted for it, and the next run cannot open the story: tick sets it aside."""
     repo = on_github(tmp_path)
-    github, gh = FakeGitHub(installed=("o/r", "evil/other")), RecordedGh(real_git=False)
+    github, gh = FakeGitHub(installed=("o/r", "evil/other")), RecordedGh()
     pipe = pipeline(tmp_path, repo, happy_engine(), gh, app=fake_app(tmp_path, github), test_cmd=PLANT)
     st = await pipe.run(text_card("avatars"))
     assert git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"  # the redirect ran
@@ -1349,10 +1398,16 @@ async def test_as_the_bot_a_token_a_command_prints_reaches_no_error_state_event_
     github = FakeGitHub()
 
     class Leaky(RecordedGh):
+        """Echoes its token when `leaks` fails: the fetch, or the submit."""
+
+        def __init__(self, leaks: str) -> None:
+            super().__init__()
+            self.leaks = leaks
+
         async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
-            if args[0] == "git":
+            if args[0] == "git" and self.leaks == "fetch":
                 said = "fatal: unable to access https://x-access-token:$GH_TOKEN@github.com/o/r.git/"
-            elif args[:3] == ["gh", "stack", "submit"]:
+            elif args[:3] == ["gh", "stack", "submit"] and self.leaks == "submit":
                 said = "remote: Permission to o/r.git denied to token $GH_TOKEN"
             else:
                 return await super().__call__(args, cwd, env)
@@ -1360,15 +1415,20 @@ async def test_as_the_bot_a_token_a_command_prints_reaches_no_error_state_event_
             return await run_cmd(["sh", "-c", f'echo "{said}" >&2; exit 1'], cwd, env)
 
     jira = FakeJira()
-    st = await pipeline(
-        tmp_path, repo, happy_engine(), Leaky(), board=jira_board_for(jira), app=fake_app(tmp_path, github)
-    ).run(ISSUE)
+    app, board = fake_app(tmp_path, github), jira_board_for(jira)
+    st = await pipeline(tmp_path, repo, happy_engine(), Leaky("fetch"), board=board, app=app).run(ISSUE)
+    assert st.stage == "intake" and st.blocked is not None  # a trunk that cannot be fetched stops the story
+    [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
+    for said in (failed["error"], st.blocked):
+        assert "x-access-token:***@github.com" in said or "https://***@github.com" in said
+    (st.path / "state.json").unlink()  # the story starts over: the fetch works now, and the submit leaks
+    st = await pipeline(tmp_path, repo, happy_engine(), Leaky("submit"), board=board, app=app).run(ISSUE)
     assert st.stage == "build" and st.blocked is not None
     assert "denied to token ***" in st.blocked
-    [failed] = kinds(st.path / "events.jsonl", "fetch_failed")
-    assert "x-access-token:***@github.com" in failed["error"] or "https://***@github.com" in failed["error"]
     comments = [r.content.decode() for r in jira.requests if r.url.path.endswith("/comment")]
     assert any("denied to token ***" in c for c in comments)
+    # the first run's stop is on the issue too (its masked URL holds "**", which ADF renders as bold markup)
+    assert any("could not be fetched from origin" in c for c in comments)
     secrets = [*github.tokens, *github.jwts]
     assert len(github.tokens) >= 3 and not [
         t for t in secrets if t in files_under(st.path) + "".join(comments)
@@ -1393,7 +1453,7 @@ async def test_a_bot_that_cannot_be_found_stops_the_story_before_any_model_works
     """Who commits the layers is asked for right after prepare: an app that cannot get a token stops the
     story before refine, not after refine and the layer plan."""
     repo = on_github(tmp_path)
-    engine, gh = happy_engine(), RecordedGh(real_git=False)
+    engine, gh = happy_engine(), RecordedGh()
     app = fake_app(tmp_path, FakeGitHub(installed=("o/elsewhere",)))
     st = await pipeline(tmp_path, repo, engine, gh, app=app).run(text_card("avatars"))
     assert st.stage == "new" and st.blocked is not None
@@ -1416,7 +1476,7 @@ async def test_a_resumed_story_pins_its_repository_before_the_runs_first_model_w
     plant = FakeReply(tool_calls=[ToolCall("p", "shell", json.dumps({"cmd": redirect}))])
     roles = {**STORY_ROLES, "product": (STORY_ROLES["product"][0], ["read_file", "list_dir", "shell"])}
     github = FakeGitHub(installed=("o/r", "evil/other"))  # the app could mint for either
-    gh = RecordedGh(real_git=False)
+    gh = RecordedGh()
     app = fake_app(tmp_path, github)
     st = await pipeline(tmp_path, repo, happy_engine(product=[plant, STORY]), gh, app=app, roles=roles).run(
         card
@@ -1443,7 +1503,7 @@ async def test_a_story_that_has_published_needs_no_working_app_nor_its_remote(
     GitHub nothing, and the repository its remote names no longer matters: nothing is published again."""
     repo = on_github(tmp_path)
     card = text_card("avatars")
-    gh, app = RecordedGh(real_git=False), fake_app(tmp_path, FakeGitHub())
+    gh, app = RecordedGh(), fake_app(tmp_path, FakeGitHub())
     first = await pipeline(tmp_path, repo, happy_engine(), gh, app=app).run(card)
     assert first.stage == "review" and first.github_repo == "o/r"
     if stage == "publish":  # the PR links never reached the issue: the next run posts them
@@ -1452,7 +1512,7 @@ async def test_a_story_that_has_published_needs_no_working_app_nor_its_remote(
     if moved:
         git(repo, "remote", "set-url", "origin", "git@github.com:o/moved.git")
     github = FakeGitHub(installed=())  # an app that cannot get a token now
-    after = RecordedGh(real_git=False)
+    after = RecordedGh()
     st = await pipeline(tmp_path, repo, FakeEngine(), after, app=fake_app(tmp_path, github)).run(card)
     assert st.blocked is None and st.stage == "review"
     assert github.requests == [] and after.calls == []
@@ -1476,7 +1536,7 @@ async def test_without_a_persons_command_the_gate_is_read_from_agents_md_once_an
     [read] = kinds(st.path / "events.jsonl", "gate")
     assert (read["commands"], read["agents_md"], read["base"]) == (st.gate["commands"], blob, st.base)
     log = [json.loads(x)["kind"] for x in (st.path / "events.jsonl").read_text().splitlines()]
-    assert log[:5] == ["story_start", "stage", "fetch_failed", "gate", "run"]  # after the base, before refine
+    assert log[:4] == ["story_start", "stage", "gate", "run"]  # after the base, before refine
     gate = "test -f README.md && ./check.sh"  # the studio's one command, as before
     assert f"layer 01/02 built: Storage (`{gate}` passes)" in (st.path / "notes.md").read_text()
     assert f"Tests: `{gate}` passes on this branch." in (st.path / "pr-01.md").read_text()
@@ -1511,6 +1571,11 @@ async def test_a_gate_edited_in_the_persons_checkout_or_in_a_layers_worktree_is_
             "## Test gate\n\n```sh\n# none yet\n```\n",
             "the Test gate section of its AGENTS.md lists no command",
         ),
+        (
+            "## Test gate\n\n```sh\npytest -q \\\n  --maxfail=1\n```\n",
+            "the Test gate section of its AGENTS.md continues a command onto the next line "
+            "('pytest -q \\\\')",
+        ),
     ],
 )
 async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model_works(
@@ -1522,18 +1587,17 @@ async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model
     trunk = git(repo, "branch", "--show-current")
     sha = git(repo, "rev-parse", trunk)
     board, engine = RecordingBoard(), happy_engine()
-    pipe = pipeline(
-        tmp_path, repo, engine, RecordedGh(real_git=False), board=board, test_cmd=None, github_repo="o/r"
-    )
+    pipe = pipeline(tmp_path, repo, engine, RecordedGh(), board=board, test_cmd=None, github_repo="o/r")
     st = await pipe.run(ISSUE)
     assert st.stage == "intake" and st.gate is None and engine.requests == []
     assert st.blocked is not None and st.blocked.startswith(
-        f"o/r has no test gate on {trunk} ({sha[:12]}): {problem}"
+        f"o/r has no test gate on origin/{trunk} ({sha[:12]}): {problem}"
     )
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in st.blocked
     assert "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```" in st.blocked
     assert board.moves == ["building", "blocked"]  # out of intake, so the queue moves on
-    assert board.notes[-1].startswith(f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on {trunk}")
+    stop = f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on origin/{trunk}"
+    assert board.notes[-1].startswith(stop)
 
 
 async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
@@ -1595,7 +1659,7 @@ async def test_the_issues_label_is_the_repository_the_story_is_pinned_to_and_pub
     tmp_path: Path,
 ) -> None:
     repo = on_github(tmp_path)  # its remote names o/r
-    github, gh = FakeGitHub(), RecordedGh(real_git=False)
+    github, gh = FakeGitHub(), RecordedGh()
     app = fake_app(tmp_path, github)
     st = await pipeline(tmp_path, repo, happy_engine(), gh, app=app, github_repo="O/R").run(ISSUE)
     assert st.blocked is None and st.stage == "review"
@@ -1608,8 +1672,55 @@ async def test_a_remote_that_is_not_the_labels_repository_stops_the_story_before
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     git(repo, "remote", "add", "origin", "git@github.com:o/other.git")
-    engine, gh = happy_engine(), RecordedGh(real_git=False)
+    engine, gh = happy_engine(), RecordedGh()
     st = await pipeline(tmp_path, repo, engine, gh, github_repo="o/r").run(ISSUE)
     assert st.stage == "new" and st.blocked is not None
     assert "story.remote 'origin' names o/other, not o/r" in st.blocked
     assert engine.requests == [] and gh.calls == []
+
+
+async def test_an_inline_comment_in_the_gate_does_not_hide_a_command_after_it_that_fails(
+    tmp_path: Path,
+) -> None:
+    """Joined as one line, `./check.sh # …` would comment out every command after it, and the layer would pass
+    on ./check.sh alone. Each command runs in a group of its own, so the one that fails fails the layer."""
+    commands = ["./check.sh   # the marker tests", "test -f NEVER   # stands in for a suite that fails"]
+    repo = gated(tmp_path, *commands)
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(text_card("avatars"))
+    assert st.gate is not None and st.gate["commands"] == commands
+    assert st.stage == "layers" and st.blocked is not None
+    assert f"`{' && '.join(commands)}` fails on" in st.blocked  # shown as the commands read, joined with &&
+
+
+# ---- each layer keeps the gate it was built with: its PR says what it passed ----
+
+
+async def test_each_pr_body_names_the_gate_its_own_layer_passed(tmp_path: Path) -> None:
+    """Layer 01 passes AGENTS.md's gate; layer 02 fails it (it writes profile.txt), and a resume with a
+    person's --test-cmd builds it with that. Each PR says what its own layer passed."""
+    repo = gated(tmp_path, "./check.sh", "test ! -f profile.txt")
+    card = text_card("Let users upload an avatar")
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(card)
+    assert st.stage == "layers" and st.blocked is not None and list(st.built) == ["01"]
+    again = FakeEngine({"qa": [DONE], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    st = await pipeline(tmp_path, repo, again, test_cmd="./check.sh").run(card)
+    assert st.blocked is None and st.stage == "review"
+    assert [st.built[n]["gate"] for n in ("01", "02")] == [
+        "./check.sh && test ! -f profile.txt",
+        "./check.sh",
+    ]
+    first, second = ((st.path / f"pr-0{n}.md").read_text(encoding="utf-8") for n in (1, 2))
+    assert "Tests: `./check.sh && test ! -f profile.txt` passes on this branch." in first
+    assert "Tests: `./check.sh` passes on this branch." in second
+
+
+async def test_a_story_whose_layers_are_all_built_publishes_without_reading_a_gate(tmp_path: Path) -> None:
+    """Every layer was built with a person's --test-cmd and the submit failed. Publishing needs no gate (each
+    layer keeps its own), so a resume without --test-cmd publishes, though AGENTS.md has none to read."""
+    repo = repo_with_marker_tests(tmp_path)  # no AGENTS.md
+    card = text_card("Let users upload an avatar")
+    st = await pipeline(tmp_path, repo, happy_engine(), FailingGh("the network fell over")).run(card)
+    assert st.stage == "build" and st.blocked is not None and st.gate is None
+    st = await pipeline(tmp_path, repo, FakeEngine(), test_cmd=None).run(card)
+    assert st.blocked is None and st.stage == "review" and st.gate is None
+    assert "Tests: `./check.sh` passes on this branch." in (st.path / "pr-02.md").read_text(encoding="utf-8")

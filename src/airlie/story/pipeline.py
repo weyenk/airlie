@@ -19,7 +19,7 @@ from typing import Any
 from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
-from airlie.story.gate import missing_gate, read_gate
+from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -107,6 +107,11 @@ def _kept(wt: Path, branch: str) -> str:
         "The next run removes that worktree and branch before it rebuilds the layer: "
         "copy anything you want to keep first."
     )
+
+
+def _to_build(st: StoryState) -> bool:
+    """A layer of the story is still to be built: its layers are not planned yet, or one is not built."""
+    return st.layers is None or any(f"{i + 1:02d}" not in st.built for i in range(len(st.layers)))
 
 
 def _running(st: StoryState) -> str:
@@ -200,7 +205,7 @@ class StoryPipeline:
                     st.save()
             await self._intake(st, card)
             base = await self._base(st)
-            if not st.done("publish"):  # a layer to build, or PR bodies to write: both name the gate
+            if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
                 self._gate(st, base)
             story = await self._refine(st, card)
             layers = await self._layers(st, card, story)
@@ -230,16 +235,17 @@ class StoryPipeline:
         st.finish("intake")
 
     async def _base(self, st: StoryState) -> dict[str, str]:
-        """The commit the story builds on, resolved once and kept in the state: the remote's trunk, fetched,
-        else the local one. Refine and layers read the code at it, layer 01 is built on it, and a resume reads
-        and builds on that same commit whatever the remote has moved on to."""
+        """The commit the story builds on, resolved once and kept in the state: the remote's trunk, fetched
+        now (`_trunk_ref`). Refine and layers read the code at it and its test gate is read from it, layer 01
+        is built on it, and a resume reads and builds on that same commit whatever the remote has moved on
+        to."""
         if st.base is None:
             ref = await self._trunk_ref(st)
             sha = rev_parse(self.repo, ref)
-            if sha is None:
+            if sha is None:  # a fetch that succeeded leaves it there: something removed it since
                 raise StoryBlocked(
-                    f"the trunk '{ref}' does not exist in {self.repo}; "
-                    "story.trunk names the branch the stack is built on"
+                    f"the trunk '{ref}' does not exist in {self.repo} after it was fetched; run the story "
+                    "again"
                 )
             st.base = {"ref": ref, "sha": sha}
             st.save()
@@ -251,7 +257,7 @@ class StoryPipeline:
         writes), and kept in the state: the story keeps it for its whole life, whatever AGENTS.md says later.
         A repository with no gate there stops the story, before any model works."""
         if self.person_cmd is not None:
-            cmd = self.person_cmd
+            run = shown = self.person_cmd
         else:
             if st.gate is None:
                 try:
@@ -261,11 +267,12 @@ class StoryPipeline:
                     raise StoryBlocked(missing_gate(who, base["ref"], base["sha"], str(e))) from None
                 st.gate = {"commands": list(gate.commands), "agents_md": gate.blob}
                 st.save()
-                shown = [_redact_urls(c) for c in gate.commands]
-                st.emit("gate", commands=shown, agents_md=gate.blob, base=base)
-            cmd = " && ".join(st.gate["commands"])
-        self.test_cmd = cmd
-        self._shown_cmd = _redact_urls(cmd)
+                masked = [_redact_urls(c) for c in gate.commands]
+                st.emit("gate", commands=masked, agents_md=gate.blob, base=base)
+            commands = st.gate["commands"]
+            run, shown = gate_command(commands), gate_shown(commands)  # each runs on its own; shown as read
+        self.test_cmd = run
+        self._shown_cmd = _redact_urls(shown)
 
     async def _ask(self, st: StoryState, stage: str, role: str, brief: str) -> str:
         """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
@@ -351,15 +358,21 @@ class StoryPipeline:
         return layers
 
     async def _trunk_ref(self, st: StoryState) -> str:
-        """The remote's trunk, fetched first; the local trunk when the fetch fails (an event, not a stop) or
-        the remote has no such branch."""
+        """The remote's trunk, fetched now into its remote-tracking branch (Publisher.fetch). A fetch that
+        fails stops the story (an event, then the stop): the local trunk is no stand-in, since a model's shell
+        can move it, and the story's base and test gate come from what it is built on."""
         try:
             await self.publisher.fetch(self.repo, self.s.trunk)
         except PublishError as e:
-            st.emit("fetch_failed", remote=self.s.remote, trunk=self.s.trunk, error=_redact_urls(str(e)))
-            return self.s.trunk
-        remote = f"{self.s.remote}/{self.s.trunk}"
-        return remote if rev_parse(self.repo, remote) else self.s.trunk
+            failure = str(e)
+        else:
+            return f"{self.s.remote}/{self.s.trunk}"
+        st.emit("fetch_failed", remote=self.s.remote, trunk=self.s.trunk, error=_redact_urls(failure))
+        raise StoryBlocked(  # outside the handler: nothing is chained
+            f"the trunk {self.s.trunk} could not be fetched from {self.s.remote}, and a story builds only on "
+            f"the remote's trunk (a model can move the local one): {failure}. Check the remote, then run the "
+            "story again"
+        )
 
     def _clear_attempt(self, st: StoryState) -> None:
         """A layer that stopped earlier kept its worktree and branch for inspection; a resume rebuilds it."""
@@ -424,7 +437,13 @@ class StoryPipeline:
             )
         sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
         remove_worktree(self.repo, wt)
-        st.built[nn] = {"branch": branch, "sha": sha, "run_id": report.run_id, "subtasks": _rows(orch)}
+        st.built[nn] = {
+            "branch": branch,
+            "sha": sha,
+            "run_id": report.run_id,
+            "subtasks": _rows(orch),
+            "gate": self._shown_cmd,  # what this layer passed, for its PR: a resume can pass another
+        }
         st.attempt = None
         st.save()
         st.emit("layer_built", layer=nn, branch=branch, sha=sha)
@@ -446,7 +465,7 @@ class StoryPipeline:
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
-                text = pr_body(card, story, layers, i, rows, prs, self._shown_cmd)
+                text = pr_body(card, story, layers, i, rows, prs, st.built[f"{i + 1:02d}"]["gate"])
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")

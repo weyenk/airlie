@@ -3,12 +3,15 @@ AGENTS.md, read from a commit (never a worktree), joined with && into one comman
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from airlie.story.gate import Gate, gate_commands, missing_gate, read_gate
 from airlie.story.model import NoTestGate
+from airlie.subproc import without_hooks
 from tests.unit.git_helpers import git
 
 GATE = """# OpenHand
@@ -40,10 +43,54 @@ def test_each_line_of_the_first_block_under_the_heading_is_one_command_in_order(
         "node scripts/run-impacted-tests.mjs",
     )
     gate = Gate(gate_commands(GATE), "b10b")
-    assert gate.command == (
+    assert gate.shown == (  # what a note or a PR body says
         "pnpm install --frozen-lockfile --prefer-offline && pnpm static:ratchet && "
         "node scripts/run-impacted-tests.mjs"
     )
+    assert gate.command == (  # what runs: each command in a brace group of its own, ended by a newline
+        "{ pnpm install --frozen-lockfile --prefer-offline\n} && { pnpm static:ratchet\n} && "
+        "{ node scripts/run-impacted-tests.mjs\n}"
+    )
+
+
+def sh(commands: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    """The gate of `commands` as the studio runs it: /bin/sh -c, in `cwd`."""
+    command = Gate(tuple(commands), "b10b").command
+    return subprocess.run(["/bin/sh", "-c", command], cwd=cwd, capture_output=True, text=True)
+
+
+def test_an_inline_comment_ends_at_its_line_so_every_later_command_still_gates(tmp_path: Path) -> None:
+    assert sh(["true   # deps", "false  # stands in for a suite that fails"], tmp_path).returncode == 1
+    assert sh(["true   # deps", "true   # the suite"], tmp_path).returncode == 0
+
+
+def test_the_first_command_that_fails_fails_the_gate_and_no_later_one_runs(tmp_path: Path) -> None:
+    done = sh(["true", "false # the first failure", "touch RAN"], tmp_path)
+    assert done.returncode == 1 and not (tmp_path / "RAN").exists()
+
+
+def test_a_cd_carries_over_to_the_commands_after_it_and_a_brace_can_be_an_argument(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "MARK").write_text("")
+    assert sh(["cd sub", "test -f MARK"], tmp_path).returncode == 0
+    done = sh(["echo }", "echo {"], tmp_path)
+    assert done.returncode == 0 and done.stdout.split() == ["}", "{"]
+
+
+@pytest.mark.parametrize("line", ["pytest -q \\", "pytest -q \\\\\\", "  make test\\  "])
+def test_a_command_continued_onto_the_next_line_is_refused_and_named(line: str) -> None:
+    text = f"## Test gate\n```sh\nuv sync\n{line}\n  --maxfail=1\n```\n"
+    with pytest.raises(NoTestGate) as e:
+        gate_commands(text)
+    assert str(e.value) == (
+        "the Test gate section of its AGENTS.md continues a command onto the next line "
+        f"({line.strip()!r}): put each command on one line"
+    )
+
+
+def test_a_line_that_ends_in_an_escaped_backslash_or_a_comment_that_does_is_no_continuation() -> None:
+    text = "## Test gate\n```sh\n# a comment that ends in one \\\nprintf '%s' a\\\\\n```\n"
+    assert gate_commands(text) == ("printf '%s' a\\\\",)
 
 
 @pytest.mark.parametrize(
@@ -127,6 +174,37 @@ def test_a_fence_whose_info_string_holds_a_backtick_is_no_fence() -> None:
     assert gate_commands(text) == ("make test",)
 
 
+@pytest.mark.parametrize("underline", ["=========", "---------", "=", "  ---  ", "==="])
+def test_a_setext_heading_is_a_heading(underline: str) -> None:
+    assert gate_commands(f"# Repo\n\nTest gate\n{underline}\n\n```\nmake test\n```\n") == ("make test",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Test gate\n=========\n\nNo block yet.\n\nNext\n====\n\n```\nlint\n```\n",  # a setext h1 ends an h1
+        "## Test gate\n\nNo block yet.\n\nNext\n----\n\n```\nlint\n```\n",  # a setext h2 ends an h2
+        "Test gate\n---\nNo block yet.\n# Next\n```\nlint\n```\n",  # and an ATX h1 ends a setext h2
+    ],
+)
+def test_a_setext_heading_of_the_sections_level_or_a_higher_one_ends_it(text: str) -> None:
+    with pytest.raises(NoTestGate, match="^the Test gate section of its AGENTS.md lists no command"):
+        gate_commands(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# Test gate\n\nWhy\n---\n\n```\nmake test\n```\n",  # a setext h2 under an h1: still inside
+        "## Test gate\n\n---\n\n```\nmake test\n```\n",  # dashes after a blank line: a thematic break
+        "## Test gate\n- run it:\n---\n```\nmake test\n```\n",  # dashes after a list item: a break too
+        "## Test gate\n```\nmake test\n```\nText\n===\n",  # a heading after the block changes nothing
+    ],
+)
+def test_setext_underlines_that_end_no_section(text: str) -> None:
+    assert gate_commands(text) == ("make test",)
+
+
 # ---- read from a commit ----
 
 
@@ -180,15 +258,61 @@ def test_an_agents_md_that_links_to_another_file_of_the_commit_is_read_through_t
     assert read_gate(repo, head) == Gate(("make test",), git(repo, "rev-parse", f"{head}:CLAUDE.md"))
 
 
-def test_a_link_that_leaves_the_commit_is_not_followed(tmp_path: Path) -> None:
+def test_a_link_that_leaves_the_commit_is_not_followed_and_is_named_as_one(tmp_path: Path) -> None:
     repo = a_repo(tmp_path)
     outside = tmp_path / "outside.md"
     outside.write_text("## Test gate\n```\nmake test\n```\n")
-    (repo / "AGENTS.md").symlink_to(outside)
+    (repo / "AGENTS.md").symlink_to("../outside.md")
     git(repo, "add", "AGENTS.md")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "linked out")
-    with pytest.raises(NoTestGate, match="^it has no AGENTS.md$"):
+    with pytest.raises(NoTestGate) as e:
         read_gate(repo, git(repo, "rev-parse", "HEAD"))
+    assert str(e.value) == (
+        "its AGENTS.md is a symbolic link out of the repository (to '../outside.md'), and airlie reads only "
+        "the files of the commit"
+    )
+    (repo / "AGENTS.md").unlink()
+    (repo / "AGENTS.md").symlink_to(outside)  # a long path is cut where it is quoted: it is the file's text
+    git(repo, "add", "AGENTS.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "linked out, absolute")
+    with pytest.raises(NoTestGate) as e:
+        read_gate(repo, git(repo, "rev-parse", "HEAD"))
+    assert f"(to {repr(str(outside))[:79]}…)" in str(e.value)
+
+
+@pytest.mark.parametrize("target", ["MISSING.md", "AGENTS.md"])  # a file the commit lacks; a link to itself
+def test_a_link_that_leads_to_no_file_of_the_commit_is_named_as_one(tmp_path: Path, target: str) -> None:
+    repo = a_repo(tmp_path)
+    (repo / "AGENTS.md").symlink_to(target)
+    git(repo, "add", "AGENTS.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "a link to nothing")
+    nowhere = "^its AGENTS.md is a symbolic link that leads to no file of the commit$"
+    with pytest.raises(NoTestGate, match=nowhere):
+        read_gate(repo, git(repo, "rev-parse", "HEAD"))
+
+
+def test_replacements_planted_from_a_layer_worktree_change_nothing_airlie_reads(tmp_path: Path) -> None:
+    """A coder's shell in a layer worktree can `git replace` the base commit, or AGENTS.md's blob:
+    refs/replace is shared by every worktree, and plain git follows it. airlie's own git does not
+    (core.useReplaceRefs), and neither does the git of a publish step (the same setting in its
+    environment)."""
+    repo = a_repo(tmp_path)
+    base = commit_agents_md(repo, "## Test gate\n```\n./check.sh\n```\n")
+    blob = git(repo, "rev-parse", f"{base}:AGENTS.md")
+    layer = tmp_path / "layer"
+    git(repo, "worktree", "add", "-q", "-b", "layer-01", str(layer))
+    weak = commit_agents_md(layer, "## Test gate\n```\ntrue\n```\n", "a weaker gate")
+    git(layer, "replace", base, weak)  # the base commit, replaced
+    git(layer, "replace", blob, git(layer, "rev-parse", f"{weak}:AGENTS.md"))  # and AGENTS.md's blob
+    # plain git reads the planted gate, through either replacement
+    assert git(repo, "cat-file", "-p", f"{base}:AGENTS.md").endswith("true\n```")
+    assert git(repo, "cat-file", "-p", blob).endswith("true\n```")
+    assert read_gate(repo, base) == Gate(("./check.sh",), blob)  # airlie's: the real one
+    published = without_hooks(dict(os.environ))  # a publish step's environment holds the same setting
+    shown = subprocess.run(
+        ["git", "cat-file", "-p", blob], cwd=repo, env=published, capture_output=True, text=True
+    )
+    assert shown.stdout.endswith("./check.sh\n```\n")
 
 
 def test_the_note_for_a_missing_gate_names_the_repository_and_the_trunk_and_shows_an_example() -> None:

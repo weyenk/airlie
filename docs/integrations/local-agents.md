@@ -66,23 +66,22 @@ running. The agent and command files are copies: run the task again after you up
 - **Give `/story` an issue key or link, or a short request of your own, and `/studio` a short goal in your own
   words. Do not paste an issue's body, or any text you did not write, into either:** OpenCode runs `` !`cmd` ``
   spans in a command's arguments, so pasted text can run a shell command.
-- **What stops a merge.** The agents airlie installs (the chief and its four subagents) deny `gh api*`,
-  `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That guards against a model's
-  slip, not against a determined one: the rules match the command line, so a wrapper such as
-  `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands and has
-  your full environment. The studio's own coder has a shell tool that these rules do not govern at all, but that
-  shell, its `run_tests` and `git` tools and the test gate start without your credentials (no gh token or login,
-  no SSH agent, no git credential helper, no `ATLASSIAN_*`), so a model there cannot naively `gh pr merge` or
-  `git push` as you. It can write the repository's git configuration, which airlie's own git reads: airlie pins
-  hooks, fsmonitor, credential helpers, the ssh command, askpass, proxies, address lists, the TLS check,
-  alternates, submodules and the transports over it. As the bot, each publish step also refuses any URL but the
-  story's repository and uses a token for that repository alone; as you, a remote on this machine is refused
-  (SSH and HTTPS only), but a push still goes where the remote points on those, and a setting for the remote's
-  exact URL still applies (`story.md`, *What stops a merge*, says exactly what remains). None of that is an OS
-  sandbox: a model that deliberately goes after what your macOS user stores (the keychain, `~/.ssh`) is not
-  stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that only you can update, which can
-  refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing as a bot*) but not when it
-  publishes as you.
+- **What stops a merge.** The agents airlie installs (the chief and its four subagents) deny `gh api*`, `gh pr merge*`
+  and `gh stack merge*`, and the chief delegates only to those four. That guards against a model's slip, not against a
+  determined one: the rules match the command line, so a wrapper such as `sh -c "gh pr merge ..."` is not caught under
+  `coder` or `qa`, whose shell allows most other commands and has your full environment. The studio's own coder has a
+  shell tool that these rules do not govern at all, but that shell, its `run_tests` and `git` tools and the test gate
+  start without your credentials (no gh token or login, no SSH agent, no git credential helper, no `ATLASSIAN_*`), so
+  a model there cannot naively `gh pr merge` or `git push` as you. It can write the repository's git configuration,
+  which airlie's own git reads: airlie pins hooks, fsmonitor, replaced objects, credential helpers, the ssh command,
+  askpass, proxies, address lists, the TLS check, alternates, submodules and the transports over it. As the bot, each
+  publish step also refuses any URL but the story's repository and uses a token for that repository alone; as you, a
+  remote on this machine is refused (SSH and HTTPS only), but a push still goes where the remote points on those, and
+  a setting for the remote's exact URL still applies (`story.md`, *What stops a merge*, says exactly what remains).
+  None of that is an OS sandbox: a model that deliberately goes after what your macOS user stores (the keychain,
+  `~/.ssh`) is not stopped by it. What really stops a merge is GitHub: a ruleset on the trunk that only you can
+  update, which can refuse airlie when it publishes as a GitHub App's bot (`story.md`, *Publishing as a bot*) but not
+  when it publishes as you.
 - Without `--api-key`, any program on this machine can use `task serve`, and its jobs API starts studio runs (they
   commit on a local branch) and stories (they push branches and open draft PRs). Start it with
   `task serve -- --api-key SECRET`, and give OpenCode the same secret in the `airlie` provider's `apiKey` (chat)
@@ -133,8 +132,9 @@ starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` an
   the job when it knows its id and points at `airlie_status`, and after a request to start a job that timed out
   it warns that the job may have started anyway.
 - **Repository.** The tools work in the git repository `airlie mcp` was started in, or in the `repo` they are
-  given; for a written request `airlie_story` falls back to `story.repo`. For a Jira issue, `airlie_story` sends a
-  `repo` only when it is given one: the issue's `repo:` label names its repository.
+  given; for a written request `airlie_story` falls back to `story.repo`. For a Jira issue, `airlie_story` sends no
+  repository and refuses a `repo`: the issue's `repo:` label names its repository, and only a person's
+  `task story --repo` builds it elsewhere.
 
 #### Known issues
 

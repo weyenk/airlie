@@ -49,9 +49,13 @@ NO_KEY = (
 )
 REPO = "path of the git repository to work in (default: the one airlie mcp was started in)"
 STORY_REPO = (
-    "for a written request, the path of the git repository to build in (default: the one airlie mcp was "
-    "started in, else story.repo); for a Jira issue leave it out: its repo:<owner>/<name> label names the "
-    "repository"
+    "for a written request only: the path of the git repository to build in (default: the one airlie mcp was "
+    "started in, else story.repo). Leave it out for a Jira issue: its repo:<owner>/<name> label names the "
+    "repository, and a repo with a card is refused"
+)
+ISSUE_REPO = (
+    "repo is for a written request (text) only: an issue's repository is its repo:<owner>/<name> label, and "
+    "only a person's `task story --repo` builds an issue elsewhere"
 )
 ONLY_CONFIGURED = (
     "Leave it out unless the person names one: only a command they configured "
@@ -444,8 +448,10 @@ def build_server(
         card, text = _given(card), _given(text)
         if (card is None) == (text is None):
             raise ToolError("pass exactly one of card or text")
-        # an issue's repository is its label: the work tree airlie mcp runs in is sent only when named
-        where = repository(repo, needed=False) if text is not None or _given(repo) else None
+        if card is not None and _given(repo) is not None:
+            raise ToolError(ISSUE_REPO)
+        # an issue's repository is its label: no work tree is sent for it
+        where = repository(repo, needed=False) if text is not None else None
         body = {"card": card, "text": text, "repo": where}
 
         async def work(call: _Call) -> str:  # the POST may wait for Jira: it gets the whole call's time

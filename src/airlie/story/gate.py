@@ -1,16 +1,17 @@
 """A repository's test gate: the commands every change must pass, as the root AGENTS.md lists them under a
 Test gate heading. It is read from a commit (a story's base: the trunk, which only a person merges into),
-never from a worktree, so a model cannot weaken the gate it is held to. The commands run in order, joined
-with && into the one command the studio's gate runs."""
+never from a worktree, so a model cannot weaken the gate it is held to. The commands run in order, each in a
+group of its own, joined with && into the one command the studio's gate runs."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from airlie.story.model import NoTestGate
-from airlie.teams.worktree import show_file
+from airlie.teams.worktree import find_file, read_blob
 
 AGENTS_MD = "AGENTS.md"
 EXAMPLE = ("uv sync --frozen", "uv run ruff check .", "uv run pytest -q")
@@ -21,12 +22,33 @@ NO_COMMAND = (
     "the Test gate section of its AGENTS.md lists no command (no fenced block under the heading, or only "
     "blank and # lines in it)"
 )
+LEADS_NOWHERE = "its AGENTS.md is a symbolic link that leads to no file of the commit"
+_QUOTED = 80
+"""How many characters of the file's own text a message quotes."""
 _HEADING = re.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*))?")
 """An ATX heading: up to three spaces, one to six #, then nothing or a space and the text."""
 _CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
 """The #s that may close a heading's text."""
+_UNDERLINE = re.compile(r" {0,3}(=+|-+)[ \t]*")
+"""A Setext heading's underline: = for a level 1 heading, - for level 2, under the lines of a paragraph."""
+_NO_PARAGRAPH = re.compile(
+    r" {0,3}(?:[-+*](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|>|(?:-[ \t]*){3,}$|(?:\*[ \t]*){3,}$|(?:_[ \t]*){3,}$)"
+)
+"""A list item, a block quote or a thematic break: no paragraph, so no Setext heading, is made of it."""
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+
+
+def gate_command(commands: Sequence[str]) -> str:
+    """`commands` as the one command the studio's gate runs in sh: each in a brace group of its own, ended by
+    a newline (so an inline `# comment` ends at its own line), joined with &&: the first that fails fails the
+    gate and stops it, and a `cd` carries over to the commands after it."""
+    return " && ".join(f"{{ {c}\n}}" for c in commands)
+
+
+def gate_shown(commands: Sequence[str]) -> str:
+    """`commands` as a note or a PR body shows them: as they read, joined with &&."""
+    return " && ".join(commands)
 
 
 @dataclass(frozen=True)
@@ -38,12 +60,23 @@ class Gate:
 
     @property
     def command(self) -> str:
-        """The commands as the one command the studio's gate runs: the first that fails fails it."""
-        return " && ".join(self.commands)
+        """What runs (gate_command)."""
+        return gate_command(self.commands)
+
+    @property
+    def shown(self) -> str:
+        """What a note or a PR body says (gate_shown)."""
+        return gate_shown(self.commands)
+
+
+def _quoted(text: str) -> str:
+    """`text` as a message quotes it: its repr, cut to _QUOTED characters."""
+    shown = repr(text)
+    return shown if len(shown) <= _QUOTED else shown[: _QUOTED - 1] + "…"
 
 
 def _heading(line: str) -> tuple[int, str] | None:
-    """(level, text) of a heading line, its closing #s dropped; None for any other line."""
+    """(level, text) of an ATX heading line, its closing #s dropped; None for any other line."""
     m = _HEADING.fullmatch(line)
     if m is None:
         return None
@@ -65,14 +98,32 @@ def _closes(line: str, fence: tuple[str, int]) -> bool:
     return m is not None and m[1][0] == fence[0] and len(m[1]) >= fence[1]
 
 
+def _paragraph_line(line: str, paragraph: list[str]) -> bool:
+    """`line` is a line of a paragraph (one a Setext underline can turn into a heading): not blank, not a list
+    item, a block quote or a thematic break, and not indented code (four spaces or a tab) unless it goes on a
+    paragraph."""
+    if not line.strip() or _NO_PARAGRAPH.match(line):
+        return False
+    return bool(paragraph) or not line.startswith(("    ", "\t"))
+
+
+def _continues(command: str) -> bool:
+    """`command` goes on onto the next line: it ends in an odd number of backslashes (an even number is
+    escaped backslashes)."""
+    return (len(command) - len(command.rstrip("\\"))) % 2 == 1
+
+
 def gate_commands(markdown: str) -> tuple[str, ...]:
-    """The commands of the first heading, at any level, whose text is "Test gate" (in any case): the lines of
-    the first fenced block (``` or ~~~) after it and before the next heading of its level or a higher one, but
-    blank lines and those that start with #, each trimmed. NoTestGate when there is no such heading, or no
-    command under it. A heading inside a code block is code, and CRLF line ends are read as lines."""
+    """The commands of the first heading, at any level, ATX (`## Test gate`) or Setext (`Test gate` over a
+    line of = or -), whose text is "Test gate" (in any case): the lines of the first fenced block (``` or ~~~)
+    after it and before the next heading of its level or a higher one, but blank lines and those that start
+    with #, each trimmed. NoTestGate when there is no such heading, no command under it, or a command that
+    goes on onto the next line (each is run on its own: gate_command). A heading inside a code block is code,
+    and CRLF line ends are read as lines."""
     level: int | None = None  # the Test gate heading's, once it is found
     fence: tuple[str, int] | None = None  # the open code block's
     block: list[str] | None = None  # the lines of the gate's block, once it opened
+    paragraph: list[str] = []  # the lines of the paragraph a Setext underline would make a heading of
     for raw in markdown.removeprefix("﻿").split("\n"):
         line = raw.removesuffix("\r")
         if fence is not None:
@@ -85,12 +136,18 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
             continue
         fence = _opens(line)
         if fence is not None:
+            paragraph = []
             if level is not None:
                 block = []
             continue
         heading = _heading(line)
+        underline = _UNDERLINE.fullmatch(line) if heading is None and paragraph else None
+        if underline is not None:
+            heading = (1 if underline[1][0] == "=" else 2, " ".join(x.strip() for x in paragraph))
         if heading is None:
+            paragraph = [*paragraph, line] if _paragraph_line(line, paragraph) else []
             continue
+        paragraph = []
         if level is None:
             if heading[1].casefold() == "test gate":
                 level = heading[0]
@@ -101,17 +158,30 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     commands = tuple(c for c in (x.strip() for x in block or ()) if c and not c.startswith("#"))
     if not commands:
         raise NoTestGate(NO_COMMAND)
+    going_on = next((c for c in commands if _continues(c)), None)
+    if going_on is not None:
+        raise NoTestGate(
+            "the Test gate section of its AGENTS.md continues a command onto the next line "
+            f"({_quoted(going_on)}): put each command on one line"
+        )
     return commands
 
 
 def read_gate(repo: Path, commit: str) -> Gate:
     """The test gate of the AGENTS.md at the root of `commit` in `repo`, read from git's objects (a link to
-    another file of the commit followed). NoTestGate when there is no AGENTS.md there, or no gate in it."""
-    found = show_file(repo, commit, AGENTS_MD)
-    if found is None:
+    another file of the commit followed). NoTestGate when there is no AGENTS.md there, it is a link out of the
+    commit or to no file of it, or it holds no gate."""
+    kind, found = find_file(repo, commit, AGENTS_MD)
+    if kind == "symlink":
+        raise NoTestGate(
+            f"its AGENTS.md is a symbolic link out of the repository (to {_quoted(found)}), and airlie reads "
+            "only the files of the commit"
+        )
+    if kind in ("dangling", "loop", "notdir"):
+        raise NoTestGate(LEADS_NOWHERE)
+    if kind != "blob":
         raise NoTestGate(NO_AGENTS_MD)
-    blob, text = found
-    return Gate(gate_commands(text), blob)
+    return Gate(gate_commands(read_blob(repo, found)), found)
 
 
 def missing_gate(repository: str, trunk: str, sha: str, problem: str) -> str:

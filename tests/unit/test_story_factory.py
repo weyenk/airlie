@@ -133,9 +133,8 @@ def test_an_issue_is_built_in_the_checkout_its_label_names_never_in_story_repo(t
     elsewhere = repo_with_marker_tests(tmp_path)  # story.repo is a written request's, not an issue's
     story = {"repos_root": str(tmp_path / "git"), "repo": str(elsewhere)}
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
-    assert place(cfg, LABELLED) == Place(
-        repo.resolve(), "o/repo"
-    )  # the label's spelling, the directory's own
+    # the label's spelling, the directory's own
+    assert place(cfg, LABELLED) == Place(repo.resolve(), "o/repo")
 
 
 def test_repo_replaces_the_lookup_but_the_remote_must_still_name_the_labels_repository(
@@ -147,9 +146,8 @@ def test_repo_replaces_the_lookup_but_the_remote_must_still_name_the_labels_repo
     other = checkout_of(tmp_path / "other", "o/other")
     with pytest.raises(RepositoryError, match="is not a checkout of o/repo: its remote 'origin'"):
         place(cfg, LABELLED, other)
-    with pytest.raises(
-        StorySetupError, match="is not a git repository$"
-    ) as e:  # the command's, not the issue's
+    # the person's error, in the command: not the issue's
+    with pytest.raises(StorySetupError, match="is not a git repository$") as e:
         place(cfg, LABELLED, tmp_path / "nowhere")
     assert not isinstance(e.value, RepositoryError)
 
@@ -412,9 +410,8 @@ class QueueBoard:
         self.notes: dict[str, list[str]] = {c.key: [] for c in cards}
         self.refuse = refuse
         self.says = says  # what a refused call is told
-        self.off = (
-            off  # switched-off columns (statuses.blocked: null): a move there leaves the issue, as Jira's
-        )
+        # switched-off columns (statuses.blocked: null): a move there leaves the issue where it is, as Jira's
+        self.off = off
         self.searches = 0
 
     async def card(self, ref: str) -> Card:
@@ -455,7 +452,7 @@ def queue_setup(
         "jira": {"statuses": {"blocked": blocked}},
     }
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
-    gh = RecordedGh(real_git=False)
+    gh = RecordedGh()
     monkeypatch.setattr(factory, "make_board", lambda cfg: board)
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
     monkeypatch.setattr(
@@ -581,6 +578,22 @@ async def test_an_issue_whose_repository_cannot_be_used_is_told_why_and_moved_ou
     assert await tick(cfg) == "AIR-8 Avatar upload: review"  # the queue moves on
 
 
+async def test_an_issue_whose_checkout_cannot_be_read_is_set_aside_not_a_beat_that_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = QueueBoard(POISON, NEXT)
+    cfg, _ = queue_setup(tmp_path, monkeypatch, board)
+    poison = cfg.story.repos_root / "poison"
+    poison.chmod(0)
+    try:
+        line = await tick(cfg)  # no PermissionError out of the beat: every later beat would stop on it
+    finally:
+        poison.chmod(0o755)
+    assert line.startswith("AIR-7 Avatar upload: cannot start (") and "/poison cannot be read (" in line
+    assert board.column == {"AIR-7": "blocked", "AIR-8": "intake"}
+    assert await tick(cfg) == "AIR-8 Avatar upload: review"
+
+
 async def test_with_blocked_off_an_issue_without_a_repository_still_leaves_intake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -606,11 +619,12 @@ async def test_an_issue_whose_repository_has_no_test_gate_stops_out_of_intake_be
     trunk = git(poison, "branch", "--show-current")
 
     line = await tick(cfg)
-    assert line.startswith(f"AIR-7 Avatar upload: blocked (o/poison has no test gate on {trunk} (")
+    assert line.startswith(f"AIR-7 Avatar upload: blocked (o/poison has no test gate on origin/{trunk} (")
     assert "its AGENTS.md has no Test gate section" in line and engine.requests == []
     assert board.column == {"AIR-7": "blocked" if blocked else "building", "AIR-8": "intake"}
     stop = board.notes["AIR-7"][-1]
-    assert stop.startswith(f"{NOTE_PREFIX}stopped after 'intake': o/poison has no test gate on {trunk} (")
+    on = f"o/poison has no test gate on origin/{trunk} ("
+    assert stop.startswith(f"{NOTE_PREFIX}stopped after 'intake': {on}")
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in stop
     assert await tick(cfg) == "AIR-8 Avatar upload: review"
 
@@ -738,6 +752,37 @@ async def test_an_issue_put_back_in_to_do_after_its_story_finished_goes_to_revie
     assert board.searches == 4
 
 
+@pytest.mark.parametrize("how", ["label removed", "label changed", "checkout moved"])
+@pytest.mark.parametrize("stage", ["publish", "review"])
+async def test_a_story_that_has_published_needs_neither_its_label_nor_its_checkout_any_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, how: str
+) -> None:
+    """Its PRs are open and nothing is built or published again: a person may tidy the label or move the
+    clone, and the story still gets its final note (stage publish: the PR links never reached the issue) and
+    In Review (stage review: the issue was put back in To Do). It runs in the checkout it recorded,
+    unchecked."""
+    board = QueueBoard(NEXT)  # AIR-8, for o/repo
+    cfg, gh = queue_setup(tmp_path, monkeypatch, board)
+    assert await tick(cfg) == "AIR-8 Avatar upload: review"
+    state = stories_dir(cfg) / "AIR-8" / "state.json"
+    if stage == "publish":
+        saved = json.loads(state.read_text())
+        state.write_text(json.dumps({**saved, "stage": "publish"}))
+    if how == "checkout moved":
+        (cfg.story.repos_root / "repo").rename(cfg.story.repos_root / "repo-moved")
+    else:
+        board.cards["AIR-8"] = replace(NEXT, labels=() if how == "label removed" else ("repo:o/poison",))
+    board.column["AIR-8"] = "intake"
+    calls = len(gh.calls)
+    line = await tick(cfg)
+    if stage == "publish":
+        assert line == "AIR-8 Avatar upload: review"
+        assert "stacked draft PRs, bottom layer first" in board.notes["AIR-8"][-1]
+    else:
+        assert line.startswith("AIR-8 Avatar upload: already in review (nothing to do)")
+    assert board.column["AIR-8"] == "review" and len(gh.calls) == calls  # nothing fetched or published
+
+
 @pytest.mark.parametrize("contents", ["[]", "{}", '"review"', "12"])
 async def test_a_state_file_of_the_wrong_shape_is_a_poison_issue_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
@@ -803,7 +848,7 @@ async def test_a_story_job_is_named_after_its_card_and_follows_its_events(
 
 
 def test_a_story_job_takes_no_test_command() -> None:
-    assert list(inspect.signature(story_job).parameters) == ["cfg", "card", "text", "repo"]
+    assert list(inspect.signature(story_job).parameters) == ["cfg", "card", "text", "repo", "running"]
 
 
 async def test_a_story_job_with_an_issue_fetches_it_and_finds_its_checkout_before_any_job_exists(
@@ -969,13 +1014,39 @@ async def test_check_with_an_issue_that_would_be_blocked_says_why(
     repo = checkout_of(root, "o/repo")
     commit_file(repo, "AGENTS.md", "# Agents\n", "no gate")
     trunk = git(repo, "branch", "--show-current")
+    git(repo, "update-ref", f"refs/remotes/origin/{trunk}", "HEAD")  # pushed, and fetched since
     cfg.story.trunk = trunk
     sha = git(repo, "rev-parse", trunk)
     problems, notes = await check(cfg, None, None, "AIR-7")
-    no_section = missing_gate("o/repo", trunk, sha, "its AGENTS.md has no Test gate section")
+    no_section = missing_gate("o/repo", f"origin/{trunk}", sha, "its AGENTS.md has no Test gate section")
     assert problems == [f"AIR-7 would be blocked: {no_section}"]
-    assert notes[1] == f"trunk: {trunk} at {sha[:12]}, as last fetched (a story fetches it first)"
+    assert notes[1] == f"trunk: origin/{trunk} at {sha[:12]}, as last fetched (a story fetches it first)"
     assert not stories_dir(cfg).exists() and all(r.method == "GET" for r in jira.requests)
+
+
+async def test_check_of_an_issue_whose_story_has_published_checks_no_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is built or published again: its repository, trunk and gate are not looked at (the checkout it
+    recorded may have moved since), and check says so."""
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    gone = tmp_path / "git" / "repo"  # recorded, and moved away since
+    st = StoryState(
+        path=stories_dir(cfg) / "AIR-7", card={}, repo=str(gone), stage="review", github_repo="o/repo"
+    )
+    st.path.mkdir(parents=True)
+    st.save()
+    jira = FakeJira()
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(jira))
+    monkeypatch.setattr(JiraBoard, "check", no_jira_problems)
+    seen: list[tuple[str, Path]] = []
+    monkeypatch.setattr(factory, "Publisher", fake_publisher([], seen))
+    problems, notes = await check(cfg, None, None, "AIR-7")
+    assert problems == [] and seen == []
+    assert notes == [
+        f"AIR-7's story has published (stage review, in {gone}): nothing is built or published again, so its "
+        "repository and test gate are not checked"
+    ]
 
 
 async def test_check_with_an_issue_but_no_jira_says_so(
@@ -995,13 +1066,20 @@ async def test_check_of_a_written_requests_repository_shows_its_trunk_and_gate(
     monkeypatch.setattr(factory, "Publisher", fake_publisher([], []))
     problems, notes = await check(cfg, None, None)
     assert problems == []
+    sha = git(repo, "rev-parse", trunk)
     assert notes == [
-        f"trunk: {trunk} at {git(repo, 'rev-parse', trunk)[:12]}, as last fetched (a story fetches it first)",
-        f"test gate (AGENTS.md at {trunk}): make test",
+        f"trunk: origin/{trunk} at {sha[:12]}, as last fetched (a story fetches it first)",
+        f"test gate (AGENTS.md at origin/{trunk}): make test",
     ]
-    cfg.story.trunk = "nope"
-    problems, _ = await check(cfg, None, None)
-    assert problems == [f"the trunk 'nope' (story.trunk) does not exist in {repo.resolve()}"]
+    # never fetched: the local trunk is no stand-in
+    git(repo, "update-ref", "-d", f"refs/remotes/origin/{trunk}")
+    problems, notes = await check(cfg, None, None)
+    assert problems == [] and notes == [
+        f"trunk: origin/{trunk} has not been fetched into {repo.resolve()}: a story fetches it first, and "
+        "reads its test gate there"
+    ]
+    problems, notes = await check(cfg, None, " make check ")  # a person's command is shown all the same
+    assert notes[-1] == "test gate: make check (--test-cmd)"
 
 
 async def test_check_does_not_hand_git_a_remote_it_would_read_as_an_option(

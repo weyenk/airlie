@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -298,7 +299,7 @@ async def test_a_long_poll_that_finds_only_a_fragment_still_moves_the_cursor(tmp
 def test_the_story_endpoint_starts_a_job_and_rejects_bad_requests(tmp_path: Path) -> None:
     events = tmp_path / "story-events.jsonl"
 
-    async def fake_story_job(cfg, *, card, text, repo):  # type: ignore[no-untyped-def]
+    async def fake_story_job(cfg, *, card, text, repo, running):  # type: ignore[no-untyped-def]
         if text == "broken":
             raise StorySetupError("no repository")
 
@@ -331,15 +332,33 @@ def test_the_story_endpoint_passes_the_request_to_the_job_factory(tmp_path: Path
 
         return "story-AIR-7", tmp_path / "events.jsonl", work()
 
-    body = {"card": "AIR-7", "repo": "~/code/app"}
+    body = {"text": "avatars", "repo": "~/code/app"}  # a written request's repository
     with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
         assert client.post("/v1/airlie/stories", json=body).status_code == 202
         finish(client, "story-AIR-7")
-        assert client.post("/v1/airlie/stories", json={"card": "AIR-7"}).status_code == 202
+        assert client.post("/v1/airlie/stories", json={"card": "AIR-7", "repo": " "}).status_code == 202
+    for kw in seen:
+        assert callable(kw.pop("running"))  # what tells it a job of the same story is running
     assert seen == [
-        {"card": "AIR-7", "text": None, "repo": "~/code/app"},
-        {"card": "AIR-7", "text": None, "repo": None},
+        {"card": None, "text": "avatars", "repo": "~/code/app"},
+        {"card": "AIR-7", "text": None, "repo": " "},  # a blank repo is none
     ]
+
+
+def test_an_issues_story_with_a_repo_is_refused_only_a_person_on_the_cli_may_move_it(tmp_path: Path) -> None:
+    called: list[dict[str, Any]] = []
+
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        called.append(kw)
+        raise AssertionError("never reached")
+
+    with TestClient(app_for(tmp_path, FakeEngine({}), story_job=fake_story_job)) as client:
+        r = client.post("/v1/airlie/stories", json={"card": "AIR-7", "repo": "/somewhere/else"})
+    assert r.status_code == 422 and called == []
+    assert r.json()["detail"] == (
+        "repo is for a written request (text) only: an issue's repository is its repo:<owner>/<name> label, "
+        "and only a person's `task story --repo` builds an issue elsewhere"
+    )
 
 
 @pytest.mark.parametrize("extra", [{"test_cmd": "true"}, {"test_cmd": None}, {"gate": "true"}])
@@ -461,3 +480,34 @@ def test_a_second_story_while_one_is_in_flight_ends_as_a_failed_job_that_says_so
         assert r.status_code == 202  # a different story id: nothing is running under it
         done = finish(client, r.json()["job_id"])
     assert done["state"] == "failed" and "StoryBusy: another story is in flight" in done["error"]
+
+
+def test_a_story_already_running_is_a_409_before_its_issue_is_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second POST for a story whose job runs: refused as the job's duplicate, before `placed` can note on
+    the issue or move it (here its checkout has gone since, which would have the issue told and moved to
+    Blocked while the first job builds it)."""
+    from tests.unit.test_story_board import FakeJira
+    from tests.unit.test_story_board import board as jira_board_for
+    from tests.unit.test_story_pipeline import checkout_of
+
+    repo = checkout_of(tmp_path / "git", "o/repo")  # FakeJira's AIR-7 is labelled repo:o/repo
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    jira = FakeJira()
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(jira))
+    release = asyncio.Event()
+
+    async def builds(c: Any, *, board: Any, card: Any, repo: Path | None = None) -> StoryState:
+        await release.wait()
+        return StoryState(path=tmp_path / "s", card=card.to_dict(), repo=str(repo), stage="review")
+
+    monkeypatch.setattr(factory, "run_one", builds)
+    with TestClient(create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))) as client:
+        assert client.post("/v1/airlie/stories", json={"card": "AIR-7"}).status_code == 202
+        shutil.rmtree(repo)  # the checkout goes while the first job runs
+        posted = len([r for r in jira.requests if r.method == "POST"])
+        r = client.post("/v1/airlie/stories", json={"card": "AIR-7"})
+        assert r.status_code == 409 and "already running" in r.json()["detail"]
+        assert len([r for r in jira.requests if r.method == "POST"]) == posted  # no note, no move
+        assert client.delete("/v1/airlie/jobs/story-AIR-7").json()["cancelled"] is True

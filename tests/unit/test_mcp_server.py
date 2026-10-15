@@ -321,7 +321,9 @@ async def test_a_test_command_is_passed_on_only_if_the_person_configured_it(tmp_
             assert text(await client.call_tool("cancel", {"job_id": job})) == f"Cancelled {job}."
         # a story takes no test command at all: its gate is its repository's AGENTS.md
         assert not (await client.call_tool("story", {"text": "avatars"})).is_error
-    assert stories == [{"card": None, "text": "avatars", "repo": str(repo.resolve())}]
+    assert [{k: v for k, v in kw.items() if k != "running"} for kw in stories] == [
+        {"card": None, "text": "avatars", "repo": str(repo.resolve())}
+    ]
     runs = [body for method, path, body in serve.sent if (method, path) == ("POST", "/v1/airlie/runs")]
     assert [body["test_cmd"] for body in runs] == ["make test", "./check.sh"]  # story.test_cmd comes first
 
@@ -466,7 +468,12 @@ async def test_the_repository_is_the_work_tree_airlie_mcp_runs_in_unless_repo_na
         await outside.call_tool("story", {"text": "a"})  # no repository here: serve uses story.repo
         # an issue's repository is its repo: label: the one airlie mcp runs in is not sent in its place
         await inside.call_tool("story", {"card": "AIR-7", "repo": " "})
-        await inside.call_tool("story", {"card": "AIR-7", "repo": "."})  # unless one is named
+        with pytest.raises(ToolError) as e:  # and one that is named is refused: only a person moves it
+            await inside.call_tool("story", {"card": "AIR-7", "repo": "."})
+        assert str(e.value).endswith(
+            "repo is for a written request (text) only: an issue's repository is its repo:<owner>/<name> "
+            "label, and only a person's `task story --repo` builds an issue elsewhere"
+        )
         for server, args in ((outside, {"goal": "g"}), (inside, {"goal": "g", "repo": str(elsewhere)})):
             with pytest.raises(ToolError, match="is in no git repository; pass repo"):
                 await server.call_tool("run", args)
@@ -479,7 +486,6 @@ async def test_the_repository_is_the_work_tree_airlie_mcp_runs_in_unless_repo_na
         {"text": "a", "repo": where},
         {"text": "a"},
         {"card": "AIR-7"},
-        {"card": "AIR-7", "repo": where},
     ]
 
 

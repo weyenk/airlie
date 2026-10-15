@@ -349,9 +349,14 @@ class Publisher:
         raise PublishError(failure)
 
     async def fetch(self, repo: Path, trunk: str) -> None:
-        """Fetch `trunk` from the remote into `repo`'s remote-tracking branch."""
+        """Fetch `trunk` from the remote into `repo`'s remote-tracking branch, refs/remotes/<remote>/<trunk>,
+        and update nothing else. The refspec names both ends, and --refmap= (empty) has git use no fetch
+        refspec the repository's configuration names: a model can plant one that maps nothing, so the
+        remote-tracking branch stays where it was, or one that maps the trunk onto a local branch, which git
+        would then move."""
+        refspec = f"+refs/heads/{trunk}:refs/remotes/{self.remote}/{trunk}"
         async with self._step(repo) as env:
-            await self.run(["git", "fetch", "-q", self.remote, trunk], repo, env)
+            await self.run(["git", "fetch", "-q", "--refmap=", self.remote, refspec], repo, env)
 
     async def _stacked(self, wt: Path, env: Mapping[str, str]) -> tuple[str, list[str]] | None:
         """The trunk and the branches (bottom first) of the stack `wt` is on; None when it is on none."""

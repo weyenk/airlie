@@ -22,7 +22,7 @@ from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.skills import prompt_text
 from airlie.story.board import BoardError
-from airlie.story.model import StorySetupError
+from airlie.story.model import StoryRunning, StorySetupError
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -110,9 +110,16 @@ class StartRun(PlanRequest):
     synthesise: bool = True
 
 
+ISSUE_REPO = (
+    "repo is for a written request (text) only: an issue's repository is its repo:<owner>/<name> label, and "
+    "only a person's `task story --repo` builds an issue elsewhere"
+)
+"""Why a story request with both a card and a repo is refused."""
+
+
 class StoryRequest(BaseModel):
-    """A story: an issue (`card`) or a written request (`text`), and `repo`: a written request's repository,
-    or for an issue the checkout to use in place of the one its repo: label names. Its test gate is the
+    """A story: an issue (`card`) or a written request (`text`), and `repo`, a written request's repository:
+    an issue's is its repo: label, and a request cannot move it (422, ISSUE_REPO). Its test gate is the
     repository's AGENTS.md, never the request's: a request that names one (test_cmd), or anything else, is
     refused (422) rather than quietly ignored."""
 
@@ -336,8 +343,19 @@ def create_app(
     async def start_story(req: StoryRequest) -> dict[str, Any]:
         if (req.card is None) == (req.text is None):
             raise HTTPException(400, "pass exactly one of card or text")
+        if req.card is not None and (req.repo or "").strip():
+            raise HTTPException(422, ISSUE_REPO)
+
+        def running(job_id: str) -> bool:
+            job = jobs.get(job_id)
+            return job is not None and job.state == "running"
+
         try:
-            job_id, events, work = await make_story(cfg, card=req.card, text=req.text, repo=req.repo)
+            job_id, events, work = await make_story(
+                cfg, card=req.card, text=req.text, repo=req.repo, running=running
+            )
+        except StoryRunning as e:  # decided before the story is placed: its issue is read, not told or moved
+            raise HTTPException(409, str(e)) from e
         except (StorySetupError, BoardError) as e:
             raise HTTPException(400, str(e)) from e
         try:

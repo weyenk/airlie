@@ -5,7 +5,7 @@ gh, the pipeline and the one-story lock."""
 from __future__ import annotations
 
 import json
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -15,16 +15,20 @@ from airlie.story.checkout import check_checkout, find_checkout, held_label
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, masked
 from airlie.story.jira import JiraBoard, jira_board
-from airlie.story.model import NoTestGate, RepositoryError, StorySetupError
+from airlie.story.model import NoTestGate, RepositoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Checked, Publisher
-from airlie.story.state import StoryState, story_lock
+from airlie.story.state import STAGES, StoryState, story_lock
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
 
 class StoryBusy(RuntimeError):
     """Another story holds the lock: stories are built one at a time."""
+
+
+PUBLISHED = STAGES[STAGES.index("publish") :]
+"""The stages of a story whose PRs are open: nothing is built or published again."""
 
 
 def stories_dir(cfg: AirlieConfig) -> Path:
@@ -95,14 +99,15 @@ def written_repo(cfg: AirlieConfig, repo: Path | None) -> Path:
     return git_repo(raw)
 
 
-def _recorded(cfg: AirlieConfig, card: Card, field: str) -> str | None:
-    """`field` of the story of `card` as its state.json says; None when there is no state, it cannot be read
-    or it holds none (the run then starts the story, or says what is wrong with the file)."""
+def _recorded(cfg: AirlieConfig, card: Card) -> dict[str, str]:
+    """The text fields of the story of `card` as its state.json says (stage, repo, github_repo, …); none when
+    there is no state or it cannot be read (the run then starts the story, or says what is wrong with the
+    file)."""
     try:
-        value = json.loads((stories_dir(cfg) / card.key / "state.json").read_text())[field]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return None if value is None else str(value)
+        saved = json.loads((stories_dir(cfg) / card.key / "state.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in saved.items() if isinstance(v, str)} if isinstance(saved, dict) else {}
 
 
 def place(cfg: AirlieConfig, card: Card, repo: Path | None = None) -> Place:
@@ -110,11 +115,18 @@ def place(cfg: AirlieConfig, card: Card, repo: Path | None = None) -> Place:
     A Jira issue: in the repository its one repo:<owner>/<name> label names (the one its story started with,
     if it did), which is the checkout of that name in story.repos_root, or `repo` in its place; either way its
     remote, as written, must name that repository. A RepositoryError is for the issue (`placed` tells it); a
-    `repo` that is not a git repository is a StorySetupError, for the person who named it."""
+    `repo` that is not a git repository is a StorySetupError, for the person who named it.
+
+    Once a story has published, nothing is built or published again: it gets the checkout and the repository
+    its state recorded, and neither its label nor that checkout is looked at, so a label tidied or a clone
+    moved since still lets it post its PR links and reach review."""
     if not card.ref:  # a written request has no labels
         return Place(written_repo(cfg, repo), None)
+    saved = _recorded(cfg, card)
+    if saved.get("stage") in PUBLISHED and "repo" in saved:
+        return Place(Path(saved["repo"]), saved.get("github_repo"))
     state = stories_dir(cfg) / card.key / "state.json"
-    label = held_label(card.labels, _recorded(cfg, card, "github_repo"), state)
+    label = held_label(card.labels, saved.get("github_repo"), state)
     path = git_repo(repo) if repo is not None else find_checkout(cfg.story.repos_root, label)
     check_checkout(path, cfg.story.remote, label)
     return Place(path.resolve(), label)
@@ -277,7 +289,7 @@ async def tick(cfg: AirlieConfig) -> str:
         card = await board.next_card()
         if card is None:
             return "idle: no issue matches the intake query"
-        finished = _recorded(cfg, card, "stage") == "review"  # then the run below has nothing to do
+        finished = _recorded(cfg, card).get("stage") == "review"  # then the run below has nothing to do
         try:
             where = place(cfg, card)
             pipe = make_pipeline(
@@ -297,12 +309,18 @@ async def tick(cfg: AirlieConfig) -> str:
 
 
 async def story_job(
-    cfg: AirlieConfig, *, card: str | None, text: str | None, repo: str | None
+    cfg: AirlieConfig,
+    *,
+    card: str | None,
+    text: str | None,
+    repo: str | None,
+    running: Callable[[str], bool] | None = None,
 ) -> tuple[str, Path, Coroutine[Any, Any, dict[str, Any]]]:
     """For POST /v1/airlie/stories: the issue is fetched, and where its story is built found, now (a bad
     reference, or a story that cannot start, is the caller's 400; an issue whose repository cannot be used is
     told so too); the story is built in the job. Its gate is the repository's AGENTS.md: a request names
-    none."""
+    none. `running` says whether a job (by its id) runs: one for the same story is StoryRunning, before the
+    issue can be told or moved."""
     try:
         scfg = story_config(cfg)
     except ConfigError as e:  # story.topology names no profile, or the file changed under a running serve
@@ -312,47 +330,45 @@ async def story_job(
         raise StorySetupError("; ".join(problems))
     given = Path(repo) if repo else None
     board, c = await card_for(scfg, card, text)
+    job_id = f"story-{c.key}"
+    if running is not None and running(job_id):
+        raise StoryRunning(f"job '{job_id}' is already running")
     await placed(scfg, board, c, given)
 
     async def work() -> dict[str, Any]:
         st = await run_one(scfg, board=board, card=c, repo=given)
         return {"stage": st.stage, "blocked": st.blocked, "prs": st.prs, "dir": str(st.path)}
 
-    return f"story-{c.key}", stories_dir(scfg) / c.key / "events.jsonl", work()
-
-
-def _last_fetched(cfg: AirlieConfig, path: Path) -> tuple[str, str] | None:
-    """The trunk a story would build on, as last fetched: the remote's, else the local one (the pipeline
-    fetches first, then picks the same way); its ref and commit, or None when neither exists."""
-    s = cfg.story
-    for ref in (f"{s.remote}/{s.trunk}", s.trunk):
-        sha = rev_parse(path, ref)
-        if sha is not None:
-            return ref, sha
-    return None
+    return job_id, stories_dir(scfg) / c.key / "events.jsonl", work()
 
 
 def _check_trunk_and_gate(
     cfg: AirlieConfig, path: Path, who: str, test_cmd: str | None, blocked: str, out: Checked
 ) -> None:
-    """The trunk of `path` and the test gate a story there would have: a person's `test_cmd`, else the one
-    AGENTS.md at that trunk lists (`who` names the repository, `blocked` the story, in a problem)."""
-    trunk = _last_fetched(cfg, path)
-    if trunk is None:
-        out.problems.append(f"the trunk '{cfg.story.trunk}' (story.trunk) does not exist in {path}")
-        return
-    ref, sha = trunk
-    out.notes.append(f"trunk: {ref} at {sha[:12]}, as last fetched (a story fetches it first)")
+    """The trunk a story in `path` would build on, the remote's as last fetched (a story fetches it first,
+    and never builds on the local one), and the test gate it would have: a person's `test_cmd`, else the one
+    AGENTS.md lists there (`who` names the repository, `blocked` the story, in a problem)."""
+    ref = f"{cfg.story.remote}/{cfg.story.trunk}"
+    sha = rev_parse(path, ref)
+    if sha is None:
+        out.notes.append(
+            f"trunk: {ref} has not been fetched into {path}: a story fetches it first, and reads its test "
+            "gate there"
+        )
+    else:
+        out.notes.append(f"trunk: {ref} at {sha[:12]}, as last fetched (a story fetches it first)")
     cmd = (test_cmd or "").strip()
     if cmd:
         out.notes.append(f"test gate: {cmd} (--test-cmd)")
+        return
+    if sha is None:
         return
     try:
         gate = read_gate(path, sha)
     except NoTestGate as e:
         out.problems.append(f"{blocked} would be blocked: {missing_gate(who, ref, sha, str(e))}")
         return
-    out.notes.append(f"test gate (AGENTS.md at {ref}): {gate.command}")
+    out.notes.append(f"test gate (AGENTS.md at {ref}): {gate.shown}")
 
 
 async def _check_issue(
@@ -366,6 +382,13 @@ async def _check_issue(
         card = await board.card(ref)
     except BoardError as e:
         out.problems.append(str(e))
+        return None
+    saved = _recorded(cfg, card)
+    if saved.get("stage") in PUBLISHED and "repo" in saved:  # place would not look at its repository either
+        out.notes.append(
+            f"{card.ref}'s story has published (stage {saved['stage']}, in {saved['repo']}): nothing is "
+            "built or published again, so its repository and test gate are not checked"
+        )
         return None
     try:
         where = place(cfg, card, repo)

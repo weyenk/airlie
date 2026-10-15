@@ -214,3 +214,51 @@ def test_a_directory_that_is_not_a_git_repository_is_no_checkout(tmp_path: Path)
         f"{path} is not a git repository: clone weyenk/OpenHand there "
         "(git clone git@github.com:weyenk/OpenHand.git)"
     )
+
+
+# ---- a checkout that cannot be read is the issue's problem, never a crash (tick would fail every beat) ----
+
+
+def test_a_checkout_that_cannot_be_looked_into_is_a_repository_error(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    path = clone_of(locked / "OpenHand", "git@github.com:weyenk/OpenHand.git")
+    locked.chmod(0)  # nothing under it can be looked at: stat raises EACCES
+    try:
+        with pytest.raises(RepositoryError) as e:
+            check_checkout(path, "origin", "weyenk/OpenHand")
+    finally:
+        locked.chmod(0o755)
+    assert str(e.value) == (
+        f"{path} cannot be read (Permission denied): fix its permissions, or clone weyenk/OpenHand again"
+    )
+
+
+def test_git_that_cannot_run_in_the_checkout_is_a_repository_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = clone_of(tmp_path / "OpenHand", "git@github.com:weyenk/OpenHand.git")
+
+    def refused(repo: Path, remote: str) -> str | None:
+        raise PermissionError(13, "Permission denied", str(repo))  # as subprocess raises when cwd is locked
+
+    monkeypatch.setattr("airlie.story.checkout.remote_url", refused)
+    with pytest.raises(RepositoryError) as e:
+        check_checkout(path, "origin", "weyenk/OpenHand")
+    assert str(e.value) == (
+        f"{path} cannot be read (Permission denied): fix its permissions, or clone weyenk/OpenHand again"
+    )
+
+
+def test_a_directory_of_the_name_that_cannot_be_looked_at_is_named_not_skipped(tmp_path: Path) -> None:
+    root = tmp_path / "git"
+    (root / "OpenHand").mkdir(parents=True)
+    root.chmod(0o644)  # its names can be listed, but nothing in it can be looked at
+    try:
+        with pytest.raises(RepositoryError) as e:
+            find_checkout(root, "weyenk/OpenHand")
+    finally:
+        root.chmod(0o755)
+    assert str(e.value) == (
+        f"{root / 'OpenHand'} cannot be read (Permission denied): fix its permissions, or clone "
+        "weyenk/OpenHand again"
+    )

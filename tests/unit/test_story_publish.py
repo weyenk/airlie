@@ -565,7 +565,7 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
         assert [n for n in ("GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_ENTERPRISE_TOKEN") if n in env] == []
         assert env["GIT_SSH_COMMAND"] == "false" and env["GIT_ALLOW_PROTOCOL"] == "https"
         assert env["GIT_PROXY_COMMAND"] == ""
-        assert pairs(env)[-16:] == [
+        last = [
             *NO_HOOKS,
             *BOT_GIT,
             *PINNED,
@@ -573,6 +573,7 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
             (f"http.{URL}.curloptResolve", ""),  # again for the one URL the step fetches from and pushes to
             (f"http.{URL}.sslVerify", "true"),
         ]
+        assert pairs(env)[-len(last) :] == last
     gh_dirs = {e["GH_CONFIG_DIR"] for e in rec.envs}
     assert len(gh_dirs) == 5 and str(tmp_path / "your-gh") not in gh_dirs  # one per step, never yours
     assert rec.gh_dirs == [([], 0o700)] * 6  # empty and private while it runs
@@ -976,6 +977,38 @@ async def test_a_publish_steps_fetch_runs_no_alternate_refs_command_a_model_plan
     assert logged(marks) == []
     git_in(repo, dict(os.environ), "fetch", "-q", "origin", "main")  # the control: plain git runs it
     assert "alternateRefsCommand GH_TOKEN= SSH_AUTH_SOCK=/tmp/the-persons-agent.sock" in logged(marks)
+
+
+async def test_the_trunk_fetch_names_the_one_ref_it_updates_whatever_refspec_a_model_configured(
+    tmp_path: Path, local_remotes: None, own_git: Path
+) -> None:
+    """A model can plant remote.origin.fetch: a refspec that maps nothing leaves origin/main where it was, and
+    a story would build on that; one that maps the trunk onto a local branch has git move that branch as it
+    fetches. The fetch names its one source and destination, and --refmap= has git use no configured one."""
+    remote, seed, repo = tmp_path / "remote.git", tmp_path / "seed", tmp_path / "repo"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    for name in ("one", "two"):
+        git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", name)
+        git(seed, "push", "-q", str(remote), "main")
+        if name == "one":
+            git(tmp_path, "clone", "-q", str(remote), str(repo))
+    stale, news = git(repo, "rev-parse", "origin/main"), git(remote, "rev-parse", "main")
+    git(repo, "branch", "yours", stale)  # a branch of the person's
+    git(repo, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/heads/yours")
+    git(repo, "config", "--add", "remote.origin.fetch", "+refs/heads/nothing:refs/remotes/origin/nothing")
+    ran: list[list[str]] = []
+
+    async def run(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        ran.append(args)
+        return await run_cmd(args, cwd, env)
+
+    await Publisher(run=run).fetch(repo, "main")
+    assert ran == [["git", "fetch", "-q", "--refmap=", "origin", "+refs/heads/main:refs/remotes/origin/main"]]
+    assert git(repo, "rev-parse", "origin/main") == news  # the one ref it names, moved
+    assert git(repo, "rev-parse", "yours") == stale  # and nothing else
+    git(repo, "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")  # the control
+    assert git(repo, "rev-parse", "yours") == news  # plain git also moves what the planted refspec maps
 
 
 def transports(tmp_path: Path, marks: Path) -> tuple[Path, Path]:

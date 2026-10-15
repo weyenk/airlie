@@ -79,15 +79,35 @@ def held_label(labels: Iterable[str], pinned: str | None, state: Path) -> str:
     )
 
 
+def _unreadable(path: Path, github_repo: str, e: OSError) -> RepositoryError:
+    """The checkout at `path` cannot be read (`e`: EACCES, say): a person must look, as at any other checkout
+    that is not the repository's."""
+    why = e.strerror or type(e).__name__
+    return RepositoryError(
+        f"{path} cannot be read ({why}): fix its permissions, or clone {github_repo} again"
+    )
+
+
 def find_checkout(root: Path, github_repo: str) -> Path:
     """The directory in `root` (story.repos_root) named as `github_repo` ("owner/name") is, in any case; a
     RepositoryError that names `root` when there is none (and says to clone the repository there) or more than
-    one (a volume where names are case-sensitive)."""
+    one (a volume where names are case-sensitive), or that names the one that cannot be read."""
     name = github_repo.split("/", 1)[1]
     try:
-        found = sorted(p for p in root.iterdir() if p.name.lower() == name.lower() and p.is_dir())
+        named = sorted(p for p in root.iterdir() if p.name.lower() == name.lower())
     except OSError:  # no such directory, not a directory, not readable: no checkout is there
-        found = []
+        named = []
+    found: list[Path] = []
+    for p in named:
+        try:
+            is_dir = p.is_dir()
+        except OSError as e:  # EACCES: the name is there, and nothing can be learnt about it
+            failure = _unreadable(p, github_repo, e)
+        else:
+            if is_dir:
+                found.append(p)
+            continue
+        raise failure  # outside the handler: nothing is chained
     if not found:
         raise RepositoryError(
             f"no checkout of {github_repo} in {root} (story.repos_root): clone it there: "
@@ -104,11 +124,21 @@ def find_checkout(root: Path, github_repo: str) -> Path:
 def check_checkout(path: Path, remote: str, github_repo: str) -> None:
     """`path` must be a git repository whose `remote` (story.remote), as written (no insteadOf applied: the
     first URL, which every fetch uses), names `github_repo` in one of GitHub's forms, in any case; a
-    RepositoryError says what it is instead, and what it should be (a password in the URL masked)."""
+    RepositoryError says what it is instead, and what it should be (a password in the URL masked), or that it
+    cannot be read."""
     ssh = f"git@github.com:{github_repo}.git"
-    if not (path / ".git").exists():
+    failure: RepositoryError | None
+    try:
+        cloned = (path / ".git").exists()
+        url = remote_url(path, remote) if cloned else None
+    except OSError as e:  # EACCES from the stat, or from starting git there
+        failure = _unreadable(path, github_repo, e)
+    else:
+        failure = None
+    if failure is not None:
+        raise failure  # outside the handler: nothing is chained
+    if not cloned:
         raise RepositoryError(f"{path} is not a git repository: clone {github_repo} there (git clone {ssh})")
-    url = remote_url(path, remote)
     if url is None:
         add = f"git -C {path} remote add {remote} {ssh}"
         raise RepositoryError(f"{path} has no remote '{remote}' (story.remote): add it with {add}")

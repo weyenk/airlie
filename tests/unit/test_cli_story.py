@@ -67,9 +67,8 @@ def test_run_names_what_is_missing(tmp_path: Path) -> None:
 
 def test_a_text_story_prints_its_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    p = story_cfg(
-        tmp_path, test_cmd="pytest -q"
-    )  # airlie_run's: a story's gate is AGENTS.md's, or --test-cmd
+    # story.test_cmd is airlie_run's: a story's gate is AGENTS.md's, or --test-cmd
+    p = story_cfg(tmp_path, test_cmd="pytest -q")
     seen: dict[str, object] = {}
 
     async def fake_run_one(cfg, *, board, card, repo, test_cmd):  # type: ignore[no-untyped-def]
@@ -261,8 +260,8 @@ def test_check_with_an_issue_prints_its_repository_trunk_and_gate_and_writes_not
     assert r.output.splitlines() == [
         f"AIR-7 is for o/repo (its repo: label): {repo.resolve()}, whose remote 'origin' is "
         "git@github.com:o/repo.git",
-        f"trunk: {trunk} at {sha[:12]}, as last fetched (a story fetches it first)",
-        f"test gate (AGENTS.md at {trunk}): uv sync && uv run pytest -q",
+        f"trunk: origin/{trunk} at {sha[:12]}, as last fetched (a story fetches it first)",
+        f"test gate (AGENTS.md at origin/{trunk}): uv sync && uv run pytest -q",
         "ready: task story -- AIR-7",
     ]
     assert [r.method for r in jira.requests] == ["GET"]  # no note, no move
@@ -270,9 +269,10 @@ def test_check_with_an_issue_prints_its_repository_trunk_and_gate_and_writes_not
 
     git(repo, "rm", "-q", "AGENTS.md")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "no gate")
+    git(repo, "update-ref", f"refs/remotes/origin/{trunk}", "HEAD")  # pushed, and fetched since
     r = runner.invoke(cli.app, ["story", "check", "AIR-7", "--config", str(p)])
     assert r.exit_code == 1
-    assert f"✗ AIR-7 would be blocked: o/repo has no test gate on {trunk} (" in r.output
+    assert f"✗ AIR-7 would be blocked: o/repo has no test gate on origin/{trunk} (" in r.output
     assert "it has no AGENTS.md. Add a `## Test gate` section" in r.output
 
 
