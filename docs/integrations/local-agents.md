@@ -14,8 +14,9 @@ for roles also `task serve`.
 
 ## OpenCode
 
-Verified 2026-10-14 (OpenCode 1.19.0): `opencode run --model airlie/base "create hello.txt …, read it back …"`
-wrote the file, read it and answered, through `POST /v1/chat/completions` on the engine.
+Verified 2026-10-14 on OpenCode 1.19.0 (a 1.19-era result; the same check on 2.0 is pending, and see the known
+issues at the end of this section): `opencode run --model airlie/base "create hello.txt …, read it back …"` wrote
+the file, read it and answered, through `POST /v1/chat/completions` on the engine.
 
 ```bash
 mkdir -p ~/.config/opencode && cp docs/integrations/opencode.json ~/.config/opencode/opencode.json
@@ -26,9 +27,10 @@ If you already have an `opencode.json`, merge the `provider.airlie` block into i
 "airlie/base"` (and `agent.build.model`) to make it the default.
 
 The sample also holds the `mcp.airlie` entry that starts airlie's MCP server (see the chief, below), with
-`/path/to/airlie` where your airlie checkout goes. `task opencode:install` writes the real path into
-`~/.config/opencode/opencode.json` (it replaces the placeholder, after a backup, if you copied the sample there). If
-you copy the sample or merge the entry by hand, edit that path yourself, or OpenCode cannot start the server.
+`/path/to/airlie` where your airlie checkout goes (in `--project` and in `--config`). `task opencode:install` writes
+the real command into `~/.config/opencode/opencode.json`: if you copied the sample there, it replaces the placeholder
+command and keeps the rest of the entry. If you copy the sample or merge the entry by hand, edit that path yourself,
+or OpenCode cannot start the server.
 
 Pick `airlie/coder` for coding (Qwen3-Coder with the coder persona), `airlie/architect` for a plan,
 `airlie/qa` for tests; the generalist roles (`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
@@ -41,30 +43,33 @@ engine directly because the role server also repairs streamed tool-call chunks t
 ### The chief: delegation, the studio and stories
 
 `task opencode:install` copies a `chief` agent (switch to it with Tab), four subagents and two commands into
-`~/.config/opencode`, and registers airlie's MCP server in `~/.config/opencode/opencode.json`. Restart OpenCode
-after installing, and keep `task serve` running. The agent and command files are copies: run the task again after
-you update them.
+`~/.config/opencode`, and registers airlie's MCP server in `~/.config/opencode/opencode.json`. Run it from the
+checkout you keep, your main one (see *Install* below). Restart OpenCode after installing, and keep `task serve`
+running. The agent and command files are copies: run the task again after you update them.
 
 - The **chief** runs on the raw `generalist` (Qwen3.8). It never edits files. It hands small changes to a
   subagent with OpenCode's `task` tool, and to these four only: `coder`, `qa`, `docs` or `architect`, each on its
   role model, so `task serve` supplies the persona (not OpenCode's built-in `explore`, whose shell has no merge
-  denies). Its shell runs `git status`, `git diff`, `git log`, `gh pr view` and `gh stack view --json` (or
-  `--short`) without asking; `--output` on `git diff` and `git log` is denied (it writes a file), as are `gh api`
-  and the merge commands, and every other command asks you first.
+  denies). Its shell runs these git forms without asking, and only these (no wildcard, so no other flag or argument
+  rides along): `git status`, `git status --short`, `git diff`, `git diff --stat`, `git diff --cached` and
+  `git log --oneline -20`; it also runs `gh pr view` and `gh stack view --json` or `--short`, which may take
+  arguments. `--output` on `git diff` and `git log` is denied (it writes a file), as are `gh api` and the merge
+  commands, and everything else asks you first.
 - **Features:** `/studio <goal>` (or just ask). `airlie_plan` returns the studio chief's plan; you approve or
   edit it; `airlie_run` builds it on a new branch, committed locally (the roles you approved are pinned);
   `airlie_status` follows it, and `airlie_cancel` stops it.
 - **Stories:** `/story <Jira issue key or link | request>` runs the story pipeline (`story.md`) and ends in
   stacked draft PRs. A story that stops is a finished job whose result carries the reason, so `airlie_status` shows
   `stopped: <reason>` and the chief reports it as stopped, with the reason instead of PR links.
-- **Give `/story` and `/studio` an issue key or link, or a short request of your own, and do not paste an issue's
-  body:** OpenCode runs `` !`cmd` `` spans in a command's arguments, so pasted text can run a shell command.
+- **Give `/story` an issue key or link, or a short request of your own, and `/studio` a short goal in your own
+  words. Do not paste an issue's body, or any text you did not write, into either:** OpenCode runs `` !`cmd` ``
+  spans in a command's arguments, so pasted text can run a shell command.
 - **What stops a merge.** The agents airlie installs (the chief and its four subagents) deny `gh api*`,
   `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That guards against a model's
   slip, not against a determined one: the rules match the command line, so a wrapper such as
-  `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands. What really
-  stops a merge is GitHub: branch protection on the trunk (required reviews) and the scope of the token your `gh`
-  login uses.
+  `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands, and the
+  studio's own coder has a shell tool that these rules do not govern at all. What really stops a merge is GitHub:
+  branch protection on the trunk (required reviews) and the scope of the token your `gh` login uses.
 - Without `--api-key`, any program on this machine can use `task serve`, and its jobs API starts studio runs (they
   commit on a local branch) and stories (they push branches and open draft PRs). Start it with
   `task serve -- --api-key SECRET`, and give OpenCode the same secret in the `airlie` provider's `apiKey` (chat)
@@ -78,28 +83,52 @@ OpenCode 2.0 no longer loads tool files, so the tools come from `airlie mcp`, a 
 starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` and `story`, which OpenCode names
 `airlie_plan` and so on, and each is a client of `task serve`'s jobs API.
 
-- **Install.** `task opencode:install` merges an `mcp.airlie` entry into `~/.config/opencode/opencode.json`:
-  `uv run --quiet --project <this checkout> airlie mcp`, with `AIRLIE_URL` set to `http://127.0.0.1:8090`. A missing
-  file is created; a file that already has exactly that entry is left alone; any other is first copied to
-  `opencode.json.<date>-<time>.bak`. A file that is not strict JSON (a comment, say) is refused and left as it is, and
-  the error prints the entry to add by hand. The task also deletes the `tool/airlie.ts` an earlier install copied.
-  `airlie mcp config` prints the entry (`--install` merges it, as the task does).
+- **Install.** `task opencode:install` puts an `mcp.airlie` entry into `~/.config/opencode/opencode.json`:
+  `uv run --quiet --project <this checkout> airlie mcp --config <this checkout>/airlie.yaml`, with `AIRLIE_URL` set
+  to `http://127.0.0.1:8090`. A missing file is created. An `mcp.airlie` you already have is merged into, not
+  replaced: its `type` and `command` are set to these, and every other key and every `environment` entry you added
+  stays (`AIRLIE_URL` is added only when it is missing). The task says `created`, `added`, `updated` or `unchanged`.
+  When it changes an existing file it first copies it to `opencode.json.<date>-<time>.bak` (an unchanged file gets no
+  backup), keeps the file's mode and follows a symlink, and writes the result beside the file and moves it into
+  place, so a failed write cannot truncate your config. A file that is not strict JSON (a comment, say), or an
+  `mcp`, `mcp.airlie` or `environment` that is not an object, is refused and left as it is, and the error prints the
+  entry to add by hand. The task also deletes the `tool/airlie.ts` an earlier install copied. `airlie mcp config`
+  prints the entry (`--install` merges it, as the task does).
+- **Install from the checkout you keep.** The entry points at the checkout the task ran from, so run it from your
+  main checkout. From a `.claude/worktrees/` checkout the task still installs but warns that the checkout
+  disappears once its branch is merged, after which OpenCode cannot start `airlie mcp`; run it again from the main
+  checkout then.
 - **Environment.** `airlie mcp` reads three variables, which you set in the `environment` object of its entry:
   `AIRLIE_URL` (`task serve`'s address), `AIRLIE_SERVE_API_KEY` (sent as `Authorization: Bearer`, and only to an
   `https` or loopback `AIRLIE_URL`) and `AIRLIE_TEST_CMDS` (test commands the tools accept, one per line). Installing
-  again replaces an entry that differs from the generated one (after a backup), so put what you added to
-  `environment` back, or copy it from the backup.
-- **Test commands.** `airlie_run` and `airlie_story` pass on a `test_cmd` only if it is `story.test_cmd` (from the
-  `airlie.yaml` `airlie mcp` finds above where it runs, else this checkout's) or a line of `AIRLIE_TEST_CMDS`; any
-  other is refused, because the command runs in a shell on this machine and a model must not choose it. Leave
-  `test_cmd` out to use `story.test_cmd`. The chief's file also sets `airlie_run` and `airlie_story` to `ask`; the
-  refusal does not depend on that prompt.
-- **Time.** An MCP client may cut a call off at 60 s, so every tool answers within about 45 s. `airlie_plan` waits up
-  to 45 s for the plan; when the chief is still planning it returns the job id ("still planning"), and the chief calls
-  `airlie_status` with it until the plan comes. `airlie_status` waits up to 45 s (at most 50) for news.
-  `airlie_run` and `airlie_story` return at once with a job id.
+  again keeps what you put there; it only resets `type` and `command`.
+- **Config.** The installed command pins `--config <this checkout>/airlie.yaml`, so `story.test_cmd` is the one in
+  that file (with its `airlie.local.yaml`) wherever OpenCode runs, never an `airlie.yaml` that happens to be above
+  the project. An entry made by hand without `--config` takes `AIRLIE_CONFIG`, else an `airlie.yaml` above where
+  `airlie mcp` runs, else this checkout's own.
+- **Test commands.** `airlie_run` and `airlie_story` pass on a `test_cmd` only if it is `story.test_cmd` or a line of
+  `AIRLIE_TEST_CMDS`; any other is refused, because the command runs in a shell on this machine and a model must not
+  choose it. Left out, `airlie_run` uses `story.test_cmd`, else the first `AIRLIE_TEST_CMDS` line, and with neither
+  the run has no test gate; `airlie_story` uses `story.test_cmd` (a story with none configured is refused). The
+  chief's file also sets `airlie_run` and `airlie_story` to `ask`; the refusal does not depend on that prompt.
+- **Time.** An MCP client may cut a call off at 60 s, so every tool returns within about 45 s, even when
+  `task serve` hangs. `airlie_plan` waits for the plan for most of that (its request included); when the chief is
+  still planning it returns the job id ("still planning"), and the chief calls `airlie_status` with it until the
+  plan comes. `airlie_status` waits 40 s by default (at most 43) for news. `airlie_run` and `airlie_story` return
+  as soon as the job has started, with its id. When `task serve` does not answer in time, a tool says so: it names
+  the job when it knows its id and points at `airlie_status`, and after a request to start a job that timed out
+  it warns that the job may have started anyway.
 - **Repository.** The tools work in the git repository `airlie mcp` was started in, or in the `repo` they are
   given; `airlie_story` falls back to `story.repo`.
+
+#### Known issues
+
+Found in a live sandbox check on OpenCode 2.0.29 on 2026-10-15, and open:
+
+- End-to-end tool calls on local models currently fail with `OpenAI Chat tool call delta is missing id or name`.
+  The engine's Qwen3-Coder tool-call parser drops malformed calls, and a fix is in progress separately.
+- `opencode run --agent chief` used the config's default model rather than the agent's `airlie/generalist`; to be
+  rechecked in the TUI.
 
 ## Claude Code
 

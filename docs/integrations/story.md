@@ -1,8 +1,8 @@
 # Stories: a Jira issue → stacked draft PRs
 
 `task story` takes a Jira issue (or a written request) through the whole loop on your local models and stops
-at a stack of draft pull requests for you to review. **Only a human merges:** airlie has no merge path (see *What
-stops a merge*).
+at a stack of draft pull requests for you to review. **Only a human merges:** airlie has no code that merges;
+*What stops a merge*, below, says what else stands in the way.
 
 | stage | who | what you get |
 | --- | --- | --- |
@@ -127,17 +127,19 @@ failure is in the next one:
 
 | stopped after | the failure was in |
 | --- | --- |
-| `'new'` | the pick-up itself (Jira refused the move to *In Progress*, say) |
+| `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment) |
 | `'intake'` | refining the story (or finding the trunk) |
 | `'refine'` | planning the layers, or posting the story's comment |
 | `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
-| `'publish'` | telling the issue: the PRs are open |
+| `'publish'` | telling the issue (the PR links or the move to *In Review*): the PRs are open |
 
-A stage is saved before its comment is posted, so a comment that Jira refuses stops the story as `after 'refine'` or
-`after 'layers'` (the reason names Jira) and costs no work: the story, the plan and the built layers are kept, and
-the model is not asked again. The reason is cut to 800 characters, and a `user:password@` in a URL is masked. The
-usual reasons:
+The refined story, the layer plan and each built layer are saved before their comments are posted, so a comment
+that Jira refuses stops the story as `after 'refine'` or `after 'layers'` (the reason names Jira) and costs no work:
+the story, the plan and the built layers are kept, and the model is not asked again. The pick-up and the final
+note work the other way round: they are posted before their stage is saved, so when Jira refuses one the stop reads
+`after 'new'` or `after 'publish'`, and the next run posts it again. The reason is cut to 800 characters, and a
+`user:password@` in a URL is masked. The usual reasons:
 
 - product says the request cannot be built as written, and names the decision a person must make: edit the issue
   or comment on it;
@@ -170,9 +172,9 @@ chief calls `airlie_story`, a tool of the `airlie mcp` server that `task opencod
 `opencode.json`; it starts the same pipeline through `task serve`, and the chief follows it with `airlie_status`. The
 story is built in the git repository `airlie mcp` was started in, or in the `repo` the tool is given, or else in
 `story.repo`. `airlie_story` passes on a test command only if it is `story.test_cmd` or a line of `AIRLIE_TEST_CMDS`
-in the server's environment, and refuses any other. A story that stops is a finished job whose result carries the
-reason, so the chief reports it as stopped, with the reason instead of PR links, and says it resumes when the same
-command runs again.
+in the server's environment, and refuses any other; left out, it uses `story.test_cmd`. A story that stops is a
+finished job whose result carries the reason, so the chief reports it as stopped, with the reason instead of PR
+links, and says it resumes when the same command runs again.
 
 **Give `/story` an issue key or link, or a short request of your own, and do not paste an issue's body:** OpenCode
 runs `` !`cmd` `` spans in a command's arguments, so pasted text can run a shell command.
