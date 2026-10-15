@@ -28,10 +28,13 @@ def _no_atlassian_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
-    """airlie reads the .env beside airlie.yaml: no unit test may read the person's real one. Tests of the
-    reader pass their own tmp paths, and a test of the lookup imports the real config_dotenv itself."""
+def _no_real_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """airlie reads the .env beside airlie.yaml and ~/.config/airlie/.env: no unit test may read the person's
+    real ones. Tests of the reader pass their own tmp paths, and a test of the lookup imports the real
+    config_dotenv (and, with a HOME of its own, the real user_dotenv_path) itself."""
     monkeypatch.setattr("airlie.story.jira.config_dotenv", lambda cfg: {})
+    nowhere = tmp_path / "no-home" / ".config" / "airlie" / ".env"
+    monkeypatch.setattr("airlie.story.jira.user_dotenv_path", lambda: nowhere)
 
 
 @pytest.fixture(autouse=True)

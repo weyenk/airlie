@@ -2,18 +2,20 @@
 Authorization header (HTTP Basic), never in a URL, a log line, an error message or a repr.
 
 ATLASSIAN_BASE_URL, ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY each come from the process
-environment first, then from the .env beside airlie.yaml, then from story.jira. airlie reads that .env itself,
-in memory: nothing exports it, so no subprocess (the coder's shell tool, the test gate, gh, git, the engines)
-inherits the token. Descriptions and comments are Atlassian Document Format (ADF): read as plain text, written
-from airlie's markdown-ish notes."""
+environment first, then from the .env beside airlie.yaml, then from ~/.config/airlie/.env (one for every
+checkout), then from story.jira. airlie reads those files itself, in memory: nothing exports them, so no
+subprocess (the coder's shell tool, the test gate, gh, git, the engines) inherits the token. Descriptions and
+comments are Atlassian Document Format (ADF): read as plain text, written from airlie's markdown-ish notes."""
 
 from __future__ import annotations
 
 import base64
 import os
 import re
+import stat
 import warnings
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -67,16 +69,33 @@ def read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def config_dotenv(cfg: AirlieConfig) -> dict[str, str]:
-    """The .env beside the config file (airlie.yaml), read in memory and never exported; {} without a config
-    file. Every unit test stubs this lookup (tests/unit/conftest.py), so none reads a real .env."""
-    if cfg.source_path is None:
-        return {}
-    path = cfg.source_path.parent / ".env"
+def user_dotenv_path() -> Path:
+    """~/.config/airlie/.env: the person's own settings, for every checkout. tests/unit/conftest.py points
+    this at a file that does not exist, so no unit test reads a real one."""
+    return Path.home() / ".config" / "airlie" / ".env"
+
+
+def _dotenv(path: Path) -> dict[str, str]:
     try:
         return read_dotenv(path)
     except OSError as e:
-        raise BoardError(f"cannot read {path} ({type(e).__name__})") from None
+        failure = f"cannot read {path} ({type(e).__name__})"
+    raise BoardError(failure)  # outside the handler: nothing is chained
+
+
+def config_dotenv(cfg: AirlieConfig) -> dict[str, str]:
+    """The values of ~/.config/airlie/.env, and over them those of the .env beside the config file
+    (airlie.yaml; none without a config file), read in memory and never exported. A user file that group or
+    others can read is a warning that names it. Every unit test stubs this lookup (tests/unit/conftest.py), so
+    none reads a real .env."""
+    user = user_dotenv_path()
+    values = _dotenv(user)
+    with suppress(OSError):  # read just now; gone since is no warning
+        if user.stat().st_mode & (stat.S_IRGRP | stat.S_IROTH):
+            warnings.warn(f"{user} is readable by group or others: chmod 600 {user}", stacklevel=2)
+    if cfg.source_path is not None:
+        values.update(_dotenv(cfg.source_path.parent / ".env"))
+    return values
 
 
 def _pick(var: str, dotenv: Mapping[str, str]) -> str | None:
@@ -105,7 +124,8 @@ def jira_credentials(spec: JiraSpec, dotenv: Mapping[str, str]) -> tuple[str, st
     if not email or not token:
         raise BoardError(
             "Jira needs your account email and an API token: set ATLASSIAN_EMAIL and ATLASSIAN_API_KEY in "
-            "the .env beside airlie.yaml, or story.jira.email and story.jira.token in airlie.local.yaml"
+            "~/.config/airlie/.env (or the .env beside airlie.yaml), or story.jira.email and "
+            "story.jira.token in airlie.local.yaml"
         )
     return email, token
 

@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ import yaml
 
 from airlie.config import JiraSpec
 from airlie.story import board as board_module
+from airlie.story import jira as airlie_jira
 from airlie.story import model
 from airlie.story.board import ISSUE_KEY, BoardError, Card, NullBoard, note, parse_card_ref, text_card
 from airlie.story.jira import (
@@ -27,6 +29,7 @@ from airlie.story.jira import (
     jira_credentials,
     jira_spec,
     read_dotenv,
+    user_dotenv_path,  # the real one: tests/unit/conftest.py points airlie.story.jira's at nothing
 )
 from tests.unit.test_studio_orchestrator import cfg_for
 
@@ -745,7 +748,9 @@ def test_an_unreadable_env_file_is_a_board_error_that_names_only_the_path(
     assert cfg.source_path is not None
 
     def unreadable(path: Path) -> dict[str, str]:
-        raise PermissionError(13, "Permission denied: s3cret")
+        if path == cfg.source_path.parent / ".env":  # type: ignore[union-attr]
+            raise PermissionError(13, "Permission denied: s3cret")
+        return {}
 
     monkeypatch.setattr("airlie.story.jira.read_dotenv", unreadable)
     with pytest.raises(BoardError) as e:
@@ -830,3 +835,108 @@ async def test_a_yaml_email_and_token_sign_in_but_never_reach_the_spec_or_a_dump
         yaml.safe_dump(cfg.model_dump(mode="json")),  # what `task config` prints
     ]
     assert [v for v in ("yaml-me", "yaml-t0ken") for text in shown if v in text] == []
+
+
+# ---- ~/.config/airlie/.env: one file for every checkout (fix round 1, item 8) ----
+
+
+def user_env(home: Path, text: str, mode: int = 0o600) -> Path:
+    """`text` as the .env of the person whose home is `home`, with `mode`."""
+    path = home / ".config" / "airlie" / ".env"
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    path.chmod(mode)
+    return path
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home of the test's own, and the real lookup of ~/.config/airlie/.env in it (tests/unit/conftest.py
+    points it nowhere for every other test)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("airlie.story.jira.user_dotenv_path", user_dotenv_path)
+    return tmp_path / "home"
+
+
+def test_the_users_env_file_is_read_and_the_one_beside_airlie_yaml_wins_over_it(
+    tmp_path: Path, home: Path
+) -> None:
+    user_env(home, f"ATLASSIAN_BASE_URL={SITE}\nATLASSIAN_PROJECT_KEY=USR\nATLASSIAN_API_KEY=user-t0ken\n")
+    cfg = cfg_for(tmp_path)
+    assert cfg.source_path is not None
+    assert config_dotenv(cfg) == {
+        "ATLASSIAN_BASE_URL": SITE,
+        "ATLASSIAN_PROJECT_KEY": "USR",
+        "ATLASSIAN_API_KEY": "user-t0ken",
+    }
+    (cfg.source_path.parent / ".env").write_text("ATLASSIAN_PROJECT_KEY=AIR\n")
+    assert config_dotenv(cfg)["ATLASSIAN_PROJECT_KEY"] == "AIR"  # the checkout's own .env wins
+    cfg.source_path = None  # no config file: the user's file still counts
+    assert config_dotenv(cfg)["ATLASSIAN_PROJECT_KEY"] == "USR"
+
+
+def test_the_order_is_the_environment_then_the_checkouts_env_then_the_users_then_the_yaml(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_env(
+        home, "ATLASSIAN_EMAIL=user@example.org\nATLASSIAN_API_KEY=user-t0ken\nATLASSIAN_PROJECT_KEY=USR\n"
+    )
+    yaml_cfg = {
+        "story": {"jira": {"site": SITE, "project": "YML", "email": "y@example.org", "token": "y-t0ken"}}
+    }
+    cfg = cfg_for(tmp_path, extra=yaml_cfg)
+    assert cfg.source_path is not None
+    (cfg.source_path.parent / ".env").write_text("ATLASSIAN_API_KEY=checkout-t0ken\n")
+    monkeypatch.setattr("airlie.story.jira.config_dotenv", config_dotenv)  # this test reads its own files
+    board = jira_board(cfg)
+    assert board is not None and board.project == "USR"  # the user's file over the yaml
+    basic = base64.b64decode(board._headers["Authorization"].removeprefix("Basic ")).decode()
+    assert basic == "user@example.org:checkout-t0ken"  # the checkout's over the user's
+    monkeypatch.setenv("ATLASSIAN_API_KEY", "env-t0ken")
+    board = jira_board(cfg)
+    assert board is not None
+    assert (
+        base64.b64decode(board._headers["Authorization"].removeprefix("Basic "))
+        .decode()
+        .endswith(":env-t0ken")
+    )
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o644])
+def test_a_users_env_file_group_or_others_can_read_is_warned_about_by_path_only(
+    tmp_path: Path, home: Path, mode: int
+) -> None:
+    path = user_env(home, "ATLASSIAN_API_KEY=s3cret-t0ken\n", mode=mode)
+    with pytest.warns(UserWarning) as caught:
+        values = config_dotenv(cfg_for(tmp_path))
+    said = [str(w.message) for w in caught]
+    assert values == {"ATLASSIAN_API_KEY": "s3cret-t0ken"}
+    assert said == [f"{path} is readable by group or others: chmod 600 {path}"]
+
+
+def test_a_private_users_env_file_is_read_without_a_warning(tmp_path: Path, home: Path) -> None:
+    user_env(home, "ATLASSIAN_PROJECT_KEY=USR\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert config_dotenv(cfg_for(tmp_path)) == {"ATLASSIAN_PROJECT_KEY": "USR"}
+
+
+def test_an_unreadable_users_env_file_is_a_board_error_that_names_only_the_path(
+    tmp_path: Path, home: Path
+) -> None:
+    path = user_env(home, "ATLASSIAN_API_KEY=s3cret-t0ken\n", mode=0)
+    try:
+        with pytest.raises(BoardError) as e:
+            config_dotenv(cfg_for(tmp_path))
+    finally:
+        path.chmod(0o600)
+    assert str(e.value) == f"cannot read {path} (PermissionError)"
+    assert "s3cret" not in "".join(traceback.format_exception(e.value))
+
+
+def test_unit_tests_never_read_the_real_users_env_file(tmp_path: Path) -> None:
+    """tests/unit/conftest.py points the lookup at a file that does not exist, whatever HOME says."""
+    assert (
+        airlie_jira.user_dotenv_path() != user_dotenv_path() and not airlie_jira.user_dotenv_path().exists()
+    )
+    assert config_dotenv(cfg_for(tmp_path)) == {}
