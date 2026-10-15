@@ -19,6 +19,7 @@ from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
 from airlie.story.model import (
+    SURROGATE,
     Layer,
     NotActionable,
     Story,
@@ -59,14 +60,15 @@ class StoryBlocked(Exception):
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
     """One row per subtask for the PR body: role, how it stopped, its last review and that review's
-    findings."""
+    findings. A lone surrogate in a finding (half of an escape in the reviewer's JSON) becomes U+FFFD: the
+    rows go into the state and the PR body, and neither can be written as UTF-8 with one in it."""
     rows: list[dict[str, Any]] = []
     for r in orch.runs.values():
         rv = r.review
         findings = []
         for f in rv.findings if rv else ():
             where = f"{f.file}:{f.line}" if f.line is not None else f.file
-            findings.append(f"{f.severity} {where}: {f.claim}")
+            findings.append(SURROGATE.sub("\N{REPLACEMENT CHARACTER}", f"{f.severity} {where}: {f.claim}"))
         rows.append(
             {
                 "id": r.subtask.id,
@@ -189,8 +191,7 @@ class StoryPipeline:
         except StoryBlocked as e:
             await self._block(st, card, str(e))
         except asyncio.CancelledError:
-            st.emit("cancelled", stage=st.stage, during=_running(st))
-            await self._say_cancelled(st, card)
+            await self._cancelled(st, card)
             raise
         except Exception as e:  # noqa: BLE001 - every failure ends as a note on the issue, never a silent stop
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
@@ -425,13 +426,20 @@ class StoryPipeline:
     async def _block(self, st: StoryState, card: Card, reason: str) -> None:
         """Every stop ends here: the reason is masked and then cut (once, for all of them), kept in the state
         and the events, posted as a note, and the issue moved to blocked. The note and the move are separate
-        calls, so a note that fails does not keep the issue out of Blocked."""
+        calls, so a note that fails does not keep the issue out of Blocked. A cancel that lands while the
+        board is being told is a cancel like any other (back to intake, with a note), not a stop."""
         # masked first: a cut through a password would leave a piece of it
         reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
         st.emit("blocked", stage=st.stage, reason=reason)
-        await self._tell(st, card, f"stopped after '{st.stage}': {reason}\nResume: {card.resume}.", "blocked")
+        try:
+            await self._tell(
+                st, card, f"stopped after '{st.stage}': {reason}\nResume: {card.resume}.", "blocked"
+            )
+        except asyncio.CancelledError:  # run's own handler is behind us: this stop is being handled
+            await self._cancelled(st, card)
+            raise
 
     async def _tell(self, st: StoryState, card: Card, text: str, column: Column) -> None:
         """A note on the issue and then a move to `column`, as two calls: a board that is down must not hide
@@ -445,6 +453,12 @@ class StoryPipeline:
             await self.board.move(card, column)
         except Exception as e:  # noqa: BLE001
             _board_error(st, "move", e)
+
+    async def _cancelled(self, st: StoryState, card: Card) -> None:
+        """A cancel: the event, then the note and the move back to intake (`_say_cancelled`). The caller
+        raises the cancel again."""
+        st.emit("cancelled", stage=st.stage, during=_running(st))
+        await self._say_cancelled(st, card)
 
     async def _say_cancelled(self, st: StoryState, card: Card) -> None:
         """The story was stopped from outside, and `tick` takes only issues in intake: the issue is told so

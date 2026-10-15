@@ -1,5 +1,6 @@
 """Story state survives a restart, refuses a different repository, and the lock admits one story at a time."""
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -27,8 +28,10 @@ def test_state_round_trips_and_tracks_stages(tmp_path: Path) -> None:
 def test_a_story_resumes_only_in_its_own_repository(tmp_path: Path) -> None:
     card = text_card("x")
     StoryState.open(tmp_path / card.key, card, tmp_path / "a")
-    with pytest.raises(StorySetupError, match="started in"):
+    with pytest.raises(StorySetupError, match="started in") as e:
         StoryState.open(tmp_path / card.key, card, tmp_path / "b")
+    # the file to delete, not the directory, which also holds the story's events, notes and PR bodies
+    assert str(e.value).endswith(f"or delete {tmp_path / card.key / 'state.json'} to start over")
 
 
 def test_the_lock_admits_one_story_at_a_time(tmp_path: Path) -> None:
@@ -102,7 +105,54 @@ def test_a_damaged_state_file_is_a_readable_stop_that_names_the_story(tmp_path: 
     (story_dir / "state.json").write_bytes(damaged)
     with pytest.raises(StorySetupError, match="is damaged") as e:
         StoryState.open(story_dir, card, tmp_path / "repo")
-    assert str(story_dir) in str(e.value)
+    assert str(e.value).startswith(f"{story_dir / 'state.json'} is damaged (")  # the file, not the directory
+    assert str(e.value).endswith("; delete it to start the story over")
+
+
+@pytest.mark.parametrize(
+    ("how", "said"),
+    [
+        ("no read permission", "Permission denied"),
+        ("no search permission on its directory", "Permission denied"),
+        ("an I/O error", os.strerror(errno.EIO)),
+        ("an error without a description", "OSError"),
+    ],
+)
+def test_a_state_file_that_cannot_be_read_is_a_readable_stop_that_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, said: str
+) -> None:
+    """Not a raw OSError, which would escape a tick at every beat: the tick sets the issue aside, as it does
+    one whose state is damaged."""
+    card = text_card("x")
+    story_dir = tmp_path / card.key
+    StoryState.open(story_dir, card, tmp_path / "repo")
+    f = story_dir / "state.json"
+    read_text = Path.read_text
+
+    def fails(error: OSError) -> None:
+        def read(self: Path, *args: object, **kwargs: object) -> str:
+            if self == f:
+                raise error
+            return read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", read)
+
+    if how == "no read permission":
+        f.chmod(0)
+    elif how == "no search permission on its directory":
+        story_dir.chmod(0o600)
+    elif how == "an I/O error":
+        fails(OSError(errno.EIO, os.strerror(errno.EIO)))
+    else:
+        fails(OSError("disk on fire"))
+    try:
+        with pytest.raises(StorySetupError) as e:
+            StoryState.open(story_dir, card, tmp_path / "repo")
+    finally:
+        story_dir.chmod(0o755)
+        f.chmod(0o644)
+    assert str(e.value) == f"{f} cannot be read ({said}); fix that, or delete it to start the story over"
+    assert e.value.__cause__ is None and e.value.__suppress_context__
 
 
 def test_a_torn_event_line_is_closed_before_the_next_event_on_resume(tmp_path: Path) -> None:

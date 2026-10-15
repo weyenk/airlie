@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 from airlie.story.board import Card
-from airlie.story.model import CONTROL, Layer, Story
+from airlie.story.model import CONTROL, SURROGATE, Layer, Story
 from airlie.topology.studio_plan import Plan, Subtask
 
 BODY_LIMIT = 60_000
@@ -59,7 +59,9 @@ def _mentions(text: str) -> str:
 
 def _model(text: str) -> str:
     """Model text in a PR body, rendered by GitHub as Markdown and HTML: `_mentions`, and a zero-width space
-    after each "<", "&" and "[^", so no tag, comment, character reference or footnote forms."""
+    after each "<", "&" and "[^", so no tag, comment, character reference or footnote forms. A lone surrogate
+    (in a state saved before findings were checked for one) becomes U+FFFD, so the body can be written."""
+    text = SURROGATE.sub("\N{REPLACEMENT CHARACTER}", text)
     return _mentions(text).replace("<", "<" + ZWSP).replace("&", "&" + ZWSP).replace("[^", "[" + ZWSP + "^")
 
 

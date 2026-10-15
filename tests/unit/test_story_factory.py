@@ -397,12 +397,15 @@ def poison_setup(
     blocked: str | None = "Blocked",
 ) -> tuple[Any, RecordedGh]:
     """queue_setup, where the top issue, AIR-7, has a story state that cannot be opened (`how`: a damaged
-    state.json, or one started in another repository)."""
+    state.json, one that cannot be read, or one started in another repository)."""
     cfg, gh = queue_setup(tmp_path, monkeypatch, board, blocked=blocked)
     state = stories_dir(cfg) / POISON.key
     if how == "damaged":
         state.mkdir(parents=True)
         (state / "state.json").write_text("{ not json")
+    elif how == "unreadable":  # a good state file that airlie may not read
+        StoryState.open(state, POISON, Path(cfg.story.repo).resolve())
+        (state / "state.json").chmod(0)
     else:  # a story that was started in another repository, then stopped
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -412,7 +415,11 @@ def poison_setup(
 
 @pytest.mark.parametrize(
     ("how", "blocked", "column", "says"),
-    [("damaged", "Blocked", "blocked", "is damaged"), ("elsewhere", None, "building", "started in")],
+    [
+        ("damaged", "Blocked", "blocked", "/AIR-7/state.json is damaged"),
+        ("unreadable", "Blocked", "blocked", "/AIR-7/state.json cannot be read (Permission denied)"),
+        ("elsewhere", None, "building", "started in"),
+    ],
 )
 async def test_a_poison_issue_is_set_aside_and_the_next_tick_builds_the_issue_behind_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, blocked: str | None, column: str, says: str

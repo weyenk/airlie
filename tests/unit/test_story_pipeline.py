@@ -975,6 +975,26 @@ async def test_a_failed_layer_keeps_its_worktree_and_branch_and_the_note_says_wh
         )
 
 
+async def test_a_finding_that_holds_half_an_escape_reaches_neither_the_state_nor_the_pr_as_one(
+    tmp_path: Path,
+) -> None:
+    """A lone surrogate (the reviewer's JSON had half of a \\ud83d\\ude00 pair) cannot be written as UTF-8:
+    in the state it would stop every publish, this one and each resume."""
+    repo = repo_with_marker_tests(tmp_path)
+    gh = ReadingGh()
+    odd = FakeReply(
+        text='{"verdict": "approve", "findings": [{"severity": "minor", "file": "store.py", "line": 3, '
+        '"claim": "half \\ud83d of a pair"}]}'
+    )
+    st = await pipeline(tmp_path, repo, happy_engine(reviewer=[odd, APPROVE]), gh).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"  # published
+    shown = "minor store.py:3: half \N{REPLACEMENT CHARACTER} of a pair"
+    assert [f for row in st.built["01"]["subtasks"] for f in row["findings"]] == [shown]
+    saved = json.loads((st.path / "state.json").read_text())
+    assert [f for row in saved["built"]["01"]["subtasks"] for f in row["findings"]] == [shown]
+    assert shown in gh.bodies[B1]
+
+
 # ---- a signal or a cancel ----
 
 CANCELLED = "stopped by a signal or a cancel during '{}'; it is back in To Do and the next run resumes it"
@@ -1092,6 +1112,49 @@ async def test_a_board_in_trouble_neither_holds_up_nor_changes_a_cancel(
         assert board.calls[-1] == ("move", "intake") and errors == ["comment"]  # the issue still goes back
     else:
         assert board.calls[-1] == ("comment", told) and errors == ["move"]
+
+
+@pytest.mark.parametrize("hangs_on", ["the note", "the move"])
+async def test_a_cancel_while_a_stop_is_told_to_the_board_still_puts_the_issue_back_in_intake(
+    tmp_path: Path, hangs_on: str
+) -> None:
+    """The stop's own note and move are where a Ctrl-C lands when git was the one it reached first: the
+    cancel is still told and the issue goes back to intake, or no tick would take it again."""
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("avatars")
+    telling = asyncio.Event()
+
+    class HangsWhileTold(RecordingBoard):
+        async def comment(self, card: Card, text: str) -> None:
+            if hangs_on == "the note" and "stopped after" in text:
+                telling.set()
+                await asyncio.sleep(3600)
+            await super().comment(card, text)
+
+        async def move(self, card: Card, column: Column) -> None:
+            if hangs_on == "the move" and column == "blocked":
+                telling.set()
+                await asyncio.sleep(3600)
+            await super().move(card, column)
+
+    board = HangsWhileTold()
+    unbuildable = fenced({"type": "blocked", "reason": "which image sizes?"})
+    task = asyncio.create_task(
+        pipeline(tmp_path, repo, FakeEngine({"product": [unbuildable]}), board=board).run(card)
+    )
+    await asyncio.wait_for(telling.wait(), 30)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 30)
+    assert board.calls[-2:] == [("comment", note(CANCELLED.format("refine"))), ("move", "intake")]
+    events = tmp_path / "state" / "stories" / card.key / "events.jsonl"
+    [cancelled] = kinds(events, "cancelled")
+    assert (cancelled["stage"], cancelled["during"]) == ("intake", "refine")
+    assert len(kinds(events, "blocked")) == 1 and kinds(events, "story_done") == []
+    again = RecordingBoard()  # the next run (the tick takes it from intake) resumes it
+    st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
+    assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'intake'"))]
+    assert st.blocked is None and st.stage == "review"
 
 
 async def test_a_story_that_was_killed_is_resumed_with_its_issue_moved_to_building_again(

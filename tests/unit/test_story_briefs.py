@@ -349,3 +349,20 @@ def test_body_text_is_cut_before_it_is_neutralised() -> None:
     layer = Layer("profile", "Profile", "a&" * 150, "Show the avatar.", ("AC2",))
     body = pr_body(CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("ok"), PRS, "uv run pytest -q")
     assert "**Scope:** " + ("a&" + ZW) * 150 in body
+
+
+def test_a_finding_saved_with_a_lone_surrogate_still_makes_a_body_that_can_be_written() -> None:
+    """A state saved before findings were checked for half an escape: the body is UTF-8 all the same."""
+    rows = [
+        {
+            "id": "build",
+            "role": "coder",
+            "stop": "done",
+            "review": "approve",
+            "fix_rounds": 0,
+            "findings": ["minor a.py: half \ud83d of a pair"],
+        }
+    ]
+    body = pr_body(text_card("x"), STORY, LAYERS, 0, rows, [(11, "https://github.com/o/r/pull/11")], "t")
+    assert "half \N{REPLACEMENT CHARACTER} of a pair" in body
+    body.encode("utf-8")

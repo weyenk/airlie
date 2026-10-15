@@ -52,20 +52,30 @@ class StoryState:
 
     @classmethod
     def open(cls, path: Path, card: Card, repo: Path) -> StoryState:
+        """The state at `path`, or a new one. A state that cannot be used (it cannot be read, it is damaged,
+        or it belongs to another repository) is a StorySetupError that names state.json: deleting that file,
+        not the directory, starts the story over and keeps its events, notes and PR bodies."""
         f = path / "state.json"
-        if f.is_file():
+        try:
+            text = f.read_text() if f.is_file() else None
+        except OSError as e:  # permissions, a failing disk: a person must look, as at a damaged file
+            raise StorySetupError(
+                f"{f} cannot be read ({e.strerror or type(e).__name__}); fix that, or delete it to start "
+                "the story over"
+            ) from None
+        if text is not None:
             try:
-                st = cls(path=path, **json.loads(f.read_text()))
+                st = cls(path=path, **json.loads(text))
             except (ValueError, TypeError) as e:
                 raise StorySetupError(
-                    f"{path} is damaged ({type(e).__name__}); delete it to start the story over"
+                    f"{f} is damaged ({type(e).__name__}); delete it to start the story over"
                 ) from None
             if st.stage not in STAGES:
-                raise StorySetupError(f"{path} is damaged (unknown stage); delete it to start the story over")
+                raise StorySetupError(f"{f} is damaged (unknown stage); delete it to start the story over")
             if st.repo != str(repo):
                 raise StorySetupError(
                     f"this story was started in {st.repo}; resume it there (--repo {st.repo}) "
-                    f"or delete {path} to start over"
+                    f"or delete {f} to start over"
                 )
             _end_a_torn_line(path / "events.jsonl")
             return st

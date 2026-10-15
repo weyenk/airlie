@@ -154,8 +154,8 @@ note work the other way round: they are posted before their stage is saved, so w
 the stopped stage runs again. A failed layer's kept worktree and branch are removed first and the layer is rebuilt
 from its base, so copy anything you want from them before you run it. The refined story, the layer plan and the
 commit the story builds on (the trunk as fetched when it started) are kept, so editing the issue after the refine
-changes nothing: to start over, delete the story's directory and the layer branches it made. To make the tick retry
-a blocked story, move the issue back to *To Do*.
+changes nothing: to start over, delete the story's `state.json` (its events, notes and PR bodies stay beside it)
+and the layer branches it made. To make the tick retry a blocked story, move the issue back to *To Do*.
 
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
@@ -251,10 +251,10 @@ story:check` names what is missing), or `stopped by SIGTERM: ...` when launchd s
 An issue that a beat leaves in *To Do* is taken again by every later beat, and nothing behind it would ever be built.
 So the tick moves two kinds of issue out of *To Do*:
 
-- **A story it cannot open** (its `state.json` is damaged, or the story was started in another repository): the issue
-  gets `cannot be picked up: <reason>` and `Needs a person`, and goes to *Blocked* (to *In Progress* when
-  `blocked: null`, with a note that says so). The reason says whether to delete the story's directory or to resume
-  it in the repository it was started in.
+- **A story it cannot open** (its `state.json` cannot be read or is damaged, or the story was started in another
+  repository): the issue gets `cannot be picked up: <reason>` and `Needs a person`, and goes to *Blocked* (to
+  *In Progress* when `blocked: null`, with a note that says so). The reason names the `state.json` and says whether
+  to fix or delete it, or to resume the story in the repository it was started in.
 - **A story that already finished**, whose issue was put back in *To Do*: nothing is built again. The issue gets
   `this story is already in review` with the PR links, and moves to *In Review*.
 
