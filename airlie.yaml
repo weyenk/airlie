@@ -159,7 +159,7 @@ roles:
 # ---- Tools --------------------------------------------------------------------------------------------------------
 tools:
   builtin: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git]
-  shell_timeout_s: 120
+  shell_timeout_s: 600
   output_cap_chars: 20000
 mcp: {}                            # name: { command, args, env } — exposed to teams as extra tools
 
