@@ -15,8 +15,8 @@ permission:
   task:
     "*": deny
     architect: allow
-    coder: allow
-    qa: allow
+    coder: ask
+    qa: ask
     docs: allow
   airlie_run: ask
   airlie_story: ask

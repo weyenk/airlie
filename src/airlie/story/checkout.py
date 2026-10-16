@@ -1,8 +1,8 @@
-"""The repository a Jira story is built in. The issue names it with one label, repo:<owner>/<name>, which a
-model cannot move: agents get no Jira credentials, and airlie only comments and transitions. Its checkout is
-the directory under story.repos_root named <name>, in any case, and that checkout's remote, as written, must
-name the same repository: a story is built only in a clone of the repository its issue names. Each problem is
-a RepositoryError whose message is for the issue."""
+"""The repository a Jira story is built in. The issue names it with one label, repo:<owner>/<name>: a model's
+tools and environment carry no Jira credentials, and airlie itself only comments and transitions. Its checkout
+is the directory under story.repos_root named <name>, in any case, and that checkout's remote, as written,
+must name the same repository: a story is built only in a clone of the repository its issue names. Each
+problem is a RepositoryError whose message is for the issue."""
 
 from __future__ import annotations
 

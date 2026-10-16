@@ -1,6 +1,7 @@
 """The OpenCode front door stays in step with airlie: agents name models task serve lists, nothing can merge,
-the chief cannot edit, delegates only to agents that cannot merge and asks before every shell command, the MCP
-server calls routes that exist, and the commands name tools the server lists."""
+the chief cannot edit, delegates only to agents that cannot merge, and asks before every shell command and
+before it hands work to coder or qa, the MCP server calls routes that exist, and the commands name tools the
+server lists."""
 
 from __future__ import annotations
 
@@ -73,10 +74,17 @@ def simple_commands(command: str) -> list[str]:
     return [c for c in parts if c and not REDIRECT.fullmatch(c)] + inner
 
 
+NO_RULE = "no rule applies"
+"""verdict's answer for a call that holds no command, only a redirect (`> F`): OpenCode asks only about
+commands, so nothing is matched against any rule and the call runs without asking (2.0.29, live)."""
+
+
 def verdict(rules: dict[str, str], command: str) -> str:
     """OpenCode's verdict on a shell call: denied if any simple command in it is, allowed only if every one
-    is, else it asks."""
+    is, else it asks; NO_RULE when it holds no command at all."""
     each = [decision(rules, c) for c in simple_commands(command)]
+    if not each:
+        return NO_RULE
     return "deny" if "deny" in each else "allow" if all(v == "allow" for v in each) else "ask"
 
 
@@ -114,9 +122,13 @@ def test_only_coder_and_qa_run_a_shell_command_without_asking() -> None:
 
 
 def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
+    """...and asks the person first for one that runs any command. On 2.0.29 the chief handed coder a task
+    without asking, and coder runs any shell command as you without asking: no approval stood between a model
+    and a command. So a hand-off to coder or qa asks; architect's and docs' shells ask before every command,
+    so a hand-off to them need not."""
     meta, body = front(OC / "agent/chief.md")
     task = meta["permission"]["task"]
-    assert list(task)[0] == "*" and task["*"] == "deny"  # first, so that each allow after it wins
+    assert list(task)[0] == "*" and task["*"] == "deny"  # first, so that each rule after it wins
     # OpenCode's own subagents: explore allows every shell command and denies no merge
     assert decision(task, "explore") == decision(task, "general") == "deny" and "explore" not in body
     # every agent the chief may hand work to, with or without asking the person
@@ -128,6 +140,7 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
         bash = front(path)[0]["permission"]["bash"]
         assert bash["gh api*"] == bash["gh pr merge*"] == bash["gh stack merge*"] == "deny", name
         assert list(bash)[-2:] == ["gh pr merge*", "gh stack merge*"], name
+        assert decision(task, name) == ("ask" if bash["*"] == "allow" else "allow"), name
 
 
 @pytest.mark.parametrize(
@@ -186,6 +199,16 @@ def test_the_chief_shell_asks_before_every_command_and_denies_what_writes_or_mer
     command: str, expected: str
 ) -> None:
     assert verdict(front(OC / "agent/chief.md")[0]["permission"]["bash"], command) == expected
+
+
+@pytest.mark.parametrize("command", ["> F", ">> F", "2> F"])
+def test_a_redirect_with_no_command_runs_unasked_under_every_agents_rules(command: str) -> None:
+    """Checked live on 2.0.29: under the chief's "*": ask, `> empty1.txt` made an empty file and
+    `> existing.txt` emptied one that was there, both without asking. OpenCode asks only about commands, and
+    such a line holds none, so no rule is matched: not an allow (that would be a rule's), and nothing a rule
+    could change. What it writes is always empty."""
+    for p in (OC / "agent").glob("*.md"):
+        assert verdict(front(p)[0]["permission"]["bash"], command) == NO_RULE, p.name
 
 
 def test_the_simulated_shell_tool_splits_a_call_into_simple_commands() -> None:

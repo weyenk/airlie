@@ -118,8 +118,9 @@ is in flight, `task story` says so and exits, and the tick logs `busy`.
 
 Label each issue with the GitHub repository it is for: one label `repo:<owner>/<name>`, such as
 `repo:weyenk/OpenHand`. The prefix may be in any case (`REPO:`); owner and name are GitHub's characters (letters,
-digits, `.`, `_` and `-`). Models cannot move a label: agents get no Jira credentials, and airlie itself only
-comments on issues and moves them.
+digits, `.`, `_` and `-`). A model's tools and environment carry no Jira credentials, and airlie itself only
+comments on issues and moves them. (A model's shell still runs as you, though, and can read the `.env` files that
+hold the token: see *What stops a merge*.)
 
 The story is built in the checkout of that repository under `story.repos_root` (default `~/git`): the directory
 named `<name>`, in any case (`~/git/openhand` for `repo:weyenk/OpenHand`). It must be a git repository whose
@@ -528,8 +529,8 @@ What planted repository configuration can still do during a publish step:
 
 The backstop is GitHub: the token's scope (one repository, one hour, contents and pull requests write) and a
 ruleset on the trunk. None of this is an OS sandbox either: those processes still run as your macOS user, and a
-model that deliberately goes after what is stored for that user (the keychain, `~/.ssh`, the app's key) is not
-stopped by it.
+model that deliberately goes after what is stored for that user (the keychain, `~/.ssh`, `~/.config/airlie/.env`
+and the checkout's `.env` with your Jira token, the app's private key) is not stopped by it.
 
 Publishing as you ignores a `core.sshCommand` or `credential.helper` in the repository's own configuration, so a
 deploy key set up there for one repository stops being used. To keep one, put those settings in a file your
@@ -541,10 +542,11 @@ global configuration includes for that repository's directory, which airlie read
 ```
 
 In OpenCode, the agents airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`)
-deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four. That
-guards against a model's slip, not against a determined one: the rules match the command line, so a wrapper such
-as `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other commands and runs
-with your full environment (OpenCode's shells are not airlie's).
+deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four, and
+asks you before it hands work to `coder` or `qa`. That guards against a model's slip, not against a determined one:
+the rules match the command line, so a wrapper such as `sh -c "gh pr merge ..."` is not caught under `coder` or
+`qa`, whose shell allows most other commands and runs with your full environment (OpenCode's shells are not
+airlie's).
 
 What really stops a merge is GitHub: a ruleset (or branch protection) on the trunk that only you can update. It
 can refuse a bot but not you: publish as a bot (above), and it keeps everything but you from merging.
