@@ -487,7 +487,8 @@ async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -
     note2 = FakeReply(
         tool_calls=[ToolCall("n2", "write_file", json.dumps({"path": "n2.txt", "content": "b\n"}))]
     )
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2], "docs": [DONE]})
+    # offered no tools for its final answer, it calls one anyway: no answer, so it failed at max_steps
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2, note2], "docs": [DONE]})
     await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     docs_goal = [r for r in engine.requests if r.role == "docs"][0].messages[1].content
     assert "FAILED: max_steps" in docs_goal

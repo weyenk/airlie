@@ -59,6 +59,13 @@ def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
     return out
 
 
+LAST_STEP = (
+    "You have used all {n} of your steps: no more tools. Give your final answer now, complete, from what "
+    "you have already found."
+)
+"""What a role is told on the turn after its last allowed step, which offers it no tools."""
+
+
 class NativeTeam:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -88,6 +95,7 @@ class NativeTeam:
         final_text = ""
         stop: StopReason = "done"
         ok = False
+        last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
             injected = await observer.before_step(ctx.team_id, step_num)
@@ -99,7 +107,7 @@ class NativeTeam:
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
-                tools=ctx.tools.schemas(),
+                tools=None if last_turn else ctx.tools.schemas(),
                 thinking=ctx.role.thinking,
                 draft_budget=ctx.draft_budget(),
             )
@@ -127,6 +135,10 @@ class NativeTeam:
                 final_text = res.text
                 ok = True
                 stop = "done"
+                break
+            if last_turn:  # it called a tool it was not offered: there is no answer
+                final_text = f"stopped: reached max_steps={ctx.max_steps}"
+                stop = "max_steps"
                 break
             calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
             replay = tuple(replace(c, arguments=history_arguments(c.arguments)) for c in calls)
@@ -170,16 +182,16 @@ class NativeTeam:
                 final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
                 stop = "repeated_action"
                 break
-            if steps >= ctx.max_steps:
-                final_text = f"stopped: reached max_steps={ctx.max_steps}"
-                stop = "max_steps"
-                break
             if (
                 max_prompt + completion_tokens >= ctx.token_budget
             ):  # context size + generated, not resent history
                 final_text = f"stopped: token budget {ctx.token_budget} exhausted"
                 stop = "token_budget"
                 break
+            if steps >= ctx.max_steps:
+                last_turn = True
+                messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))
+                continue
         return TeamResult(
             team_id=ctx.team_id,
             ok=ok,
