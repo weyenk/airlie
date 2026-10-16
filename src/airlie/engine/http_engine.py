@@ -135,8 +135,8 @@ class HTTPEngine:
                 for t in req.tools
             ]
             body["tool_choice"] = "auto"
-        if thinking and spec.thinking_budget:
-            body["thinking_budget"] = spec.thinking_budget
+        if thinking and spec.thinking_budget:  # vllm-mlx's name for it: it drops keys it does not know
+            body["thinking_token_budget"] = spec.thinking_budget
         if req.draft_budget is not None and self.capabilities.per_request_draft:
             body["num_draft_tokens"] = req.draft_budget
         return body

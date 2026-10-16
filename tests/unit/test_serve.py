@@ -18,6 +18,7 @@ from airlie.obs import RunDir
 from airlie.orchestrator import RunReport
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
+from tests.unit.vllm_helpers import ChatCompletionRequest
 
 
 def cfg(tmp_path: Path):
@@ -160,9 +161,10 @@ def test_a_streamed_reply_cut_off_at_max_tokens_ends_with_finish_reason_length(t
     assert b'"finish_reason":"length"' in body and b"[DONE]" in body
 
 
-def test_a_role_that_thinks_and_has_a_budget_is_bounded_by_it_not_only_by_max_tokens(tmp_path: Path) -> None:
-    """HTTPEngine sends the budget with every thinking request; a client of task serve (OpenCode) now gets the
-    same."""
+def test_a_role_that_thinks_and_has_a_budget_is_sent_to_the_engine_as_thinking_token_budget(
+    tmp_path: Path,
+) -> None:
+    """The name vllm-mlx reads (it drops others, `thinking_budget` among them); HTTPEngine sends the same."""
     up, c = FakeUpstream(), cfg(tmp_path)
     c.roles["coder"].thinking = False  # does not think: no budget to send
     c.roles["summarizer"].thinking_budget = None  # thinks, uncapped: none either
@@ -171,22 +173,33 @@ def test_a_role_that_thinks_and_has_a_budget_is_bounded_by_it_not_only_by_max_to
     # judge thinks with the default budget; base is a raw model, not a role
     for model in ("judge", "coder", "summarizer", "base"):
         assert client.post("/v1/chat/completions", json={"model": model, **ask}).status_code == 200
-    budgets = [json.loads(r.content).get("thinking_budget") for r in up.requests]
-    assert budgets == [c.roles["judge"].thinking_budget, None, None, None]
-    assert budgets[0] == 8192
+    bodies = [json.loads(r.content) for r in up.requests]
+    sent = [b.get("thinking_token_budget") for b in bodies]
+    assert sent == [c.roles["judge"].thinking_budget, None, None, None]
+    assert c.roles["judge"].thinking_budget == 8192 and not any("thinking_budget" in b for b in bodies)
 
 
-def test_a_client_that_names_its_own_thinking_budget_keeps_it_and_a_stream_gets_the_role_s(
-    tmp_path: Path,
-) -> None:
+def test_vllm_mlx_reads_the_budget_from_the_body_serve_sends(tmp_path: Path) -> None:
+    """vllm-mlx's own request model, given the body serve forwards, comes out with the role's budget."""
+    up, c = FakeUpstream(), cfg(tmp_path)
+    client = TestClient(create_app(c, transport=httpx.MockTransport(up)))
+    client.post(
+        "/v1/chat/completions", json={"model": "judge", "messages": [{"role": "user", "content": "yo"}]}
+    )
+    read = ChatCompletionRequest.model_validate(json.loads(up.requests[0].content))
+    assert read.thinking_token_budget == c.roles["judge"].thinking_budget == 8192
+    assert read.max_tokens == c.roles["judge"].max_tokens
+
+
+def test_a_clients_own_thinking_token_budget_wins_and_a_stream_gets_the_roles(tmp_path: Path) -> None:
     up = FakeUpstream()
     client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(up)))
     ask = {"messages": [{"role": "user", "content": "yo"}]}
-    client.post("/v1/chat/completions", json={"model": "judge", "thinking_budget": 100, **ask})
+    client.post("/v1/chat/completions", json={"model": "judge", "thinking_token_budget": 100, **ask})
     with client.stream("POST", "/v1/chat/completions", json={"model": "judge", "stream": True, **ask}) as r:
         assert r.status_code == 200
         b"".join(r.iter_bytes())
-    assert [json.loads(x.content)["thinking_budget"] for x in up.requests] == [100, 8192]
+    assert [json.loads(x.content)["thinking_token_budget"] for x in up.requests] == [100, 8192]
 
 
 def test_unknown_role_is_404(tmp_path: Path) -> None:
