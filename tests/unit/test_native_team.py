@@ -118,8 +118,44 @@ async def test_max_steps_stops_the_loop(tmp_path: Path) -> None:
     engine = FakeEngine({"coder": calls})
     team, ctx = make_team(tmp_path, engine, max_steps=3)
     result = await team.run(ctx, Recorder())
+    # the fourth request offered no tools and asked for the answer; a tool call there still ends the run
     assert not result.ok and result.stop_reason == "max_steps"
     assert result.steps == 3
+    assert len(engine.requests) == 4 and engine.requests[-1].tools is None
+
+
+async def test_the_last_step_gets_no_tools_and_its_answer_finishes_the_run(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
+                FakeReply(tool_calls=[ToolCall("c2", "read_file", json.dumps({"path": "b"}))]),
+                FakeReply(text="The story, from what I read."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=2)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.stop_reason == "done"
+    assert result.final_text == "The story, from what I read."
+    assert result.steps == 2
+    assert [r.tools is None for r in engine.requests] == [False, False, True]
+    last = engine.requests[-1].messages[-1]
+    assert last.role == "user" and "no more tools" in str(last.content).lower()
+
+
+async def test_a_cut_off_last_answer_is_not_a_finished_one(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
+                FakeReply(text="The story so", finish_reason="length"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    result = await team.run(ctx, Recorder())
+    assert not result.ok and result.stop_reason == "cut_off"
 
 
 async def test_native_team_repeated_action_stops(tmp_path: Path) -> None:
