@@ -63,9 +63,11 @@ running the same command again resumes it (see *When a story stops*).
    `## Test gate` section on its trunk (*The test gate*). A written request (`--text`) is built in `--repo`, else
    `story.repo` in `airlie.local.yaml`.
 5. **GitHub:** `gh extension install github/gh-stack`, and either `gh auth status` (the PRs are yours) or a
-   GitHub App whose bot publishes for you (*Publishing as a bot*, below). Optionally, install the *GitHub for
-   Jira* app for the repository: branch names start with the issue key, so the issue lists its branches and pull
-   requests.
+   GitHub App whose bot publishes for you (*Publishing as a bot*, below). The committed `airlie.yaml` publishes as
+   this repository owner's app (`story.github_app.app_id: 5332832`). In a clone, set `story.github_app.app_id:
+   null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there. Optionally,
+   install the *GitHub for Jira* app for the repository: branch names start with the issue key, so the issue lists
+   its branches and pull requests.
 6. `task story:check -- AIR-7` lists anything still missing for that issue: roles; its label, checkout, remote,
    trunk and test gate, which it prints, or the reason its story would be blocked; gh, gh-stack, your gh login or
    the bot's app, a rule or `pushurl` that would send git somewhere else than the repository, the Jira
@@ -89,7 +91,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `tests_role`, `build_role` | `product`, `architect`, `qa`, `coder` | which role does what |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
-| `story.github_app.app_id`, `key_file`, `api_url` | none, `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); none: with your gh login and SSH key |
+| `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
 ## Run one
 
@@ -421,10 +423,10 @@ So the tick moves two kinds of issue out of *To Do*:
 
 ## Publishing as a bot
 
-By default the publish steps (the trunk fetch, `gh stack init` and `submit`, each `gh pr view` and `gh pr edit`) run
-with your own `gh` login and SSH key: the PRs are yours, and a ruleset that lets you merge lets anything holding
-your login merge too. With `story.github_app.app_id` set, they run as a GitHub App's bot instead, which a ruleset
-can refuse.
+Without an app (`story.github_app.app_id: null`) the publish steps (the trunk fetch, `gh stack init` and `submit`,
+each `gh pr view` and `gh pr edit`) run with your own `gh` login and SSH key: the PRs are yours, and a ruleset that
+lets you merge lets anything holding your login merge too. With `story.github_app.app_id` set, they run as a GitHub
+App's bot instead, which a ruleset can refuse.
 
 1. **Create a GitHub App** (GitHub → Settings → Developer settings → GitHub Apps → New GitHub App): repository
    permissions *Contents* and *Pull requests* read and write (*Metadata* read comes with them), no webhook (untick
