@@ -5,6 +5,7 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import asdict, replace
 from typing import Any
@@ -59,6 +60,15 @@ def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
     return out
 
 
+UNPARSED_CALL = re.compile(r"<tool_call>|<function=")
+"""A tool call the server left in the text: the model wrote one the parser could not read (HDS-5, 2026-10-16:
+`<function=read_file>` with a `<file>` tag). It is not an answer, however the reply reads."""
+MALFORMED = (
+    "Your last reply had a tool call written as text, and it could not be run. Call the tool again in the "
+    "proper tool-call format, or, if you are finished, give your answer with no tool-call markup."
+)
+"""What a role is told after one such reply; a second in a row ends the run (malformed_call)."""
+
 LAST_STEP = (
     "You have used all {n} of your steps: no more tools. Give your final answer now, complete, from what "
     "you have already found."
@@ -95,6 +105,7 @@ class NativeTeam:
         final_text = ""
         stop: StopReason = "done"
         ok = False
+        corrected = False  # the current streak of unparsed tool calls has had its one correction
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
@@ -132,10 +143,24 @@ class NativeTeam:
                         final_text = cut_off_text(ctx.role_name, ctx.role, thinking=thinking)
                     stop = "cut_off"
                     break
+                if UNPARSED_CALL.search(res.text):
+                    if last_turn:  # it tried a tool it was not offered: there is no answer
+                        final_text = f"stopped: reached max_steps={ctx.max_steps}"
+                        stop = "max_steps"
+                        break
+                    if corrected:
+                        final_text = "stopped: two replies in a row held a tool call that could not be parsed"
+                        stop = "malformed_call"
+                        break
+                    corrected = True
+                    messages.append(Message(role="assistant", content=res.text))
+                    messages.append(Message(role="user", content=MALFORMED))
+                    continue
                 final_text = res.text
                 ok = True
                 stop = "done"
                 break
+            corrected = False
             if last_turn:  # it called a tool it was not offered: there is no answer
                 final_text = f"stopped: reached max_steps={ctx.max_steps}"
                 stop = "max_steps"

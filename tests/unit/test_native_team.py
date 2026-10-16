@@ -488,3 +488,58 @@ async def test_images_become_parts_on_the_goal_message(tmp_path: Path) -> None:
     await team.run(ctx, Recorder())
     goal = engine.requests[0].messages[1]
     assert goal.parts is not None and goal.parts[0].type == "text" and goal.parts[1].type == "image_url"
+
+
+GARBLED = (
+    "Let me look at the schema.\n\n<function=read_file>\n"
+    "<file>src/airlie/config/schema.py</file>\n</function>"
+)
+"""HDS-5 layer 01 (2026-10-16): the coder's tool call as text the server could not parse."""
+
+
+async def test_a_tool_call_left_as_text_is_not_an_answer_and_gets_one_correction(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(text=GARBLED),
+                FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
+                FakeReply(text="Read it; nothing to change."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.stop_reason == "done"
+    assert result.final_text == "Read it; nothing to change."
+    assert result.steps == 1  # the correction is a turn, not a step
+    asked = engine.requests[1].messages[-1]
+    assert asked.role == "user" and "could not be run" in str(asked.content)
+
+
+async def test_a_second_unparsed_tool_call_in_a_row_fails_the_run(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {"coder": [FakeReply(text=GARBLED), FakeReply(text='<tool_call>\n{"name": "read_file"')]}
+    )
+    team, ctx = make_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert not result.ok and result.stop_reason == "malformed_call"
+    assert "<function=read_file>" not in result.final_text and "could not be parsed" in result.final_text
+    assert len(engine.requests) == 2
+
+
+async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine(
+        {"coder": [FakeReply(text=GARBLED), read, FakeReply(text=GARBLED), FakeReply(text="Done.")]}
+    )
+    team, ctx = make_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Done."
+
+
+async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED)]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    result = await team.run(ctx, Recorder())
+    assert not result.ok and result.stop_reason == "max_steps"
