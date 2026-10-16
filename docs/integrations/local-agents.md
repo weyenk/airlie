@@ -56,14 +56,11 @@ running. The agent and command files are copies: run the task again after you up
 
 - The **chief** runs on the raw `generalist` (Qwen3.8), the sample's default model (`opencode run --agent chief`
   takes the config's default, not the agent's own: see the known issues). It never edits files. It hands small
-  changes to a subagent with OpenCode's `task` tool, and to these four only: `coder`, `qa`, `docs` or `architect`,
-  each on its role model, so `task serve` supplies the persona (not OpenCode's built-in `explore`, whose shell has
-  no merge denies). Its shell runs these git forms without asking, and only these (no wildcard, so no other flag or
-  argument rides along): `git status`, `git status --short`, `git diff`, `git diff --stat`, `git diff --cached` and
-  `git log --oneline -20`; it also runs `gh pr view` and `gh stack view --json` or `--short`, which may take
-  arguments but not a redirect: a command with a `>` or `>>` asks you first (a wildcard allow matches what follows
-  it, so `gh pr view 1 > pr.txt` once wrote a file unasked). `--output` on `git diff` and `git log` is denied (it
-  writes a file), as are `gh api` and the merge commands, and everything else asks you first.
+  changes to a subagent with OpenCode's `subagent` tool (its permission key is still `task`), and to these four
+  only: `coder`, `qa`, `docs` or `architect`, each on its role model, so `task serve` supplies the persona (not
+  OpenCode's built-in `explore`, whose shell has no merge denies). It asks you before every shell command, the
+  read-only ones too: a redirect after a compound statement ran unasked under per-command allows, so no allow list
+  stays read-only. `--output` on `git diff` and `git log`, `gh api` and the merge commands are denied outright.
 - **Features:** `/studio <goal>` (or just ask). `airlie_plan` returns the studio chief's plan; you approve or
   edit it; `airlie_run` builds it on a new branch, committed locally (the roles you approved are pinned);
   `airlie_status` follows it, and `airlie_cancel` stops it.
@@ -158,18 +155,28 @@ Checked live on OpenCode 2.0.29 on 2026-10-15, against the real engines with the
   The chief, `/studio` and `/story` say so, because asked for `airlie_run` by name the model answers that it has
   no such tool. Permissions hold there: `tools.airlie.run` inside `execute` asked as `airlie_run`, so the keys in
   the chief's `permission` block (`airlie_run`, `airlie_story`) stay as they are.
-- **A non-interactive `opencode run` auto-rejects every ask,** the chief's `airlie_run` and `airlie_story` and any
-  shell command outside its read-only list among them. Approve those in the TUI.
+- **A non-interactive `opencode run` auto-rejects every ask,** the chief's `airlie_run` and `airlie_story` and every
+  shell command it runs among them. Approve those in the TUI.
 - **`opencode run --agent chief` uses the config's default model, not the agent's own** (`opencode debug agents`
   resolves the chief to `airlie/generalist` all the same). On `airlie/coder` the chief degenerated after a
-  rejection and repeated one shell command, so the sample's default is `airlie/generalist`. If yours is something
-  else, pass `--model airlie/generalist` to `opencode run`. The TUI picks the agent's own model, and the subagents
-  keep theirs.
-- **A redirect asks.** The `*` of an allow such as `gh pr view *` also matched what followed it, so
-  `gh pr view 1 > pr.txt` ran unasked: a file write despite `edit: deny` (redirected into `.git/hooks/`, a crafted
-  PR body would be code). The chief's rules now carry `"*>*": ask` after its allows and before its denies, so any
-  `>` or `>>` asks. The other rules held: `gh pr view 1 & touch F` was split into two commands and asked, and so
-  were `git diff > F` and `GIT_EXTERNAL_DIFF=cat git diff`.
+  rejection and repeated one shell command, so the sample's default is now `airlie/generalist`, and with it
+  `opencode run --agent chief` without `--model` ran the chief on `airlie/generalist`. An `opencode.json` copied
+  from an earlier sample still defaults to `airlie/coder`, and `task opencode:install` does not change the model:
+  set `"model": "airlie/generalist"` there, or pass `--model airlie/generalist` to `opencode run`.
+- **No allow list stays read-only, so the chief asks before every shell command.** `gh pr view 1 > pr.txt` ran
+  unasked under `gh pr view *` (its `*` matched the redirect), and a redirect after a compound statement ran
+  unasked under the plain git allows: `(git status) > comp1.txt`, `{ git status; } > comp2.txt` and
+  `for i in 1; do git status; done > comp3.txt` each wrote their file. OpenCode matches each command inside a
+  compound statement by its own text and the redirect is part of none of them, so no rule can close it (and
+  `edit: deny` does not cover a shell redirect). What held: `gh pr view 1 & touch F` was split into two commands and
+  asked, and so were `git diff > F` and `GIT_EXTERNAL_DIFF=cat git diff`.
+
+Not from that check, but what the rules leave:
+
+- **In the OpenCode door, the person approving is the control.** Every OpenCode agent runs as you, with your `gh`
+  login, SSH agent and keychain. `coder` and `qa` run any shell command without asking (by design), and the chief
+  can hand them work. The unattended story pipeline is different: it starts its agents without your credentials and
+  publishes as the bot (`story.md`). *What stops a merge*, above, says what the rules do and do not stop.
 
 ## Claude Code
 

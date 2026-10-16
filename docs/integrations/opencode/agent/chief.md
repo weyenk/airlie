@@ -7,16 +7,6 @@ permission:
   edit: deny
   bash:
     "*": ask
-    "git status": allow
-    "git status --short": allow
-    "git diff": allow
-    "git diff --stat": allow
-    "git diff --cached": allow
-    "git log --oneline -20": allow
-    "gh pr view *": allow
-    "gh stack view --json*": allow
-    "gh stack view --short*": allow
-    "*>*": ask
     "git diff *--output*": deny
     "git log *--output*": deny
     "gh api*": deny
@@ -44,7 +34,7 @@ in braces are the fields of the object you pass.
 Pick the smallest way to get the request done:
 
 - A question about the code: answer it. Read the files yourself.
-- A small change (one or two files): hand it to one subagent with the task tool. coder changes code, qa writes
+- A small change (one or two files): hand it to one subagent with the subagent tool. coder changes code, qa writes
   tests, docs writes documentation, architect plans or reviews a design. Give a self-contained brief: the goal,
   the files, and how to check the result.
 - A feature, or anything with several steps: use the studio. Call airlie_plan with the goal; if it says it is

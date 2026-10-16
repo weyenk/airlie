@@ -1,5 +1,5 @@
 """The OpenCode front door stays in step with airlie: agents name models task serve lists, nothing can merge,
-the chief cannot edit, delegates only to agents that cannot merge and runs only read-only git and gh, the MCP
+the chief cannot edit, delegates only to agents that cannot merge and asks before every shell command, the MCP
 server calls routes that exist, and the commands name tools the server lists."""
 
 from __future__ import annotations
@@ -50,15 +50,27 @@ def decision(rules: dict[str, str], subject: str) -> str:
     return hits[-1] if hits else "ask"
 
 
+OPERATORS = r"&&|\|\||;|\||(?<![>&])&(?![&>])"  # what ends a simple command: && || ; | and a lone &
+GROUPING = (  # compound-statement syntax, which holds commands without being one
+    r"(?:^|(?<=[;&|(]))\s*for\s+\S+\s+in\s+[^;]*;\s*do\b"  # for x in ...; do
+    r"|(?<=;)\s*done\b"  # ...; done
+    r"|[()]"  # ( ... )
+    r"|(?<![\w$])\{(?=\s)|(?<=\s)\}(?!\w)"  # { ...; }, but not ${x}
+)
+REDIRECT = re.compile(r"[0-9]*>>?&?\s*\S+")  # what is left of `) > f`, `} > f` or `done > f` once cut away
+
+
 def simple_commands(command: str) -> list[str]:
     """The simple commands OpenCode's shell tool checks one by one: the call split at &&, ||, ;, |, a lone &
     (not the one in 2>&1 or &>) and $(...), each substitution checked as a command of its own (and left in
-    its outer command as $SUB)."""
+    its outer command as $SUB). A compound statement, (...), { ...; } or for ... do ... done, is no command
+    but holds some: they are checked, and the redirect after it is part of none of them (2.0.29, live)."""
     inner: list[str] = []
     while sub := re.search(r"\$\(([^()]*)\)", command):
         inner += simple_commands(sub.group(1))
         command = command[: sub.start()] + "$SUB" + command[sub.end() :]
-    return [c.strip() for c in re.split(r"&&|\|\||;|\||(?<![>&])&(?![&>])", command) if c.strip()] + inner
+    parts = [c.strip() for c in re.split(f"{OPERATORS}|{GROUPING}", command)]
+    return [c for c in parts if c and not REDIRECT.fullmatch(c)] + inner
 
 
 def verdict(rules: dict[str, str], command: str) -> str:
@@ -87,26 +99,18 @@ def test_no_agent_can_merge_and_the_chief_cannot_edit() -> None:
         # the last matching rule wins, so the denies come last; gh api merges too (PUT .../pulls/N/merge)
         assert list(bash)[-3:] == ["gh api*", "gh pr merge*", "gh stack merge*"], p.name
         assert bash["gh api*"] == bash["gh pr merge*"] == bash["gh stack merge*"] == "deny", p.name
-    chief = front(OC / "agent/chief.md")[0]["permission"]
-    assert chief["edit"] == "deny"
-    views = [k for k, v in chief["bash"].items() if k.startswith("gh stack view") and v == "allow"]
-    assert views == ["gh stack view --json*", "gh stack view --short*"]  # the bare view is interactive
+    assert front(OC / "agent/chief.md")[0]["permission"]["edit"] == "deny"
 
 
-def test_a_redirect_asks_under_every_wildcard_allow_and_only_denies_come_after_that_ask() -> None:
-    """A wildcard allow swallows what follows it, a redirect too: on OpenCode 2.0.29 `gh pr view *` ran
-    `gh pr view 1 > pr.txt` unasked, a file write under `edit: deny`. An agent with one asks for any `>` after
-    its allows (coder and qa allow every command by design, so `*` is no wildcard allow here)."""
-    guarded: list[str] = []
+def test_only_coder_and_qa_run_a_shell_command_without_asking() -> None:
+    """No allow list stays read-only. On OpenCode 2.0.29 `gh pr view *` took `gh pr view 1 > pr.txt` unasked,
+    and a redirect after a compound statement ran unasked under the plain git allows: OpenCode matches each
+    command inside by its own text and the redirect is part of none, so no rule can close it. An agent asks
+    before every shell command, its denies aside, unless it is meant to run any (coder and qa)."""
     for p in (OC / "agent").glob("*.md"):
         bash = front(p)[0]["permission"]["bash"]
-        rules = list(bash)
-        wildcard = [i for i, k in enumerate(rules) if bash[k] == "allow" and k != "*" and "*" in k]
-        if wildcard:
-            guarded.append(p.stem)
-            assert bash.get("*>*") == "ask" and rules.index("*>*") > max(wildcard), p.name
-            assert {bash[k] for k in rules[rules.index("*>*") + 1 :]} == {"deny"}, p.name
-    assert "chief" in guarded  # the one agent whose shell has wildcard allows: this is not vacuous
+        assert list(bash)[0] == "*" and bash["*"] == ("allow" if p.stem in ("coder", "qa") else "ask"), p.name
+        assert "allow" not in [v for k, v in bash.items() if k != "*"], p.name
 
 
 def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
@@ -129,29 +133,34 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
-        # git runs unasked only in these fixed read-only forms
-        ("git status", "allow"),
-        ("git status --short", "allow"),
-        ("git diff", "allow"),
-        ("git diff --stat", "allow"),
-        ("git diff --cached", "allow"),
-        ("git log --oneline -20", "allow"),
-        ("gh pr view 3", "allow"),
-        ("gh stack view --json", "allow"),
-        ("gh stack view --short", "allow"),
-        # any other form asks: quoting, an env prefix or a redirect cannot dress up a write as a read
+        # nothing runs unasked, the read-only forms included (no allow list stays read-only: see below)
+        ("git status", "ask"),
+        ("git status --short", "ask"),
+        ("git diff", "ask"),
+        ("git diff --stat", "ask"),
+        ("git diff --cached", "ask"),
+        ("git log --oneline -20", "ask"),
+        ("gh pr view 3", "ask"),
+        ("gh stack view --json", "ask"),
+        ("gh stack view --short", "ask"),
+        ("gh stack view", "ask"),  # interactive: it hangs a shell with no terminal
+        # and so does every other form
         ("git diff HEAD~1", "ask"),
         ("git log --oneline -5", "ask"),
         ("git difftool -y -x touch", "ask"),
         ("git statusx", "ask"),
         ("git diff --out''put=F", "ask"),  # git reads --output=F: the quotes slipped past "*--output*"
         ("GIT_EXTERNAL_DIFF=x git diff", "ask"),
+        # a redirect ran unasked under an allow: "gh pr view *" took `> pr.txt` (2.0.29, live)
         ("git diff > F", "ask"),
-        # "gh pr view *" swallowed a redirect: `gh pr view 1 > pr.txt` ran unasked (2.0.29, live)
         ("gh pr view 1 > pr.txt", "ask"),
         ("gh pr view 1 >> x", "ask"),
         ("gh stack view --json > x", "ask"),
-        ("gh stack view", "ask"),  # interactive: it hangs a shell with no terminal
+        # and so did one after a compound statement, under the plain git allows: OpenCode matched the command
+        # inside and the redirect is part of none, so no rule could close it (2.0.29, live)
+        ("(git status) > comp1.txt", "ask"),
+        ("{ git status; } > comp2.txt", "ask"),
+        ("for i in 1; do git status; done > comp3.txt", "ask"),
         # a call is as strong as its weakest simple command
         ("gh pr view 1 & touch F", "ask"),  # a lone & splits the call too (2.0.29, live)
         ("git diff; rm -rf x", "ask"),
@@ -167,12 +176,13 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
         ("gh pr merge 3 --squash", "deny"),
         ("gh stack merge", "deny"),
         ("gh api -X PUT repos/o/r/pulls/3/merge", "deny"),
-        # the redirect's ask comes before the denies, so it never softens one
+        # behind a redirect, or inside a compound statement, too
         ("git diff --output=x > y", "deny"),
         ("gh pr merge 3 --squash > /dev/null", "deny"),
+        ("{ gh pr merge 3 --squash; } > /dev/null", "deny"),
     ],
 )
-def test_the_chief_shell_runs_fixed_read_only_forms_and_nothing_that_writes_or_merges(
+def test_the_chief_shell_asks_before_every_command_and_denies_what_writes_or_merges(
     command: str, expected: str
 ) -> None:
     assert verdict(front(OC / "agent/chief.md")[0]["permission"]["bash"], command) == expected
@@ -183,6 +193,14 @@ def test_the_simulated_shell_tool_splits_a_call_into_simple_commands() -> None:
     assert simple_commands("git diff $(touch F $(rm x))") == ["git diff $SUB", "rm x", "touch F $SUB"]
     assert simple_commands("a & b") == ["a", "b"]  # a lone & backgrounds a command: the next one is its own
     assert simple_commands("a 2>&1 &> f >&2") == ["a 2>&1 &> f >&2"]  # these & are redirects, not splits
+    # a compound statement holds commands without being one: they are checked, and the redirect after it is
+    # part of none of them (2.0.29: `(git status) > f` was matched as `git status`)
+    assert simple_commands("(git status) > f") == simple_commands("{ git status; } > f") == ["git status"]
+    assert simple_commands("for i in 1; do git status; done > f") == ["git status"]
+    assert simple_commands("(a) && { b; } 2>&1") == ["a", "b"]
+    assert simple_commands("git diff > f") == ["git diff > f"]  # a simple command keeps its own redirect
+    assert simple_commands("(git diff > f)") == ["git diff > f"]
+    assert simple_commands("echo ${x} done for > f") == ["echo ${x} done for > f"]  # words, not syntax
 
 
 def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None:
