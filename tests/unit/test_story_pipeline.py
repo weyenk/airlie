@@ -478,15 +478,15 @@ async def test_a_layer_that_changed_nothing_names_the_subtasks_whose_reply_was_c
     )
 
 
-async def test_a_layer_names_every_subtask_whose_reply_was_cut_off_in_run_order(tmp_path: Path) -> None:
+async def test_a_layer_is_one_coder_subtask_and_its_cut_off_is_named_once(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = happy_engine(qa=[CUT_THINKING], coder=[CUT_THINKING], reviewer=[APPROVE])
+    engine = happy_engine(coder=[CUT_THINKING], reviewer=[APPROVE])
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and st.blocked.startswith(
-        "layer 01 (Storage) changed nothing; "
-        f"subtask 'tests' (qa): {cut_off_why('qa')}; "
-        f"subtask 'build' (coder): {cut_off_why('coder')}; its worktree is kept at "
+        f"layer 01 (Storage) changed nothing; subtask 'build' (coder): {cut_off_why('coder')}; its worktree "
+        "is kept at "
     )
+    assert not [r for r in engine.requests if r.role == "qa"]
 
 
 async def test_a_layer_whose_tests_fail_names_the_subtask_whose_reply_was_cut_off(tmp_path: Path) -> None:
@@ -568,7 +568,9 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert [e["kind"] for e in log] == [
         *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
-        *("layer_start", "layer_built", "layer_start", "layer_built", "stage"),  # build
+        # build; ./check.sh runs no pytest, so the checks on a layer's tests say they did not run
+        *("layer_start", "test_checks_skipped", "layer_built"),
+        *("layer_start", "test_checks_skipped", "layer_built", "stage"),
         *("published", "stage", "stage", "story_done"),  # publish, review
     ]
     assert {e["run_id"] for e in log} == {

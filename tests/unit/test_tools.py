@@ -23,6 +23,7 @@ def ctx(tmp_path: Path, **kw) -> ToolContext:
         shell_timeout_s=kw.pop("timeout", 5.0),
         output_cap_chars=kw.pop("cap", 2000),
         test_cmd=kw.pop("test_cmd", "echo tests-ok"),
+        test_steps=tuple(kw.pop("test_steps", ())),
     )
 
 
@@ -136,6 +137,43 @@ async def test_run_tests_uses_configured_command(tmp_path: Path) -> None:
     reg = ToolRegistry.builtin(["run_tests"], ctx(tmp_path, test_cmd="echo tests-ok && exit 3"))
     r = await reg.call(ToolCall("1", "run_tests", "{}"))
     assert not r.ok and "tests-ok" in r.output and "exit 3" in r.output
+
+
+async def test_run_tests_runs_every_gate_command_and_reports_each(tmp_path: Path) -> None:
+    steps = ["echo one", "echo ruff says no; exit 3", "echo 12 passed"]
+    reg = ToolRegistry.builtin(["run_tests"], ctx(tmp_path, test_cmd="unused", test_steps=steps))
+    r = await reg.call(ToolCall("1", "run_tests", "{}"))
+    assert not r.ok
+    lines = r.output.splitlines()
+    assert lines[0] == "2 of 3 gate commands pass; failed: [2/3]"
+    assert "[1/3] PASS: echo one" in lines
+    assert "[2/3] FAIL (exit 3): echo ruff says no; exit 3" in lines and "ruff says no" in lines
+    # the command after the failure still ran, and its result comes through
+    assert "[3/3] PASS: echo 12 passed" in lines and lines[-1] == "12 passed"
+
+
+async def test_run_tests_passes_when_every_gate_command_does(tmp_path: Path) -> None:
+    steps = ["mkdir -p sub && cd sub", "pwd"]  # a cd carries over, as it does in the story's gate
+    reg = ToolRegistry.builtin(["run_tests"], ctx(tmp_path, test_steps=steps))
+    r = await reg.call(ToolCall("1", "run_tests", "{}"))
+    assert r.ok and r.output.splitlines()[0] == "2 of 2 gate commands pass"
+    assert r.output.rstrip().endswith("/wt/sub")
+
+
+async def test_run_tests_caps_a_failing_commands_output(tmp_path: Path) -> None:
+    steps = ["python3 -c \"print('x' * 5000)\"; exit 1"]
+    reg = ToolRegistry.builtin(["run_tests"], ctx(tmp_path, cap=500, test_steps=steps))
+    r = await reg.call(ToolCall("1", "run_tests", "{}"))
+    assert not r.ok and "truncated" in r.output and len(r.output) < 800
+
+
+async def test_run_tests_goes_on_after_a_command_that_times_out(tmp_path: Path) -> None:
+    steps = ["echo one", "sleep 10", "echo after"]
+    reg = ToolRegistry.builtin(["run_tests"], ctx(tmp_path, timeout=1.0, test_steps=steps))
+    r = await reg.call(ToolCall("1", "run_tests", "{}"))
+    assert not r.ok
+    assert "[1/3] PASS: echo one" in r.output
+    assert "[2/3] FAIL (timed out after 1s): sleep 10" in r.output and "[3/3] PASS: echo after" in r.output
 
 
 async def test_git_status_and_diff(tmp_path: Path) -> None:

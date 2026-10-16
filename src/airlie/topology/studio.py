@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +52,7 @@ class SubtaskRun:
     result: TeamResult | None = None
     review: Review | None = None
     fix_rounds: int = 0
+    preamble: str = ""  # what it ran with (the repo map, its skill's guideline): a follow-up runs with it too
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,8 @@ class StudioOrchestrator:
         self.images: list[Path] = []
         self.base_sha = ""
         self.worktree: Path | None = None
+        self.test_cmd: str | None = None
+        self.test_steps: tuple[str, ...] = ()  # the gate's commands, for run_tests to report one by one
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
 
@@ -195,7 +198,11 @@ class StudioOrchestrator:
             t for t in self._tool_names(role) if t not in ("decide", "search_knowledge", "retrieve_value")
         ]
         ctx = ToolContext(
-            self.worktree, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars, test_cmd
+            self.worktree,
+            self.cfg.tools.shell_timeout_s,
+            self.cfg.tools.output_cap_chars,
+            test_cmd,
+            self.test_steps,
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:
@@ -303,7 +310,7 @@ class StudioOrchestrator:
     async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:
         role = self.cfg.roles[run.role]
         run.skill, skill_text = await self._skill(run.subtask, role)
-        preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
+        preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
         writes = self._writes(role)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
         ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
@@ -382,6 +389,32 @@ class StudioOrchestrator:
                 run, role, test_cmd, preamble=preamble, parent=run.result, nudge=nudge_from_review(review)
             )
             run.result = await self.team.run(ctx, self.observer)
+
+    async def follow_up(self, subtask_id: str, nudge: str) -> None:
+        """Send subtask `subtask_id`, which has run, back once more in its own conversation with `nudge` (as a
+        fix round is), on the run's worktree, with no review: for a check that runs after the plan and before
+        the gate (`execute_task`'s `before_gate`). An engine failure is its result, never raised."""
+        run = self.runs[subtask_id]
+        role = self.cfg.roles[run.role]
+        self.sink.emit("follow_up", subtask=subtask_id, role=run.role)
+        ctx = self._context(run, role, self.test_cmd, preamble=run.preamble, parent=run.result, nudge=nudge)
+        try:
+            async with self.write_lock, self.sem:
+                run.result = await self.team.run(ctx, self.observer)
+        except Exception as e:  # noqa: BLE001 - as in _run_subtask
+            run.result = TeamResult(
+                subtask_id, False, "engine_error", f"engine error: {type(e).__name__}: {e}", 0, 0, 0, 0.0
+            )
+        res = run.result
+        self.sink.emit(
+            "subtask_done",
+            subtask=subtask_id,
+            role=run.role,
+            ok=res.ok,
+            stop_reason=res.stop_reason,
+            steps=res.steps,
+            fix_rounds=run.fix_rounds,
+        )
 
     async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
         for wave in schedule(plan, satisfied=frozenset(self.runs)):
@@ -481,6 +514,8 @@ class StudioOrchestrator:
         branch: str | None = None,
         detach: bool = False,
         synthesise: bool = True,
+        test_steps: Sequence[str] = (),
+        before_gate: Callable[[], Awaitable[bool]] | None = None,
     ) -> RunReport:
         """Plan, run, review, synthesise.
 
@@ -488,7 +523,10 @@ class StudioOrchestrator:
         `base` is the worktree's start point (default HEAD), `branch` its new branch (default
         airlie/<run>/studio), `detach` gives it none (read-only work). The repo map is built from that
         worktree, so every role sees the code it builds on, not the checkout it was started from.
-        `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result."""
+        `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result.
+        `test_steps` are the gate's commands (`test_cmd` joined): run_tests reports each. `before_gate` runs
+        once the plan has (it may `follow_up` a subtask); when it returns False the gate does not run and the
+        tests count as failed."""
         given = pin(plan) if plan is not None else None
         if given is not None:
             self.check_plan(given)
@@ -505,6 +543,7 @@ class StudioOrchestrator:
         name = None if detach else (branch or f"airlie/{self.run_dir.run_id}/studio")
         self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
         self.base_sha = commit_wip(self.worktree, "studio: base")
+        self.test_cmd, self.test_steps = test_cmd, tuple(test_steps)
         self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given
         final = ""
@@ -515,7 +554,8 @@ class StudioOrchestrator:
         if chosen is not None:
             await self._run_plan(chosen, test_cmd)
             final = await self._synthesise(query_text, test_cmd) if synthesise else self._results_text()
-        passed = await self._tests_pass(test_cmd)
+        checked = chosen is None or before_gate is None or await before_gate()
+        passed = await self._tests_pass(test_cmd) if checked else False
         report = self._report(query_text, final, t0, name or "(detached)", passed)
         self.sink.emit(
             "run_done",

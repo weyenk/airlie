@@ -13,6 +13,9 @@ class ToolContext:
     shell_timeout_s: float = 120.0
     output_cap_chars: int = 20000
     test_cmd: str | None = None
+    test_steps: tuple[str, ...] = ()
+    """The gate's commands, one by one: run_tests runs each and reports each (`test_cmd` is them joined, as
+    the final gate runs them). Empty: run_tests runs `test_cmd`."""
 
 
 @dataclass(frozen=True)

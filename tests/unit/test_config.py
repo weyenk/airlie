@@ -592,8 +592,8 @@ def test_story_defaults(tmp_path: Path) -> None:
     s = load_config(write(tmp_path, MINIMAL)).story
     assert (s.topology, s.trunk, s.remote) == ("studio", "main", "origin")
     assert (s.max_layers, s.stage_attempts) == (5, 2)
-    roles = (s.product_role, s.architect_role, s.tests_role, s.build_role)
-    assert roles == ("product", "architect", "qa", "coder")
+    roles = (s.product_role, s.architect_role, s.build_role)
+    assert roles == ("product", "architect", "coder")
     assert s.repo is None and s.test_cmd is None
     j = s.jira
     assert (j.site, j.project, j.email, j.token, j.jql, j.api_url) == (None,) * 6
@@ -831,6 +831,17 @@ def test_an_explicit_tag_that_does_not_fit_its_value_names_only_its_error_type(
     assert leaks(err) == []
     hint = "a value's explicit tag (!!int, !!float, !!bool …) does not fit it"
     assert str(err.value) == f"{local.resolve()}: not valid YAML: {hint} ({error_type})"
+
+
+def test_an_old_local_config_that_sets_story_tests_role_says_what_replaced_it(tmp_path: Path) -> None:
+    base = write(tmp_path, MINIMAL)
+    (tmp_path / "airlie.local.yaml").write_text("story: {tests_role: qa}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert str(err.value) == (
+        "config invalid:\n  story.tests_role: removed on 2026-10-16: one coder (story.build_role) now "
+        "writes a layer's tests and its code; delete story.tests_role from your config"
+    )
 
 
 def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path) -> None:

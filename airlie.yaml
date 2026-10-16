@@ -146,7 +146,7 @@ roles:
   research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   qa:           { prompt: prompts/roles/qa.md, model: base, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], skills: skills/qa, max_tokens: 4096, thinking: false, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   security:     { prompt: prompts/roles/security.md, model: base, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
-  reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [], max_context: 131072, max_tokens: 2048, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [], max_context: 131072, max_tokens: 8192, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
     model: base
