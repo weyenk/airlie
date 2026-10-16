@@ -1,6 +1,9 @@
 # airlie — every action is a task. Run `task` to list them.
 version: '3'
 
+# Deliberately no `dotenv:`. Task would export .env, which holds the Jira token, to every task's process and so to its
+# children (the coder's shell tool, the test gate, gh, git, the engines). airlie reads .env beside airlie.yaml itself.
+
 vars:
   UV: uv
   RUN: uv run --quiet
@@ -77,6 +80,37 @@ tasks:
     cmds:
       - '{{.RUN}} airlie studio {{.CLI_ARGS}}'
 
+  story:
+    desc: "A Jira issue or --text \"request\" → story → layers → test-first build → stacked draft PRs (task story -- ISSUE [--repo PATH] [--test-cmd CMD]; ISSUE is AIR-7 or its link)"
+    cmds:
+      - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
+
+  story:tick:
+    desc: "One scheduler beat by hand: build the top issue of the intake query unless a story is in flight (the launchd agent runs the same command; docs/integrations/story.md)"
+    cmds:
+      - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
+
+  story:check:
+    desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
+    cmds:
+      - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
+
+  story:launchd:install:
+    desc: "Load the launchd agent that runs the story tick (airlie story tick) every 15 minutes from this checkout (docs/integrations/story.md)"
+    cmds:
+      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/story-tick.plist > ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - echo "loaded; the log is ~/.local/state/airlie/story-tick.log"
+
+  story:launchd:uninstall:
+    desc: "Unload the story pickup launchd agent and remove its plist"
+    cmds:
+      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
     cmds:
@@ -96,6 +130,17 @@ tasks:
     desc: "Expose `task serve` (8090) through a Cloudflare quick tunnel for clients that call from the cloud (Cursor). Run serve with --api-key first."
     cmds:
       - cloudflared tunnel --url http://127.0.0.1:8090 {{.CLI_ARGS}}
+
+  opencode:install:
+    desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story into ~/.config/opencode and add the airlie MCP server (the airlie_* tools) to its opencode.json, after a backup when it changes the file (restart OpenCode after)"
+    cmds:
+      - mkdir -p ~/.config/opencode/agent ~/.config/opencode/command
+      - cp docs/integrations/opencode/agent/*.md ~/.config/opencode/agent/
+      - cp docs/integrations/opencode/command/*.md ~/.config/opencode/command/
+      # the tool file an earlier install copied: OpenCode 2.0 does not run it, airlie mcp has its tools
+      - rm -f ~/.config/opencode/tool/airlie.ts
+      - '{{.RUN}} airlie mcp config --install'
+      - echo "installed; restart OpenCode. The airlie_* tools need 'task serve' running."
 
   bench:lts:
     desc: "Memory-free baseline vs LTS on graded tasks; spec 04 §4 ≥25% verdict (task bench:lts -- --tasks lang_detect)"

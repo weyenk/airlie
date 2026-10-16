@@ -14,7 +14,7 @@ class RouteDecision:
     choice: str | None
     chosen: str
     decision: str
-    """clear | ambiguous | low-confidence | invalid | error | hint"""
+    """clear | ambiguous | low-confidence | invalid | error | hint | fallback | pinned"""
     probabilities: dict[str, float] = field(default_factory=dict)
     confidence: float = 0.0
     hint: str | None = None

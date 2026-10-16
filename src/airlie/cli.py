@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from airlie import __version__
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
+from airlie.story.state import StoryState
 
 app = typer.Typer(
-    no_args_is_help=True, add_completion=False, help="airlie: parallel agent teams with shared memory."
+    no_args_is_help=True,
+    add_completion=False,
+    # No traceback lists the locals of its frames, whatever the default of the Typer that is installed:
+    # jira_board's are the account email and the API token.
+    pretty_exceptions_show_locals=False,
+    help="airlie: parallel agent teams with shared memory.",
 )
 config_app = typer.Typer(no_args_is_help=True, help="Inspect configuration.")
 app.add_typer(config_app, name="config")
@@ -31,11 +39,18 @@ controller_app = typer.Typer(no_args_is_help=True, help="Learned LTS admission c
 app.add_typer(controller_app, name="controller")
 route_app = typer.Typer(no_args_is_help=True, help="Routing (Kev / chief) decisions and their eval.")
 app.add_typer(route_app, name="route")
+story_app = typer.Typer(
+    no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
+)
+app.add_typer(story_app, name="story")
+mcp_app = typer.Typer()  # its help is mcp_serve's docstring
+app.add_typer(mcp_app, name="mcp")
 console = Console()
 err = Console(stderr=True)
 
 ConfigOpt = Annotated[
-    Path | None, typer.Option("--config", "-c", help="path to airlie.yaml (default: search upwards)")
+    Path | None,
+    typer.Option("--config", "-c", help="path to airlie.yaml (default: AIRLIE_CONFIG, else search upwards)"),
 ]
 
 
@@ -509,6 +524,68 @@ def serve(
     uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
 
 
+@mcp_app.callback(invoke_without_command=True)
+def mcp_serve(
+    ctx: typer.Context,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="airlie.yaml whose story.test_cmd airlie_run accepts (default: AIRLIE_CONFIG, else search "
+            "upwards, else this checkout's)",
+        ),
+    ] = None,
+) -> None:
+    """airlie as an MCP server: `airlie mcp` serves the tools plan, run, status, cancel and story over stdio
+    for OpenCode or any MCP client, which starts it. The tools call `task serve` at AIRLIE_URL (default
+    http://127.0.0.1:8090); `airlie mcp config` prints or installs OpenCode's entry for it."""
+    if ctx.invoked_subcommand is not None:
+        return
+    import asyncio
+
+    from airlie.serve.mcp_server import serve_stdio
+
+    asyncio.run(serve_stdio(config))
+
+
+@mcp_app.command("config")
+def mcp_config(
+    install: Annotated[
+        bool,
+        typer.Option(
+            "--install",
+            help="merge it into ~/.config/opencode/opencode.json, after a backup when it changes the file",
+        ),
+    ] = False,
+) -> None:
+    """Print the entry OpenCode needs to start this server (`mcp.airlie`), or --install it."""
+    import json
+
+    from airlie.serve.mcp_server import (
+        CHECKOUT,
+        InstallError,
+        install_opencode,
+        opencode_config,
+        opencode_entry,
+    )
+
+    if not install:
+        typer.echo(json.dumps({"mcp": {"airlie": opencode_entry(CHECKOUT)}}, indent=2))
+        return
+    path = opencode_config()
+    try:
+        typer.echo(install_opencode(path, CHECKOUT))
+    except InstallError as e:
+        problem = str(e)
+    except (OSError, UnicodeError) as e:  # a file it cannot read or write (the write never truncates it)
+        problem = f"{path} could not be updated ({type(e).__name__}: {e}), so airlie left it as it is"
+    else:
+        return
+    err.print(f"[red]{escape(problem)}[/red]", soft_wrap=True, emoji=False)
+    raise typer.Exit(1)
+
+
 @bench_app.command("report")
 def bench_report(paths: list[Path]) -> None:
     """Render saved bench JSON file(s) as one markdown table (what docs/bench/*.md contain)."""
@@ -700,6 +777,211 @@ def studio(
 ) -> None:
     """Run the studio topology (chief → router → specialists → review → synthesis) on a goal."""
     run(goal, repo=repo, k=None, test_cmd=test_cmd, topology="studio", config=config, image=image)
+
+
+# ---- stories (task story / story:tick / story:check) ----
+
+
+def _run_stoppable[T](coro: Coroutine[Any, Any, T]) -> T:
+    """asyncio.run(coro), except that SIGTERM and SIGHUP stop it as asyncio.run already stops it on SIGINT:
+    they cancel the main task, so every cleanup runs and publish.run_cmd kills the process group gh runs in.
+    gh has a session of its own, which a signal to airlie does not reach: launchd stops `story:tick` with
+    SIGTERM and a closed terminal sends SIGHUP, and without this a killed airlie leaves a `gh stack submit`
+    pushing. A signal that was ignored when airlie started (nohup) stays ignored, the handlers that were there
+    are put back when the run ends, and off the main thread, where none can be installed, this is asyncio.run.
+    A stop exits with 128 + the signal, whether or not its notice could be written."""
+    import asyncio
+    import io
+    import signal
+    import sys
+    import threading
+
+    caught: list[signal.Signals] = []
+    found: dict[signal.Signals, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        found = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    ours = [sig for sig, handler in found.items() if handler is not signal.SIG_IGN]
+
+    def stop(sig: signal.Signals, task: asyncio.Task[Any]) -> None:
+        caught.append(sig)
+        task.cancel()
+
+    async def main() -> T:
+        task = asyncio.current_task()
+        assert task is not None  # asyncio.run runs this as the main task
+        for sig in ours:
+            asyncio.get_running_loop().add_signal_handler(sig, stop, sig, task)
+        return await coro
+
+    try:
+        return asyncio.run(main())
+    except asyncio.CancelledError:
+        if not caught:
+            raise
+        try:
+            err.print(
+                f"[yellow]stopped by {caught[0].name}[/yellow]: "
+                "`task story -- ISSUE` resumes a stopped story from its last finished stage"
+            )
+        except (OSError, SystemExit):  # nobody reads stderr (a hung-up terminal); Rich exits on a broken pipe
+            # What stderr refused stays in Python's buffer, and flushing it at exit would fail again and make
+            # the status 120: it is given somewhere to go.
+            sys.stderr = io.StringIO()
+        raise typer.Exit(128 + caught[0]) from None
+    finally:
+        for sig in ours:  # asyncio.run has put the default back; this puts back what was there
+            if found[sig] is not None:
+                signal.signal(sig, found[sig])
+
+
+def _story_cfg(config: Path | None) -> AirlieConfig:
+    from airlie.story.factory import story_config
+
+    try:
+        return story_config(_load(config))
+    except ConfigError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+
+
+def _fail(problems: list[str]) -> None:
+    """Print every problem and exit 1; no problems, no exit."""
+    for p in problems:
+        err.print(f"[red]{escape(p)}[/red]", emoji=False)
+    if problems:
+        raise typer.Exit(1)
+
+
+def _print_story(st: StoryState) -> None:
+    """The outcome; model and issue text is printed as text, never as Rich markup or emoji codes."""
+    if st.blocked:
+        state = f"[red]blocked[/red] after {st.stage}: {escape(st.blocked)}"
+    else:
+        state = f"[green]{st.stage}[/green]"
+    console.print(f"story {escape(st.path.name)}: {state}", highlight=False, emoji=False)
+    for p in st.prs:
+        console.print(
+            f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False, emoji=False
+        )
+    console.print(
+        f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl",
+        markup=False,
+        highlight=False,
+        emoji=False,
+    )
+
+
+REPO_HELP = (
+    "repository to build in: a written request's (default: story.repo); for an issue, in place of the "
+    "checkout its repo: label names in story.repos_root (its remote must still name that repository)"
+)
+TEST_CMD_HELP = "the gate every layer must pass, in place of the Test gate of the repository's AGENTS.md"
+
+
+@story_app.command("run")
+def story_run(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="Jira issue key (AIR-7) or its link")
+    ] = None,
+    text: Annotated[str | None, typer.Option(help="a written request instead of an issue (no board)")] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Refine a Jira issue (or --text) into a story, plan its layers, build each one test-first, open stacked
+    draft PRs. An issue is built in the repository its repo:<owner>/<name> label names, gated by the Test gate
+    of that repository's AGENTS.md. A stopped story resumes from its last finished stage when you run the same
+    command again."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    if (ref is None) == (text is None):
+        err.print("[red]pass an issue (AIR-7 or its link) or --text, not both[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    problems = factory.story_problems(cfg)
+    if text is not None:  # its repository is known now: a missing one fails before anything runs
+        try:
+            factory.written_repo(cfg, repo)
+        except StorySetupError as e:
+            problems.append(str(e))
+    _fail(problems)
+
+    async def go() -> StoryState:
+        board, card = await factory.card_for(cfg, ref, text)
+        return await factory.run_one(cfg, board=board, card=card, repo=repo, test_cmd=test_cmd)
+
+    try:
+        st = _run_stoppable(go())
+    except (factory.StoryBusy, BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    _print_story(st)
+    if st.blocked:
+        raise typer.Exit(1)
+
+
+@story_app.command("tick")
+def story_tick(config: ConfigOpt = None) -> None:
+    """One scheduler beat (launchd runs this): build the top issue of the intake query, unless a story is in
+    flight or the engine is down."""
+    import time
+
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+    try:
+        line = _run_stoppable(factory.tick(cfg))
+    except (BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    # soft_wrap: a log line is one line, whatever the width of the terminal (or of the launchd log)
+    console.print(
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}",
+        markup=False,
+        highlight=False,
+        emoji=False,
+        soft_wrap=True,
+    )
+
+
+@story_app.command("check")
+def story_check(
+    ref: Annotated[
+        str | None,
+        typer.Argument(
+            metavar="[ISSUE]",
+            help="a Jira issue (AIR-7 or its link): check its repo: label, checkout, remote, trunk and gate",
+        ),
+    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    test_cmd: Annotated[str | None, typer.Option(help=TEST_CMD_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Check what `task story` needs: roles; for ISSUE, the repository its label names (the checkout, its
+    remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
+    who publishes (your gh login, or story.github_app's bot), the Jira project and its statuses. No model runs
+    and nothing is written."""
+    from airlie.story import factory
+
+    cfg = _story_cfg(config)
+    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
+    # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
+    for n in checked.notes:
+        console.print(n, markup=False, highlight=False, emoji=False, soft_wrap=True)
+    if not checked.problems:
+        then = (
+            escape(f"task story -- {ref}") if ref is not None else 'task story -- ISSUE (or --text "request")'
+        )
+        console.print(f"[green]ready[/green]: {then}", highlight=False, emoji=False, soft_wrap=True)
+        return
+    for p in checked.problems:
+        err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
+    raise typer.Exit(1)
 
 
 @eval_app.command("run")

@@ -38,10 +38,13 @@ def repair_create_result(result: CreateResult) -> CreateResult:
 
 
 class RepairingOpenAIClient(OpenAIChatCompletionClient):
-    """Also takes a generation slot from the SlotScheduler for each model call (spec 04 §2)."""
+    """Also takes a generation slot from the SlotScheduler for each model call (spec 04 §2), and remembers how
+    the latest reply ended: AutoGen's agent does not pass that on."""
 
     slot_scheduler: SlotScheduler | None = None
     team_id: str = ""
+    last_finish_reason: str = ""
+    """How the latest reply ended; "length" means max_tokens cut it off."""
 
     def _slot(self) -> AbstractAsyncContextManager[None]:
         if self.slot_scheduler is None:
@@ -67,6 +70,7 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
                 extra_create_args=extra_create_args or {},
                 cancellation_token=cancellation_token,
             )
+        self.last_finish_reason = res.finish_reason
         return repair_create_result(res)
 
     async def create_stream(
@@ -92,4 +96,8 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
                 max_consecutive_empty_chunk_tolerance=max_consecutive_empty_chunk_tolerance,
                 include_usage=include_usage,
             ):
-                yield repair_create_result(item) if isinstance(item, CreateResult) else item
+                if isinstance(item, CreateResult):
+                    self.last_finish_reason = item.finish_reason
+                    yield repair_create_result(item)
+                else:
+                    yield item

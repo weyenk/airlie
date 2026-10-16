@@ -1,4 +1,5 @@
-"""Builtin process tools: shell, run_tests, git. All timeboxed, output-capped, run inside the worktree."""
+"""Builtin process tools: shell, run_tests, git. All timeboxed, output-capped, run inside the worktree with
+the agent environment (airlie.subproc: no credentials)."""
 
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ import asyncio
 import shlex
 from typing import Any
 
+from airlie.subproc import agent_env, kill_group
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
 
@@ -13,23 +15,32 @@ GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "refl
 
 
 async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> ToolResult:
+    """Run a command a model chose, or code a model wrote, in the worktree: with the agent environment, no
+    stdin, and in a process group of its own, so a timeout or the caller being cancelled kills the command
+    and everything it started."""
+    spawn: dict[str, Any] = dict(
+        cwd=ctx.worktree,
+        env=agent_env(),
+        stdin=asyncio.subprocess.DEVNULL,  # never the person's terminal
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,  # its own process group: kill_group reaches what it starts
+    )
     try:
         if shell:
-            proc = await asyncio.create_subprocess_shell(
-                str(cmd), cwd=ctx.worktree, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-            )
+            proc = await asyncio.create_subprocess_shell(str(cmd), **spawn)
         else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=ctx.worktree, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-            )
+            proc = await asyncio.create_subprocess_exec(*cmd, **spawn)
     except OSError as e:
         return ToolResult(False, f"error: {e}")
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=ctx.shell_timeout_s)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_group(proc)
         return ToolResult(False, f"error: command timed out after {ctx.shell_timeout_s:g}s")
+    except BaseException:  # cancelled: nothing the command started may outlive its caller
+        await kill_group(proc)
+        raise
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
     rc = proc.returncode or 0
     body = cap(text, ctx.output_cap_chars)
@@ -75,6 +86,8 @@ class Git:
         argv = [str(a) for a in (args.get("args") or [])]
         if not argv:
             return ToolResult(False, "error: git needs arguments")
+        if argv[0].startswith("-"):  # -c k=v, -C dir, --git-dir ...: the subcommand after them goes unchecked
+            return ToolResult(False, "error: git's own options are not allowed: start with the subcommand")
         if argv[0] in GIT_DENY:
             return ToolResult(False, f"error: git {argv[0]} is not allowed inside a team worktree")
         return await run_cmd(

@@ -12,7 +12,7 @@ from typing import Any
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall, image_part
 from airlie.skills import prompt_text
-from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
+from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
 from airlie.tools.jsonargs import history_arguments
 
 
@@ -116,6 +116,14 @@ class NativeTeam:
             max_prompt = max(max_prompt, res.prompt_tokens)
             completion_tokens += res.completion_tokens
             if not res.tool_calls:
+                # a reply that max_tokens ended is not a finished answer, whatever text it holds
+                if res.finish_reason == "length":
+                    thinking = bool(res.reasoning.strip())
+                    final_text = res.text
+                    if not final_text.strip():
+                        final_text = cut_off_text(ctx.role_name, ctx.role, thinking=thinking)
+                    stop = "cut_off"
+                    break
                 final_text = res.text
                 ok = True
                 stop = "done"

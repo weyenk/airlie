@@ -64,3 +64,32 @@ def test_map_cache_hits_on_second_call_and_misses_after_change(tmp_path: Path) -
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     text, c3 = build_repo_map(repo, test_cmd=None, max_chars=6000, depth=3, cache_dir=cache)
     assert c3 is False and "def added()" in text
+
+
+def test_a_tracked_path_the_checkout_cannot_stat_or_read_does_not_stop_the_map(tmp_path: Path) -> None:
+    """Every studio run maps its fresh worktree, where a tracked symlink to an ignored file dangles (the file
+    is not in it). Such a path is left out; a file nobody may read is listed without signatures."""
+    from airlie.teams.worktree import add_worktree
+
+    repo = git_repo(tmp_path, FILES)
+    (repo / ".gitignore").write_text("local.cfg\n")
+    (repo / "local.cfg").write_text("only in the person's checkout\n")
+    (repo / "config.cfg").symlink_to("local.cfg")  # tracked; its target is ignored
+    (repo / "gone.py").symlink_to("missing.py")  # tracked, and dangling everywhere
+    (repo / "pkg" / "locked.py").write_text("def hidden() -> None: ...\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "links"], cwd=repo, check=True
+    )
+    wt = add_worktree(repo, tmp_path / "wt", branch=None)
+    locked = wt / "pkg" / "locked.py"
+    locked.chmod(0)
+    try:
+        text, cached = build_repo_map(
+            wt, test_cmd=None, max_chars=6000, depth=3, cache_dir=tmp_path / "cache"
+        )
+    finally:
+        locked.chmod(0o644)
+    assert cached is False and "config.cfg" not in text and "gone.py" not in text  # nothing to stat: left out
+    assert "pkg/report.py" in text and "def total_cost(" in text and ".gitignore" in text  # the rest is there
+    assert "pkg/locked.py (" in text and "hidden" not in text  # listed; its signatures could not be read

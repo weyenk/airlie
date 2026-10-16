@@ -102,7 +102,7 @@ def test_serve_command_pins_spec_launch_parameters(tmp_path: Path) -> None:
         pairs["--default-chat-template-kwargs"] == '{"enable_thinking": true}'
     )  # team role default thinking
     assert pairs["--default-top-k"] == "20"
-    assert pairs["--default-thinking-token-budget"] == "16384"
+    assert pairs["--default-thinking-token-budget"] == "8192"  # the schema default; max_tokens stays above it
     assert "--offline" in flags
     assert "--kv-cache-quantization" not in flags
 

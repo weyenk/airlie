@@ -42,8 +42,12 @@ Run `task` to list them. The ones that exist today:
 | `task up` / `task down` / `task restart` / `task status` / `task logs [-- -f]` | start/stop every managed engine in `airlie.yaml`: the vllm-mlx process (`main`, all catalog models in its registry) and the llama-server process serving Kev (`decision`, `/v1/systemone`); status shows pid and per-model readiness |
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
-| `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}` |
+| `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
 | `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
+| `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a Jira issue (a key like `AIR-7`, or its link) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; an issue is built in the repository its `repo:<owner>/<name>` label names (its clone in `~/git`, `story.repos_root`), and every layer must pass the `## Test gate` of that repository's `AGENTS.md`; Jira comes from the `ATLASSIAN_*` variables in `~/.config/airlie/.env` (or a `.env` beside `airlie.yaml`), which airlie reads itself and never exports; with `story.github_app.app_id` set, a GitHub App's bot pushes, opens the PRs and authors the layer commits with a token scoped to the story's one repository, never your gh login or SSH key; the committed `airlie.yaml` publishes as this repository owner's app, so in a clone set `story.github_app.app_id: null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there (`docs/integrations/story.md`) |
+| `task story:tick` / `task story:check [-- ISSUE]` | one scheduler beat (what the launchd agent runs): build the top *To Do* issue unless a story is in flight / check roles, gh + gh-stack, the Jira credentials, project and statuses, and an issue's label, checkout, trunk and test gate |
+| `task story:launchd:install` / `task story:launchd:uninstall` | load / remove the launchd agent that runs the story tick (`airlie story tick`) every 15 minutes |
+| `task opencode:install` | copy the OpenCode chief, its subagents, `/studio` and `/story` into `~/.config/opencode` and register `airlie mcp`, an MCP server (stdio) that gives OpenCode the tools `airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel` and `airlie_story` over `task serve`'s jobs API, in its `opencode.json` (merged into an entry you already have; after a backup when it changes the file; `docs/integrations/local-agents.md`) |
 | `task route:eval -- --min-accuracy 0.9 --out docs/bench/routing.json` | score the Kev router on `evals/routing.jsonl` (54 labelled tasks seeded from ai-mode) against the role criteria in `evals/routing-roles.yaml`: accuracy, mean confidence, wrong-but-clear, confusions |
 | `task bench:topology -- --topologies single,teams,fork --repeats 3` | one agent vs K teams vs fork-when-stuck on the graded tasks: wall-clock, steps, forks, winner graded by the hidden tests; verdict against the single-agent baseline |
 | `task bench:lts -- --tasks lang_detect --repeats 2` | memory-free baseline vs the configured controller on graded tasks: wall-clock, steps, admissions, retrievals, pass rate, and the spec's ≥25 % verdict |
@@ -90,7 +94,12 @@ Cursor (through a tunnel) are in `docs/integrations/` too.
 `task serve` starts an OpenAI-compatible server on `127.0.0.1:8090`. Point Claude Code, Qwen Code, Cursor or
 `curl` at `http://127.0.0.1:8090/v1` and pick a role as the model name; airlie prepends the role prompt and
 forwards to the engine. `POST /v1/airlie/run` with `{"goal": ..., "repo": "/path", "k": 3}` runs the parallel
-teams and returns the aggregated answer and winning branch.
+teams and returns the aggregated answer and winning branch. The jobs API (`/v1/airlie/plans`, `/runs`, `/stories`)
+starts studio plans, studio runs and stories in the background and is followed by long polls
+([`docs/integrations/story.md`](docs/integrations/story.md)). **Without `--api-key`, any program on this machine can
+call every route, including the ones that start stories, which push branches and open draft PRs:** run
+`task serve -- --api-key SECRET` (or set `AIRLIE_SERVE_API_KEY`) to require `Authorization: Bearer SECRET`. A
+`task serve` that is already running must be restarted to get the jobs API.
 
 ## How a run works
 
@@ -193,6 +202,11 @@ declare `tools` (a subset of the builtins plus `decide` and `search_knowledge`),
 guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory the `search_knowledge` tool
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every
 error names the key path.
+
+A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
+caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
+A reply the engine cuts off at `max_tokens` ends an agent's turn as `cut_off`, never as a finished answer; the
+studio chief refuses one it cannot parse, and the reviewer one with no text.
 
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.

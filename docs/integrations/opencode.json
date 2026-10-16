@@ -20,7 +20,7 @@
           "name": "architect",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "qa": {
@@ -48,7 +48,7 @@
           "name": "research",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "product": {
@@ -83,7 +83,7 @@
           "name": "generalist",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "small": {
@@ -96,5 +96,24 @@
       }
     }
   },
-  "model": "airlie/coder"
+  "mcp": {
+    "airlie": {
+      "type": "local",
+      "command": [
+        "uv",
+        "run",
+        "--quiet",
+        "--project",
+        "/path/to/airlie",
+        "airlie",
+        "mcp",
+        "--config",
+        "/path/to/airlie/airlie.yaml"
+      ],
+      "environment": {
+        "AIRLIE_URL": "http://127.0.0.1:8090"
+      }
+    }
+  },
+  "model": "airlie/generalist"
 }

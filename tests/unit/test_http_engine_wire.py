@@ -15,6 +15,7 @@ from airlie.config import RoleSpec, Sampling
 from airlie.engine import ContentPart, EngineError, GenRequest, Message, ToolCall, ToolSchema
 from airlie.engine.http_engine import YES_NO_SYSTEM, HTTPEngine, _error_text, _finish, _wire_message
 from airlie.engine.types import EngineCapabilities, EngineHealth, EngineStats, TokenEvent
+from tests.unit.vllm_helpers import ChatCompletionRequest
 
 
 def role_spec(**kw: Any) -> RoleSpec:
@@ -165,7 +166,8 @@ def test_body_has_every_sampling_field_and_the_served_name() -> None:
 def test_body_optional_fields_appear_only_when_set() -> None:
     e, _ = make()
     plain = e._body(req(), stream=False)
-    for key in ("stop", "tools", "tool_choice", "thinking_budget", "num_draft_tokens", "repetition_penalty"):
+    keys = ("stop", "tools", "tool_choice", "thinking_token_budget", "num_draft_tokens", "repetition_penalty")
+    for key in keys:
         assert key not in plain
     stopped = e._body(req(stop=["END"]), stream=False)
     assert stopped["stop"] == ["END"]
@@ -183,19 +185,35 @@ def test_body_optional_fields_appear_only_when_set() -> None:
     assert e._body(req(sampling=Sampling(repetition_penalty=1.1)), stream=False)["repetition_penalty"] == 1.1
 
 
-def test_thinking_comes_from_the_request_over_the_role_and_gates_the_budget() -> None:
+def test_thinking_comes_from_the_request_over_the_role_and_gates_the_thinking_token_budget() -> None:
     on = role_spec(thinking=True, thinking_budget=100)
     e, _ = make(spec=on)
     assert e._body(req(), stream=False)["chat_template_kwargs"] == {"enable_thinking": True}
-    assert e._body(req(), stream=False)["thinking_budget"] == 100
+    body = e._body(req(), stream=False)
+    assert body["thinking_token_budget"] == 100
+    assert [k for k in body if "budget" in k] == ["thinking_token_budget"]  # under no other name
     off = e._body(req(thinking=False), stream=False)
-    assert off["chat_template_kwargs"] == {"enable_thinking": False} and "thinking_budget" not in off
+    assert off["chat_template_kwargs"] == {"enable_thinking": False} and "thinking_token_budget" not in off
     e2, _ = make(spec=role_spec(thinking=False, thinking_budget=100))
     forced = e2._body(req(thinking=True), stream=False)
-    assert forced["chat_template_kwargs"] == {"enable_thinking": True} and forced["thinking_budget"] == 100
-    assert "thinking_budget" not in e2._body(req(), stream=False)
+    assert forced["chat_template_kwargs"] == {"enable_thinking": True}
+    assert forced["thinking_token_budget"] == 100
+    assert "thinking_token_budget" not in e2._body(req(), stream=False)
     e3, _ = make(spec=role_spec(thinking=True, thinking_budget=None))
-    assert "thinking_budget" not in e3._body(req(), stream=False)
+    assert "thinking_token_budget" not in e3._body(req(), stream=False)
+
+
+def test_vllm_mlx_reads_the_budget_from_the_body_the_engine_sends() -> None:
+    """vllm-mlx 0.5.0 drops request keys its pydantic model does not know, and reads the per-request budget
+    from `thinking_token_budget` (it never reads `thinking_budget`): its own request model, given our body,
+    must come out with the role's budget."""
+    e, _ = make(spec=role_spec(thinking=True, thinking_budget=100, max_tokens=4096))
+    tools = [ToolSchema("read_file", "Read", {"type": "object"})]
+    body = e._body(req(tools=tools, stop=["END"], max_tokens=4096), stream=True)
+    read = ChatCompletionRequest.model_validate(body)
+    assert read.thinking_token_budget == 100
+    assert read.max_tokens == 4096 and read.stop == ["END"]
+    assert read.chat_template_kwargs == {"enable_thinking": True}
 
 
 def test_role_template_kwargs_merge_over_the_thinking_flag() -> None:

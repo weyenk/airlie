@@ -23,10 +23,11 @@ dependencies = [
     "typer>=0.15",
     "pyyaml>=6.0",
     "psutil>=6",
-    "mcp>=1.2",
+    "mcp>=2.3",
     "autogen-agentchat>=0.7", # spec 01 §2: AutoGen team orchestrator
     "autogen-ext[openai]>=0.7",
     "rank-bm25>=0.2.2",
+    "pyjwt[crypto]>=2.10", # story.github_app: the JWT a GitHub App signs with its key
 ]
 
 [project.scripts]
@@ -78,17 +79,30 @@ ignore_missing_imports = true
 source_paths = ["src"]
 pytest_add_cli_args_test_selection = ["tests/unit/"]
 # Kept out of mutation runs only (they still run in the unit stage):
-# - the MCP echo-server test spawns a subprocess, which fails under mutmut's runner;
+# - the MCP echo-server test and the `airlie mcp` stdio test spawn a subprocess through the MCP stdio client,
+#   whose stderr is closed under mutmut's runner ("ValueError: I/O operation on closed file");
 # - the torch/peft/safetensors tests are not fork-safe: mutmut forks a worker per mutant, and on macOS torch's
 #   BLAS thread pool and Metal buffers segfault in a forked, multi-threaded process (a crash dialog per mutant).
 pytest_add_cli_args = [
     "--deselect",
     "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
+    "--deselect",
+    "tests/unit/test_mcp_server.py::test_airlie_mcp_serves_the_five_tools_over_stdio",
     "--ignore=tests/unit/test_trainer.py",
     "--ignore=tests/unit/test_learned_controller.py",
     "--ignore=tests/unit/test_cli_controller.py",
 ]
-also_copy = ["airlie.yaml", "prompts", "evals", "scripts", "knowledge", "skills"]
+# Taskfile.yml and docs/integrations: tests read the task definitions, the launchd plist and OpenCode's files.
+also_copy = [
+    "airlie.yaml",
+    "prompts",
+    "evals",
+    "scripts",
+    "knowledge",
+    "skills",
+    "Taskfile.yml",
+    "docs/integrations",
+]
 
 [tool.airlie.mutation]
 # Modules held to "every mutant is caught" (the pipeline and `task mutate:enrolled` fail on a survivor).

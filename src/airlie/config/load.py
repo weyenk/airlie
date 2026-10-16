@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,57 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+# what PyYAML quotes in a message: a repr(), so a quote inside it is escaped with a backslash
+_QUOTED = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+_ESCAPE = r"\\(?:[abtnvfre'\"\\]|x[0-9a-f]{2}|u[0-9a-f]{4}|U[0-9a-f]{8})"  # one character, as repr writes it
+_IDS = (  # PyYAML's token ids, which its parser messages quote ("expected ',', but found '<block end>'")
+    "directive|document start|document end|stream start|stream end|block sequence start|block mapping start"
+    "|block end|alias|anchor|tag|scalar"
+)
+# the quotes safe to keep: one character, one escaped character ('\t'), or one of PyYAML's '<token id>'
+_FIXED = re.compile(rf".?|{_ESCAPE}|<(?:{_IDS})>")
+
+
+def _at(mark: Any) -> str:
+    return f"line {mark.line + 1}, column {mark.column + 1}"
+
+
+def _yaml_problem(e: yaml.YAMLError) -> str:
+    """Where and what, never the source text. PyYAML's own str(e) quotes the offending lines, and its messages
+    quote what they choke on (an alias, an anchor, a tag): a token may be any of them. Of the quotes only one
+    character (a tab shows as '\\t') and PyYAML's own '<token id>' are kept. Places are 1-based integers: the
+    problem's line and column (a reader error has a character instead) and, if it differs, where it opened."""
+    mark, opened = getattr(e, "problem_mark", None), getattr(e, "context_mark", None)
+    offset = getattr(e, "position", None)
+    where = ""
+    if mark is not None:
+        where = f" at {_at(mark)}"
+    elif isinstance(offset, int):
+        where = f" at character {offset + 1}"
+    said = (getattr(e, "context", None), getattr(e, "problem", None) or getattr(e, "reason", None))
+    what = ", ".join(str(s) for s in said if s)
+    what = _QUOTED.sub(lambda q: q[0] if _FIXED.fullmatch(q[0][1:-1]) else "'…'", what)
+    since = ""
+    if opened is not None and (mark is None or _at(opened) != _at(mark)):
+        since = f" (opened at {_at(opened)})"
+    return f"not valid YAML{where}" + (f": {what}" if what else "") + since
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
+    # outside the try below: a UnicodeDecodeError is a ValueError too, and has nothing to do with tags
+    text = path.read_text()
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(text) or {}
     except yaml.YAMLError as e:
-        raise ConfigError(f"{path}: not valid YAML: {e}") from e
+        raise ConfigError(f"{path}: {_yaml_problem(e)}") from None
+    except (ValueError, KeyError, IndexError, AttributeError, TypeError) as e:
+        # an explicit tag (!!int, !!float, !!bool ...) on a value it does not fit raises from its constructor,
+        # outside YAMLError, and that message quotes the value (lower-cased for float and bool): name only the
+        # type of the error
+        raise ConfigError(
+            f"{path}: not valid YAML: a value's explicit tag (!!int, !!float, !!bool …) does not fit it "
+            f"({type(e).__name__})"
+        ) from None
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: top level must be a mapping")
     return data
@@ -138,7 +185,8 @@ def load_config(
     try:
         cfg = AirlieConfig.model_validate(data)
     except ValidationError as e:
-        raise ConfigError(_format_validation_error(e)) from e
+        # from None: the chained error carries input_value, which can be a token under a mistyped key
+        raise ConfigError(_format_validation_error(e)) from None
     cfg.source_path = path
     base = path.parent
     for role in cfg.roles.values():
@@ -151,6 +199,9 @@ def load_config(
         if m.path is not None:
             m.path = (base / m.path.expanduser()).resolve()
     cfg.observability.state_dir = cfg.observability.state_dir.expanduser()
+    if cfg.story.repo is not None:
+        cfg.story.repo = (base / cfg.story.repo.expanduser()).resolve()
+    cfg.story.repos_root = (base / cfg.story.repos_root.expanduser()).resolve()
     if cfg.lts.controller.adapter_path is not None:
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
     problems = cfg.validate_references()

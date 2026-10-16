@@ -19,6 +19,7 @@ from autogen_agentchat.messages import (
     BaseAgentEvent,
     BaseChatMessage,
     TextMessage,
+    ThoughtEvent,
     ToolCallExecutionEvent,
     ToolCallRequestEvent,
     ToolCallSummaryMessage,
@@ -34,7 +35,7 @@ from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
 from airlie.teams.autogen_client import RepairingOpenAIClient
 from airlie.teams.native_team import _goal_message
-from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult
+from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
 from airlie.tools import ToolRegistry
 from airlie.tools.protocol import Tool
 
@@ -262,6 +263,12 @@ class AutoGenTeam:
                         if isinstance(last, TextMessage)
                         else (str(getattr(last, "content", "")) if last else "")
                     )
+                    if client.last_finish_reason == "length":  # as NativeTeam: not a finished answer
+                        if not final_text.strip():
+                            thinking = any(isinstance(e, ThoughtEvent) and e.content.strip() for e in events)
+                            final_text = cut_off_text(ctx.role_name, ctx.role, thinking=thinking)
+                        stop = "cut_off"
+                        break
                     ok = True
                     stop = "done"
                     break

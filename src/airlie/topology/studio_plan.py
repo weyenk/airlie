@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Any
 
 from airlie.tools.jsonargs import repair_json_args
@@ -20,6 +21,8 @@ class Subtask:
     role_hint: str | None = None
     depends_on: tuple[str, ...] = ()
     inputs: tuple[str, ...] = ()
+    pinned: bool = False
+    """The role was chosen by a person or a pipeline: the router does not override it."""
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,75 @@ def parse_chief(text: str) -> Plan | Synthesis | Delegate | Answer | None:
     if kind == "answer":
         return Answer(str(obj.get("answer", "")))
     return None
+
+
+_OPENER = re.compile(r"```json[ \t]*\r?\n", re.I)
+
+
+def extract_json_block(text: str) -> dict[str, Any] | None:
+    """The object under the last ```json fence in `text`, else the first bare object (`extract_json`). Roles
+    that think aloud put braces in their prose, so the last fence marks the answer, and the object's own end,
+    not a closing fence, ends it: a fence quoted in a JSON string follows backslash-n, so it never opens."""
+    openers = list(_OPENER.finditer(text))
+    if not openers:
+        return extract_json(text)
+    start = openers[-1].end()
+    body = text[start:].lstrip()
+    return extract_json(body) if body.startswith("{") else None
+
+
+def plan_to_dict(plan: Plan) -> dict[str, Any]:
+    """The chief's own plan shape, so a person reads and edits what the chief writes."""
+    return {
+        "type": "plan",
+        "assumptions": list(plan.assumptions),
+        "subtasks": [
+            {
+                "id": s.id,
+                "role": s.role_hint,
+                "brief": s.brief,
+                "depends_on": list(s.depends_on),
+                "inputs": list(s.inputs),
+            }
+            for s in plan.subtasks
+        ],
+    }
+
+
+def _str_list(value: Any, what: str, of: str = "strings") -> tuple[str, ...]:
+    """A list field of a plan someone edited by hand. Missing or null is empty, a lone string is a list of one
+    (models drop the brackets), a list is the str of each item; anything else is a PlanError naming `what`."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list):
+        return tuple(str(x) for x in value)
+    raise PlanError(f"{what} must be a list of {of}")
+
+
+def plan_from_dict(obj: dict[str, Any]) -> Plan:
+    """A plan a person or a pipeline wrote (the chief's shape); PlanError says what to fix."""
+    raw = obj.get("subtasks")
+    if not isinstance(raw, list) or not raw:
+        raise PlanError("a plan needs a non-empty 'subtasks' list")
+    subs: list[Subtask] = []
+    for n, d in enumerate(raw, 1):
+        if isinstance(d, dict):  # check the list fields first: `_subtask` reads the chief's replies loosely
+            d = {
+                **d,
+                "depends_on": _str_list(d.get("depends_on"), f"subtask {n} 'depends_on'", "ids"),
+                "inputs": _str_list(d.get("inputs"), f"subtask {n} 'inputs'"),
+            }
+        s = _subtask(d)
+        if s is None:
+            raise PlanError(f"subtask {n} needs an 'id' and a 'brief'")
+        subs.append(s)
+    return Plan(_str_list(obj.get("assumptions"), "'assumptions'"), tuple(subs))
+
+
+def pin(plan: Plan) -> Plan:
+    return Plan(plan.assumptions, tuple(replace(s, pinned=True) for s in plan.subtasks))
 
 
 def schedule(plan: Plan, *, satisfied: frozenset[str] = frozenset()) -> list[list[Subtask]]:

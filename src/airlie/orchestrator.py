@@ -24,6 +24,7 @@ from airlie.obs import EventSink, RunDir
 from airlie.repo_map import build_repo_map
 from airlie.report import RunReport, write_report
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
+from airlie.subproc import agent_env, kill_group
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.aggregate import Aggregator, LLMAggregator, TeamOutcome, TestScoreAggregator
 from airlie.teams.worktree import add_worktree
@@ -337,14 +338,24 @@ class ParallelAgentTeamOrchestrator:
         wt = self.run_dir.path / r.team_id
         if not test_cmd:
             return TeamOutcome(r, wt, None, "")
+        # the test command loads the code the team wrote: it runs as the run_tests tool runs it
         proc = await asyncio.create_subprocess_shell(
-            test_cmd, cwd=wt, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            test_cmd,
+            cwd=wt,
+            env=agent_env(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,  # its own process group: kill_group reaches what it starts
         )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=self.cfg.tools.shell_timeout_s)
         except TimeoutError:
-            proc.kill()
+            await kill_group(proc)
             return TeamOutcome(r, wt, False, "test command timed out")
+        except BaseException:  # cancelled: nothing the command started may outlive its caller
+            await kill_group(proc)
+            raise
         return TeamOutcome(r, wt, proc.returncode == 0, out.decode("utf-8", "replace")[-4000:])
 
     def _write_report(self, report: RunReport, reason: str) -> None:

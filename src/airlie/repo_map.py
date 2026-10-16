@@ -7,24 +7,42 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import subprocess
 from pathlib import Path
+
+from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 HEADER = "[Repository map]"
 TRUNCATED = "\n[map truncated]"
 
 
 def _tracked(repo: Path) -> list[Path]:
+    # airlie's own git in a checkout a model may have worked in: reading the index can run an fsmonitor
     out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", *NO_HOOKS_ARGS, "ls-files", "-z"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=agent_env(),
     ).stdout
     return sorted(Path(p) for p in out.split("\0") if p)
+
+
+def _stat(path: Path) -> os.stat_result | None:
+    """`path`'s stat, or None when there is none to give: a tracked symlink whose target is not in this
+    checkout (an ignored file it points at is not in a fresh worktree), a file that went away."""
+    try:
+        return path.stat()
+    except OSError:
+        return None
 
 
 def _signatures(path: Path) -> list[str]:
     try:
         tree = ast.parse(path.read_text(errors="replace"))
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, OSError):  # OSError: a file this user cannot read
         return []
     sigs: list[str] = []
     for node in tree.body:
@@ -54,7 +72,10 @@ def _render(repo: Path, files: list[Path], *, test_cmd: str | None, depth: int) 
                 lines.append(f"{d}/ …")
             continue
         full = repo / rel
-        entry = f"{rel} ({_size(full.stat().st_size)})"
+        st = _stat(full)
+        if st is None:  # left out, as in the fingerprint
+            continue
+        entry = f"{rel} ({_size(st.st_size)})"
         if rel.suffix == ".py":
             sigs = _signatures(full)
             if sigs:
@@ -70,7 +91,9 @@ def build_repo_map(
     files = _tracked(repo)
     fingerprint = hashlib.sha256()
     for rel in files:
-        st = (repo / rel).stat()
+        st = _stat(repo / rel)
+        if st is None:  # a path that cannot be stat'ed is left out of the map
+            continue
         fingerprint.update(f"{rel}\0{st.st_mtime_ns}\0{st.st_size}\n".encode())
     fingerprint.update(f"{test_cmd}\0{max_chars}\0{depth}".encode())
     cache_file = cache_dir / f"{fingerprint.hexdigest()}.md" if cache_dir else None

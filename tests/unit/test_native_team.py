@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
@@ -30,11 +33,20 @@ class Recorder(StepObserver):
         self.steps.append(step)
 
 
-def make_team(tmp_path: Path, engine: FakeEngine, *, max_steps: int = 10, token_budget: int = 10**6):
+def make_team(
+    tmp_path: Path,
+    engine: FakeEngine,
+    *,
+    max_steps: int = 10,
+    token_budget: int = 10**6,
+    role_name: str = "coder",
+    **role_fields: Any,
+):
     wt = tmp_path / "wt"
     wt.mkdir(exist_ok=True)
     (tmp_path / "coder.md").write_text("You are the coder.")
-    role = RoleSpec(prompt=tmp_path / "coder.md", model="base", thinking=False, max_tokens=64)
+    fields = {"thinking": False, "max_tokens": 64, **role_fields}
+    role = RoleSpec(prompt=tmp_path / "coder.md", model="base", **fields)
     tools = ToolRegistry.builtin(
         ["write_file", "read_file", "run_tests"], ToolContext(worktree=wt, test_cmd="echo ok")
     )
@@ -44,6 +56,7 @@ def make_team(tmp_path: Path, engine: FakeEngine, *, max_steps: int = 10, token_
         role=role,
         tools=tools,
         worktree=wt,
+        role_name=role_name,
         max_steps=max_steps,
         token_budget=token_budget,
         scheduler=SlotScheduler(2),
@@ -179,6 +192,131 @@ async def test_repeated_action_requires_identical_outputs(tmp_path: Path) -> Non
     ctx.tools.add(VaryingShell())
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 3
+
+
+# ---- a reply cut off at max_tokens is not a finished answer (HDS-3, 2026-10-15) ----
+
+HDS_3 = {"thinking": True, "thinking_budget": 8192, "max_tokens": 4096}
+"""The architect of the first live story: its thinking could use the whole of max_tokens."""
+
+
+async def test_a_reply_cut_off_with_no_visible_text_ends_the_turn_unsuccessfully_and_says_why(
+    tmp_path: Path,
+) -> None:
+    """The architect read six files and then thought until max_tokens. The server split the thinking off, so
+    the text was empty; the loop took that for its final answer and the story failed with "no JSON object"."""
+    cut = FakeReply(reasoning="Let me look at the layers again. ", finish_reason="length")
+    engine = FakeEngine({"architect": [cut]})
+    team, ctx = make_team(tmp_path, engine, role_name="architect", **HDS_3)
+    result = await team.run(ctx, Recorder())
+    assert result.ok is False and result.stop_reason == "cut_off"
+    assert result.final_text == (
+        "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
+        "raise roles.architect.max_tokens above its thinking_budget (8192)"
+    )
+    assert result.steps == 0 and len(engine.requests) == 1  # it is not asked again
+    assert result.completion_tokens == 7  # the tokens it spent are counted
+
+
+async def test_a_reply_cut_off_after_tool_steps_keeps_the_steps_it_took(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a.py"}))]),
+                FakeReply(reasoning="Now the second file. ", finish_reason="length"),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.stop_reason == "cut_off" and not result.ok and result.steps == 1
+    assert [s.u_t.name for s in rec.steps] == ["read_file"]
+
+
+async def test_a_cut_off_reply_that_has_text_keeps_it_and_is_marked_cut_off(tmp_path: Path) -> None:
+    cut = FakeReply(text="The plan has three lay", reasoning="Two layers? Three. ", finish_reason="length")
+    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}))
+    result = await team.run(ctx, Recorder())
+    assert result.final_text == "The plan has three lay"  # its text, not a message about the cut-off
+    assert result.stop_reason == "cut_off" and result.ok is False
+
+
+async def test_a_cut_off_reply_whose_text_is_only_whitespace_has_no_visible_text(tmp_path: Path) -> None:
+    cut = FakeReply(text=" \n\t ", reasoning="hmm ", finish_reason="length")
+    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "cut_off"
+    assert result.final_text == (
+        "the reply was cut off at max_tokens (64) before it ended, still thinking; "
+        "raise roles.coder.max_tokens"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "reasoning", "expected"),
+    [
+        pytest.param(
+            {"thinking": True, "thinking_budget": 4096, "max_tokens": 4096},
+            "hmm",
+            "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
+            "raise roles.coder.max_tokens above its thinking_budget (4096)",
+            id="the budget is as big as max_tokens: it leaves no room",
+        ),
+        pytest.param(
+            {"thinking": True, "thinking_budget": 4095, "max_tokens": 4096},
+            "hmm",
+            "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
+            "raise roles.coder.max_tokens",
+            id="a budget below max_tokens is not what to raise it above",
+        ),
+        pytest.param(
+            {"thinking": True, "thinking_budget": None, "max_tokens": 4096},
+            "hmm",
+            "the reply was cut off at max_tokens (4096) before it ended, still thinking; "
+            "raise roles.coder.max_tokens",
+            id="uncapped thinking has no budget to name",
+        ),
+        pytest.param(
+            {"thinking": False, "thinking_budget": 8192, "max_tokens": 4096},
+            "",
+            "the reply was cut off at max_tokens (4096) before it ended; raise roles.coder.max_tokens",
+            id="a role that does not think: no thinking, no budget",
+        ),
+    ],
+)
+async def test_the_cut_off_message_names_what_to_raise(
+    tmp_path: Path, fields: dict[str, Any], reasoning: str, expected: str
+) -> None:
+    cut = FakeReply(reasoning=reasoning, finish_reason="length")
+    team, ctx = make_team(tmp_path, FakeEngine({"coder": [cut]}), **fields)
+    assert (await team.run(ctx, Recorder())).final_text == expected
+
+
+async def test_a_tool_call_is_unaffected_by_a_length_finish(tmp_path: Path) -> None:
+    """Only a reply with no tool call is judged by how it ended; a call is run as ever."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a.py"}))],
+                    finish_reason="length",
+                ),
+                FakeReply(text="Read it."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.stop_reason == "done" and result.steps == 1
+    assert result.final_text == "Read it."
+
+
+async def test_a_reply_that_stopped_by_itself_is_done_whatever_it_holds(tmp_path: Path) -> None:
+    only_thinking = FakeReply(reasoning="All of it was thinking. ", finish_reason="stop")
+    team, ctx = make_team(tmp_path, FakeEngine({"coder": [only_thinking]}))
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.stop_reason == "done" and result.final_text == ""
 
 
 # ---- fork-when-stuck seam: stop predicate, state snapshot, resume with nudge, preamble ----

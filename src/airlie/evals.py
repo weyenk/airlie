@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from airlie.subproc import agent_env
+
 
 @dataclass(frozen=True)
 class Graded:
@@ -34,8 +36,14 @@ class EvalTask:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content)
                 written.append(p)
-            proc = subprocess.run(
-                self.run_cmd, cwd=repo, shell=True, capture_output=True, text=True, timeout=timeout_s
+            proc = subprocess.run(  # it runs the code a model wrote: the agent environment, no credentials
+                self.run_cmd,
+                cwd=repo,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                env=agent_env(),
             )
             return Graded(proc.returncode == 0, (proc.stdout + proc.stderr)[-20000:], proc.returncode)
         except subprocess.TimeoutExpired:

@@ -3,17 +3,23 @@ wins."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
+import pytest
 import yaml
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.orchestrator import ParallelAgentTeamOrchestrator
+from airlie.teams.protocol import TeamResult
 from airlie.topology.fork import ForkOrchestrator
 from airlie.topology.protocol import build_topology
+from tests.unit.proc_helpers import eventually, running, unique_sleep
 
 
 def repo_with_marker_tests(tmp_path: Path) -> Path:
@@ -74,6 +80,25 @@ WRITE_NOTE = FakeReply(
 
 def events(report):  # type: ignore[no-untyped-def]
     return [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+
+
+async def test_a_trunk_whose_reply_is_cut_off_ends_the_run_with_why_instead_of_forking(
+    tmp_path: Path,
+) -> None:
+    """HDS-3 (2026-10-15): a reply cut off at max_tokens is not "done", and it is not stuck: more branches
+    would run into the same cap. The run ends, unsuccessfully, saying what to raise."""
+    engine = FakeEngine(
+        {"coder": [WRITE_NOTE, FakeReply(reasoning="Thinking, still. ", finish_reason="length")] + [RUN] * 6}
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f9")
+    report = await orch.execute_task(
+        "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    [trunk] = report.teams
+    assert (trunk.team_id, trunk.ok, trunk.stop_reason, trunk.steps) == ("trunk", False, "cut_off", 1)
+    assert not report.any_ok and "the reply was cut off at max_tokens" in report.final_answer
+    assert not [e for e in events(report) if e["kind"] == "fork_point"] and len(engine.requests) == 2
+    assert [e["stop_reason"] for e in events(report) if e["kind"] == "branch_done"] == ["cut_off"]
 
 
 async def test_trunk_forks_after_two_failures_and_passing_child_wins(tmp_path: Path) -> None:
@@ -255,3 +280,34 @@ async def test_best_effort_prefers_branches_that_ran_tests_and_worked(tmp_path: 
     assert orch._resolve([quitter, worker])[0].id == "r1-2"  # noqa: SLF001
     orch.observer.last_test["r1-1"] = "1 failed, 2 passed"  # fewer failures beats more steps
     assert orch._resolve([quitter, worker])[0].id == "r1-1"  # noqa: SLF001
+
+
+# ---- the test gate of a team ----
+
+
+async def team_tests(tmp_path: Path, timeout_s: float, test_cmd: str) -> object:
+    """The test gate of one finished team, whose test command gets `timeout_s`."""
+    cfg = cfg_for(tmp_path)
+    cfg.tools.shell_timeout_s = timeout_s
+    orch = ParallelAgentTeamOrchestrator(cfg, FakeEngine({}))
+    (orch.run_dir.path / "t").mkdir()
+    return await orch._outcome(TeamResult("t", True, "done", "", 0, 0, 0, 0.0), test_cmd)  # noqa: SLF001
+
+
+async def test_a_team_test_gate_kills_what_the_test_command_started_when_it_times_out(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    started = time.monotonic()
+    out = await asyncio.wait_for(team_tests(tmp_path, 1, f"{sleeper} & wait"), 20)
+    assert (out.tests_passed, out.test_output) == (False, "test command timed out")  # type: ignore[attr-defined]
+    assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
+    assert await eventually(lambda: not running(sleeper))
+
+
+async def test_cancelling_a_team_test_gate_kills_what_the_test_command_started(tmp_path: Path) -> None:
+    sleeper = unique_sleep()
+    task = asyncio.create_task(team_tests(tmp_path, 60, f"{sleeper} & wait"))
+    assert await eventually(lambda: running(f"^{sleeper}"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)
+    assert await eventually(lambda: not running(sleeper))

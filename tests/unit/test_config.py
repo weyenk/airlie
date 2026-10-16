@@ -1,11 +1,14 @@
 """Config schema: airlie.yaml is validated with path-qualified errors and deep-merged with local overrides."""
 
+import os
+import traceback
 from pathlib import Path
 
 import pytest
 import yaml
 
-from airlie.config import AirlieConfig, ConfigError, load_config, profile_configs
+from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config, profile_configs
+from airlie.config.load import _yaml_problem
 
 MINIMAL: dict = {
     "version": 1,
@@ -161,7 +164,7 @@ def test_local_override_is_optional(tmp_path: Path) -> None:
 
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
-    cfg = load_config(root / "airlie.yaml")
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
     assert {"base", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "vllm_mlx"
@@ -169,6 +172,153 @@ def test_committed_default_config_is_valid() -> None:
         assert m.revision, f"models.{name} must pin a revision"
     for role in cfg.roles:
         assert cfg.engine_for_role(role) == "main"
+
+
+# ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
+
+ROOT = Path(__file__).resolve().parents[2]
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
+
+
+def with_coder(**coder: object) -> dict:
+    """MINIMAL with `coder` set over the schema defaults."""
+    return {**MINIMAL, "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], **coder}}}
+
+
+def no_room(role: str, max_tokens: int, budget: int) -> str:
+    return (
+        rf"roles\.{role}\.max_tokens \({max_tokens}\) must be larger than "
+        rf"roles\.{role}\.thinking_budget \({budget}\)"
+    )
+
+
+def test_a_role_given_only_a_prompt_and_a_model_has_room_to_answer(tmp_path: Path) -> None:
+    role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
+    assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384)
+
+
+def test_the_room_is_checked_after_a_profile_is_merged(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=False, max_tokens=4096),
+        "topology": {
+            "kind": "single",
+            "profiles": {
+                "think": {"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}},
+                "roomy": {
+                    "roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 16384}}
+                },
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p).roles["coder"].thinking is False  # the file on its own is fine
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)) as e:
+        load_config(p, topology="think")
+    assert str(e.value).startswith("config invalid:\n  roles.coder.max_tokens (4096)")
+    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+
+
+def test_a_profile_that_lowers_max_tokens_below_a_thinking_budget_is_checked_too(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=True, thinking_budget=8192, max_tokens=16384),
+        "topology": {
+            "kind": "single",
+            "profiles": {
+                "short": {"roles": {"coder": {"max_tokens": 2048}}},
+                "unthinking": {"roles": {"coder": {"thinking": False, "max_tokens": 2048}}},
+            },
+        },
+    }
+    p = write(tmp_path, data)
+    assert load_config(p).roles["coder"].max_tokens == 16384
+    with pytest.raises(ConfigError, match=no_room("coder", 2048, 8192)):
+        load_config(p, topology="short")
+    assert load_config(p, topology="unthinking").roles["coder"].max_tokens == 2048
+
+
+def test_a_profile_can_give_a_role_the_room_the_file_leaves_it(tmp_path: Path) -> None:
+    data = {
+        **with_coder(thinking=True, thinking_budget=8192, max_tokens=4096),
+        "topology": {"kind": "single", "profiles": {"roomy": {"roles": {"coder": {"max_tokens": 16384}}}}},
+    }
+    p = write(tmp_path, data)
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+        load_config(p)
+    assert load_config(p, topology="roomy").roles["coder"].max_tokens == 16384
+
+
+def test_the_room_is_checked_after_the_local_overrides_are_merged(tmp_path: Path) -> None:
+    base = write(tmp_path, with_coder(thinking=False, max_tokens=4096))
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192}}}))
+    with pytest.raises(ConfigError, match=no_room("coder", 4096, 8192)):
+        load_config(base, local)
+    local.write_text(
+        yaml.safe_dump({"roles": {"coder": {"thinking": True, "thinking_budget": 8192, "max_tokens": 9000}}})
+    )
+    assert load_config(base, local).roles["coder"].max_tokens == 9000
+
+
+BELOW_ONE = "config invalid:\n  roles.coder.thinking_budget: Input should be greater than or equal to 1"
+
+
+@pytest.mark.parametrize("thinking", [True, False])
+@pytest.mark.parametrize("budget", [0, -1], ids=["zero", "negative"])
+def test_a_thinking_budget_below_one_is_a_config_error_at_load(
+    tmp_path: Path, budget: int, thinking: bool
+) -> None:
+    """vllm-mlx refuses a thinking_token_budget below 1 (a 422 on every request): airlie refuses it first, on
+    any role, whether or not it thinks."""
+    with pytest.raises(ConfigError) as e:
+        load_config(write(tmp_path, with_coder(thinking=thinking, thinking_budget=budget)))
+    assert str(e.value) == BELOW_ONE
+
+
+@pytest.mark.parametrize("budget", [1, None], ids=["one", "uncapped"])
+def test_a_thinking_budget_of_one_or_null_loads(tmp_path: Path, budget: int | None) -> None:
+    cfg = load_config(write(tmp_path, with_coder(thinking=True, thinking_budget=budget)))
+    assert cfg.roles["coder"].thinking_budget == budget
+
+
+def test_a_thinking_budget_below_one_from_a_profile_or_the_local_file_is_refused_too(tmp_path: Path) -> None:
+    profiles = {"zero": {"roles": {"coder": {"thinking_budget": 0}}}}
+    base = write(tmp_path, {**with_coder(), "topology": {"kind": "single", "profiles": profiles}})
+    with pytest.raises(ConfigError) as e:
+        load_config(base, topology="zero")
+    assert str(e.value) == BELOW_ONE
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking_budget": -5}}}))
+    with pytest.raises(ConfigError) as e:
+        load_config(base, local)
+    assert str(e.value) == BELOW_ONE
+
+
+def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    variants = [*TOPOLOGY_KINDS, *(n for n in base.topology.profiles if n not in TOPOLOGY_KINDS)]
+    assert "studio-qwen38" in variants  # the profile whose coder thinks
+    for name in variants:
+        try:
+            cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=name)
+        except ConfigError as e:
+            pytest.fail(f"airlie.yaml does not load under '{name}': {e}")
+        for rname, role in cfg.roles.items():
+            if role.thinking and role.thinking_budget is not None:
+                assert role.max_tokens >= role.thinking_budget + 8192, f"{name}: roles.{rname}"
+
+
+def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_with() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
+    for name in ("chief", "architect", "research"):
+        role = cfg.roles[name]
+        assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
+    coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen38").roles["coder"]
+    assert (coder.model, coder.thinking, coder.thinking_budget, coder.max_tokens) == (
+        "generalist",
+        True,
+        8192,
+        16384,
+    )
 
 
 # ---- M0 Task 2: catalog fields ----
@@ -433,3 +583,260 @@ def test_named_variant_inherits_the_kind_of_the_profile_it_extends(tmp_path: Pat
     }
     cfg = load_config(write(tmp_path, data), topology="fork-hot")
     assert cfg.topology.kind == "fork" and cfg.teams.max_steps == 3
+
+
+# ---- stories (2026-10-14) ----
+
+
+def test_story_defaults(tmp_path: Path) -> None:
+    s = load_config(write(tmp_path, MINIMAL)).story
+    assert (s.topology, s.trunk, s.remote) == ("studio", "main", "origin")
+    assert (s.max_layers, s.stage_attempts) == (5, 2)
+    roles = (s.product_role, s.architect_role, s.tests_role, s.build_role)
+    assert roles == ("product", "architect", "qa", "coder")
+    assert s.repo is None and s.test_cmd is None
+    j = s.jira
+    assert (j.site, j.project, j.email, j.token, j.jql, j.api_url) == (None,) * 6
+    statuses = (j.statuses.intake, j.statuses.building, j.statuses.review, j.statuses.blocked)
+    assert statuses == ("To Do", "In Progress", "In Review", "Blocked")
+
+
+def test_github_app_defaults_to_your_own_login_and_takes_an_app_id(tmp_path: Path) -> None:
+    app = load_config(write(tmp_path, MINIMAL)).story.github_app
+    assert (app.app_id, app.key_file, app.api_url) == (
+        None,
+        Path("~/.config/airlie/github-app.pem"),  # expanded at use, not here
+        "https://api.github.com",
+    )
+    spec = {"app_id": 5332832, "key_file": "~/keys/bot.pem", "api_url": "http://127.0.0.1:8080"}
+    app = load_config(write(tmp_path, {**MINIMAL, "story": {"github_app": spec}})).story.github_app
+    assert (app.app_id, app.key_file, app.api_url) == (
+        5332832,
+        Path("~/keys/bot.pem"),
+        "http://127.0.0.1:8080",
+    )
+
+
+@pytest.mark.parametrize(
+    ("spec", "says"),
+    [
+        ({"app_id": 0}, "story.github_app.app_id: Input should be greater than or equal to 1"),
+        ({"app_id": "five"}, "story.github_app.app_id: Input should be a valid integer"),
+        ({"private_key": "x"}, "story.github_app.private_key: Extra inputs are not permitted"),
+    ],
+)
+def test_a_github_app_setting_that_cannot_be_used_is_named(
+    tmp_path: Path, spec: dict[str, object], says: str
+) -> None:
+    with pytest.raises(ConfigError) as e:
+        load_config(write(tmp_path, {**MINIMAL, "story": {"github_app": spec}}))
+    assert says in str(e.value)
+
+
+def test_the_committed_config_publishes_as_airlies_bot() -> None:
+    root = Path(__file__).resolve().parents[2]
+    app = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml").story.github_app
+    assert app.app_id == 5332832 and app.key_file == Path("~/.config/airlie/github-app.pem")
+
+
+def test_story_repos_root_is_your_git_directory_unless_set_and_resolves_like_a_path_of_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # ~ is this test's own, never the person's
+    assert load_config(write(tmp_path, MINIMAL)).story.repos_root == (tmp_path / "home" / "git").resolve()
+    for given, expected in (
+        ("~/src", tmp_path / "home" / "src"),
+        ("../repos", tmp_path / ".." / "repos"),  # from the config's directory, as story.repo is
+        (str(tmp_path / "abs" / ".." / "elsewhere"), tmp_path / "elsewhere"),
+    ):
+        cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repos_root": given}}))
+        assert cfg.story.repos_root == expected.resolve(), given
+
+
+def test_story_repo_resolves_beside_the_config_and_typos_fail(tmp_path: Path) -> None:
+    jira = {"site": "https://acme.atlassian.net", "project": "AIR", "statuses": {"blocked": None}}
+    cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"repo": "../proj", "jira": jira}}))
+    assert cfg.story.repo == (tmp_path / "../proj").resolve()
+    assert (cfg.story.jira.project, cfg.story.jira.statuses.blocked) == ("AIR", None)
+    with pytest.raises(ConfigError, match="story"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"tickets": "x"}}))
+    with pytest.raises(ConfigError, match="story.jira.board"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"jira": {"board": "B1"}}}))
+
+
+def test_jira_secrets_never_print(tmp_path: Path) -> None:
+    jira = {
+        "site": "https://acme.atlassian.net",
+        "project": "AIR",
+        "email": "me@example.org",
+        "token": "t0ken",
+    }
+    cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"jira": jira}}))
+    token, email = cfg.story.jira.token, cfg.story.jira.email
+    assert token is not None and token.get_secret_value() == "t0ken"
+    assert email is not None and email.get_secret_value() == "me@example.org"  # the email is a credential too
+    shown = yaml.safe_dump(cfg.model_dump(mode="json"))  # what `task config` prints
+    assert "t0ken" not in shown and "me@example.org" not in shown
+    assert "t0ken" not in repr(cfg.story.jira) and "me@example.org" not in repr(cfg.story.jira)
+
+
+def test_unit_tests_never_see_the_atlassian_variables() -> None:
+    names = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
+    # tests/unit/conftest.py removes any the person exported in their shell
+    assert [n for n in names if n in os.environ] == []
+
+
+def test_the_taskfile_does_not_export_dotenv() -> None:
+    # Task would put .env (the Jira token) in the environment of every task's process, and so of the coder's
+    # shell tool, the test gate, gh, git and the engines; airlie reads .env itself, only where it needs it.
+    root = Path(__file__).resolve().parents[2]
+    taskfile = yaml.safe_load((root / "Taskfile.yml").read_text())
+    assert taskfile.get("dotenv") is None
+    assert [name for name, task in taskfile["tasks"].items() if "dotenv" in task] == []
+
+
+# ---- no secret in a config error (review, 2026-10-14) ----
+# "t0ken-SYNTHETIC" stands in for a Jira token written into airlie.local.yaml. An error, and the traceback of
+# everything it chains, must say where the file is wrong and never repeat what it holds. A constructor may
+# show a value lower-cased, and a tag can hold a secret of lower-case letters and spaces, so the check is on
+# the lower-cased traceback.
+SECRETS = ("t0ken-synthetic", "synthetic token")
+
+
+def leaks(err: pytest.ExceptionInfo[ConfigError]) -> list[str]:
+    shown = "".join(traceback.format_exception(err.value)).lower()
+    return [s for s in SECRETS if s in shown]
+
+
+@pytest.mark.parametrize(
+    ("source", "reported"),
+    [
+        pytest.param(
+            'story: {jira: {token: "t0ken-SYNTHETIC',
+            "not valid YAML at line 1, column 39: while scanning a quoted scalar, "
+            "found unexpected end of stream (opened at line 1, column 23)",
+            id="unclosed quote",
+        ),
+        pytest.param(
+            'story:\n  jira:\n    site: "t0ken-SYNTHETIC\n    project: AIR\n',
+            "not valid YAML at line 5, column 1: while scanning a quoted scalar, "
+            "found unexpected end of stream (opened at line 3, column 11)",
+            id="quote opened on line 3",
+        ),
+        pytest.param(
+            "story:\n  jira:\n    site: x\n    t0ken-SYNTHETIC\n    project: AIR\n",
+            "not valid YAML at line 5, column 5: while scanning a simple key, "
+            "could not find expected ':' (opened at line 4, column 5)",
+            id="missing colon",
+        ),
+        pytest.param(
+            "story:\n  jira:\n    token: ab: t0ken-SYNTHETIC\n",
+            "not valid YAML at line 3, column 14: mapping values are not allowed here",
+            id="stray colon",
+        ),
+        pytest.param(
+            "story: {jira: {token: @t0ken-SYNTHETIC}}\n",
+            "not valid YAML at line 1, column 23: while scanning for the next token, "
+            "found character '@' that cannot start any token",
+            id="leading @",
+        ),
+        pytest.param(
+            "story:\n\tjira: {token: t0ken-SYNTHETIC}\n",
+            "not valid YAML at line 2, column 1: while scanning for the next token, "
+            "found character '\\t' that cannot start any token",
+            id="tab",
+        ),
+        pytest.param(
+            "story: {jira: {token: *t0ken-SYNTHETIC}}\n",
+            "not valid YAML at line 1, column 23: found undefined alias '…'",
+            id="alias",
+        ),
+        pytest.param(  # two characters are already too many to keep
+            "story: {jira: {token: *ab}}\n",
+            "not valid YAML at line 1, column 23: found undefined alias '…'",
+            id="two-character alias",
+        ),
+        pytest.param(  # one of PyYAML's own token ids, which is kept
+            "story: {jira: {token: t0ken-SYNTHETIC}\n",
+            "not valid YAML at line 2, column 1: while parsing a flow mapping, expected ',' or '}', but got "
+            "'<stream end>' (opened at line 1, column 8)",
+            id="unclosed flow mapping",
+        ),
+        pytest.param(
+            "story: {jira: {token: !t0ken-SYNTHETIC x}}\n",
+            "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
+            id="tag",
+        ),
+        # a tag may hold a raw ' and a %-escaped ": repr() then quotes it with ' and escapes the inner one
+        pytest.param(
+            "story: {jira: {token: !<%22't0ken-SYNTHETIC> y}}\n",
+            "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
+            id="tag with both quote kinds",
+        ),
+        # a tag may decode to any text in angle brackets: only PyYAML's own token ids are kept
+        pytest.param(
+            "story: {jira: {token: !<%3Csynthetic%20token%3E> y}}\n",
+            "not valid YAML at line 1, column 23: could not determine a constructor for the tag '…'",
+            id="tag in angle brackets",
+        ),
+        pytest.param(
+            "story: {jira: {token: t0ken-SYNTHETIC\x00}}\n",
+            "not valid YAML at character 38: special characters are not allowed",
+            id="control character",
+        ),
+    ],
+)
+def test_a_yaml_error_names_the_place_and_never_quotes_the_source(
+    tmp_path: Path, source: str, reported: str
+) -> None:
+    base = write(tmp_path, MINIMAL)
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(source)
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert leaks(err) == []
+    assert str(err.value) == f"{local.resolve()}: {reported}"
+
+
+def test_a_yaml_error_without_text_or_with_one_mark_is_reported_without_inventing_either() -> None:
+    m = yaml.Mark("airlie.yaml", 0, 2, 4, None, None)
+    scanning, end = "while scanning a quoted scalar", "found unexpected end of stream"
+    same_place = yaml.MarkedYAMLError(context=scanning, context_mark=m, problem=end, problem_mark=m)
+    assert (
+        _yaml_problem(same_place) == f"not valid YAML at line 3, column 5: {scanning}, {end}"
+    )  # opened there
+    only_opened = yaml.MarkedYAMLError(context=scanning, context_mark=m)
+    assert _yaml_problem(only_opened) == f"not valid YAML: {scanning} (opened at line 3, column 5)"
+    assert _yaml_problem(yaml.YAMLError()) == "not valid YAML"  # nothing to say: nothing after it
+
+
+@pytest.mark.parametrize(
+    ("tagged", "error_type"),
+    [
+        ("!!int t0ken-SYNTHETIC", "ValueError"),
+        ("!!float t0ken-SYNTHETIC", "ValueError"),
+        ("!!bool t0ken-SYNTHETIC", "KeyError"),
+        ("!!timestamp t0ken-SYNTHETIC", "AttributeError"),
+        ('!!int ""', "IndexError"),
+    ],
+)
+def test_an_explicit_tag_that_does_not_fit_its_value_names_only_its_error_type(
+    tmp_path: Path, tagged: str, error_type: str
+) -> None:
+    base = write(tmp_path, MINIMAL)
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text("story: {jira: {token: " + tagged + "}}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert leaks(err) == []
+    hint = "a value's explicit tag (!!int, !!float, !!bool …) does not fit it"
+    assert str(err.value) == f"{local.resolve()}: not valid YAML: {hint} ({error_type})"
+
+
+def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path) -> None:
+    base = write(tmp_path, MINIMAL)
+    (tmp_path / "airlie.local.yaml").write_text("story: {jira: {api_key: t0ken-SYNTHETIC}}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert leaks(err) == []
+    assert str(err.value) == "config invalid:\n  story.jira.api_key: Extra inputs are not permitted"

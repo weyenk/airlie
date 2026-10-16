@@ -21,9 +21,11 @@ from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
+from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
+from airlie.tools.shell import run_cmd
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
     Answer,
@@ -33,6 +35,7 @@ from airlie.topology.studio_plan import (
     Subtask,
     Synthesis,
     parse_chief,
+    pin,
     schedule,
 )
 
@@ -49,6 +52,47 @@ class SubtaskRun:
     result: TeamResult | None = None
     review: Review | None = None
     fix_rounds: int = 0
+
+
+@dataclass(frozen=True)
+class PlanOutcome:
+    """The chief's reply to a planning request: a plan to show a person, or a direct answer."""
+
+    plan: Plan | None
+    answer: str
+    failed: bool
+
+
+def specialists(cfg: AirlieConfig) -> dict[str, str]:
+    """role -> summary for the roles the studio routes to, and a given plan may pin."""
+    s = cfg.studio
+    exclude = {
+        s.chief_role,
+        s.review.role,
+        cfg.lts.summarizer.role,
+        cfg.lts.controller.judge_role,
+        cfg.aggregator.role,
+        cfg.aggregator.judge_role,
+        cfg.fork.hypothesis_role,
+    }
+    return routable_roles(cfg, exclude=exclude)
+
+
+def check_plan(cfg: AirlieConfig, plan: Plan) -> None:
+    """Raise PlanError when a plan from outside the chief (a person's edit, the pipeline) cannot run: no
+    subtasks, more than studio.max_subtasks, a role that is not a specialist, a missing dependency, a
+    duplicate id or a cycle. Every role is checked, pinned or not: a chief-made plan never comes here."""
+    if not plan.subtasks:
+        raise PlanError("the plan has no subtasks")
+    limit = cfg.studio.max_subtasks
+    if len(plan.subtasks) > limit:
+        raise PlanError(f"the plan has {len(plan.subtasks)} subtasks; studio.max_subtasks is {limit}")
+    roles = specialists(cfg)
+    for s in plan.subtasks:
+        if s.role_hint not in roles:
+            use = ", ".join(sorted(roles))
+            raise PlanError(f"subtask '{s.id}' names role {s.role_hint!r}; use one of: {use}")
+    schedule(plan)
 
 
 class StudioOrchestrator:
@@ -78,17 +122,7 @@ class StudioOrchestrator:
         self.base_sha = ""
         self.worktree: Path | None = None
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
-        s = cfg.studio
-        exclude = {
-            s.chief_role,
-            s.review.role,
-            cfg.lts.summarizer.role,
-            cfg.lts.controller.judge_role,
-            cfg.aggregator.role,
-            cfg.aggregator.judge_role,
-            cfg.fork.hypothesis_role,
-        }
-        self.criteria = routable_roles(cfg, exclude=exclude)
+        self.criteria = specialists(cfg)
 
     # ---- chief ----
     async def _chief(self, user: str, *, with_images: bool) -> str:
@@ -107,7 +141,16 @@ class StudioOrchestrator:
             max_tokens=role.max_tokens,
             thinking=role.thinking,
         )
-        return (await self.engine.generate(req)).text
+        res = await self.engine.generate(req)
+        if res.finish_reason == "length":
+            # max_tokens ended it. With nothing to read (all thinking), or a plan, answer or synthesis cut off
+            # inside its json (which parses to nothing, and would be taken for a prose answer), it is no reply
+            empty = not res.text.strip()
+            if empty or parse_chief(res.text) is None:
+                raise EngineError(
+                    cut_off_text(role_name, role, thinking=empty and bool(res.reasoning.strip()))
+                )
+        return res.text
 
     def _roles_table(self) -> str:
         return "\n".join(f"- {name}: {summary}" for name, summary in self.criteria.items())
@@ -184,12 +227,17 @@ class StudioOrchestrator:
         return team if team in self.criteria else next(iter(self.criteria))
 
     async def _route(self, s: Subtask) -> tuple[str, RouteDecision]:
-        hint = s.role_hint if s.role_hint in self.criteria else None
-        try:
-            d = await self.router.route(s.brief, self.criteria, hint)
-        except ValueError as e:  # chief router without a usable hint, or no fallback for an off-set choice
-            role = self._fallback_role()
-            d = RouteDecision("role", None, role, "fallback", {}, 0.0, s.role_hint, detail=str(e))
+        if s.pinned and s.role_hint is not None and s.role_hint in self.criteria:
+            # a person or a pipeline chose this role: the router gets no second opinion
+            role = s.role_hint
+            d = RouteDecision("role", role, role, "pinned", {role: 1.0}, 1.0, role)
+        else:
+            hint = s.role_hint if s.role_hint in self.criteria else None
+            try:
+                d = await self.router.route(s.brief, self.criteria, hint)
+            except ValueError as e:  # chief router without a usable hint, or no fallback off the set
+                role = self._fallback_role()
+                d = RouteDecision("role", None, role, "fallback", {}, 0.0, s.role_hint, detail=str(e))
         self.routing_log.record(s.id, d)
         self.sink.emit(
             "route",
@@ -345,35 +393,38 @@ class StudioOrchestrator:
             await asyncio.gather(*(self._run_subtask(r, test_cmd) for r in runs))
 
     # ---- the run ----
-    async def execute_task(
-        self,
-        query_text: str,
-        *,
-        repo: Path,
-        test_cmd: str | None = None,
-        images: Sequence[Path] = (),
-    ) -> RunReport:
-        t0 = time.monotonic()
-        self.images = list(images)
-        self.sink.emit("run_start", goal=query_text, k=1, repo=str(repo), orchestrator="studio")
-        if self.cfg.repo_map.enabled:
-            text, cached = build_repo_map(
-                repo,
-                test_cmd=test_cmd,
-                max_chars=self.cfg.repo_map.max_chars,
-                depth=self.cfg.repo_map.depth,
-                cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
-            )
-            self.preamble = text
-            self.sink.emit("repo_map", chars=len(text), cached=cached)
-        branch = f"airlie/{self.run_dir.run_id}/studio"
-        self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=branch)
-        self.base_sha = commit_wip(self.worktree, "studio: base")
+    def check_plan(self, plan: Plan) -> None:
+        """Raise PlanError when a plan from outside the chief cannot run (see the module's `check_plan`)."""
+        check_plan(self.cfg, plan)
+
+    def _prepare(self, repo: Path, test_cmd: str | None) -> None:
+        if not self.cfg.repo_map.enabled:
+            return
+        text, cached = build_repo_map(
+            repo,
+            test_cmd=test_cmd,
+            max_chars=self.cfg.repo_map.max_chars,
+            depth=self.cfg.repo_map.depth,
+            cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
+        )
+        self.preamble = text
+        self.sink.emit("repo_map", chars=len(text), cached=cached)
+
+    def _emit_plan(self, plan: Plan) -> None:
+        self.sink.emit(
+            "plan",
+            assumptions=list(plan.assumptions),
+            subtasks=[s.id for s in plan.subtasks],
+            roles=[s.role_hint for s in plan.subtasks],
+            pinned=any(s.pinned for s in plan.subtasks),
+        )
+
+    async def _make_plan(self, goal: str) -> tuple[Plan | None, str]:
+        """The chief's plan, asked twice at most: (plan, "") or (None, the answer or why there is none)."""
         final = ""
-        plan: Plan | None = None
         feedback: str | None = None
         for attempt in range(2):
-            message = self._plan_message(query_text)
+            message = self._plan_message(goal)
             if feedback:
                 message += f"\n\nYour previous plan was rejected: {feedback}"
             try:
@@ -385,9 +436,8 @@ class StudioOrchestrator:
                 continue
             parsed = parse_chief(text)
             if isinstance(parsed, Answer):
-                final = parsed.text
                 self.failed = False
-                break
+                return None, parsed.text
             if isinstance(parsed, Plan):
                 try:
                     schedule(parsed)
@@ -397,24 +447,76 @@ class StudioOrchestrator:
                     final = f"the chief did not produce a runnable plan: {e}"
                     self.failed = True
                     continue
-                plan = parsed
-                final = ""
                 self.failed = False
-                self.sink.emit(
-                    "plan",
-                    assumptions=list(plan.assumptions),
-                    subtasks=[s.id for s in plan.subtasks],
-                    roles=[s.role_hint for s in plan.subtasks],
-                )
-                break
+                self._emit_plan(parsed)
+                return parsed, ""
             self.sink.emit("plan_error", attempt=attempt, error="no plan or answer in the reply")
             final = text  # prose is the answer (design §4); not a failure
             self.failed = False
-        if plan is not None:
-            await self._run_plan(plan, test_cmd)
-            final = await self._synthesise(query_text, test_cmd)
+        return None, final
+
+    async def plan(
+        self, goal: str, *, repo: Path, test_cmd: str | None = None, images: Sequence[Path] = ()
+    ) -> PlanOutcome:
+        """The chief's plan for `goal`, not run. The interactive door shows it, a person edits it, and a later
+        run takes the edited plan (`execute_task(plan=...)`)."""
+        t0 = time.monotonic()
+        self.images = list(images)
+        self.sink.emit("run_start", goal=goal, k=1, repo=str(repo), orchestrator="studio", mode="plan")
+        self._prepare(repo, test_cmd)
+        plan, answer = await self._make_plan(goal)
+        wall = round((time.monotonic() - t0) * 1000.0, 1)
+        self.sink.emit("run_done", ok=not self.failed, wall_ms=wall, subtasks=0, tests=None)
+        return PlanOutcome(plan, answer, self.failed)
+
+    async def execute_task(
+        self,
+        query_text: str,
+        *,
+        repo: Path,
+        test_cmd: str | None = None,
+        images: Sequence[Path] = (),
+        plan: Plan | None = None,
+        base: str | None = None,
+        branch: str | None = None,
+        detach: bool = False,
+        synthesise: bool = True,
+    ) -> RunReport:
+        """Plan, run, review, synthesise.
+
+        `plan` replaces the chief's plan and pins its roles (PlanError before any work when it cannot run).
+        `base` is the worktree's start point (default HEAD), `branch` its new branch (default
+        airlie/<run>/studio), `detach` gives it none (read-only work). The repo map is built from that
+        worktree, so every role sees the code it builds on, not the checkout it was started from.
+        `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result."""
+        given = pin(plan) if plan is not None else None
+        if given is not None:
+            self.check_plan(given)
+        t0 = time.monotonic()
+        self.images = list(images)
+        self.sink.emit(
+            "run_start",
+            goal=query_text,
+            k=1,
+            repo=str(repo),
+            orchestrator="studio",
+            given_plan=given is not None,
+        )
+        name = None if detach else (branch or f"airlie/{self.run_dir.run_id}/studio")
+        self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
+        self.base_sha = commit_wip(self.worktree, "studio: base")
+        self._prepare(self.worktree, test_cmd)
+        chosen: Plan | None = given
+        final = ""
+        if given is not None:
+            self._emit_plan(given)
+        else:
+            chosen, final = await self._make_plan(query_text)
+        if chosen is not None:
+            await self._run_plan(chosen, test_cmd)
+            final = await self._synthesise(query_text, test_cmd) if synthesise else self._results_text()
         passed = await self._tests_pass(test_cmd)
-        report = self._report(query_text, final, t0, branch, passed)
+        report = self._report(query_text, final, t0, name or "(detached)", passed)
         self.sink.emit(
             "run_done",
             ok=report.any_ok,
@@ -423,6 +525,13 @@ class StudioOrchestrator:
             tests=passed,
         )
         return report
+
+    def _results_text(self) -> str:
+        """The answer without a synthesis: every subtask's own closing text, in run order."""
+        return "\n\n".join(
+            f"### {r.subtask.id} ({r.role})\n{r.result.final_text if r.result else '(not run)'}"
+            for r in self.runs.values()
+        )
 
     async def _synthesise(self, goal: str, test_cmd: str | None) -> str:
         """Synthesis rounds: a delegate runs one more subtask (its rejection is fed back); the last round
@@ -456,17 +565,14 @@ class StudioOrchestrator:
         return ""  # unreachable: the last round always returns
 
     async def _tests_pass(self, test_cmd: str | None) -> bool | None:
+        """The test gate. The test command loads the code the roles wrote, so it runs as run_tests runs it
+        (tools.shell.run_cmd): with the agent environment, and killed with all it started on a timeout or a
+        cancel."""
         if not test_cmd or self.worktree is None or not self.runs:
             return None
-        proc = await asyncio.create_subprocess_shell(
-            test_cmd, cwd=self.worktree, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        try:
-            await asyncio.wait_for(proc.communicate(), timeout=self.cfg.tools.shell_timeout_s)
-        except TimeoutError:
-            proc.kill()
-            return False
-        return proc.returncode == 0
+        tools = self.cfg.tools
+        ctx = ToolContext(self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd)
+        return (await run_cmd(test_cmd, ctx, shell=True)).ok
 
     def _report(self, goal: str, final: str, t0: float, branch: str, passed: bool | None) -> RunReport:
         teams = [r.result for r in self.runs.values() if r.result is not None]

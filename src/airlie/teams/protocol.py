@@ -16,8 +16,26 @@ from airlie.scheduler import SlotScheduler
 from airlie.tools import ToolRegistry
 
 StopReason = Literal[
-    "done", "max_steps", "token_budget", "repeated_action", "engine_error", "cancelled", "fork_point"
+    "done",
+    "max_steps",
+    "token_budget",
+    "repeated_action",
+    "engine_error",
+    "cancelled",
+    "fork_point",
+    "cut_off",
 ]
+"""cut_off: a reply with no tool call ended at max_tokens: not a finished answer, whatever text it holds."""
+
+
+def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> str:
+    """What a person reads when a reply of `role_name` ended at max_tokens: what happened, and what to raise.
+    `thinking`: the reply was all thinking (the server split it off, so there is no visible text)."""
+    still = ", still thinking" if thinking else ""
+    fix = f"raise roles.{role_name}.max_tokens"
+    if role.thinking and role.thinking_budget is not None and role.max_tokens <= role.thinking_budget:
+        fix += f" above its thinking_budget ({role.thinking_budget})"
+    return f"the reply was cut off at max_tokens ({role.max_tokens}) before it ended{still}; {fix}"
 
 
 @dataclass

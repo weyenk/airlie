@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class Strict(BaseModel):
@@ -115,10 +115,15 @@ class RoleSpec(Strict):
     prompt: Path
     model: str
     max_context: int = 65536
-    max_tokens: int = 8192
+    max_tokens: int = Field(
+        default=16384,
+        description="cap on the whole reply, thinking included: keep it above thinking_budget when thinking",
+    )
     sampling: Sampling = Field(default_factory=Sampling)
     thinking: bool = True
-    thinking_budget: int | None = Field(default=16384, description="cap on reasoning tokens; None = uncapped")
+    thinking_budget: int | None = Field(
+        default=8192, ge=1, description="cap on reasoning tokens (vllm-mlx refuses < 1); None = uncapped"
+    )
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
@@ -266,6 +271,82 @@ class StudioSpec(Strict):
     review: ReviewSpec = Field(default_factory=ReviewSpec)
 
 
+class JiraStatusesSpec(Strict):
+    intake: str = Field(default="To Do", description="issues waiting to be built (story:tick takes the top)")
+    building: str = "In Progress"
+    review: str = "In Review"
+    blocked: str | None = Field(default="Blocked", description="null: a stopped issue stays where it is")
+
+
+class JiraSpec(Strict):
+    site: str | None = Field(default=None, description="https://NAME.atlassian.net; ATLASSIAN_BASE_URL wins")
+    project: str | None = Field(default=None, description="project key, e.g. AIR; ATLASSIAN_PROJECT_KEY wins")
+    email: SecretStr | None = Field(
+        default=None, description="your Atlassian account email (a credential); ATLASSIAN_EMAIL wins"
+    )
+    token: SecretStr | None = Field(
+        default=None, description="API token; ATLASSIAN_API_KEY wins (keep it in .env, not here)"
+    )
+    statuses: JiraStatusesSpec = Field(default_factory=JiraStatusesSpec)
+    jql: str | None = Field(
+        default=None,
+        description='the issues story:tick takes, in order (default: project = "<project>" AND '
+        'status = "<statuses.intake>" ORDER BY Rank ASC)',
+    )
+    api_url: str | None = Field(
+        default=None,
+        description="REST base (default <site>/rest/api/3); a scoped token needs "
+        "https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3",
+    )
+
+
+class GitHubAppSpec(Strict):
+    """story.github_app: publish as a GitHub App's bot (docs/integrations/story.md, Publishing as a bot)."""
+
+    app_id: int | None = Field(
+        default=None, ge=1, description="set: publish as the app's bot; null: with your gh login and SSH key"
+    )
+    key_file: Path = Field(
+        default=Path("~/.config/airlie/github-app.pem"),
+        description="the app's private key (PEM, keep it 0600); expanded at use, never logged",
+    )
+    api_url: str = Field(
+        default="https://api.github.com",
+        description="GitHub's REST API: https://, or http:// on this machine (tests); no user or password",
+    )
+
+
+class StorySpec(Strict):
+    repo: Path | None = Field(
+        default=None,
+        description="the repository a written request (--text) is built in (--repo wins); a Jira issue's "
+        "comes from its repo:<owner>/<name> label",
+    )
+    repos_root: Path = Field(
+        default=Path("~/git"),
+        description="where a Jira issue's repo:<owner>/<name> label finds its checkout: the directory named "
+        "<name>, in any case",
+    )
+    test_cmd: str | None = Field(
+        default=None,
+        description="a test command airlie_run accepts (its default); a story's gate comes from its "
+        "repository's AGENTS.md",
+    )
+    trunk: str = Field(default="main", description="the stack's base branch")
+    remote: str = "origin"
+    topology: str = Field(default="studio", description="the profile story runs load")
+    max_layers: int = Field(default=5, ge=1)
+    stage_attempts: int = Field(
+        default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"
+    )
+    product_role: str = "product"
+    architect_role: str = "architect"
+    tests_role: str = "qa"
+    build_role: str = "coder"
+    jira: JiraSpec = Field(default_factory=JiraSpec)
+    github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
+
+
 TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork", "studio")
 
 
@@ -319,6 +400,7 @@ class AirlieConfig(Strict):
     fork: ForkSpec = Field(default_factory=ForkSpec)
     router: RouterSpec = Field(default_factory=RouterSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
+    story: StorySpec = Field(default_factory=StorySpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
@@ -360,6 +442,13 @@ class AirlieConfig(Strict):
                 if not hosts:
                     problems.append(f"router.model '{rm}' must be served by a llama_server engine")
         for rname, r in self.roles.items():
+            if r.thinking and r.thinking_budget is not None and r.max_tokens <= r.thinking_budget:
+                problems.append(
+                    f"roles.{rname}.max_tokens ({r.max_tokens}) must be larger than "
+                    f"roles.{rname}.thinking_budget ({r.thinking_budget}): max_tokens caps the thinking and "
+                    "the answer together, so the model can think its way to the cap and never answer. "
+                    "Raise max_tokens, lower thinking_budget, or set thinking_budget: null (no cap)"
+                )
             if r.model not in self.models:
                 problems.append(
                     f"roles.{rname}.model names '{r.model}', which is not in models ({sorted(self.models)})"

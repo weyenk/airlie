@@ -126,6 +126,57 @@ def test_every_role_reference_is_checked_and_named_in_the_message(
     assert problems(data) == [f"{label} names 'nope', which is not in roles ({ROLES})"]
 
 
+# ---- a thinking role has room to answer (HDS-3, 2026-10-15) ----
+
+
+def no_room(role: str, max_tokens: int, budget: int) -> str:
+    return (
+        f"roles.{role}.max_tokens ({max_tokens}) must be larger than "
+        f"roles.{role}.thinking_budget ({budget}): max_tokens caps the thinking and the answer together, so "
+        "the model can think its way to the cap and never answer. Raise max_tokens, lower thinking_budget, "
+        "or set thinking_budget: null (no cap)"
+    )
+
+
+def test_a_thinking_role_needs_max_tokens_above_its_thinking_budget(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    data["roles"]["judge"].update(thinking=True, thinking_budget=8192, max_tokens=4096)
+    assert problems(data) == [no_room("judge", 4096, 8192)]
+    data["roles"]["summarizer"].update(thinking=True, thinking_budget=100, max_tokens=64)
+    assert problems(data) == [no_room("summarizer", 64, 100), no_room("judge", 4096, 8192)]  # in role order
+
+
+@pytest.mark.parametrize(
+    ("max_tokens", "fits"), [(8191, False), (8192, False), (8193, True), (16384, True)], ids=str
+)
+def test_the_room_is_max_tokens_strictly_above_the_budget(
+    tmp_path: Path, max_tokens: int, fits: bool
+) -> None:
+    data = valid(tmp_path)
+    data["roles"]["coder"].update(thinking=True, thinking_budget=8192, max_tokens=max_tokens)
+    assert problems(data) == ([] if fits else [no_room("coder", max_tokens, 8192)])
+
+
+def test_a_role_that_does_not_think_or_has_no_budget_needs_no_room(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    data["roles"]["coder"].update(
+        thinking=False, thinking_budget=16384, max_tokens=4096
+    )  # airlie.yaml's coder
+    data["roles"]["judge"].update(
+        thinking=True, thinking_budget=None, max_tokens=64
+    )  # uncapped stays allowed
+    assert problems(data) == []
+
+
+def test_the_room_check_does_not_wait_on_the_roles_other_problems(tmp_path: Path) -> None:
+    data = valid(tmp_path)
+    data["roles"]["coder"].update(model="ghost", thinking=True, thinking_budget=8192, max_tokens=4096)
+    assert problems(data) == [
+        no_room("coder", 4096, 8192),
+        "roles.coder.model names 'ghost', which is not in models (['team'])",
+    ]
+
+
 # ---- loader ----
 
 
@@ -134,7 +185,7 @@ def test_invalid_yaml_and_non_mapping_files_name_the_file(tmp_path: Path) -> Non
     bad.write_text("a: [unclosed\n")
     with pytest.raises(ConfigError) as ei:
         load_config(bad)
-    assert str(ei.value).startswith(f"{bad.resolve()}: not valid YAML: ")
+    assert str(ei.value).startswith(f"{bad.resolve()}: not valid YAML at line 2, column 1: ")
     bad.write_text("- 1\n- 2\n")
     with pytest.raises(ConfigError) as ei:
         load_config(bad)
