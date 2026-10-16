@@ -8,13 +8,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -218,7 +219,7 @@ async def test_a_token_the_length_limit_would_cut_through_is_masked_before_the_c
 async def test_a_publish_step_runs_with_prompts_askpass_and_update_notices_off(
     tmp_path: Path, as_who: str
 ) -> None:
-    env = yours() if as_who == "you" else bot_env("ghs_t", tmp_path)
+    env = yours() if as_who == "you" else bot_env("ghs_t", tmp_path, repository="o/r")
     script = 'echo "$GIT_TERMINAL_PROMPT $GIT_ASKPASS $SSH_ASKPASS $GH_PROMPT_DISABLED"'
     script += '; echo "$GH_STACK_NO_UPDATE_NOTIFIER"'
     assert await run_cmd(["sh", "-c", script], tmp_path, env) == "0 false false 1\n1\n"
@@ -564,7 +565,7 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
     for env in rec.envs:
         assert [n for n in ("GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_ENTERPRISE_TOKEN") if n in env] == []
         assert env["GIT_SSH_COMMAND"] == "false" and env["GIT_ALLOW_PROTOCOL"] == "https"
-        assert env["GIT_PROXY_COMMAND"] == ""
+        assert env["GIT_PROXY_COMMAND"] == "" and env["GH_REPO"] == "o/r"
         last = [
             *NO_HOOKS,
             *BOT_GIT,
@@ -594,12 +595,12 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     repo = repo_on_github(tmp_path)
     p = Publisher(run=rec)
     p.prepare(repo)
-    await every_step(p, repo, tmp_path)
+    await every_step(p, repo, repo)  # the publish worktree is one of the repository's: it has the remote
     assert len(rec.envs) == 6
     for env in rec.envs:
         assert {name: env[name] for name in yours_} == yours_
         assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https" and "GIT_SSH_COMMAND" not in env
-        assert env["GIT_PROXY_COMMAND"] == ""
+        assert env["GIT_PROXY_COMMAND"] == "" and env["GH_REPO"] == "o/r"
         assert pairs(env) == [
             *NO_HOOKS,
             ("core.sshCommand", "ssh"),
@@ -607,7 +608,7 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
             *PINNED,
             ("remote.origin.proxy", ""),
         ]
-    assert p.repository is None  # nothing is minted, and no repository is pinned
+    assert p.repository == "o/r"  # nothing is minted, but every step must lead to it
 
 
 async def test_a_step_whose_token_cannot_be_minted_runs_nothing_and_says_why(tmp_path: Path) -> None:
@@ -730,7 +731,7 @@ async def test_prepare_names_a_remote_the_bot_cannot_publish_to(tmp_path: Path) 
 def test_the_bots_git_entries_reach_a_child_git(tmp_path: Path, own_git: Path) -> None:
     repo = repo_on_github(tmp_path)
     git(repo, "remote", "add", "other", "ssh://git@github.com/o/r.git")
-    env = bot_env("ghs_child", tmp_path / "gh")
+    env = bot_env("ghs_child", tmp_path / "gh", repository="o/r")
     assert git_in(
         repo, env, "config", "--get-all", "url.https://github.com/.insteadof"
     ).stdout.splitlines() == [
@@ -762,7 +763,7 @@ async def test_as_the_bot_a_helper_a_model_planted_never_answers_and_gh_answers_
     git(
         repo, "config", "credential.helper", str(helper(tmp_path / "planted.sh", marks, "planted", "planted"))
     )
-    env = bot_env("ghs_step-token", tmp_path / "gh")
+    env = bot_env("ghs_step-token", tmp_path / "gh", repository="o/r")
     out = fill(repo, env, "github.com")
     assert out.returncode == 0 and "username=x-access-token\npassword=ghs_step-token" in out.stdout
     other = fill(repo, env, "evil.example")  # a remote redirected to another host gets no credential
@@ -787,7 +788,7 @@ async def test_as_the_bot_an_ssh_command_a_model_planted_never_runs(
         tmp_path / "planted-ssh.sh", f"echo 'planted ssh' >> {shlex.quote(str(marks))}\nexit 1"
     )
     git(repo, "config", "core.sshCommand", str(planted))
-    env = bot_env("ghs_t", tmp_path / "gh")
+    env = bot_env("ghs_t", tmp_path / "gh", repository="o/r")
     if protocols == "any":
         del env["GIT_ALLOW_PROTOCOL"]  # GIT_SSH_COMMAND=false alone keeps it from running
     assert git_in(repo, env, "ls-remote", "origin").returncode != 0
@@ -807,7 +808,9 @@ async def test_as_the_bot_a_command_a_model_named_for_a_local_remote_never_runs(
     )
     git(repo, "config", "remote.origin.pushurl", str(tmp_path / "elsewhere.git"))
     git(repo, "config", "remote.origin.receivepack", str(receiver))
-    out = git_in(repo, bot_env("ghs_t", tmp_path / "gh"), "push", "origin", "HEAD:refs/heads/x")
+    out = git_in(
+        repo, bot_env("ghs_t", tmp_path / "gh", repository="o/r"), "push", "origin", "HEAD:refs/heads/x"
+    )
     assert out.returncode != 0 and "transport 'file' not allowed" in out.stderr and logged(marks) == []
     git_in(repo, dict(os.environ), "push", "origin", "HEAD:refs/heads/x")  # the control: plain git runs it
     assert logged(marks) == ["planted receivepack"]
@@ -817,7 +820,9 @@ async def test_a_failure_as_the_bot_is_masked_with_the_steps_token(tmp_path: Pat
     token = "ghs_" + "Mint3d" * 6
     with pytest.raises(PublishError) as e:
         await run_cmd(
-            ["sh", "-c", 'echo "denied for $GH_TOKEN" >&2; exit 1'], tmp_path, bot_env(token, tmp_path)
+            ["sh", "-c", 'echo "denied for $GH_TOKEN" >&2; exit 1'],
+            tmp_path,
+            bot_env(token, tmp_path, repository="o/r"),
         )
     assert str(e.value).endswith("exited 1: denied for ***") and token not in str(e.value)
 
@@ -891,7 +896,7 @@ def curl_said(cwd: Path, env: Mapping[str, str], *args: str) -> str:
 
 def both_ways(tmp_path: Path, as_who: str) -> dict[str, str]:
     """A publish step's environment, as you or as the bot (for a remote named origin)."""
-    return yours() if as_who == "you" else bot_env("ghs_t", tmp_path / "gh")
+    return yours() if as_who == "you" else bot_env("ghs_t", tmp_path / "gh", repository="o/r")
 
 
 @pytest.mark.parametrize("as_who", ["you", "the bot"])
@@ -1175,3 +1180,185 @@ def test_as_you_a_remote_on_this_machine_is_refused_so_its_planted_command_never
     assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https"
     git_in(repo, dict(os.environ), *action)  # the control: plain git runs it, with your agent
     assert logged(marks) == ["ran SSH_AUTH_SOCK=/tmp/the-persons-agent.sock"]
+
+
+# ---- as you too: where git would really fetch from and push to (final review 2, I1) ----
+
+YOURS_ELSEWHERE = (
+    "a url.<base>.insteadOf or pushInsteadOf (yours or the repository's) or a remote.origin.pushurl sends it "
+    "there, and the story publishes only to o/r"
+)
+
+
+def steps(p: Publisher, repo: Path) -> list[Callable[[], Awaitable[object]]]:
+    """Every publish step in `repo`, each to be started on its own: the trunk fetch, the stack, the submit,
+    a PR's view and its edit."""
+    return [
+        lambda: p.fetch(repo, "main"),
+        lambda: p.stack(repo, "main", ["s-01-a"]),
+        lambda: p.submit(repo),
+        lambda: p.pr(repo, "s-01-a"),
+        lambda: p.describe(repo, "s-01-a", "[1/1] Story: A", repo / "pr-01.md"),
+    ]
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+@pytest.mark.parametrize(
+    ("planted", "value", "yours", "the_bots"),
+    [
+        (
+            "url.https://github.com/evil/other.insteadOf",
+            "git@github.com:o/r.git",
+            "fetch from https://github.com/evil/other",
+            "fetch from https://github.com/evil/other",
+        ),
+        (
+            "url.git@github.com:evil/other.git.pushInsteadOf",
+            "git@github.com:o/r.git",
+            "push to git@github.com:evil/other.git",
+            "push to git@github.com:evil/other.git",
+        ),
+        (
+            "remote.origin.pushurl",
+            "git@github.com:evil/other.git",
+            "push to git@github.com:evil/other.git",
+            "push to https://github.com/evil/other.git",  # the bot sends GitHub's SSH URLs over HTTPS
+        ),
+    ],
+    ids=["insteadOf", "pushInsteadOf", "pushurl"],
+)
+async def test_every_step_refuses_a_rule_a_model_planted_that_leads_to_another_repository(
+    tmp_path: Path, own_git: Path, as_who: str, planted: str, value: str, yours: str, the_bots: str
+) -> None:
+    """A model's shell can write the shared .git/config, and what it writes outlives its story. The remote as
+    written still names o/r, so the issue's label, prepare and the state's pin all pass, but git would fetch
+    the next story's trunk (its base commit and its AGENTS.md gate) or push the layers elsewhere: as you, with
+    your credentials. Each step works out where git would really go and refuses, before any command runs (and,
+    as the bot, before a token is minted)."""
+    repo = repo_on_github(tmp_path)
+    github, rec = FakeGitHub(installed=("o/r", "evil/other")), Recorded()
+    p = Publisher(run=rec, app=fake_app(tmp_path, github) if as_who == "the bot" else None)
+    p.prepare(repo, expected="o/r")  # before any model works
+    git(repo, "config", planted, value)  # a model, in this story or an earlier one
+    said, home = (yours, "o/r on github.com") if as_who == "you" else (the_bots, "https://github.com/o/r")
+    refusal = f"^the remote 'origin' would {re.escape(said)}, not {re.escape(home)}: "
+    for step in steps(p, repo):
+        with pytest.raises(PublishError, match=refusal):
+            await step()
+    assert rec.calls == [] and github.minted_for() == []
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n',
+        '[url "git@github.com:"]\n\tpushInsteadOf = https://github.com/\n',
+        '[url "git@github.com:o/r"]\n\tinsteadOf = https://github.com/O/R\n',  # the same name, another case
+    ],
+    ids=["insteadOf", "pushInsteadOf", "another-case"],
+)
+async def test_as_you_a_rule_of_yours_that_sends_the_repository_over_ssh_still_publishes(
+    tmp_path: Path, own_git: Path, rule: str
+) -> None:
+    """A common global rule: it leads to the same repository on github.com, so every step runs and check
+    names nothing (the bot refuses it: it cannot use SSH). GitHub's names are any case."""
+    own_git.write_text(rule)
+    repo = repo_on_github(tmp_path, "https://github.com/O/R.git")
+    rec = Recorded()
+    p = Publisher(run=rec)
+    p.prepare(repo, expected="o/r")
+    for step in steps(p, repo):
+        await step()
+    assert [c[:3] for c, _ in rec.calls] == [
+        ["git", "fetch", "-q"],
+        ["gh", "stack", "view"],
+        ["gh", "stack", "init"],
+        ["gh", "stack", "submit"],
+        ["gh", "pr", "view"],
+        ["gh", "pr", "edit"],
+    ]
+    assert await Publisher(run=Recorded()).check(repo) == ([], [])
+
+
+async def test_check_as_you_names_a_rule_a_model_planted_as_the_bots_check_does(
+    tmp_path: Path, own_git: Path
+) -> None:
+    repo = repo_on_github(tmp_path)
+    git(repo, "config", "remote.origin.pushurl", "https://me:hunter2@github.com/evil/other.git")
+    found = await Publisher(run=Recorded()).check(repo)
+    shown = "https://***@github.com/evil/other.git"  # the password masked
+    wrong = f"the remote 'origin' would push to {shown}, not o/r on github.com: {YOURS_ELSEWHERE}"
+    assert found == ([wrong], [])
+
+
+async def test_as_you_a_remote_that_names_no_github_repository_has_none_to_hold_the_steps_to(
+    tmp_path: Path, own_git: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A written request's remote on another host (an issue's must name its label's repository on
+    github.com): there is no repository to compare where git goes with, so no step is checked, as before,
+    and gh is told none. A rule planted for such a remote is not caught."""
+    monkeypatch.delenv("GH_REPO", raising=False)
+    repo = repo_on_github(tmp_path, "git@git.example.invalid:o/r.git")
+    git(repo, "config", "url.https://elsewhere.invalid/x.insteadOf", "git@git.example.invalid:o/r.git")
+    rec = Recorded()
+    p = Publisher(run=rec)
+    p.prepare(repo)
+    for step in steps(p, repo):
+        await step()
+    assert p.repository is None and len(rec.calls) == 6
+    assert [env for env in rec.envs if "GH_REPO" in env] == []
+    assert await Publisher(run=Recorded()).check(repo) == ([], [])
+
+
+# ---- gh and gh-stack are told the repository; they never choose it (final review 2, M1) ----
+
+
+@pytest.fixture
+def gh_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fake `gh` first on PATH, gh-stack's commands included (`gh stack ...`): each call logs its first two
+    arguments and the repository it is given, GH_REPO (- when unset), and answers as gh does for a
+    repository with no stack yet and PR 7. Returns the log."""
+    log = tmp_path / "gh-given.log"
+    log.touch()
+    bin_dir = tmp_path / "gh-given-bin"
+    bin_dir.mkdir()
+    run_script(
+        bin_dir / "gh",
+        f'echo "$1 $2 GH_REPO=${{GH_REPO:--}}" >> {shlex.quote(str(log))}\n'
+        '[ "$1 $2" = "stack view" ] && exit 1\n'
+        '[ "$1 $2" = "pr view" ] && echo \'{"number": 7, "url": "https://github.com/o/r/pull/7"}\'\n'
+        "exit 0",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+@pytest.mark.parametrize("as_who", ["you", "the bot"])
+async def test_gh_is_given_the_storys_repository_whatever_remote_a_model_adds_and_marks(
+    tmp_path: Path, own_git: Path, gh_given: Path, monkeypatch: pytest.MonkeyPatch, as_who: str
+) -> None:
+    """Unless GH_REPO names one, gh and gh-stack pick the GitHub repository themselves: a remote marked
+    remote.<name>.gh-resolved (what `gh repo set-default` writes) first, then `git remote -v` (traced offline
+    under GIT_TRACE; with GH_REPO set, gh-stack reads neither). A model can add a remote and mark it, and gh
+    would then open and edit the PRs there (as you, with your login). Every gh step is given the story's
+    repository instead. (No trunk fetch here: it would go to github.com.)"""
+    monkeypatch.delenv("GH_REPO", raising=False)
+    repo = repo_on_github(tmp_path)
+    git(repo, "remote", "add", "planted", "git@github.com:evil/other.git")
+    git(repo, "config", "remote.planted.gh-resolved", "base")
+    p = Publisher(app=fake_app(tmp_path, FakeGitHub()) if as_who == "the bot" else None)
+    p.prepare(repo, expected="o/r")
+    await p.stack(repo, "main", ["s-01-a"])
+    await p.submit(repo)
+    await p.pr(repo, "s-01-a")
+    await p.describe(repo, "s-01-a", "[1/1] Story: A", repo / "pr-01.md")
+    calls = ("stack view", "stack init", "stack submit", "pr view", "pr edit")
+    assert logged(gh_given) == [f"{call} GH_REPO=o/r" for call in calls]
+
+
+def test_as_you_your_own_gh_repo_stays_only_while_the_story_names_no_github_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GH_REPO", "yours/own")
+    assert person_env(PersonGit())["GH_REPO"] == "yours/own"
+    assert person_env(PersonGit(), repository="o/r")["GH_REPO"] == "o/r"

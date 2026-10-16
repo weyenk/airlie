@@ -8,7 +8,10 @@ identities (docs/integrations/story.md, Publishing as a bot): a GitHub App's bot
 token minted for that step and scoped to the story's repository, over HTTPS and with none of the person's
 credentials (bot_env); or the person, with their own gh login and SSH key (person_env). Either way git runs no
 repository hook and no fsmonitor, uses no credential helper or ssh command the repository's own configuration
-names, and nothing prompts."""
+names, and nothing prompts; gh is told the story's repository (GH_REPO) instead of finding one among the
+remotes; and a step starts only once git's own answer to where it would fetch from and push to is the story's
+repository on github.com (effective_urls, misdirected). As you, a remote that names no github.com repository
+has none to be held to."""
 
 from __future__ import annotations
 
@@ -141,25 +144,39 @@ def _pins(remote: str, urls: Iterable[str] = ()) -> list[tuple[str, str]]:
     ]
 
 
-def person_env(person: PersonGit, remote: str = "origin") -> dict[str, str]:
+def person_env(person: PersonGit, remote: str = "origin", *, repository: str | None = None) -> dict[str, str]:
     """A publish step as you: your environment (your gh login, your SSH agent) with no prompt, git running no
     hook or fsmonitor and no transport but PERSON_TRANSPORTS, and your own core.sshCommand and credential
     helpers pinned over whatever the repository's configuration says (command-line configuration outranks it;
-    the empty helper resets the list first), then PINNED for `remote`."""
+    the empty helper resets the list first), then PINNED for `remote`. With `repository` ("owner/name": the
+    story's, once the remote names one on github.com), gh is told it as GH_REPO, so neither gh nor gh-stack
+    picks one from the remotes, where a model can add one and mark it (remote.<name>.gh-resolved)."""
     env = {**os.environ, **QUIET, **NO_PROMPTS, **NO_GIT_PROXY, "GIT_ALLOW_PROTOCOL": PERSON_TRANSPORTS}
+    if repository is not None:
+        env["GH_REPO"] = repository
     pins = [("core.sshCommand", person.ssh_command), ("credential.helper", ""), *person.helpers]
     return with_git_config(without_hooks(env), [*pins, *_pins(remote)])
 
 
-def bot_env(token: str, gh_dir: Path, remote: str = "origin", urls: Iterable[str] = ()) -> dict[str, str]:
+def bot_env(
+    token: str, gh_dir: Path, remote: str = "origin", urls: Iterable[str] = (), *, repository: str
+) -> dict[str, str]:
     """A publish step as the bot: the agent environment (none of your credentials: no gh token or login, no
     SSH agent, no git over SSH, every credential helper reset, no prompt), then the step's token as GH_TOKEN,
-    `gh_dir` (empty, the step's own) as gh's configuration, git limited to HTTPS, no hook or fsmonitor,
-    BOT_GIT, and PINNED for `remote` and for each of `urls`, the URLs it fetches from and pushes to."""
+    `gh_dir` (empty, the step's own) as gh's configuration, `repository` (the one the token covers) as
+    GH_REPO, git limited to HTTPS, no hook or fsmonitor, BOT_GIT, and PINNED for `remote` and for each of
+    `urls`, the URLs it fetches from and pushes to."""
     env = agent_env()
     env.update(QUIET)
     env.update(NO_GIT_PROXY)
-    env.update({"GH_TOKEN": token, "GH_CONFIG_DIR": str(gh_dir), "GIT_ALLOW_PROTOCOL": "https"})
+    env.update(
+        {
+            "GH_TOKEN": token,
+            "GH_CONFIG_DIR": str(gh_dir),
+            "GH_REPO": repository,
+            "GIT_ALLOW_PROTOCOL": "https",
+        }
+    )
     return with_git_config(without_hooks(env), [*BOT_GIT, *_pins(remote, urls)])
 
 
@@ -179,22 +196,43 @@ def effective_urls(cwd: Path, remote: str, env: Mapping[str, str]) -> tuple[list
     return ask("ls-remote", "--get-url", remote), ask("remote", "get-url", "--push", "--all", remote)
 
 
-def misdirected(repository: str, remote: str, fetch: list[str], push: list[str]) -> list[str]:
-    """What is wrong with where the bot's git would fetch from (`fetch`) and push to (`push`): anything but
-    https://github.com/<repository>, with or without .git."""
-    home = f"https://github.com/{repository}"
+def misdirected(
+    repository: str, remote: str, fetch: list[str], push: list[str], *, as_bot: bool
+) -> list[str]:
+    """What is wrong with where a publish step's git would fetch from (`fetch`) and push to (`push`), for a
+    story that publishes to `repository`. As the bot: any URL but https://github.com/<repository>, with or
+    without .git (it fetches and pushes over HTTPS alone). As you: any URL that does not name <repository> on
+    github.com in one of GitHub's forms (repo_slug, any case), so a rule of yours that keeps it there, such as
+    one that sends GitHub over SSH, still passes."""
+    if as_bot:
+        wanted = f"https://github.com/{repository}"
+        only = "the bot fetches and pushes only over HTTPS, and only to"
+    else:
+        wanted, only = f"{repository} on github.com", "the story publishes only to"
     problems: list[str] = []
     for what, urls in (("fetch from", fetch), ("push to", push)):
         if not urls:
             problems.append(f"git cannot say where the remote '{remote}' would {what}")
         for url in urls:
-            if url.lower() not in (home.lower(), f"{home}.git".lower()):
+            if not _leads_to(url, repository, as_bot=as_bot):
                 problems.append(
-                    f"the remote '{remote}' would {what} {masked(url)}, not {home}: a url.<base>.insteadOf "
+                    f"the remote '{remote}' would {what} {masked(url)}, not {wanted}: a url.<base>.insteadOf "
                     f"or pushInsteadOf (yours or the repository's) or a remote.{remote}.pushurl sends it "
-                    f"there, and the bot fetches and pushes only over HTTPS, and only to {repository}"
+                    f"there, and {only} {repository}"
                 )
     return problems
+
+
+def _leads_to(url: str, repository: str, *, as_bot: bool) -> bool:
+    """Whether `url` is `repository` on github.com: as the bot, as https://github.com/<repository> alone
+    (.git optional); as you, in any of GitHub's forms (repo_slug)."""
+    if as_bot:
+        home = f"https://github.com/{repository}".lower()
+        return url.lower() in (home, f"{home}.git")
+    try:
+        return repo_slug(url).lower() == repository.lower()
+    except GitHubAppError:  # not a github.com repository at all
+        return False
 
 
 def _mask(text: str, env: Mapping[str, str]) -> str:
@@ -261,34 +299,39 @@ class Publisher:
         self.run = run
         self.app = app
         self.repository: str | None = None
-        """As the bot: the "owner/name" every token is scoped to (prepare)."""
+        """The "owner/name" every publish step must fetch from and push to (prepare): the one the remote names
+        as written, which a story's pin has been held to; as the bot, the one every token covers too. As you,
+        None while the remote names no github.com repository: then no step is held to one."""
         self._person: PersonGit | None = None
 
     def github_repo_of(self, repo: Path) -> str | None:
         """The "owner/name" the remote's URL names as written (no insteadOf applied); None when `repo` has no
-        such remote or its URL is not a github.com repository."""
-        url = remote_url(repo, self.remote)
+        such remote, its URL is not a github.com repository, or git cannot be run there."""
+        try:
+            url = remote_url(repo, self.remote)
+        except OSError:  # no git, or no such directory: nothing says which repository
+            return None
         try:
             return repo_slug(url) if url is not None else None
         except GitHubAppError:
             return None
 
     def prepare(self, repo: Path, expected: str | None = None) -> None:
-        """Read, once per run and before a model works in it, what publishing from `repo` uses: as the bot,
-        the GitHub repository the remote's URL names (as written: no insteadOf applied), the one repository
-        each token covers; as you, your own git settings. What a model plants in the repository's
-        configuration later changes neither. With `expected` ("owner/name", any case: the repository a story
-        was started for, or one named elsewhere), the remote as written must name that repository."""
-        if expected is not None:
-            named = self.github_repo_of(repo)
-            if named is None or named.lower() != expected.lower():
-                named = named or "no github.com repository"
-                raise PublishError(
-                    f"story.remote '{self.remote}' names {named}, not {expected}: "
-                    f"the story publishes to {expected}"
-                )
+        """Read, once per run and before a model works in it, what publishing from `repo` uses: the GitHub
+        repository the remote's URL names (as written: no insteadOf applied), which every step must fetch from
+        and push to and, as the bot, the one repository each token covers; as you, your own git settings too.
+        What a model plants in the repository's configuration later changes none of them. With `expected`
+        ("owner/name", any case: the repository a story was started for, or one named elsewhere), the remote
+        as written must name that repository."""
+        named = self.github_repo_of(repo)
+        if expected is not None and (named is None or named.lower() != expected.lower()):
+            raise PublishError(
+                f"story.remote '{self.remote}' names {named or 'no github.com repository'}, not {expected}: "
+                f"the story publishes to {expected}"
+            )
         if self.app is None:
             self._person = PersonGit.read(repo)
+            self.repository = named
             return
         url = remote_url(repo, self.remote)
         failure = f"{repo} has no remote '{self.remote}' (story.remote)"
@@ -309,24 +352,40 @@ class Publisher:
         assert self.repository is not None  # prepare set it, or raised
         return self.app, self.repository
 
+    def _misdirected_as_you(self, cwd: Path, env: Mapping[str, str]) -> list[str]:
+        """As you: what misdirected finds in where git in `cwd`, under `env`, would fetch from and push to;
+        nothing while the remote names no github.com repository (prepare), as there is none to hold it to."""
+        if self.repository is None:
+            return []
+        fetch, push = effective_urls(cwd, self.remote, env)
+        return misdirected(self.repository, self.remote, fetch, push, as_bot=False)
+
     @asynccontextmanager
     async def _step(self, cwd: Path) -> AsyncIterator[dict[str, str]]:
-        """The environment of one publish step in `cwd`. As the bot: a token minted now, for this step alone,
-        and gh pointed at an empty directory made for it and removed after it. As you: person_env."""
+        """The environment of one publish step in `cwd`, once where git would fetch from and push to has been
+        found to be the story's repository (anywhere else is refused before any command runs). As the bot: a
+        token minted now, for this step alone, and gh pointed at an empty directory made for it and removed
+        after it. As you: person_env."""
         if self.app is None:
             if self._person is None:
                 self.prepare(cwd)
-            yield person_env(self._person or PersonGit(), self.remote)
+            env = person_env(self._person or PersonGit(), self.remote, repository=self.repository)
+            wrong = self._misdirected_as_you(cwd, env)
+            if wrong:
+                raise PublishError(wrong[0])
+            yield env
             return
         app, repository = self._as_bot(cwd)
         with tempfile.TemporaryDirectory(prefix="airlie-bot-gh-") as gh_dir:
             # where git would go, before a token exists: anywhere but the repository is refused
-            fetch, push = effective_urls(cwd, self.remote, bot_env("", Path(gh_dir), self.remote))
-            wrong = misdirected(repository, self.remote, fetch, push)
+            probe = bot_env("", Path(gh_dir), self.remote, repository=repository)
+            fetch, push = effective_urls(cwd, self.remote, probe)
+            wrong = misdirected(repository, self.remote, fetch, push, as_bot=True)
             if wrong:
                 raise PublishError(wrong[0])
             token = await self._token(app, repository)
-            yield bot_env(token, Path(gh_dir), self.remote, urls=dict.fromkeys([*fetch, *push]))
+            urls = dict.fromkeys([*fetch, *push])
+            yield bot_env(token, Path(gh_dir), self.remote, urls=urls, repository=repository)
 
     @staticmethod
     async def _token(app: GitHubApp, repository: str) -> str:
@@ -393,7 +452,8 @@ class Publisher:
             await self.run(["gh", "pr", "edit", branch, "--title", title, "--body-file", str(body)], wt, env)
 
     async def check(self, repo: Path) -> Checked:
-        """What publishing needs, for `task story:check`: gh and gh-stack installed and the remote; then as
+        """What publishing needs, for `task story:check`: gh and gh-stack installed and the remote, and that
+        git would fetch from and push to the repository the remote names, as every step checks it; then as
         you, gh logged in; as the bot, a github.com remote and what GitHubApp.check looks at (the key file,
         the installation, the token's permissions; not gh's login: gh uses the token). Without gh there is
         nothing to say about its login or its extension."""
@@ -405,7 +465,7 @@ class Publisher:
         if self.app is None:
             needs.insert(0, (["gh", "auth", "status"], "gh is not logged in: run `gh auth login`"))
             self.prepare(repo)
-            env = person_env(self._person or PersonGit(), self.remote)
+            env = person_env(self._person or PersonGit(), self.remote, repository=self.repository)
         else:  # none of these needs a credential, and none gets one
             env = without_hooks({**agent_env(), **QUIET})
         problems: list[str] = []
@@ -421,13 +481,17 @@ class Publisher:
                     problems.append("gh is not installed (https://cli.github.com)")
                 else:
                     problems.append(why)
-        if self.app is None or no_remote in problems:
+        if no_remote in problems:
             return Checked(problems, [])
+        if self.app is None:
+            return Checked([*problems, *self._misdirected_as_you(repo, env)], [])
         try:
             app, repository = self._as_bot(repo)
         except PublishError as e:
             return Checked([*problems, str(e)], [])
         with tempfile.TemporaryDirectory(prefix="airlie-bot-gh-") as gh_dir:
-            fetch, push = effective_urls(repo, self.remote, bot_env("", Path(gh_dir), self.remote))
+            probe = bot_env("", Path(gh_dir), self.remote, repository=repository)
+            fetch, push = effective_urls(repo, self.remote, probe)
         found, notes = await app.check(repository)
-        return Checked([*problems, *misdirected(repository, self.remote, fetch, push), *found], notes)
+        wrong = misdirected(repository, self.remote, fetch, push, as_bot=True)
+        return Checked([*problems, *wrong, *found], notes)

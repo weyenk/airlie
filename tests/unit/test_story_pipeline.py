@@ -1477,6 +1477,44 @@ async def test_as_the_bot_a_remote_a_model_redirects_during_the_build_stops_the_
         await pipe.run(text_card("avatars"))
 
 
+async def test_as_you_a_remote_a_model_redirects_during_the_build_stops_the_story_at_publish(
+    tmp_path: Path,
+) -> None:
+    """As the bot's (above): the step refuses before gh runs, so the layers are not pushed to the other
+    repository with your credentials, and the next run cannot open the story."""
+    repo = on_github(tmp_path)
+    gh = RecordedGh()
+    pipe = pipeline(tmp_path, repo, happy_engine(), gh, test_cmd=PLANT)
+    st = await pipe.run(text_card("avatars"))
+    assert git(repo, "config", "remote.origin.url") == "git@github.com:evil/other.git"  # the redirect ran
+    assert st.stage == "build" and st.blocked is not None
+    assert "the remote 'origin' would fetch from " in st.blocked and "evil/other" in st.blocked
+    assert ", not o/r on github.com: " in st.blocked
+    assert [c[:2] for c in gh.calls] == [["git", "fetch"]]  # the trunk, before the build; nothing of gh's
+    with pytest.raises(
+        StorySetupError, match="this story publishes to o/r, but the remote now names evil/other"
+    ):
+        await pipe.run(text_card("avatars"))
+
+
+async def test_as_you_a_rule_a_model_planted_in_an_earlier_story_stops_the_next_ones_trunk_fetch(
+    tmp_path: Path,
+) -> None:
+    """The shared .git/config outlives a story: a model's shell left a url.<base>.insteadOf in it that sends
+    the remote, still written as o/r, to another repository. The next story would take its base commit and
+    its AGENTS.md gate from that repository's trunk, and push there: its fetch is refused before git runs, and
+    the story stops before any model works."""
+    repo = on_github(tmp_path)
+    git(repo, "config", "url.https://github.com/evil/other.insteadOf", "git@github.com:o/r.git")
+    board, engine, gh = RecordingBoard(), happy_engine(), RecordedGh()
+    st = await pipeline(tmp_path, repo, engine, gh, board=board, github_repo="o/r").run(ISSUE)
+    assert st.stage == "intake" and st.base is None and st.gate is None and engine.requests == []
+    assert gh.calls == []  # nothing fetched, and nothing published
+    assert st.blocked is not None and st.blocked.startswith("the trunk ")
+    assert "would fetch from https://github.com/evil/other, not o/r on github.com: " in st.blocked
+    assert board.moves == ["building", "blocked"]
+
+
 async def test_as_the_bot_a_token_a_command_prints_reaches_no_error_state_event_or_jira_comment(
     tmp_path: Path,
 ) -> None:

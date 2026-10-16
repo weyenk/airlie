@@ -68,7 +68,8 @@ running the same command again resumes it (see *When a story stops*).
    requests.
 6. `task story:check -- AIR-7` lists anything still missing for that issue: roles; its label, checkout, remote,
    trunk and test gate, which it prints, or the reason its story would be blocked; gh, gh-stack, your gh login or
-   the bot's app, the Jira credentials, the project and its statuses. Without an issue, `task story:check` checks
+   the bot's app, a rule or `pushurl` that would send git somewhere else than the repository, the Jira
+   credentials, the project and its statuses. Without an issue, `task story:check` checks
    the repository of a written request (`--repo`, or `story.repo`) in its place. Neither runs a model or writes
    anything, and each prints `ready` when nothing is missing.
 
@@ -172,7 +173,9 @@ node scripts/run-impacted-tests.mjs
   in the background. Write `> file 2>&1`, `>> file 2>&1` and `2>&1 |`; the note says so. `&&`, `2>&1`, `>&2` and `<&0`
   are fine, and so is an `&` that is quoted, escaped or in a comment.
 - **Read from the trunk:** `AGENTS.md` is read with git from the story's base commit (the remote's trunk as
-  fetched when the story started), never from a worktree: a model that edits `AGENTS.md` in its layer, or an
+  fetched when the story started, from the story's repository only: a fetch that git would take from anywhere
+  else, by a rule a model planted in `.git/config` in an earlier story, say, is refused, as you or as the bot;
+  see *What stops a merge*), never from a worktree: a model that edits `AGENTS.md` in its layer, or an
   uncommitted edit in your checkout, changes nothing, and neither does an object a model replaced with `git
   replace` (airlie's git reads no replacement). A symbolic link to another file of the commit is followed; one
   that leaves the repository, or leads to no file of the commit, stops the story with a note that says which.
@@ -277,9 +280,12 @@ note work the other way round: they are posted before their stage is saved, so w
   trunk, or on a tag or a local branch named `origin/<trunk>` (which git reads first for that short name), since a
   model's shell can move or make any of them. Run it again once the remote answers;
 - `git` or `gh` fails or runs over 10 minutes (a push, a PR), or Jira refuses a move;
+- git would fetch from or push to somewhere else than the repository the story is pinned to: the remote, a
+  `pushurl`, or a `url.<base>.insteadOf` or `pushInsteadOf` rule (any of which a model can plant) sends it there,
+  and the step refuses, as you or as the bot (*What stops a merge*). The trunk fetch at the start is one such
+  step, so a rule left from an earlier story stops the next one before any model works;
 - publishing as the bot: the remote is not a github.com repository, the app is not installed on it or its key is
-  wrong (each stops the story before any model works, and says how to fix it), or the remote now leads somewhere
-  else than the repository the story is pinned to (a step refuses; see *Publishing as a bot*).
+  wrong (each stops the story before any model works, and says how to fix it).
 
 **Resume** by fixing the cause and running the same command again (`task story -- AIR-7`; for a request, the same
 `--text`). Finished stages are skipped, the issue goes back to *In Progress* with `resumed after '<stage>'`, and only
@@ -450,7 +456,8 @@ What changes:
 - **Each story is pinned to one repository:** an issue's is the one its `repo:` label names; a written request's,
   the one its remote named, as written (before any `insteadOf`), when the story started. `state.json` keeps it.
   Before every step airlie works out where git would fetch from and push to, with every rule applied, and refuses
-  anything but that repository's `https://github.com/` URL, before a token is minted. Until the story has
+  anything but that repository's `https://github.com/` URL, before a token is minted (as you, the pin and the
+  check are the same, and any of GitHub's forms of the URL passes: *What stops a merge*). Until the story has
   published, a later run that finds the remote naming another repository, or none, cannot open the story, and
   `task story:tick` sets the issue aside (*Blocked*, with the reason).
 - **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
@@ -486,19 +493,30 @@ environment, which outrank the repository's configuration:
   - transports: as you, SSH and HTTPS remotes only (`GIT_ALLOW_PROTOCOL=ssh:https`: no remote on this machine,
     whose `receivepack` or `uploadpack` command git would run itself, and no `ext::`, `git://` or remote
     helper); as the bot, HTTPS only;
+  - where the step's git would really fetch from and push to, as git itself answers with every rule applied
+    (`url.<base>.insteadOf`, `pushInsteadOf`, a `pushurl`, yours or the repository's), must be the story's
+    repository on github.com (*Publishing as a bot* says which one that is), or the step refuses before any
+    command runs: as you, in any of GitHub's forms (`git@github.com:`, `ssh://git@github.com/`,
+    `https://github.com/`; a rule of yours that sends it over SSH still passes); as the bot, its
+    `https://github.com/` URL alone. As you, a written request whose remote names no github.com repository has
+    none to compare with, and is not checked;
+  - gh and gh-stack are told that repository whenever there is one (`GH_REPO`), so neither picks one from the
+    remotes, where a model can add one and mark it for gh (`remote.<name>.gh-resolved`);
 - as the bot, also: a token for the story's repository alone, minted per step with contents and pull requests
-  write alone; a step that refuses unless git would fetch from and push to that repository's own URL; and the TLS
-  check and the address list given again for that exact URL.
+  write alone, and the TLS check and the address list given again for that exact URL.
 
 What planted repository configuration can still do during a publish step:
 
-- **As you,** where the remote points is the repository's to say, within those transports: a rewritten remote or
-  `pushurl` on this machine is refused, so no command it names runs, but one on another SSH or HTTPS host is not.
-  A model that rewrites it during a run has that run push your branches there, with your credentials (for a
-  remote on github.com, the next run finds another repository and, until the story has published, sets it
-  aside). Settings for your remote's exact URL (`http.<url>.sslVerify`,
-  `http.<url>.curloptResolve`) outrank the general ones above, so over HTTPS a model that also leaves a listener
-  running on this machine could read what your credential helper sends.
+- **As you,** a remote, `pushurl` or rule that a model rewrites or plants, in this story or in an earlier one in
+  the same checkout, is refused at the next step when it leads anywhere but the story's repository on github.com:
+  neither the story's push nor a later story's trunk fetch (and with it that story's base commit and test gate)
+  goes to another repository with your credentials. A rewritten `remote.<name>.url` also keeps the next run from
+  opening the story until it has published (`task story:tick` sets the issue aside), and one on this machine is
+  refused by the transports, so no command it names runs. What is left: where the remote of a written request
+  that names no github.com repository points is the repository's to say, within those transports; and settings
+  for your remote's exact URL (`http.<url>.sslVerify`, `http.<url>.curloptResolve`) outrank the general ones
+  above, so over HTTPS a model that also leaves a listener running on this machine could read what your
+  credential helper sends.
 - **As the bot,** git's other settings still apply, but as far as these settings and the URL check reach, none
   can send the token anywhere but GitHub's address for the story's repository: the proxy is off, the address list
   empty and TLS checked for that exact URL, and any other URL is refused.

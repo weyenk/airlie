@@ -200,9 +200,9 @@ class StoryPipeline:
         try:
             if not st.done("publish"):  # a layer to build, or the stack to publish: GitHub comes into it
                 # before any model works in this run: what it plants in the repository's git configuration
-                # later changes neither the repository the bot publishes to nor the person's own git
-                # settings; and an app that cannot get a token (for the layers' author) stops the story
-                # before any model works
+                # later changes neither the repository every publish step must fetch from and push to (the
+                # one the bot's tokens cover) nor the person's own git settings; and an app that cannot get
+                # a token (for the layers' author) stops the story before any model works
                 self.publisher.prepare(self.repo, expected=st.github_repo)
                 await self.publisher.author(self.repo)
             if st.done("intake") and not st.done("review"):
