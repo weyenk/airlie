@@ -259,6 +259,40 @@ def test_the_room_is_checked_after_the_local_overrides_are_merged(tmp_path: Path
     assert load_config(base, local).roles["coder"].max_tokens == 9000
 
 
+BELOW_ONE = "config invalid:\n  roles.coder.thinking_budget: Input should be greater than or equal to 1"
+
+
+@pytest.mark.parametrize("thinking", [True, False])
+@pytest.mark.parametrize("budget", [0, -1], ids=["zero", "negative"])
+def test_a_thinking_budget_below_one_is_a_config_error_at_load(
+    tmp_path: Path, budget: int, thinking: bool
+) -> None:
+    """vllm-mlx refuses a thinking_token_budget below 1 (a 422 on every request): airlie refuses it first, on
+    any role, whether or not it thinks."""
+    with pytest.raises(ConfigError) as e:
+        load_config(write(tmp_path, with_coder(thinking=thinking, thinking_budget=budget)))
+    assert str(e.value) == BELOW_ONE
+
+
+@pytest.mark.parametrize("budget", [1, None], ids=["one", "uncapped"])
+def test_a_thinking_budget_of_one_or_null_loads(tmp_path: Path, budget: int | None) -> None:
+    cfg = load_config(write(tmp_path, with_coder(thinking=True, thinking_budget=budget)))
+    assert cfg.roles["coder"].thinking_budget == budget
+
+
+def test_a_thinking_budget_below_one_from_a_profile_or_the_local_file_is_refused_too(tmp_path: Path) -> None:
+    profiles = {"zero": {"roles": {"coder": {"thinking_budget": 0}}}}
+    base = write(tmp_path, {**with_coder(), "topology": {"kind": "single", "profiles": profiles}})
+    with pytest.raises(ConfigError) as e:
+        load_config(base, topology="zero")
+    assert str(e.value) == BELOW_ONE
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"roles": {"coder": {"thinking_budget": -5}}}))
+    with pytest.raises(ConfigError) as e:
+        load_config(base, local)
+    assert str(e.value) == BELOW_ONE
+
+
 def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     variants = [*TOPOLOGY_KINDS, *(n for n in base.topology.profiles if n not in TOPOLOGY_KINDS)]

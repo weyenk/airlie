@@ -121,7 +121,9 @@ class RoleSpec(Strict):
     )
     sampling: Sampling = Field(default_factory=Sampling)
     thinking: bool = True
-    thinking_budget: int | None = Field(default=8192, description="cap on reasoning tokens; None = uncapped")
+    thinking_budget: int | None = Field(
+        default=8192, ge=1, description="cap on reasoning tokens (vllm-mlx refuses < 1); None = uncapped"
+    )
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
