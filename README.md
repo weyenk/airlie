@@ -205,7 +205,8 @@ error names the key path.
 
 A role that thinks (`thinking: true` with a `thinking_budget`) needs `max_tokens` larger than the budget: `max_tokens`
 caps the thinking and the answer together, so the config is refused otherwise, naming the role and both numbers.
-A reply the engine cuts off at `max_tokens` ends its turn as `cut_off`, never as a finished answer.
+A reply the engine cuts off at `max_tokens` ends an agent's turn as `cut_off`, never as a finished answer; the
+studio chief refuses one it cannot parse, and the reviewer one with no text.
 
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.

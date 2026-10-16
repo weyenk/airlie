@@ -9,7 +9,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
-| build, per layer | studio: qa writes the failing tests, coder makes them pass, Muse Glimmer reviews both | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie`, gated by the repository's test gate (its `AGENTS.md`) |
+| build, per layer | studio: qa writes the failing tests, coder makes them pass, Muse Glimmer reviews both | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
 

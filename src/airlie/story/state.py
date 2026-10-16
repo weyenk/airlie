@@ -82,10 +82,10 @@ class StoryState:
         the JSON of a story state, a stage that is none, and a repository, stage or pinned GitHub repository
         that is not text: each is compared or looked up here, and must not fail as anything else.
 
-        `github_repo` is the "owner/name" the repository's remote names now, as written (None: none on
-        github.com). A story keeps the one it was started with (or first opened with) and publishes there
-        only: until it has published, a later run that finds another one, or none, is a StorySetupError
-        too."""
+        `github_repo` is the "owner/name" the story is for: for an issue, the one its repo: label names; for a
+        written request, the one the repository's remote names now, as written (None: none on github.com). A
+        story keeps the one it was started with (or first opened with) and publishes there only: until it has
+        published, a later run that finds another one, or none, is a StorySetupError too."""
         f = path / "state.json"
         try:
             text = f.read_text() if f.is_file() else None

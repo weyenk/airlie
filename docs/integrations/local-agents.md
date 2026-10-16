@@ -24,8 +24,8 @@ cd /path/to/project && opencode            # or: opencode run --model airlie/bas
 ```
 
 If you already have an `opencode.json`, merge the `provider.airlie` block into it and set `"model":
-"airlie/generalist"` (and `agent.build.model`) to make it the default, as the sample does: it is the chief's
-model, and `opencode run --agent chief` takes the config's default rather than the agent's own.
+"airlie/generalist"` to make it the default, as the sample does: it is the chief's model, and `opencode run --agent
+chief` takes the config's default rather than the agent's own.
 
 The sample also holds the `mcp.airlie` entry that starts airlie's MCP server (see the chief, below), with
 `/path/to/airlie` where your airlie checkout goes (in `--project` and in `--config`). `task opencode:install` writes
