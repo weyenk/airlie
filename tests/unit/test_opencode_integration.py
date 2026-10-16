@@ -122,10 +122,10 @@ def test_only_coder_and_qa_run_a_shell_command_without_asking() -> None:
 
 
 def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
-    """...and asks the person first for one that runs any command. On 2.0.29 the chief handed coder a task
-    without asking, and coder runs any shell command as you without asking: no approval stood between a model
-    and a command. So a hand-off to coder or qa asks; architect's and docs' shells ask before every command,
-    so a hand-off to them need not."""
+    """It also asks the person before it hands work to one that runs any command. On 2.0.29 the chief handed
+    coder a task without asking, and coder runs any shell command as you without asking: no approval stood
+    between a model and a command. So a hand-off to coder or qa asks; architect's and docs' shells ask before
+    every command, so a hand-off to them need not."""
     meta, body = front(OC / "agent/chief.md")
     task = meta["permission"]["task"]
     assert list(task)[0] == "*" and task["*"] == "deny"  # first, so that each rule after it wins

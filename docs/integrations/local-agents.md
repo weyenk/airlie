@@ -179,9 +179,9 @@ Checked live on OpenCode 2.0.29 on 2026-10-15, against the real engines with the
   compound statement by its own text and the redirect is part of none of them, so no rule can close it (and
   `edit: deny` does not cover a shell redirect). What held: `gh pr view 1 & touch F` was split into two commands and
   asked, and so were `git diff > F` and `GIT_EXTERNAL_DIFF=cat git diff`.
-- **A redirect with no command runs without asking, under every agent's rules.** Under the chief's `"*": ask`,
-  `> empty1.txt` created an empty file unasked, and `> existing.txt` truncated an existing file to zero bytes.
-  OpenCode asks only about commands, and that line has none, so no rule closes it; what it writes is always empty.
+- **A redirect with no command runs without asking.** Under the chief's `"*": ask`, `> empty1.txt` created an empty
+  file unasked, and `> existing.txt` truncated an existing file to zero bytes. OpenCode asks only about commands,
+  and that line has none, so no rule closes it, under any agent's rules; what it writes is always empty.
 
 Not from that check, but what the rules leave:
 

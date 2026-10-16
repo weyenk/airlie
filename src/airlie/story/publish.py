@@ -300,8 +300,9 @@ class Publisher:
         self.app = app
         self.repository: str | None = None
         """The "owner/name" every publish step must fetch from and push to (prepare): the one the remote names
-        as written, which a story's pin has been held to; as the bot, the one every token covers too. As you,
-        None while the remote names no github.com repository: then no step is held to one."""
+        as written, which prepare holds to a story's pin when it has one; as the bot, the one every token
+        covers too. As you, None while the remote names no github.com repository: then no step is held to
+        one."""
         self._person: PersonGit | None = None
 
     def github_repo_of(self, repo: Path) -> str | None:
