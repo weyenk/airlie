@@ -14,9 +14,9 @@ for roles also `task serve`.
 
 ## OpenCode
 
-Verified 2026-10-14 on OpenCode 1.19.0 (a 1.19-era result; tried on OpenCode 2.0.29: tool calls fail, see the
-known issues at the end of this section): `opencode run --model airlie/base "create hello.txt …, read it back …"`
-wrote the file, read it and answered, through `POST /v1/chat/completions` on the engine.
+Verified 2026-10-14 on OpenCode 1.19.0: `opencode run --model airlie/base "create hello.txt …, read it back …"`
+wrote the file, read it and answered, through `POST /v1/chat/completions` on the engine. OpenCode 2.0.29 was
+checked on 2026-10-15; the known issues at the end of this section say what holds there.
 
 ```bash
 mkdir -p ~/.config/opencode && cp docs/integrations/opencode.json ~/.config/opencode/opencode.json
@@ -24,7 +24,8 @@ cd /path/to/project && opencode            # or: opencode run --model airlie/bas
 ```
 
 If you already have an `opencode.json`, merge the `provider.airlie` block into it and set `"model":
-"airlie/base"` (and `agent.build.model`) to make it the default.
+"airlie/generalist"` (and `agent.build.model`) to make it the default, as the sample does: it is the chief's
+model, and `opencode run --agent chief` takes the config's default rather than the agent's own.
 
 The sample also holds the `mcp.airlie` entry that starts airlie's MCP server (see the chief, below), with
 `/path/to/airlie` where your airlie checkout goes (in `--project` and in `--config`). `task opencode:install` writes
@@ -32,8 +33,9 @@ the real command into `~/.config/opencode/opencode.json`: if you copied the samp
 command and keeps the rest of the entry. If you copy the sample or merge the entry by hand, edit that path yourself,
 or OpenCode cannot start the server.
 
-Pick `airlie/coder` for coding (Qwen3-Coder with the coder persona), `airlie/architect` for a plan,
-`airlie/qa` for tests; the generalist roles (`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
+The sample's default model is `airlie/generalist`, the chief's (see below). Pick `airlie/coder` for coding
+(Qwen3-Coder with the coder persona), `airlie/architect` for a plan, `airlie/qa` for tests; the generalist roles
+(`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
 Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
 assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. The thinking
 models (`architect`, `research`, `generalist`) have `limit.output` 16384, as their `max_tokens` in `airlie.yaml`:
@@ -52,14 +54,16 @@ be a string").
 checkout you keep, your main one (see *Install* below). Restart OpenCode after installing, and keep `task serve`
 running. The agent and command files are copies: run the task again after you update them.
 
-- The **chief** runs on the raw `generalist` (Qwen3.8). It never edits files. It hands small changes to a
-  subagent with OpenCode's `task` tool, and to these four only: `coder`, `qa`, `docs` or `architect`, each on its
-  role model, so `task serve` supplies the persona (not OpenCode's built-in `explore`, whose shell has no merge
-  denies). Its shell runs these git forms without asking, and only these (no wildcard, so no other flag or argument
-  rides along): `git status`, `git status --short`, `git diff`, `git diff --stat`, `git diff --cached` and
+- The **chief** runs on the raw `generalist` (Qwen3.8), the sample's default model (`opencode run --agent chief`
+  takes the config's default, not the agent's own: see the known issues). It never edits files. It hands small
+  changes to a subagent with OpenCode's `task` tool, and to these four only: `coder`, `qa`, `docs` or `architect`,
+  each on its role model, so `task serve` supplies the persona (not OpenCode's built-in `explore`, whose shell has
+  no merge denies). Its shell runs these git forms without asking, and only these (no wildcard, so no other flag or
+  argument rides along): `git status`, `git status --short`, `git diff`, `git diff --stat`, `git diff --cached` and
   `git log --oneline -20`; it also runs `gh pr view` and `gh stack view --json` or `--short`, which may take
-  arguments. `--output` on `git diff` and `git log` is denied (it writes a file), as are `gh api` and the merge
-  commands, and everything else asks you first.
+  arguments but not a redirect: a command with a `>` or `>>` asks you first (a wildcard allow matches what follows
+  it, so `gh pr view 1 > pr.txt` once wrote a file unasked). `--output` on `git diff` and `git log` is denied (it
+  writes a file), as are `gh api` and the merge commands, and everything else asks you first.
 - **Features:** `/studio <goal>` (or just ask). `airlie_plan` returns the studio chief's plan; you approve or
   edit it; `airlie_run` builds it on a new branch, committed locally (the roles you approved are pinned);
   `airlie_status` follows it, and `airlie_cancel` stops it.
@@ -98,7 +102,8 @@ running. The agent and command files are copies: run the task again after you up
 
 OpenCode 2.0 no longer loads tool files, so the tools come from `airlie mcp`, a stdio MCP server that OpenCode
 starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` and `story`, which OpenCode names
-`airlie_plan` and so on, and each is a client of `task serve`'s jobs API.
+`airlie_plan` and so on (in its permission prompts and in the chief's `permission` block; the model reaches them
+through `execute` as `tools.airlie.plan(…)`, see the known issues), and each is a client of `task serve`'s jobs API.
 
 - **Install.** `task opencode:install` puts an `mcp.airlie` entry into `~/.config/opencode/opencode.json`:
   `uv run --quiet --project <this checkout> airlie mcp --config <this checkout>/airlie.yaml`, with `AIRLIE_URL` set
@@ -143,12 +148,28 @@ starts and you never run by hand. It serves `plan`, `run`, `status`, `cancel` an
 
 #### Known issues
 
-Found in a live sandbox check on OpenCode 2.0.29 on 2026-10-15, and open:
+Checked live on OpenCode 2.0.29 on 2026-10-15, against the real engines with the engine's tool-call parser fixed:
 
-- End-to-end tool calls on local models can fail with `OpenAI Chat tool call delta is missing id or name`.
-  The engine's Qwen3-Coder tool-call parser drops malformed calls, and a fix is proposed separately.
-- `opencode run --agent chief` used the config's default model rather than the agent's `airlie/generalist`; to be
-  rechecked in the TUI.
+- **Tool calls work.** A local model's calls reach OpenCode's tools and, through `airlie mcp`, `task serve`; the
+  earlier `OpenAI Chat tool call delta is missing id or name` is gone with the parser fix.
+- **Code mode.** OpenCode 2.0 shows the model its own tools and one `execute` tool, and airlie's tools are
+  reachable only inside `execute`'s JavaScript: `await tools.airlie.plan({goal})`, `tools.airlie.run({goal, plan})`,
+  `tools.airlie.status({job_id})`, `tools.airlie.cancel({job_id})` and `tools.airlie.story({card})` (or `{text}`).
+  The chief, `/studio` and `/story` say so, because asked for `airlie_run` by name the model answers that it has
+  no such tool. Permissions hold there: `tools.airlie.run` inside `execute` asked as `airlie_run`, so the keys in
+  the chief's `permission` block (`airlie_run`, `airlie_story`) stay as they are.
+- **A non-interactive `opencode run` auto-rejects every ask,** the chief's `airlie_run` and `airlie_story` and any
+  shell command outside its read-only list among them. Approve those in the TUI.
+- **`opencode run --agent chief` uses the config's default model, not the agent's own** (`opencode debug agents`
+  resolves the chief to `airlie/generalist` all the same). On `airlie/coder` the chief degenerated after a
+  rejection and repeated one shell command, so the sample's default is `airlie/generalist`. If yours is something
+  else, pass `--model airlie/generalist` to `opencode run`. The TUI picks the agent's own model, and the subagents
+  keep theirs.
+- **A redirect asks.** The `*` of an allow such as `gh pr view *` also matched what followed it, so
+  `gh pr view 1 > pr.txt` ran unasked: a file write despite `edit: deny` (redirected into `.git/hooks/`, a crafted
+  PR body would be code). The chief's rules now carry `"*>*": ask` after its allows and before its denies, so any
+  `>` or `>>` asks. The other rules held: `gh pr view 1 & touch F` was split into two commands and asked, and so
+  were `git diff > F` and `GIT_EXTERNAL_DIFF=cat git diff`.
 
 ## Claude Code
 

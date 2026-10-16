@@ -51,13 +51,14 @@ def decision(rules: dict[str, str], subject: str) -> str:
 
 
 def simple_commands(command: str) -> list[str]:
-    """The simple commands OpenCode's shell tool checks one by one: the call split at &&, ||, ;, | and
-    $(...), each substitution checked as a command of its own (and left in its outer command as $SUB)."""
+    """The simple commands OpenCode's shell tool checks one by one: the call split at &&, ||, ;, |, a lone &
+    (not the one in 2>&1 or &>) and $(...), each substitution checked as a command of its own (and left in
+    its outer command as $SUB)."""
     inner: list[str] = []
     while sub := re.search(r"\$\(([^()]*)\)", command):
         inner += simple_commands(sub.group(1))
         command = command[: sub.start()] + "$SUB" + command[sub.end() :]
-    return [c.strip() for c in re.split(r"&&|\|\||;|\|", command) if c.strip()] + inner
+    return [c.strip() for c in re.split(r"&&|\|\||;|\||(?<![>&])&(?![&>])", command) if c.strip()] + inner
 
 
 def verdict(rules: dict[str, str], command: str) -> str:
@@ -90,6 +91,22 @@ def test_no_agent_can_merge_and_the_chief_cannot_edit() -> None:
     assert chief["edit"] == "deny"
     views = [k for k, v in chief["bash"].items() if k.startswith("gh stack view") and v == "allow"]
     assert views == ["gh stack view --json*", "gh stack view --short*"]  # the bare view is interactive
+
+
+def test_a_redirect_asks_under_every_wildcard_allow_and_only_denies_come_after_that_ask() -> None:
+    """A wildcard allow swallows what follows it, a redirect too: on OpenCode 2.0.29 `gh pr view *` ran
+    `gh pr view 1 > pr.txt` unasked, a file write under `edit: deny`. An agent with one asks for any `>` after
+    its allows (coder and qa allow every command by design, so `*` is no wildcard allow here)."""
+    guarded: list[str] = []
+    for p in (OC / "agent").glob("*.md"):
+        bash = front(p)[0]["permission"]["bash"]
+        rules = list(bash)
+        wildcard = [i for i, k in enumerate(rules) if bash[k] == "allow" and k != "*" and "*" in k]
+        if wildcard:
+            guarded.append(p.stem)
+            assert bash.get("*>*") == "ask" and rules.index("*>*") > max(wildcard), p.name
+            assert {bash[k] for k in rules[rules.index("*>*") + 1 :]} == {"deny"}, p.name
+    assert "chief" in guarded  # the one agent whose shell has wildcard allows: this is not vacuous
 
 
 def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
@@ -130,8 +147,13 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
         ("git diff --out''put=F", "ask"),  # git reads --output=F: the quotes slipped past "*--output*"
         ("GIT_EXTERNAL_DIFF=x git diff", "ask"),
         ("git diff > F", "ask"),
+        # "gh pr view *" swallowed a redirect: `gh pr view 1 > pr.txt` ran unasked (2.0.29, live)
+        ("gh pr view 1 > pr.txt", "ask"),
+        ("gh pr view 1 >> x", "ask"),
+        ("gh stack view --json > x", "ask"),
         ("gh stack view", "ask"),  # interactive: it hangs a shell with no terminal
         # a call is as strong as its weakest simple command
+        ("gh pr view 1 & touch F", "ask"),  # a lone & splits the call too (2.0.29, live)
         ("git diff; rm -rf x", "ask"),
         ("git log --oneline -20 | sh", "ask"),
         ("git status || sh -c x", "ask"),
@@ -145,6 +167,9 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
         ("gh pr merge 3 --squash", "deny"),
         ("gh stack merge", "deny"),
         ("gh api -X PUT repos/o/r/pulls/3/merge", "deny"),
+        # the redirect's ask comes before the denies, so it never softens one
+        ("git diff --output=x > y", "deny"),
+        ("gh pr merge 3 --squash > /dev/null", "deny"),
     ],
 )
 def test_the_chief_shell_runs_fixed_read_only_forms_and_nothing_that_writes_or_merges(
@@ -156,11 +181,13 @@ def test_the_chief_shell_runs_fixed_read_only_forms_and_nothing_that_writes_or_m
 def test_the_simulated_shell_tool_splits_a_call_into_simple_commands() -> None:
     assert simple_commands("a && b || c; d | e") == ["a", "b", "c", "d", "e"]
     assert simple_commands("git diff $(touch F $(rm x))") == ["git diff $SUB", "rm x", "touch F $SUB"]
+    assert simple_commands("a & b") == ["a", "b"]  # a lone & backgrounds a command: the next one is its own
+    assert simple_commands("a 2>&1 &> f >&2") == ["a 2>&1 &> f >&2"]  # these & are redirects, not splits
 
 
 def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None:
-    # beside the server's own test_cmd check. How OpenCode keys an MCP tool's permission is a best guess
-    # (the tool's name, airlie_<tool>), checked live in Task 15
+    # beside the server's own test_cmd check. OpenCode keys an MCP tool's permission by the tool's name,
+    # airlie_<tool>, in code mode too: tools.airlie.run inside execute asked as airlie_run (2.0.29, live)
     permission = front(OC / "agent/chief.md")[0]["permission"]
     assert permission["airlie_run"] == permission["airlie_story"] == "ask"
 
@@ -188,6 +215,65 @@ async def test_the_commands_and_the_chief_name_only_tools_the_mcp_server_lists()
     assert set(re.findall(r"airlie_\w+", front(OC / "agent/chief.md")[1])) <= tools
 
 
+CODE_MODE_CALL = re.compile(r"tools\.airlie\.(\w+)\(\{([^{}]*)\}\)")
+
+
+def code_mode_problems(body: str, schemas: dict[str, dict[str, Any]]) -> list[str]:
+    """What a prompt gets wrong about reaching airlie's tools in OpenCode 2.0, where they are reachable only
+    inside the execute tool's JavaScript, as `tools.airlie.<tool>({argument, ...})`: no word on the execute
+    tool, a call to a tool the server does not list, an argument its schema lacks, a required one left out,
+    or an airlie_<tool> name used without that call form."""
+    problems = [] if "the execute tool" in " ".join(body.split()) else ["it never names the execute tool"]
+    reached: set[str] = set()
+    for tool, args in CODE_MODE_CALL.findall(body):
+        reached.add(tool)
+        if tool not in schemas:
+            problems.append(f"tools.airlie.{tool}: the server lists no such tool")
+            continue
+        given = {a.strip() for a in args.split(",") if a.strip()}
+        known, required = set(schemas[tool]["properties"]), set(schemas[tool].get("required", []))
+        problems += [f"tools.airlie.{tool}: {a} is no argument of it" for a in sorted(given - known)]
+        problems += [f"tools.airlie.{tool}: {a} is required" for a in sorted(required - given)]
+    named = {name.removeprefix("airlie_") for name in re.findall(r"airlie_\w+", body)}
+    return problems + [
+        f"airlie_{t} is named, but not reached as tools.airlie.{t}(...)" for t in sorted(named - reached)
+    ]
+
+
+async def test_the_chief_and_the_commands_reach_airlie_through_code_mode_with_the_schemas_names() -> None:
+    """OpenCode 2.0 shows the model its own tools and one `execute` tool; airlie's MCP tools are reachable
+    only inside its JavaScript (asked for `airlie_run` by name, the generalist said it had no such tool:
+    2.0.29, live). So the chief and both commands say how, with the tool and argument names of the schemas
+    that `airlie mcp` lists."""
+    async with airlie_http({}) as http:
+        listed = await build_server(http, test_cmds=[], cwd=ROOT).list_tools()
+    schemas = {t.name: t.input_schema for t in listed}
+    for p in (OC / "agent/chief.md", OC / "command/studio.md", OC / "command/story.md"):
+        assert code_mode_problems(front(p)[1], schemas) == [], p.name
+    chief_reaches = {tool for tool, _ in CODE_MODE_CALL.findall(front(OC / "agent/chief.md")[1])}
+    assert chief_reaches == set(schemas) == {"plan", "run", "status", "cancel", "story"}
+
+
+def test_the_code_mode_check_flags_what_a_prompt_can_get_wrong() -> None:
+    schemas = {"status": {"properties": {"job_id": {}, "wait": {}}, "required": ["job_id"]}}
+    good = "Use the execute tool: `await tools.airlie.status({job_id})` (airlie_status)."
+    assert code_mode_problems(good, schemas) == []
+    assert code_mode_problems(good.replace("the execute tool", "a tool"), schemas) == [
+        "it never names the execute tool"
+    ]
+    assert code_mode_problems(good.replace("{job_id}", "{jobId, wait}"), schemas) == [
+        "tools.airlie.status: jobId is no argument of it",
+        "tools.airlie.status: job_id is required",
+    ]
+    assert code_mode_problems(good.replace("status({", "poll({"), schemas) == [
+        "tools.airlie.poll: the server lists no such tool",
+        "airlie_status is named, but not reached as tools.airlie.status(...)",
+    ]
+    assert code_mode_problems("Use the execute tool, then follow it with airlie_status.", schemas) == [
+        "airlie_status is named, but not reached as tools.airlie.status(...)"
+    ]
+
+
 def test_the_chief_and_studio_follow_a_plan_still_being_made_with_airlie_status() -> None:
     """airlie_plan answers within 45 s (an MCP client may give a call only 60); a longer planning comes back
     as a job id, and airlie_status shows the plan when it ends."""
@@ -204,6 +290,16 @@ def test_opencode_gets_the_tools_from_airlie_mcp_not_from_a_tool_file() -> None:
     sample = json.loads((ROOT / "docs/integrations/opencode.json").read_text())
     entry = sample["mcp"]["airlie"]
     assert entry == opencode_entry(Path(entry["command"][4]))  # what install writes; the checkout is yours
+
+
+def test_the_samples_default_model_is_the_chiefs_because_opencode_run_ignores_an_agents_own() -> None:
+    """`opencode run --agent chief` ran the chief on the config's default model, not its own `model:` (2.0.29,
+    live), and on the coder model it degenerated: the sample's default is the chief's, and the sample lists
+    it. Agents with a `model:` of their own keep it (test_agents_use_models_task_serve_lists)."""
+    sample = json.loads((ROOT / "docs/integrations/opencode.json").read_text())
+    provider, model = sample["model"].split("/", 1)
+    assert sample["model"] == front(OC / "agent/chief.md")[0]["model"]
+    assert model in sample["provider"][provider]["models"]
 
 
 def thinking_room() -> tuple[Any, dict[str, int]]:
