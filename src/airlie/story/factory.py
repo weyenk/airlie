@@ -13,7 +13,7 @@ from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.checkout import check_checkout, find_checkout, held_label
 from airlie.story.gate import missing_gate, read_gate
-from airlie.story.github_app import GitHubApp, masked
+from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.jira import JiraBoard, jira_board
 from airlie.story.model import NoTestGate, RepositoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
@@ -168,6 +168,22 @@ def github_app(cfg: AirlieConfig) -> GitHubApp | None:
     return GitHubApp(spec) if spec.app_id is not None else None
 
 
+async def github_down(cfg: AirlieConfig) -> str | None:
+    """Why a story could not reach GitHub now, or None when GitHub answers: as the bot, the app as GitHub sees
+    it (GitHubApp.slug: the key, the app's id, GitHub's reply); as you, GitHub's API at all (ping). A story
+    started while GitHub is down stops at its first publish step (the bot's identity, or the trunk fetch), and
+    its issue goes to blocked."""
+    app = github_app(cfg)
+    try:
+        if app is not None:
+            await app.slug()
+        else:
+            await ping(cfg.story.github_app.api_url)
+    except GitHubAppError as e:
+        return str(e)
+    return None
+
+
 def _engine(cfg: AirlieConfig) -> Any:
     from airlie.cli import _http_engine  # the CLI owns engine construction
 
@@ -270,10 +286,11 @@ async def _already_in_review(board: Board, card: Card, st: StoryState) -> str:
 
 
 async def tick(cfg: AirlieConfig) -> str:
-    """One scheduler beat: build the top issue of the intake query, unless a story is in flight or the engine
-    is down, in the repository its label names, gated by its AGENTS.md. Returns one line for the log. An
-    issue that a run leaves in intake would hold up the ones behind it, so it is moved out: one whose story
-    cannot be placed or opened (_set_aside), or whose story has finished (_already_in_review)."""
+    """One scheduler beat: build the top issue of the intake query, unless a story is in flight, the engine
+    is down or GitHub does not answer (github_down), in the repository its label names, gated by its
+    AGENTS.md. Returns one line for the log. An issue that a run leaves in intake would hold up the ones
+    behind it, so it is moved out: one whose story cannot be placed or opened (_set_aside), or whose story has
+    finished (_already_in_review)."""
     board = make_board(cfg)
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
@@ -286,6 +303,9 @@ async def tick(cfg: AirlieConfig) -> str:
             healthy = False
         if not healthy:
             return "engine down: start it with `task restart -- --topology studio`"
+        down = await github_down(cfg)
+        if down is not None:  # an issue taken now would stop at its first publish step: the queue waits
+            return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
         card = await board.next_card()
         if card is None:
             return "idle: no issue matches the intake query"

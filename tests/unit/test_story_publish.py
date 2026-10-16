@@ -19,9 +19,11 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from airlie.story import publish
+from airlie.story import github_app, publish
+from airlie.story.github_app import GitHubApp
 from airlie.story.publish import (
     BOT_GIT,
     PINNED,
@@ -36,7 +38,7 @@ from airlie.story.publish import (
 from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
 from tests.unit.git_helpers import git
-from tests.unit.github_helpers import BOT, FakeGitHub, fake_app, fake_gh
+from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
 from tests.unit.proc_helpers import eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
@@ -545,6 +547,7 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
     yours_ = {"GH_TOKEN": "ghp_yours", "GITHUB_TOKEN": "ghp_yours2", "SSH_AUTH_SOCK": "/tmp/agent.sock"}
     for name, value in {**yours_, "GH_CONFIG_DIR": str(tmp_path / "your-gh")}.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("GH_HOST", "evil.example")  # yours, but no step's: gh would take the token there
     github, rec = FakeGitHub(), Inspecting()
     repo = repo_on_github(tmp_path)
     p = Publisher(run=rec, app=fake_app(tmp_path, github))
@@ -563,7 +566,9 @@ async def test_as_the_bot_each_step_has_a_new_token_its_own_gh_dir_and_none_of_y
     assert [e["GH_TOKEN"] for e in rec.envs] == [github.tokens[i] for i in (0, 1, 1, 2, 3, 4)]
     assert len(github.tokens) == 5 and github.minted_for() == [["r"]] * 5
     for env in rec.envs:
-        assert [n for n in ("GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_ENTERPRISE_TOKEN") if n in env] == []
+        assert [
+            n for n in ("GITHUB_TOKEN", "SSH_AUTH_SOCK", "GH_ENTERPRISE_TOKEN", "GH_HOST") if n in env
+        ] == []
         assert env["GIT_SSH_COMMAND"] == "false" and env["GIT_ALLOW_PROTOCOL"] == "https"
         assert env["GIT_PROXY_COMMAND"] == "" and env["GH_REPO"] == "o/r"
         last = [
@@ -591,6 +596,7 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     }
     for name, value in yours_.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("GH_HOST", "evil.example")  # yours, but not for a story that publishes to github.com
     rec = Recorded()
     repo = repo_on_github(tmp_path)
     p = Publisher(run=rec)
@@ -598,7 +604,7 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     await every_step(p, repo, repo)  # the publish worktree is one of the repository's: it has the remote
     assert len(rec.envs) == 6
     for env in rec.envs:
-        assert {name: env[name] for name in yours_} == yours_
+        assert {name: env[name] for name in yours_} == yours_ and env.get("GH_HOST") is None
         assert env["GIT_ALLOW_PROTOCOL"] == "ssh:https" and "GIT_SSH_COMMAND" not in env
         assert env["GIT_PROXY_COMMAND"] == "" and env["GH_REPO"] == "o/r"
         assert pairs(env) == [
@@ -611,6 +617,19 @@ async def test_as_you_each_step_keeps_your_login_and_gets_nothing_of_the_bots(
     assert p.repository == "o/r"  # nothing is minted, but every step must lead to it
 
 
+def test_no_publish_environment_keeps_a_gh_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GH_HOST is the host gh puts a repository on when GH_REPO names none ("owner/name"): one that named
+    another host would have gh, and the step's credentials with it (the bot's token, or your login), go there.
+    Neither way keeps it, whether or not the story names a github.com repository."""
+    monkeypatch.setenv("GH_HOST", "evil.example")
+    envs = {
+        "the bot": bot_env("ghs_t", tmp_path / "gh", repository="o/r"),
+        "you": person_env(PersonGit(), repository="o/r"),
+        "you, without a github.com repository": person_env(PersonGit()),  # gh then picks one from the remote
+    }
+    assert {who: env.get("GH_HOST") for who, env in envs.items()} == dict.fromkeys(envs)
+
+
 async def test_a_step_whose_token_cannot_be_minted_runs_nothing_and_says_why(tmp_path: Path) -> None:
     github, rec = FakeGitHub(installed=("o/elsewhere",)), Recorded()
     repo = repo_on_github(tmp_path)
@@ -620,6 +639,119 @@ async def test_a_step_whose_token_cannot_be_minted_runs_nothing_and_says_why(tmp
         await p.submit(repo)
     assert str(e.value).startswith("the GitHub App airlie-bot-test is not installed on o/r: install it")
     assert e.value.__cause__ is None and e.value.__context__ is None and rec.calls == []
+
+
+class Revocations(Recorded):
+    """Recorded, and which of `github`'s tokens were revoked by the time each call ran."""
+
+    def __init__(self, github: FakeGitHub) -> None:
+        super().__init__()
+        self.github = github
+        self.revoked_then: list[list[str]] = []
+
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        self.revoked_then.append(list(self.github.revoked))
+        return await super().__call__(args, cwd, env)
+
+
+async def test_as_the_bot_every_steps_token_is_revoked_when_the_step_ends(
+    tmp_path: Path, own_git: Path
+) -> None:
+    github = FakeGitHub()
+    rec = Revocations(github)
+    repo = repo_on_github(tmp_path)
+    p = Publisher(run=rec, app=fake_app(tmp_path, github))
+    p.prepare(repo)
+    await every_step(p, repo, repo)
+    assert len(github.tokens) == 5 and github.revoked == github.tokens  # every one, in the order minted
+    # while a step's commands ran its own token was live, and every earlier step's was revoked already
+    assert rec.revoked_then == [github.tokens[:n] for n in (0, 1, 1, 2, 3, 4)]
+    deletes = [r for r in github.requests if r.method == "DELETE"]
+    assert [r.headers["authorization"] for r in deletes] == [f"Bearer {t}" for t in github.tokens]
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [PublishError("`gh stack submit` exited 1: rejected"), asyncio.CancelledError()],
+    ids=["fails", "cancelled"],
+)
+async def test_a_step_that_fails_or_is_cancelled_still_revokes_its_token(
+    tmp_path: Path, own_git: Path, ending: BaseException
+) -> None:
+    async def ends(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        raise ending
+
+    github = FakeGitHub()
+    repo = repo_on_github(tmp_path)
+    p = Publisher(run=ends, app=fake_app(tmp_path, github))
+    p.prepare(repo)
+    with pytest.raises(type(ending)) as e:
+        await p.submit(repo)
+    assert e.value is ending  # what ended the step comes out as it was
+    assert len(github.tokens) == 1 and github.revoked == github.tokens
+
+
+async def test_a_step_cancelled_while_github_holds_on_to_its_revocation_is_still_cancelled_at_once(
+    tmp_path: Path, own_git: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """launchd's SIGTERM cancels a story in the middle of a step: the step's revocation is let go after
+    REVOKE_S and the cancel goes on, so the story still has the time to put its issue back in To Do."""
+    monkeypatch.setattr(github_app, "REVOKE_S", 0.05)
+    github, running = FakeGitHub(), asyncio.Event()
+
+    async def holds_on(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            await asyncio.sleep(3600)
+        return github(request)
+
+    async def pushing(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        running.set()
+        await asyncio.sleep(3600)
+        return ""
+
+    repo = repo_on_github(tmp_path)
+    app = GitHubApp(app_spec(tmp_path), transport=httpx.MockTransport(holds_on))
+    p = Publisher(run=pushing, app=app)
+    p.prepare(repo)
+    step = asyncio.create_task(p.submit(repo))
+    await running.wait()
+    started = time.monotonic()
+    step.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await step
+    assert step.cancelled() and time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("refusal", [401, 503, None], ids=["401", "503", "no-reply"])
+async def test_a_token_github_will_not_revoke_neither_fails_a_step_nor_hides_why_one_failed(
+    tmp_path: Path, own_git: Path, refusal: int | None
+) -> None:
+    """It lasts out its hour; the step's own outcome is what comes out."""
+    github, tried = FakeGitHub(), []
+
+    def keeps_tokens(request: httpx.Request) -> httpx.Response:
+        if request.method != "DELETE":
+            return github(request)
+        tried.append(request.headers["authorization"].removeprefix("Bearer "))
+        if refusal is None:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(refusal, json={"message": "Service Unavailable"})
+
+    rec = Recorded()
+    repo = repo_on_github(tmp_path)
+    app = GitHubApp(app_spec(tmp_path), transport=httpx.MockTransport(keeps_tokens))
+    p = Publisher(run=rec, app=app)
+    p.prepare(repo)
+    await p.submit(repo)
+    assert [c[:3] for c, _ in rec.calls] == [["gh", "stack", "submit"]]
+
+    async def rejected(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        raise PublishError("`gh stack submit` exited 1: rejected")
+
+    p.run = rejected
+    with pytest.raises(PublishError, match="^`gh stack submit` exited 1: rejected$"):
+        await p.submit(repo)
+    assert len(github.tokens) == 2 and tried == github.tokens and github.revoked == []
 
 
 @pytest.mark.parametrize(

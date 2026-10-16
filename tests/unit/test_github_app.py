@@ -4,7 +4,10 @@ holds the token, the JWT or the key."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -199,17 +202,20 @@ async def test_a_token_covers_the_one_repository_and_the_bot_is_named(tmp_path: 
     assert token.token == github.tokens[0] and token.permissions == github.permissions
     assert token.expires_at == "2026-10-15T13:00:00Z"
     assert await app.identity("o/r") == BOT
-    # as the app: who it is, its installation on o/r, a token for r alone; then the bot, with a token
+    # as the app: who it is, its installation on o/r, a token for r alone; then the bot, with a token that is
+    # revoked once the lookup is done
     assert [(r.method, r.url.path) for r in github.requests] == [
         ("GET", "/api/app"),
         ("GET", "/api/repos/o/r/installation"),
         ("POST", f"/api/app/installations/{INSTALLATION}/access_tokens"),
         ("POST", f"/api/app/installations/{INSTALLATION}/access_tokens"),
         ("GET", f"/api/users/{SLUG}[bot]"),
+        ("DELETE", "/api/installation/token"),
     ]
     assert github.minted_for() == [["r"], ["r"]]
     auth = [r.headers["authorization"] for r in github.requests]
-    assert auth[:4] == [f"Bearer {j}" for j in github.jwts] and auth[4] == f"Bearer {github.tokens[1]}"
+    assert auth[:4] == [f"Bearer {j}" for j in github.jwts]
+    assert auth[4:] == [f"Bearer {github.tokens[1]}"] * 2 and github.revoked == [github.tokens[1]]
     assert all(r.headers["accept"] == "application/vnd.github+json" for r in github.requests)
 
 
@@ -383,6 +389,140 @@ async def test_a_bot_user_that_cannot_be_found_is_named(tmp_path: Path) -> None:
         await app.identity("o/r")
     assert str(e.value) == f"GitHub GET users/{SLUG}%5Bbot%5D: 404 Not Found"
     no_secret_in(e.value, github)
+    assert github.revoked == github.tokens and len(github.tokens) == 1  # a lookup that fails revokes it too
+
+
+async def test_a_lookup_that_gets_no_reply_still_tries_to_revoke_its_token(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    sent: list[tuple[str, str]] = []
+
+    def lookup_down(request: httpx.Request) -> httpx.Response:
+        sent.append((request.method, request.url.path))
+        if request.url.path.startswith("/api/users/"):
+            raise httpx.ConnectError("connection reset", request=request)
+        return github(request)
+
+    app = GitHubApp(app_spec(tmp_path), transport=httpx.MockTransport(lookup_down))
+    with pytest.raises(GitHubAppError, match=r"^GitHub GET users/.*: ConnectError, no reply$") as e:
+        await app.identity("o/r")
+    no_secret_in(e.value, github)
+    assert sent[-2:] == [("GET", f"/api/users/{SLUG}[bot]"), ("DELETE", "/api/installation/token")]
+    assert github.revoked == github.tokens
+
+
+async def test_revoking_a_token_sends_the_token_itself_and_nothing_else(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    app = fake_app(tmp_path, github)
+    token = (await app.token("o/r")).token
+    before = len(github.requests)
+    await app.revoke(token)
+    [sent] = github.requests[before:]
+    assert (sent.method, sent.url.path) == ("DELETE", "/api/installation/token")
+    assert sent.headers["authorization"] == f"Bearer {token}" and github.revoked == [token]
+
+
+def no_reply(kind: type[httpx.TransportError]) -> Callable[[httpx.Request], httpx.Response]:
+    """A GitHub that does not answer: every request fails with `kind`."""
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise kind("no reply", request=request)
+
+    return fail
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        lambda request: httpx.Response(401, json={"message": "Bad credentials"}),  # revoked, or expired
+        lambda request: httpx.Response(503, text="unavailable"),
+        no_reply(httpx.ConnectError),
+        no_reply(httpx.ReadTimeout),
+    ],
+    ids=["401", "503", "no-reply", "timeout"],
+)
+async def test_a_revocation_github_refuses_or_does_not_answer_is_let_go(
+    tmp_path: Path, answer: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    """The token then lasts out its hour; nothing is raised (a publish step ends with its revocation)."""
+    app = GitHubApp(app_spec(tmp_path), transport=httpx.MockTransport(answer))
+    assert await app.revoke("ghs_PLANTEDrevoke") is None
+
+
+async def test_a_revocation_github_holds_on_to_is_let_go_after_revoke_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step revokes its token even while the story is being cancelled (launchd's SIGTERM), and the story
+    must still post its cancel note before launchd kills it: a GitHub that never answers is not waited for."""
+
+    async def hangs(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(3600)
+        raise AssertionError("not reached")
+
+    assert github_app.REVOKE_S <= 3  # with kill_group's drain and the cancel note, inside launchd's 20 s
+    monkeypatch.setattr(github_app, "REVOKE_S", 0.05)
+    app = GitHubApp(app_spec(tmp_path), transport=httpx.MockTransport(hangs))
+    started = time.monotonic()
+    assert await app.revoke("ghs_PLANTEDrevoke") is None
+    assert time.monotonic() - started < 2
+
+
+async def test_revoking_with_an_api_url_that_cannot_be_used_is_let_go_too(tmp_path: Path) -> None:
+    app = GitHubApp(app_spec(tmp_path, api_url="http://api.github.com"))  # http:// that is not this machine
+    assert await app.revoke("ghs_PLANTEDrevoke") is None
+
+
+# ---- whether GitHub answers at all (a tick that publishes as you asks before it takes an issue) ----
+
+
+async def test_ping_asks_githubs_api_for_its_rate_limit_and_sends_no_credential() -> None:
+    """GET /rate_limit costs no quota: a beat every few minutes never runs the unauthenticated limit down."""
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"resources": {"core": {"limit": 60, "remaining": 60}}})
+
+    assert await github_app.ping("http://127.0.0.1:9/api", transport=httpx.MockTransport(answer)) is None
+    [request] = sent
+    assert (request.method, str(request.url)) == ("GET", "http://127.0.0.1:9/api/rate_limit")
+    assert "authorization" not in request.headers  # nothing of yours, and nothing of the app's
+    assert request.headers["accept"] == "application/vnd.github+json"
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        (lambda request: httpx.Response(503, text="unicorn"), "503 Service Unavailable"),
+        (lambda request: httpx.Response(500, json={"message": "Server Error"}), "500 Internal Server Error"),
+        (
+            lambda request: httpx.Response(302, headers={"location": "https://portal.invalid/login"}),
+            "302 Found",  # a captive portal, say: not followed, and not GitHub
+        ),
+        (lambda request: httpx.Response(404, json={"message": "Not Found"}), "404 Not Found"),
+        (no_reply(httpx.ConnectError), "ConnectError, no reply"),
+        (no_reply(httpx.ConnectTimeout), "ConnectTimeout, no reply"),
+    ],
+    ids=["503", "500", "redirect", "404", "no-reply", "timeout"],
+)
+async def test_ping_names_what_github_said_when_it_does_not_answer_as_it_should(
+    answer: Callable[[httpx.Request], httpx.Response], said: str
+) -> None:
+    with pytest.raises(GitHubAppError) as e:
+        await github_app.ping("http://127.0.0.1:9/api", transport=httpx.MockTransport(answer))
+    assert str(e.value) == f"GitHub GET rate_limit: {said}"
+    assert e.value.__cause__ is None and e.value.__context__ is None
+
+
+async def test_ping_refuses_an_api_url_that_cannot_be_used_before_any_request() -> None:
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200)
+
+    with pytest.raises(GitHubAppError, match="^story.github_app.api_url must be https://"):
+        await github_app.ping("http://api.github.com", transport=httpx.MockTransport(answer))
+    assert sent == []
 
 
 # ---- story check ----
@@ -391,6 +531,16 @@ async def test_a_bot_user_that_cannot_be_found_is_named(tmp_path: Path) -> None:
 async def test_check_says_who_publishes_when_the_app_can(tmp_path: Path) -> None:
     app = fake_app(tmp_path, FakeGitHub())
     assert await app.check("o/r") == ([], [f"publishing to o/r as {SLUG}[bot]"])
+
+
+async def test_check_revokes_every_token_it_mints(tmp_path: Path) -> None:
+    """One to read what a token is granted, one to look the bot up: neither outlives the check."""
+    github = FakeGitHub()
+    problems, _ = await fake_app(tmp_path, github).check("o/r")
+    assert problems == [] and len(github.tokens) == 2 and github.revoked == github.tokens
+    lacking = FakeGitHub(granted={"contents": "read"})  # a check that finds a problem revokes it as well
+    problems, _ = await fake_app(tmp_path, lacking).check("o/r")
+    assert problems and lacking.tokens and lacking.revoked == lacking.tokens
 
 
 async def test_check_warns_of_a_key_that_group_or_others_can_read(tmp_path: Path) -> None:

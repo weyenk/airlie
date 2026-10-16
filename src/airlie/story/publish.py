@@ -5,13 +5,14 @@ human merges.
 
 Each publish step (the fetch, the stack, the submit, each `gh pr view` and `gh pr edit`) runs as one of two
 identities (docs/integrations/story.md, Publishing as a bot): a GitHub App's bot (story.github_app), with a
-token minted for that step and scoped to the story's repository, over HTTPS and with none of the person's
-credentials (bot_env); or the person, with their own gh login and SSH key (person_env). Either way git runs no
-repository hook and no fsmonitor, uses no credential helper or ssh command the repository's own configuration
-names, and nothing prompts; gh is told the story's repository (GH_REPO) instead of finding one among the
-remotes; and a step starts only once git's own answer to where it would fetch from and push to is the story's
-repository on github.com (effective_urls, misdirected). As you, a remote that names no github.com repository
-has none to be held to."""
+token minted for that step, scoped to the story's repository and revoked when the step ends, over HTTPS and
+with none of the person's credentials (bot_env); or the person, with their own gh login and SSH key
+(person_env). Either way git runs no repository hook and no fsmonitor, uses no credential helper or ssh
+command the repository's own configuration names, and nothing prompts; gh is told the story's repository
+(GH_REPO) instead of finding one among the remotes, and no other host (GH_HOST is dropped); and a step starts
+only once git's own answer to where it would fetch from and push to is the story's repository on github.com
+(effective_urls, misdirected). As you, a remote that names no github.com repository has none to be held
+to."""
 
 from __future__ import annotations
 
@@ -38,6 +39,10 @@ _HEAD, _TAIL = 200, 600  # how much of a failed command's output a PublishError 
 
 QUIET = {"GH_STACK_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 """gh and gh-stack: no update notice and no prompt."""
+NO_GH_HOST = "GH_HOST"
+"""Dropped from every publish step's environment: the host gh puts a repository on when GH_REPO names none
+(it is "owner/name"). One that named another host would have gh, and the step's credentials with it (the
+bot's token, or your login), go there instead of github.com."""
 PERSON_TRANSPORTS = "ssh:https"
 """The transports publishing as you allows (GIT_ALLOW_PROTOCOL): SSH and HTTPS remotes, and no remote on this
 machine. For a remote that is a path, git runs the receivepack or uploadpack command the repository's
@@ -150,8 +155,10 @@ def person_env(person: PersonGit, remote: str = "origin", *, repository: str | N
     helpers pinned over whatever the repository's configuration says (command-line configuration outranks it;
     the empty helper resets the list first), then PINNED for `remote`. With `repository` ("owner/name": the
     story's, once the remote names one on github.com), gh is told it as GH_REPO, so neither gh nor gh-stack
-    picks one from the remotes, where a model can add one and mark it (remote.<name>.gh-resolved)."""
+    picks one from the remotes, where a model can add one and mark it (remote.<name>.gh-resolved). Your
+    GH_HOST is dropped either way (NO_GH_HOST)."""
     env = {**os.environ, **QUIET, **NO_PROMPTS, **NO_GIT_PROXY, "GIT_ALLOW_PROTOCOL": PERSON_TRANSPORTS}
+    env.pop(NO_GH_HOST, None)
     if repository is not None:
         env["GH_REPO"] = repository
     pins = [("core.sshCommand", person.ssh_command), ("credential.helper", ""), *person.helpers]
@@ -164,9 +171,10 @@ def bot_env(
     """A publish step as the bot: the agent environment (none of your credentials: no gh token or login, no
     SSH agent, no git over SSH, every credential helper reset, no prompt), then the step's token as GH_TOKEN,
     `gh_dir` (empty, the step's own) as gh's configuration, `repository` (the one the token covers) as
-    GH_REPO, git limited to HTTPS, no hook or fsmonitor, BOT_GIT, and PINNED for `remote` and for each of
-    `urls`, the URLs it fetches from and pushes to."""
+    GH_REPO and no GH_HOST (NO_GH_HOST), git limited to HTTPS, no hook or fsmonitor, BOT_GIT, and PINNED for
+    `remote` and for each of `urls`, the URLs it fetches from and pushes to."""
     env = agent_env()
+    env.pop(NO_GH_HOST, None)
     env.update(QUIET)
     env.update(NO_GIT_PROXY)
     env.update(
@@ -365,8 +373,9 @@ class Publisher:
     async def _step(self, cwd: Path) -> AsyncIterator[dict[str, str]]:
         """The environment of one publish step in `cwd`, once where git would fetch from and push to has been
         found to be the story's repository (anywhere else is refused before any command runs). As the bot: a
-        token minted now, for this step alone, and gh pointed at an empty directory made for it and removed
-        after it. As you: person_env."""
+        token minted now, for this step alone, and revoked when the step ends however it ends (best effort:
+        GitHubApp.revoke), and gh pointed at an empty directory made for it and removed after it. As you:
+        person_env."""
         if self.app is None:
             if self._person is None:
                 self.prepare(cwd)
@@ -386,7 +395,10 @@ class Publisher:
                 raise PublishError(wrong[0])
             token = await self._token(app, repository)
             urls = dict.fromkeys([*fetch, *push])
-            yield bot_env(token, Path(gh_dir), self.remote, urls=urls, repository=repository)
+            try:
+                yield bot_env(token, Path(gh_dir), self.remote, urls=urls, repository=repository)
+            finally:  # however the step ended: its token stops working now, not in an hour
+                await app.revoke(token)
 
     @staticmethod
     async def _token(app: GitHubApp, repository: str) -> str:
