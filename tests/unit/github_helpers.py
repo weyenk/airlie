@@ -53,7 +53,8 @@ class FakeGitHub:
     of rsa_key()) holding `permissions`, its installation on `installed` repositories (`selection`: "all" or
     "selected"), whose tokens may cover the names in `covered` and as much of `permissions` as a mint asks
     for, a new token for every mint (`tokens`), and the bot's user. `granted` replaces what a token is said to
-    hold. Every request is kept."""
+    hold. A token revoked with itself (DELETE /installation/token) is kept in `revoked` and works no more.
+    Every request is kept."""
 
     def __init__(
         self,
@@ -71,7 +72,12 @@ class FakeGitHub:
         self.granted = granted
         self.requests: list[httpx.Request] = []
         self.tokens: list[str] = []
+        self.revoked: list[str] = []
         self.jwts: list[str] = []
+
+    def _live(self, token: str) -> bool:
+        """A token this GitHub minted and nobody has revoked."""
+        return token in self.tokens and token not in self.revoked
 
     @staticmethod
     def _bearer(request: httpx.Request) -> str:
@@ -81,8 +87,13 @@ class FakeGitHub:
         self.requests.append(request)
         # app_spec's api_url ends in /api, as a GitHub Enterprise one would: the routes are under it
         method, path, bearer = request.method, request.url.path.removeprefix("/api"), self._bearer(request)
+        if method == "DELETE" and path == "/installation/token":  # a token revokes itself
+            if not self._live(bearer):
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            self.revoked.append(bearer)
+            return httpx.Response(204)
         if path.startswith("/users/"):  # with an installation token
-            if bearer not in self.tokens:
+            if not self._live(bearer):
                 return httpx.Response(401, json={"message": "Bad credentials"})
             if path == f"/users/{SLUG}[bot]":
                 return httpx.Response(200, json={"login": f"{SLUG}[bot]", "id": BOT_ID, "type": "Bot"})

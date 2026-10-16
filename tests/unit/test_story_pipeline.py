@@ -1431,6 +1431,7 @@ async def test_as_the_bot_a_story_mints_a_token_per_step_for_its_repository_and_
     assert st.blocked is None and st.stage == "review" and st.github_repo == "o/r"
     assert github.asked("GET").count("/api/repos/o/r/installation") == 1
     assert github.minted_for() == [["r"]] * 8  # the bot's identity, the fetch, then six publish steps
+    assert github.revoked == github.tokens  # and each was revoked when its lookup or its step was done
     # each step's own token: the fetch, the stack (its view and its init), the submit, each PR's view and edit
     assert [c[:3] for c in gh.calls] == [
         ["git", "fetch", "-q"],

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ import pytest
 
 from airlie.engine import EngineHealth, FakeEngine
 from airlie.story import factory
+from airlie.story import github_app as github_app_module
 from airlie.story.board import NOTE_PREFIX, BoardError, Card, Column, NullBoard, text_card
 from airlie.story.factory import (
     Place,
@@ -38,7 +39,7 @@ from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
-from tests.unit.github_helpers import FakeGitHub, fake_app
+from tests.unit.github_helpers import FakeGitHub, app_spec, fake_app, key_file
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_board import FakeJira
 from tests.unit.test_story_board import board as jira_board_for
@@ -305,15 +306,36 @@ class Engine:
 TOP = Card("AIR-7", "10007", "AIR-7", "Avatar upload", "", labels=("repo:o/repo",))
 
 
+def github_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Callable[[httpx.Request], httpx.Response] = lambda request: httpx.Response(200, json={}),
+) -> list[httpx.Request]:
+    """GitHub's API as a tick that publishes as you pings it (github_app.ping), answering with `answer` (200
+    by default); returns the requests it got. A tick that publishes as the bot asks its app instead."""
+    asked: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        return answer(request)
+
+    async def ping(api_url: str) -> None:
+        await github_app_module.ping(api_url, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(factory, "ping", ping)
+    return asked
+
+
 def tick_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, board: Any, engine: Engine
 ) -> tuple[Any, Path]:
-    """A tick over `board`, whose issues are for o/repo: its checkout is in story.repos_root. Neither
-    story.repo nor a test command is set: an issue's repository is its label, and its gate is AGENTS.md's."""
+    """A tick over `board`, whose issues are for o/repo: its checkout is in story.repos_root, and GitHub
+    answers. Neither story.repo nor a test command is set: an issue's repository is its label, and its gate
+    is AGENTS.md's."""
     repo = checkout_of(tmp_path / "git", "o/repo")
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
     monkeypatch.setattr(factory, "make_board", lambda cfg: board)
     monkeypatch.setattr(factory, "_engine", lambda cfg: engine)
+    github_answers(monkeypatch)
     return cfg, repo
 
 
@@ -376,8 +398,10 @@ async def test_a_tick_does_not_start_a_story_while_the_engine_is_down(
 ) -> None:
     board = Intake(TOP)
     cfg, _ = tick_setup(tmp_path, monkeypatch, board, Engine(health))
+    asked = github_answers(monkeypatch)
     assert (await tick(cfg)).startswith("engine down: start it with")
     assert board.asked == 0  # the issue stays where it is
+    assert asked == []  # the engine is named first; GitHub is not asked
 
 
 async def test_a_tick_does_nothing_while_a_story_is_in_flight(
@@ -385,10 +409,110 @@ async def test_a_tick_does_nothing_while_a_story_is_in_flight(
 ) -> None:
     board, engine = Intake(TOP), Engine(True)
     cfg, _ = tick_setup(tmp_path, monkeypatch, board, engine)
+    asked = github_answers(monkeypatch)
     with story_lock(stories_dir(cfg)) as held:
         assert held
         assert await tick(cfg) == "busy: a story is in flight"
-    assert (board.asked, engine.probed) == (0, 0)
+    assert (board.asked, engine.probed, asked) == (0, 0, [])
+
+
+def unavailable(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(503, text="unicorn")
+
+
+def no_reply(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("connection refused", request=request)
+
+
+def no_story(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tick that takes an issue fails the test right there, before its story (and any git or gh, which
+    would go to the checkout's github.com remote) can run."""
+
+    def made(cfg: Any, **kw: Any) -> Any:
+        raise AssertionError("the tick took an issue and started its story")
+
+    monkeypatch.setattr(factory, "make_pipeline", made)
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [
+        (unavailable, "GitHub GET rate_limit: 503 Service Unavailable"),
+        (no_reply, "GitHub GET rate_limit: ConnectError, no reply"),
+    ],
+    ids=["503", "no-reply"],
+)
+async def test_as_you_a_tick_takes_no_issue_while_github_does_not_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Callable[[httpx.Request], httpx.Response],
+    said: str,
+) -> None:
+    """Every issue a tick took now would stop at the trunk fetch and go to blocked: the queue waits instead,
+    as it does for the engine, and the next beat asks again."""
+    board = Intake(TOP)
+    cfg, _ = tick_setup(tmp_path, monkeypatch, board, Engine(True))
+    no_story(monkeypatch)
+    asked = github_answers(monkeypatch, answer)
+    assert await tick(cfg) == f"github down: {said}"
+    assert board.asked == 0 and len(asked) == 1  # the issue stays in To Do, untouched
+    asked = github_answers(monkeypatch)  # GitHub is back: the next beat asks the board again
+    board.top = None
+    assert await tick(cfg) == "idle: no issue matches the intake query"
+    assert board.asked == 1 and len(asked) == 1
+
+
+def app_down(github: FakeGitHub, says: str) -> httpx.MockTransport:
+    """`github`, but GET /app (the app asking who it is) gets a 503 with `says`."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/app":
+            github.requests.append(request)
+            return httpx.Response(503, json={"message": says})
+        return github(request)
+
+    return httpx.MockTransport(answer)
+
+
+@pytest.mark.parametrize("why", ["github 503", "no key", "another key"])
+async def test_as_the_bot_a_tick_takes_no_issue_while_the_app_cannot_reach_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """GitHubApp.slug is the check: GitHub must answer the app's JWT, so its key must be there and be the
+    app's. Each would stop every issue at the bot's identity (`stopped after 'new'`), so none is taken."""
+    board, github = Intake(TOP), FakeGitHub()
+    cfg, _ = tick_setup(tmp_path, monkeypatch, board, Engine(True))
+    no_story(monkeypatch)
+    pinged = github_answers(monkeypatch)
+    if why == "github 503":
+        app = GitHubApp(app_spec(tmp_path), transport=app_down(github, "down\nfor maintenance"))
+        said = "GitHub GET app: 503 down for maintenance"  # one line in the log, whatever GitHub says
+    elif why == "no key":
+        app = fake_app(tmp_path, github, key_file=tmp_path / "nowhere.pem")
+        said = (
+            f"story.github_app.key_file {tmp_path / 'nowhere.pem'} cannot be read (No such file or "
+            "directory): put the app's private key there"
+        )
+    else:
+        other = key_file(tmp_path, "other")
+        app = fake_app(tmp_path, github, key_file=other)
+        said = "GitHub refused the app's JWT (401 A JSON web token could not be decoded): check that "
+    monkeypatch.setattr(factory, "github_app", lambda cfg: app)
+    line = await tick(cfg)
+    assert line.startswith(f"github down: {said}") and "\n" not in line
+    assert board.asked == 0 and pinged == []  # as the bot, the app is the check
+    assert github.tokens == []  # nothing was minted
+
+
+async def test_as_the_bot_a_tick_whose_app_github_answers_takes_the_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board, github = Intake(None), FakeGitHub()
+    cfg, _ = tick_setup(tmp_path, monkeypatch, board, Engine(True))
+    pinged = github_answers(monkeypatch)
+    monkeypatch.setattr(factory, "github_app", lambda cfg: fake_app(tmp_path, github))
+    assert await tick(cfg) == "idle: no issue matches the intake query"
+    assert board.asked == 1 and pinged == [] and github.asked("GET") == ["/api/app"]
 
 
 # ---- a poison issue: a story that cannot be opened must not hold up the issues behind it ----
@@ -440,9 +564,10 @@ NEXT = Card("AIR-8", "10008", "AIR-8", "Avatar upload", "Users want avatars", la
 def queue_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, board: QueueBoard, *, blocked: str | None = "Blocked"
 ) -> tuple[Any, RecordedGh]:
-    """A tick over `board`, in which every story builds on a fresh FakeEngine with a recorded gh. AIR-7 is for
-    o/poison and AIR-8 for o/repo, each with its checkout in story.repos_root (tmp/git) and an AGENTS.md whose
-    gate is ./check.sh. Their remotes are GitHub's, so the recorded gh fetches nothing."""
+    """A tick over `board`, in which every story builds on a fresh FakeEngine with a recorded gh, and GitHub
+    answers. AIR-7 is for o/poison and AIR-8 for o/repo, each with its checkout in story.repos_root (tmp/git)
+    and an AGENTS.md whose gate is ./check.sh. Their remotes are GitHub's, so the recorded gh fetches
+    nothing."""
     root = tmp_path / "git"
     repo = checkout_of(root, "o/repo")
     checkout_of(root, "o/poison")
@@ -458,6 +583,7 @@ def queue_setup(
     monkeypatch.setattr(
         factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
     )
+    github_answers(monkeypatch)
     return cfg, gh
 
 

@@ -1,8 +1,9 @@
 """Publishing as a GitHub App's bot (story.github_app; docs/integrations/story.md, Publishing as a bot). The
 app signs a short-lived JWT with its private key, finds its installation on the story's repository, and mints
 an installation token scoped to that one repository: gh and git publish with it. A token is minted at the
-start of each publish step and kept nowhere (not in the state, an event or a file). The bot's identity,
-`<slug>[bot]` and its noreply address, authors the layer commits.
+start of each publish step, kept nowhere (not in the state, an event or a file) and revoked when the step
+ends. The bot's identity, `<slug>[bot]` and its noreply address, authors the layer commits. `ping` asks
+whether GitHub's API answers at all, with no credential, for a tick that publishes as the person.
 
 An error says what failed and how to fix it, and never holds the token, the JWT or the key: those travel only
 in the Authorization header or stay in memory, GitHub's own message is cut short with them masked, and every
@@ -11,6 +12,8 @@ carries the header)."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import stat
 import time
@@ -36,6 +39,10 @@ _SAID = 200
 """How much of GitHub's own message an error keeps."""
 PUBLISHES = {"contents": "write", "pull_requests": "write"}
 """What every token is minted with, whatever more the app holds: pushing the layers and opening the PRs."""
+REVOKE_S = 3.0
+"""How long a revocation may take before it is let go. A publish step revokes its token even while the story
+is being cancelled (launchd's SIGTERM), and the story must still post its cancel note before launchd kills it,
+20 s after the SIGTERM."""
 
 
 class GitHubAppError(RuntimeError):
@@ -45,7 +52,8 @@ class GitHubAppError(RuntimeError):
 
 @dataclass(frozen=True)
 class InstallationToken:
-    """A token of the app's installation, for one repository; it lasts an hour. Its repr leaves it out."""
+    """A token of the app's installation, for one repository; it lasts an hour unless it is revoked first
+    (GitHubApp.revoke). Its repr leaves it out."""
 
     token: str = field(repr=False)
     expires_at: str
@@ -96,6 +104,48 @@ def api_base(url: str) -> str:
     raise GitHubAppError(f"story.github_app.api_url {problem}")  # outside the handler: nothing is chained
 
 
+async def _request(
+    api_url: str,
+    transport: httpx.AsyncBaseTransport | None,
+    method: str,
+    path: str,
+    bearer: str | None,
+    **kw: Any,
+) -> httpx.Response:
+    """One request to GitHub's API at `api_url` on a short-lived client, with `bearer` (the JWT, or a token;
+    None: no credential at all) in the Authorization header. Redirects are not followed: the header stays with
+    api_url. GitHubAppError when GitHub cannot be reached; it names the method and path, never a header."""
+    base = api_base(api_url)
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if bearer is not None:
+        headers["Authorization"] = f"Bearer {bearer}"
+    failure = ""
+    try:
+        async with httpx.AsyncClient(
+            base_url=base + "/",
+            headers=headers,
+            transport=transport,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=False,
+        ) as client:
+            r = await client.request(method, path, **kw)
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        failure = f"{type(e).__name__}, no reply"
+    if failure:
+        raise GitHubAppError(f"GitHub {method} {path}: {failure}")
+    return r
+
+
+async def ping(api_url: str, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    """That GitHub's API at `api_url` answers: GET /rate_limit, sent with no credential, succeeds. It costs no
+    quota, so a beat every few minutes never runs the unauthenticated limit down. Otherwise a GitHubAppError
+    says what came back, or that nothing did. A tick asks this before it takes an issue when the publish steps
+    run as you; as the bot, it asks the app (GitHubApp.slug)."""
+    r = await _request(api_url, transport, "GET", "rate_limit", None)
+    if not r.is_success:
+        raise GitHubAppError(f"GitHub GET rate_limit: {r.status_code} {r.reason_phrase}")
+
+
 class GitHubApp:
     """The app of story.github_app, over GitHub's REST API (`transport` stands in for GitHub in tests). It
     keeps what is not secret (the app's slug, its installation per repository, the bot's identity) for the
@@ -137,29 +187,8 @@ class GitHubApp:
         raise GitHubAppError(f"story.github_app.key_file {self.key_file} {failure}")
 
     async def _call(self, method: str, path: str, bearer: str, **kw: Any) -> httpx.Response:
-        """One request on a short-lived client, with `bearer` (the JWT, or a token) in the Authorization
-        header. Redirects are not followed: the header stays with api_url. GitHubAppError when GitHub cannot
-        be reached; it names the method and path, never a header."""
-        base = api_base(self.api_url)
-        failure = ""
-        try:
-            async with httpx.AsyncClient(
-                base_url=base + "/",
-                headers={
-                    "Authorization": f"Bearer {bearer}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                transport=self._transport,
-                timeout=httpx.Timeout(30.0, connect=10.0),
-                follow_redirects=False,
-            ) as client:
-                r = await client.request(method, path, **kw)
-        except (httpx.HTTPError, httpx.InvalidURL) as e:
-            failure = f"{type(e).__name__}, no reply"
-        if failure:
-            raise GitHubAppError(f"GitHub {method} {path}: {failure}")
-        return r
+        """One request (_request) to the app's api_url, with `bearer` (the JWT, or a token)."""
+        return await _request(self.api_url, self._transport, method, path, bearer, **kw)
 
     @staticmethod
     def _said(r: httpx.Response, bearer: str) -> str:
@@ -237,7 +266,7 @@ class GitHubApp:
     async def token(self, repo: str) -> InstallationToken:
         """A token of the app's installation for `repo` ("owner/name") and no other repository, with
         PUBLISHES and nothing more (POST /app/installations/{id}/access_tokens, as the app). It lasts an
-        hour."""
+        hour; whoever asked for it revokes it once done with it (revoke)."""
         installation, _ = await self._installation(repo)
         slug = await self.slug()
         path, bearer = f"app/installations/{installation}/access_tokens", self._jwt()
@@ -258,13 +287,26 @@ class GitHubApp:
         granted = {str(k): str(v) for k, v in permissions.items()} if isinstance(permissions, dict) else {}
         return InstallationToken(token, str(body.get("expires_at") or ""), granted)
 
+    async def revoke(self, token: str) -> None:
+        """Revoke `token`, one of the app's installation tokens, so it stops working now rather than at the
+        end of its hour (DELETE /installation/token, with the token itself in the Authorization header). Best
+        effort: when GitHub refuses, does not answer or takes more than REVOKE_S, the token is left to expire,
+        and nothing is raised."""
+        with contextlib.suppress(GitHubAppError, TimeoutError):  # the token then lasts out its hour
+            async with asyncio.timeout(REVOKE_S):
+                await self._call("DELETE", "installation/token", token)
+
     async def identity(self, repo: str) -> BotIdentity:
-        """Who the bot is (GET /users/<slug>[bot], with a token for `repo`): its name and its noreply address,
-        which GitHub links to the bot's account, so a commit with them shows as the bot's."""
+        """Who the bot is (GET /users/<slug>[bot], with a token for `repo`, revoked once the lookup is done):
+        its name and its noreply address, which GitHub links to the bot's account, so a commit with them shows
+        as the bot's."""
         if self._identity is None:
             slug = await self.slug()
             path, bearer = f"users/{slug}%5Bbot%5D", (await self.token(repo)).token
-            r = await self._call("GET", path, bearer)
+            try:
+                r = await self._call("GET", path, bearer)
+            finally:  # the lookup is all this token was for
+                await self.revoke(bearer)
             if not r.is_success:
                 raise GitHubAppError(f"GitHub GET {path}: {self._said(r, bearer)}")
             uid = self._id(self._json(r, "GET", path))
@@ -287,10 +329,12 @@ class GitHubApp:
         if mode & (stat.S_IRGRP | stat.S_IROTH):
             notes.append(f"warning: {self.key_file} is readable by group or others: chmod 600 it")
         try:
-            granted = (await self.token(repo)).permissions
+            minted = await self.token(repo)
+            await self.revoke(minted.token)  # what it was granted is all check wants of it
             bot = await self.identity(repo)
         except GitHubAppError as e:
             return [str(e)], notes
+        granted = minted.permissions
         lacking = [p for p in ("contents", "pull_requests") if granted.get(p) != "write"]
         if lacking:
             have = ", ".join(f"{k}: {v}" for k, v in sorted(granted.items())) or "none"
