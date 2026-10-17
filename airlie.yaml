@@ -38,12 +38,12 @@ engines:
 # `task doctor` warns on hybrid models. To swap the team model: change `roles.coder.model` (and `aggregator`).
 models:
   base:                            # Qwen3-Coder-30B-A3B: MoE (3B active), standard GQA attention, coding + tool use
-    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
-    revision: 6e302ea604ad9ab206367e2c501d1571023e7b6d   # 2025-08-06
+    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-6bit   # the 4-bit dropped `"` before `]` (HDS-5); 8-bit overruns studio
+    revision: 8730fb50f41e7f3ad7af9d10cb928274e479f071   # 2025-07-31
     preload: true
     bench: true
     tags: [modern, coder, moe]
-    estimated_memory_gb: 17
+    estimated_memory_gb: 24.8
     kv_mb_per_1k_tokens: 192
     tool_call_parser: qwen3_xml_raw  # airlie's: values stay raw text (vllm-mlx's qwen3_coder mangles code, bench 2026-10-14)
     reasoning_parser: qwen3      # server-wide flag (taken from the team model): thinking roles on Qwen3.8 return
@@ -204,6 +204,7 @@ topology:
     studio-qwen38:                 # the bench variant: Qwen3.8-27B in the coder seat (design §3)
       extends: studio
       roles: { coder: { model: generalist, thinking: true, thinking_budget: 8192, max_tokens: 16384 } }
+      models: { base: { preload: false } }   # its coder is generalist; base (security) loads on demand, so the 6-bit fits
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck
