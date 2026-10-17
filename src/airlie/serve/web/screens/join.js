@@ -31,6 +31,7 @@ export function render(root, [token], ctx) {
       if (e?.status === 410) expired();
       else if (e?.name === "NotAllowedError" || e?.name === "AbortError") error.textContent = "";
       else if (e?.name === "InvalidStateError") error.textContent = "This device already has a passkey for airlie. Sign in with it instead.";
+      else if (e instanceof TypeError) error.textContent = "Can't reach airlie. Is it running, and are you on Noah's network?";
       else error.textContent = `Couldn't create the passkey: ${e.message}`;
       if (e?.status !== 410) button.disabled = false;
     }

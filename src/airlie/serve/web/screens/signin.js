@@ -32,6 +32,7 @@ export function render(root, _params, ctx) {
     } catch (e) {
       if (e?.name === "NotAllowedError" || e?.name === "AbortError") error.textContent = "";
       else if (e?.name === "AuthError" || e?.status === 401) error.textContent = "That passkey isn't known here. Ask Noah for an invite.";
+      else if (e instanceof TypeError) error.textContent = "Can't reach airlie. Is it running, and are you on Noah's network?";
       else error.textContent = `Can't sign in: ${e.message}`;
     } finally {
       device.disabled = false;
