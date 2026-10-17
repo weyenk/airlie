@@ -27,6 +27,9 @@ from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column,
 SETTINGS = {"site": "ATLASSIAN_BASE_URL", "project": "ATLASSIAN_PROJECT_KEY"}
 """story.jira field → the variable that wins over it (the credentials: ATLASSIAN_EMAIL, ATLASSIAN_API_KEY)."""
 FIELDS = "summary,description,comment,status,labels"
+IMPORT_FIELDS = FIELDS + ",issuetype,parent,created"
+"""What an import of the project reads besides a card's fields: the level, the parent, the creation time."""
+_PAGE = 100
 _PAIR = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")
 _QUOTED = re.compile(r"""(["'])(.*?)\1(?:\s+#.*)?""")  # "value" or 'value', then perhaps  # a comment
 _COMMENT = re.compile(r"\s+#.*")
@@ -344,6 +347,22 @@ class JiraBoard:
         params = {"jql": self.jql, "maxResults": 1, "fields": FIELDS}
         issues = (await self._send("GET", "search/jql", params=params)).get("issues") or []
         return self._card(issues[0]) if issues else None
+
+    async def project_issues(self) -> list[dict[str, Any]]:
+        """Every issue of the project, whatever its status, oldest first, as Jira returns them (the fields of
+        IMPORT_FIELDS): search/jql hands out a nextPageToken until isLast. For `airlie board import-jira`."""
+        jql = f'project = "{self.project}" ORDER BY created ASC'
+        issues: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            params: dict[str, Any] = {"jql": jql, "maxResults": _PAGE, "fields": IMPORT_FIELDS}
+            if token:
+                params["nextPageToken"] = token
+            page = await self._send("GET", "search/jql", params=params)
+            issues.extend(i for i in page.get("issues") or [] if isinstance(i, dict))
+            token = page.get("nextPageToken") or None
+            if page.get("isLast", True) or not token:
+                return issues
 
     async def move(self, card: Card, column: Column) -> None:
         """Transition the issue to the column's status: nothing for a switched-off column (blocked: null) or
