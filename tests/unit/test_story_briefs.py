@@ -479,3 +479,14 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
     text = layers_brief(STORY, 4, round_steps=5)
     assert "asked for your plan after every 5 steps" in text and "no tools on that turn" in text
     assert '"refine" object' in text and "worth_another_round" in text
+
+
+def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_there_are_some() -> None:
+    plain = layer_plan(STORY, LAYERS, 1, build_role="coder").subtasks[0].brief
+    assert "Already read for you" not in plain
+    full = layer_plan(STORY, LAYERS, 1, build_role="coder", guide="### src/profile.py\n```\nx = 1\n```")
+    brief = full.subtasks[0].brief
+    assert "Already read for you (do not read these again)\n### src/profile.py" in brief
+    assert brief.index("Already read for you") < brief.index(
+        "Show the avatar."
+    )  # before the layer's own text

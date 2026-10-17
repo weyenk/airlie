@@ -596,6 +596,53 @@ async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it
     assert told.role == "user" and "No tools are available on this turn" in str(told.content)
 
 
+def reads(n: int) -> list[FakeReply]:
+    return [
+        FakeReply(tool_calls=[ToolCall(f"r{i}", "read_file", json.dumps({"path": f"f{i}"}))])
+        for i in range(n)
+    ]
+
+
+def told_to_write(engine: FakeEngine) -> list[int]:
+    """The 1-based requests whose messages hold the write-now nudge."""
+    return [
+        i
+        for i, r in enumerate(engine.requests, 1)
+        if any(m.role == "user" and "written nothing" in str(m.content) for m in r.messages)
+    ]
+
+
+async def test_a_role_that_can_write_and_has_only_read_is_told_once_to_write_two_fifths_in(
+    tmp_path: Path,
+) -> None:
+    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)
+    await team.run(ctx, Recorder())
+    # 10 steps: the fourth is the line; the fifth request is the first to carry it, and it carries it on
+    assert told_to_write(engine)[0] == 5 and told_to_write(engine) == list(range(5, len(engine.requests) + 1))
+    asked = [m for m in engine.requests[-1].messages if "written nothing" in str(m.content)]
+    assert len(asked) == 1 and "4 of your 10 steps" in str(asked[0].content)  # said once, not each step
+
+
+async def test_a_role_that_has_written_is_not_told_to(tmp_path: Path) -> None:
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
+    )
+    engine = FakeEngine({"coder": [reads(1)[0], write, *reads(6), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)
+    await team.run(ctx, Recorder())
+    assert told_to_write(engine) == []
+
+
+async def test_a_role_with_no_write_tool_is_not_told_to_write(tmp_path: Path) -> None:
+    engine = FakeEngine({"architect": [*reads(8), FakeReply(text="Done.")]})
+    team, ctx = make_team(
+        tmp_path, engine, max_steps=10, role_name="architect", tool_names=("read_file", "list_dir")
+    )
+    await team.run(ctx, Recorder())
+    assert told_to_write(engine) == []
+
+
 class Events:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []

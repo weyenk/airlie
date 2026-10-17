@@ -97,6 +97,12 @@ LAST_STEP = (
 )
 """What a role is told on the turn after its last allowed step, which offers it no tools."""
 
+WRITE_NOW = (
+    "You have used {n} of your {total} steps and have written nothing. Stop reading: you have what you need. "
+    "Write the change now (a test file first, if the task asks for tests), then run run_tests."
+)
+"""What a role with write tools is told, once, when it is two-fifths through its steps without a write."""
+
 LAST_TURN_RETRY = (
     "No tools are available on this turn, so nothing you call can run. Write your answer now, complete, in "
     "your reply, from what you have already read."
@@ -159,6 +165,9 @@ class NativeTeam:
         ok = False
         corrected = False  # the current streak of unparsed tool calls has had its one correction
         last_corrected = False  # the tool-less last turn has had its one correction
+        can_write = bool({"write_file", "edit_file"} & set(ctx.tools.names()))
+        wrote = False  # a write_file or edit_file has run
+        write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
@@ -271,6 +280,8 @@ class NativeTeam:
                     draft_tokens=res.draft_tokens,
                 )
                 await observer.after_step(step_record)
+                if call.name in ("write_file", "edit_file"):
+                    wrote = True
                 if call.name == "run_tests":
                     last_test_output = result.output
                 recent.append((call.name, call.arguments, result.output))
@@ -292,6 +303,8 @@ class NativeTeam:
                 final_text = f"stopped: token budget {ctx.token_budget} exhausted"
                 stop = "token_budget"
                 break
+            if can_write and not wrote and steps == write_by:
+                messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
             if steps >= ctx.max_steps:
                 last_turn = True
                 messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))
