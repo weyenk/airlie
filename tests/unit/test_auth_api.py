@@ -347,3 +347,18 @@ def test_login_options_flood_leaves_the_server_bounded(studio: Studio) -> None:
     token = studio.invite("Pat")
     key = SoftAuthenticator()
     assert studio.register(token, key).status_code == 201
+
+
+def test_an_admin_issues_a_fresh_link_for_an_existing_person(studio: Studio) -> None:
+    """The People list's "New link": someone's invite lapsed, or they want a passkey on a second device."""
+    token = studio.invite("Pat")
+    pat_id = studio.store.peek_invite(token).id  # type: ignore[union-attr]
+    r = studio.admin.post(f"/v1/auth/users/{pat_id}/invites")
+    assert r.status_code == 201, r.text
+    assert r.json()["user"]["id"] == pat_id and r.json()["url"].startswith("/#/join/")
+    fresh = r.json()["url"].removeprefix("/#/join/")
+    assert fresh != token
+    assert studio.register(fresh, SoftAuthenticator()).status_code == 201
+    assert [u["name"] for u in studio.admin.get("/v1/auth/users").json()] == ["Noah", "Pat"]  # nobody new
+    assert studio.admin.post("/v1/auth/users/nobody/invites").status_code == 404
+    assert studio.phone.post(f"/v1/auth/users/{pat_id}/invites").status_code == 403

@@ -1,7 +1,7 @@
 // The shell: header, navigation (the top nav on desktop, the tab bar on phones), the theme toggle, and a hash
 // router over the screens. A screen module exports `title`, `render(root, params, ctx)` (returning a cleanup
 // function or nothing) and, for Sign in, `bare` (no chrome around it).
-import { clearKey, getKey, setAuthHandler } from "./api.js";
+import { getKey, setAuthHandler, signOut as endSession, whoami } from "./api.js";
 import { clear, h, icon } from "./dom.js";
 import * as signin from "./screens/signin.js";
 
@@ -11,8 +11,10 @@ const ROUTES = [
   { re: /^#\/jobs\/([^/]+)$/, nav: "jobs", load: () => import("./screens/job.js") },
   { re: /^#\/start$/, nav: "chat", load: () => import("./screens/start.js") },
   { re: /^#\/board(?:\/([^/]+))?$/, nav: "board", load: () => import("./screens/board.js") },
-  { re: /^#\/(topology|metrics|admin)$/, nav: "$1", load: () => import("./screens/soon.js") },
-  { re: /^#\/signin$/, nav: null, load: async () => signin },
+  { re: /^#\/(topology|metrics)$/, nav: "$1", load: () => import("./screens/soon.js") },
+  { re: /^#\/admin$/, nav: "admin", load: () => import("./screens/admin.js") },
+  { re: /^#\/join\/([^/]+)$/, nav: null, public: true, load: () => import("./screens/join.js") },
+  { re: /^#\/signin$/, nav: null, public: true, load: async () => signin },
 ];
 
 const NAV = [
@@ -56,8 +58,9 @@ const signOut = h(
   {
     type: "button",
     class: "linkbtn",
-    onclick: () => {
-      clearKey();
+    onclick: async () => {
+      await endSession();
+      ctx.signedIn = false;
       ctx.returnTo = "";
       ctx.go("#/signin");
     },
@@ -97,6 +100,7 @@ let cleanup = null;
 let current = "";
 const ctx = {
   returnTo: "",
+  signedIn: false, // the server knew us (Tailscale identity or a passkey session) the last time we asked
   go(hash) {
     if (location.hash === hash) route();
     else location.hash = hash;
@@ -104,22 +108,35 @@ const ctx = {
 };
 
 setAuthHandler(() => {
-  if (!location.hash.startsWith("#/signin")) {
+  ctx.signedIn = false;
+  if (!location.hash.startsWith("#/signin") && !location.hash.startsWith("#/join/")) {
     ctx.returnTo = location.hash || "#/";
     ctx.go("#/signin");
   }
 });
 
+/** Without a stored key, ask the server once whether it already knows us (behind tailscale serve it does). */
+async function knownToServer() {
+  if (ctx.signedIn) return true;
+  try {
+    ctx.signedIn = Boolean(await whoami());
+  } catch {
+    ctx.signedIn = false; // unreachable: Sign in says so
+  }
+  return ctx.signedIn;
+}
+
 async function route() {
   const hash = location.hash || "#/";
   const found = ROUTES.map((r) => ({ r, m: hash.match(r.re) })).find((x) => x.m);
   if (!found) return ctx.go("#/");
-  const isSignin = found.r.load === ROUTES.at(-1).load;
-  if (!getKey() && !isSignin) {
+  const token = (current = hash + Math.random());
+  if (!found.r.public && !getKey() && !(await knownToServer())) {
+    if (token !== current) return;
     ctx.returnTo = hash;
     return ctx.go("#/signin");
   }
-  const token = (current = hash + Math.random());
+  if (token !== current) return; // the hash moved on while we asked the server
   let screen;
   try {
     screen = await found.r.load();

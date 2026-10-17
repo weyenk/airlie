@@ -74,6 +74,7 @@ prints a fresh one for that person (the first admin's included).
 | `GET /me` | anyone signed in | `{user_id, name, role, via}`; 401 for nobody |
 | `POST /invites` `{name, role?, login?}` | admin | `{url: "/#/join/<token>", expires_at, user}` |
 | `GET /users`, `DELETE /users/{id}` | admin | people with passkey counts; remove one |
+| `POST /users/{id}/invites` | admin | a fresh link for an existing person (a lapsed invite, a second device) |
 | `POST /register/options` `{invite}` → `POST /register/verify` `{invite, credential}` | the invited person | WebAuthn creation; 410 when the invite is used or expired; 201 with the session cookie |
 | `POST /login/options` → `POST /login/verify` `{credential}` | anyone with a passkey | discoverable credentials, user verification required; a stale sign count (a cloned authenticator) is 401 |
 | `POST /logout` | anyone | ends this device's session |

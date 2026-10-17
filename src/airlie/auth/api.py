@@ -184,6 +184,20 @@ def auth_router(
             "user": _user_dict(user),
         }
 
+    @router.post("/users/{user_id}/invites", status_code=201)
+    async def reinvite(request: Request, user_id: str) -> dict[str, Any]:
+        """A fresh link for an existing person: a lapsed invite, or a passkey on another device."""
+        _admin(request)
+        user = store.user(user_id)
+        if user is None:
+            raise HTTPException(404, "no such user")
+        token = store.make_invite(user.id, cfg.invite_hours)
+        return {
+            "url": f"/#/join/{token}",
+            "expires_at": now() + cfg.invite_hours * 3600,
+            "user": _user_dict(user),
+        }
+
     @router.get("/users")
     async def users(request: Request) -> list[dict[str, Any]]:
         _admin(request)

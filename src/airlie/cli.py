@@ -554,9 +554,12 @@ LoginOpt = Annotated[
 
 def _print_invite(cfg: AirlieConfig, base_url: str, token: str, name: str) -> None:
     console.print(
-        f"invite for {name}: {base_url.rstrip('/')}/#/join/{token}\n"
-        f"(open it on a device with Face ID / Touch ID; good for {cfg.auth.invite_hours} hours, once)"
+        f"invite for {name} (good for {cfg.auth.invite_hours} hours, once; "
+        "open it on a device with Face ID / Touch ID):"
     )
+    console.print(
+        f"{base_url.rstrip('/')}/#/join/{token}", soft_wrap=True, highlight=False
+    )  # one line, never broken
 
 
 @auth_app.command("admin")
