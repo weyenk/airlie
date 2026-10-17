@@ -1,11 +1,11 @@
-"""The story pipeline over airlie's own board (story.board: local): a story item is a Card, the oldest
-story in todo is next, the pipeline's columns are the board's statuses, and airlie's notes are comments by
-airlie."""
+"""The story pipeline over airlie's own board (story.board: local): a story item is a Card (without airlie's
+own notes, as with Jira), the oldest story in todo is next, the pipeline's columns are the board's statuses,
+and airlie's notes are comments by airlie."""
 
 from __future__ import annotations
 
 from airlie.board import BoardStore, Item
-from airlie.story.board import ISSUE_KEY, BoardError, Card, Column, note
+from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -37,7 +37,7 @@ class LocalBoard:
             title=item.title,
             description=item.description,
             url=None,
-            comments=tuple(c.text for c in item.comments),
+            comments=tuple(c.text for c in item.comments if not c.text.startswith(NOTE_PREFIX)),
             labels=item.labels,
         )
 
@@ -58,5 +58,6 @@ class LocalBoard:
         self.store.update(card.key, status=STATUS_OF[column])  # type: ignore[arg-type]
 
     async def comment(self, card: Card, text: str) -> None:
+        """`text` as given (the pipeline passes note(text), as it does to every board), by airlie."""
         self._item(card.key)
-        self.store.comment(card.key, "airlie", note(text))
+        self.store.comment(card.key, "airlie", text)

@@ -41,16 +41,27 @@ class BoardStore:
     def __init__(self, path: Path, *, prefix: str = "AL") -> None:
         self.path = path
         self.prefix = prefix
-        path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA foreign_keys=ON")
-        self._db.executescript(_SCHEMA)
+        self._conn: sqlite3.Connection | None = None
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        """The connection, opened (and the file and its directory made) on first use: serve builds the store
+        at startup, and a state_dir that cannot be written must not stop it, nor a test touch the person's
+        board. Reads and writes hold the lock, so the first of them opens it once."""
+        if self._conn is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_SCHEMA)
+            self._conn = conn
+        return self._conn
 
     def close(self) -> None:
-        self._db.close()
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     # ---- reading -------------------------------------------------------------------------------------------
 
@@ -119,10 +130,10 @@ class BoardStore:
                         n,
                     ),
                 )
+                self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
-            self._db.execute("COMMIT")
             return self._get(key)
 
     def update(
@@ -160,10 +171,10 @@ class BoardStore:
                     sets.append("updated_at = ?")
                     args.append(time.time())
                     self._db.execute(f"UPDATE items SET {', '.join(sets)} WHERE key = ?", (*args, key))
+                self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
-            self._db.execute("COMMIT")
             return self._get(key)
 
     def comment(self, key: str, author: str, text: str) -> Item:
@@ -178,10 +189,10 @@ class BoardStore:
                     (key, author, text, now),
                 )
                 self._db.execute("UPDATE items SET updated_at = ? WHERE key = ?", (now, key))
+                self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
-            self._db.execute("COMMIT")
             return self._get(key)
 
     # ---- inside the lock -----------------------------------------------------------------------------------

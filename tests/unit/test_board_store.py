@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -160,3 +161,45 @@ def test_the_store_survives_reopening(tmp_path: Path) -> None:
     assert again.get("AL-1").comments[0].text == "c"
     assert again.create(level="initiative", title="j").key == "AL-2"
     again.close()
+
+
+def test_the_store_opens_its_file_on_first_use_not_on_construction(tmp_path: Path) -> None:
+    """serve builds the store at startup: a state_dir that is missing or unwritable must not stop serve, and a
+    test that builds the app must not touch the person's board."""
+    path = tmp_path / "nowhere" / "board.sqlite"
+    s = BoardStore(path)
+    assert not path.parent.exists()
+    s.close()  # nothing to close yet
+    assert not path.parent.exists()
+    s.create(level="initiative", title="i")
+    assert path.exists()
+    s.close()
+    assert store(tmp_path / "again").list() == []  # a read opens it too
+
+
+class _CommitFails:
+    """A connection whose COMMIT fails (a full disk): sqlite3.Connection's methods cannot be patched."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self.real = real
+
+    def execute(self, sql: str, *args: object) -> object:
+        if sql == "COMMIT":
+            raise sqlite3.OperationalError("database or disk is full")
+        return self.real.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.real, name)
+
+
+def test_a_commit_that_fails_rolls_back_and_the_store_keeps_working(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    s.create(level="initiative", title="i")
+    db = s._db  # noqa: SLF001
+    s._conn = _CommitFails(db)  # type: ignore[assignment]  # noqa: SLF001
+    with pytest.raises(sqlite3.OperationalError):
+        s.create(level="initiative", title="lost")
+    s._conn = db  # noqa: SLF001
+    assert not db.in_transaction
+    assert s.create(level="initiative", title="j").key == "AL-2"
+    assert [i.title for i in s.list()] == ["i", "j"]

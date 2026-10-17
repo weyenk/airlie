@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from airlie.board import BoardStore
-from airlie.story.board import NOTE_PREFIX, BoardError, Card, NullBoard
-from airlie.story.factory import make_board
+from airlie.story.board import NOTE_PREFIX, BoardError, Card, NullBoard, note
+from airlie.story.factory import _note_and_move, make_board
 from airlie.story.local_board import LocalBoard
 from tests.unit.test_config import MINIMAL, write
 
@@ -77,13 +77,32 @@ async def test_move_maps_every_column_onto_a_status(tmp_path: Path) -> None:
         await b.move(Card("AL-99", "AL-99", "AL-99", "gone", ""), "review")
 
 
-async def test_comment_is_written_by_airlie_with_its_prefix(tmp_path: Path) -> None:
+async def test_comment_stores_the_pipelines_note_as_given_by_airlie(tmp_path: Path) -> None:
+    """The pipeline passes note(text) already (as to every board): the prefix is not added twice."""
     s, b = filled(tmp_path)
     card = await b.card("AL-3")
-    await b.comment(card, "blocked: the gate failed")
+    await b.comment(card, note("blocked: the gate failed"))
     [c] = s.get("AL-3").comments
     assert c.author == "airlie" and c.text == NOTE_PREFIX + "blocked: the gate failed"
-    assert (await b.card("AL-3")).comments == (NOTE_PREFIX + "blocked: the gate failed",)
+
+
+async def test_a_note_then_a_move_lands_once_and_moves_the_item(tmp_path: Path) -> None:
+    s, b = filled(tmp_path)
+    card = await b.card("AL-3")
+    told = await _note_and_move(b, card, "the gate failed", "blocked")
+    assert told == "noted on the issue, moved to blocked"
+    item = s.get("AL-3")
+    assert item.status == "blocked" and [c.text for c in item.comments] == [NOTE_PREFIX + "the gate failed"]
+
+
+async def test_airlies_own_notes_stay_out_of_the_card(tmp_path: Path) -> None:
+    """As JiraBoard does: the next brief gets what people wrote, not airlie's status notes."""
+    s, b = filled(tmp_path)
+    s.comment("AL-3", "noah", "keep it small")
+    card = await b.card("AL-3")
+    await b.comment(card, note("picked this up"))
+    s.comment("AL-3", "noah", "and fast")
+    assert (await b.card("AL-3")).comments == ("keep it small", "and fast")
 
 
 def test_make_board_picks_the_local_board_from_story_board(

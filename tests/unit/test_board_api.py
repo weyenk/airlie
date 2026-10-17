@@ -104,3 +104,8 @@ def test_the_serve_key_guards_the_board(tmp_path: Path) -> None:
         assert c.get("/v1/board/items").status_code == 401
         ok = c.get("/v1/board/items", headers={"Authorization": "Bearer k"})
         assert ok.status_code == 200 and ok.json() == {"items": []}
+
+
+def test_building_the_app_does_not_touch_the_board_file(tmp_path: Path) -> None:
+    create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
+    assert not (tmp_path / "state" / "board.sqlite").exists()
