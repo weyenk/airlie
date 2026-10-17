@@ -128,9 +128,10 @@ export async function* sseEvents(body) {
   if (last !== null) yield last;
 }
 
-/** POST `body` to `path` and call `onDelta(text)` for every content delta. Resolves with the whole text on
- * `[DONE]`; rejects with StreamCut (its `partial` is what arrived) when the body ends before that. */
-export async function stream(path, body, onDelta, { signal } = {}) {
+/** POST `body` to `path` and call `onDelta(text)` for every content delta (`onReasoning(text)` for a thinking
+ * model's reasoning deltas). Resolves with the whole text on `[DONE]`; rejects with StreamCut (its `partial`
+ * is what arrived) when the body ends before that. */
+export async function stream(path, body, onDelta, { signal, onReasoning } = {}) {
   const r = await fetch(path, {
     method: "POST",
     headers: headers(undefined, true),
@@ -157,10 +158,11 @@ export async function stream(path, body, onDelta, { signal } = {}) {
       } catch {
         continue;
       }
-      const text = obj?.choices?.[0]?.delta?.content;
-      if (text) {
-        partial += text;
-        onDelta(text);
+      const delta = obj?.choices?.[0]?.delta || {};
+      if (delta.reasoning_content && onReasoning) onReasoning(delta.reasoning_content);
+      if (delta.content) {
+        partial += delta.content;
+        onDelta(delta.content);
       }
     }
   } catch (e) {
