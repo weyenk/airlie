@@ -231,3 +231,101 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
             f"no layer covers acceptance {missing}; give each criterion to the layer that makes it true"
         )
     return tuple(layers)
+
+
+HARDEN_SLUG = "harden-tests"
+"""The slug of the layer the architect's mutation review adds on top of a story: tests only, for mutants that
+survived the story's mutation gate."""
+
+
+@dataclass(frozen=True)
+class HardenCase:
+    """A test case the architect asks for: its name, its setup, what it expects, and the mutants it kills."""
+
+    name: str
+    given: str
+    expect: str
+    kills: str
+
+
+@dataclass(frozen=True)
+class HardenFile:
+    test_file: str
+    cases: tuple[HardenCase, ...]
+
+
+@dataclass(frozen=True)
+class MutationReview:
+    """The architect's verdict on the mutants that survived a story's mutation gate: the test cases that kill
+    the ones that matter (`harden`), and the ones it drops with a reason each (`ignored`, (mutant, why))."""
+
+    harden: tuple[HardenFile, ...]
+    ignored: tuple[tuple[str, str], ...]
+
+    @property
+    def cases(self) -> int:
+        return sum(len(f.cases) for f in self.harden)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "harden": [asdict(f) for f in self.harden],
+            "ignored": [{"mutant": m, "why": w} for m, w in self.ignored],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> MutationReview:
+        harden = tuple(
+            HardenFile(str(f["test_file"]), tuple(HardenCase(**c) for c in f["cases"])) for f in d["harden"]
+        )
+        return cls(harden, tuple((str(i["mutant"]), str(i["why"])) for i in d["ignored"]))
+
+
+def parse_mutation_review(obj: dict[str, Any] | None) -> MutationReview:
+    """The architect's mutation review, from its JSON object: {"harden": [{"test_file", "cases": [{"name",
+    "given", "expect", "kills"}]}], "ignored": [{"mutant", "why"}]}. A StoryError the architect can act on for
+    anything else, or for a review that neither hardens nor ignores anything."""
+    if obj is None:
+        raise StoryError(NO_JSON)
+    raw_harden, raw_ignored = obj.get("harden", []), obj.get("ignored", [])
+    if not isinstance(raw_harden, list) or not isinstance(raw_ignored, list):
+        raise StoryError('"harden" and "ignored" must each be a list')
+    harden: list[HardenFile] = []
+    for n, f in enumerate(raw_harden, 1):
+        if not isinstance(f, dict):
+            raise StoryError(f"harden item {n} must be an object with test_file and cases")
+        where = f"harden item {n}"
+        test_file = _one_line(_text(f, "test_file", where), f"{where} test_file", 300)
+        raw_cases = f.get("cases")
+        if not isinstance(raw_cases, list) or not raw_cases:
+            raise StoryError(f"{where} ({test_file}) needs a non-empty 'cases' list")
+        cases: list[HardenCase] = []
+        for m, c in enumerate(raw_cases, 1):
+            if not isinstance(c, dict):
+                raise StoryError(f"{where} case {m} must be an object with name, given, expect and kills")
+            at = f"{where} case {m}"
+            kills = ", ".join(_strs(c.get("kills"), f"{at}: 'kills'", "mutant ids")).strip()
+            if not kills:
+                raise StoryError(f"{at} needs 'kills': the id of each mutant it kills")
+            name, given, expect = (_text(c, k, at) for k in ("name", "given", "expect"))
+            cases.append(HardenCase(_one_line(name, f"{at} name", 120), given, expect, kills))
+        harden.append(HardenFile(test_file, tuple(cases)))
+    ignored: list[tuple[str, str]] = []
+    for n, i in enumerate(raw_ignored, 1):
+        if not isinstance(i, dict):
+            raise StoryError(f"ignored item {n} must be an object with mutant and why")
+        ignored.append((_text(i, "mutant", f"ignored item {n}"), _text(i, "why", f"ignored item {n}")))
+    if not harden and not ignored:
+        raise StoryError(
+            "the review hardens nothing and ignores nothing: list each surviving mutant under one of them"
+        )
+    return MutationReview(tuple(harden), tuple(ignored))
+
+
+def harden_layer(review: MutationReview) -> Layer:
+    """The layer that adds the architect's test cases on top of the story: tests only, no criterion."""
+    lines = ["Add these test cases. Each one kills mutants of code this story already wrote:"]
+    for f in review.harden:
+        lines.append(f"In {f.test_file}:")
+        lines += [f"- {c.name}: given {c.given}; expect {c.expect} (kills {c.kills})" for c in f.cases]
+    scope = ", ".join(dict.fromkeys(f.test_file for f in review.harden))
+    return Layer(HARDEN_SLUG, "Harden the tests", f"tests only: {scope}", "\n".join(lines))

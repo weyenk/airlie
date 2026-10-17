@@ -58,9 +58,11 @@ class StoryState:
     commit, as {"commands": [...], "agents_md": <its blob sha>}: read once, so every layer built without a
     person's --test-cmd, resumed or not, passes the same commands. `mutation_gate` is AGENTS.md's Mutation
     gate at that commit, read with the test gate, as {"commands": [...], "agents_md": <its blob sha>}, or
-    {"commands": []} when it has none. `mutation` is how that gate went on the top layer: {"status": "passed"
-    or "skipped", "attempts": n, "head": <the top layer's commit>, ...}, kept so a resume never runs it again
-    for a layer that is built."""
+    {"commands": []} when it has none. `mutation` is how that gate went over the built stack: {"status":
+    "passed", "skipped" or "survived", "head": <the top layer's commit>, "summary" when mutants survived},
+    kept so a resume never runs it again for the same stack. `mutation_review` is the architect's review of
+    the survivors ({"harden": [...], "ignored": [...], "layer": the hardening layer's number or null}); its
+    hardening layer is the last of `layers`."""
 
     path: Path
     card: dict[str, Any]
@@ -74,6 +76,7 @@ class StoryState:
     gate: dict[str, Any] | None = None
     mutation_gate: dict[str, Any] | None = None
     mutation: dict[str, Any] | None = None
+    mutation_review: dict[str, Any] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None

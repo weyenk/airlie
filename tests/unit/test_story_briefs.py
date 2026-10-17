@@ -10,12 +10,22 @@ from airlie.story.briefs import (
     layer_goal,
     layer_plan,
     layers_brief,
+    mutation_review_brief,
     pr_body,
     pr_title,
     refine_brief,
     story_text,
 )
-from airlie.story.model import Criterion, Layer, Story
+from airlie.story.model import (
+    HARDEN_SLUG,
+    Criterion,
+    HardenCase,
+    HardenFile,
+    Layer,
+    MutationReview,
+    Story,
+    harden_layer,
+)
 from airlie.topology.studio_plan import schedule
 
 ISSUE_URL = "https://acme.atlassian.net/browse/AIR-7"
@@ -129,6 +139,40 @@ def test_a_pr_body_names_the_storys_mutation_gate_result_under_its_tests() -> No
     assert (
         "`uv run pytest -q` passes on this branch.\nMutation gate: passes on the top layer (`make m`)" in body
     )
+
+
+def test_a_pr_body_lists_the_ignored_mutants_as_neutralised_bullets() -> None:
+    ignored = [("airlie.x__mutmut_1", "equivalent"), ("airlie.y__mutmut_2", "### heading @someone #12")]
+    body = pr_body(CARD, STORY, LAYERS, 2, ROWS, PRS, "pytest", "mutants survived", ignored)
+    assert "### Surviving mutants the architect ignored\n" in body
+    assert "airlie.x__mutmut_1: equivalent" in body
+    # model text renders no mention or reference, and its "###" stays inside the bullet
+    assert "- \u200bairlie.y__mutmut_2: ### heading @\u200bsomeone #\u200b12\n" in body
+    assert "### Surviving mutants" not in pr_body(CARD, STORY, LAYERS, 2, ROWS, PRS, "pytest")
+
+
+def test_the_mutation_review_brief_carries_the_summary_the_diff_and_the_layers_as_data() -> None:
+    brief = mutation_review_brief(STORY, LAYERS, "- m__mutmut_1: survived", "diff --git a/x b/x", "bad JSON")
+    assert "- m__mutmut_1: survived" in brief and "diff --git a/x b/x" in brief
+    assert "1. Storage" in brief and '"harden"' in brief and '"ignored"' in brief
+    assert "Your previous reply could not be used: bad JSON" in brief
+
+
+def test_the_hardening_layer_is_planned_as_tests_only_against_the_storys_base() -> None:
+    review = MutationReview(
+        (
+            HardenFile(
+                "tests/test_p.py", (HardenCase("test_twice", "an avatar", "two views", "m__mutmut_1"),)
+            ),
+        ),
+        (),
+    )
+    layer = harden_layer(review)
+    assert (layer.slug, layer.title, layer.acceptance) == (HARDEN_SLUG, "Harden the tests", ())
+    [build] = layer_plan(STORY, (*LAYERS, layer), 3, build_role="coder").subtasks
+    assert "test_twice: given an avatar; expect two views (kills m__mutmut_1)" in build.brief
+    assert "Change test files only" in build.brief and "fail on the story's base" in build.brief
+    assert "fail on the layer's base" not in build.brief
 
 
 def test_refine_brief_quotes_card_text_line_by_line_and_caps_it() -> None:

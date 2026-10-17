@@ -7,6 +7,7 @@ one command the studio's gate runs."""
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,8 @@ TEST_GATE = "Test gate"
 MUTATION_GATE = "Mutation gate"
 BASE = "{base}"
 """What a Mutation gate command names the story's base commit with."""
+REPORT = "{report}"
+"""What a Mutation gate command names the file it writes its markdown summary to with (optional)."""
 EXAMPLE = ("uv sync --frozen", "uv run ruff check .", "uv run pytest -q")
 """The gate a note shows when a repository has none."""
 NO_AGENTS_MD = "it has no AGENTS.md"
@@ -277,9 +280,11 @@ def mutation_commands(markdown: str) -> tuple[str, ...] | None:
     return None if block is None else _commands(block, MUTATION_GATE)
 
 
-def with_base(commands: Sequence[str], base: str) -> tuple[str, ...]:
-    """`commands` with every `{base}` replaced by `base`, the story's base commit; nothing else is touched."""
-    return tuple(c.replace(BASE, base) for c in commands)
+def with_base(commands: Sequence[str], base: str, report: Path | None = None) -> tuple[str, ...]:
+    """`commands` with every `{base}` replaced by `base`, the story's base commit, and every `{report}` by
+    `report`, the file airlie reads the gate's summary from, quoted for sh; nothing else is touched."""
+    filled = tuple(c.replace(BASE, base) for c in commands)
+    return filled if report is None else tuple(c.replace(REPORT, shlex.quote(str(report))) for c in filled)
 
 
 def read_gate(repo: Path, commit: str) -> Gate:

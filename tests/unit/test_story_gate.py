@@ -485,6 +485,13 @@ def test_base_is_replaced_by_the_storys_base_commit_in_every_command() -> None:
     )
 
 
+def test_report_is_replaced_by_the_file_airlie_reads_quoted_for_sh() -> None:
+    commands = ("tool --base {base} --report {report}", "true")
+    filled = with_base(commands, "abc123", Path("/state/my story/mutation-report.md"))
+    assert filled == ("tool --base abc123 --report '/state/my story/mutation-report.md'", "true")
+    assert with_base(("tool {report}",), "abc123") == ("tool {report}",)  # no file: left as written
+
+
 @pytest.mark.parametrize(
     ("block", "problem"),
     [

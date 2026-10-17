@@ -570,8 +570,9 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
         *("run", "stage", "run", "stage"),  # refine, layers
         # build; ./check.sh runs no pytest, so the checks on a layer's tests say they did not run
         *("layer_start", "test_checks_skipped", "layer_built"),
-        # the top layer: no Mutation gate in this repository, so the story's mutation gate says it was skipped
-        *("layer_start", "test_checks_skipped", "mutation_gate_skipped", "layer_built", "stage"),
+        *("layer_start", "test_checks_skipped", "layer_built"),
+        # no Mutation gate in this repository: the story's mutation gate says it was skipped
+        *("mutation_gate_skipped", "stage"),
         *("published", "stage", "stage", "story_done"),  # publish, review
     ]
     assert {e["run_id"] for e in log} == {

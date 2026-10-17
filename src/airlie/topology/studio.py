@@ -605,11 +605,6 @@ class StudioOrchestrator:
             return final
         return ""  # unreachable: the last round always returns
 
-    async def gate(self) -> bool | None:
-        """The test gate again, on the run's worktree as it is now: for a check after `execute_task` that sent
-        a subtask back (`follow_up`). None when there is no gate or the run has no worktree."""
-        return await self._tests_pass(self.test_cmd)
-
     async def _tests_pass(self, test_cmd: str | None) -> bool | None:
         """The test gate. The test command loads the code the roles wrote, so it runs as run_tests runs it
         (tools.shell.run_cmd): with the agent environment, and killed with all it started on a timeout or a

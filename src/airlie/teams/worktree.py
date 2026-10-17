@@ -102,6 +102,11 @@ def diff_between(worktree: Path, base_sha: str, max_chars: int) -> str:
     return _git(worktree, "diff", "--no-color", base_sha, "HEAD", check=False).stdout[:max_chars]
 
 
+def diff_commits(repo: Path, base_sha: str, head_sha: str, max_chars: int) -> str:
+    """The diff from `base_sha` to `head_sha` in `repo`, capped."""
+    return _git(repo, "diff", "--no-color", base_sha, head_sha, check=False).stdout[:max_chars]
+
+
 def changed_files(worktree: Path, base_sha: str) -> list[str]:
     out = _git(worktree, "diff", "--name-only", base_sha, "HEAD", check=False).stdout
     return [line for line in out.splitlines() if line]

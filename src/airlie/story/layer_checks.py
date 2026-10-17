@@ -171,13 +171,15 @@ class PytestChecks:
         self.runner = runner
         self.timeout_s = timeout_s
 
-    async def run(self, worktree: Path, base: str) -> list[Finding]:
-        """The findings on the tests the worktree's HEAD added or changed since `base`. The worktree must hold
-        no uncommitted change: the red check puts files back, and leaves it as its HEAD holds it."""
+    async def run(self, worktree: Path, base: str, *, red_base: str | None = None) -> list[Finding]:
+        """The findings on the tests the worktree's HEAD added or changed since `base`. The red check puts the
+        other changes since `red_base` back (default `base`): a layer that tests code an earlier layer wrote
+        (the hardening layer) is checked against the story's base. The worktree must hold no uncommitted
+        change: the red check puts files back, and leaves it as its HEAD holds it."""
         tests = changed_tests(worktree, base)
         if not tests:
             return []
-        green = await self._pass_on_base(worktree, base, tests)
+        green = await self._pass_on_base(worktree, red_base or base, tests)
         findings = []
         for t in tests:
             if t.id in green:
