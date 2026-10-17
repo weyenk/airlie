@@ -68,6 +68,17 @@ class Jobs:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
+    def list(self) -> list[dict[str, Any]]:
+        """Every job this process started, newest first: id, kind, state, started (a failed one: error)."""
+        out: list[dict[str, Any]] = []
+        for job in sorted(self._jobs.values(), key=lambda j: j.started, reverse=True):
+            row: dict[str, Any] = {"id": job.id, "kind": job.kind, "state": job.state, "started": job.started}
+            if row["state"] == "failed":
+                exc = job.task.exception()
+                row["error"] = f"{type(exc).__name__}: {exc}"
+            out.append(row)
+        return out
+
     def cancel(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.task.done():

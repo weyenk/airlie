@@ -14,7 +14,8 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from airlie.board import BoardStore
@@ -22,12 +23,17 @@ from airlie.board.api import board_router
 from airlie.config import AirlieConfig
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
+from airlie.serve.listing import recent_runs, repos, stories
 from airlie.skills import prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+
+WEB_DIR = Path(__file__).parent / "web"
+"""The web app's static files: `GET /` is its index.html, `/app/*` the rest. No key: the shell is harmless
+without one, and every call it makes goes to /v1, which keeps the guard."""
 
 
 class ToolCallStreamRepair:
@@ -226,6 +232,21 @@ def create_app(
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
         return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
 
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
+
+    @app.middleware("http")
+    async def _revalidate_static(request: Request, call_next: Callable[..., Any]) -> Any:
+        """The shell's files are revalidated on every load (ETags keep that cheap), so a new airlie never
+        serves an old module next to a new one from a phone's cache."""
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/app/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles)}
@@ -371,6 +392,22 @@ def create_app(
         except ValueError as e:
             raise HTTPException(409, str(e)) from e
         return {"job_id": job.id, "kind": job.kind}
+
+    @app.get("/v1/airlie/jobs")
+    async def job_list() -> dict[str, Any]:
+        return {"jobs": jobs.list()}
+
+    @app.get("/v1/airlie/runs")
+    async def run_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+        return {"runs": recent_runs(cfg.observability.state_dir, limit)}
+
+    @app.get("/v1/airlie/stories")
+    async def story_list() -> dict[str, Any]:
+        return {"stories": stories(cfg.observability.state_dir)}
+
+    @app.get("/v1/airlie/repos")
+    async def repo_list() -> dict[str, Any]:
+        return {"repos": repos(cfg)}
 
     @app.get("/v1/airlie/jobs/{job_id}")
     async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:
