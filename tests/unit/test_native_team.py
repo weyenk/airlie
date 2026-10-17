@@ -40,6 +40,7 @@ def make_team(
     max_steps: int = 10,
     token_budget: int = 10**6,
     role_name: str = "coder",
+    tool_names: tuple[str, ...] = ("write_file", "read_file", "run_tests"),
     **role_fields: Any,
 ):
     wt = tmp_path / "wt"
@@ -47,9 +48,7 @@ def make_team(
     (tmp_path / "coder.md").write_text("You are the coder.")
     fields = {"thinking": False, "max_tokens": 64, **role_fields}
     role = RoleSpec(prompt=tmp_path / "coder.md", model="base", **fields)
-    tools = ToolRegistry.builtin(
-        ["write_file", "read_file", "run_tests"], ToolContext(worktree=wt, test_cmd="echo ok")
-    )
+    tools = ToolRegistry.builtin(list(tool_names), ToolContext(worktree=wt, test_cmd="echo ok"))
     ctx = TeamContext(
         team_id="team-1",
         goal="make it pass",
@@ -631,3 +630,39 @@ async def test_the_correction_shows_a_call_in_the_proper_format(tmp_path: Path) 
     await team.run(ctx, Recorder())
     asked = str(engine.requests[1].messages[-1].content)
     assert "<tool_call><function=read_file><parameter=path>" in asked
+
+
+INVENTED = FakeReply(
+    tool_calls=[ToolCall("c1", "Read", json.dumps({"file_path": "/home/luke/repos/x/README.md"}))]
+)
+"""2026-10-16, a design subtask with tools: []: it called tools from its training, none of which exist."""
+
+
+async def test_a_role_without_tools_is_asked_to_answer_directly_and_offered_no_tools(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text="Here is the design: …")]})
+    team, ctx = make_team(tmp_path, engine, tool_names=())
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Here is the design: …" and result.steps == 0
+    goal = str(engine.requests[0].messages[1].content)
+    assert "answer" in goal.lower() and "Use the tools" not in goal and "run the tests" not in goal
+    assert engine.requests[0].tools is None
+
+
+async def test_a_role_without_tools_gets_one_correction_for_an_invented_call(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [INVENTED, FakeReply(text="The answer.")]})
+    team, ctx = make_team(tmp_path, engine, tool_names=())
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.final_text == "The answer." and result.steps == 0
+    assert rec.steps == []  # nothing was run
+    asked = engine.requests[1].messages[-1]
+    assert asked.role == "user" and "no tools" in str(asked.content).lower()
+
+
+async def test_a_role_without_tools_that_keeps_calling_tools_stops(tmp_path: Path) -> None:
+    text_call = FakeReply(text="<tool_call>\n<function=list_files>\n</function>\n</tool_call>")
+    engine = FakeEngine({"coder": [INVENTED, text_call]})
+    team, ctx = make_team(tmp_path, engine, tool_names=())
+    result = await team.run(ctx, Recorder())
+    assert not result.ok and result.stop_reason == "no_tools"
+    assert len(engine.requests) == 2

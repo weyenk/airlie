@@ -73,6 +73,10 @@ class ToolRegistry:
     async def call(self, call: ToolCall) -> ToolResult:
         tool = self._tools.get(call.name)
         if tool is None:
+            if not self._tools:
+                return ToolResult(
+                    False, f"error: unknown tool '{call.name}': this role has no tools; answer directly"
+                )
             return ToolResult(
                 False, f"error: unknown tool '{call.name}'; available: {', '.join(self._tools)}"
             )

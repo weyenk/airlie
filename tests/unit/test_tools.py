@@ -74,6 +74,11 @@ async def test_unknown_tool_and_bad_json_are_observations_not_exceptions(tmp_pat
     assert not r.ok and "arguments" in r.output
 
 
+async def test_a_call_to_a_registry_with_no_tools_says_there_are_none(tmp_path: Path) -> None:
+    r = await ToolRegistry.builtin([], ctx(tmp_path)).call(ToolCall("1", "Read", "{}"))
+    assert not r.ok and "no tools" in r.output and "available: " not in r.output
+
+
 async def test_shell_runs_in_worktree(tmp_path: Path) -> None:
     c = ctx(tmp_path)
     r = await ToolRegistry.builtin(["shell"], c).call(ToolCall("1", "shell", '{"cmd": "pwd"}'))

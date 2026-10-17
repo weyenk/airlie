@@ -18,9 +18,18 @@ from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamCont
 from airlie.tools.jsonargs import history_arguments
 
 
-def _goal_message(goal: str, worktree_hint: str, team_id: str = "", preamble: str | None = None) -> str:
+def _goal_message(
+    goal: str, worktree_hint: str, team_id: str = "", preamble: str | None = None, *, tools: bool = True
+) -> str:
     who = f"You are {team_id}. " if team_id else ""
     head = f"{preamble.rstrip()}\n\n" if preamble else ""
+    if not tools:  # told to use tools it does not have, a model invents them (2026-10-16: Read, list_files)
+        return (
+            f"{head}Goal:\n{goal}\n\n{who}"
+            "You have no tools in this task: answer directly, in your reply, with the complete deliverable. "
+            "When it is files (HTML, Markdown, code), give each one in full in a fenced block headed by its "
+            "path."
+        )
     return (
         f"{head}Goal:\n{goal}\n\n{who}"
         f"You are working inside a git checkout of the repository ({worktree_hint}). "
@@ -75,6 +84,13 @@ holding `<tool_call>` or `<function=` gets it, so the example is in the format t
 MALFORMED_TEXT_CAP = 4000
 """Characters of a malformed reply kept in its `malformed_call` event."""
 
+NO_TOOLS = (
+    "You have no tools in this task, so nothing you call can run. Answer directly, in your reply, with the "
+    "complete deliverable."
+)
+"""What a role without tools is told after one reply that calls a tool anyway; a second in a row ends the run
+(no_tools)."""
+
 LAST_STEP = (
     "You have used all {n} of your steps: no more tools. Give your final answer now, complete, from what "
     "you have already found."
@@ -106,7 +122,8 @@ class NativeTeam:
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
         system = prompt_text(ctx.role.prompt)
-        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
+        toolless = not ctx.tools.names()
+        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble, tools=not toolless)
         messages: list[Message]
         if ctx.initial_state is not None:
             messages = load_messages(ctx.initial_state["messages"])
@@ -141,7 +158,7 @@ class NativeTeam:
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
-                tools=None if last_turn else ctx.tools.schemas(),
+                tools=None if last_turn or toolless else ctx.tools.schemas(),
                 thinking=ctx.role.thinking,
                 draft_budget=ctx.draft_budget(),
             )
@@ -159,6 +176,15 @@ class NativeTeam:
             completion_tokens += res.completion_tokens
             calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
             content = res.text
+            if toolless and res.finish_reason != "length" and (calls or UNPARSED_CALL.search(res.text)):
+                if corrected:
+                    final_text = "stopped: two replies in a row called tools, and this role has none"
+                    stop = "no_tools"
+                    break
+                corrected = True
+                messages.append(Message(role="assistant", content=res.text))
+                messages.append(Message(role="user", content=NO_TOOLS))
+                continue
             if not calls:
                 # a reply that max_tokens ended is not a finished answer, whatever text it holds
                 if res.finish_reason == "length":
