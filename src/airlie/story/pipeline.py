@@ -456,6 +456,7 @@ class StoryPipeline:
         same: Callable[[T, T], bool],
         round_steps: int,
         rounds: int,
+        signal: Callable[[str], Any] | None = None,
     ) -> str:
         """`_ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
         conversation until a round leaves the plan unchanged or `rounds` are used."""
@@ -582,7 +583,8 @@ class StoryPipeline:
                 parse=parse,
                 same=same_layers,
                 round_steps=round_steps,
-                rounds=max(1, cap // round_steps),
+                rounds=max(1, min(cap // round_steps, self.s.plan_max_rounds)),
+                signal=lambda text: (extract_json_block(text) or {}).get("refine"),
             )
         layers = await self._usable(
             st,
@@ -590,7 +592,12 @@ class StoryPipeline:
             self.s.architect_role,
             "layer plan",
             lambda feedback: layers_brief(
-                story, self.s.max_layers, feedback, guide=guide, survey=st.survey or ""
+                story,
+                self.s.max_layers,
+                feedback,
+                guide=guide,
+                survey=st.survey or "",
+                round_steps=round_steps,
             ),
             parse,
             ask=ask,

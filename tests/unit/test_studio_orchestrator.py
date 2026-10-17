@@ -530,8 +530,9 @@ async def test_failed_dependency_is_labelled_in_the_next_brief(tmp_path: Path) -
     note2 = FakeReply(
         tool_calls=[ToolCall("n2", "write_file", json.dumps({"path": "n2.txt", "content": "b\n"}))]
     )
-    # offered no tools for its final answer, it calls one anyway: no answer, so it failed at max_steps
-    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2, note2], "docs": [DONE]})
+    # offered no tools for its final answer, it calls one anyway, is told once, and does it again: no answer,
+    # so it failed at max_steps
+    engine = FakeEngine({"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, note2, note2, note2], "docs": [DONE]})
     await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task("g", repo=repo)
     docs_goal = [r for r in engine.requests if r.role == "docs"][0].messages[1].content
     assert "FAILED: max_steps" in docs_goal
@@ -780,15 +781,14 @@ async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_wh
 
 async def test_max_steps_limits_every_subtask_of_the_run_below_the_roles_own(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [RUN, RUN, RUN, DONE], "reviewer": [APPROVE]})
+    engine = FakeEngine({"coder": [RUN, RUN, RUN, RUN, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task(
         "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, max_steps=2
     )
     [team] = report.teams
-    assert (
-        team.steps == 2 and team.stop_reason == "max_steps"
-    )  # the third call came on the tool-less last turn
+    # the third and fourth calls came on the tool-less last turn: told once, then it failed
+    assert team.steps == 2 and team.stop_reason == "max_steps"
 
 
 async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp_path: Path) -> None:

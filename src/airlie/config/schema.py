@@ -376,6 +376,11 @@ class StorySpec(Strict):
         description="the architect plans in rounds of this many steps (a plan after each, the next round "
         "refines it) and stops when a round leaves the plan unchanged; 0 plans in one go, as before",
     )
+    plan_max_rounds: int = Field(
+        default=3,
+        ge=1,
+        description="the most rounds the architect plans in, whatever its role's step allowance would give",
+    )
     survey: bool = Field(
         default=True,
         description="while product refines the request, the architect reads the code it touches and takes "
