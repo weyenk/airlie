@@ -103,6 +103,17 @@ WRITE_NOW = (
 )
 """What a role with write tools is told, once, when it is two-fifths through its steps without a write."""
 
+WRITE_ONLY = (
+    "You still have written nothing after {n} steps, so reading is switched off: only write_file, edit_file "
+    "and run_tests are available until you write. Make the change from what you have read."
+)
+"""What a role is told, once, when the nudge did not make it write and its read tools are taken away."""
+
+WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
+"""The tools a role keeps once its reading is switched off."""
+WRITE_ONLY_AFTER = 4
+"""Steps after the write-now nudge by which a role that still has not written loses its read tools."""
+
 LAST_TURN_RETRY = (
     "No tools are available on this turn, so nothing you call can run. Write your answer now, complete, in "
     "your reply, from what you have already read."
@@ -114,6 +125,14 @@ ONE_STEP_LEFT = (
     "have found. Stop exploring and write the deliverable."
 )
 """What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
+
+
+def _offered(ctx: TeamContext, reading_off: bool) -> list[Any]:
+    """The tool schemas a turn offers: all of them, or (reading switched off) those that write or test."""
+    schemas = ctx.tools.schemas()
+    if not reading_off:
+        return list(schemas)
+    return [x for x in schemas if x.name in WRITE_TOOLS_ONLY]
 
 
 def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None) -> None:
@@ -168,6 +187,7 @@ class NativeTeam:
         can_write = bool({"write_file", "edit_file"} & set(ctx.tools.names()))
         wrote = False  # a write_file or edit_file has run
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
+        reading_off = False  # the role never wrote after the nudge: it is offered write tools only
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
@@ -180,7 +200,7 @@ class NativeTeam:
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
-                tools=None if last_turn or toolless else ctx.tools.schemas(),
+                tools=None if last_turn or toolless else _offered(ctx, reading_off),
                 thinking=ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn),
                 draft_budget=ctx.draft_budget(),
             )
@@ -305,6 +325,9 @@ class NativeTeam:
                 break
             if can_write and not wrote and steps == write_by:
                 messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
+            if can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
+                reading_off = True
+                messages.append(Message(role="user", content=WRITE_ONLY.format(n=steps)))
             if steps >= ctx.max_steps:
                 last_turn = True
                 messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))
