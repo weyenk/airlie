@@ -46,9 +46,16 @@ def test_a_parent_must_be_exactly_one_level_up(tmp_path: Path) -> None:
         s.create(level="subtask", title="s", parent=init.key)
     with pytest.raises(BoardStoreError, match=r"initiative.*no parent"):
         s.create(level="initiative", title="i2", parent=init.key)
-    with pytest.raises(BoardStoreError, match=r"epic.*needs a parent"):
-        s.create(level="epic", title="orphan")
     assert [i.key for i in s.list()] == ["AL-1", "AL-2"]  # nothing refused was stored
+
+
+def test_an_item_below_initiative_may_have_no_parent(tmp_path: Path) -> None:
+    """A Jira project has epics under no initiative and stories under no epic: they import as they are."""
+    s = store(tmp_path)
+    epic = s.create(level="epic", title="orphan epic")
+    story = s.create(level="story", title="orphan story")
+    assert epic.parent is None and story.parent is None
+    assert [i.key for i in s.list(level="story")] == [story.key]
 
 
 def test_a_parent_must_exist(tmp_path: Path) -> None:
@@ -92,6 +99,15 @@ def test_comment_appends_in_order_with_author(tmp_path: Path) -> None:
     assert s.get(init.key).comments == item.comments
     with pytest.raises(KeyError):
         s.comment("AL-99", "noah", "x")
+
+
+def test_comment_keeps_a_given_time(tmp_path: Path) -> None:
+    """An imported comment keeps the time it was written in Jira, not the time of the import."""
+    s = store(tmp_path)
+    init = s.create(level="initiative", title="i")
+    item = s.comment(init.key, "Noah", "from Jira", at=1_700_000_000.0)
+    assert item.comments[0].at == 1_700_000_000.0
+    assert item.updated_at >= init.updated_at
 
 
 def test_list_filters_by_level_status_and_parent_in_created_order(tmp_path: Path) -> None:
