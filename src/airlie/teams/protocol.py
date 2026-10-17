@@ -25,9 +25,11 @@ StopReason = Literal[
     "fork_point",
     "cut_off",
     "malformed_call",
+    "no_tools",
 ]
 """cut_off: a reply with no tool call ended at max_tokens: not a finished answer, whatever text it holds.
-malformed_call: two replies in a row held a tool call the server could not parse, left in the text."""
+malformed_call: two replies in a row held a tool call the server could not parse, left in the text.
+no_tools: a role with no tools called one in two replies in a row, and so gave no answer."""
 
 
 def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> str:
