@@ -5,6 +5,7 @@ checked in `AirlieConfig.validate_references`; defaults mirror the wiki build sp
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -358,6 +359,22 @@ class StorySpec(Strict):
     build_role: str = "coder"
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
+    board: Literal["jira", "local"] = Field(
+        default="jira",
+        description="where stories come from: the Jira project (story.jira), or airlie's own board (board:)",
+    )
+
+
+class BoardSpec(Strict):
+    """airlie's own board (initiative → epic → story → subtask) in observability.state_dir/board.sqlite."""
+
+    prefix: str = Field(default="AL", description="item keys are <prefix>-<n>, like Jira issue keys")
+
+    @model_validator(mode="after")
+    def _prefix_is_a_key_prefix(self) -> BoardSpec:
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]+", self.prefix, re.ASCII):
+            raise ValueError("board.prefix must be letters, digits or _ starting with a letter")
+        return self
 
 
 TOPOLOGY_KINDS: tuple[str, ...] = ("single", "teams", "fork", "studio")
@@ -414,6 +431,7 @@ class AirlieConfig(Strict):
     router: RouterSpec = Field(default_factory=RouterSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
+    board: BoardSpec = Field(default_factory=BoardSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
