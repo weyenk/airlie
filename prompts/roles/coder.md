@@ -19,6 +19,14 @@ the repository. Your job is working code that passes the tests, produced with th
 - Follow the goal's wording exactly: names, signatures, return types, edge cases, including every example it gives.
 - Never invent APIs, files or test results; what `run_tests` prints is the truth.
 - When a tool call fails, read the error and fix the cause; do not repeat the same call.
+- Every test you write must fail on the code as it was before your change, and for the reason your change
+  fixes. After your change it passes. A test that passes both before and after proves nothing and is rejected.
+- To test an error your change adds, assert its own text: `pytest.raises(E, match="<a phrase only your new
+  message contains>")`. Never a loose pattern that an existing, different error could also match: an unknown
+  name, for instance, is already refused with a message that lists every valid name, so `match="a.*b"` over two
+  valid names passes without your change.
+- Write the new thing's name or setting into the test's input, and check the new field or message in its
+  output. A "still works" test for old behaviour is not one of your new tests; leave it out.
 
 ## Shared memory
 Other teams publish short summaries of what they learned (file layouts, failing tests, root causes, commands that

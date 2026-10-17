@@ -19,6 +19,7 @@ from typing import Literal
 
 from airlie.teams.worktree import changed_files, find_file, put_back, read_blob, reset_to_head
 from airlie.tools.protocol import ToolContext
+from airlie.tools.scope import is_test_module, pytest_runner
 from airlie.tools.shell import run_cmd
 
 Kind = Literal["vacuous_test", "assertion_free_test", "unparseable_test"]
@@ -29,7 +30,6 @@ ASSERTION_FREE = "it has no assert, pytest.raises, pytest.warns or other check, 
 CHECK_CALLS = frozenset({"raises", "warns", "deprecated_call", "fail", "expect"})
 """Calls that are a check: pytest's, and expect(...) (playwright's). Any call whose name starts with "assert"
 is one too: unittest's self.assertEqual, a mock's assert_called_once_with, a helper's assert_valid."""
-_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
 _PASSED = re.compile(r"^PASSED (\S+)", re.MULTILINE)
 _PARAMS = re.compile(r"\[.*\]$")
 _SOURCE_CHARS = 4_000
@@ -60,12 +60,6 @@ class Finding:
     test: str
     why: str
     source: str
-
-
-def is_test_module(path: str) -> bool:
-    """pytest's default test module: test_*.py or *_test.py."""
-    name = PurePosixPath(path).name
-    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
 
 
 def _test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
@@ -164,24 +158,6 @@ def _passed(output: str, ids: Sequence[str]) -> set[str]:
     are from pytest's rootdir, which can be below the repository's root: a match on the end is a match."""
     passed = {_PARAMS.sub("", m) for m in _PASSED.findall(output)}
     return {i for i in ids if any(i == p or i.endswith("/" + p) for p in passed)}
-
-
-def pytest_runner(commands: Sequence[str]) -> str | None:
-    """How the gate runs pytest: the first command that does, up to and including `pytest` (or `-m pytest`),
-    from after the last shell operator before it. None when no command runs pytest."""
-    for command in commands:
-        try:
-            words = shlex.split(command)
-        except ValueError:
-            continue
-        for i, word in enumerate(words):
-            end = i + 1 if PurePosixPath(word).name == "pytest" else None
-            if word == "-m" and words[i + 1 : i + 2] == ["pytest"]:
-                end = i + 2
-            if end is not None:
-                cut = max((j + 1 for j, w in enumerate(words[:i]) if w in _OPERATORS), default=0)
-                return shlex.join(words[cut:end])
-    return None
 
 
 class PytestChecks:

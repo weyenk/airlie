@@ -11,7 +11,7 @@ uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
-uv run pytest -q
+uv run pytest -q -n auto --maxprocesses 8
 ```
 
 ## Mutation gate

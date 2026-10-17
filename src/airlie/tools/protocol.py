@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from airlie.tools.scope import GateMemo
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,11 @@ class ToolContext:
     test_steps: tuple[str, ...] = ()
     """The gate's commands, one by one: run_tests runs each and reports each (`test_cmd` is them joined, as
     the final gate runs them). Empty: run_tests runs `test_cmd`."""
+    scope_base: str = ""
+    """A git commit: when set, run_tests runs the gate's pytest on the test files changed since it, and the
+    whole gate only once those pass (tools.scope). Empty: run_tests runs the whole gate every time."""
+    gate_memo: GateMemo | None = None
+    """Shared with the studio's final gate: the tree that last passed the whole gate need not run it again."""
     write_file_max_overwrite_lines: int = 200
     """write_file refuses to replace an existing file longer than this: such a change goes through edit_file,
     or new tests go in a new file (HDS-5 2026-10-16: a whole-file rewrite ran past the coder's max_tokens)."""

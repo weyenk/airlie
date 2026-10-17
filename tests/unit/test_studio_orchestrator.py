@@ -744,6 +744,22 @@ async def test_cancelling_the_test_gate_kills_what_the_test_command_started(tmp_
     assert await eventually(lambda: not running(sleeper))
 
 
+async def test_the_final_gate_skips_a_tree_run_tests_already_passed_whole(tmp_path: Path) -> None:
+    from airlie.tools.scope import tree_fingerprint
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    orch = gate(tmp_path, 30)
+    orch.scope_base = "base"
+    assert await orch._tests_pass("exit 1") is False  # no memo: it runs, and fails
+    orch.gate_memo.passed = tree_fingerprint(tmp_path)
+    assert await orch._tests_pass("exit 1") is True  # this tree passed already: not run
+    (tmp_path / "new.txt").write_text("edit")
+    assert await orch._tests_pass("exit 1") is False  # an edit since: it runs
+    orch.scope_base = ""
+    orch.gate_memo.passed = tree_fingerprint(tmp_path)
+    assert await orch._tests_pass("exit 1") is False  # an unscoped run always runs the gate
+
+
 ONE_BUILD = Plan((), (Subtask("build", "make the check pass", "coder"),))
 
 

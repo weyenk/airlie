@@ -14,6 +14,7 @@ from typing import Any
 from airlie.subproc import agent_env, kill_group
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
+from airlie.tools.scope import changed_test_files, scoped_steps, tree_fingerprint
 
 GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "reflog", "worktree", "config"}
 
@@ -109,16 +110,45 @@ class RunTests:
     name = "run_tests"
     description = (
         "Run the project's test commands and return each one's result and output. Call this after every "
-        "change."
+        "change. It runs your own tests first and the whole suite once those pass."
     )
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if ctx.test_steps and ctx.scope_base:
+            return await _run_scoped(ctx)
         if ctx.test_steps:
             return await run_steps(ctx.test_steps, ctx)
         if not ctx.test_cmd:
             return ToolResult(False, "error: no test command configured for this repository")
         return await run_cmd(ctx.test_cmd, ctx, shell=True)
+
+
+async def _run_scoped(ctx: ToolContext) -> ToolResult:
+    """The gate with pytest limited to the layer's own test files; when it passes, the whole gate, unless the
+    memo says this very tree already passed it. A pytest step with no test file to run is left out, and the
+    run says so (the layer is written test-first: its tests come before the code)."""
+    files = changed_test_files(ctx.worktree, ctx.scope_base)
+    steps = scoped_steps(ctx.test_steps, files)
+    first = await run_steps(steps, ctx)
+    if not first.ok:
+        head = f"scoped to your {len(files)} test file(s); the whole suite runs once these pass\n"
+        return ToolResult(False, head + first.output)
+    if not files:
+        return ToolResult(
+            False,
+            first.output + "\nno test file of yours to run yet: write the layer's tests first. The whole "
+            "suite has not run.",
+        )
+    if ctx.gate_memo is not None:
+        here = tree_fingerprint(ctx.worktree)
+        if here is not None and here == ctx.gate_memo.passed:
+            return ToolResult(True, first.output + "\nthe whole suite already passed on exactly this tree")
+    full = await run_steps(ctx.test_steps, ctx)
+    if full.ok and ctx.gate_memo is not None:
+        ctx.gate_memo.passed = tree_fingerprint(ctx.worktree)
+    note = "your tests pass; the whole suite " + ("passes" if full.ok else "FAILS (see below)")
+    return ToolResult(full.ok, f"{note}\n{full.output}" if not full.ok else f"{note}\n{first.output}")
 
 
 class Git:

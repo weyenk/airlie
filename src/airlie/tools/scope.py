@@ -1,0 +1,98 @@
+"""Scoped test runs for a layer's coder: its own tests first, the whole gate once those pass.
+
+A story layer's coder calls run_tests after every change, and the repository's gate runs the whole suite each
+time (minutes). Scoped, run_tests runs the gate with pytest limited to the test files the layer added or
+changed (seconds); only when those pass does it run the whole gate, and not again for a tree it already
+passed (`GateMemo`). The studio's own final gate asks the same memo, so a tree that passed in the coder's
+last run_tests is not run a third time.
+"""
+
+from __future__ import annotations
+
+import shlex
+import subprocess
+import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from airlie.subproc import NO_HOOKS_ARGS, agent_env
+
+_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
+@dataclass
+class GateMemo:
+    """The fingerprint of the last worktree tree that passed the whole gate (None: none has)."""
+
+    passed: str | None = None
+
+
+def pytest_runner(commands: Sequence[str]) -> str | None:
+    """How the gate runs pytest: the first command that does, up to and including `pytest` (or `-m pytest`),
+    from after the last shell operator before it. None when no command runs pytest."""
+    for command in commands:
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            continue
+        for i, word in enumerate(words):
+            end = i + 1 if PurePosixPath(word).name == "pytest" else None
+            if word == "-m" and words[i + 1 : i + 2] == ["pytest"]:
+                end = i + 2
+            if end is not None:
+                cut = max((j + 1 for j, w in enumerate(words[:i]) if w in _OPERATORS), default=0)
+                return shlex.join(words[cut:end])
+    return None
+
+
+def is_test_module(path: str) -> bool:
+    """pytest's default test module: test_*.py or *_test.py."""
+    name = PurePosixPath(path).name
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
+def _git(worktree: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    done = subprocess.run(
+        ["git", *NO_HOOKS_ARGS, *args],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**agent_env(), **(env or {})},
+    )
+    return done.stdout if done.returncode == 0 else ""
+
+
+def changed_test_files(worktree: Path, base: str) -> list[str]:
+    """The test modules the worktree has added or changed since `base`, committed or not, that still exist."""
+    names = set(_git(worktree, "diff", "--name-only", "--diff-filter=d", base).splitlines())
+    names |= set(_git(worktree, "ls-files", "--others", "--exclude-standard").splitlines())
+    return sorted(n for n in names if is_test_module(n) and (worktree / n).is_file())
+
+
+def tree_fingerprint(worktree: Path) -> str | None:
+    """A hash of every file of the worktree as it is now (tracked or not, the ignored left out), made with
+    a throwaway index: it changes with any edit and is the same for the same files. None when git cannot
+    say."""
+    with tempfile.TemporaryDirectory(prefix="airlie-fp-") as tmp:
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        _git(worktree, "read-tree", "HEAD", env=env)
+        _git(worktree, "add", "-A", env=env)
+        out = _git(worktree, "write-tree", env=env).strip()
+    return out or None
+
+
+def scope_step(step: str, files: Sequence[str]) -> str | None:
+    """`step` with pytest limited to `files`; the step unchanged when it does not run pytest. None when it
+    does and there are no files: nothing to run."""
+    if pytest_runner([step]) is None:
+        return step
+    if not files:
+        return None
+    return f"{step.rstrip()} {shlex.join(files)}"
+
+
+def scoped_steps(steps: Sequence[str], files: Sequence[str]) -> list[str]:
+    """`steps` with pytest limited to `files`; a pytest step with no file to run is left out."""
+    return [scoped for step in steps if (scoped := scope_step(step, files)) is not None]

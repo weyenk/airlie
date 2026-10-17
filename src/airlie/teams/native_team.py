@@ -97,6 +97,12 @@ LAST_STEP = (
 )
 """What a role is told on the turn after its last allowed step, which offers it no tools."""
 
+ONE_STEP_LEFT = (
+    "You have one step left. Use it only if you must; then give your final answer, complete, from what you "
+    "have found. Stop exploring and write the deliverable."
+)
+"""What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
+
 
 def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None) -> None:
     """A `malformed_call` event: the reply as the role wrote it (capped), and what the repair made of it."""
@@ -273,6 +279,8 @@ class NativeTeam:
                 last_turn = True
                 messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))
                 continue
+            if steps == ctx.max_steps - 1:
+                messages.append(Message(role="user", content=ONE_STEP_LEFT))
         return TeamResult(
             team_id=ctx.team_id,
             ok=ok,

@@ -26,6 +26,7 @@ from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
+from airlie.tools.scope import GateMemo, tree_fingerprint
 from airlie.tools.shell import run_cmd
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
@@ -142,6 +143,10 @@ class StudioOrchestrator:
         self.worktree: Path | None = None
         self.test_cmd: str | None = None
         self.test_steps: tuple[str, ...] = ()  # the gate's commands, for run_tests to report one by one
+        self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
+        self.gate_memo = (
+            GateMemo()
+        )  # the tree that last passed the whole gate, for run_tests and the final gate
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
 
@@ -221,6 +226,8 @@ class StudioOrchestrator:
             self.cfg.tools.output_cap_chars,
             test_cmd,
             self.test_steps,
+            self.scope_base,
+            self.gate_memo,
             self.cfg.tools.write_file_max_overwrite_lines,
         )
         reg = ToolRegistry.builtin(names, ctx)
@@ -553,6 +560,7 @@ class StudioOrchestrator:
         synthesise: bool = True,
         test_steps: Sequence[str] = (),
         before_gate: Callable[[], Awaitable[bool]] | None = None,
+        scope_tests: bool = False,
     ) -> RunReport:
         """Plan, run, review, synthesise.
 
@@ -563,7 +571,9 @@ class StudioOrchestrator:
         `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result.
         `test_steps` are the gate's commands (`test_cmd` joined): run_tests reports each. `before_gate` runs
         once the plan has (it may `follow_up` a subtask); when it returns False the gate does not run and the
-        tests count as failed."""
+        tests count as failed. `scope_tests` makes run_tests run the gate's pytest on the test files the run
+        changed first and the whole gate only once those pass; the final gate is skipped for a tree that
+        passed it already."""
         given = pin(plan) if plan is not None else None
         if given is not None:
             self.check_plan(given)
@@ -581,6 +591,8 @@ class StudioOrchestrator:
         self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
         self.base_sha = commit_wip(self.worktree, "studio: base")
         self.test_cmd, self.test_steps = test_cmd, tuple(test_steps)
+        self.scope_base = self.base_sha if scope_tests else ""
+        self.gate_memo = GateMemo()
         self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given
         final = ""
@@ -647,6 +659,12 @@ class StudioOrchestrator:
         cancel."""
         if not test_cmd or self.worktree is None or not self.runs:
             return None
+        if (
+            self.scope_base
+            and self.gate_memo.passed is not None
+            and tree_fingerprint(self.worktree) == self.gate_memo.passed
+        ):
+            return True  # run_tests already ran the whole gate on exactly this tree
         tools = self.cfg.tools
         ctx = ToolContext(self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd)
         return (await run_cmd(test_cmd, ctx, shell=True)).ok
