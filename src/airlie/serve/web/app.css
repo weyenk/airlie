@@ -1,2 +1,230 @@
-/* airlie web app: tokens and layout land in Task 4 */
-body { margin: 0; font-family: system-ui, sans-serif; background: #000; color: #F2F4F7; }
+/* airlie web app. Tokens from the 2026-10-17 mockups; dark by default, light via data-theme on <html>. */
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #0e1013;
+  --bubble: #16191e;
+  --line: #2b2f36;
+  --line2: #1f2228;
+  --field: #16191e;
+  --field-line: #3a3f47;
+  --ink: #f2f4f7;
+  --ink2: #b4b9c2;
+  --accent: #8fb6e0;
+  --accent-ink: #0a1a2b;
+  --head: #000000;
+  --head-ink: #f2f4f7;
+  --head-muted: #a3a8b2;
+  --run-bg: #16283f;
+  --run: #b9d3f2;
+  --ok-bg: #13281c;
+  --ok: #a9ddb9;
+  --warn-bg: #2e230d;
+  --warn: #f0c978;
+  --err-bg: #33171a;
+  --err: #f2b2aa;
+  --mute-bg: #1e2228;
+  --mute: #b4b9c2;
+  --warn-box: #1c160a;
+  --warn-line: #5c4515;
+  --danger-line: #5c2a2a;
+  --tab: #0e1013;
+  --node-edge: #cfe0f3;
+  --seg: #3a3f47;
+  --seg-on: #f4c6cf;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f5f1;
+  --surface: #ffffff;
+  --bubble: #ffffff;
+  --line: #e2e0d8;
+  --line2: #eeece5;
+  --field: #ffffff;
+  --field-line: #c9c7bd;
+  --ink: #17191e;
+  --ink2: #4b4f58;
+  --accent: #0b5f7a;
+  --accent-ink: #ffffff;
+  --head: #17191e;
+  --head-ink: #f6f5f1;
+  --head-muted: #c9cbd1;
+  --run-bg: #e6edfd;
+  --run: #1e3fa8;
+  --ok-bg: #e2f2e9;
+  --ok: #1e5c3e;
+  --warn-bg: #fbf0d9;
+  --warn: #7a4f00;
+  --err-bg: #fbe6e3;
+  --err: #8e2b22;
+  --mute-bg: #eef0f3;
+  --mute: #4b4f58;
+  --warn-box: #fff8ea;
+  --warn-line: #f0d9a8;
+  --danger-line: #f0c0b8;
+  --tab: #ffffff;
+  --node-edge: #9dbfe5;
+  --seg: #c9c7bd;
+  --seg-on: #c2185b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+a {
+  color: var(--accent);
+}
+a:hover {
+  color: var(--ink);
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.muted {
+  color: var(--ink2);
+}
+.small {
+  font-size: 13px;
+}
+.error {
+  color: var(--err);
+  font-size: 14px;
+  min-height: 1.2em;
+}
+.label {
+  font-weight: 500;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.stack.small {
+  gap: 6px;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.spread {
+  justify-content: space-between;
+}
+
+.field {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid var(--field-line);
+  border-radius: 10px;
+  padding: 0 12px;
+  font: inherit;
+  background: var(--field);
+  color: var(--ink);
+}
+textarea.field {
+  padding: 10px 12px;
+  resize: vertical;
+}
+.field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  border: 1px solid var(--field-line);
+  background: transparent;
+  color: var(--ink);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.btn.danger {
+  color: var(--err);
+  border-color: var(--danger-line);
+}
+.btn.small {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+.btn.big {
+  min-height: 52px;
+  border-radius: 12px;
+  font-size: 17px;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.orb {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid #cfe0f3;
+  background: radial-gradient(circle at 50% 50%, #e6f0fb 0%, #9dbfe5 100%);
+}
+.orb.xl {
+  width: 72px;
+  height: 72px;
+}
+.brand-xl {
+  font-weight: 700;
+  font-size: 32px;
+  letter-spacing: -0.02em;
+}
+
+/* Sign in: the phone mockup, centred on any width */
+.signin {
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 28px;
+  font-size: 16px;
+}
+.signin .field {
+  min-height: 52px;
+  border-radius: 12px;
+  font-size: 16px;
+}
