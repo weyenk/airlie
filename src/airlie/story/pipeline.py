@@ -590,7 +590,12 @@ class StoryPipeline:
             self.s.architect_role,
             "layer plan",
             lambda feedback: layers_brief(
-                story, self.s.max_layers, feedback, guide=guide, survey=st.survey or ""
+                story,
+                self.s.max_layers,
+                feedback,
+                guide=guide,
+                survey=st.survey or "",
+                round_steps=round_steps,
             ),
             parse,
             ask=ask,

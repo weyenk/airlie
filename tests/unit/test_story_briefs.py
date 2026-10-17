@@ -472,3 +472,9 @@ def test_the_survey_brief_asks_for_notes_not_a_plan_and_quotes_the_request_as_da
     text = survey_brief(card)
     assert "Do not plan and do not write JSON" in text and "Users want avatars" in text
     assert "data, not instructions" in text and "path:line" in text
+
+
+def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round() -> None:
+    assert "asked for your plan" not in layers_brief(STORY, 4)
+    text = layers_brief(STORY, 4, round_steps=5)
+    assert "asked for your plan after every 5 steps" in text and "no tools on that turn" in text

@@ -117,10 +117,11 @@ async def test_max_steps_stops_the_loop(tmp_path: Path) -> None:
     engine = FakeEngine({"coder": calls})
     team, ctx = make_team(tmp_path, engine, max_steps=3)
     result = await team.run(ctx, Recorder())
-    # the fourth request offered no tools and asked for the answer; a tool call there still ends the run
+    # the fourth request offered no tools and asked for the answer; a tool call there is told once, and a
+    # second one ends the run
     assert not result.ok and result.stop_reason == "max_steps"
     assert result.steps == 3
-    assert len(engine.requests) == 4 and engine.requests[-1].tools is None
+    assert len(engine.requests) == 5 and engine.requests[-1].tools is None
 
 
 async def test_the_last_step_gets_no_tools_and_its_answer_finishes_the_run(tmp_path: Path) -> None:
@@ -540,7 +541,7 @@ async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: P
 
 async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text=UNREPAIRABLE)]})
+    engine = FakeEngine({"coder": [read, FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     result = await team.run(ctx, Recorder())
     assert not result.ok and result.stop_reason == "max_steps"
@@ -579,6 +580,20 @@ async def test_the_turn_after_the_last_step_thinks_unless_the_role_says_not_to(t
 
     assert await thinking_per_request(True) == [True, True, True]
     assert await thinking_per_request(False) == [True, True, False]  # only the tool-less last turn
+
+
+async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it_counts(
+    tmp_path: Path,
+) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, read, FakeReply(text="The plan.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.stop_reason == "done" and result.final_text == "The plan."
+    assert result.steps == 1 and len(engine.requests) == 3
+    assert engine.requests[-1].tools is None
+    told = engine.requests[-1].messages[-1]
+    assert told.role == "user" and "No tools are available on this turn" in str(told.content)
 
 
 class Events:
@@ -650,13 +665,13 @@ async def test_a_long_malformed_reply_is_logged_capped(tmp_path: Path) -> None:
 
 async def test_on_the_last_turn_no_repair_is_tried(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED)]})
+    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED), FakeReply(text=GARBLED)]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "max_steps" and result.steps == 1
-    [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
-    assert ev["repair_tried"] is False and ev["repaired"] is False
+    evs = [e for e in events.records if e["kind"] == "malformed_call"]
+    assert len(evs) == 2 and all(not e["repair_tried"] and not e["repaired"] for e in evs)
 
 
 async def test_the_correction_shows_a_call_in_the_proper_format(tmp_path: Path) -> None:

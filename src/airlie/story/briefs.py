@@ -167,6 +167,7 @@ def layers_brief(
     *,
     guide: str = "",
     survey: str = "",
+    round_steps: int = 0,
 ) -> str:
     parts = [
         "Split this story into a stack of pull requests for this repository, one layer each, bottom first. "
@@ -186,6 +187,15 @@ def layers_brief(
         "(a tool, option or field) below the layer that validates or uses it, since code that refuses an "
         "unknown name already refuses it for the wrong reason; where a criterion could pass on the base by "
         "accident, say in that layer's brief which message or output proves the new behaviour.",
+        *(
+            [
+                f"You will be asked for your plan after every {round_steps} steps, whatever you have read so "
+                "far, with no tools on that turn: read the files that matter first, and be ready to write "
+                "the JSON plan then. You may refine it in later rounds."
+            ]
+            if round_steps
+            else []
+        ),
         LAYERS_CONTRACT,
         *_again(feedback),
     ]

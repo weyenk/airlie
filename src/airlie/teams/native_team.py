@@ -97,6 +97,12 @@ LAST_STEP = (
 )
 """What a role is told on the turn after its last allowed step, which offers it no tools."""
 
+LAST_TURN_RETRY = (
+    "No tools are available on this turn, so nothing you call can run. Write your answer now, complete, in "
+    "your reply, from what you have already read."
+)
+"""What a role is told once when it calls a tool on the turn that offers none (a second time ends the run)."""
+
 ONE_STEP_LEFT = (
     "You have one step left. Use it only if you must; then give your final answer, complete, from what you "
     "have found. Stop exploring and write the deliverable."
@@ -152,6 +158,7 @@ class NativeTeam:
         stop: StopReason = "done"
         ok = False
         corrected = False  # the current streak of unparsed tool calls has had its one correction
+        last_corrected = False  # the tool-less last turn has had its one correction
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
@@ -210,7 +217,12 @@ class NativeTeam:
                 _log_malformed(ctx, step_num, res.text, repair)
                 if repair is not None and repair.call is not None:
                     calls, content = [repair.call], repair.prose  # runs below as an ordinary step
-                elif last_turn:  # it tried a tool it was not offered: there is no answer
+                elif last_turn:  # it tried a tool it was not offered: told once, then there is no answer
+                    if not last_corrected:
+                        last_corrected = True
+                        messages.append(Message(role="assistant", content=res.text))
+                        messages.append(Message(role="user", content=LAST_TURN_RETRY))
+                        continue
                     final_text = f"stopped: reached max_steps={ctx.max_steps}"
                     stop = "max_steps"
                     break
@@ -224,7 +236,12 @@ class NativeTeam:
                     messages.append(Message(role="user", content=MALFORMED))
                     continue
             corrected = False
-            if last_turn:  # it called a tool it was not offered: there is no answer
+            if last_turn:  # it called a tool it was not offered: told once, then there is no answer
+                if not last_corrected:
+                    last_corrected = True
+                    messages.append(Message(role="assistant", content=res.text))
+                    messages.append(Message(role="user", content=LAST_TURN_RETRY))
+                    continue
                 final_text = f"stopped: reached max_steps={ctx.max_steps}"
                 stop = "max_steps"
                 break
