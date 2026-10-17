@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from airlie.config import AirlieConfig
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
+from airlie.serve.listing import recent_runs, repos, stories
 from airlie.skills import prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
@@ -378,6 +379,22 @@ def create_app(
         except ValueError as e:
             raise HTTPException(409, str(e)) from e
         return {"job_id": job.id, "kind": job.kind}
+
+    @app.get("/v1/airlie/jobs")
+    async def job_list() -> dict[str, Any]:
+        return {"jobs": jobs.list()}
+
+    @app.get("/v1/airlie/runs")
+    async def run_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+        return {"runs": recent_runs(cfg.observability.state_dir, limit)}
+
+    @app.get("/v1/airlie/stories")
+    async def story_list() -> dict[str, Any]:
+        return {"stories": stories(cfg.observability.state_dir)}
+
+    @app.get("/v1/airlie/repos")
+    async def repo_list() -> dict[str, Any]:
+        return {"repos": repos(cfg)}
 
     @app.get("/v1/airlie/jobs/{job_id}")
     async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:
