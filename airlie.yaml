@@ -109,7 +109,7 @@ roles:
     prompt: prompts/roles/coder.md
     model: base
     max_context: 65536
-    max_tokens: 4096                 # bounds a runaway generation to ~2 min; raise for very large files
+    max_tokens: 8192                 # bounds a runaway generation to ~4 min; room for a large edit (HDS-5)
     thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. generalist)
     thinking_budget: 16384
     sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
@@ -161,6 +161,7 @@ tools:
   builtin: [read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git]
   shell_timeout_s: 600
   output_cap_chars: 20000
+  write_file_max_overwrite_lines: 200   # longer existing files change with edit_file, not a rewrite
 mcp: {}                            # name: { command, args, env } — exposed to teams as extra tools
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------

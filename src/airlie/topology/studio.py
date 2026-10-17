@@ -203,6 +203,7 @@ class StudioOrchestrator:
             self.cfg.tools.output_cap_chars,
             test_cmd,
             self.test_steps,
+            self.cfg.tools.write_file_max_overwrite_lines,
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:

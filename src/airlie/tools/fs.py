@@ -41,7 +41,10 @@ class ReadFile:
 
 class WriteFile:
     name = "write_file"
-    description = "Create or overwrite a text file in the repository with the given content."
+    description = (
+        "Create a text file in the repository with the given content, or overwrite a short one. "
+        "Change a long existing file with edit_file."
+    )
     parameters = {
         "type": "object",
         "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -51,6 +54,15 @@ class WriteFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if p.is_file() and (n := len(p.read_text(errors="replace").splitlines())) > (
+                limit := ctx.write_file_max_overwrite_lines
+            ):
+                return ToolResult(
+                    False,
+                    f"error: {args['path']} already exists with {n} lines (over {limit}); write_file does "
+                    "not rewrite a file that long. Change it with edit_file, or put new tests in a new file "
+                    "named for the feature.",
+                )
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(str(args["content"]))
         except Exception as e:  # noqa: BLE001

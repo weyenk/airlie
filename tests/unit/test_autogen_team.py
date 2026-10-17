@@ -147,7 +147,9 @@ async def test_registry_tool_marks_failures_as_errors_and_names_missing_args(tmp
     wt.mkdir()
     reg = ToolRegistry.builtin(["read_file", "run_tests"], ToolContext(worktree=wt, test_cmd="false"))
     read, run_tests = build_function_tools(reg)
-    with pytest.raises(ToolError, match="read_file requires: path"):
+    with pytest.raises(
+        ToolError, match=r"read_file requires: path\. A correct call looks like: read_file\(path="
+    ):
         await read.run_json({}, cancellation_token=None)  # type: ignore[arg-type]
     with pytest.raises(ToolError, match="no such file|not found|error"):
         await read.run_json({"path": "missing.txt"}, cancellation_token=None)  # type: ignore[arg-type]

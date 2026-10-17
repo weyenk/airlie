@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
 
@@ -58,6 +60,28 @@ async def test_write_file_refuses_secrets_and_escapes(tmp_path: Path) -> None:
     assert (r.ok, r.output) == (False, "error: refusing to touch a likely secret file: id_rsa")
     r = await WriteFile().run({"path": "../out.txt", "content": "k"}, c)
     assert (r.ok, r.output) == (False, "error: path escapes the worktree: ../out.txt")
+
+
+async def test_write_file_refuses_to_overwrite_a_long_existing_file(tmp_path: Path) -> None:
+    """HDS-5 2026-10-16: rewriting a 17,000-character test file in one call hit max_tokens."""
+    c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
+    p = put(c, "tests/test_big.py", "a\nb\nc\nd\n")
+    r = await WriteFile().run({"path": "tests/test_big.py", "content": "x = 1\n"}, c)
+    assert not r.ok and "4 lines" in r.output and "edit_file" in r.output and "new file" in r.output
+    assert p.read_text() == "a\nb\nc\nd\n"
+
+
+async def test_write_file_overwrites_a_short_file_and_creates_a_new_one(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
+    p = put(c, "small.py", "a\nb\nc\n")
+    r = await WriteFile().run({"path": "small.py", "content": "x = 1\n"}, c)
+    assert r.ok and p.read_text() == "x = 1\n"
+    r = await WriteFile().run({"path": "fresh.py", "content": "y\n" * 50}, c)
+    assert r.ok and (c.worktree / "fresh.py").read_text() == "y\n" * 50
+
+
+def test_write_file_overwrite_limit_defaults_to_200_lines(tmp_path: Path) -> None:
+    assert ToolContext(worktree=tmp_path).write_file_max_overwrite_lines == 200
 
 
 # ---- edit_file ----

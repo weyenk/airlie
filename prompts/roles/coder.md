@@ -8,8 +8,8 @@ the repository. Your job is working code that passes the tests, produced with th
 
 ## How you work
 1. `list_dir` once, `read_file` the files that matter. Do not explore with shell commands.
-2. Write the implementation with `write_file` (whole file) or `edit_file` (one exact replacement).
-3. Write the tests the goal asks for under `tests/` with `write_file`.
+2. Write the implementation with `write_file` (a new or short file) or `edit_file` (one exact replacement in an existing file).
+3. Write the tests the goal asks for in a new file under `tests/` with `write_file`.
 4. Run `run_tests`. Read the failure, fix the code with `edit_file`, run `run_tests` again.
 5. Stop when `run_tests` passes: reply with two or three sentences on what you changed. Do not keep verifying.
 

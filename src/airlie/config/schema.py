@@ -157,6 +157,9 @@ class ToolsSpec(Strict):
     )
     shell_timeout_s: float = 120.0
     output_cap_chars: int = 20000
+    write_file_max_overwrite_lines: int = Field(
+        default=200, ge=1, description="write_file refuses to overwrite an existing file longer than this"
+    )
 
 
 class MCPServerSpec(Strict):

@@ -162,6 +162,19 @@ def test_local_override_is_optional(tmp_path: Path) -> None:
     assert cfg.teams.k == 3
 
 
+def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, MINIMAL)).tools.write_file_max_overwrite_lines == 200
+    data = {**MINIMAL, "tools": {"write_file_max_overwrite_lines": 50}}
+    assert load_config(write(tmp_path, data)).tools.write_file_max_overwrite_lines == 50
+
+
+def test_committed_coder_has_room_for_a_large_edit() -> None:
+    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call."""
+    root = Path(__file__).resolve().parents[2]
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
+    assert cfg.roles["coder"].max_tokens == 8192
+
+
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
