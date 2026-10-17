@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Job</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--field:#16191E;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--head:#000000;--head-ink:#F2F4F7;--head-muted:#A3A8B2;--run-bg:#16283F;--run:#B9D3F2;--ok-bg:#13281C;--ok:#A9DDB9;--warn-bg:#2E230D;--warn:#F0C978;--err-bg:#33171A;--err:#F2B2AA;--mute-bg:#1E2228;--mute:#B4B9C2;--danger-line:#6B2E2A;--seg:#5A606B;--seg-on:#F4C6CF;--node-edge:#CFE0F3}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--line2:#EEECE5;--field:#FFFFFF;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--head:#17191E;--head-ink:#F6F5F1;--head-muted:#C9CBD1;--run-bg:#E6EDFD;--run:#1E3FA8;--ok-bg:#E2F2E9;--ok:#1E5C3E;--warn-bg:#FBF0D9;--warn:#7A4F00;--err-bg:#FBE6E3;--err:#8E2B22;--mute-bg:#EEF0F3;--mute:#4B4F58;--danger-line:#E3B4AE;--seg:#A9A69B;--seg-on:#D9546E;--node-edge:#7FA6D1}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.run{background:var(--run-bg);color:var(--run)}.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.warn{background:var(--warn-bg);color:var(--warn)}.chip.err{background:var(--err-bg);color:var(--err)}.chip.mute{background:var(--mute-bg);color:var(--mute)}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:10px;font:inherit;font-weight:600;font-size:15px;cursor:pointer;border:1px solid var(--field-line);background:transparent;color:var(--ink)}
+.btn.danger{color:var(--err);border-color:var(--danger-line)}
+.nav a{color:var(--head-muted);text-decoration:none;padding:18px 0}
+.nav a[aria-current]{color:var(--head-ink);font-weight:600;border-bottom:2px solid #8FB6E0;padding-bottom:16px}
+.node{position:absolute;width:104px;height:104px;box-sizing:border-box;border-radius:50%;border:1px solid var(--node-edge);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#0A1A2B;line-height:1.2;padding:8px;font:inherit;cursor:pointer;background:radial-gradient(circle at 50% 50%,#E6F0FB 0%,#9DBFE5 100%)}
+.node.review{border-color:#B8DDA4;background:radial-gradient(circle at 50% 50%,#EAF5E3 0%,#9CCB84 100%)}
+.node.partial{box-shadow:0 0 0 4px #E0B34E}
+.node.active{box-shadow:0 0 0 4px #F4C6CF,0 0 24px 4px rgba(244,198,207,.45)}
+.node.waiting{opacity:.55;border-style:dashed}
+.seg{position:absolute;background:var(--seg)}
+.seg.on{background:var(--seg-on)}
+.elabel{position:absolute;font-size:13px;color:var(--ink2);white-space:nowrap}
+</style>
+</helmet>
+<div class="{{theme}}" style="min-height: 100vh; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--ink); background: var(--bg); font-size: 15px; line-height: 1.5">
+  <header style="background: var(--head); border-bottom: 1px solid var(--line)">
+    <div style="max-width: 1240px; margin: 0 auto; padding: 0 20px; min-height: 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+      <a href="Main.dc.html" style="color: var(--head-ink); text-decoration: none; font-weight: 700; font-size: 20px">airlie</a>
+      <nav class="nav" aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px 20px; flex: 1 1 auto">
+        <a href="Main.dc.html">Home</a>
+        <a href="Job.dc.html" aria-current="page">Jobs</a>
+        <a href="Topology.dc.html">Topology</a>
+        <a href="Metrics.dc.html">Metrics</a>
+        <a href="Admin.dc.html">Admin</a>
+      </nav>
+      <span style="font-size: 14px; color: var(--head-muted)">Noah · admin</span>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 24px 20px 48px; display: flex; flex-direction: column; gap: 20px">
+    <div style="display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; justify-content: space-between">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <a href="Main.dc.html" style="font-size: 14px">← All jobs</a>
+        <h1 style="margin: 0; font-size: 26px; letter-spacing: -0.01em">airlie web app mockups</h1>
+        <div class="mono" style="color: var(--ink2); font-size: 13px">studio run 20261016-235100-f43f · scratch repo · started 23:51</div>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+        <span class="chip run">Running · fix round 1</span>
+        <button class="btn danger" type="button">Stop job</button>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+      <section class="card" aria-labelledby="tree-h" style="flex: 999 1 640px; min-width: 0; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+          <h2 id="tree-h" style="margin: 0; font-size: 18px">Agents · studio · dev shop</h2>
+          <a href="Topology.dc.html" style="font-size: 14px">Change topology</a>
+        </div>
+        <div style="overflow-x: auto">
+          <div role="img" aria-label="Chief delegated to ux and design, both cut off short; the coder is working now and sends its diff to the reviewer, which returned 18 findings; the chief's synthesis waits." style="position: relative; width: 760px; height: 610px; margin: 0 auto">
+            <div class="seg" style="left: 379px; top: 112px; width: 2px; height: 38px"></div>
+            <div class="seg" style="left: 230px; top: 149px; width: 302px; height: 2px"></div>
+            <div class="seg" style="left: 229px; top: 150px; width: 2px; height: 28px"></div>
+            <div class="seg" style="left: 529px; top: 150px; width: 2px; height: 28px"></div>
+            <div class="seg" style="left: 229px; top: 282px; width: 2px; height: 38px"></div>
+            <div class="seg" style="left: 529px; top: 282px; width: 2px; height: 38px"></div>
+            <div class="seg" style="left: 230px; top: 319px; width: 302px; height: 2px"></div>
+            <div class="seg" style="left: 379px; top: 320px; width: 2px; height: 28px"></div>
+            <div class="seg on" style="left: 378.5px; top: 452px; width: 3px; height: 36px"></div>
+            <div class="seg" style="left: 432px; top: 539px; width: 126px; height: 2px"></div>
+            <span class="elabel" style="left: 392px; top: 120px">delegates</span>
+            <span class="elabel" style="left: 392px; top: 324px">flows + direction (partial)</span>
+            <span class="elabel" style="left: 392px; top: 458px; color: var(--seg-on)">diff → · ← 18 findings</span>
+            <span class="elabel" style="left: 450px; top: 512px">results</span>
+
+            <button class="node" type="button" style="left: 328px; top: 8px"><strong>Chief</strong><span style="font-size: 12px">✓ plan</span></button>
+            <button class="node partial" type="button" style="left: 178px; top: 178px"><strong>UX</strong><span style="font-size: 12px">! cut off</span></button>
+            <button class="node partial" type="button" style="left: 478px; top: 178px"><strong>Design</strong><span style="font-size: 12px">! cut off</span></button>
+            <button class="node active" type="button" aria-pressed="true" style="left: 328px; top: 348px"><strong>Coder</strong><span style="font-size: 12px">● step 18</span></button>
+            <button class="node review" type="button" style="left: 328px; top: 488px"><strong>Reviewer</strong><span style="font-size: 12px">✓ changes</span></button>
+            <button class="node waiting" type="button" style="left: 558px; top: 488px"><strong>Synthesis</strong><span style="font-size: 12px">○ waiting</span></button>
+          </div>
+        </div>
+        <ul aria-label="Legend" style="list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--ink2)">
+          <li style="display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 24px; height: 3px; background: var(--seg-on)"></span>Working now</li>
+          <li style="display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 0 3px #E0B34E"></span>Partial answer</li>
+          <li style="display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 50%; background: #9CCB84"></span>Reviewer</li>
+          <li style="display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 50%; border: 1px dashed var(--ink2)"></span>Waiting</li>
+        </ul>
+      </section>
+
+      <aside style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+        <section class="card" aria-labelledby="sel-h" style="padding: 20px; display: flex; flex-direction: column; gap: 10px">
+          <h2 id="sel-h" style="margin: 0; font-size: 18px">Coder</h2>
+          <dl style="margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; font-size: 14px">
+            <div><dt style="color: var(--ink2)">Model</dt><dd class="mono" style="margin: 0">Qwen3-Coder-30B-A3B</dd></div>
+            <div><dt style="color: var(--ink2)">Steps</dt><dd class="mono" style="margin: 0">29, then 18 of 40</dd></div>
+            <div><dt style="color: var(--ink2)">Context</dt><dd class="mono" style="margin: 0">44,161 tokens</dd></div>
+            <div><dt style="color: var(--ink2)">Last reply</dt><dd class="mono" style="margin: 0">8,192 (cap)</dd></div>
+          </dl>
+          <h3 style="margin: 8px 0 0; font-size: 14px; color: var(--ink2); font-weight: 500">Latest steps</h3>
+          <ol class="mono" style="margin: 0; padding-left: 20px; font-size: 13px; display: flex; flex-direction: column; gap: 4px">
+            <li>edit_file mockups/home.html · <span style="color: var(--err)">old text not found</span></li>
+            <li>read_file mockups/home.html · ok</li>
+            <li>edit_file mockups/job.html · <span style="color: var(--err)">old text not found</span></li>
+          </ol>
+        </section>
+
+        <section class="card" aria-labelledby="plan-h" style="padding: 20px; display: flex; flex-direction: column; gap: 10px">
+          <h2 id="plan-h" style="margin: 0; font-size: 18px">Plan</h2>
+          <ol style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px">
+            <li>ux-flows · UX</li>
+            <li>visual-direction · Design</li>
+            <li>implement-mockups · Coder, after both</li>
+          </ol>
+          <span class="chip ok" style="align-self: flex-start">Approved by Noah</span>
+        </section>
+
+        <section class="card" aria-labelledby="res-h" style="padding: 20px; display: flex; flex-direction: column; gap: 10px">
+          <h2 id="res-h" style="margin: 0; font-size: 18px">Result</h2>
+          <p style="margin: 0; color: var(--ink2)">The branch is ready when the job finishes. Pull it to your laptop to try it.</p>
+          <code class="mono" style="background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 13px; overflow-x: auto; white-space: nowrap">git fetch studio [BRANCH]</code>
+          <button class="btn" type="button" disabled style="opacity: .55">Copy pull command</button>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":1180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: (this.props.dark ?? true) ? 'dark' : 'light' };
+  }
+}
+</script>
+</body>
+</html>
