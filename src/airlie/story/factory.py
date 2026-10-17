@@ -60,7 +60,6 @@ def story_problems(cfg: AirlieConfig) -> list[str]:
     for label, role in (
         ("story.product_role", s.product_role),
         ("story.architect_role", s.architect_role),
-        ("story.tests_role", s.tests_role),
         ("story.build_role", s.build_role),
     ):
         if role not in roles:

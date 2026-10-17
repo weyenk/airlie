@@ -701,6 +701,56 @@ async def test_cancelling_the_test_gate_kills_what_the_test_command_started(tmp_
     assert await eventually(lambda: not running(sleeper))
 
 
+ONE_BUILD = Plan((), (Subtask("build", "make the check pass", "coder"),))
+
+
+async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_whole_command(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [RUN, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    steps = ("echo first", "./check.sh", "echo third")
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", test_steps=steps, plan=ONE_BUILD, synthesise=False
+    )
+    tool_output = engine.requests[1].messages[-1].content
+    assert "[2/3] FAIL (exit 1): ./check.sh" in tool_output and "[3/3] PASS: echo third" in tool_output
+    assert report.tests == {"studio": False}
+
+
+async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def before_gate() -> bool:
+        await orch.follow_up("build", "write PASS, then stop")
+        return True
+
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, before_gate=before_gate
+    )
+    assert report.tests == {"studio": True}
+    assert engine.requests[-2].messages[-1].content == "write PASS, then stop"
+    assert [e["subtask"] for e in events(report) if e["kind"] == "follow_up"] == ["build"]
+
+
+async def test_a_before_gate_that_says_no_skips_the_gate(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def before_gate() -> bool:
+        return False
+
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, before_gate=before_gate
+    )
+    assert report.tests == {"studio": False}  # the check passes, but it never ran
+    assert [e["tests"] for e in events(report) if e["kind"] == "run_done"] == [False]
+
+
 async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_path: Path) -> None:
     bad = "<function=open_file>\n<file>PASS</file>\n</function>"
     engine = FakeEngine(

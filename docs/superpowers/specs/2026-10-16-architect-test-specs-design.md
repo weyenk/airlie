@@ -1,5 +1,11 @@
 # Architect-written test specs, one agent per chunk, red/green checked
 
+> **Superseded on 2026-10-16** by single-coder layers with post-hoc red and no-assertion checks: one coder writes a
+> layer's tests and its code, then the pipeline checks (with no model) that each new or changed test fails on the
+> layer's base and asserts something, with one retry before the layer stops. See `docs/integrations/story.md`,
+> *Checks on a layer's tests*. This design was judged more trouble than it is worth and was not built; the rest of
+> this document is kept as written.
+
 Status: approved by Noah on 2026-10-16. It changes how the story pipeline builds a layer.
 
 ## Why

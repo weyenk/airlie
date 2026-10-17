@@ -341,7 +341,6 @@ class StorySpec(Strict):
     )
     product_role: str = "product"
     architect_role: str = "architect"
-    tests_role: str = "qa"
     build_role: str = "coder"
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)

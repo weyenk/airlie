@@ -86,11 +86,20 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+REMOVED = {
+    "story.tests_role": "removed on 2026-10-16: one coder (story.build_role) now writes a layer's tests and "
+    "its code; delete story.tests_role from your config",
+}
+"""Keys a config may still carry from an older airlie, and what to tell its owner instead of "Extra inputs are
+not permitted"."""
+
+
 def _format_validation_error(e: ValidationError) -> str:
     lines = []
     for err in e.errors():
         loc = ".".join(str(p) for p in err["loc"]) or "<root>"
-        lines.append(f"{loc}: {err['msg']}")
+        removed = REMOVED.get(loc) if err["type"] == "extra_forbidden" else None
+        lines.append(f"{loc}: {removed or err['msg']}")
     return "config invalid:\n  " + "\n  ".join(lines)
 
 
