@@ -224,6 +224,12 @@ class TeamsSpec(Strict):
     max_steps: int = 40
     token_budget: int = 200000
     stop_on_first_pass: bool = True
+    fresh_continuation_tokens: int = Field(
+        default=32768,
+        ge=1,
+        description="a fix round or follow-up on a conversation larger than this (estimated tokens) starts a "
+        "new one: the brief, a note that the earlier work is in the worktree, and the findings",
+    )
 
 
 class AggregatorSpec(Strict):

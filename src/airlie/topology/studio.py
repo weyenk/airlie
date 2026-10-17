@@ -9,6 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.engine.protocol import Engine
@@ -41,6 +42,23 @@ from airlie.topology.studio_plan import (
 
 WRITE_TOOLS = {"write_file", "edit_file", "shell", "git"}
 SKILL_QUESTION = "Which guideline should this specialist follow as the primary lens?"
+FRESH_CONTINUATION = (
+    "You have already worked on this subtask: your changes are in this worktree (see them with git diff, or "
+    "read the files). Your earlier conversation is not repeated here. Pick up from the worktree as it is and "
+    "deal with the following."
+)
+"""What a subtask sent back on a long conversation is told instead of seeing that conversation again."""
+CHARS_PER_TOKEN = 4
+"""A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
+
+
+def _estimated_tokens(state: dict[str, Any]) -> int:
+    """About how many tokens the stored conversation `state` (NativeTeam's dumped messages) would resend."""
+    chars = sum(
+        len(str(m.get("content") or "")) + len(str(m.get("tool_calls") or ""))
+        for m in state.get("messages", [])
+    )
+    return chars // CHARS_PER_TOKEN
 
 
 @dataclass
@@ -280,6 +298,22 @@ class StudioOrchestrator:
             chosen += [k for k in skills if second and k.name == second[0][0] and k not in chosen]
         return d.chosen, "\n\n".join(f"## Guideline: {k.name}\n{k.text}" for k in chosen)
 
+    def _continuation(
+        self, run: SubtaskRun, parent: TeamResult | None, nudge: str | None
+    ) -> tuple[dict[str, Any] | None, str, str | None]:
+        """The conversation a subtask goes on in, its goal, and its nudge. A short one goes on as it is. One
+        over teams.fresh_continuation_tokens starts again, so a fix round does not resend it (HDS-5: 58-72k
+        tokens, and the coder's reply was cut off before it acted): the brief, where its work is, a nudge."""
+        goal = self._brief_with_deps(run.subtask)
+        state = parent.state if parent else None
+        if state is None or nudge is None:
+            return state, goal, nudge
+        size = _estimated_tokens(state)
+        if size <= self.cfg.teams.fresh_continuation_tokens:
+            return state, goal, nudge
+        self.sink.emit("fresh_continuation", subtask=run.subtask.id, role=run.role, estimated_tokens=size)
+        return None, f"{goal}\n\n{FRESH_CONTINUATION}\n\n{nudge}", None
+
     def _context(
         self,
         run: SubtaskRun,
@@ -291,9 +325,10 @@ class StudioOrchestrator:
         nudge: str | None,
     ) -> TeamContext:
         assert self.worktree is not None
+        state, goal, nudge = self._continuation(run, parent, nudge)
         return TeamContext(
             team_id=run.subtask.id,
-            goal=self._brief_with_deps(run.subtask),
+            goal=goal,
             role=role,
             tools=self._tools(role, test_cmd),
             worktree=self.worktree,
@@ -302,7 +337,7 @@ class StudioOrchestrator:
             token_budget=self.cfg.teams.token_budget,
             scheduler=self.scheduler,
             preamble=preamble or None,
-            initial_state=parent.state if parent else None,
+            initial_state=state,
             nudge=nudge,
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],

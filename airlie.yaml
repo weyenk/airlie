@@ -219,7 +219,7 @@ repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatu
 
 # ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
 scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }
-teams: { k: 1, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true }   # k: 1 = single agent (bench 2026-10-13); spec: k: 3
+teams: { k: 1, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true, fresh_continuation_tokens: 32768 }   # k: 1 = single agent (bench 2026-10-13); spec: k: 3
 aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 step 9
 
 # ---- Host + observability -----------------------------------------------------------------------------------------
