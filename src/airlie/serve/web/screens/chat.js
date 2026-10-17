@@ -259,9 +259,8 @@ export function render(root, _params, ctx) {
     } finally {
       reply.streaming = false;
       reply.reply = reply.text ? unwrap(reply.text) : null;
-      delete reply.el?.dataset.x;
       if (reply.el) fill(reply.el, reply);
-      save(THREAD, strip_els(thread));
+      save(THREAD, withoutEls(thread));
       busy = null;
       send.disabled = false;
       scrollDown();
@@ -269,7 +268,7 @@ export function render(root, _params, ctx) {
     }
   }
 
-  function strip_els(items) {
+  function withoutEls(items) {
     return items.map(({ el, ...rest }) => rest);
   }
 

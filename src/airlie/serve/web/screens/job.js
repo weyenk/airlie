@@ -59,6 +59,7 @@ export function digest(events) {
         break;
       }
       case "step": {
+        if (!e.team_id) break; // a team run outside the studio's subtasks
         const n = node(e.team_id);
         n.stepCount = Math.max(n.stepCount, e.step || n.steps.length + 1);
         n.steps.push({ step: e.step, tool: e.tool, ok: e.ok !== false });
@@ -314,7 +315,7 @@ export function render(root, [rawId], ctx) {
     }
     const okChip = r.ok === true ? chip("ok", "Passed") : r.ok === false ? chip("err", "Did not pass") : null;
     resultBox.append(h("div", { class: "row spread" }, h("h2", { class: "h2" }, "Result"), okChip));
-    if (r.branch) resultBox.append(h("div", { class: "small muted" }, "The branch is ready. Fetch it to try it:"), h("code", { class: "mono codebox" }, `git fetch ${shortRepo(m.repo) ? "origin" : ""} ${r.branch}`.replace(/\s+/g, " ")));
+    if (r.branch) resultBox.append(h("div", { class: "small muted" }, `The branch is in the Studio's checkout${m.repo ? ` at ${m.repo}` : ""}. Fetch it to try it:`), h("code", { class: "mono codebox" }, `git fetch <studio> ${r.branch}`));
     if (r.tests && typeof r.tests === "object") resultBox.append(h("div", { class: "small muted" }, `Tests: ${Object.entries(r.tests).map(([k, v]) => `${k} ${v ? "✓" : "✗"}`).join(", ")}`));
     if (r.final_answer) resultBox.append(h("div", { class: "answer" }, markdown(r.final_answer)));
     const rest = Object.entries(r).filter(([k, v]) => !["ok", "branch", "tests", "final_answer", "run_id", "type"].includes(k) && (typeof v !== "object" || v === null));
