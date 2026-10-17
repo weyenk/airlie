@@ -125,6 +125,11 @@ class RoleSpec(Strict):
     thinking_budget: int | None = Field(
         default=8192, ge=1, description="cap on reasoning tokens (vllm-mlx refuses < 1); None = uncapped"
     )
+    last_turn_thinking: bool = Field(
+        default=True,
+        description="think on the turn after the last step, the one that must answer without tools: False "
+        "writes the answer from what the role has read (the architect's took 14-20 minutes thinking)",
+    )
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"
@@ -364,6 +369,17 @@ class StorySpec(Strict):
     max_layers: int = Field(default=5, ge=1)
     stage_attempts: int = Field(
         default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"
+    )
+    plan_round_steps: int = Field(
+        default=5,
+        ge=0,
+        description="the architect plans in rounds of this many steps (a plan after each, the next round "
+        "refines it) and stops when a round leaves the plan unchanged; 0 plans in one go, as before",
+    )
+    survey: bool = Field(
+        default=True,
+        description="while product refines the request, the architect reads the code it touches and takes "
+        "notes the layer planning starts from",
     )
     mutation_timeout_s: float = Field(
         default=3600,

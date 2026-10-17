@@ -69,6 +69,9 @@ class StoryState:
     repo: str
     stage: str = "new"
     story: dict[str, Any] | None = None
+    survey: str | None = None
+    """The architect's notes on the code the request touches, taken while product refined it ("" when none
+    were: it failed or is switched off). None: not taken yet."""
     layers: list[dict[str, Any]] | None = None
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt: dict[str, str] | None = None

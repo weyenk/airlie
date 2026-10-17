@@ -14,7 +14,8 @@ import contextlib
 import re
 import subprocess
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,10 @@ from airlie.story.briefs import (
     pr_body,
     pr_title,
     refine_brief,
+    story_text,
+    survey_brief,
 )
+from airlie.story.context import repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate, read_mutation_gate, with_base
 from airlie.story.layer_checks import Finding, checks_for, feedback
 from airlie.story.model import (
@@ -47,6 +51,7 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.publish import Publisher, PublishError
+from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
 from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
@@ -92,6 +97,10 @@ CANCEL_NOTE_S = 10.0
 _URL_USERINFO = re.compile(r"(?<=://)[^/\s]*@")
 """What follows "://" up to the last "@" before a "/" or a space. Nothing is matched before the "://", so the
 scan stays linear on a long run of letters."""
+
+
+SURVEY_STEPS = 8
+"""Steps the architect gets for the survey: enough to read a handful of files."""
 
 
 class StoryBlocked(Exception):
@@ -234,6 +243,7 @@ class StoryPipeline:
         """`test_cmd` is a person's (--test-cmd): it wins over the repository's test gate, and a blank one is
         none. `github_repo` is the "owner/name" an issue's repo: label names (None for a written request): the
         story is pinned to it and publishes there only."""
+        self.cfg = cfg
         self.s = cfg.story
         self.board = board
         self.studio = studio
@@ -282,7 +292,7 @@ class StoryPipeline:
             base = await self._base(st)
             if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
                 self._gate(st, base)
-            story = await self._refine(st, card)
+            story = await self._refine_with_survey(st, card)
             layers = await self._layers(st, card, story)
             for i in range(len(layers)):
                 await self._build(st, card, story, layers, i)
@@ -382,10 +392,9 @@ class StoryPipeline:
             st.emit("mutation_gate", commands=masked, agents_md=found.blob, base=base)
         st.save()
 
-    async def _ask(self, st: StoryState, stage: str, role: str, brief: str, at: str | None = None) -> str:
-        """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
-        the story's base, or at commit `at` (removed after, even when the studio raises), no synthesis."""
-        plan = Plan((), (Subtask(stage, brief, role),))
+    def _start_ask(self, st: StoryState, stage: str, at: str | None) -> tuple[Any, dict[str, str]]:
+        """The studio for one read-only turn, on record in the state and the events, and the commit it reads
+        (the story's base, or `at`)."""
         orch = self.studio()
         base = dict(st.base or {})
         if at is not None:
@@ -395,6 +404,32 @@ class StoryPipeline:
         st.emit(
             "run", stage=stage, studio_run=orch.run_dir.run_id, base=base.get("ref"), base_sha=base.get("sha")
         )
+        return orch, base
+
+    def _answer(self, team: Any, role: str, orch: Any) -> str:
+        """What a specialist's turn said, or the stop it ended in (a cut-off one stops the story: another try
+        with the same config meets the same cap, so it is no StoryError, which is retried with its text in
+        the model's prompt)."""
+        if team is not None and team.stop_reason == "cut_off":
+            raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
+        if team is None or not team.ok:
+            raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
+        return str(team.final_text)
+
+    async def _ask(
+        self,
+        st: StoryState,
+        stage: str,
+        role: str,
+        brief: str,
+        at: str | None = None,
+        steps: int | None = None,
+    ) -> str:
+        """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
+        the story's base, or at commit `at` (removed after, even when the studio raises), no synthesis.
+        `steps` limits its steps (the role's own limit when None)."""
+        plan = Plan((), (Subtask(stage, brief, role),))
+        orch, base = self._start_ask(st, stage, at)
         try:
             report = await orch.execute_task(
                 f"{stage}: {st.card['title']}",
@@ -403,17 +438,57 @@ class StoryPipeline:
                 base=base.get("sha"),
                 detach=True,
                 synthesise=False,
+                max_steps=steps,
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
-        team = report.teams[0] if report.teams else None
-        if team is not None and team.stop_reason == "cut_off":
-            # unfinished, with text or without. Another try with the same config meets the same cap, so the
-            # story stops here (a StoryError would be retried, with its text in the model's prompt)
-            raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
-        if team is None or not team.ok:
-            raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
-        return team.final_text
+        return self._answer(report.teams[0] if report.teams else None, role, orch)
+
+    async def _ask_in_rounds[T](
+        self,
+        st: StoryState,
+        stage: str,
+        role: str,
+        brief: str,
+        at: str | None,
+        *,
+        parse: Callable[[str], T],
+        same: Callable[[T, T], bool],
+        round_steps: int,
+        rounds: int,
+    ) -> str:
+        """`_ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
+        conversation until a round leaves the plan unchanged or `rounds` are used."""
+        plan = Plan((), (Subtask(stage, brief, role),))
+        orch, base = self._start_ask(st, stage, at)
+
+        async def first() -> str:
+            report = await orch.execute_task(
+                f"{stage}: {st.card['title']}",
+                repo=self.repo,
+                plan=plan,
+                base=base.get("sha"),
+                detach=True,
+                synthesise=False,
+                max_steps=round_steps,
+            )
+            return self._answer(report.teams[0] if report.teams else None, role, orch)
+
+        async def again(nudge: str) -> str:
+            await orch.follow_up(stage, nudge)
+            return self._answer(orch.runs[stage].result, role, orch)
+
+        try:
+            return await plan_in_rounds(
+                first,
+                again,
+                parse,
+                same,
+                rounds=rounds,
+                emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
+            )
+        finally:
+            remove_worktree(self.repo, orch.run_dir.path / "studio")
 
     async def _usable[T](
         self,
@@ -425,19 +500,50 @@ class StoryPipeline:
         parse: Callable[[str], T],
         attempts: int | None = None,
         at: str | None = None,
+        ask: Callable[..., Awaitable[str]] | None = None,
     ) -> T:
         """Ask `role` until `parse` accepts the reply: an unusable one (StoryError) goes back with the reason,
         story.stage_attempts tries in all (or `attempts`), then the story stops with the last reason. A reply
         cut off at max_tokens is not asked again (`_ask`): the story stops at once. `at` is the commit the
-        role reads (default the story's base)."""
+        role reads (default the story's base). `ask` replaces `_ask` (planning in rounds)."""
         feedback: str | None = None
         for _ in range(attempts or self.s.stage_attempts):
             try:
-                return parse(await self._ask(st, stage, role, brief(feedback), at))
+                return parse(await (ask or self._ask)(st, stage, role, brief(feedback), at))
             except StoryError as e:
                 feedback = str(e)
                 st.emit("retry", stage=stage, error=feedback)
         raise StoryBlocked(f"{role} did not produce a usable {what}: {feedback}")
+
+    async def _survey(self, st: StoryState, card: Card) -> None:
+        """The architect reads the code the request touches and takes notes, while product refines it: the
+        layer planning starts from them. Only for a story that has not refined yet (a resume that has, or one
+        that surveyed, does not), and never a reason to stop: a survey that fails is no notes."""
+        if not self.s.survey or st.survey is not None or st.story is not None:
+            return
+        try:
+            text = await self._ask(
+                st, "survey", self.s.architect_role, survey_brief(card), steps=SURVEY_STEPS
+            )
+        except Exception as e:  # noqa: BLE001 - a survey is a head start: whatever fails, the story goes on
+            st.emit("survey_failed", reason=_cap(_reason(e)))
+            text = ""
+        st.survey = text
+        st.save()
+        st.emit("survey_done", chars=len(text))
+
+    async def _refine_with_survey(self, st: StoryState, card: Card) -> Story:
+        """`_refine`, with `_survey` running beside it (they read the same code and share the engine)."""
+        survey = asyncio.create_task(self._survey(st, card))
+        try:
+            story = await self._refine(st, card)
+            await survey
+            return story
+        finally:
+            if not survey.done():
+                survey.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await survey
 
     async def _refine(self, st: StoryState, card: Card) -> Story:
         if st.story is not None:
@@ -462,13 +568,32 @@ class StoryPipeline:
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
+        guide = repo_guide(self.repo, (st.base or {}).get("sha", "HEAD"), story_text(story))
+
+        def parse(text: str) -> tuple[Layer, ...]:
+            return parse_layers(extract_json_block(text), story, self.s.max_layers)
+
+        ask: Callable[..., Awaitable[str]] | None = None
+        round_steps = self.s.plan_round_steps
+        if round_steps:
+            cap = self.cfg.roles[self.s.architect_role].max_steps or self.cfg.teams.max_steps
+            ask = partial(
+                self._ask_in_rounds,
+                parse=parse,
+                same=same_layers,
+                round_steps=round_steps,
+                rounds=max(1, cap // round_steps),
+            )
         layers = await self._usable(
             st,
             "layers",
             self.s.architect_role,
             "layer plan",
-            lambda feedback: layers_brief(story, self.s.max_layers, feedback),
-            lambda text: parse_layers(extract_json_block(text), story, self.s.max_layers),
+            lambda feedback: layers_brief(
+                story, self.s.max_layers, feedback, guide=guide, survey=st.survey or ""
+            ),
+            parse,
+            ask=ask,
         )
         st.layers = [x.to_dict() for x in layers]
         st.finish("layers")

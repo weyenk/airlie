@@ -165,7 +165,7 @@ class NativeTeam:
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
                 tools=None if last_turn or toolless else ctx.tools.schemas(),
-                thinking=ctx.role.thinking,
+                thinking=ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn),
                 draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()

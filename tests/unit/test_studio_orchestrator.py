@@ -778,6 +778,19 @@ async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_wh
     assert report.tests == {"studio": False}
 
 
+async def test_max_steps_limits_every_subtask_of_the_run_below_the_roles_own(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [RUN, RUN, RUN, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, max_steps=2
+    )
+    [team] = report.teams
+    assert (
+        team.steps == 2 and team.stop_reason == "max_steps"
+    )  # the third call came on the tool-less last turn
+
+
 async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine({"coder": [DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})

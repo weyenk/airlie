@@ -96,6 +96,8 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.trunk`, `story.remote` | `main`, `origin` | the branch the stack is based on, and the remote it is pushed to |
 | `story.max_layers` | 5 | the most layers the architect may plan |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
+| `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |
+| `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
 | `story.mutation_timeout_s` | 3600 | how long the story's mutation gate may run (it runs once per story) |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what (`story.tests_role` was removed on 2026-10-16: the coder writes a layer's tests; a config that still sets it is refused with a note saying to delete it) |
@@ -152,6 +154,26 @@ does not count), names that repository on github.com, as `git@github.com:<owner>
 - Once a story has published (its PRs are open), nothing is built or published again: it runs in the checkout it
   recorded and looks at neither its label nor that checkout, so a label tidied or a clone moved since still lets it
   post its PR links and move the issue to *In Review*.
+
+### Planning time
+
+The layers stage was the slowest of a story: the architect used all 20 steps reading code (prompts of 40-60k
+tokens, each step slower than the last) and then spent 14-20 minutes thinking its answer. Four things shorten it:
+
+- **No thinking on the final answer.** `roles.architect.last_turn_thinking: false`: the turn after the last step
+  (no tools) writes the plan from what was read, without a reasoning pass. Any role may set it.
+- **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
+  from the story's base commit, and the architect is told not to read them again.
+- **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then
+  goes on in the same conversation for another round and writes it again; the pipeline compares the two (same layers,
+  scopes and criteria) and stops on the first round that changed nothing. The role's `max_steps` still caps it
+  (`max_steps / plan_round_steps` rounds). A later plan that cannot be parsed ends the rounds on the one before.
+  Events: `plan_round` (each plan's layers) and `plan_done` (`converged`, `cap` or `malformed`).
+- **A survey beside refine** (`story.survey`): while product refines the request, the architect reads the code it
+  touches (8 steps) and takes notes (files and symbols, where the tests live, the registries a new name goes in,
+  what could make a test pass for the wrong reason). The notes are kept in `state.json` (`survey`) and go in the
+  layers brief. A survey that fails is no notes (`survey_failed`), never a stop; a story that has refined does not
+  take one on resume.
 
 ### Scoped `run_tests` for the coder
 
