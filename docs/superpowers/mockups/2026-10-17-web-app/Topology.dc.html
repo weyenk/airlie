@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Topology</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--head:#000000;--head-ink:#F2F4F7;--head-muted:#A3A8B2;--seg:#5A606B;--seg-on:#F4C6CF;--node-edge:#CFE0F3}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--head:#17191E;--head-ink:#F6F5F1;--head-muted:#C9CBD1;--seg:#A9A69B;--seg-on:#D9546E;--node-edge:#7FA6D1}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.node{position:absolute;box-sizing:border-box;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid var(--node-edge);color:#0A1A2B;font-weight:500;line-height:1.2;padding:6px;background:radial-gradient(circle at 50% 50%,#E6F0FB 0%,#9DBFE5 100%)}
+.node.review{border-color:#B8DDA4;background:radial-gradient(circle at 50% 50%,#EAF5E3 0%,#9CCB84 100%)}
+.node.stuck{border-color:#F0B9B9;background:radial-gradient(circle at 50% 50%,#FBE1E1 0%,#E28F8F 100%)}
+.node.bank{border-color:#B8DDA4;background:linear-gradient(180deg,#E3F1DA 0%,#94C37B 100%)}
+.seg{position:absolute;background:var(--seg)}
+.seg.on{background:var(--seg-on)}
+.pick{min-height:48px;min-width:220px;border:1px solid var(--ink2);border-radius:10px;background:transparent;color:var(--ink);font:inherit;font-size:20px;padding:0 14px}
+.pick option{color:#17191E}
+</style>
+</helmet>
+<div class="{{theme}}" style="min-height: 100vh; background: var(--bg); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5">
+  <header style="background: var(--head); border-bottom: 1px solid var(--line)">
+    <div style="max-width: 1240px; margin: 0 auto; padding: 0 20px; min-height: 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+      <a href="Main.dc.html" style="color: var(--head-ink); text-decoration: none; font-weight: 700; font-size: 20px">airlie</a>
+      <nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px 20px; flex: 1 1 auto">
+        <a href="Main.dc.html" style="color: var(--head-muted); text-decoration: none; padding: 18px 0">Home</a>
+        <a href="Job.dc.html" style="color: var(--head-muted); text-decoration: none; padding: 18px 0">Jobs</a>
+        <a href="Topology.dc.html" aria-current="page" style="color: var(--head-ink); text-decoration: none; font-weight: 600; border-bottom: 2px solid #8FB6E0; padding: 18px 0 16px">Topology</a>
+        <a href="Metrics.dc.html" style="color: var(--head-muted); text-decoration: none; padding: 18px 0">Metrics</a>
+        <a href="Admin.dc.html" style="color: var(--head-muted); text-decoration: none; padding: 18px 0">Admin</a>
+      </nav>
+      <span style="font-size: 14px; color: var(--head-muted)">Noah · admin</span>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 20px 20px 40px; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+    <div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 14px">
+      <h1 style="margin: 0; font-size: 24px">Topology</h1>
+      <label style="display: flex; flex-direction: column; gap: 6px; color: var(--ink2)">How the agents are arranged
+        <select class="pick" value="{{topo}}" onChange="{{pickTopo}}">
+          <option value="solo">Solo</option>
+          <option value="studio">Studio</option>
+          <option value="teams">Teams</option>
+          <option value="fork">Solo with forking</option>
+        </select>
+      </label>
+      <sc-if value="{{isStudio}}" hint-placeholder-val="{{ false }}">
+        <label style="display: flex; flex-direction: column; gap: 6px; color: var(--ink2)">Studio type
+          <select class="pick">
+            <option>Dev shop</option>
+            <option disabled>Deep research (later)</option>
+          </select>
+        </label>
+      </sc-if>
+      <sc-if value="{{isTeams}}" hint-placeholder-val="{{ false }}">
+        <label style="display: flex; align-items: center; gap: 12px; color: var(--ink2)">Parallel teams
+          <select class="pick" style="min-width: 90px" value="{{teamsVal}}" onChange="{{pickTeams}}">
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
+        </label>
+      </sc-if>
+      <p style="margin: 0; color: var(--ink2)">{{about}}</p>
+      <ul aria-label="Legend" style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--ink2)">
+        <li style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="width: 28px; height: 3px; background: var(--seg-on)"></span>Path of the work right now</li>
+        <li style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="width: 16px; height: 16px; border-radius: 50%; background: #9CCB84"></span>Reviewer (other model family)</li>
+        <li style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="width: 16px; height: 16px; border-radius: 50%; background: #E28F8F"></span>Stuck: handed to a fork</li>
+      </ul>
+      <p style="margin: 0; font-size: 13px; color: var(--ink2)">Changing the topology restarts the engine. airlie waits for running jobs first.</p>
+    </div>
+
+    <div role="img" aria-label="{{diagramLabel}}" style="flex: 999 1 760px; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--bg)">
+      <div style="position: relative; width: 1120px; height: 640px; margin: 0 auto">
+        <sc-for list="{{segs}}" as="s" hint-placeholder-count="4">
+          <div class="{{s.cls}}" style="left: {{s.x}}px; top: {{s.y}}px; width: {{s.w}}px; height: {{s.h}}px"></div>
+        </sc-for>
+        <sc-for list="{{nodes}}" as="n" hint-placeholder-count="3">
+          <div class="{{n.cls}}" style="left: {{n.x}}px; top: {{n.y}}px; width: {{n.w}}px; height: {{n.h}}px; border-radius: {{n.r}}; font-size: {{n.fs}}px">{{n.label}}</div>
+        </sc-for>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":820}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { topo: 'studio', teams: 3 };
+  }
+  renderVals() {
+    const topo = this.state.topo;
+    const nodes = [];
+    const segs = [];
+    const circle = (cx, cy, d, label, kind) => nodes.push({
+      x: cx - d / 2, y: cy - d / 2, w: d, h: d, r: '50%', label,
+      cls: 'node' + (kind ? ' ' + kind : ''), fs: d >= 240 ? 30 : d >= 120 ? 17 : 15
+    });
+    const h = (x1, x2, y, on) => segs.push({ x: Math.min(x1, x2), y: y - (on ? 1.5 : 1), w: Math.abs(x2 - x1) + (on ? 3 : 2), h: on ? 3 : 2, cls: on ? 'seg on' : 'seg' });
+    const v = (x, y1, y2, on) => segs.push({ x: x - (on ? 1.5 : 1), y: Math.min(y1, y2), w: on ? 3 : 2, h: Math.abs(y2 - y1), cls: on ? 'seg on' : 'seg' });
+    let about = '';
+    if (topo === 'solo') {
+      circle(560, 320, 300, 'Chief');
+      about = 'One agent does the whole job. The fastest and cheapest; the 2026-10-13 bench found it the best default for small tasks.';
+    } else if (topo === 'studio') {
+      const names = ['Architect', 'Product', 'UX', 'Design', 'Docs', 'Research', 'Coder'];
+      const xs = [90, 247, 403, 560, 717, 873, 1030];
+      circle(560, 90, 130, 'Chief');
+      v(560, 155, 230, true);
+      h(90, 1030, 230, false); h(560, 1030, 230, true);
+      h(90, 1030, 450, false); h(560, 1030, 450, true);
+      xs.forEach((x, i) => {
+        const on = names[i] === 'Coder';
+        v(x, 230, 270, on); v(x, 390, 450, on);
+        circle(x, 330, 120, names[i]);
+      });
+      v(560, 450, 510, true);
+      circle(560, 570, 120, 'Reviewer', 'review');
+      about = 'The chief plans and delegates each subtask to a specialist. A reviewer from another model family checks the work. Right now: the coder is building, then review.';
+    } else if (topo === 'teams') {
+      const n = this.state.teams;
+      circle(560, 80, 120, 'Chief');
+      v(560, 140, 200, false);
+      nodes.push({ x: 420, y: 200, w: 280, h: 180, r: '22px', label: 'Shared memory bank', cls: 'node bank', fs: 20 });
+      h(60, 420, 250, false); [60, 200, 340].forEach((x) => { v(x, 250, 300, false); circle(x, 355, 110, 'Team 1'); });
+      h(700, 1060, 250, false); [780, 920, 1060].forEach((x) => { v(x, 250, 300, false); circle(x, 355, 110, n === 3 ? 'Team 3' : 'Team 2'); });
+      if (n === 3) {
+        v(560, 380, 440, false); h(420, 700, 440, false);
+        [420, 560, 700].forEach((x) => { v(x, 440, 480, false); circle(x, 535, 110, 'Team 2'); });
+      }
+      about = n + ' teams work the same task in parallel and share what they learn through the memory bank. The best result wins.';
+    } else {
+      circle(560, 80, 120, 'Chief');
+      v(560, 140, 280, false);
+      v(560, 140, 200, true); h(560, 740, 200, true); v(740, 200, 280, true);
+      circle(560, 340, 120, 'Stuck chief', 'stuck');
+      circle(740, 340, 120, 'Forked chief');
+      v(740, 400, 500, true);
+      circle(740, 560, 120, 'Chief (continues)');
+      about = 'One agent works alone. When it gets stuck, airlie forks it with a different hypothesis and carries on with the branch that gets unstuck.';
+    }
+    return {
+      theme: (this.props.dark ?? true) ? 'dark' : 'light',
+      topo,
+      isStudio: topo === 'studio',
+      isTeams: topo === 'teams',
+      teamsVal: String(this.state.teams),
+      pickTopo: (e) => this.setState({ topo: e.target.value }),
+      pickTeams: (e) => this.setState({ teams: Number(e.target.value) }),
+      nodes, segs, about,
+      diagramLabel: 'Topology diagram: ' + about
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Topology (phone)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--line:#2B2F36;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--tab:#0E1013;--seg:#5A606B;--seg-on:#F4C6CF;--node-edge:#CFE0F3}
+.light{--bg:#F6F5F1;--line:#E2E0D8;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--tab:#FFFFFF;--seg:#A9A69B;--seg-on:#D9546E;--node-edge:#7FA6D1}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.node{position:absolute;box-sizing:border-box;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid var(--node-edge);color:#0A1A2B;font-weight:600;line-height:1.1;padding:3px;background:radial-gradient(circle at 50% 50%,#E6F0FB 0%,#9DBFE5 100%)}
+.node.review{border-color:#B8DDA4;background:radial-gradient(circle at 50% 50%,#EAF5E3 0%,#9CCB84 100%)}
+.node.stuck{border-color:#F0B9B9;background:radial-gradient(circle at 50% 50%,#FBE1E1 0%,#E28F8F 100%)}
+.node.bank{border-color:#B8DDA4;background:linear-gradient(180deg,#E3F1DA 0%,#94C37B 100%)}
+.seg{position:absolute;background:var(--seg)}
+.seg.on{background:var(--seg-on)}
+.pick{min-height:48px;width:100%;border:1px solid var(--ink2);border-radius:12px;background:transparent;color:var(--ink);font:inherit;font-size:18px;padding:0 12px}
+.pick option{color:#17191E}
+.tabs a{flex:1 1 0;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:56px;justify-content:center;font-size:12px;text-decoration:none;color:var(--ink2)}
+.tabs a[aria-current]{color:var(--accent);font-weight:600}
+</style>
+</helmet>
+<div class="{{theme}}" style="width: 390px; height: 844px; box-sizing: border-box; background: var(--bg); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.45; display: flex; flex-direction: column">
+  <main style="flex: 1 1 auto; overflow: hidden; padding: 18px 16px 8px; display: flex; flex-direction: column; gap: 12px">
+    <h1 style="margin: 0; font-size: 24px">Topology</h1>
+    <div style="display: flex; gap: 10px">
+      <label style="flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink2)">Arrangement
+        <select class="pick" value="{{topo}}" onChange="{{pickTopo}}">
+          <option value="solo">Solo</option>
+          <option value="studio">Studio</option>
+          <option value="teams">Teams</option>
+          <option value="fork">Solo w/ forking</option>
+        </select>
+      </label>
+      <sc-if value="{{isStudio}}" hint-placeholder-val="{{ false }}">
+        <label style="flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink2)">Studio type
+          <select class="pick"><option>Dev shop</option><option disabled>Deep research (later)</option></select>
+        </label>
+      </sc-if>
+      <sc-if value="{{isTeams}}" hint-placeholder-val="{{ false }}">
+        <label style="flex: 0 0 110px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink2)">Teams
+          <select class="pick" value="{{teamsVal}}" onChange="{{pickTeams}}"><option value="2">2</option><option value="3">3</option></select>
+        </label>
+      </sc-if>
+    </div>
+    <div role="img" aria-label="{{about}}" style="position: relative; width: 358px; height: 440px">
+      <sc-for list="{{segs}}" as="s" hint-placeholder-count="4">
+        <div class="{{s.cls}}" style="left: {{s.x}}px; top: {{s.y}}px; width: {{s.w}}px; height: {{s.h}}px"></div>
+      </sc-for>
+      <sc-for list="{{nodes}}" as="n" hint-placeholder-count="3">
+        <div class="{{n.cls}}" style="left: {{n.x}}px; top: {{n.y}}px; width: {{n.w}}px; height: {{n.h}}px; border-radius: {{n.r}}; font-size: {{n.fs}}px">{{n.label}}</div>
+      </sc-for>
+    </div>
+    <p style="margin: 0; font-size: 14px; color: var(--ink2)">{{about}}</p>
+  </main>
+
+  <nav class="tabs" aria-label="Main" style="display: flex; border-top: 1px solid var(--line); background: var(--tab); padding-bottom: 14px">
+    <a href="PhoneHome.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+    <a href="PhoneJob.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>Jobs</a>
+    <a href="PhoneTopology.dc.html" aria-current="page"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"></circle><circle cx="5" cy="19" r="3"></circle><circle cx="19" cy="19" r="3"></circle><path d="M12 8v4M12 12l-6 4M12 12l6 4"></path></svg>Topology</a>
+    <a href="Metrics.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"></path></svg>Metrics</a>
+    <a href="Admin.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>Admin</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { topo: 'studio', teams: 3 };
+  }
+  renderVals() {
+    const topo = this.state.topo;
+    const nodes = [];
+    const segs = [];
+    const circle = (cx, cy, d, label, kind) => nodes.push({
+      x: cx - d / 2, y: cy - d / 2, w: d, h: d, r: '50%', label,
+      cls: 'node' + (kind ? ' ' + kind : ''), fs: d >= 150 ? 24 : d >= 70 ? 13 : 11
+    });
+    const h = (x1, x2, y, on) => segs.push({ x: Math.min(x1, x2), y: y - 1, w: Math.abs(x2 - x1) + 2, h: on ? 3 : 2, cls: on ? 'seg on' : 'seg' });
+    const v = (x, y1, y2, on) => segs.push({ x: x - 1, y: Math.min(y1, y2), w: on ? 3 : 2, h: Math.abs(y2 - y1), cls: on ? 'seg on' : 'seg' });
+    let about = '';
+    if (topo === 'solo') {
+      circle(179, 210, 190, 'Chief');
+      about = 'One agent does the whole job: the fastest and cheapest.';
+    } else if (topo === 'studio') {
+      circle(179, 40, 72, 'Chief');
+      v(179, 76, 196, true);
+      h(45, 313, 96, false);
+      [['Architect', 45], ['Product', 134], ['UX', 224], ['Design', 313]].forEach(([n, x]) => { v(x, 96, 108, false); circle(x, 140, 64, n); });
+      h(90, 268, 196, false); h(179, 268, 196, true);
+      [['Docs', 90, false], ['Research', 179, false], ['Coder', 268, true]].forEach(([n, x, on]) => { v(x, 196, 208, on); circle(x, 240, 64, n); v(x, 272, 300, on); });
+      h(90, 268, 300, false); h(179, 268, 300, true);
+      v(179, 300, 330, true);
+      circle(179, 366, 72, 'Reviewer', 'review');
+      about = 'The chief delegates to specialists; a reviewer from another model family checks the work. Now: the coder, then review.';
+    } else if (topo === 'teams') {
+      const n = this.state.teams;
+      circle(179, 36, 64, 'Chief');
+      v(179, 68, 100, false);
+      nodes.push({ x: 109, y: 100, w: 140, h: 64, r: '16px', label: 'Shared memory bank', cls: 'node bank', fs: 13 });
+      v(179, 164, 190, false); v(40, 190, 190 + n * 80 - 30, false); h(40, 179, 190, false);
+      for (let t = 0; t < n; t++) {
+        const y = 240 + t * 80;
+        h(40, 74, y, false);
+        [100, 179, 258].forEach((x) => circle(x, y, 52, 'Team ' + (t + 1)));
+      }
+      about = n + ' teams work the same task in parallel and share what they learn. The best result wins.';
+    } else {
+      circle(179, 50, 72, 'Chief');
+      v(179, 86, 150, false);
+      v(179, 86, 110, true); h(179, 268, 110, true); v(268, 110, 150, true);
+      circle(179, 186, 72, 'Stuck chief', 'stuck');
+      circle(268, 186, 72, 'Forked chief');
+      v(268, 222, 290, true);
+      circle(268, 326, 72, 'Chief');
+      about = 'One agent works alone; when it gets stuck, airlie forks it and keeps the branch that gets unstuck.';
+    }
+    return {
+      theme: (this.props.dark ?? true) ? 'dark' : 'light',
+      topo,
+      isStudio: topo === 'studio',
+      isTeams: topo === 'teams',
+      teamsVal: String(this.state.teams),
+      pickTopo: (e) => this.setState({ topo: e.target.value }),
+      pickTeams: (e) => this.setState({ teams: Number(e.target.value) }),
+      nodes, segs, about
+    };
+  }
+}
+</script>
+</body>
+</html>

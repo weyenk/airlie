@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Job (phone)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--run-bg:#16283F;--run:#B9D3F2;--err:#F2B2AA;--danger-line:#6B2E2A;--tab:#0E1013;--seg:#5A606B;--seg-on:#F4C6CF;--node-edge:#CFE0F3}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--run-bg:#E6EDFD;--run:#1E3FA8;--err:#8E2B22;--danger-line:#E3B4AE;--tab:#FFFFFF;--seg:#A9A69B;--seg-on:#D9546E;--node-edge:#7FA6D1}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.run{background:var(--run-bg);color:var(--run)}
+.node{position:absolute;width:72px;height:72px;box-sizing:border-box;border-radius:50%;border:1px solid var(--node-edge);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#0A1A2B;font:inherit;font-size:12px;font-weight:600;line-height:1.15;padding:4px;cursor:pointer;background:radial-gradient(circle at 50% 50%,#E6F0FB 0%,#9DBFE5 100%)}
+.node.review{border-color:#B8DDA4;background:radial-gradient(circle at 50% 50%,#EAF5E3 0%,#9CCB84 100%)}
+.node.partial{box-shadow:0 0 0 3px #E0B34E}
+.node.active{box-shadow:0 0 0 3px #F4C6CF,0 0 18px 3px rgba(244,198,207,.45)}
+.node.waiting{opacity:.55;border-style:dashed}
+.seg{position:absolute;background:var(--seg)}
+.seg.on{background:var(--seg-on)}
+.tabs a{flex:1 1 0;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:56px;justify-content:center;font-size:12px;text-decoration:none;color:var(--ink2)}
+.tabs a[aria-current]{color:var(--accent);font-weight:600}
+</style>
+</helmet>
+<div class="{{theme}}" style="width: 390px; height: 844px; box-sizing: border-box; background: var(--bg); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.45; display: flex; flex-direction: column">
+  <header style="padding: 16px 16px 6px; display: flex; flex-direction: column; gap: 4px">
+    <a href="PhoneHome.dc.html" style="font-size: 15px; min-height: 32px; display: inline-flex; align-items: center">← Home</a>
+    <h1 style="margin: 0; font-size: 22px; letter-spacing: -0.01em">airlie web app mockups</h1>
+    <div style="display: flex; gap: 8px; align-items: center"><span class="chip run">Fix round 1</span><span class="mono" style="font-size: 13px; color: var(--ink2)">2 h 10 min</span></div>
+  </header>
+
+  <main style="flex: 1 1 auto; overflow: hidden; padding: 6px 16px 12px; display: flex; flex-direction: column; gap: 12px">
+    <div role="img" aria-label="Chief delegated to UX and Design (both cut off short); the coder works now and trades its diff and 18 findings with the reviewer; synthesis waits." style="position: relative; width: 358px; height: 396px">
+      <div class="seg" style="left: 178px; top: 76px; width: 2px; height: 20px"></div>
+      <div class="seg" style="left: 109px; top: 95px; width: 142px; height: 2px"></div>
+      <div class="seg" style="left: 108px; top: 96px; width: 2px; height: 16px"></div>
+      <div class="seg" style="left: 248px; top: 96px; width: 2px; height: 16px"></div>
+      <div class="seg" style="left: 108px; top: 184px; width: 2px; height: 20px"></div>
+      <div class="seg" style="left: 248px; top: 184px; width: 2px; height: 20px"></div>
+      <div class="seg" style="left: 109px; top: 203px; width: 142px; height: 2px"></div>
+      <div class="seg" style="left: 178px; top: 204px; width: 2px; height: 16px"></div>
+      <div class="seg on" style="left: 177.5px; top: 292px; width: 3px; height: 24px"></div>
+      <div class="seg" style="left: 215px; top: 351px; width: 49px; height: 2px"></div>
+
+      <button class="node" type="button" style="left: 143px; top: 4px">Chief<span style="font-weight: 400">✓ plan</span></button>
+      <button class="node partial" type="button" style="left: 73px; top: 112px">UX<span style="font-weight: 400">! cut off</span></button>
+      <button class="node partial" type="button" style="left: 213px; top: 112px">Design<span style="font-weight: 400">! cut off</span></button>
+      <button class="node active" type="button" aria-pressed="true" style="left: 143px; top: 220px">Coder<span style="font-weight: 400">● step 18</span></button>
+      <button class="node review" type="button" style="left: 143px; top: 316px">Reviewer<span style="font-weight: 400">18 found</span></button>
+      <button class="node waiting" type="button" style="left: 264px; top: 316px">Synthesis<span style="font-weight: 400">waiting</span></button>
+    </div>
+
+    <section aria-labelledby="sel-h" style="background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline"><h2 id="sel-h" style="margin: 0; font-size: 18px">Coder</h2><span class="mono" style="font-size: 12px; color: var(--ink2)">Qwen3-Coder-30B-A3B</span></div>
+      <div class="mono" style="font-size: 13px; color: var(--ink2)">step 18 of 40 · 44,161 tokens</div>
+      <div class="mono" style="font-size: 13px">edit_file home.html · <span style="color: var(--err)">old text not found</span></div>
+      <div style="display: flex; gap: 10px; margin-top: 4px">
+        <button type="button" style="flex: 1 1 0; min-height: 44px; border-radius: 12px; border: 1px solid var(--field-line); background: transparent; color: var(--ink); font: inherit; font-weight: 600">Steps</button>
+        <button type="button" style="flex: 1 1 0; min-height: 44px; border-radius: 12px; border: 1px solid var(--danger-line); background: transparent; color: var(--err); font: inherit; font-weight: 600">Stop job</button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs" aria-label="Main" style="display: flex; border-top: 1px solid var(--line); background: var(--tab); padding-bottom: 14px">
+    <a href="PhoneHome.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+    <a href="PhoneJob.dc.html" aria-current="page"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>Jobs</a>
+    <a href="PhoneTopology.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"></circle><circle cx="5" cy="19" r="3"></circle><circle cx="19" cy="19" r="3"></circle><path d="M12 8v4M12 12l-6 4M12 12l6 4"></path></svg>Topology</a>
+    <a href="Metrics.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"></path></svg>Metrics</a>
+    <a href="Admin.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>Admin</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: (this.props.dark ?? true) ? 'dark' : 'light' };
+  }
+}
+</script>
+</body>
+</html>

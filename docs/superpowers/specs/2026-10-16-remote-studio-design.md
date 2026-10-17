@@ -99,7 +99,13 @@ Claude Code does without a GitHub remote), and how the client pulls a run's bran
 - **Transport:** Tailscale, which Noah already runs. He shares the Studio machine with each person he
   authorizes, and they reach it from the Tailscale app on a laptop or phone. `tailscale serve` gives serve a
   real HTTPS address, which also clears the plain-HTTP gap.
-- **Identity:** Tailscale's identity headers can serve as a second check on top of the key.
+- **Identity (revised 2026-10-17):** people sign in as themselves, not with keys. Order: Tailscale identity
+  first (the `Tailscale-User-Login` header `tailscale serve` adds, trusted only on requests it proxies), then
+  a passkey (WebAuthn: Face ID / Touch ID, synced by iCloud Keychain, verified on the Studio with no internet).
+  Noah invites a person with a link; they register a passkey; revoking is deleting it. Sign in with Apple is
+  not used: it needs a paid developer account and internet on both ends, and only matters off the tailnet.
+  The one API key stays for non-browser clients (OpenCode, `airlie mcp`) and is the admin's. Plan:
+  `docs/superpowers/plans/2026-10-17-sign-in.md`.
 - **Rejected:** opening a router port; an SSH tunnel (unworkable on a phone). Cloudflare Tunnel with Access is
   the fallback if someone can't run Tailscale.
 
