@@ -6,17 +6,23 @@ People use the web app as themselves. `task serve` decides who a request is in t
 1. **The admin API key** (`task serve -- --api-key SECRET`, or `AIRLIE_SERVE_API_KEY`): `Authorization: Bearer
    SECRET` is the admin named `api-key`. OpenCode and `airlie mcp` keep using it; it is never a person.
 2. **Tailscale identity**: with `auth.tailscale: true` in `airlie.yaml`, the `Tailscale-User-Login` header that
-   `tailscale serve` adds names the person. It is trusted only on requests that arrive from loopback, which is
-   where `tailscale serve` proxies from; from any other address the header is ignored. A login nobody has
-   invited gets `401 {"error": "not invited"}`.
+   `tailscale serve` adds names the person. It is trusted only on a request `tailscale serve` proxied: one that
+   arrives from loopback with the device's tailnet address (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`) in
+   `X-Forwarded-For`. From any other address, or through any other local proxy (`task tunnel`, Funnel, a reverse
+   proxy), the header is ignored. A login nobody has invited, with no passkey session either, gets
+   `401 {"error": "not invited"}`; a person invited without a login signs in with their passkey as usual.
 3. **A passkey session**: the `airlie_session` cookie a passkey sign-in set (HttpOnly, SameSite=Strict, Secure
    over https, `auth.session_days`, 30 by default). Sessions live in the store, so revoking a person ends them.
 
 A request to `/v1` that is nobody gets `401 {"error": "not signed in"}`. `/health` is open.
 
-**Fresh install:** while no user exists and no API key is set, requests from the Mac itself (loopback) are let in
-as a bootstrap admin, so the web app works on `http://localhost:8090` before anyone is invited. The first invite
-ends that.
+**Fresh install:** while no user exists and no API key is set, requests from the Mac itself (a direct loopback
+connection, nothing forwarded) are let in as a bootstrap admin, so the web app works on `http://localhost:8090`
+before anyone is invited. The first invite ends that. Requests through a proxy are never the bootstrap admin.
+
+Do not put `task serve` behind `task tunnel` or another local proxy with `auth.tailscale: true` and no API key:
+such a proxy arrives from loopback too, and only the forwarded tailnet address keeps the identity header
+trustworthy. serve runs uvicorn with `proxy_headers` off so it sees the real peer; keep it that way.
 
 The store is `observability.state_dir/auth.sqlite` (people, invites, passkeys, sessions; invite and session
 tokens are hashed at rest). Nothing from it is logged; refusals are logged as `auth_refused <reason>` on the
@@ -58,7 +64,8 @@ device whose passkey they want (a phone with Face ID, a Mac with Touch ID), the 
 new device "Use this device" on the sign-in screen asks for it. Passkeys need https, except on `localhost`.
 
 `task auth:users` lists people with their passkey counts; `task auth:revoke -- --id ID` removes a person, and
-their passkeys and sessions with them.
+their passkeys and sessions with them. A link that lapsed before it was used: `task auth:invite -- --id ID`
+prints a fresh one for that person (the first admin's included).
 
 ## The API (`/v1/auth`)
 

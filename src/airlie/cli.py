@@ -532,7 +532,9 @@ def serve(
         f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
-    uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
+    # proxy_headers off: the resolver reads the real peer to tell tailscale serve (loopback, with the device's
+    # tailnet address forwarded) from the Mac itself; uvicorn's default would rewrite it to X-Forwarded-For.
+    uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info", proxy_headers=False)
 
 
 def _auth_store(cfg: AirlieConfig):  # type: ignore[no-untyped-def]
@@ -571,8 +573,9 @@ def auth_admin(
         admins = [u for u in store.users() if u.role == "admin"]
         if admins:
             console.print(
-                f"an admin already exists ({', '.join(u.name for u in admins)}); "
-                "add another with `airlie auth invite --name NAME --role admin`"
+                f"an admin already exists ({', '.join(f'{u.name}, id {u.id}' for u in admins)}); "
+                "add another with `airlie auth invite --name NAME --role admin`, or give an existing one a "
+                f"fresh link with `airlie auth invite --id {admins[0].id}`"
             )
             raise typer.Exit(1)
         user = store.add_user(name, "admin", login=login)
@@ -583,23 +586,35 @@ def auth_admin(
 
 @auth_app.command("invite")
 def auth_invite(
-    name: Annotated[str, typer.Option("--name", help="the person's display name")],
+    name: Annotated[str | None, typer.Option("--name", help="a new person's display name")] = None,
     role: Annotated[str, typer.Option("--role", help="admin or member")] = "member",
     login: LoginOpt = None,
+    id: Annotated[
+        str | None, typer.Option("--id", help="instead of --name: a fresh link for an existing person")
+    ] = None,
     base_url: BaseUrlOpt = "http://127.0.0.1:8090",
     config: ConfigOpt = None,
 ) -> None:
-    """Invite a person: create them and print the link where they register a passkey."""
+    """Invite a person: create them (--name) or re-invite one (--id) and print the link for their passkey."""
+    if (name is None) == (id is None):
+        console.print("pass --name NAME for a new person, or --id ID for a fresh link (airlie auth users)")
+        raise typer.Exit(2)
     if role not in ("admin", "member"):
         console.print(f"role must be admin or member, not {role!r}")
         raise typer.Exit(2)
     cfg = _load(config)
     store = _auth_store(cfg)
     try:
-        if login and store.user_by_login(login) is not None:
-            console.print(f"a user with login {login!r} already exists")
-            raise typer.Exit(1)
-        user = store.add_user(name, role, login=login)
+        if id is not None:
+            user = store.user(id)
+            if user is None:
+                console.print(f"no user with id {id!r}")
+                raise typer.Exit(1)
+        else:
+            if login and store.user_by_login(login) is not None:
+                console.print(f"a user with login {login!r} already exists")
+                raise typer.Exit(1)
+            user = store.add_user(name or "", role, login=login)
         _print_invite(cfg, base_url, store.make_invite(user.id, cfg.auth.invite_hours), user.name)
     finally:
         store.close()

@@ -110,3 +110,43 @@ def test_revoke_deletes_the_person_their_passkeys_and_sessions(tmp_path: Path) -
         s.close()
     r = runner.invoke(cli.app, ["auth", "revoke", "--id", "nobody", *config(tmp_path)])
     assert r.exit_code == 1 and "nobody" in r.output
+
+
+def test_serve_runs_uvicorn_without_proxy_header_rewriting(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """uvicorn would replace the client address with X-Forwarded-For for a loopback peer, and loopback is what
+    the resolver reads to tell a tailscale serve proxy from the Mac itself."""
+    seen: dict[str, object] = {}
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    r = runner.invoke(cli.app, ["serve", "--port", "8099", *config(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert seen["proxy_headers"] is False
+    assert seen["port"] == 8099
+
+
+def test_invite_by_id_issues_a_fresh_link_for_an_existing_person(tmp_path: Path) -> None:
+    """An invite that lapsed (24 h) must not strand the person, least of all the first admin."""
+    r = runner.invoke(
+        cli.app, ["auth", "admin", "--name", "Noah", "--login", "noah@github", *config(tmp_path)]
+    )
+    assert r.exit_code == 0, r.output
+    s = store(tmp_path)
+    (noah,) = s.users()
+    s.close()
+    r = runner.invoke(cli.app, ["auth", "invite", "--id", noah.id, *config(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Noah" in r.output and "/#/join/" in r.output
+    s = store(tmp_path)
+    try:
+        assert [u.name for u in s.users()] == ["Noah"]  # nobody new
+        token = r.output.split("/#/join/", 1)[1].split()[0]
+        assert s.peek_invite(token) == noah
+    finally:
+        s.close()
+    assert runner.invoke(cli.app, ["auth", "invite", "--id", "nobody", *config(tmp_path)]).exit_code == 1
+    both = ["auth", "invite", "--id", noah.id, "--name", "X", *config(tmp_path)]
+    assert runner.invoke(cli.app, both).exit_code == 2
+    assert runner.invoke(cli.app, ["auth", "invite", *config(tmp_path)]).exit_code == 2
+    again = runner.invoke(cli.app, ["auth", "admin", "--name", "Sam", *config(tmp_path)])
+    assert again.exit_code == 1 and f"--id {noah.id}" in again.output

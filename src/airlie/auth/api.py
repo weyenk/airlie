@@ -42,6 +42,8 @@ PUBLIC_PATHS = frozenset(
 """The routes a person reaches before they are anyone; serve's middleware lets them through."""
 
 CHALLENGE_SECONDS = 300
+MAX_CEREMONIES = 1000
+"""Outstanding challenges kept at once; login/options is public, so the oldest go when a flood opens more."""
 LOCAL_ORIGIN = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
 INVITE_GONE = "invite expired or already used"
 
@@ -108,7 +110,11 @@ class Ceremonies:
 
     def open(self, challenge: bytes, kind: str, user_id: str | None) -> None:
         t = self.now()
-        self.pending = {c: v for c, v in self.pending.items() if v[2] > t}
+        # insertion order is expiry order (one TTL), so expired ones are at the front
+        while self.pending and next(iter(self.pending.values()))[2] <= t:
+            del self.pending[next(iter(self.pending))]
+        while len(self.pending) >= MAX_CEREMONIES:
+            del self.pending[next(iter(self.pending))]
         self.pending[challenge] = (kind, user_id, t + CHALLENGE_SECONDS)
 
     def take(self, credential: dict[str, Any], kind: str) -> str | None:

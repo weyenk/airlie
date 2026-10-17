@@ -18,6 +18,13 @@ from tests.unit.test_serve import FakeUpstream, cfg
 
 LOOPBACK = ("127.0.0.1", 40000)
 ELSEWHERE = ("10.0.0.5", 40000)
+PROXIED = {
+    "Tailscale-User-Login": "noah@github",
+    "X-Forwarded-For": "100.64.0.7",
+    "X-Forwarded-Proto": "https",
+}
+"""What a request looks like after `tailscale serve` proxied it from a tailnet device: it arrives from
+loopback with the device's tailnet address forwarded."""
 
 
 @pytest.fixture
@@ -57,27 +64,55 @@ def test_the_bearer_key_is_the_admin_principal_named_api_key(store: AuthStore) -
 def test_a_tailscale_login_on_loopback_is_its_user(store: AuthStore) -> None:
     u = store.add_user("Noah", "admin", login="noah@github")
     r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
-    got = probe(r, LOOPBACK, headers={"Tailscale-User-Login": "noah@github"}).json()
+    got = probe(r, LOOPBACK, headers=PROXIED).json()
     assert got == {"user_id": u.id, "name": "Noah", "role": "admin", "via": "tailscale"}
 
 
 def test_tailscale_header_is_ignored_off_loopback(store: AuthStore) -> None:
     store.add_user("Noah", "admin", login="noah@github")
     r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
-    assert probe(r, ELSEWHERE, headers={"Tailscale-User-Login": "noah@github"}).json() is None
+    assert probe(r, ELSEWHERE, headers=PROXIED).json() is None
+
+
+def test_tailscale_header_needs_a_forwarded_tailnet_address(store: AuthStore) -> None:
+    """Loopback alone is any local proxy (task tunnel, a reverse proxy): only `tailscale serve`, which
+    forwards the device's 100.64/10 or fd7a:115c:a1e0::/48 address, vouches for the header."""
+    store.add_user("Noah", "admin", login="noah@github")
+    r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
+    assert probe(r, LOOPBACK, headers={"Tailscale-User-Login": "noah@github"}).json() is None
+    internet = {**PROXIED, "X-Forwarded-For": "203.0.113.9"}
+    assert probe(r, LOOPBACK, headers=internet).json() is None
+    v6 = {**PROXIED, "X-Forwarded-For": "fd7a:115c:a1e0::1234"}
+    assert probe(r, LOOPBACK, headers=v6).json()["via"] == "tailscale"
+    chain = {**PROXIED, "X-Forwarded-For": "100.64.0.7, 10.0.0.1"}
+    assert probe(r, LOOPBACK, headers=chain).json()["via"] == "tailscale"
+    bogus = {**PROXIED, "X-Forwarded-For": "not-an-address"}
+    assert probe(r, LOOPBACK, headers=bogus).json() is None
 
 
 def test_tailscale_header_is_ignored_when_auth_tailscale_is_off(store: AuthStore) -> None:
     store.add_user("Noah", "admin", login="noah@github")
     r = Resolver(store, AuthSpec(tailscale=False), api_key=None)
-    assert probe(r, LOOPBACK, headers={"Tailscale-User-Login": "noah@github"}).json() is None
+    assert probe(r, LOOPBACK, headers=PROXIED).json() is None
 
 
 def test_an_unknown_tailscale_login_is_not_invited(store: AuthStore) -> None:
     store.add_user("Noah", "admin", login="noah@github")  # so the install is not fresh
     r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
-    got = probe(r, LOOPBACK, headers={"Tailscale-User-Login": "stranger@github"}).json()
+    got = probe(r, LOOPBACK, headers={**PROXIED, "Tailscale-User-Login": "stranger@github"}).json()
     assert got == {"not_invited": "stranger@github"}
+
+
+def test_an_unknown_tailscale_login_with_a_passkey_session_is_the_sessions_user(store: AuthStore) -> None:
+    """A person invited without a login comes through tailscale serve too; their cookie must count."""
+    pat = store.add_user("Pat", "member")
+    token = store.make_session(pat.id, days=30)
+    r = Resolver(store, AuthSpec(tailscale=True), api_key=None)
+    headers = {**PROXIED, "Tailscale-User-Login": "pat@github", "Cookie": f"airlie_session={token}"}
+    got = probe(r, LOOPBACK, headers=headers).json()
+    assert got == {"user_id": pat.id, "name": "Pat", "role": "member", "via": "session"}
+    stale = {**PROXIED, "Tailscale-User-Login": "pat@github", "Cookie": "airlie_session=forged"}
+    assert probe(r, LOOPBACK, headers=stale).json() == {"not_invited": "pat@github"}
 
 
 def test_a_session_cookie_is_its_user_until_the_user_is_deleted(store: AuthStore) -> None:
@@ -112,6 +147,20 @@ def test_fresh_install_is_loopback_only(store: AuthStore) -> None:
     assert probe(r, LOOPBACK).json() is None
 
 
+def test_fresh_install_bootstrap_is_for_direct_loopback_requests_only(store: AuthStore) -> None:
+    """A request a local proxy forwarded (task tunnel, tailscale serve, Funnel) is not the Mac itself."""
+    r = Resolver(store, AuthSpec(), api_key=None)
+    for proxied in (
+        {"X-Forwarded-For": "100.64.0.7"},
+        {"X-Forwarded-Host": "studio.ts.net"},
+        {"X-Forwarded-Proto": "https"},
+        {"Forwarded": "for=203.0.113.9"},
+        {"Tailscale-User-Login": "x@y"},
+    ):
+        assert probe(r, LOOPBACK, headers=proxied).json() is None, proxied
+    assert probe(r, LOOPBACK).json()["name"] == "bootstrap"
+
+
 def test_fresh_install_with_an_api_key_set_needs_the_key_even_on_loopback(store: AuthStore) -> None:
     r = Resolver(store, AuthSpec(), api_key="s3cret")
     assert probe(r, LOOPBACK).json() is None
@@ -144,10 +193,10 @@ def test_serve_answers_an_unknown_tailscale_login_with_401_not_invited(tmp_path:
     store.close()
     app = create_app(c, transport=httpx.MockTransport(FakeUpstream()))
     with TestClient(app, client=LOOPBACK) as tc:
-        r = tc.get("/v1/models", headers={"Tailscale-User-Login": "stranger@github"})
+        r = tc.get("/v1/models", headers={**PROXIED, "Tailscale-User-Login": "stranger@github"})
         assert r.status_code == 401
         assert r.json() == {"error": "not invited"}
-        assert tc.get("/v1/models", headers={"Tailscale-User-Login": "noah@github"}).status_code == 200
+        assert tc.get("/v1/models", headers=PROXIED).status_code == 200
 
 
 def test_serve_lets_a_fresh_install_in_from_loopback_only(tmp_path: Path) -> None:

@@ -319,3 +319,31 @@ def test_the_cookie_is_secure_when_tailscale_serve_says_the_request_was_https(tm
         assert "Secure" in r.headers["set-cookie"]
     finally:
         s.store.close()
+
+
+def test_outstanding_ceremonies_are_capped_so_a_public_route_cannot_grow_memory(tmp_path: Path) -> None:
+    from airlie.auth.api import MAX_CEREMONIES, Ceremonies
+
+    clock = Clock()
+    c = Ceremonies(clock)
+    first = b"first"
+    c.open(first, "login", None)
+    for i in range(MAX_CEREMONIES + 5):
+        c.open(f"c{i}".encode(), "login", None)
+    assert len(c.pending) == MAX_CEREMONIES
+    assert first not in c.pending  # the oldest went first
+    assert f"c{MAX_CEREMONIES + 4}".encode() in c.pending
+    clock.t += 301
+    c.open(b"late", "login", None)
+    assert list(c.pending) == [b"late"]  # expired ones are gone
+
+
+def test_login_options_flood_leaves_the_server_bounded(studio: Studio) -> None:
+    from airlie.auth.api import MAX_CEREMONIES
+
+    for _ in range(MAX_CEREMONIES + 20):
+        assert studio.phone.post("/v1/auth/login/options").status_code == 200
+    # the app's ceremonies live inside the router; the public route still answers and a real login still works
+    token = studio.invite("Pat")
+    key = SoftAuthenticator()
+    assert studio.register(token, key).status_code == 201
