@@ -100,9 +100,10 @@ def scoped_steps(steps: Sequence[str], files: Sequence[str]) -> list[str]:
 
 def autofix_steps(steps: Sequence[str]) -> list[str]:
     """The commands that mend what the gate's ruff steps would only report: `ruff format` for a
-    `ruff format --check` step and `ruff check --fix` for a `ruff check` step. Style is mechanical: a coder
-    that is told a line is too long or a file unformatted spends steps on it that the layer's own change
-    needs."""
+    `ruff format --check` step and `ruff check --fix --unsafe-fixes` for a `ruff check` step. Style is
+    mechanical: a coder told a line is too long, a file unformatted or an `if` that wants a ternary (SIM108,
+    which ruff only fixes as "unsafe") spends steps on it that the layer's own change needs. An unsafe fix may
+    change what code does: the layer's tests and the whole gate still run after it."""
     out: list[str] = []
     for step in steps:
         words = step.split()
@@ -111,5 +112,5 @@ def autofix_steps(steps: Sequence[str]) -> list[str]:
         if "format" in words and "--check" in words:
             out.append(" ".join(w for w in words if w != "--check"))
         elif "check" in words and "--fix" not in words:
-            out.append(f"{step.rstrip()} --fix")
+            out.append(f"{step.rstrip()} --fix --unsafe-fixes")
     return out
