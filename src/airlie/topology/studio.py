@@ -143,6 +143,9 @@ class StudioOrchestrator:
         self.worktree: Path | None = None
         self.test_cmd: str | None = None
         self.test_steps: tuple[str, ...] = ()  # the gate's commands, for run_tests to report one by one
+        self.step_limit: int | None = (
+            None  # steps per subtask for this run, over the role's (planning rounds)
+        )
         self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
         self.gate_memo = (
             GateMemo()
@@ -340,7 +343,7 @@ class StudioOrchestrator:
             tools=self._tools(role, test_cmd),
             worktree=self.worktree,
             role_name=run.role,
-            max_steps=role.max_steps or self.cfg.teams.max_steps,
+            max_steps=self.step_limit or role.max_steps or self.cfg.teams.max_steps,
             token_budget=self.cfg.teams.token_budget,
             scheduler=self.scheduler,
             preamble=preamble or None,
@@ -561,6 +564,7 @@ class StudioOrchestrator:
         test_steps: Sequence[str] = (),
         before_gate: Callable[[], Awaitable[bool]] | None = None,
         scope_tests: bool = False,
+        max_steps: int | None = None,
     ) -> RunReport:
         """Plan, run, review, synthesise.
 
@@ -573,7 +577,8 @@ class StudioOrchestrator:
         once the plan has (it may `follow_up` a subtask); when it returns False the gate does not run and the
         tests count as failed. `scope_tests` makes run_tests run the gate's pytest on the test files the run
         changed first and the whole gate only once those pass; the final gate is skipped for a tree that
-        passed it already."""
+        passed it already. `max_steps` limits every subtask's steps in this run, follow-ups included."""
+        self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
         if given is not None:
             self.check_plan(given)

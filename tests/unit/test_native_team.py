@@ -567,6 +567,20 @@ async def test_a_one_step_role_is_not_told_it_has_a_step_left(tmp_path: Path) ->
     assert not any("one step left" in str(m.content) for r in engine.requests for m in r.messages)
 
 
+async def test_the_turn_after_the_last_step_thinks_unless_the_role_says_not_to(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+
+    async def thinking_per_request(last_turn_thinking: bool) -> list[bool]:
+        engine = FakeEngine({"coder": [read, read, FakeReply(text="Plan.")]})
+        team, ctx = make_team(tmp_path, engine, max_steps=2)
+        ctx.role = ctx.role.model_copy(update={"thinking": True, "last_turn_thinking": last_turn_thinking})
+        await team.run(ctx, Recorder())
+        return [r.thinking for r in engine.requests]
+
+    assert await thinking_per_request(True) == [True, True, True]
+    assert await thinking_per_request(False) == [True, True, False]  # only the tool-less last turn
+
+
 class Events:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []

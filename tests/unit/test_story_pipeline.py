@@ -129,7 +129,12 @@ def pipeline(
 ) -> StoryPipeline:
     """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
     `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
-    settings = {"trunk": git(repo, "branch", "--show-current"), **(story or {})}
+    settings = {
+        "trunk": git(repo, "branch", "--show-current"),
+        "plan_round_steps": 0,  # one go, no survey: the rounds and the survey have tests of their own
+        "survey": False,
+        **(story or {}),
+    }
     cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings})
     return StoryPipeline(
         cfg,
@@ -1925,3 +1930,72 @@ async def test_a_tag_named_like_a_layers_branch_is_not_the_next_layers_base(tmp_
     st = await pipeline(tmp_path, repo, again).run(card)
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", f"refs/heads/{B1}", f"refs/heads/{B2}")  # on layer 01's work
+
+
+SURVEY_NOTES = FakeReply(text="- store.py:10 Store class\n- tests live in tests/unit/test_store.py")
+
+
+def architect_requests(engine: FakeEngine) -> list[Any]:
+    return [r for r in engine.requests if r.role == "architect"]
+
+
+def text_of(request: Any) -> str:
+    return "\n".join(str(m.content) for m in request.messages)
+
+
+async def test_the_architect_surveys_while_product_refines_and_plans_from_its_notes_in_rounds(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    (repo / "AGENTS.md").write_text("# rules\nthe gate is ./check.sh\n")
+    git(repo, "add", "AGENTS.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "agents")
+    engine = happy_engine(architect=[SURVEY_NOTES, LAYERS, LAYERS])
+    settings = {"survey": True, "plan_round_steps": 2}
+    st = await pipeline(tmp_path, repo, engine, story=settings).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review"
+    arch = architect_requests(engine)
+    assert len(arch) == 3  # the survey, round 1, round 2 (the same plan: converged, no round 3)
+    assert "Do not plan and do not write JSON" in text_of(arch[0])
+    layers_ask = text_of(arch[1])
+    assert "store.py:10 Store class" in layers_ask  # the survey's notes
+    assert "the gate is ./check.sh" in layers_ask  # AGENTS.md, read for it
+    assert "That is your plan so far" in text_of(arch[2])  # round 2 goes on in the same conversation
+    events = (st.path / "events.jsonl").read_text()
+    assert [e["kind"] for e in kinds(st.path / "events.jsonl", "plan_done")] == ["plan_done"]
+    assert kinds(st.path / "events.jsonl", "plan_done")[0]["reason"] == "converged"
+    assert kinds(st.path / "events.jsonl", "survey_done")[0]["chars"] == len(str(SURVEY_NOTES.text))
+    assert st.survey == SURVEY_NOTES.text and '"survey_failed"' not in events
+
+
+async def test_a_survey_that_fails_is_no_notes_and_the_story_goes_on(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(architect=[CUT_THINKING, LAYERS])
+    st = await pipeline(tmp_path, repo, engine, story={"survey": True}).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    assert st.survey == "" and kinds(st.path / "events.jsonl", "survey_failed")
+    assert "Notes from reading the code" not in text_of(architect_requests(engine)[1])
+
+
+async def test_a_story_that_has_refined_is_not_surveyed_again_on_resume(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    nonsense = FakeReply(text="no plan here")
+    first = happy_engine(architect=[SURVEY_NOTES, nonsense, nonsense])  # layers: two unusable replies, a stop
+    stopped = await pipeline(tmp_path, repo, first, story={"survey": True}).run(text_card("avatars"))
+    assert stopped.stage == "refine" and stopped.blocked and stopped.survey == SURVEY_NOTES.text
+    again = happy_engine(architect=[LAYERS])
+    st = await pipeline(tmp_path, repo, again, story={"survey": True}).run(text_card("avatars"))
+    arch = architect_requests(again)
+    assert len(arch) == 1 and "Do not plan and do not write JSON" not in text_of(arch[0])  # layers, no survey
+    assert "store.py:10 Store class" in text_of(arch[0])  # the notes kept from the first run
+    assert st.blocked is None and st.stage == "review"
+
+
+async def test_one_go_planning_asks_the_architect_once_and_never_continues_the_conversation(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine()
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))  # the helper's default: 0 and off
+    assert st.stage == "review" and len(architect_requests(engine)) == 1
+    assert not kinds(st.path / "events.jsonl", "plan_round")

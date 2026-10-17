@@ -53,7 +53,15 @@ from tests.unit.test_story_pipeline import (
     fenced,
     happy_engine,
 )
-from tests.unit.test_studio_orchestrator import cfg_for
+from tests.unit.test_studio_orchestrator import cfg_for as studio_cfg_for
+
+
+def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -> Any:
+    """The studio tests' config with the story settings that keep these tests' scripted replies in order:
+    planning in one go and no survey (the rounds and the survey have tests of their own)."""
+    extra = dict(extra or {})
+    extra["story"] = {"plan_round_steps": 0, "survey": False, **extra.get("story", {})}
+    return studio_cfg_for(tmp_path, extra=extra, **kw)
 
 
 @pytest.fixture(autouse=True)
