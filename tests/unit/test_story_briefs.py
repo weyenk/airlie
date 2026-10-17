@@ -448,3 +448,10 @@ def test_a_layer_whose_gate_is_not_known_has_a_tests_line_that_names_no_command(
     """A layer built before each layer kept the gate it passed: the PR cannot say which command that was."""
     body = pr_body(CARD, STORY, LAYERS, 1, ROWS, PRS, None)
     assert "Tests: the story's test gate passes on this branch." in body and "Tests: `" not in body
+
+
+def test_the_briefs_ask_for_criteria_and_layers_that_are_red_before_the_change() -> None:
+    refine = refine_brief(CARD)
+    assert "names what differs after the change" in refine and "only the new message contains" in refine
+    layers = layers_brief(STORY, 3)
+    assert "fail before the layer and pass after it" in layers and "adds a name" in layers
