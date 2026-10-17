@@ -11,6 +11,7 @@ from typing import Any
 
 from airlie.story.board import Card
 from airlie.story.model import CONTROL, HARDEN_SLUG, SURROGATE, Layer, Story
+from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
 
 BODY_LIMIT = 60_000
@@ -191,7 +192,7 @@ def layers_brief(
             [
                 f"You will be asked for your plan after every {round_steps} steps, whatever you have read so "
                 "far, with no tools on that turn: read the files that matter first, and be ready to write "
-                "the JSON plan then. You may refine it in later rounds."
+                "the JSON plan then. You may refine it in later rounds. " + REFINE_FIELD
             ]
             if round_steps
             else []

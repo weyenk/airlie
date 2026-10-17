@@ -478,3 +478,4 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
     assert "asked for your plan" not in layers_brief(STORY, 4)
     text = layers_brief(STORY, 4, round_steps=5)
     assert "asked for your plan after every 5 steps" in text and "no tools on that turn" in text
+    assert '"refine" object' in text and "worth_another_round" in text

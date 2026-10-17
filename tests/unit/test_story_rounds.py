@@ -17,7 +17,17 @@ def layer(slug: str, scope: str = "a.py", ac: tuple[str, ...] = ("AC1",), title:
 def parse(text: str) -> tuple[Layer, ...]:
     if text == "garbage":
         raise StoryError("no JSON")
-    return tuple(layer(s) for s in text.split(","))
+    return tuple(layer(s) for s in text.split("|")[0].split(","))
+
+
+def signal(text: str) -> Any:
+    """The verdict after the plan's "|": "stop", "more" or "junk" (a verdict that is not an object)."""
+    word = text.partition("|")[2]
+    if word == "stop":
+        return {"worth_another_round": False, "reason": "settled", "check": "nothing"}
+    if word == "more":
+        return {"worth_another_round": True, "reason": "unsure", "check": "schema.py"}
+    return "junk" if word == "junk" else None
 
 
 class Script:
@@ -41,7 +51,7 @@ class Script:
 
 async def run(script: Script, rounds: int = 4) -> str:
     return await plan_in_rounds(
-        script.first, script.again, parse, same_layers, rounds=rounds, emit=script.emit
+        script.first, script.again, parse, same_layers, rounds=rounds, emit=script.emit, signal=signal
     )
 
 
@@ -94,14 +104,55 @@ async def test_a_first_plan_that_stays_unusable_is_the_callers_story_error_after
     assert len(s.nudges) == 2 and [k for k, _ in s.events] == ["plan_fix", "plan_fix"]
 
 
-def test_two_plans_are_the_same_when_their_layers_scopes_and_criteria_are() -> None:
+async def test_a_plan_that_says_another_round_is_not_worth_it_ends_the_rounds_at_once() -> None:
+    s = Script("a,b|stop")
+    assert await run(s) == "a,b|stop"
+    assert s.nudges == []  # no second round was asked
+    assert [k for k, _ in s.events] == ["plan_round", "plan_check", "plan_done"]
+    assert s.events[1][1] == {
+        "round": 1,
+        "worth_another_round": False,
+        "reason": "settled",
+        "check": "nothing",
+    }
+    assert s.events[-1][1] == {"reason": "architect_done", "rounds": 1}
+
+
+async def test_a_later_plan_that_says_stop_is_the_plan_the_rounds_end_on() -> None:
+    s = Script("a|more", "a,b|stop", "a,b,c")
+    assert await run(s) == "a,b|stop"
+    assert len(s.nudges) == 1
+    assert s.events[-1][1] == {"reason": "architect_done", "rounds": 2}
+
+
+async def test_a_plan_that_wants_more_goes_on_until_the_cap() -> None:
+    s = Script("a|more", "a,b|more", "a,b,c|more")
+    assert await run(s, rounds=3) == "a,b,c|more"
+    assert s.events[-1][1] == {"reason": "cap", "rounds": 3}
+    assert [e[1]["check"] for e in s.events if e[0] == "plan_check"] == ["schema.py"] * 3
+
+
+async def test_an_unchanged_plan_ends_the_rounds_as_converged_whatever_its_verdict_says() -> None:
+    s = Script("a,b|more", "a,b|stop")
+    assert await run(s) == "a,b|more"
+    assert s.events[-1][1] == {"reason": "converged", "rounds": 2}
+
+
+async def test_a_verdict_that_is_not_an_object_is_no_verdict() -> None:
+    s = Script("a|junk", "a,b|junk", "a,b")
+    assert await run(s) == "a,b|junk"  # round 3 repeated round 2's layers: converged, on round 2's text
+    assert not [e for e in s.events if e[0] == "plan_check"]
+    assert s.events[-1][1] == {"reason": "converged", "rounds": 3}
+
+
+def test_two_plans_are_the_same_when_they_have_the_same_layers_owning_the_same_criteria() -> None:
     a = (layer("x", "s.py", ("AC1",), "Title one"), layer("y", "t.py", ("AC2",)))
-    reworded = (
-        Layer("x", "A new title", "s.py", "other words", ("AC1",)),
-        Layer("y", "T", "t.py", "x", ("AC2",)),
+    renamed = (
+        Layer("storage", "A new title", "other/store.py", "other words", ("AC1",)),
+        Layer("show", "T", "elsewhere.py", "x", ("AC2",)),
     )
-    assert same_layers(a, reworded)
+    assert same_layers(a, renamed)  # names, scopes and prose are reworded between rounds for nothing
     assert not same_layers(a, (a[0],))
     assert not same_layers(a, (a[0], layer("y", "t.py", ("AC3",))))
-    assert not same_layers(a, (a[0], layer("y", "u.py", ("AC2",))))
+    assert not same_layers(a, (a[0], layer("y", "t.py", ("AC1", "AC2"))))
     assert not same_layers(a, (a[1], a[0]))
