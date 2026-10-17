@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Metrics</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--field:#16191E;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--head:#000000;--head-ink:#F2F4F7;--head-muted:#A3A8B2;--bar-fast:#8FB6E0;--bar-slow:#E0A46B}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--line2:#EEECE5;--field:#FFFFFF;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--head:#17191E;--head-ink:#F6F5F1;--head-muted:#C9CBD1;--bar-fast:#0B5F7A;--bar-slow:#B5651D}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:10px;font:inherit;font-weight:600;font-size:15px;cursor:pointer;border:1px solid var(--field-line);background:transparent;color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.field{min-height:44px;border:1px solid var(--field-line);border-radius:10px;padding:0 12px;font:inherit;background:var(--field);color:var(--ink)}
+.bar{height:14px;border-radius:3px}
+th{font-weight:500;text-align:left}
+.nav a{color:var(--head-muted);text-decoration:none;padding:18px 0}
+.nav a[aria-current]{color:var(--head-ink);font-weight:600;border-bottom:2px solid #8FB6E0;padding-bottom:16px}
+</style>
+</helmet>
+<div class="{{theme}}" style="min-height: 100vh; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--ink); background: var(--bg); font-size: 15px; line-height: 1.5">
+  <header style="background: var(--head); border-bottom: 1px solid var(--line)">
+    <div style="max-width: 1240px; margin: 0 auto; padding: 0 20px; min-height: 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+      <a href="Main.dc.html" style="color: var(--head-ink); text-decoration: none; font-weight: 700; font-size: 20px">airlie</a>
+      <nav class="nav" aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px 20px; flex: 1 1 auto">
+        <a href="Main.dc.html">Home</a>
+        <a href="Job.dc.html">Jobs</a>
+        <a href="Topology.dc.html">Topology</a>
+        <a href="Metrics.dc.html" aria-current="page">Metrics</a>
+        <a href="Admin.dc.html">Admin</a>
+      </nav>
+      <span style="font-size: 14px; color: var(--head-muted)">Noah · admin</span>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 24px 20px 48px; display: flex; flex-direction: column; gap: 20px">
+    <div style="display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; justify-content: space-between">
+      <h1 style="margin: 0; font-size: 26px; letter-spacing: -0.01em">Metrics</h1>
+      <label style="display: flex; align-items: center; gap: 10px; font-weight: 500">Showing
+        <select class="field"><option>Last 24 hours · all runs</option><option>One run…</option></select>
+      </label>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px">
+      <div class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 2px"><span style="color: var(--ink2); font-size: 14px">Generation, coder</span><span class="mono" style="font-size: 28px; font-weight: 500">~100 tok/s</span><span style="font-size: 13px; color: var(--ink2)">Qwen3-Coder-30B-A3B</span></div>
+      <div class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 2px"><span style="color: var(--ink2); font-size: 14px">Prefill, generalist</span><span class="mono" style="font-size: 28px; font-weight: 500">~780 tok/s</span><span style="font-size: 13px; color: var(--ink2)">65,031 tokens in 83 s</span></div>
+      <div class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 2px"><span style="color: var(--ink2); font-size: 14px">Prefix cache hit, coder</span><span class="mono" style="font-size: 28px; font-weight: 500">98.9%</span><span style="font-size: 13px; color: var(--ink2)">generalist: 0% (no reuse)</span></div>
+      <div class="card" style="padding: 16px; display: flex; flex-direction: column; gap: 2px"><span style="color: var(--ink2); font-size: 14px">GPU memory</span><span class="mono" style="font-size: 28px; font-weight: 500">75.5 GB</span><span style="font-size: 13px; color: var(--ink2)">peak 89.5 of 128 GB</span></div>
+    </div>
+
+    <section class="card" aria-labelledby="step-h" style="padding: 20px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+        <h2 id="step-h" style="margin: 0; font-size: 18px">Median time per step, by prompt size</h2>
+        <span style="font-size: 13px; color: var(--ink2)">Most of a slow step is prefill: each step resends the whole conversation.</span>
+      </div>
+      <div style="overflow-x: auto">
+        <table style="width: 100%; border-collapse: collapse; min-width: 620px">
+          <thead><tr style="color: var(--ink2); font-size: 13px; border-bottom: 1px solid var(--line)">
+            <th style="padding: 8px 12px 8px 0; width: 30%">Role · model</th><th style="padding: 8px 12px">under 16k</th><th style="padding: 8px 12px">16–40k</th><th style="padding: 8px 0">over 40k</th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--line2)">
+              <td style="padding: 12px 12px 12px 0"><strong>coder, qa</strong><div class="mono" style="font-size: 12px; color: var(--ink2)">Qwen3-Coder-30B-A3B</div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 3px; background: var(--bar-fast)"></span><span class="mono">0.6 s</span></div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 8px; background: var(--bar-fast)"></span><span class="mono">4.1 s</span></div></td>
+              <td style="padding: 12px 0"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 6px; background: var(--bar-fast)"></span><span class="mono">3.0 s</span></div></td>
+            </tr>
+            <tr style="border-bottom: 1px solid var(--line2)">
+              <td style="padding: 12px 12px 12px 0"><strong>product</strong><div class="mono" style="font-size: 12px; color: var(--ink2)">Qwen3.8-27B · thinking off</div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 21px; background: var(--bar-slow)"></span><span class="mono">10.7 s</span></div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 44px; background: var(--bar-slow)"></span><span class="mono">22.2 s</span></div></td>
+              <td style="padding: 12px 0"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 111px; background: var(--bar-slow)"></span><span class="mono">55.4 s</span></div></td>
+            </tr>
+            <tr>
+              <td style="padding: 12px 12px 12px 0"><strong>architect</strong><div class="mono" style="font-size: 12px; color: var(--ink2)">Qwen3.8-27B · thinking on</div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 15px; background: var(--bar-slow)"></span><span class="mono">7.3 s</span></div></td>
+              <td style="padding: 12px"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 71px; background: var(--bar-slow)"></span><span class="mono">35.3 s</span></div></td>
+              <td style="padding: 12px 0"><div style="display: flex; align-items: center; gap: 8px"><span class="bar" style="width: 141px; background: var(--bar-slow)"></span><span class="mono">70.3 s</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="bench-h" style="padding: 20px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+        <h2 id="bench-h" style="margin: 0; font-size: 18px">Benchmarks</h2>
+        <span style="font-size: 13px; color: var(--ink2)">Starting one loads the GPU, so only the admin can. Everyone can see results.</span>
+      </div>
+      <div style="overflow-x: auto">
+        <table style="width: 100%; border-collapse: collapse; min-width: 640px">
+          <thead><tr style="color: var(--ink2); font-size: 13px; border-bottom: 1px solid var(--line)">
+            <th style="padding: 8px 12px 8px 0">Benchmark</th><th style="padding: 8px 12px">What it measures</th><th style="padding: 8px 12px">Last run</th><th style="padding: 8px 0"><span style="position: absolute; left: -9999px">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--line2)"><td class="mono" style="padding: 12px 12px 12px 0">bench</td><td style="padding: 12px">Engine throughput through the seam</td><td style="padding: 12px; color: var(--ink2)">[DATE]</td><td style="padding: 12px 0; text-align: right"><button class="btn" type="button" style="min-height: 40px">Start</button></td></tr>
+            <tr style="border-bottom: 1px solid var(--line2)"><td class="mono" style="padding: 12px 12px 12px 0">bench:models</td><td style="padding: 12px">Every catalog model marked for benching</td><td style="padding: 12px; color: var(--ink2)">[DATE]</td><td style="padding: 12px 0; text-align: right"><button class="btn" type="button" style="min-height: 40px">Start</button></td></tr>
+            <tr style="border-bottom: 1px solid var(--line2)"><td class="mono" style="padding: 12px 12px 12px 0">bench:topology</td><td style="padding: 12px">Solo vs teams vs forking vs studio on graded tasks</td><td style="padding: 12px">2026-10-13 · solo won</td><td style="padding: 12px 0; text-align: right"><button class="btn" type="button" style="min-height: 40px">Start</button></td></tr>
+            <tr style="border-bottom: 1px solid var(--line2)"><td class="mono" style="padding: 12px 12px 12px 0">bench:lts</td><td style="padding: 12px">Memory-free baseline vs shared memory</td><td style="padding: 12px; color: var(--ink2)">[DATE]</td><td style="padding: 12px 0; text-align: right"><button class="btn" type="button" style="min-height: 40px">Start</button></td></tr>
+            <tr><td class="mono" style="padding: 12px 12px 12px 0">route:eval</td><td style="padding: 12px">How often the router picks the right role</td><td style="padding: 12px; color: var(--ink2)">[DATE]</td><td style="padding: 12px 0; text-align: right"><button class="btn" type="button" style="min-height: 40px">Start</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end">
+        <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500; flex: 1 1 220px">Compare
+          <select class="field"><option>[SAVED RESULT A]</option></select>
+        </label>
+        <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500; flex: 1 1 220px">with
+          <select class="field"><option>[SAVED RESULT B]</option></select>
+        </label>
+        <button class="btn primary" type="button">Show differences</button>
+      </div>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":1160}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: (this.props.dark ?? true) ? 'dark' : 'light' };
+  }
+}
+</script>
+</body>
+</html>

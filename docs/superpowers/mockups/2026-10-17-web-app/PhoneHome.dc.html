@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Chat (phone)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--bubble:#16191E;--line:#2B2F36;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--run-bg:#16283F;--run:#B9D3F2;--ok-bg:#13281C;--ok:#A9DDB9;--warn-bg:#2E230D;--warn:#F0C978;--tab:#0E1013}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--bubble:#FFFFFF;--line:#E2E0D8;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--run-bg:#E6EDFD;--run:#1E3FA8;--ok-bg:#E2F2E9;--ok:#1E5C3E;--warn-bg:#FBF0D9;--warn:#7A4F00;--tab:#FFFFFF}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:500;white-space:nowrap;text-decoration:none}
+.chip.run{background:var(--run-bg);color:var(--run)}.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.warn{background:var(--warn-bg);color:var(--warn)}
+.orb{flex:0 0 auto;width:28px;height:28px;border-radius:50%;border:1px solid #CFE0F3;background:radial-gradient(circle at 50% 50%,#E6F0FB 0%,#9DBFE5 100%)}
+.them{background:var(--bubble);border:1px solid var(--line);border-radius:4px 16px 16px 16px;padding:10px 12px}
+.me{align-self:flex-end;max-width:80%;background:var(--accent);color:var(--accent-ink);border-radius:16px 4px 16px 16px;padding:10px 12px}
+.quick{min-height:40px;padding:0 14px;border-radius:999px;border:1px solid var(--field-line);background:transparent;color:var(--ink);font:inherit;font-size:14px;font-weight:500;cursor:pointer}
+.tabs a{flex:1 1 0;display:flex;flex-direction:column;align-items:center;gap:2px;min-height:52px;justify-content:center;font-size:12px;text-decoration:none;color:var(--ink2)}
+.tabs a[aria-current]{color:var(--accent);font-weight:600}
+</style>
+</helmet>
+<div class="{{theme}}" style="width: 390px; height: 844px; box-sizing: border-box; background: var(--bg); color: var(--ink); font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.45; display: flex; flex-direction: column">
+  <header style="padding: 16px 16px 10px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line)">
+    <div style="display: flex; align-items: center; justify-content: space-between">
+      <span style="display: flex; align-items: center; gap: 10px"><span class="orb" aria-hidden="true"></span><span style="font-weight: 700; font-size: 20px">airlie</span></span>
+      <span style="font-size: 13px; color: var(--ink2)">Studio · Dev shop</span>
+    </div>
+    <div style="display: flex; gap: 8px">
+      <a class="chip warn" href="PhoneJob.dc.html">1 needs you</a>
+      <a class="chip run" href="PhoneJob.dc.html">2 running</a>
+      <a class="chip ok" href="Main.dc.html">2 boxes up</a>
+    </div>
+  </header>
+
+  <main aria-label="Conversation with the chief" style="flex: 1 1 auto; overflow: hidden; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; justify-content: flex-end">
+    <div style="display: flex; gap: 8px; align-items: flex-start">
+      <span class="orb" aria-hidden="true"></span>
+      <div style="display: flex; flex-direction: column; gap: 8px; min-width: 0">
+        <div class="them">Morning, Noah. <strong>HDS-5</strong> is blocked at layer 01: the coder's new test file didn't parse, twice. Rerun it, or split it into smaller stories?</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px">
+          <button class="quick" type="button">Rerun</button>
+          <button class="quick" type="button">Split it</button>
+          <button class="quick" type="button">Show me why</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="me">Split it. Start with just the config guardrail.</div>
+
+    <div style="display: flex; gap: 8px; align-items: flex-start">
+      <span class="orb" aria-hidden="true"></span>
+      <div class="them" style="display: flex; flex-direction: column; gap: 8px; min-width: 0">
+        <span>Here's the plan. One small story first, about 3 files:</span>
+        <ol style="margin: 0; padding-left: 20px; font-size: 15px; display: flex; flex-direction: column; gap: 2px">
+          <li>Add web_search and web_fetch to the known tools</li>
+          <li>Refuse them on roles that can write or run shell</li>
+          <li>Tests for both, in a new test file</li>
+        </ol>
+        <div style="display: flex; gap: 8px">
+          <button type="button" style="flex: 1 1 0; min-height: 44px; border-radius: 12px; border: 0; background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600">Approve</button>
+          <button type="button" style="flex: 1 1 0; min-height: 44px; border-radius: 12px; border: 1px solid var(--field-line); background: transparent; color: var(--ink); font: inherit; font-weight: 600">Change</button>
+        </div>
+      </div>
+    </div>
+
+    <a href="PhoneJob.dc.html" style="margin-left: 36px; text-decoration: none; color: inherit; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px">
+      <span style="display: flex; flex-direction: column"><span style="font-weight: 600; font-size: 15px">Job started</span><span class="mono" style="font-size: 12px; color: var(--ink2)">weyenk/airlie · coder · step 4</span></span>
+      <span class="chip run">Watch</span>
+    </a>
+  </main>
+
+  <form aria-label="Message the chief" style="padding: 10px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; background: var(--bg)">
+    <div style="display: flex; gap: 8px; align-items: flex-end">
+      <button type="button" aria-label="Attach a screenshot or file" style="flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--field-line); background: transparent; color: var(--ink); display: flex; align-items: center; justify-content: center">
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+      </button>
+      <label for="msg" style="position: absolute; left: -9999px">Message</label>
+      <textarea id="msg" rows="1" placeholder="Ask airlie, or describe new work…" style="flex: 1 1 auto; min-height: 44px; box-sizing: border-box; border-radius: 22px; border: 1px solid var(--field-line); background: var(--surface); color: var(--ink); font: inherit; padding: 10px 14px; resize: none"></textarea>
+      <button type="submit" aria-label="Send" style="flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center">
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>
+      </button>
+    </div>
+    <div style="display: flex; gap: 8px; font-size: 13px; color: var(--ink2)">
+      <span class="mono">/ skills</span><span>·</span><span class="mono">weyenk/airlie ▾</span><span>·</span><span>Jira issue ▾</span>
+    </div>
+  </form>
+
+  <nav class="tabs" aria-label="Main" style="display: flex; border-top: 1px solid var(--line); background: var(--tab); padding-bottom: 12px">
+    <a href="PhoneHome.dc.html" aria-current="page"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"></path></svg>Chat</a>
+    <a href="PhoneJob.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>Jobs</a>
+    <a href="PhoneTopology.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"></circle><circle cx="5" cy="19" r="3"></circle><circle cx="19" cy="19" r="3"></circle><path d="M12 8v4M12 12l-6 4M12 12l6 4"></path></svg>Topology</a>
+    <a href="Metrics.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V10M12 20V4M19 20v-7"></path></svg>Metrics</a>
+    <a href="Admin.dc.html"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>Admin</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: (this.props.dark ?? true) ? 'dark' : 'light' };
+  }
+}
+</script>
+</body>
+</html>

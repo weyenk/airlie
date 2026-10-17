@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Admin</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--field:#16191E;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--head:#000000;--head-ink:#F2F4F7;--head-muted:#A3A8B2;--ok-bg:#13281C;--ok:#A9DDB9;--mute-bg:#1E2228;--mute:#B4B9C2;--warn-box:#1C160A;--warn-line:#5C4515;--err:#F2B2AA;--danger-line:#6B2E2A;--meter:#1F2228}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--line2:#EEECE5;--field:#FFFFFF;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--head:#17191E;--head-ink:#F6F5F1;--head-muted:#C9CBD1;--ok-bg:#E2F2E9;--ok:#1E5C3E;--mute-bg:#EEF0F3;--mute:#4B4F58;--warn-box:#FFF8EA;--warn-line:#F0D9A8;--err:#8E2B22;--danger-line:#E3B4AE;--meter:#EEECE5}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.mute{background:var(--mute-bg);color:var(--mute)}.chip.acc{background:var(--accent);color:var(--accent-ink)}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:10px;font:inherit;font-weight:600;font-size:15px;cursor:pointer;border:1px solid var(--field-line);background:transparent;color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:var(--err);border-color:var(--danger-line)}
+.field{min-height:44px;border:1px solid var(--field-line);border-radius:10px;padding:0 12px;font:inherit;background:var(--field);color:var(--ink)}
+th{font-weight:500;text-align:left}
+.nav a{color:var(--head-muted);text-decoration:none;padding:18px 0}
+.nav a[aria-current]{color:var(--head-ink);font-weight:600;border-bottom:2px solid #8FB6E0;padding-bottom:16px}
+.side a{padding:10px 12px;border-radius:10px;text-decoration:none;color:var(--ink2)}
+.side a[aria-current]{background:var(--surface);border:1px solid var(--line);color:var(--ink);font-weight:600}
+</style>
+</helmet>
+<div class="{{theme}}" style="min-height: 100vh; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--ink); background: var(--bg); font-size: 15px; line-height: 1.5">
+  <header style="background: var(--head); border-bottom: 1px solid var(--line)">
+    <div style="max-width: 1240px; margin: 0 auto; padding: 0 20px; min-height: 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+      <a href="Main.dc.html" style="color: var(--head-ink); text-decoration: none; font-weight: 700; font-size: 20px">airlie</a>
+      <nav class="nav" aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px 20px; flex: 1 1 auto">
+        <a href="Main.dc.html">Home</a>
+        <a href="Job.dc.html">Jobs</a>
+        <a href="Topology.dc.html">Topology</a>
+        <a href="Metrics.dc.html">Metrics</a>
+        <a href="Admin.dc.html" aria-current="page">Admin</a>
+      </nav>
+      <span style="font-size: 14px; color: var(--head-muted)">Noah · admin</span>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 24px 20px 48px; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+    <nav class="side" aria-label="Admin sections" style="flex: 1 1 200px; display: flex; flex-direction: column; gap: 4px">
+      <h1 style="margin: 0 0 8px; font-size: 26px; letter-spacing: -0.01em">Admin</h1>
+      <a href="#roles" aria-current="true">Roles and tools</a>
+      <a href="#people">People and keys</a>
+      <a href="#integrations">Integrations</a>
+    </nav>
+
+    <div style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+      <section id="roles" class="card" aria-labelledby="roles-h" style="padding: 20px; display: flex; flex-direction: column; gap: 14px">
+        <h2 id="roles-h" style="margin: 0; font-size: 18px">Roles and tools</h2>
+        <div style="overflow-x: auto">
+          <table style="width: 100%; border-collapse: collapse; min-width: 640px; font-size: 14px">
+            <thead><tr style="color: var(--ink2); font-size: 13px; border-bottom: 1px solid var(--line)">
+              <th style="padding: 8px 12px 8px 0">Role</th><th style="padding: 8px 12px">Model</th><th style="padding: 8px 12px">Tools</th><th style="padding: 8px 12px">Steps</th><th style="padding: 8px 0">Reply cap</th>
+            </tr></thead>
+            <tbody class="mono">
+              <tr style="border-bottom: 1px solid var(--line2)"><td style="padding: 10px 12px 10px 0">chief</td><td style="padding: 10px 12px">Qwen3.8-27B</td><td style="padding: 10px 12px">none</td><td style="padding: 10px 12px">plan</td><td style="padding: 10px 0">16,384</td></tr>
+              <tr style="border-bottom: 1px solid var(--line2)"><td style="padding: 10px 12px 10px 0">architect</td><td style="padding: 10px 12px">Qwen3.8-27B</td><td style="padding: 10px 12px">read, list, grep</td><td style="padding: 10px 12px">20</td><td style="padding: 10px 0">16,384</td></tr>
+              <tr style="border-bottom: 1px solid var(--line2)"><td style="padding: 10px 12px 10px 0">coder</td><td style="padding: 10px 12px">Qwen3-Coder-30B-A3B</td><td style="padding: 10px 12px">all builtin</td><td style="padding: 10px 12px">40</td><td style="padding: 10px 0">8,192</td></tr>
+              <tr style="border-bottom: 1px solid var(--line2)"><td style="padding: 10px 12px 10px 0">ux, design</td><td style="padding: 10px 12px">Qwen3.8-27B</td><td style="padding: 10px 12px">none</td><td style="padding: 10px 12px">answer</td><td style="padding: 10px 0">8,192</td></tr>
+              <tr><td style="padding: 10px 12px 10px 0">reviewer</td><td style="padding: 10px 12px">Muse Glimmer 30B</td><td style="padding: 10px 12px">none</td><td style="padding: 10px 12px">answer</td><td style="padding: 10px 0">8,192</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span style="font-size: 13px; color: var(--ink2)">Web tools are never allowed together with write, shell or git tools.</span>
+      </section>
+
+      <section id="people" class="card" aria-labelledby="people-h" style="padding: 20px; display: flex; flex-direction: column; gap: 12px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center">
+          <h2 id="people-h" style="margin: 0; font-size: 18px">People and keys</h2>
+          <button class="btn primary" type="button">Add a person</button>
+        </div>
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column">
+          <li style="display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line2)">
+            <strong style="flex: 1 1 160px">Noah</strong><span class="chip acc">admin</span><span class="mono" style="font-size: 13px; color: var(--ink2)">key ••••[LAST 4] · Tailscale: [DEVICE]</span>
+          </li>
+          <li style="display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 0">
+            <strong style="flex: 1 1 160px">[AUTHORIZED PERSON]</strong><span class="chip mute">member</span><span class="mono" style="font-size: 13px; color: var(--ink2)">key ••••[LAST 4]</span>
+            <button class="btn danger" type="button" style="min-height: 40px">Revoke key</button>
+          </li>
+        </ul>
+      </section>
+
+      <section id="integrations" class="card" aria-labelledby="int-h" style="padding: 20px; display: flex; flex-direction: column; gap: 12px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center">
+          <h2 id="int-h" style="margin: 0; font-size: 18px">Integrations</h2>
+          <button class="btn primary" type="button" aria-haspopup="dialog" onClick="{{openMarket}}">Add integrations</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px">
+          <div style="border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px"><strong>Jira</strong><span class="mono" style="font-size: 13px; color: var(--ink2)">project HDS</span><span class="chip ok" style="align-self: flex-start">connected</span></div>
+          <div style="border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px"><strong>GitHub App</strong><span class="mono" style="font-size: 13px; color: var(--ink2)">airlie-bot · draft PRs only</span><span class="chip ok" style="align-self: flex-start">connected</span></div>
+          <div style="border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px"><strong>Web search</strong><span class="mono" style="font-size: 13px; color: var(--ink2)">SearXNG on the Studio</span><span class="chip mute" style="align-self: flex-start">not set up (HDS-5)</span></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <sc-if value="{{showMarket}}" hint-placeholder-val="{{ false }}">
+    <div style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 10">
+      <div role="dialog" aria-modal="true" aria-labelledby="market-h" class="card" style="width: min(640px, 100%); padding: 24px; display: flex; flex-direction: column; gap: 18px">
+        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center">
+          <h2 id="market-h" style="margin: 0; font-size: 22px">Integrations marketplace</h2>
+          <button class="btn" type="button" aria-label="Close" onClick="{{closeMarket}}" style="min-width: 44px; padding: 0">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4l10 10M14 4L4 14"></path></svg>
+          </button>
+        </div>
+        <span class="chip mute" style="align-self: flex-start">Coming soon</span>
+        <p style="margin: 0; color: var(--ink2)">Connect more tools to airlie: issue trackers, chat, error monitoring and other code hosts. The marketplace isn't open yet. Jira, the GitHub App and web search are set up from this page today.</p>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+          <div style="border: 1px dashed var(--field-line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px; color: var(--ink2)"><strong style="color: var(--ink)">Issue trackers</strong><span style="font-size: 13px">Coming soon</span></div>
+          <div style="border: 1px dashed var(--field-line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px; color: var(--ink2)"><strong style="color: var(--ink)">Chat and notifications</strong><span style="font-size: 13px">Coming soon</span></div>
+          <div style="border: 1px dashed var(--field-line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px; color: var(--ink2)"><strong style="color: var(--ink)">Error monitoring</strong><span style="font-size: 13px">Coming soon</span></div>
+          <div style="border: 1px dashed var(--field-line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px; color: var(--ink2)"><strong style="color: var(--ink)">Other code hosts</strong><span style="font-size: 13px">Coming soon</span></div>
+        </div>
+        <button class="btn" type="button" onClick="{{closeMarket}}" style="align-self: flex-end">Close</button>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":1140}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { market: false };
+  }
+  renderVals() {
+    return {
+      theme: (this.props.dark ?? true) ? 'dark' : 'light',
+      showMarket: this.state.market,
+      openMarket: () => this.setState({ market: true }),
+      closeMarket: () => this.setState({ market: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airlie: Home</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.dark{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--field:#16191E;--field-line:#3A3F47;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;--head:#000000;--head-ink:#F2F4F7;--head-muted:#A3A8B2;--run-bg:#16283F;--run:#B9D3F2;--ok-bg:#13281C;--ok:#A9DDB9;--warn-bg:#2E230D;--warn:#F0C978;--err-bg:#33171A;--err:#F2B2AA;--mute-bg:#1E2228;--mute:#B4B9C2;--warn-box:#1C160A;--warn-line:#5C4515}
+.light{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--line2:#EEECE5;--field:#FFFFFF;--field-line:#C9C7BD;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;--head:#17191E;--head-ink:#F6F5F1;--head-muted:#C9CBD1;--run-bg:#E6EDFD;--run:#1E3FA8;--ok-bg:#E2F2E9;--ok:#1E5C3E;--warn-bg:#FBF0D9;--warn:#7A4F00;--err-bg:#FBE6E3;--err:#8E2B22;--mute-bg:#EEF0F3;--mute:#4B4F58;--warn-box:#FFF8EA;--warn-line:#F0D9A8}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.run{background:var(--run-bg);color:var(--run)}.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.warn{background:var(--warn-bg);color:var(--warn)}.chip.err{background:var(--err-bg);color:var(--err)}.chip.mute{background:var(--mute-bg);color:var(--mute)}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:10px;font:inherit;font-weight:600;font-size:15px;cursor:pointer;border:1px solid var(--field-line);background:transparent;color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.field{min-height:44px;border:1px solid var(--field-line);border-radius:10px;padding:0 12px;font:inherit;background:var(--field);color:var(--ink)}
+th{font-weight:500;text-align:left}
+.nav a{color:var(--head-muted);text-decoration:none;padding:18px 0}
+.nav a[aria-current]{color:var(--head-ink);font-weight:600;border-bottom:2px solid #8FB6E0;padding-bottom:16px}
+</style>
+</helmet>
+<div class="{{theme}}" style="min-height: 100vh; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--ink); background: var(--bg); font-size: 15px; line-height: 1.5">
+  <header style="background: var(--head); border-bottom: 1px solid var(--line)">
+    <div style="max-width: 1240px; margin: 0 auto; padding: 0 20px; min-height: 60px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+      <a href="Main.dc.html" style="color: var(--head-ink); text-decoration: none; font-weight: 700; font-size: 20px; letter-spacing: -0.01em">airlie</a>
+      <nav class="nav" aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px 20px; flex: 1 1 auto">
+        <a href="Main.dc.html" aria-current="page">Home</a>
+        <a href="Job.dc.html">Jobs</a>
+        <a href="Topology.dc.html">Topology</a>
+        <a href="Metrics.dc.html">Metrics</a>
+        <a href="Admin.dc.html">Admin</a>
+      </nav>
+      <div style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--head-muted)">
+        <span class="chip ok">Mac Studio online</span>
+        <span>Noah · admin</span>
+      </div>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 28px 20px 48px; display: flex; flex-direction: column; gap: 24px">
+    <div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+      <section class="card" aria-labelledby="start-h" style="flex: 999 1 560px; min-width: 0; padding: 24px; display: flex; flex-direction: column; gap: 18px">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center">
+          <h1 id="start-h" style="margin: 0; font-size: 24px; letter-spacing: -0.01em">Start new work</h1>
+          <span style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink2)"><span class="chip run">{{modeName}}</span><a href="Topology.dc.html">Change</a></span>
+        </div>
+        <sc-if value="{{devShop}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; flex-direction: column; gap: 18px">
+        <div role="group" aria-label="What to start from" style="display: inline-flex; align-self: flex-start; border: 1px solid var(--field-line); border-radius: 11px; padding: 3px; gap: 3px">
+          <button class="btn primary" type="button" aria-pressed="true" style="min-height: 40px">Written request</button>
+          <button class="btn" type="button" aria-pressed="false" style="min-height: 40px; border-color: transparent; color: var(--ink2)">Jira issue</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+          <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">Repository
+            <select class="field"><option>weyenk/airlie</option><option>weyenk/OpenHand</option></select>
+          </label>
+          <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">How it runs
+            <select class="field"><option>Story: layers → draft PRs</option><option>Studio run: one branch</option></select>
+          </label>
+        </div>
+        <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">What should airlie build?
+          <textarea class="field" rows="5" style="padding: 12px; resize: vertical">Add web_search and web_fetch tools behind a provider seam, for the read-only roles only (chief, research, ux, design, reviewer).</textarea>
+        </label>
+        <div role="group" aria-label="Skills" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--ink2)">
+          <span>Type <span class="mono" style="color: var(--ink)">/</span> for skills, or start with one:</span>
+          <button class="btn" type="button" style="min-height: 36px; padding: 0 12px; font-size: 14px"><span class="mono">/interview</span> · ask me questions first</button>
+          <button class="btn" type="button" style="min-height: 36px; padding: 0 12px; font-size: 14px"><span class="mono">/story</span></button>
+          <button class="btn" type="button" style="min-height: 36px; padding: 0 12px; font-size: 14px"><span class="mono">/research</span></button>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px">
+          <button class="btn primary" type="button">Start</button>
+          <span style="color: var(--ink2); font-size: 14px">The chief plans first. You approve the plan before anything is built, and nothing merges without your review.</span>
+        </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{research}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: 18px">
+          <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">What should airlie research?
+            <textarea class="field" rows="5" style="padding: 12px; resize: vertical">How do coding-agent products let people hand work to a remote agent box, from a laptop and a phone?</textarea>
+          </label>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+            <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">Sources
+              <select class="field"><option>Web search and the repository</option><option>Web search only</option><option>Repository knowledge only</option></select>
+            </label>
+            <label style="display: flex; flex-direction: column; gap: 6px; font-weight: 500">Deliver as
+              <select class="field"><option>Report with sources (Markdown)</option><option>Short answer</option></select>
+            </label>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px">
+            <button class="btn primary" type="button">Start research</button>
+            <span style="color: var(--ink2); font-size: 14px">Each role researches on its own and cites what it found. A reviewer from another model family challenges the findings.</span>
+          </div>
+        </div>
+        </sc-if>
+      </section>
+
+      <section class="card" aria-labelledby="needs-h" style="flex: 1 1 340px; min-width: 0; padding: 24px; display: flex; flex-direction: column; gap: 14px">
+        <h2 id="needs-h" style="margin: 0; font-size: 18px">Needs you</h2>
+        <article style="border: 1px solid var(--warn-line); background: var(--warn-box); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+          <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><strong class="mono" style="font-size: 14px">HDS-5</strong><span class="chip warn">Blocked</span></div>
+          <div>Web search and fetch tools: layer 01 of 5 failed its test gate.</div>
+          <a href="Job.dc.html" style="font-weight: 600">See why, then rerun</a>
+        </article>
+        <article style="border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px">
+          <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><strong class="mono" style="font-size: 14px">Draft PRs</strong><span class="chip mute">0 to review</span></div>
+          <div style="color: var(--ink2)">Story pull requests from the bot show up here for your review.</div>
+        </article>
+      </section>
+    </div>
+
+    <section class="card" aria-labelledby="running-h" style="padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+        <h2 id="running-h" style="margin: 0; font-size: 18px">Running</h2>
+        <span style="color: var(--ink2); font-size: 14px">2 jobs · engine main · 75.5 GB of 128 GB</span>
+      </div>
+      <div style="overflow-x: auto">
+        <table style="width: 100%; border-collapse: collapse; min-width: 640px">
+          <thead><tr style="color: var(--ink2); font-size: 13px; border-bottom: 1px solid var(--line)">
+            <th style="padding: 8px 12px 8px 0">Job</th><th style="padding: 8px 12px">Where it is</th><th style="padding: 8px 12px">Working now</th><th style="padding: 8px 12px">Time</th><th style="padding: 8px 0"><span style="position: absolute; left: -9999px">Open</span></th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--line2)">
+              <td style="padding: 14px 12px 14px 0"><div style="font-weight: 600">HDS-5 · Web search and fetch tools</div><div class="mono" style="color: var(--ink2); font-size: 13px">story · weyenk/airlie</div></td>
+              <td style="padding: 14px 12px">Layer 01 of 5</td>
+              <td style="padding: 14px 12px"><span class="chip run">coder · editing</span></td>
+              <td class="mono" style="padding: 14px 12px">34 min</td>
+              <td style="padding: 14px 0; text-align: right"><a href="Job.dc.html" style="font-weight: 600">Open</a></td>
+            </tr>
+            <tr>
+              <td style="padding: 14px 12px 14px 0"><div style="font-weight: 600">airlie web app mockups</div><div class="mono" style="color: var(--ink2); font-size: 13px">studio run · scratch repo</div></td>
+              <td style="padding: 14px 12px">Fix round 1</td>
+              <td style="padding: 14px 12px"><span class="chip run">coder · reading</span></td>
+              <td class="mono" style="padding: 14px 12px">2 h 10 min</td>
+              <td style="padding: 14px 0; text-align: right"><a href="Job.dc.html" style="font-weight: 600">Open</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="boxes-h" style="padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+        <h2 id="boxes-h" style="margin: 0; font-size: 18px">Remote boxes</h2>
+        <span style="color: var(--ink2); font-size: 14px">macOS 1 of 2 running · Linux 1 · one isolated Tart VM per job</span>
+      </div>
+      <div style="overflow-x: auto">
+        <table style="width: 100%; border-collapse: collapse; min-width: 720px">
+          <thead><tr style="color: var(--ink2); font-size: 13px; border-bottom: 1px solid var(--line)">
+            <th style="padding: 8px 12px 8px 0">Box</th><th style="padding: 8px 12px">Image</th><th style="padding: 8px 12px">Job · started by</th><th style="padding: 8px 12px">Up for</th><th style="padding: 8px 12px">CPU · memory</th><th style="padding: 8px 0"><span style="position: absolute; left: -9999px">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--line2)">
+              <td style="padding: 14px 12px 14px 0"><div style="display: flex; align-items: center; gap: 8px"><span class="chip run">running</span><span class="mono" style="font-size: 13px">[BOX-ID]</span></div></td>
+              <td style="padding: 14px 12px">macOS · Xcode<div class="mono" style="color: var(--ink2); font-size: 13px">from weyenk/OpenHand's environment recipe</div></td>
+              <td style="padding: 14px 12px">[JOB] · [PERSON]</td>
+              <td class="mono" style="padding: 14px 12px">[TIME]</td>
+              <td class="mono" style="padding: 14px 12px">[CPU] · [GB]</td>
+              <td style="padding: 14px 0; text-align: right; white-space: nowrap"><a href="Job.dc.html" style="font-weight: 600; margin-right: 14px">Open job</a><button class="btn" type="button" style="min-height: 40px; color: var(--err); border-color: var(--warn-line)">Stop</button></td>
+            </tr>
+            <tr>
+              <td style="padding: 14px 12px 14px 0"><div style="display: flex; align-items: center; gap: 8px"><span class="chip ok">setting up</span><span class="mono" style="font-size: 13px">[BOX-ID]</span></div></td>
+              <td style="padding: 14px 12px">Linux · Ubuntu<div class="mono" style="color: var(--ink2); font-size: 13px">from weyenk/airlie's environment recipe</div></td>
+              <td style="padding: 14px 12px">[JOB] · Noah</td>
+              <td class="mono" style="padding: 14px 12px">[TIME]</td>
+              <td class="mono" style="padding: 14px 12px">[CPU] · [GB]</td>
+              <td style="padding: 14px 0; text-align: right; white-space: nowrap"><a href="Job.dc.html" style="font-weight: 600; margin-right: 14px">Open job</a><button class="btn" type="button" style="min-height: 40px; color: var(--err); border-color: var(--warn-line)">Stop</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <span style="color: var(--ink2); font-size: 13px">Boxes come with the remote-studio work (Tart VMs). Values in [BRACKETS] are placeholders until then. A third macOS job waits in the queue: macOS allows two macOS VMs at a time.</span>
+    </section>
+
+    <section class="card" aria-labelledby="recent-h" style="padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <h2 id="recent-h" style="margin: 0; font-size: 18px">Recent results</h2>
+      <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column">
+        <li style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line2)">
+          <span class="chip err">Blocked</span>
+          <span style="flex: 1 1 260px">HDS-5 layer 01: a test module did not parse</span>
+          <span class="mono" style="color: var(--ink2); font-size: 13px">run 20261017-004513</span>
+        </li>
+        <li style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line2)">
+          <span class="chip err">Blocked</span>
+          <span style="flex: 1 1 260px">HDS-5 layer 01: two tests did not test the change; retry cut off</span>
+          <span class="mono" style="color: var(--ink2); font-size: 13px">run 20261016-233656</span>
+        </li>
+        <li style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 12px 0">
+          <span class="chip ok">Done</span>
+          <span style="flex: 1 1 260px">HDS-5 refine and layer plan: 5 layers</span>
+          <span class="mono" style="color: var(--ink2); font-size: 13px">run 20261016-150202</span>
+        </li>
+      </ul>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":true},"mode":{"editor":"enum","options":["Dev shop","Deep research"],"default":"Dev shop"},"$preview":{"width":1280,"height":1080}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const mode = this.props.mode ?? 'Dev shop';
+    return {
+      theme: (this.props.dark ?? true) ? 'dark' : 'light',
+      modeName: mode,
+      devShop: mode === 'Dev shop',
+      research: mode === 'Deep research'
+    };
+  }
+}
+</script>
+</body>
+</html>
