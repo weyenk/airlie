@@ -153,6 +153,16 @@ does not count), names that repository on github.com, as `git@github.com:<owner>
   recorded and looks at neither its label nor that checkout, so a label tidied or a clone moved since still lets it
   post its PR links and move the issue to *In Review*.
 
+### Scoped `run_tests` for the coder
+
+The coder calls `run_tests` after every change, and a whole-suite gate takes minutes each time. In a story layer
+`run_tests` runs the gate with pytest limited to the test files the layer added or changed (seconds) and runs the
+whole gate only once those pass; a tree that passed the whole gate is not run again, by the coder or by the
+studio's final gate (airlie fingerprints the worktree's files). A layer with no test file of its own yet gets a
+failing `run_tests` that says to write its tests first. The gate's own commands are unchanged: the final gate and
+the layer's PR still stand on the whole suite. airlie's own gate runs pytest with `-n auto --maxprocesses 8`
+(pytest-xdist).
+
 ## The test gate: `AGENTS.md`
 
 Every layer must pass its repository's test gate: the commands under a `Test gate` heading of the `AGENTS.md` at

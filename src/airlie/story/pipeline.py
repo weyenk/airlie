@@ -557,6 +557,7 @@ class StoryPipeline:
             branch=branch,
             synthesise=False,
             before_gate=before_gate,
+            scope_tests=True,
         )
         commit_wip(wt, f"studio: {branch} (final)")
         cut = _cut_off(orch)
