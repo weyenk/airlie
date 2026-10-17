@@ -62,7 +62,7 @@ class AuthStore:
     def __init__(self, path: Path, *, now: Callable[[], float] = time.time) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._now = now
-        self.conn = sqlite3.connect(path, isolation_level=None)
+        self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma foreign_keys=on")
         self.conn.executescript(SCHEMA)

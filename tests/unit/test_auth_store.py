@@ -130,3 +130,16 @@ def test_deleting_a_user_cascades_to_credentials_sessions_and_invites(store: Aut
     assert store.conn.execute("select count(*) from credentials").fetchone()[0] == 0
     assert store.conn.execute("select count(*) from sessions").fetchone()[0] == 0
     assert store.conn.execute("select count(*) from invites").fetchone()[0] == 0
+
+
+def test_the_store_may_be_used_from_another_thread(store: AuthStore) -> None:
+    """serve's test client, and uvicorn's thread pool, call the store off the thread that opened it."""
+    import threading
+
+    u = store.add_user("Pat", "member")
+    seen: list[object] = []
+    t = threading.Thread(target=lambda: seen.append(store.user(u.id)))
+    t.start()
+    t.join()
+    assert seen == [u]
+

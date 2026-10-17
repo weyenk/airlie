@@ -11,13 +11,13 @@ from typing import Any
 import httpx
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
 from airlie.config import load_config
 from airlie.obs import RunDir
 from airlie.orchestrator import RunReport
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
+from tests.unit.serve_helpers import TestClient
 from tests.unit.vllm_helpers import ChatCompletionRequest
 
 
