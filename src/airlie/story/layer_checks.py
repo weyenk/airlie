@@ -21,7 +21,7 @@ from airlie.teams.worktree import changed_files, find_file, put_back, read_blob,
 from airlie.tools.protocol import ToolContext
 from airlie.tools.shell import run_cmd
 
-Kind = Literal["vacuous_test", "assertion_free_test"]
+Kind = Literal["vacuous_test", "assertion_free_test", "unparseable_test"]
 VACUOUS = (
     "it passes on the layer's base with the layer's other changes undone, so it does not test this change"
 )
@@ -84,8 +84,31 @@ def _parse(text: str | None) -> ast.Module | None:
         return None
     try:
         return ast.parse(text)
-    except (SyntaxError, ValueError):  # a test file that does not parse: the gate says so, not this check
+    except (SyntaxError, ValueError):  # unparseable_tests reports the layer's own; a base's is no baseline
         return None
+
+
+def _layer_test_modules(worktree: Path, base: str) -> list[str]:
+    """The test modules the worktree's HEAD changed since `base` that are still there."""
+    return [p for p in changed_files(worktree, base) if is_test_module(p) and (worktree / p).is_file()]
+
+
+def unparseable_tests(worktree: Path, base: str) -> list[Finding]:
+    """A finding for each test module the layer changed that does not parse, with the error and its line: the
+    coder gets a retry to fix it (HDS-5, 2026-10-17: a missing quote left the checks with nothing to check,
+    and the gate blocked the layer with no retry)."""
+    found = []
+    for path in _layer_test_modules(worktree, base):
+        text = (worktree / path).read_text(encoding="utf-8", errors="replace")
+        try:
+            ast.parse(text)
+        except SyntaxError as e:
+            found.append(
+                Finding("unparseable_test", path, f"it does not parse: {e.msg} at line {e.lineno}", "")
+            )
+        except ValueError as e:
+            found.append(Finding("unparseable_test", path, f"it does not parse: {e}", ""))
+    return found
 
 
 def _call_name(call: ast.Call) -> str:
@@ -120,11 +143,8 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
     """The test functions of the test modules the worktree's HEAD changed since `base` that are new there or
     whose syntax tree differs from the base's (a reformat, a comment, is no change), in file order."""
     found: list[ChangedTest] = []
-    for path in changed_files(worktree, base):
-        file = worktree / path
-        if not is_test_module(path) or not file.is_file():
-            continue
-        text = file.read_text(encoding="utf-8", errors="replace")
+    for path in _layer_test_modules(worktree, base):
+        text = (worktree / path).read_text(encoding="utf-8", errors="replace")
         tree = _parse(text)
         if tree is None:
             continue
@@ -176,11 +196,11 @@ class PytestChecks:
         other changes since `red_base` back (default `base`): a layer that tests code an earlier layer wrote
         (the hardening layer) is checked against the story's base. The worktree must hold no uncommitted
         change: the red check puts files back, and leaves it as its HEAD holds it."""
+        findings = unparseable_tests(worktree, base)
         tests = changed_tests(worktree, base)
         if not tests:
-            return []
+            return findings
         green = await self._pass_on_base(worktree, red_base or base, tests)
-        findings = []
         for t in tests:
             if t.id in green:
                 findings.append(Finding("vacuous_test", t.id, VACUOUS, t.source))
@@ -221,7 +241,7 @@ def checks_for(commands: Sequence[str], *, timeout_s: float) -> PytestChecks | N
 def feedback(findings: Sequence[Finding]) -> str:
     """What the coder is told on its retry: each test and why, and what to do."""
     lines = [
-        "airlie checked the tests you added or changed, and these do not test your change:",
+        "airlie checked the tests you added or changed, and these need fixing:",
         *(f"- {f.test}: {f.why}" for f in findings),
         "Fix each one: assert the behaviour this layer adds, so the test fails without your change and "
         "passes with it. Keep the tests for the acceptance criteria. Run run_tests until the whole suite "

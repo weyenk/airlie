@@ -209,6 +209,32 @@ async def test_a_layer_with_no_new_or_changed_tests_has_no_findings(tmp_path: Pa
     assert await findings(root, base) == []
 
 
+async def test_a_test_module_that_does_not_parse_is_a_finding_with_the_error(tmp_path: Path) -> None:
+    """HDS-5, 2026-10-17: the coder left `["web_search]` in its test module. The checks skipped the file and
+    said passed, so the coder got no retry and the gate blocked the layer."""
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    broken = 'from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\nX = ["a]\n'
+    commit(root, "layer", {"tests/test_calc.py": broken})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("unparseable_test", "tests/test_calc.py")]
+    assert "line 8" in found[0].why and "does not parse" in found[0].why
+    assert "unterminated" in found[0].why.lower() or "eol" in found[0].why.lower()
+
+
+async def test_an_unparseable_module_is_reported_beside_findings_in_other_modules(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    commit(
+        root,
+        "layer",
+        {
+            "tests/test_bad.py": "def test_x(:\n    pass\n",
+            "tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n    add(1, 2)\n",
+        },
+    )
+    kinds = sorted(f.kind for f in await findings(root, base))
+    assert kinds == ["assertion_free_test", "unparseable_test", "vacuous_test"]
+
+
 # ---- the seam: only a pytest gate gets these checks ----
 
 
