@@ -286,6 +286,7 @@ class JiraStatusesSpec(Strict):
     building: str = "In Progress"
     review: str = "In Review"
     blocked: str | None = Field(default="Blocked", description="null: a stopped issue stays where it is")
+    done: str = Field(default="Done", description="finished issues (board import-jira reads them as done)")
 
 
 class JiraSpec(Strict):

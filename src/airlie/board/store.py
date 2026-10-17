@@ -119,9 +119,10 @@ class BoardStore:
                 next_n = int(self._db.execute("SELECT v FROM meta WHERE k = 'next_n'").fetchone()["v"])
                 n = next_n if number is None else number
                 key = f"{self.prefix}-{n}"
-                if number is not None and self._db.execute(
-                    "SELECT 1 FROM items WHERE key = ?", (key,)
-                ).fetchone():
+                if (
+                    number is not None
+                    and self._db.execute("SELECT 1 FROM items WHERE key = ?", (key,)).fetchone()
+                ):
                     raise BoardStoreError(f"{key} is already on the board")
                 self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(max(next_n, n + 1)),))
                 self._db.execute(
