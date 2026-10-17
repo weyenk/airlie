@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
+from typing import Any
 
 from airlie.engine.types import ToolCall, ToolSchema
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
@@ -20,6 +22,29 @@ BUILTIN: dict[str, type] = {
     "run_tests": RunTests,
     "git": Git,
 }
+
+
+_EXAMPLE_VALUES: dict[str, Any] = {"path": "src/app.py", "cmd": "ls"}
+_EXAMPLE_BY_TYPE: dict[str, Any] = {"array": ["..."], "integer": 1, "number": 1, "boolean": True}
+
+
+def example_call(tool: Tool) -> str:
+    """One correct call of `tool`, its required arguments filled in from its schema:
+    `read_file(path="src/app.py")`."""
+    props: dict[str, Any] = tool.parameters.get("properties", {})
+    args = []
+    for n in (str(n) for n in tool.parameters.get("required", [])):
+        typ = str(props.get(n, {}).get("type", "string"))
+        value = _EXAMPLE_VALUES.get(n, "...") if typ == "string" else _EXAMPLE_BY_TYPE.get(typ, "...")
+        args.append(f"{n}={json.dumps(value)}")
+    return f"{tool.name}({', '.join(args)})"
+
+
+def missing_args_error(tool: Tool, missing: Iterable[str]) -> str:
+    """HDS-5 2026-10-16: a model sending empty calls needs to see a correct one, not only what is missing."""
+    return (
+        f"error: {tool.name} requires: {', '.join(missing)}. A correct call looks like: {example_call(tool)}"
+    )
 
 
 class ToolRegistry:
@@ -64,7 +89,7 @@ class ToolRegistry:
             return ToolResult(False, f"error: {e}; arguments were: {call.arguments[:200]}")
         required = [str(n) for n in tool.parameters.get("required", [])]
         if missing := [n for n in required if args.get(n) is None]:
-            return ToolResult(False, f"error: {call.name} requires: {', '.join(missing)}")
+            return ToolResult(False, missing_args_error(tool, missing))
         try:
             return await tool.run(args, self.ctx)
         except Exception as e:  # noqa: BLE001 - a tool bug becomes an observation, never a crash

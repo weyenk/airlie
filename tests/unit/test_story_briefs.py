@@ -75,6 +75,14 @@ def test_a_layer_with_criteria_tells_the_coder_what_makes_a_test_count() -> None
     assert "must fail on the layer's base" in brief and "with no assertion" in brief
 
 
+def test_the_build_brief_says_new_tests_go_in_a_new_file_and_existing_files_change_with_edit_file() -> None:
+    """HDS-5 2026-10-16: appending to a big test file meant rewriting it, past the coder's token cap."""
+    for i in (0, 2):  # a layer that owns criteria, and an enabling one
+        brief = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks[0].brief
+        assert "NEW test file named for the feature" in brief and "tests/unit/test_<feature>.py" in brief
+        assert "Change an existing file with edit_file" in brief
+
+
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
     for i in (1, 2):  # a layer that owns criteria, and an enabling one
         [build] = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks

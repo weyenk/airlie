@@ -230,6 +230,24 @@ async def test_registry_names_missing_required_args_and_cut_off_arguments(tmp_pa
     """Parity with the AutoGen path (2026-10-13): clear, actionable errors the model can act on."""
     reg = ToolRegistry.builtin(["read_file", "write_file"], ctx(tmp_path))
     r = await reg.call(ToolCall("1", "read_file", "{}"))
-    assert not r.ok and r.output == "error: read_file requires: path"
+    assert not r.ok and r.output == (
+        'error: read_file requires: path. A correct call looks like: read_file(path="src/app.py")'
+    )
     r = await reg.call(ToolCall("2", "write_file", '{"path": "a.py", "content": "x = 1' + "0" * 300))
     assert not r.ok and "cut off" in r.output and "shorter" in r.output and "'0000'" in r.output
+
+
+async def test_a_missing_argument_error_shows_a_correct_call_built_from_the_schema(tmp_path: Path) -> None:
+    """HDS-5 2026-10-16: Qwen3-Coder sent empty calls; a bare "requires: path" did not bring it back."""
+    reg = ToolRegistry.builtin(["write_file", "shell", "grep", "git"], ctx(tmp_path))
+    r = await reg.call(ToolCall("1", "write_file", '{"path": "a.py"}'))
+    assert r.output == (
+        "error: write_file requires: content. A correct call looks like: "
+        'write_file(path="src/app.py", content="...")'
+    )
+    r = await reg.call(ToolCall("2", "shell", "{}"))
+    assert r.output.endswith('A correct call looks like: shell(cmd="ls")')
+    r = await reg.call(ToolCall("3", "grep", "{}"))
+    assert r.output.endswith('A correct call looks like: grep(pattern="...")')
+    r = await reg.call(ToolCall("4", "git", "{}"))
+    assert r.output.endswith('A correct call looks like: git(args=["..."])')

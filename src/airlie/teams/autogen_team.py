@@ -38,6 +38,7 @@ from airlie.teams.native_team import _goal_message
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
 from airlie.tools import ToolRegistry
 from airlie.tools.protocol import Tool
+from airlie.tools.registry import missing_args_error
 
 _JSON_TO_PY: dict[str, Any] = {
     "string": str,
@@ -85,7 +86,7 @@ class _RegistryTool(BaseTool[BaseModel, BaseModel]):
             )
         missing = [n for n in self._required if args.get(n) is None]
         if missing:  # a clear error instead of pydantic's, so the model can correct the call
-            raise ToolError(f"error: {self._tool.name} requires: {', '.join(missing)}")
+            raise ToolError(missing_args_error(self._tool, missing))
         return await super().run_json(args, cancellation_token, call_id)
 
     async def run(self, args: BaseModel, cancellation_token: CancellationToken) -> BaseModel:

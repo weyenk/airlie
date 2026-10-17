@@ -16,6 +16,9 @@ class ToolContext:
     test_steps: tuple[str, ...] = ()
     """The gate's commands, one by one: run_tests runs each and reports each (`test_cmd` is them joined, as
     the final gate runs them). Empty: run_tests runs `test_cmd`."""
+    write_file_max_overwrite_lines: int = 200
+    """write_file refuses to replace an existing file longer than this: such a change goes through edit_file,
+    or new tests go in a new file (HDS-5 2026-10-16: a whole-file rewrite ran past the coder's max_tokens)."""
 
 
 @dataclass(frozen=True)
