@@ -14,7 +14,8 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from airlie.config import AirlieConfig
@@ -26,6 +27,10 @@ from airlie.story.model import StoryRunning, StorySetupError
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+
+WEB_DIR = Path(__file__).parent / "web"
+"""The web app's static files: `GET /` is its index.html, `/app/*` the rest. No key: the shell is harmless
+without one, and every call it makes goes to /v1, which keeps the guard."""
 
 
 class ToolCallStreamRepair:
@@ -221,6 +226,12 @@ def create_app(
         e = cfg.engines[cfg.engine_for_model(model)]
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
         return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        return FileResponse(WEB_DIR / "index.html")
+
+    app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
