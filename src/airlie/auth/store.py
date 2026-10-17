@@ -108,6 +108,15 @@ class AuthStore:
         )
         return token
 
+    def peek_invite(self, token: str) -> User | None:
+        """The invite's user without consuming it (registration options come before the passkey exists)."""
+        row = self.conn.execute(
+            "select user_id, expires_at from invites where digest = ?", (_digest(token),)
+        ).fetchone()
+        if row is None or row[1] < self._now():
+            return None
+        return self.user(row[0])
+
     def take_invite(self, token: str) -> User | None:
         row = self.conn.execute(
             "delete from invites where digest = ? returning user_id, expires_at", (_digest(token),)
@@ -167,6 +176,10 @@ class AuthStore:
         if row is None or row[1] < self._now():
             return None
         return self.user(row[0])
+
+    def end_session(self, token: str) -> None:
+        """Sign this one device out; the user's other sessions stay."""
+        self.conn.execute("delete from sessions where digest = ?", (_digest(token),))
 
     def end_sessions(self, user_id: str) -> None:
         self.conn.execute("delete from sessions where user_id = ?", (user_id,))

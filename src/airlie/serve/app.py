@@ -7,6 +7,7 @@ client follows the job by long polls on `GET /v1/airlie/jobs/{id}?since=N&wait=S
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
+from airlie.auth.api import PUBLIC_PATHS, auth_router
 from airlie.auth.principal import NotInvited, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
@@ -187,10 +189,13 @@ def create_app(
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
     story_job: Callable[..., Any] | None = None,
+    auth_store: AuthStore | None = None,
+    now: Callable[[], float] = time.time,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
-    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job)."""
+    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job).
+    `auth_store` (default: observability.state_dir/auth.sqlite) and `now` are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
@@ -212,12 +217,12 @@ def create_app(
                 raise HTTPException(400, f"image not found: {p}")
         return images
 
-    store = AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
+    store = auth_store or AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
     resolver = Resolver(store, cfg.auth, api_key)
 
     @app.middleware("http")
     async def _require_principal(request: Request, call_next: Callable[..., Any]) -> Any:
-        if request.url.path.startswith("/v1"):
+        if request.url.path.startswith("/v1") and request.url.path not in PUBLIC_PATHS:
             try:
                 principal = await resolver.resolve(request)
             except NotInvited:
@@ -226,6 +231,8 @@ def create_app(
                 return JSONResponse({"error": "not signed in"}, status_code=401)
             request.state.principal = principal
         return await call_next(request)
+
+    app.include_router(auth_router(store, resolver, cfg.auth, now=now))
 
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""

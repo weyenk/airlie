@@ -143,3 +143,22 @@ def test_the_store_may_be_used_from_another_thread(store: AuthStore) -> None:
     t.join()
     assert seen == [u]
 
+
+def test_peeking_at_an_invite_does_not_consume_it(store: AuthStore, clock: Clock) -> None:
+    """Registration options need the invite's user before the passkey exists; a verified passkey takes it."""
+    u = store.add_user("Pat", "member")
+    token = store.make_invite(u.id, hours=1)
+    assert store.peek_invite(token) == u
+    assert store.peek_invite(token) == u
+    assert store.peek_invite("never-issued") is None
+    clock.t += 3601
+    assert store.peek_invite(token) is None
+
+
+def test_ending_one_session_leaves_the_users_other_devices_signed_in(store: AuthStore) -> None:
+    u = store.add_user("Pat", "member")
+    phone, laptop = store.make_session(u.id, days=30), store.make_session(u.id, days=30)
+    store.end_session(phone)
+    assert store.session_user(phone) is None
+    assert store.session_user(laptop) == u
+    store.end_session("never-issued")  # nothing to end is fine
