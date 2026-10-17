@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -49,6 +50,12 @@ board_app = typer.Typer(
 app.add_typer(board_app, name="board")
 mcp_app = typer.Typer()  # its help is mcp_serve's docstring
 app.add_typer(mcp_app, name="mcp")
+auth_app = typer.Typer(
+    no_args_is_help=True,
+    help="Who may use task serve as a person: the first admin, invites, the people list, revoking "
+    "(docs/integrations/sign-in.md).",
+)
+app.add_typer(auth_app, name="auth")
 console = Console()
 err = Console(stderr=True)
 
@@ -526,6 +533,117 @@ def serve(
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
     uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info")
+
+
+def _auth_store(cfg: AirlieConfig):  # type: ignore[no-untyped-def]
+    from airlie.auth.store import AuthStore
+
+    return AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
+
+
+BaseUrlOpt = Annotated[
+    str, typer.Option("--base-url", help="where people reach task serve; the invite link is made under it")
+]
+LoginOpt = Annotated[
+    str | None,
+    typer.Option("--login", help="the person's Tailscale login (user@provider), to sign in by identity"),
+]
+
+
+def _print_invite(cfg: AirlieConfig, base_url: str, token: str, name: str) -> None:
+    console.print(
+        f"invite for {name}: {base_url.rstrip('/')}/#/join/{token}\n"
+        f"(open it on a device with Face ID / Touch ID; good for {cfg.auth.invite_hours} hours, once)"
+    )
+
+
+@auth_app.command("admin")
+def auth_admin(
+    name: Annotated[str, typer.Option("--name", help="the admin's display name")],
+    login: LoginOpt = None,
+    base_url: BaseUrlOpt = "http://127.0.0.1:8090",
+    config: ConfigOpt = None,
+) -> None:
+    """Create the first admin and print their invite link (later admins: `auth invite --role admin`)."""
+    cfg = _load(config)
+    store = _auth_store(cfg)
+    try:
+        admins = [u for u in store.users() if u.role == "admin"]
+        if admins:
+            console.print(
+                f"an admin already exists ({', '.join(u.name for u in admins)}); "
+                "add another with `airlie auth invite --name NAME --role admin`"
+            )
+            raise typer.Exit(1)
+        user = store.add_user(name, "admin", login=login)
+        _print_invite(cfg, base_url, store.make_invite(user.id, cfg.auth.invite_hours), user.name)
+    finally:
+        store.close()
+
+
+@auth_app.command("invite")
+def auth_invite(
+    name: Annotated[str, typer.Option("--name", help="the person's display name")],
+    role: Annotated[str, typer.Option("--role", help="admin or member")] = "member",
+    login: LoginOpt = None,
+    base_url: BaseUrlOpt = "http://127.0.0.1:8090",
+    config: ConfigOpt = None,
+) -> None:
+    """Invite a person: create them and print the link where they register a passkey."""
+    if role not in ("admin", "member"):
+        console.print(f"role must be admin or member, not {role!r}")
+        raise typer.Exit(2)
+    cfg = _load(config)
+    store = _auth_store(cfg)
+    try:
+        if login and store.user_by_login(login) is not None:
+            console.print(f"a user with login {login!r} already exists")
+            raise typer.Exit(1)
+        user = store.add_user(name, role, login=login)
+        _print_invite(cfg, base_url, store.make_invite(user.id, cfg.auth.invite_hours), user.name)
+    finally:
+        store.close()
+
+
+@auth_app.command("users")
+def auth_users(config: ConfigOpt = None) -> None:
+    """List people: id, name, Tailscale login, role, passkeys."""
+    cfg = _load(config)
+    store = _auth_store(cfg)
+    try:
+        people = store.users()
+        if not people:
+            console.print("no people yet: task auth:admin -- --name NAME")
+            return
+        width = max(len(u.name) for u in people)
+        for u in people:  # plain lines, never clipped: the id is `auth revoke --id`'s input
+            since = datetime.fromtimestamp(u.created_at).strftime("%Y-%m-%d")
+            keys = f"{len(store.credentials(u.id))} passkey" + (
+                "" if len(store.credentials(u.id)) == 1 else "s"
+            )
+            line = f"{u.id}  {u.role:6}  {keys:11}  {since}  {u.name:{width}}  {u.login or ''}"
+            console.print(line.rstrip(), soft_wrap=True, highlight=False)
+    finally:
+        store.close()
+
+
+@auth_app.command("revoke")
+def auth_revoke(
+    id: Annotated[str, typer.Option("--id", help="the person's id (airlie auth users)")],
+    config: ConfigOpt = None,
+) -> None:
+    """Remove a person: their passkeys and sessions end at once."""
+    cfg = _load(config)
+    store = _auth_store(cfg)
+    try:
+        user = store.user(id)
+        if user is None:
+            console.print(f"no user with id {id!r}")
+            raise typer.Exit(1)
+        store.delete_user(id)
+        console.print(f"revoked {user.name} ({user.id}): passkeys and sessions gone")
+    finally:
+        store.close()
 
 
 @mcp_app.callback(invoke_without_command=True)
