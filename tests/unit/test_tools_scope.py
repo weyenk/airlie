@@ -9,6 +9,7 @@ from pathlib import Path
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import (
     GateMemo,
+    autofix_steps,
     changed_test_files,
     scope_step,
     scoped_steps,
@@ -157,3 +158,20 @@ async def test_without_a_scope_base_run_tests_runs_the_whole_gate_as_before(tmp_
     repo, base = repo_with(tmp_path, {"tests/test_old.py": FAIL})
     result = await RunTests().run({}, ctx(repo, ""))
     assert not result.ok and "scoped to" not in result.output and "test_bad" in result.output
+
+
+def test_ruff_steps_get_a_fixing_twin_and_other_steps_none() -> None:
+    steps = ["uv sync --frozen", "uv run ruff check .", "uv run ruff format --check .", "uv run mypy"]
+    assert autofix_steps(steps) == ["uv run ruff check . --fix", "uv run ruff format ."]
+    assert autofix_steps(["uv run ruff check . --fix"]) == []
+    assert autofix_steps(["make lint", "pnpm test"]) == []
+
+
+async def test_run_tests_formats_the_code_before_the_gate_checks_it(tmp_path: Path) -> None:
+    repo, base = repo_with(tmp_path, {"tests/test_old.py": PASS})
+    (repo / "tests/test_new.py").write_text(PASS)
+    (repo / "mod.py").write_text("x   =   1\n")  # unformatted
+    steps = ("uv run ruff format --check .", PYTEST)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo(), steps=steps))
+    assert result.ok, result.output
+    assert (repo / "mod.py").read_text() == "x = 1\n"

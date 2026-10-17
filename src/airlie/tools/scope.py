@@ -96,3 +96,20 @@ def scope_step(step: str, files: Sequence[str]) -> str | None:
 def scoped_steps(steps: Sequence[str], files: Sequence[str]) -> list[str]:
     """`steps` with pytest limited to `files`; a pytest step with no file to run is left out."""
     return [scoped for step in steps if (scoped := scope_step(step, files)) is not None]
+
+
+def autofix_steps(steps: Sequence[str]) -> list[str]:
+    """The commands that mend what the gate's ruff steps would only report: `ruff format` for a
+    `ruff format --check` step and `ruff check --fix` for a `ruff check` step. Style is mechanical: a coder
+    that is told a line is too long or a file unformatted spends steps on it that the layer's own change
+    needs."""
+    out: list[str] = []
+    for step in steps:
+        words = step.split()
+        if "ruff" not in " ".join(words):
+            continue
+        if "format" in words and "--check" in words:
+            out.append(" ".join(w for w in words if w != "--check"))
+        elif "check" in words and "--fix" not in words:
+            out.append(f"{step.rstrip()} --fix")
+    return out
