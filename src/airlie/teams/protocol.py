@@ -82,6 +82,8 @@ class TeamContext:
     """Evaluated after every step; True stops the run with stop_reason="fork_point" and a state snapshot."""
     images: list[Path] = field(default_factory=list)
     """Image files attached to the goal message as content parts (vision roles)."""
+    emit: Callable[..., None] | None = None
+    """The run's event sink (`EventSink.emit(kind, **fields)`), for what the team sees that is not a step."""
 
 
 @dataclass

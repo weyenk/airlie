@@ -384,6 +384,7 @@ class ParallelAgentTeamOrchestrator:
             scheduler=self.scheduler,
             draft_budget=self._budget_provider(team_id),
             preamble=self.preamble,
+            emit=self.sink.emit,
         )
         self.sink.emit("team_start", team_id=team_id, worktree=str(wt))
         result = await self.team.run(ctx, observer)

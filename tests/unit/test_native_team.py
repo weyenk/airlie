@@ -495,13 +495,15 @@ GARBLED = (
     "<file>src/airlie/config/schema.py</file>\n</function>"
 )
 """HDS-5 layer 01 (2026-10-16): the coder's tool call as text the server could not parse."""
+UNREPAIRABLE = "Let me look.\n\n<function=open_file>\n<file>src/airlie/config/schema.py</file>\n</function>"
+"""The same shape naming a tool the role does not have: nothing to repair it into."""
 
 
 async def test_a_tool_call_left_as_text_is_not_an_answer_and_gets_one_correction(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
             "coder": [
-                FakeReply(text=GARBLED),
+                FakeReply(text=UNREPAIRABLE),
                 FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))]),
                 FakeReply(text="Read it; nothing to change."),
             ]
@@ -518,7 +520,7 @@ async def test_a_tool_call_left_as_text_is_not_an_answer_and_gets_one_correction
 
 async def test_a_second_unparsed_tool_call_in_a_row_fails_the_run(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [FakeReply(text=GARBLED), FakeReply(text='<tool_call>\n{"name": "read_file"')]}
+        {"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text='<tool_call>\n{"name": "read_file"')]}
     )
     team, ctx = make_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
@@ -530,7 +532,7 @@ async def test_a_second_unparsed_tool_call_in_a_row_fails_the_run(tmp_path: Path
 async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
     engine = FakeEngine(
-        {"coder": [FakeReply(text=GARBLED), read, FakeReply(text=GARBLED), FakeReply(text="Done.")]}
+        {"coder": [FakeReply(text=UNREPAIRABLE), read, FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]}
     )
     team, ctx = make_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
@@ -539,7 +541,93 @@ async def test_each_streak_of_unparsed_calls_gets_its_own_correction(tmp_path: P
 
 async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Path) -> None:
     read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
-    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED)]})
+    engine = FakeEngine({"coder": [read, FakeReply(text=UNREPAIRABLE)]})
     team, ctx = make_team(tmp_path, engine, max_steps=1)
     result = await team.run(ctx, Recorder())
     assert not result.ok and result.stop_reason == "max_steps"
+
+
+class Events:
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def __call__(self, kind: str, **fields: Any) -> None:
+        self.records.append({"kind": kind, **fields})
+
+
+async def test_a_call_in_a_known_misshape_is_repaired_and_run_as_a_step(tmp_path: Path) -> None:
+    (tmp_path / "wt" / "src" / "airlie" / "config").mkdir(parents=True)
+    (tmp_path / "wt" / "src" / "airlie" / "config" / "schema.py").write_text("SCHEMA = 1\n")
+    engine = FakeEngine({"coder": [FakeReply(text=GARBLED), FakeReply(text="It defines SCHEMA.")]})
+    team, ctx = make_team(tmp_path, engine)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.final_text == "It defines SCHEMA." and result.steps == 1
+    assert [s.u_t.name for s in rec.steps] == ["read_file"]
+    assert json.loads(rec.steps[0].u_t.arguments) == {"path": "src/airlie/config/schema.py"}
+    assert "SCHEMA = 1" in rec.steps[0].o_t
+    history = engine.requests[1].messages
+    assistant, tool = history[-2], history[-1]
+    # replayed as a real call, prose apart
+    assert assistant.content == "Let me look at the schema." and assistant.tool_calls
+    assert tool.role == "tool" and tool.tool_call_id == assistant.tool_calls[0].id
+    assert not any(m.role == "user" and "could not be run" in str(m.content) for m in history)
+
+
+async def test_a_repaired_call_is_logged_as_a_malformed_reply_that_was_repaired(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text=GARBLED), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
+    assert ev["team_id"] == "team-1" and ev["role"] == "coder" and ev["step"] == 1
+    assert ev["text"] == GARBLED
+    assert ev["repair_tried"] is True and ev["repaired"] is True
+
+
+async def test_an_unrepairable_reply_is_logged_with_its_text_and_why(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
+    assert ev["text"] == UNREPAIRABLE and ev["step"] == 1
+    assert ev["repair_tried"] is True and ev["repaired"] is False and "open_file" in ev["repair_note"]
+
+
+async def test_every_malformed_reply_is_logged_even_the_one_that_ends_the_run(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text=UNREPAIRABLE)]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "malformed_call"
+    assert len([e for e in events.records if e["kind"] == "malformed_call"]) == 2
+
+
+async def test_a_long_malformed_reply_is_logged_capped(tmp_path: Path) -> None:
+    long = UNREPAIRABLE + "x" * 20_000
+    engine = FakeEngine({"coder": [FakeReply(text=long), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
+    assert ev["text"] == long[:4000] and ev["chars"] == len(long)
+
+
+async def test_on_the_last_turn_no_repair_is_tried(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, FakeReply(text=GARBLED)]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "max_steps" and result.steps == 1
+    [ev] = [e for e in events.records if e["kind"] == "malformed_call"]
+    assert ev["repair_tried"] is False and ev["repaired"] is False
+
+
+async def test_the_correction_shows_a_call_in_the_proper_format(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [FakeReply(text=UNREPAIRABLE), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    asked = str(engine.requests[1].messages[-1].content)
+    assert "<tool_call><function=read_file><parameter=path>" in asked
