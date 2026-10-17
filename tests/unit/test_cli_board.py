@@ -45,7 +45,7 @@ def test_export_honours_out_and_an_empty_board(tmp_path: Path) -> None:
     out = tmp_path / "elsewhere" / "b.json"
     r = runner.invoke(cli.app, ["board", "export", "--out", str(out), "--config", str(cfg_path)])
     assert r.exit_code == 0, r.output
-    assert json.loads(out.read_text()) == {"prefix": "AL", "items": []}
+    assert json.loads(out.read_text()) == {"prefix": "AIR", "items": []}
     assert (state / "board.sqlite").exists()
 
 
@@ -76,12 +76,12 @@ def test_import_jira_imports_the_project_into_the_state_dirs_board(
 def test_import_jira_dry_run_prints_the_report_and_writes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg_path, state = config_with_state(tmp_path)  # prefix AL: keys would be allocated
+    cfg_path, state = config_with_state(tmp_path)  # the default prefix, AIR: the numbers are kept under it
     monkeypatch.setattr(jira, "jira_board", lambda cfg: FakeClient(HDS))
     r = runner.invoke(cli.app, ["board", "import-jira", "--dry-run", "--config", str(cfg_path)])
     assert r.exit_code == 0, r.output
-    assert "HDS-14: would create AL-?" in r.output and "dry run: 5 would be created" in r.output
-    assert "board.prefix is AL, not HDS" in r.output  # how to keep Jira's numbers
+    assert "HDS-14: would create AIR-14" in r.output and "dry run: 5 would be created" in r.output
+    assert "board.prefix" not in r.output
     s = BoardStore(state / "board.sqlite")
     assert s.list() == []
     s.close()

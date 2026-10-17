@@ -370,7 +370,7 @@ class StorySpec(Strict):
 class BoardSpec(Strict):
     """airlie's own board (initiative → epic → story → subtask) in observability.state_dir/board.sqlite."""
 
-    prefix: str = Field(default="AL", description="item keys are <prefix>-<n>, like Jira issue keys")
+    prefix: str = Field(default="AIR", description="item keys are <prefix>-<n>, like Jira issue keys")
 
     @model_validator(mode="after")
     def _prefix_is_a_key_prefix(self) -> BoardSpec:

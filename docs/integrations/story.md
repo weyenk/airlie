@@ -661,12 +661,12 @@ can refuse a bot but not you: publish as a bot (above), and it keeps everything 
 
 airlie has a board of its own: initiative → epic → story → subtask, in `observability.state_dir/board.sqlite`,
 served by `task serve` under `/v1/board` (behind the same API key) and shown by the web app. It is the default
-(`story.board: local`): `task story -- AL-7` builds the story `AL-7`, and `task story:tick` picks the oldest
+(`story.board: local`): `task story -- AIR-7` builds the story `AIR-7`, and `task story:tick` picks the oldest
 story in `todo` (never an epic or an initiative). Moves and notes go to the item: `intake`=`todo`,
 `building`=`doing`, `review`, `blocked`; airlie's notes are comments by `airlie`. `task story:check` says which
 board is in use on its first line.
 
-- **Keys** are `<board.prefix>-<n>` (`AL` by default), so they name story directories as Jira keys do, and a
+- **Keys** are `<board.prefix>-<n>` (`AIR` by default), so they name story directories as Jira keys do, and a
   `repo:<owner>/<name>` label on the story names its repository as it does in Jira. An epic needs no
   initiative and a story no epic; a parent, when there is one, is the level above.
 - **Export:** `task board:export` writes the whole board as JSON next to `board.sqlite` (`-- --out FILE`
@@ -676,11 +676,11 @@ board is in use on its first line.
   stories, tasks, features and bugs stories; sub-tasks subtasks, each under its Jira parent. Titles,
   descriptions, labels (`repo:` included) and comments (author, text, time) come along; statuses map through
   `story.jira.statuses` (*To Do*→`todo`, *In Progress*→`doing`, *In Review*→`review`, *Blocked*→`blocked`,
-  *Done*→`done`; anything else is `todo`, with a line in the report). Set `board.prefix` to the project key
-  (`HDS`) **before** the first import and the issues keep their numbers (`HDS-5` stays `HDS-5`); with another
-  prefix keys are allocated. Every imported item carries a `jira:<key>` label, which a re-run matches: it
-  updates title, description, status, labels and parent, adds only the comments it has not got, and creates
-  nothing twice. `--dry-run` prints the same report and writes nothing.
+  *Done*→`done`; anything else is `todo`, with a line in the report). An issue keeps its number under
+  `board.prefix` (`HDS-5` → `AIR-5`, `HDS-14` → `AIR-14`); a number another item already holds is reported
+  and the issue skipped. Every imported item carries a `jira:<key>` label, which a re-run matches: it updates
+  title, description, status, labels and parent, adds only the comments it has not got, and creates nothing
+  twice. `--dry-run` prints the same report and writes nothing.
 - **Keeping Jira:** `story.board: jira` in `airlie.local.yaml` takes stories from the Jira project instead
   (*Setup*, above); `story.board` is the only switch.
 

@@ -245,7 +245,8 @@ story:
     app_id: 5332832                # airlie-bot-weyenk; put your own app's id in airlie.local.yaml (null: your login)
 
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
-# airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. `story.board: local`
-# makes the story pipeline take its stories from it instead of Jira (default: jira). Keys are <prefix>-<n>.
+# airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline
+# takes its stories from it (story.board: local, the default; `jira` keeps Jira). Keys are <prefix>-<n>; an import
+# (task board:import-jira) keeps the Jira issue's number under this prefix (HDS-5 → AIR-5).
 # board:
-#   prefix: AL
+#   prefix: AIR

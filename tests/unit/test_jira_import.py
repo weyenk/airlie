@@ -125,17 +125,39 @@ async def test_import_carries_title_description_labels_and_comments(tmp_path: Pa
     assert s.get("HDS-5").comments == () and s.get("HDS-5").description == ""
 
 
-async def test_import_allocates_keys_when_the_prefix_differs_and_labels_the_origin(tmp_path: Path) -> None:
-    s = store(tmp_path, prefix="AL")
+async def test_import_keeps_the_jira_number_under_another_prefix_and_labels_the_origin(
+    tmp_path: Path,
+) -> None:
+    s = store(tmp_path, prefix="AIR")
     report = await import_jira(s, FakeClient(HDS), "HDS")
     assert report.created == 5
-    items = s.list()
-    assert [i.key for i in items] == ["AL-1", "AL-2", "AL-3", "AL-4", "AL-5"]
-    assert [i.level for i in items] == ["epic", "story", "story", "story", "subtask"]
-    of = {next(x for x in i.labels if x.startswith("jira:")): i for i in items}
-    assert of["jira:HDS-14"].key == "AL-1"
-    assert of["jira:HDS-7"].parent == "AL-1" and of["jira:HDS-16"].parent == of["jira:HDS-7"].key
-    assert "HDS-14: created as AL-1" in report.notes
+    by_key = {i.key: i for i in s.list()}
+    assert sorted(by_key) == ["AIR-14", "AIR-16", "AIR-5", "AIR-7", "AIR-9"]
+    assert by_key["AIR-14"].labels == ("jira:HDS-14",)
+    assert by_key["AIR-7"].parent == "AIR-14" and by_key["AIR-16"].parent == "AIR-7"
+    assert "HDS-14: created as AIR-14" in report.notes
+    assert s.create(level="initiative", title="next").key == "AIR-17"
+
+
+async def test_a_number_taken_by_an_item_that_is_not_from_jira_is_reported_and_skipped(
+    tmp_path: Path,
+) -> None:
+    s = store(tmp_path, prefix="AIR")
+    mine = s.create(level="story", title="my own story")  # AIR-1
+    other = s.create(level="story", title="from another project", labels=["jira:OPS-2"])  # AIR-2
+    issues = [
+        issue("HDS-1", "Story", "one"),
+        issue("HDS-2", "Story", "two"),
+        issue("HDS-3", "Story", "three"),
+    ]
+    report = await import_jira(s, FakeClient(issues), "HDS")
+    assert (report.created, report.updated, report.skipped) == (1, 0, 2)
+    assert s.get("AIR-1") == mine and s.get("AIR-2") == other
+    assert s.get("AIR-3").title == "three"
+    assert "HDS-1: skipped; AIR-1 is already on the board and is not from Jira" in report.notes
+    assert "HDS-2: skipped; AIR-2 is already on the board and is from OPS-2" in report.notes
+    dry = await import_jira(store(tmp_path / "dry", prefix="AIR"), FakeClient(issues), "HDS", dry_run=True)
+    assert dry.created == 3  # a fresh board: nothing is taken
 
 
 async def test_rerun_updates_changed_items_adds_only_new_comments_and_skips_the_rest(

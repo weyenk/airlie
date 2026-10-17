@@ -28,7 +28,7 @@ def test_create_allocates_keys_with_the_prefix_and_sets_defaults(tmp_path: Path)
     s = store(tmp_path)
     a = s.create(level="initiative", title="Remote studio")
     b = s.create(level="initiative", title="Board", description="d", labels=["repo:weyenk/airlie"])
-    assert (a.key, b.key) == ("AL-1", "AL-2") and ISSUE_KEY.fullmatch(a.key)
+    assert (a.key, b.key) == ("AIR-1", "AIR-2") and ISSUE_KEY.fullmatch(a.key)
     assert a.status == "todo" and a.labels == () and a.created_by == "noah" and a.parent is None
     assert a.description == "" and a.comments == () and a.created_at == a.updated_at > 0
     assert b.labels == ("repo:weyenk/airlie",) and b.description == "d"
@@ -42,11 +42,11 @@ def test_a_parent_must_be_exactly_one_level_up(tmp_path: Path) -> None:
     init = s.create(level="initiative", title="i")
     epic = s.create(level="epic", title="e", parent=init.key)
     assert epic.parent == init.key
-    with pytest.raises(BoardStoreError, match=r"subtask.*story.*AL-1 is an initiative"):
+    with pytest.raises(BoardStoreError, match=r"subtask.*story.*AIR-1 is an initiative"):
         s.create(level="subtask", title="s", parent=init.key)
     with pytest.raises(BoardStoreError, match=r"initiative.*no parent"):
         s.create(level="initiative", title="i2", parent=init.key)
-    assert [i.key for i in s.list()] == ["AL-1", "AL-2"]  # nothing refused was stored
+    assert [i.key for i in s.list()] == ["AIR-1", "AIR-2"]  # nothing refused was stored
 
 
 def test_an_item_below_initiative_may_have_no_parent(tmp_path: Path) -> None:
@@ -60,13 +60,13 @@ def test_an_item_below_initiative_may_have_no_parent(tmp_path: Path) -> None:
 
 def test_a_parent_must_exist(tmp_path: Path) -> None:
     s = store(tmp_path)
-    with pytest.raises(BoardStoreError, match=r"AL-99"):
-        s.create(level="epic", title="e", parent="AL-99")
+    with pytest.raises(BoardStoreError, match=r"AIR-99"):
+        s.create(level="epic", title="e", parent="AIR-99")
 
 
 def test_get_raises_key_error_for_an_unknown_key(tmp_path: Path) -> None:
     with pytest.raises(KeyError):
-        store(tmp_path).get("AL-1")
+        store(tmp_path).get("AIR-1")
 
 
 def test_update_changes_fields_and_bumps_updated_at(tmp_path: Path) -> None:
@@ -85,7 +85,7 @@ def test_update_changes_fields_and_bumps_updated_at(tmp_path: Path) -> None:
     with pytest.raises(BoardStoreError, match="status"):
         s.update(story.key, status="shipped")  # type: ignore[arg-type]
     with pytest.raises(KeyError):
-        s.update("AL-99", title="x")
+        s.update("AIR-99", title="x")
     assert s.get(story.key).parent == other_epic.key  # a refused update changes nothing
 
 
@@ -98,7 +98,7 @@ def test_comment_appends_in_order_with_author(tmp_path: Path) -> None:
     assert item.comments[0].at <= item.comments[1].at
     assert s.get(init.key).comments == item.comments
     with pytest.raises(KeyError):
-        s.comment("AL-99", "noah", "x")
+        s.comment("AIR-99", "noah", "x")
 
 
 def test_comment_keeps_a_given_time(tmp_path: Path) -> None:
@@ -122,7 +122,7 @@ def test_list_filters_by_level_status_and_parent_in_created_order(tmp_path: Path
     assert [i.key for i in s.list(level="epic")] == [e1.key, e2.key]
     assert [i.key for i in s.list(level="story", status="todo")] == [s2.key]
     assert [i.key for i in s.list(parent=e1.key)] == [s1.key]
-    assert s.list(parent="AL-99") == []
+    assert s.list(parent="AIR-99") == []
 
 
 def test_keys_are_unique_under_concurrent_creates(tmp_path: Path) -> None:
@@ -171,11 +171,11 @@ def test_export_round_trips_every_field(tmp_path: Path) -> None:
 def test_the_store_survives_reopening(tmp_path: Path) -> None:
     s = store(tmp_path)
     s.create(level="initiative", title="i")
-    s.comment("AL-1", "noah", "c")
+    s.comment("AIR-1", "noah", "c")
     s.close()
     again = store(tmp_path)
-    assert again.get("AL-1").comments[0].text == "c"
-    assert again.create(level="initiative", title="j").key == "AL-2"
+    assert again.get("AIR-1").comments[0].text == "c"
+    assert again.create(level="initiative", title="j").key == "AIR-2"
     again.close()
 
 
@@ -217,7 +217,7 @@ def test_a_commit_that_fails_rolls_back_and_the_store_keeps_working(tmp_path: Pa
         s.create(level="initiative", title="lost")
     s._conn = db  # noqa: SLF001
     assert not db.in_transaction
-    assert s.create(level="initiative", title="j").key == "AL-2"
+    assert s.create(level="initiative", title="j").key == "AIR-2"
     assert [i.title for i in s.list()] == ["i", "j"]
 
 
@@ -236,9 +236,9 @@ def test_create_with_a_number_keeps_it_and_moves_the_counter_past_it(tmp_path: P
 def test_create_refuses_a_number_already_taken_or_not_positive(tmp_path: Path) -> None:
     s = store(tmp_path)
     s.create(level="initiative", title="one")
-    with pytest.raises(BoardStoreError, match="AL-1 is already on the board"):
+    with pytest.raises(BoardStoreError, match="AIR-1 is already on the board"):
         s.create(level="initiative", title="again", number=1)
     with pytest.raises(BoardStoreError, match="number"):
         s.create(level="initiative", title="zero", number=0)
-    assert [i.key for i in s.list()] == ["AL-1"]
-    assert s.create(level="initiative", title="two").key == "AL-2"  # nothing refused moved the counter
+    assert [i.key for i in s.list()] == ["AIR-1"]
+    assert s.create(level="initiative", title="two").key == "AIR-2"  # nothing refused moved the counter

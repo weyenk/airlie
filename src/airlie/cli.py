@@ -959,7 +959,7 @@ def story_check(
         str | None,
         typer.Argument(
             metavar="[ISSUE]",
-            help="a board item or Jira issue (AL-7, AIR-7 or its link): check its repo: label, checkout, "
+            help="a board item or Jira issue (AIR-7 or its link): check its repo: label, checkout, "
             "remote, trunk and gate",
         ),
     ] = None,
@@ -1024,8 +1024,9 @@ def board_import_jira(
 ) -> None:
     """Import the Jira project (ATLASSIAN_* / story.jira) onto the local board: epics, stories (tasks,
     features, bugs) and sub-tasks under their parents, with titles, descriptions, statuses, labels and
-    comments. Issues keep their numbers when board.prefix is the project key; every item gets a jira:<key>
-    label, which a re-run matches to update it and add new comments."""
+    comments. An issue keeps its number under board.prefix (HDS-5 → AIR-5; a number another item holds is
+    reported and skipped); every item gets a jira:<key> label, which a re-run matches to update it and add new
+    comments."""
     from airlie.board import BoardStore
     from airlie.board.jira_import import import_jira
     from airlie.story.board import BoardError
@@ -1047,15 +1048,6 @@ def board_import_jira(
         raise typer.Exit(1)
     state_dir = cfg.observability.state_dir.expanduser()
     store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
-    if cfg.board.prefix != client.project:
-        console.print(
-            f"board.prefix is {cfg.board.prefix}, not {client.project}: keys are allocated and the Jira key "
-            f"kept in a jira: label; set board.prefix: {client.project} to keep Jira's numbers",
-            markup=False,
-            highlight=False,
-            emoji=False,
-            soft_wrap=True,
-        )
     try:
         report = _run_stoppable(import_jira(store, client, client.project, dry_run=dry_run))
     except BoardError as e:

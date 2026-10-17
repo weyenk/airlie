@@ -38,7 +38,7 @@ class BoardStoreError(ValueError):
 
 
 class BoardStore:
-    def __init__(self, path: Path, *, prefix: str = "AL") -> None:
+    def __init__(self, path: Path, *, prefix: str = "AIR") -> None:
         self.path = path
         self.prefix = prefix
         self._lock = threading.Lock()

@@ -6,11 +6,11 @@
 #     base_url: http://127.0.0.1:8080/v1
 
 # The board (docs/integrations/story.md, Boards): stories come from airlie's own board by default, in
-# observability.state_dir/board.sqlite, with keys <board.prefix>-<n>. Set the prefix to your Jira project key
-# before `task board:import-jira` and the imported issues keep their numbers; story.board: jira keeps Jira as
-# the board instead.
+# observability.state_dir/board.sqlite, with keys <board.prefix>-<n> (AIR-1, AIR-2, …). `task board:import-jira`
+# brings a Jira project onto it, each issue keeping its number under the prefix (HDS-5 → AIR-5); story.board: jira
+# keeps Jira as the board instead.
 # board:
-#   prefix: HDS
+#   prefix: AIR
 # story:
 #   board: jira                           # local (the default) | jira
 

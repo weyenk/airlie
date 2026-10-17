@@ -1,8 +1,8 @@
 """`airlie board import-jira`: a Jira project onto the local board. Epics become epics, stories, tasks,
-features and bugs stories, sub-tasks subtasks, each under its Jira parent; the issue's number is kept when
-board.prefix is the project key, and every item carries a `jira:<key>` label, which a re-run matches to update
-titles, descriptions, statuses, labels and parents and to add only the comments it has not got. A dry run
-reports and writes nothing."""
+features and bugs stories, sub-tasks subtasks, each under its Jira parent; the issue keeps its number under
+board.prefix (HDS-5 → AIR-5; a number another item holds is reported and skipped), and every item carries a
+`jira:<key>` label, which a re-run matches to update titles, descriptions, statuses, labels and parents and to
+add only the comments it has not got. A dry run reports and writes nothing."""
 
 from __future__ import annotations
 
@@ -136,8 +136,8 @@ async def import_jira(
     store: BoardStore, client: JiraClient, project_key: str, *, dry_run: bool = False
 ) -> ImportReport:
     """Every issue of the project onto `store`: see the module. Items are made epics first, then stories,
-    then subtasks, so a parent is on the board before its children. `project_key` is the Jira project; when
-    it is `store.prefix` the issues keep their numbers."""
+    then subtasks, so a parent is on the board before its children. `project_key` is the Jira project, for the
+    report."""
     report = ImportReport(dry_run=dry_run)
     now = datetime.now().timestamp()
     issues = sorted(
@@ -145,9 +145,10 @@ async def import_jira(
         key=lambda i: (LEVELS.index(i.level), i.number),
     )
     statuses = status_map(client.spec.statuses)
-    keep_numbers = store.prefix == project_key
     existing: dict[str, Item] = {}
+    on_board: dict[str, Item] = {}
     for item in store.list():
+        on_board[item.key] = item
         origin = _origin(item)
         if origin is not None:
             existing.setdefault(origin, item)
@@ -166,7 +167,7 @@ async def import_jira(
         if issue.key in existing:
             _update(store, existing[issue.key], issue, parent, status, labels, report)
         else:
-            _create(store, issue, parent, status, labels, keep_numbers, board_key, report)
+            _create(store, issue, parent, status, labels, on_board, board_key, report)
     return report
 
 
@@ -177,8 +178,8 @@ def _parent(
     level_of: dict[str, Level],
     report: ImportReport,
 ) -> str | None:
-    """The board key of the issue's Jira parent: one in the project, one level up and already placed; else
-    None and a note."""
+    """The board key of the issue's Jira parent: one in the project, one level up and on the board; else None
+    and a note."""
     if issue.parent is None:
         return None
     want = parent_level(issue.level)
@@ -191,7 +192,10 @@ def _parent(
             f"{issue.key}: parent {issue.parent} is {have}, not {_an(want or 'nothing')}; no parent"
         )
         return None
-    return board_key.get(issue.parent)
+    if issue.parent not in board_key:  # skipped: its number was taken
+        report.notes.append(f"{issue.key}: parent {issue.parent} was not imported; no parent")
+        return None
+    return board_key[issue.parent]
 
 
 def _create(
@@ -200,13 +204,20 @@ def _create(
     parent: str | None,
     status: Status,
     labels: tuple[str, ...],
-    keep_numbers: bool,
+    on_board: dict[str, Item],
     board_key: dict[str, str],
     report: ImportReport,
 ) -> None:
+    key = f"{store.prefix}-{issue.number}"
+    taken = on_board.get(key)
+    if taken is not None:  # another item holds the number: not this issue's (existing would have matched)
+        origin = _origin(taken)
+        whose = f"is from {origin}" if origin else "is not from Jira"
+        report.skipped += 1
+        report.notes.append(f"{issue.key}: skipped; {key} is already on the board and {whose}")
+        return
     report.created += 1
     if report.dry_run:
-        key = f"{store.prefix}-{issue.number}" if keep_numbers else f"{store.prefix}-?"
         board_key[issue.key] = key
         report.notes.append(f"{issue.key}: would create {key}")
         return
@@ -217,7 +228,7 @@ def _create(
         parent=parent,
         labels=labels,
         created_by="jira",
-        number=issue.number if keep_numbers else None,
+        number=issue.number,
     )
     if status != "todo":
         store.update(item.key, status=status)
