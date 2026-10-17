@@ -175,6 +175,22 @@ tokens, each step slower than the last) and then spent 14-20 minutes thinking it
   layers brief. A survey that fails is no notes (`survey_failed`), never a stop; a story that has refined does not
   take one on resume.
 
+### The hybrid prefix cache
+
+Qwen3.8 (the generalist) is a hybrid model: gated delta-net layers with a recurrent state beside full-attention
+ones. vllm-mlx 0.5.0 stores a request's cache for reuse only after it finishes, rewound over the tokens it
+generated, and a recurrent state cannot be rewound, so it never stored anything for this model (and its cache
+copy could not clone those layers at all). Every step of an agent re-processed its whole conversation: an
+identical 12k-token prompt took 13.3 s the second time as the first, and layer builds spent 25-57 s per step on
+prompt processing. `airlie.engine.patches.hybrid_prefix_cache` (applied by `airlie.engine.vllm_mlx_serve` before
+the engine starts) stores one snapshot of the cache at the last prefill-chunk boundary before the prompt's final
+chunk, where the state is exactly the prompt so far, and gives the cache a copy that works for those layers.
+The next step of the conversation hits it and prefills only what follows. Measured on the real model: 15.8 s
+cold, 3.6 s for the same prompt again, 4.6 s for the prompt extended; greedy output identical to a cold run.
+It patches vllm-mlx's source textually and refuses (a warning, the engine runs unpatched) to apply to a source
+that has changed; `AIRLIE_HYBRID_PREFIX_CACHE=0` turns it off and `AIRLIE_HYBRID_PREFIX_CACHE_DEBUG=1` logs each
+store. Needs an engine restart to take effect.
+
 ### Scoped `run_tests` for the coder
 
 The coder calls `run_tests` after every change, and a whole-suite gate takes minutes each time. In a story layer

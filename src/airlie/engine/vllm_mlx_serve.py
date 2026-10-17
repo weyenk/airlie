@@ -24,6 +24,9 @@ def _tool_parser_flag(argv: list[str]) -> str | None:
 
 def main() -> int:
     ensure_registered()
+    from airlie.engine.patches.hybrid_prefix_cache import apply as apply_hybrid_prefix_cache
+
+    apply_hybrid_prefix_cache()
     import vllm_mlx.cli
     from vllm_mlx.tool_parsers import ToolParserManager
 
