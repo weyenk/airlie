@@ -38,7 +38,7 @@ class BoardStoreError(ValueError):
 
 
 class BoardStore:
-    def __init__(self, path: Path, *, prefix: str = "AL") -> None:
+    def __init__(self, path: Path, *, prefix: str = "AIR") -> None:
         self.path = path
         self.prefix = prefix
         self._lock = threading.Lock()
@@ -101,19 +101,30 @@ class BoardStore:
         parent: str | None = None,
         labels: Sequence[str] = (),
         created_by: str = "noah",
+        number: int | None = None,
     ) -> Item:
-        """A new item, keyed <prefix>-<n>; BoardStoreError for a level that is not one, or a parent that is
-        missing or not exactly one level up."""
+        """A new item, keyed <prefix>-<n>: the next number, or `number` (an import keeping Jira's), after
+        which the counter sits past it. BoardStoreError for a level that is not one, a parent that is not on
+        the board or not exactly one level up (none is allowed below initiative), or a number that is taken
+        or not positive."""
         if level not in LEVELS:
             raise BoardStoreError(f"level must be one of {', '.join(LEVELS)}, not {level!r}")
+        if number is not None and number < 1:
+            raise BoardStoreError(f"number must be positive, not {number}")
         now = time.time()
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._check_parent(level, parent)
-                n = int(self._db.execute("SELECT v FROM meta WHERE k = 'next_n'").fetchone()["v"])
-                self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(n + 1),))
+                next_n = int(self._db.execute("SELECT v FROM meta WHERE k = 'next_n'").fetchone()["v"])
+                n = next_n if number is None else number
                 key = f"{self.prefix}-{n}"
+                if (
+                    number is not None
+                    and self._db.execute("SELECT 1 FROM items WHERE key = ?", (key,)).fetchone()
+                ):
+                    raise BoardStoreError(f"{key} is already on the board")
+                self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(max(next_n, n + 1)),))
                 self._db.execute(
                     f"INSERT INTO items ({_FIELDS}, n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -177,9 +188,10 @@ class BoardStore:
                 raise
             return self._get(key)
 
-    def comment(self, key: str, author: str, text: str) -> Item:
-        """`text` appended to the item's comments as `author`; KeyError for an unknown key."""
-        now = time.time()
+    def comment(self, key: str, author: str, text: str, *, at: float | None = None) -> Item:
+        """`text` appended to the item's comments as `author`, written now or `at` (an import keeps Jira's
+        time); KeyError for an unknown key."""
+        now = time.time() if at is None else at
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -188,7 +200,7 @@ class BoardStore:
                     "INSERT INTO comments (item_key, author, text, at) VALUES (?, ?, ?, ?)",
                     (key, author, text, now),
                 )
-                self._db.execute("UPDATE items SET updated_at = ? WHERE key = ?", (now, key))
+                self._db.execute("UPDATE items SET updated_at = ? WHERE key = ?", (time.time(), key))
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
@@ -203,8 +215,8 @@ class BoardStore:
             if parent is not None:
                 raise BoardStoreError(f"an initiative has no parent (got {parent})")
             return
-        if parent is None:
-            raise BoardStoreError(f"{_an(level)} needs a parent: {_an(want)}")
+        if parent is None:  # an epic under no initiative, a story under no epic: as a Jira project has them
+            return
         row = self._db.execute("SELECT level FROM items WHERE key = ?", (parent,)).fetchone()
         if row is None:
             raise BoardStoreError(f"parent {parent} is not on the board")

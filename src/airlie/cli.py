@@ -1095,7 +1095,8 @@ def story_check(
         str | None,
         typer.Argument(
             metavar="[ISSUE]",
-            help="a Jira issue (AIR-7 or its link): check its repo: label, checkout, remote, trunk and gate",
+            help="a board item or Jira issue (AIR-7 or its link): check its repo: label, checkout, "
+            "remote, trunk and gate",
         ),
     ] = None,
     repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
@@ -1104,13 +1105,14 @@ def story_check(
 ) -> None:
     """Check what `task story` needs: roles; for ISSUE, the repository its label names (the checkout, its
     remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
-    who publishes (your gh login, or story.github_app's bot), the Jira project and its statuses. No model runs
-    and nothing is written."""
+    who publishes (your gh login, or story.github_app's bot), which board is in use (and, for Jira, the
+    project and its statuses). No model runs and nothing is written."""
     from airlie.story import factory
 
     cfg = _story_cfg(config)
-    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
     # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
+    console.print(factory.describe_board(cfg), markup=False, highlight=False, emoji=False, soft_wrap=True)
+    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
     for n in checked.notes:
         console.print(n, markup=False, highlight=False, emoji=False, soft_wrap=True)
     if not checked.problems:
@@ -1147,6 +1149,51 @@ def board_export(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     console.print(str(path), markup=False, highlight=False, soft_wrap=True)
+
+
+@board_app.command("import-jira")
+def board_import_jira(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="report what the import would do and write nothing")
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Import the Jira project (ATLASSIAN_* / story.jira) onto the local board: epics, stories (tasks,
+    features, bugs) and sub-tasks under their parents, with titles, descriptions, statuses, labels and
+    comments. An issue keeps its number under board.prefix (HDS-5 → AIR-5; a number another item holds is
+    reported and skipped); every item gets a jira:<key> label, which a re-run matches to update it and add new
+    comments."""
+    from airlie.board import BoardStore
+    from airlie.board.jira_import import import_jira
+    from airlie.story.board import BoardError
+    from airlie.story.jira import jira_board
+
+    cfg = _load(config)
+    try:
+        client = jira_board(cfg)
+    except BoardError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False, soft_wrap=True)
+        raise typer.Exit(1) from None
+    if client is None:
+        err.print(
+            "[red]no Jira project to import: set ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY (and the "
+            "credentials) in ~/.config/airlie/.env, or story.jira.site and story.jira.project[/red]",
+            emoji=False,
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+    state_dir = cfg.observability.state_dir.expanduser()
+    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    try:
+        report = _run_stoppable(import_jira(store, client, client.project, dry_run=dry_run))
+    except BoardError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False, soft_wrap=True)
+        raise typer.Exit(1) from None
+    finally:
+        store.close()
+    for line in report.notes:
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+    console.print(report.summary(), markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 @eval_app.command("run")

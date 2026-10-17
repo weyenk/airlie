@@ -512,6 +512,44 @@ async def test_next_card_is_the_first_issue_the_intake_query_returns() -> None:
     assert empty.requests[0].url.params["jql"] == "labels = airlie"
 
 
+async def test_project_issues_pages_through_every_issue_of_the_project() -> None:
+    """The import reads the whole project: every status, every page (search/jql hands out a nextPageToken
+    until isLast), with the fields the board needs (the type, the parent, the comments' authors and times)."""
+    pages = {
+        None: {"issues": [{"key": "AIR-1"}, {"key": "AIR-2"}], "isLast": False, "nextPageToken": "p2"},
+        "p2": {"issues": [{"key": "AIR-3"}], "isLast": True},
+    }
+    fake = FakeJira()
+
+    def paged(request: httpx.Request) -> httpx.Response:
+        fake.requests.append(request)
+        return httpx.Response(200, json=pages[request.url.params.get("nextPageToken")])
+
+    b = JiraBoard(
+        JiraSpec.model_validate({"site": SITE, "project": "AIR"}),
+        email=EMAIL,
+        token=TOKEN,
+        transport=httpx.MockTransport(paged),
+    )
+    issues = await b.project_issues()
+    assert [i["key"] for i in issues] == ["AIR-1", "AIR-2", "AIR-3"]
+    first, second = (r.url for r in fake.requests)
+    assert first.path == "/rest/api/3/search/jql" and "nextPageToken" not in first.params
+    assert first.params["jql"] == 'project = "AIR" ORDER BY created ASC'
+    assert first.params["maxResults"] == "100"
+    assert set(first.params["fields"].split(",")) >= {
+        "summary",
+        "description",
+        "comment",
+        "status",
+        "labels",
+        "issuetype",
+        "parent",
+        "created",
+    }
+    assert second.params["nextPageToken"] == "p2" and second.params["jql"] == first.params["jql"]
+
+
 async def test_errors_name_the_status_but_not_the_token() -> None:
     with pytest.raises(BoardError) as e:
         await board(FakeJira(status=401)).card("AIR-7")

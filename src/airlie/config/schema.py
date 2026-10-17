@@ -301,6 +301,7 @@ class JiraStatusesSpec(Strict):
     building: str = "In Progress"
     review: str = "In Review"
     blocked: str | None = Field(default="Blocked", description="null: a stopped issue stays where it is")
+    done: str = Field(default="Done", description="finished issues (board import-jira reads them as done)")
 
 
 class JiraSpec(Strict):
@@ -375,15 +376,16 @@ class StorySpec(Strict):
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
-        default="jira",
-        description="where stories come from: the Jira project (story.jira), or airlie's own board (board:)",
+        default="local",
+        description="where stories come from: airlie's own board (board:, the default) or the Jira project "
+        "(story.jira)",
     )
 
 
 class BoardSpec(Strict):
     """airlie's own board (initiative → epic → story → subtask) in observability.state_dir/board.sqlite."""
 
-    prefix: str = Field(default="AL", description="item keys are <prefix>-<n>, like Jira issue keys")
+    prefix: str = Field(default="AIR", description="item keys are <prefix>-<n>, like Jira issue keys")
 
     @model_validator(mode="after")
     def _prefix_is_a_key_prefix(self) -> BoardSpec:

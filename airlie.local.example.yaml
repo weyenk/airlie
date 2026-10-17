@@ -5,6 +5,15 @@
 #     kind: openai_http
 #     base_url: http://127.0.0.1:8080/v1
 
+# The board (docs/integrations/story.md, Boards): stories come from airlie's own board by default, in
+# observability.state_dir/board.sqlite, with keys <board.prefix>-<n> (AIR-1, AIR-2, …). `task board:import-jira`
+# brings a Jira project onto it, each issue keeping its number under the prefix (HDS-5 → AIR-5); story.board: jira
+# keeps Jira as the board instead.
+# board:
+#   prefix: AIR
+# story:
+#   board: jira                           # local (the default) | jira
+
 # Stories (task story): an issue is built in the repository its repo:<owner>/<name> label names, its clone under
 # story.repos_root (default ~/git), and every layer passes the "## Test gate" of that repository's AGENTS.md;
 # story.repo is only for written requests (--text). Jira's site, project, email and API token come from

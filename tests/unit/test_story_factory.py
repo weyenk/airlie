@@ -21,6 +21,7 @@ from airlie.story.factory import (
     StoryBusy,
     card_for,
     check,
+    describe_board,
     github_app,
     make_board,
     make_pipeline,
@@ -69,7 +70,7 @@ def _no_real_requests(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_board_is_jira_once_the_site_and_project_resolve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"board": "jira"}})
     assert isinstance(make_board(cfg), NullBoard)
     monkeypatch.setenv("ATLASSIAN_BASE_URL", "https://acme.atlassian.net")
     monkeypatch.setenv("ATLASSIAN_EMAIL", "me@example.org")
@@ -83,6 +84,22 @@ def test_the_board_is_jira_once_the_site_and_project_resolve(
     monkeypatch.delenv("ATLASSIAN_API_KEY")
     with pytest.raises(BoardError, match="ATLASSIAN_API_KEY"):
         make_board(cfg)
+
+
+def test_describe_board_names_the_board_in_use(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`task story:check` says which board stories come from before anything else."""
+    local = cfg_for(tmp_path, roles=STORY_ROLES, extra={"board": {"prefix": "HDS"}})
+    assert describe_board(local) == (
+        f"board: local, {tmp_path / 'state' / 'board.sqlite'} (keys HDS-n; story.board: local)"
+    )
+    jira = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"board": "jira"}})
+    assert describe_board(jira) == (
+        "board: Jira (story.board: jira), but no site or project is set: ATLASSIAN_BASE_URL and "
+        "ATLASSIAN_PROJECT_KEY"
+    )
+    monkeypatch.setenv("ATLASSIAN_BASE_URL", "https://acme.atlassian.net")
+    monkeypatch.setenv("ATLASSIAN_PROJECT_KEY", "AIR")
+    assert describe_board(jira) == "board: Jira project AIR at https://acme.atlassian.net (story.board: jira)"
 
 
 def test_story_problems_name_missing_roles(tmp_path: Path) -> None:
@@ -244,7 +261,7 @@ async def test_a_written_request_is_a_text_card_on_a_null_board(tmp_path: Path) 
 
 
 async def test_an_empty_request_is_refused_and_an_empty_reference_is_not_a_request(tmp_path: Path) -> None:
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"board": "jira"}})
     with pytest.raises(StorySetupError, match="empty"):
         await card_for(cfg, None, " \n")
     with pytest.raises(BoardError, match="--text"):  # no Jira here, and "" is not a written request
@@ -340,7 +357,8 @@ def tick_setup(
 
 
 async def test_a_tick_without_a_board_has_nothing_to_pick_up(tmp_path: Path) -> None:
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES)  # no Jira, and no repository either: neither is needed
+    # story.board: jira without Jira settings, and no repository either: neither is needed
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"board": "jira"}})
     assert "no board configured" in await tick(cfg)
 
 
@@ -1064,7 +1082,8 @@ async def test_check_adds_what_publishing_and_jira_need(
     trunk = git(repo, "branch", "--show-current")
     seen: list[tuple[str, Path]] = []
     monkeypatch.setattr(factory, "Publisher", fake_publisher(["gh is not logged in"], seen))
-    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"remote": "upstream", "trunk": trunk}})
+    story = {"remote": "upstream", "trunk": trunk, "board": "jira"}
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
     problems, notes = await check(cfg, repo, "./check.sh")
     assert problems == ["gh is not logged in"] and notes[-1] == "test gate: ./check.sh (--test-cmd)"
     assert seen == [("upstream", repo.resolve())]
@@ -1211,7 +1230,8 @@ async def test_check_with_an_issue_but_no_jira_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(factory, "Publisher", fake_publisher([], []))
-    problems, _ = await check(cfg_for(tmp_path, roles=STORY_ROLES), None, None, "AIR-7")
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"board": "jira"}})
+    problems, _ = await check(cfg, None, None, "AIR-7")
     assert len(problems) == 1 and "no Jira project is configured" in problems[0]
 
 
@@ -1259,9 +1279,8 @@ async def test_check_reports_a_half_configured_jira_instead_of_raising(
     monkeypatch.setenv("ATLASSIAN_BASE_URL", "https://acme.atlassian.net")
     monkeypatch.setenv("ATLASSIAN_EMAIL", "me@example.org")
     monkeypatch.setenv("ATLASSIAN_API_KEY", "t0ken")
-    cfg = cfg_for(
-        tmp_path, roles=STORY_ROLES, extra={"story": {"trunk": git(repo, "branch", "--show-current")}}
-    )
+    story = {"trunk": git(repo, "branch", "--show-current"), "board": "jira"}
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
     problems, _ = await check(cfg, repo, "./check.sh")
     assert len(problems) == 1 and "ATLASSIAN_PROJECT_KEY" in problems[0]
 

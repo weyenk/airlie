@@ -31,7 +31,7 @@ export function render(root, _params, ctx) {
     h("option", { value: "studio" }, "Studio run: one branch"),
   );
   const text = h("textarea", { class: "field", id: "what", rows: 5, placeholder: "What should airlie build?" });
-  const card = h("input", { class: "field mono", id: "card", placeholder: "HDS-5 or AL-12", autocapitalize: "characters" });
+  const card = h("input", { class: "field mono", id: "card", placeholder: "HDS-5 or AIR-12", autocapitalize: "characters" });
   const textLabel = h("label", { class: "block", for: "what" }, "What should airlie build?", text);
   const cardLabel = h("label", { class: "block", for: "card" }, "Board story", card);
   const repoLabel = h("label", { class: "block", for: "repo" }, "Repository", repo);
