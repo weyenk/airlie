@@ -9,6 +9,7 @@ const ROUTES = [
   { re: /^#\/?$/, nav: "chat", load: () => import("./screens/chat.js") },
   { re: /^#\/jobs\/?$/, nav: "jobs", load: () => import("./screens/jobs.js") },
   { re: /^#\/jobs\/([^/]+)$/, nav: "jobs", load: () => import("./screens/job.js") },
+  { re: /^#\/start$/, nav: "chat", load: () => import("./screens/start.js") },
   { re: /^#\/board(?:\/([^/]+))?$/, nav: "board", load: () => import("./screens/board.js") },
   { re: /^#\/(topology|metrics|admin)$/, nav: "$1", load: () => import("./screens/soon.js") },
   { re: /^#\/signin$/, nav: null, load: async () => signin },
