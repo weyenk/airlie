@@ -9,12 +9,14 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from airlie.board import BoardStore
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.checkout import check_checkout, find_checkout, held_label
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.jira import JiraBoard, jira_board
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import NoTestGate, RepositoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Checked, Publisher
@@ -142,9 +144,13 @@ async def placed(cfg: AirlieConfig, board: Board, card: Card, repo: Path | None 
 
 
 def make_board(cfg: AirlieConfig) -> Board:
-    """A JiraBoard once the Jira site and project resolve (jira_board: the process environment, then the .env
+    """story.board: local → a LocalBoard over the board in observability.state_dir; jira (the default) → a
+    JiraBoard once the Jira site and project resolve (jira_board: the process environment, then the .env
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
+    if cfg.story.board == "local":
+        state_dir = cfg.observability.state_dir.expanduser()
+        return LocalBoard(BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix))
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))
 
