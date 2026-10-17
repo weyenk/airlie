@@ -546,6 +546,27 @@ async def test_on_the_last_turn_an_unparsed_tool_call_is_no_answer(tmp_path: Pat
     assert not result.ok and result.stop_reason == "max_steps"
 
 
+async def test_a_role_is_told_it_has_one_step_left_after_its_second_to_last(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, read, FakeReply(text="Final.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=3)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Final."
+    told = [
+        [m for m in r.messages if m.role == "user" and "one step left" in str(m.content)]
+        for r in engine.requests
+    ]
+    assert [len(t) for t in told] == [0, 0, 1]  # only the request after step 2 of 3 carries it
+
+
+async def test_a_one_step_role_is_not_told_it_has_a_step_left(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, FakeReply(text="Final.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    await team.run(ctx, Recorder())
+    assert not any("one step left" in str(m.content) for r in engine.requests for m in r.messages)
+
+
 class Events:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
