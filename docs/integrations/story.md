@@ -10,6 +10,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
 | build, per layer | studio: the coder writes the failing tests and then the code that makes them pass, airlie checks the new tests, Muse Glimmer reviews | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
+| mutation gate, once | airlie; the architect (Qwen3.8) reviews any survivors | the repository's optional `## Mutation gate` run over the whole built stack; survivors that matter become one last *Harden the tests* layer, built by the coder; skipped, with an event, when `AGENTS.md` has none |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
 
@@ -91,6 +92,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.trunk`, `story.remote` | `main`, `origin` | the branch the stack is based on, and the remote it is pushed to |
 | `story.max_layers` | 5 | the most layers the architect may plan |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
+| `story.mutation_timeout_s` | 3600 | how long the story's mutation gate may run (it runs once per story) |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what (`story.tests_role` was removed on 2026-10-16: the coder writes a layer's tests; a config that still sets it is refused with a note saying to delete it) |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
@@ -214,7 +216,9 @@ After the coder's build step and before the test gate, airlie checks the test fu
 
 - **Red check:** every other file the layer changed is put back as it was at the base (files it added are removed),
   and only those test functions run, with the gate's own pytest. One that passes there does not test the change:
-  a `vacuous_test` finding. The worktree is the layer's again afterwards.
+  a `vacuous_test` finding. The worktree is the layer's again afterwards. The *Harden the tests* layer (*The
+  mutation gate*) is the exception: its tests test code the earlier layers wrote, so every other file the whole
+  story changed is put back as it was at the story's base.
 - **No-assertion check:** one with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
   `raise`, or call to a helper of its module that has one: an `assertion_free_test` finding.
 - **One retry:** with findings, the coder is sent back once, in the same conversation, with each test's id and why.
@@ -225,6 +229,51 @@ After the coder's build step and before the test gate, airlie checks the test fu
 - **pytest only:** a test module is a `test_*.py` or `*_test.py` file, and the checks run only when a gate command
   runs pytest (`pytest`, `python -m pytest`, `uv run pytest`, …), with what comes before `pytest` in that command.
   Any other repository (a pnpm one, say) gets a `test_checks_skipped` event and its layers are not held up.
+
+## The mutation gate: `AGENTS.md`, optional
+
+One coder writes a layer's tests and its code, so a story is held to one more check on its tests before anyone
+reviews it: mutation testing, once, over the whole story. It is the commands under a `Mutation gate` heading of
+the same `AGENTS.md`, found and read exactly as the test gate is (the trunk's, at the story's base commit, one
+command per line, kept in `state.json` as `mutation_gate`). airlie's own:
+
+~~~markdown
+## Mutation gate
+
+```sh
+uv run python scripts/mutate_changed.py --base {base} --max-children 6 --report {report}
+```
+~~~
+
+- **`{base}`** in a command is replaced by the story's base commit, so the commands see the whole story's change;
+  **`{report}`** by a file in the story's directory (quoted for `sh`). A gate that writes its summary of the
+  surviving mutants there is read from it; otherwise its output is (its start and its end, 12,000 characters).
+- **When:** once, after every layer the architect planned is built and before the stack is published, in a
+  detached worktree of the top layer's commit (it holds every layer), without your credentials, as the test gate
+  runs. It may take `story.mutation_timeout_s` (an hour by default); a gate that runs longer, or cannot start,
+  stops the story.
+- **Exit 0 passes**, and the stack is published. Anything else means mutants survived.
+- **Survivors go to the architect, never the coder.** Read-only at the top layer's commit, it gets the summary,
+  the story's diff against its base, and the story and its layers, and decides which survivors matter: it drops
+  equivalent mutants and ones in logging or message text, with a reason for each, and describes a test case for
+  each of the rest (`{"harden": [{"test_file", "cases": [{"name", "given", "expect", "kills"}]}], "ignored":
+  [{"mutant", "why"}]}`). An unusable reply gets one retry; a second stops the story, with the summary in the note.
+- **Cases become one last layer**, *Harden the tests*, stacked on top: built by the coder like any layer (the
+  same test gate, review and checks), with a brief that is the architect's cases and says to change tests only.
+  Its red check undoes the whole story, not just the layer below (*Checks on a layer's tests*), since its tests
+  test code the earlier layers wrote; a `test_checks_red_base` event says so. The mutation gate is **not** run
+  again after it: one run per story.
+- **Everything ignored:** the stack is published as it is, and the top PR lists each ignored mutant and why.
+- **No section, no stage:** a repository whose `AGENTS.md` has no `Mutation gate` (a TypeScript one, say) skips it,
+  with a `mutation_gate_skipped` event. A section with no command, or one that cannot run as written, stops the
+  story before refine, as a bad test gate does. `--test-cmd` does not replace it.
+- **Logged:** `mutation_gate_start`, `mutation_gate_passed`, `mutation_gate_failed` (with the summary),
+  `mutation_gate_skipped`, and `mutation_review` (the architect's verdict: cases asked for, test files, mutants
+  ignored, the hardening layer) in the story's `events.jsonl`; the issue gets a comment with the verdict.
+- **In the PRs:** every PR of the stack says how it went (passes, skipped, or the architect's verdict).
+- **Run once:** the result and the review are kept in `state.json` (`mutation`, with the top layer's commit, and
+  `mutation_review`), so a resume never runs the gate again for the same stack, nor asks the architect again once
+  it answered; a hardening layer that stopped is rebuilt like any other.
 
 ## What stops a story before it starts
 
@@ -240,6 +289,7 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 | that directory is not a git repository, has no `story.remote`, or its remote names another repository | which, with the clone or `git remote add` command to run, or the URL found and the one the label wants |
 | the label changed after the story started | from what to what |
 | no test gate on the trunk: no `AGENTS.md` (or a link out of the repository, or to nothing), no `Test gate` section, no command in its block, a command continued onto the next line, one run in the background with `&`, or bash's `&>`, `&>>` or `|&` | the repository, the trunk and its commit, and what to add, with a three-line example |
+| a `Mutation gate` section with no command, or a command that cannot run as written (the same rules) | the repository, the trunk and its commit, and the problem |
 | the trunk cannot be fetched | why, and to run the story again: it builds only on the remote's trunk |
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets
@@ -282,9 +332,9 @@ failure is in the next one:
 | stopped after | the failure was in |
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
-| `'intake'` | refining the story, or fetching the trunk or reading its test gate |
+| `'intake'` | refining the story, or fetching the trunk or reading its test gate or mutation gate |
 | `'refine'` | planning the layers, or posting the story's comment |
-| `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
+| `'layers'` | building a layer, the story's mutation gate, the architect's review of its survivors or the hardening layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
 | `'publish'` | telling the issue (the PR links or the move to *In Review*): the PRs are open |
 
