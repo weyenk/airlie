@@ -14,6 +14,7 @@ const STATUSES = [
   ["done", "Done", "ok"],
 ];
 const LEVELS = ["initiative", "epic", "story", "subtask"];
+const PLURAL = { initiative: "Initiatives", epic: "Epics", story: "Stories", subtask: "Subtasks" };
 const CHILD = { initiative: "epic", epic: "story", story: "subtask", subtask: null };
 
 function statusChip(status) {
@@ -42,7 +43,7 @@ export function render(root, [key], ctx) {
   }
   append(filter, [
     ["", "All"],
-    ...LEVELS.map((l) => [l, l.charAt(0).toUpperCase() + l.slice(1) + "s"]),
+    ...LEVELS.map((l) => [l, PLURAL[l]]),
   ].map(([l, label]) => h("button", { type: "button", class: "btn small", dataset: { level: l }, "aria-pressed": String(l === level), onclick: () => setFilter(l) }, label)));
 
   root.append(
@@ -174,7 +175,7 @@ export function render(root, [key], ctx) {
         ? h(
             "section",
             { class: "stack", style: { gap: "8px" } },
-            h("div", { class: "row spread" }, h("h3", { class: "h3" }, `${CHILD[item.level].charAt(0).toUpperCase() + CHILD[item.level].slice(1)}s (${children.length})`), h("button", { type: "button", class: "btn small", onclick: () => openNew(CHILD[item.level], item.key) }, "Add child")),
+            h("div", { class: "row spread" }, h("h3", { class: "h3" }, `${PLURAL[CHILD[item.level]]} (${children.length})`), h("button", { type: "button", class: "btn small", onclick: () => openNew(CHILD[item.level], item.key) }, "Add child")),
             children.length ? h("div", { class: "stack", style: { gap: "6px" } }, children.map((c) => h("a", { href: `#/board/${encodeURIComponent(c.key)}`, class: "child" }, h("span", { class: "mono small muted" }, c.key), " ", c.title, " ", statusChip(c.status)))) : h("div", { class: "muted small" }, "None yet."),
           )
         : null,
