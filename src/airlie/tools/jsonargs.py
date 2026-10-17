@@ -7,10 +7,12 @@ anything before or after it; a truncated object is returned unchanged so the cal
 
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
 _DECODER = json.JSONDecoder()
+_STRING = {"string", "str", "text", "varchar", "char", "enum"}
 
 
 def repair_json_args(raw: str) -> str:
@@ -50,3 +52,21 @@ def history_arguments(raw: str) -> str:
     except ValueError:
         return "{}"
     return json.dumps(args, ensure_ascii=False)  # pragma: no mutate  (ensure_ascii=None is falsy too)
+
+
+def typed_value(value: str, prop: Any) -> Any:
+    """String-typed and untyped parameters stay text; others are JSON or Python literals, else text."""
+    kind = prop.get("type") if isinstance(prop, dict) else None
+    if kind is None or set(kind if isinstance(kind, list) else [kind]) & _STRING:
+        return value
+    v = value.strip()
+    try:
+        return json.loads(v)
+    except ValueError:
+        pass
+    try:
+        lit = ast.literal_eval(v)
+        json.dumps(lit)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return value
+    return lit

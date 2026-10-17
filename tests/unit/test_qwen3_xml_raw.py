@@ -495,3 +495,11 @@ def test_vllm_mlx_replays_earlier_calls_through_the_model_template(server: Any) 
 async def test_vllm_mlx_non_stream_parses_with_it(server: Any) -> None:
     text, calls = server._parse_tool_calls_with_parser(SHIFT, _request(server, False), None)
     assert [(c.function.name, json.loads(c.function.arguments)) for c in calls] == CASES["shift"][1]
+
+
+def test_the_example_call_in_the_correction_message_parses() -> None:
+    from airlie.teams.native_team import MALFORMED
+
+    out = Qwen3XmlRawToolParser().extract_tool_calls(MALFORMED, REQ)
+    assert out.tools_called and [c["name"] for c in out.tool_calls] == ["read_file"]
+    assert json.loads(out.tool_calls[0]["arguments"]) == {"path": "README.md"}

@@ -305,6 +305,7 @@ class StudioOrchestrator:
             nudge=nudge,
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
+            emit=self.sink.emit,
         )
 
     async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:

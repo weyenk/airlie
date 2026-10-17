@@ -749,3 +749,22 @@ async def test_a_before_gate_that_says_no_skips_the_gate(tmp_path: Path) -> None
     )
     assert report.tests == {"studio": False}  # the check passes, but it never ran
     assert [e["tests"] for e in events(report) if e["kind"] == "run_done"] == [False]
+
+
+async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_path: Path) -> None:
+    bad = "<function=open_file>\n<file>PASS</file>\n</function>"
+    engine = FakeEngine(
+        {
+            "chief": [PLAN, SYNTH],
+            "coder": [FakeReply(text=bad), WRITE_PASS, RUN, DONE],
+            "docs": [DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task(
+        "fix the build", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
+    assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "coder", 1, bad)
+    assert ev["repaired"] is False

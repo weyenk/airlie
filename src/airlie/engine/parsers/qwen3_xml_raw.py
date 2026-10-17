@@ -14,7 +14,6 @@ delete it when a vllm-mlx release parses this format."""
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 import uuid
@@ -23,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from vllm_mlx.tool_parsers.abstract_tool_parser import ExtractedToolCallInformation, ToolParser
+
+from airlie.tools.jsonargs import typed_value
 
 _CALL = "<tool_call>"
 _CALL_END = "</tool_call>"
@@ -36,7 +37,6 @@ _VALUE_END = re.compile(re.escape(_PARAM_END))
 _NAME = re.compile(r"([^>\s]+)>")
 _NAME_SO_FAR = re.compile(r"[^>\s]*")
 _NON_WS = re.compile(r"\S")
-_STRING = {"string", "str", "text", "varchar", "char", "enum"}
 _JSON = json.JSONDecoder()
 
 
@@ -176,31 +176,14 @@ def _properties(request: dict[str, Any] | None, name: str) -> dict[str, Any]:
     return {}
 
 
-def _typed(value: str, prop: Any) -> Any:
-    """String-typed and untyped parameters stay text; others are JSON or Python literals, else text."""
-    kind = prop.get("type") if isinstance(prop, dict) else None
-    if kind is None or set(kind if isinstance(kind, list) else [kind]) & _STRING:
-        return value
-    v = value.strip()
-    try:
-        return json.loads(v)
-    except ValueError:
-        pass
-    try:
-        lit = ast.literal_eval(v)
-        json.dumps(lit)
-    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        return value
-    return lit
-
-
 def _arguments(call: _Call, request: dict[str, Any] | None) -> str:
     if call.json_args is not None:
         return call.json_args
     props = _properties(request, call.name)
     last = len(call.params) - 1
     args = {
-        k: v if call.cut and i == last else _typed(v, props.get(k)) for i, (k, v) in enumerate(call.params)
+        k: v if call.cut and i == last else typed_value(v, props.get(k))
+        for i, (k, v) in enumerate(call.params)
     }
     out = _dumps(args)
     return out[:-2] if call.cut and call.params else out  # cut: no closing `"}`, so a runaway, not a call

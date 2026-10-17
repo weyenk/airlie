@@ -13,6 +13,7 @@ from typing import Any
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall, image_part
 from airlie.skills import prompt_text
+from airlie.teams.call_repair import Repair, repair_call
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
 from airlie.tools.jsonargs import history_arguments
 
@@ -65,15 +66,37 @@ UNPARSED_CALL = re.compile(r"<tool_call>|<function=")
 `<function=read_file>` with a `<file>` tag). It is not an answer, however the reply reads."""
 MALFORMED = (
     "Your last reply had a tool call written as text, and it could not be run. Call the tool again in the "
-    "proper tool-call format, or, if you are finished, give your answer with no tool-call markup."
+    "proper tool-call format, or, if you are finished, give your answer with no tool-call markup. A call in "
+    "the proper format looks like this, one <parameter=NAME> per argument: "
+    "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>"
 )
-"""What a role is told after one such reply; a second in a row ends the run (malformed_call)."""
+"""What a role is told after one such reply; a second in a row ends the run (malformed_call). Only a reply
+holding `<tool_call>` or `<function=` gets it, so the example is in the format the chat template teaches."""
+MALFORMED_TEXT_CAP = 4000
+"""Characters of a malformed reply kept in its `malformed_call` event."""
 
 LAST_STEP = (
     "You have used all {n} of your steps: no more tools. Give your final answer now, complete, from what "
     "you have already found."
 )
 """What a role is told on the turn after its last allowed step, which offers it no tools."""
+
+
+def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None) -> None:
+    """A `malformed_call` event: the reply as the role wrote it (capped), and what the repair made of it."""
+    if ctx.emit is None:
+        return
+    ctx.emit(
+        "malformed_call",
+        team_id=ctx.team_id,
+        role=ctx.role_name,
+        step=step,
+        text=text[:MALFORMED_TEXT_CAP],
+        chars=len(text),
+        repair_tried=repair is not None,
+        repaired=repair is not None and repair.call is not None,
+        repair_note=repair.note if repair is not None else "last turn: no tools offered",
+    )
 
 
 class NativeTeam:
@@ -134,7 +157,9 @@ class NativeTeam:
             prompt_tokens += res.prompt_tokens
             max_prompt = max(max_prompt, res.prompt_tokens)
             completion_tokens += res.completion_tokens
-            if not res.tool_calls:
+            calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
+            content = res.text
+            if not calls:
                 # a reply that max_tokens ended is not a finished answer, whatever text it holds
                 if res.finish_reason == "length":
                     thinking = bool(res.reasoning.strip())
@@ -143,31 +168,36 @@ class NativeTeam:
                         final_text = cut_off_text(ctx.role_name, ctx.role, thinking=thinking)
                     stop = "cut_off"
                     break
-                if UNPARSED_CALL.search(res.text):
-                    if last_turn:  # it tried a tool it was not offered: there is no answer
-                        final_text = f"stopped: reached max_steps={ctx.max_steps}"
-                        stop = "max_steps"
-                        break
-                    if corrected:
-                        final_text = "stopped: two replies in a row held a tool call that could not be parsed"
-                        stop = "malformed_call"
-                        break
+                if not UNPARSED_CALL.search(res.text):
+                    final_text = res.text
+                    ok = True
+                    stop = "done"
+                    break
+                # on the last turn no tools were offered, so there is nothing to repair it into
+                repair = None if last_turn else repair_call(res.text, ctx.tools.schemas())
+                _log_malformed(ctx, step_num, res.text, repair)
+                if repair is not None and repair.call is not None:
+                    calls, content = [repair.call], repair.prose  # runs below as an ordinary step
+                elif last_turn:  # it tried a tool it was not offered: there is no answer
+                    final_text = f"stopped: reached max_steps={ctx.max_steps}"
+                    stop = "max_steps"
+                    break
+                elif corrected:
+                    final_text = "stopped: two replies in a row held a tool call that could not be parsed"
+                    stop = "malformed_call"
+                    break
+                else:
                     corrected = True
                     messages.append(Message(role="assistant", content=res.text))
                     messages.append(Message(role="user", content=MALFORMED))
                     continue
-                final_text = res.text
-                ok = True
-                stop = "done"
-                break
             corrected = False
             if last_turn:  # it called a tool it was not offered: there is no answer
                 final_text = f"stopped: reached max_steps={ctx.max_steps}"
                 stop = "max_steps"
                 break
-            calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
             replay = tuple(replace(c, arguments=history_arguments(c.arguments)) for c in calls)
-            messages.append(Message(role="assistant", content=res.text, tool_calls=replay))
+            messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
                 async with ctx.scheduler.tool_stall(ctx.team_id):

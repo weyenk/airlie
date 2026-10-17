@@ -311,3 +311,14 @@ async def test_cancelling_a_team_test_gate_kills_what_the_test_command_started(t
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)
     assert await eventually(lambda: not running(sleeper))
+
+
+async def test_a_malformed_tool_call_reaches_the_runs_events(tmp_path: Path) -> None:
+    bad = "<function=open_file>\n<file>PASS</file>\n</function>"
+    engine = FakeEngine({"coder": [FakeReply(text=bad), WRITE_PASS, RUN, FakeReply(text="done")]})
+    orch = ForkOrchestrator(cfg_for(tmp_path), engine, run_id="f10")
+    report = await orch.execute_task(
+        "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
+    assert (ev["team_id"], ev["text"]) == ("trunk", bad)

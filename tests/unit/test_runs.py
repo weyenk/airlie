@@ -305,3 +305,32 @@ def test_commit_wip_with_nothing_to_commit_still_returns_a_sha(tmp_path: Path) -
     ).stdout.strip()
     sha = commit_wip(trunk, "empty fork point")
     assert sha != before and len(sha) == 40
+
+
+async def test_a_parallel_teams_malformed_tool_call_reaches_the_runs_events(tmp_path: Path) -> None:
+    repo = git_repo(tmp_path)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    for r in ("coder", "summarizer", "judge", "aggregator"):
+        (cfg_dir / f"{r}.md").write_text(f"you are {r}")
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": {
+            r: {"prompt": f"{r}.md", "model": "base", "thinking": False}
+            for r in ("coder", "summarizer", "judge", "aggregator")
+        },
+        "teams": {"k": 1, "orchestrator": "native", "max_steps": 5},
+        "tools": {"builtin": ["write_file", "run_tests"]},
+        "observability": {"state_dir": str(tmp_path / "state")},
+    }
+    (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
+    bad = "<function=write_file>\n<file>t.txt</file>\n<content>one</content>\n</function>"
+    engine = FakeEngine({"coder": [FakeReply(text=bad), FakeReply(text="done")]})
+    orch = ParallelAgentTeamOrchestrator(load_config(cfg_dir / "airlie.yaml"), engine, run_id="r10")
+    report = await orch.execute_task("do the thing", repo=repo, test_cmd="true")
+    events = [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+    [ev] = [e for e in events if e["kind"] == "malformed_call"]
+    assert (ev["team_id"], ev["text"], ev["repaired"]) == ("team-1", bad, True)
+    assert [e["tool"] for e in events if e["kind"] == "step"] == ["write_file"]  # repaired: a real step

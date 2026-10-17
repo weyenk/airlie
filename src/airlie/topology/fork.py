@@ -246,6 +246,7 @@ class ForkOrchestrator:
             initial_state=parent.state if parent is not None else None,
             nudge=b.nudge,
             stop_when=self.observer.stuck,
+            emit=self.sink.emit,
         )
 
     async def _run_branch(
