@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from airlie.story.model import Layer, StoryError
-from airlie.story.rounds import ROUND_NUDGE, plan_in_rounds, same_layers
+from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, plan_in_rounds, same_layers
 
 
 def layer(slug: str, scope: str = "a.py", ac: tuple[str, ...] = ("AC1",), title: str = "T") -> Layer:
@@ -80,9 +80,18 @@ async def test_an_unusable_later_plan_ends_the_rounds_on_the_plan_before_it() ->
     assert s.events[-1][1] == {"reason": "malformed", "rounds": 1}
 
 
-async def test_an_unusable_first_plan_is_the_callers_story_error() -> None:
+async def test_an_unusable_first_plan_goes_back_with_its_reason_in_the_same_conversation() -> None:
+    s = Script("garbage", "a,b", "a,b")
+    assert await run(s) == "a,b"
+    assert s.nudges[0] == FIX_NUDGE.format(error="no JSON") and s.nudges[1] == ROUND_NUDGE
+    assert [k for k, _ in s.events][0] == "plan_fix" and s.events[0][1]["attempt"] == 1
+
+
+async def test_a_first_plan_that_stays_unusable_is_the_callers_story_error_after_the_fixes() -> None:
+    s = Script("garbage", "garbage", "garbage")
     with pytest.raises(StoryError, match="no JSON"):
-        await run(Script("garbage"))
+        await run(s)
+    assert len(s.nudges) == 2 and [k for k, _ in s.events] == ["plan_fix", "plan_fix"]
 
 
 def test_two_plans_are_the_same_when_their_layers_scopes_and_criteria_are() -> None:

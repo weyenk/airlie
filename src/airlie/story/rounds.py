@@ -18,6 +18,13 @@ ROUND_NUDGE = (
 )
 """What the architect is told to start each later round."""
 
+FIX_NUDGE = (
+    "Your plan could not be used: {error}. Reply with the whole plan again, fixed, in the same JSON. You do "
+    "not need to read anything more."
+)
+"""What the architect is told when its first plan is refused: sent back in the same conversation, which has
+already read the code, instead of asked again from the start."""
+
 Emit = Callable[..., None]
 
 
@@ -35,13 +42,23 @@ async def plan_in_rounds[T](
     *,
     rounds: int,
     emit: Emit,
+    fixes: int = 2,
 ) -> str:
     """The text of the plan the rounds end on. `first()` runs round 1 and `again(nudge)` each later one, up
-    to `rounds` in all. A round-1 reply `parse` refuses is a StoryError (the caller asks again, with its
-    reason); a later one it refuses ends the rounds on the plan before it. A round whose plan is `same` as
+    to `rounds` in all. A round-1 reply `parse` refuses goes back in the same conversation with the reason,
+    up to `fixes` times (`plan_fix` events), and is then a StoryError (the caller asks again from the start);
+    a later round's reply it refuses ends the rounds on the plan before it. A round whose plan is `same` as
     the one before ends them on it. Each round's plan and the reason the rounds ended are events."""
     text = await first()
-    plan = parse(text)
+    for attempt in range(fixes + 1):
+        try:
+            plan = parse(text)
+            break
+        except StoryError as e:
+            if attempt == fixes:
+                raise
+            emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
+            text = await again(FIX_NUDGE.format(error=e))
     emit("plan_round", round=1, **_shape(plan))
     for n in range(2, rounds + 1):
         later = await again(ROUND_NUDGE)
