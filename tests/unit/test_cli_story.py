@@ -107,13 +107,19 @@ def test_a_blocked_story_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_tick_without_a_board_says_so(tmp_path: Path) -> None:
-    r = runner.invoke(cli.app, ["story", "tick", "--config", str(story_cfg(tmp_path))])
+    r = runner.invoke(cli.app, ["story", "tick", "--config", str(story_cfg(tmp_path, board="jira"))])
     assert r.exit_code == 0 and "no board configured" in r.output
 
 
-def test_check_lists_problems(tmp_path: Path) -> None:
+def test_check_lists_problems_and_names_the_board_first(tmp_path: Path) -> None:
     r = runner.invoke(cli.app, ["story", "check", "--config", str(story_cfg(tmp_path))])
     assert r.exit_code == 1 and "no repository" in r.output
+    assert (
+        r.output.splitlines()[0].startswith("board: local, ")
+        and "(keys AL-n; story.board: local)" in r.output
+    )
+    r = runner.invoke(cli.app, ["story", "check", "--config", str(story_cfg(tmp_path, board="jira"))])
+    assert r.output.splitlines()[0].startswith("board: Jira (story.board: jira), but no site or project")
 
 
 # ---- run ----
@@ -155,7 +161,7 @@ def test_an_issue_without_a_repository_is_told_why_and_the_run_exits_one(
 
 def test_an_issue_without_a_jira_project_points_to_text(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    p = story_cfg(tmp_path, test_cmd="./check.sh", repo=str(repo))
+    p = story_cfg(tmp_path, test_cmd="./check.sh", repo=str(repo), board="jira")
     r = runner.invoke(cli.app, ["story", "run", "AIR-7", "--config", str(p)])
     assert r.exit_code == 1 and "--text" in r.output and "Traceback" not in r.output
 
@@ -258,6 +264,7 @@ def test_check_with_an_issue_prints_its_repository_trunk_and_gate_and_writes_not
     r = runner.invoke(cli.app, ["story", "check", "AIR-7", "--config", str(p)])
     assert r.exit_code == 0, r.output
     assert r.output.splitlines() == [
+        f"board: local, {tmp_path / 'state' / 'board.sqlite'} (keys AL-n; story.board: local)",
         f"AIR-7 is for o/repo (its repo: label): {repo.resolve()}, whose remote 'origin' is "
         "git@github.com:o/repo.git",
         f"trunk: origin/{trunk} at {sha[:12]}, as last fetched (a story fetches it first)",
@@ -287,7 +294,8 @@ def test_check_prints_its_notes_and_is_ready_when_they_are_all_it_found(
     monkeypatch.setattr(factory, "check", fake_check)
     r = runner.invoke(cli.app, ["story", "check", "--config", str(story_cfg(tmp_path))])
     assert r.exit_code == 0
-    assert r.output.splitlines() == [*notes, 'ready: task story -- ISSUE (or --text "request")']
+    board = f"board: local, {tmp_path / 'state' / 'board.sqlite'} (keys AL-n; story.board: local)"
+    assert r.output.splitlines() == [board, *notes, 'ready: task story -- ISSUE (or --text "request")']
 
 
 def test_check_prints_each_problem_as_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

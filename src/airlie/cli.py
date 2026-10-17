@@ -959,7 +959,8 @@ def story_check(
         str | None,
         typer.Argument(
             metavar="[ISSUE]",
-            help="a Jira issue (AIR-7 or its link): check its repo: label, checkout, remote, trunk and gate",
+            help="a board item or Jira issue (AL-7, AIR-7 or its link): check its repo: label, checkout, "
+            "remote, trunk and gate",
         ),
     ] = None,
     repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
@@ -968,13 +969,14 @@ def story_check(
 ) -> None:
     """Check what `task story` needs: roles; for ISSUE, the repository its label names (the checkout, its
     remote, the trunk) and the test gate of its AGENTS.md, or why the story would be blocked; gh and gh-stack,
-    who publishes (your gh login, or story.github_app's bot), the Jira project and its statuses. No model runs
-    and nothing is written."""
+    who publishes (your gh login, or story.github_app's bot), which board is in use (and, for Jira, the
+    project and its statuses). No model runs and nothing is written."""
     from airlie.story import factory
 
     cfg = _story_cfg(config)
-    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
     # soft_wrap: a note or a problem names paths and commands, which wrapping at the terminal's width breaks
+    console.print(factory.describe_board(cfg), markup=False, highlight=False, emoji=False, soft_wrap=True)
+    checked = _run_stoppable(factory.check(cfg, repo, test_cmd, ref=ref))
     for n in checked.notes:
         console.print(n, markup=False, highlight=False, emoji=False, soft_wrap=True)
     if not checked.problems:

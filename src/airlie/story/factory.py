@@ -15,7 +15,7 @@ from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note,
 from airlie.story.checkout import check_checkout, find_checkout, held_label
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
-from airlie.story.jira import JiraBoard, jira_board
+from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import NoTestGate, RepositoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
@@ -143,16 +143,34 @@ async def placed(cfg: AirlieConfig, board: Board, card: Card, repo: Path | None 
         raise
 
 
+def _board_path(cfg: AirlieConfig) -> Path:
+    return cfg.observability.state_dir.expanduser() / "board.sqlite"
+
+
 def make_board(cfg: AirlieConfig) -> Board:
-    """story.board: local → a LocalBoard over the board in observability.state_dir; jira (the default) → a
+    """story.board: local (the default) → a LocalBoard over the board in observability.state_dir; jira → a
     JiraBoard once the Jira site and project resolve (jira_board: the process environment, then the .env
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
     if cfg.story.board == "local":
-        state_dir = cfg.observability.state_dir.expanduser()
-        return LocalBoard(BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix))
+        return LocalBoard(BoardStore(_board_path(cfg), prefix=cfg.board.prefix))
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))
+
+
+def describe_board(cfg: AirlieConfig) -> str:
+    """One line on where stories come from, for `task story:check`: the local board and its file, or the
+    Jira project and site as they resolve (nothing is fetched), or that story.board: jira has no site or
+    project."""
+    if cfg.story.board == "local":
+        return f"board: local, {_board_path(cfg)} (keys {cfg.board.prefix}-n; story.board: local)"
+    spec = jira_spec(cfg.story.jira, config_dotenv(cfg))
+    if spec.site and spec.project:
+        return f"board: Jira project {spec.project} at {spec.site} (story.board: jira)"
+    return (
+        "board: Jira (story.board: jira), but no site or project is set: ATLASSIAN_BASE_URL and "
+        "ATLASSIAN_PROJECT_KEY"
+    )
 
 
 async def card_for(cfg: AirlieConfig, ref: str | None, text: str | None) -> tuple[Board, Card]:

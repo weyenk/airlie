@@ -868,7 +868,7 @@ def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path
 
 def test_board_defaults_and_story_board_default(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, MINIMAL))
-    assert cfg.board.prefix == "AL" and cfg.story.board == "jira"
+    assert cfg.board.prefix == "AL" and cfg.story.board == "local"  # local since the Jira migration
 
 
 def test_board_prefix_must_look_like_an_issue_key_prefix(tmp_path: Path) -> None:

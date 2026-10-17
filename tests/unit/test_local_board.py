@@ -116,17 +116,14 @@ def test_make_board_picks_the_local_board_from_story_board(
     local = load_config(
         write(
             tmp_path,
-            {
-                **MINIMAL,
-                "observability": {"state_dir": str(state)},
-                "story": {"board": "local"},
-                "board": {"prefix": "HDS"},
-            },
+            {**MINIMAL, "observability": {"state_dir": str(state)}, "board": {"prefix": "HDS"}},
         )
     )
-    board = make_board(local)
+    board = make_board(local)  # local is the default
     assert isinstance(board, LocalBoard)
     assert board.store.path == state / "board.sqlite" and board.store.prefix == "HDS"
     board.store.close()
-    jira = load_config(write(tmp_path, {**MINIMAL, "observability": {"state_dir": str(state)}}))
-    assert isinstance(make_board(jira), NullBoard)
+    jira = load_config(
+        write(tmp_path, {**MINIMAL, "observability": {"state_dir": str(state)}, "story": {"board": "jira"}})
+    )
+    assert isinstance(make_board(jira), NullBoard)  # story.board: jira, but no Jira settings

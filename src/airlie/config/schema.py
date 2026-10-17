@@ -361,8 +361,9 @@ class StorySpec(Strict):
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
-        default="jira",
-        description="where stories come from: the Jira project (story.jira), or airlie's own board (board:)",
+        default="local",
+        description="where stories come from: airlie's own board (board:, the default) or the Jira project "
+        "(story.jira)",
     )
 
 
