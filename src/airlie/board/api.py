@@ -1,0 +1,103 @@
+"""The board over HTTP, under /v1/board (task serve's key middleware guards it like the rest of /v1): list and
+read items, create, change (fields, status, parent), comment, and the export. v1 has one person: every
+comment and item is noah's; a later per-person auth sets the author."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict
+
+from airlie.board.model import Level, Status
+from airlie.board.store import BoardStore, BoardStoreError
+
+PERSON = "noah"
+
+
+class CreateItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: Level
+    title: str
+    description: str = ""
+    parent: str | None = None
+    labels: Sequence[str] = ()
+
+
+class ChangeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    description: str | None = None
+    status: Status | None = None
+    parent: str | None = None
+    labels: Sequence[str] | None = None
+
+
+class AddComment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+
+
+def board_router(store: BoardStore) -> APIRouter:
+    router = APIRouter(prefix="/v1/board", tags=["board"])
+
+    def item(key: str) -> dict[str, Any]:
+        try:
+            return store.get(key).to_dict()
+        except KeyError:
+            raise HTTPException(404, f"no item {key} on the board") from None
+
+    @router.get("/items")
+    async def list_items(
+        level: Level | None = None,
+        status: Status | None = None,
+        parent: str | None = None,
+    ) -> dict[str, Any]:
+        return {"items": [i.to_dict() for i in store.list(level=level, status=status, parent=parent)]}
+
+    @router.post("/items", status_code=201)
+    async def create_item(body: CreateItem) -> dict[str, Any]:
+        try:
+            made = store.create(
+                level=body.level,
+                title=body.title,
+                description=body.description,
+                parent=body.parent,
+                labels=body.labels,
+                created_by=PERSON,
+            )
+        except BoardStoreError as e:
+            raise HTTPException(422, str(e)) from None
+        return made.to_dict()
+
+    @router.get("/items/{key}")
+    async def get_item(key: str) -> dict[str, Any]:
+        return item(key)
+
+    @router.patch("/items/{key}")
+    async def change_item(key: str, body: ChangeItem) -> dict[str, Any]:
+        item(key)  # 404 before anything else
+        try:
+            changed = store.update(
+                key,
+                title=body.title,
+                description=body.description,
+                status=body.status,
+                parent=body.parent,
+                labels=body.labels,
+            )
+        except BoardStoreError as e:
+            raise HTTPException(422, str(e)) from None
+        return changed.to_dict()
+
+    @router.post("/items/{key}/comments")
+    async def add_comment(key: str, body: AddComment) -> dict[str, Any]:
+        item(key)
+        return store.comment(key, PERSON, body.text).to_dict()
+
+    @router.get("/export")
+    async def export() -> dict[str, Any]:
+        return store.export()
+
+    return router
