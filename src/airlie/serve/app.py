@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from airlie.board import BoardStore
+from airlie.board.api import board_router
 from airlie.config import AirlieConfig
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
@@ -185,6 +187,8 @@ def create_app(
     factory = orchestrator_factory or _default_factory
     jobs = Jobs()
     make_story = story_job or _story_job_factory()
+    board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    app.include_router(board_router(board))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()
@@ -384,5 +388,6 @@ def create_app(
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await client.aclose()
+        board.close()
 
     return app

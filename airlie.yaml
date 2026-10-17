@@ -243,3 +243,9 @@ story:
     statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }
   github_app:                      # publish as a GitHub App's bot, never with your own gh login or SSH key
     app_id: 5332832                # airlie-bot-weyenk; put your own app's id in airlie.local.yaml (null: your login)
+
+# ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
+# airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. `story.board: local`
+# makes the story pipeline take its stories from it instead of Jira (default: jira). Keys are <prefix>-<n>.
+# board:
+#   prefix: AL

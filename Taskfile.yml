@@ -121,6 +121,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie memory {{.CLI_ARGS}}'
 
+  board:export:
+    desc: "Write the local board as JSON next to board.sqlite (task board:export -- --out FILE)"
+    cmds:
+      - '{{.RUN}} airlie board export {{.CLI_ARGS}}'
+
   serve:
     desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles + catalog models; POST /v1/airlie/run). task serve -- --api-key SECRET before a tunnel"
     cmds:

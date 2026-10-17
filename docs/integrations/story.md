@@ -653,6 +653,18 @@ airlie's).
 What really stops a merge is GitHub: a ruleset (or branch protection) on the trunk that only you can update. It
 can refuse a bot but not you: publish as a bot (above), and it keeps everything but you from merging.
 
+## The local board (`story.board: local`)
+
+airlie has a board of its own: initiative → epic → story → subtask, in `observability.state_dir/board.sqlite`,
+served by `task serve` under `/v1/board` (behind the same API key) and shown by the web app. With
+`story.board: local` in `airlie.yaml` the pipeline takes its stories from it instead of Jira: `task story --
+AL-7` builds the story `AL-7`, and `task story:tick` picks the oldest story in `todo` (never an epic or an
+initiative). Keys are `<board.prefix>-<n>` (`AL` by default), so they name story directories as Jira keys do,
+and a `repo:<owner>/<name>` label on the story names its repository as it does in Jira. Moves and notes go to
+the item: `intake`=`todo`, `building`=`doing`, `review`, `blocked`; airlie's notes are comments by `airlie`.
+`task board:export` writes the whole board as JSON next to `board.sqlite` (`-- --out FILE` elsewhere), for
+backups and diffs. No Atlassian settings are needed. The default stays `jira` until the issues are migrated.
+
 ## Not yet
 
 An amigos deliberation (product, qa and architect agreeing a contract), an architect review loop across the

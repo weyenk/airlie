@@ -864,3 +864,20 @@ def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path
         load_config(base)
     assert leaks(err) == []
     assert str(err.value) == "config invalid:\n  story.jira.api_key: Extra inputs are not permitted"
+
+
+def test_board_defaults_and_story_board_default(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.board.prefix == "AL" and cfg.story.board == "jira"
+
+
+def test_board_prefix_must_look_like_an_issue_key_prefix(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"board\.prefix"):
+        load_config(write(tmp_path, {**MINIMAL, "board": {"prefix": "al-1"}}))
+
+
+def test_story_board_is_jira_or_local(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, {**MINIMAL, "story": {"board": "local"}, "board": {"prefix": "HDS"}}))
+    assert cfg.story.board == "local" and cfg.board.prefix == "HDS"
+    with pytest.raises(ConfigError, match=r"story\.board"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"board": "trello"}}))
