@@ -38,19 +38,19 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f6f5f1;
+  --bg: #f3f5f8;
   --surface: #ffffff;
   --bubble: #ffffff;
-  --line: #e2e0d8;
-  --line2: #eeece5;
+  --line: #dde2ea;
+  --line2: #eaeef3;
   --field: #ffffff;
-  --field-line: #c9c7bd;
+  --field-line: #c3cad5;
   --ink: #17191e;
   --ink2: #4b4f58;
   --accent: #0b5f7a;
   --accent-ink: #ffffff;
   --head: #17191e;
-  --head-ink: #f6f5f1;
+  --head-ink: #f3f5f8;
   --head-muted: #c9cbd1;
   --run-bg: #e6edfd;
   --run: #1e3fa8;
@@ -67,7 +67,7 @@
   --danger-line: #f0c0b8;
   --tab: #ffffff;
   --node-edge: #9dbfe5;
-  --seg: #c9c7bd;
+  --seg: #c3cad5;
   --seg-on: #c2185b;
 }
 
@@ -193,16 +193,19 @@ textarea.field {
 }
 
 .orb {
+  /* the airlie apple (assets/airlie-banner.jpg, cropped) */
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 1px solid #cfe0f3;
-  background: radial-gradient(circle at 50% 50%, #e6f0fb 0%, #9dbfe5 100%);
+  border: 1px solid #3a3f47;
+  background: #1c1f24 url("/app/logo.png") center / cover no-repeat;
 }
 .orb.xl {
-  width: 72px;
-  height: 72px;
+  width: 96px;
+  height: 96px;
+  border-radius: 24px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
 }
 .brand-xl {
   font-weight: 700;

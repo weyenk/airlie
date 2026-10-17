@@ -30,6 +30,9 @@ def test_app_files_are_served_under_app(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]
     assert client.get("/app/missing.js").status_code == 404
+    logo = client.get("/app/logo.png")
+    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    assert client.get("/app/apple-touch-icon.png").status_code == 200
 
 
 def test_static_shell_is_public_but_v1_needs_the_key(tmp_path: Path) -> None:
