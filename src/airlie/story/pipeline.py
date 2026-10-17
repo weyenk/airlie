@@ -69,7 +69,11 @@ StudioFactory = Callable[[], StudioOrchestrator]
 
 CHECK_ATTEMPTS = 2
 """How many times a layer's new and changed tests are checked: the coder gets one retry with the findings."""
-_SHORT = {"vacuous_test": "passes on the layer's base", "assertion_free_test": "has no assertion"}
+_SHORT = {
+    "vacuous_test": "passes on the layer's base",
+    "assertion_free_test": "has no assertion",
+    "unparseable_test": "does not parse",
+}
 """A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
 MUTATION_REVIEW_ATTEMPTS = 2
 """How many times the architect is asked for a usable mutation review: one retry, then the story stops."""
