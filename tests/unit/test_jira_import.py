@@ -72,6 +72,7 @@ class FakeClient:
     def __init__(self, issues: list[dict[str, Any]], **statuses: str | None) -> None:
         self.issues = issues
         self.spec = JiraSpec.model_validate({"site": SITE, "project": "HDS", "statuses": statuses})
+        self.project = "HDS"
         self.calls = 0
 
     async def project_issues(self) -> list[dict[str, Any]]:

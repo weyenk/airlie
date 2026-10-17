@@ -126,6 +126,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie board export {{.CLI_ARGS}}'
 
+  board:import-jira:
+    desc: "Import the Jira project (ATLASSIAN_*) onto the local board, keeping its keys when board.prefix matches; task board:import-jira -- --dry-run first"
+    cmds:
+      - '{{.RUN}} airlie board import-jira {{.CLI_ARGS}}'
+
   serve:
     desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles + catalog models; POST /v1/airlie/run). task serve -- --api-key SECRET before a tunnel"
     cmds:

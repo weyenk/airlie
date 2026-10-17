@@ -1013,6 +1013,59 @@ def board_export(
     console.print(str(path), markup=False, highlight=False, soft_wrap=True)
 
 
+@board_app.command("import-jira")
+def board_import_jira(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="report what the import would do and write nothing")
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Import the Jira project (ATLASSIAN_* / story.jira) onto the local board: epics, stories (tasks,
+    features, bugs) and sub-tasks under their parents, with titles, descriptions, statuses, labels and
+    comments. Issues keep their numbers when board.prefix is the project key; every item gets a jira:<key>
+    label, which a re-run matches to update it and add new comments."""
+    from airlie.board import BoardStore
+    from airlie.board.jira_import import import_jira
+    from airlie.story.board import BoardError
+    from airlie.story.jira import jira_board
+
+    cfg = _load(config)
+    try:
+        client = jira_board(cfg)
+    except BoardError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False, soft_wrap=True)
+        raise typer.Exit(1) from None
+    if client is None:
+        err.print(
+            "[red]no Jira project to import: set ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY (and the "
+            "credentials) in ~/.config/airlie/.env, or story.jira.site and story.jira.project[/red]",
+            emoji=False,
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+    state_dir = cfg.observability.state_dir.expanduser()
+    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    if cfg.board.prefix != client.project:
+        console.print(
+            f"board.prefix is {cfg.board.prefix}, not {client.project}: keys are allocated and the Jira key "
+            f"kept in a jira: label; set board.prefix: {client.project} to keep Jira's numbers",
+            markup=False,
+            highlight=False,
+            emoji=False,
+            soft_wrap=True,
+        )
+    try:
+        report = _run_stoppable(import_jira(store, client, client.project, dry_run=dry_run))
+    except BoardError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False, soft_wrap=True)
+        raise typer.Exit(1) from None
+    finally:
+        store.close()
+    for line in report.notes:
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+    console.print(report.summary(), markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @eval_app.command("run")
 def eval_run(
     task_id: Annotated[str, typer.Argument(help="task id, e.g. lang_detect")],
