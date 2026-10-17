@@ -229,7 +229,7 @@ story undone), and a test with no assertion fails the check too."""
 """How the coder writes the hardening layer's tests (the architect's cases, for mutants that survived)."""
 
 
-def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str) -> Plan:
+def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str, guide: str = "") -> Plan:
     """One build subtask: the coder writes the layer's tests and its code. A layer that owns acceptance
     criteria lists them and is test-first: tests proving each one, then the code that makes them pass; an
     enabling layer adds tests for what it changes."""
@@ -241,6 +241,8 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: s
         f"Scope of this layer: {layer.scope}\n"
         f"Later layers (not yours; leave their work alone): {later}"
     )
+    if guide:
+        context += f"\n\n## Already read for you (do not read these again)\n{guide}"
     build = (
         f"{context}\n\n{layer.brief}\n\nFollow AGENTS.md at the repository root, if it has one.\n"
         "Put new tests in a NEW test file named for the feature (e.g. tests/unit/test_<feature>.py), not "

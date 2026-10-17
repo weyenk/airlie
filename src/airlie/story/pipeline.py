@@ -670,6 +670,7 @@ class StoryPipeline:
             studio_run=orch.run_dir.run_id,
         )
         findings: list[Finding] = []
+        guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
 
         # the hardening layer tests code the story's earlier layers wrote: its red check undoes the story
         red_base = st.base["sha"] if layer.slug == HARDEN_SLUG and st.base else None
@@ -684,7 +685,7 @@ class StoryPipeline:
             repo=self.repo,
             test_cmd=self.test_cmd,
             test_steps=self.commands,
-            plan=layer_plan(story, layers, i, build_role=self.s.build_role),
+            plan=layer_plan(story, layers, i, build_role=self.s.build_role, guide=guide),
             base=base_sha,
             branch=branch,
             synthesise=False,
