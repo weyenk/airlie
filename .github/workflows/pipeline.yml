@@ -1,7 +1,8 @@
 # The pipeline, one stage per level of the test pyramid. A stage starts only when the one before it is green.
 #
 #   1 static        lint + types (the same `task static` that runs on every push to origin)
-#   2 lowest level  unit tests, then mutation tests of what changed (after the unit tests, never before)
+#   2 lowest level  unit tests (mutation testing is not a merge gate: it runs weekly, and once per airlie story
+#                   before the story is published)
 #   3 units in concert   functional, contract, integration
 #   4 behavioural        end-to-end, journey
 #   5 environmental      performance, security
@@ -44,39 +45,9 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task test:unit
 
-  mutation:
-    # After the unit tests: mutmut needs a green suite, and a red one is reported by `unit`, not here.
-    needs: unit
-    runs-on: macos-14
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # the merge base with the target branch
-      - uses: ./.github/actions/setup
-      - name: Pick the ref to diff against
-        id: base
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          case "$EVENT" in
-            pull_request) base="origin/$BASE_REF" ;;
-            push) base="$BEFORE" ;;
-            *) base="origin/main" ;;
-          esac
-          # a new branch or a force push leaves `before` empty, zeros or unreachable: use the parent commit
-          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then base="HEAD~1"; fi
-          echo "ref=$base" >> "$GITHUB_OUTPUT"
-      - name: Mutation-test the changed code and the changed tests
-        env:
-          BASE: ${{ steps.base.outputs.ref }}
-        run: task mutate:changed -- --base "$BASE" --max-children 3
-
   # ---- stage 3: units in concert ----
   functional:
-    needs: [unit, mutation]
+    needs: unit
     runs-on: macos-14
     timeout-minutes: 30
     steps:
@@ -87,7 +58,7 @@ jobs:
         if: hashFiles('tests/functional/**/test_*.py') != ''
 
   contract:
-    needs: [unit, mutation]
+    needs: unit
     runs-on: macos-14
     timeout-minutes: 30
     steps:
@@ -98,7 +69,7 @@ jobs:
         if: hashFiles('tests/contract/**/test_*.py') != ''
 
   integration:
-    needs: [unit, mutation]
+    needs: unit
     runs-on: macos-14
     timeout-minutes: 30
     steps:
