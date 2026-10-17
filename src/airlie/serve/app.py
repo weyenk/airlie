@@ -234,6 +234,15 @@ def create_app(
 
     app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
 
+    @app.middleware("http")
+    async def _revalidate_static(request: Request, call_next: Callable[..., Any]) -> Any:
+        """The shell's files are revalidated on every load (ETags keep that cheap), so a new airlie never
+        serves an old module next to a new one from a phone's cache."""
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/app/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles)}

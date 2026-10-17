@@ -18,12 +18,14 @@ def test_root_serves_the_shell(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "<title>airlie" in r.text
+    assert r.headers["cache-control"] == "no-cache"  # revalidated on every load, so a redeploy shows at once
     assert (WEB_DIR / "index.html").is_file()
 
 
 def test_app_files_are_served_under_app(tmp_path: Path) -> None:
     client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream())))
-    assert client.get("/app/app.css").status_code == 200
+    css = client.get("/app/app.css")
+    assert css.status_code == 200 and css.headers["cache-control"] == "no-cache"
     r = client.get("/app/app.js")
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]

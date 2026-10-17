@@ -1,6 +1,8 @@
-// The shell: a hash router over the screens, the key guard, and (Task 4) the header, theme and navigation.
-import { getKey, setAuthHandler } from "./api.js";
-import { clear, h } from "./dom.js";
+// The shell: header, navigation (the top nav on desktop, the tab bar on phones), the theme toggle, and a hash
+// router over the screens. A screen module exports `title`, `render(root, params, ctx)` (returning a cleanup
+// function or nothing) and, for Sign in, `bare` (no chrome around it).
+import { clearKey, getKey, setAuthHandler } from "./api.js";
+import { clear, h, icon } from "./dom.js";
 import * as signin from "./screens/signin.js";
 
 const ROUTES = [
@@ -8,11 +10,88 @@ const ROUTES = [
   { re: /^#\/jobs\/?$/, nav: "jobs", load: () => import("./screens/jobs.js") },
   { re: /^#\/jobs\/([^/]+)$/, nav: "jobs", load: () => import("./screens/job.js") },
   { re: /^#\/board(?:\/([^/]+))?$/, nav: "board", load: () => import("./screens/board.js") },
-  { re: /^#\/(topology|metrics|admin)$/, nav: null, load: () => import("./screens/soon.js") },
+  { re: /^#\/(topology|metrics|admin)$/, nav: "$1", load: () => import("./screens/soon.js") },
   { re: /^#\/signin$/, nav: null, load: async () => signin },
 ];
 
-const app = document.getElementById("app");
+const NAV = [
+  ["chat", "#/", "Chat"],
+  ["jobs", "#/jobs", "Jobs"],
+  ["board", "#/board", "Board"],
+  ["topology", "#/topology", "Topology"],
+  ["metrics", "#/metrics", "Metrics"],
+  ["admin", "#/admin", "Admin"],
+];
+
+// ---- theme ----
+const THEME = "airlie.theme";
+
+function theme() {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function setTheme(next) {
+  document.documentElement.dataset.theme = next;
+  try {
+    localStorage.setItem(THEME, next);
+  } catch {
+    /* this page only */
+  }
+  themeButton.replaceChildren(icon(next === "dark" ? "sun" : "moon", 18));
+  themeButton.setAttribute("aria-label", next === "dark" ? "Switch to light theme" : "Switch to dark theme");
+}
+
+const themeButton = h("button", { type: "button", class: "iconbtn", onclick: () => setTheme(theme() === "dark" ? "light" : "dark") });
+
+// ---- shell ----
+const nav = h("nav", { class: "nav", "aria-label": "Main" }, NAV.map(([id, href, label]) => h("a", { href, dataset: { nav: id } }, label)));
+const tabs = h(
+  "nav",
+  { class: "tabs", "aria-label": "Main" },
+  NAV.map(([id, href, label]) => h("a", { href, dataset: { nav: id } }, icon(id), h("span", null, label))),
+);
+const signOut = h(
+  "button",
+  {
+    type: "button",
+    class: "linkbtn",
+    onclick: () => {
+      clearKey();
+      ctx.returnTo = "";
+      ctx.go("#/signin");
+    },
+  },
+  "Sign out",
+);
+const main = h("main", { id: "screen", class: "main" });
+const shell = h(
+  "div",
+  { class: "shell" },
+  h(
+    "header",
+    { class: "top" },
+    h(
+      "div",
+      { class: "wrap bar" },
+      h("a", { href: "#/", class: "brand" }, h("span", { class: "orb", "aria-hidden": "true" }), "airlie"),
+      nav,
+      h("div", { class: "right" }, themeButton, signOut),
+    ),
+  ),
+  main,
+  tabs,
+);
+setTheme(theme());
+document.getElementById("app").replaceWith(shell);
+
+function markCurrent(id) {
+  for (const a of [...nav.children, ...tabs.children]) {
+    if (a.dataset.nav === id) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+}
+
+// ---- router ----
 let cleanup = null;
 let current = "";
 const ctx = {
@@ -34,7 +113,8 @@ async function route() {
   const hash = location.hash || "#/";
   const found = ROUTES.map((r) => ({ r, m: hash.match(r.re) })).find((x) => x.m);
   if (!found) return ctx.go("#/");
-  if (!getKey() && found.r.load !== ROUTES.at(-1).load) {
+  const isSignin = found.r.load === ROUTES.at(-1).load;
+  if (!getKey() && !isSignin) {
     ctx.returnTo = hash;
     return ctx.go("#/signin");
   }
@@ -43,7 +123,7 @@ async function route() {
   try {
     screen = await found.r.load();
   } catch (e) {
-    clear(app).append(h("p", { class: "error", style: { padding: "20px" } }, `This screen failed to load: ${e.message}`));
+    clear(main).append(h("p", { class: "error pad" }, `This screen failed to load: ${e.message}`));
     return;
   }
   if (token !== current) return; // the hash moved on while the module loaded
@@ -56,9 +136,12 @@ async function route() {
     cleanup = null;
   }
   document.title = screen.title ? `${screen.title} · airlie` : "airlie";
-  clear(app);
+  shell.classList.toggle("bare", Boolean(screen.bare));
   const params = found.m.slice(1);
-  const out = screen.render(app, params, ctx);
+  markCurrent(found.r.nav === "$1" ? params[0] : found.r.nav);
+  clear(main);
+  main.scrollTop = 0;
+  const out = screen.render(main, params, ctx);
   cleanup = typeof out === "function" ? out : null;
 }
 
