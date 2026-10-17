@@ -43,6 +43,10 @@ story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
 app.add_typer(story_app, name="story")
+board_app = typer.Typer(
+    no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
+)
+app.add_typer(board_app, name="board")
 mcp_app = typer.Typer()  # its help is mcp_serve's docstring
 app.add_typer(mcp_app, name="mcp")
 console = Console()
@@ -982,6 +986,31 @@ def story_check(
     for p in checked.problems:
         err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
     raise typer.Exit(1)
+
+
+@board_app.command("export")
+def board_export(
+    out: Annotated[
+        Path | None, typer.Option("--out", help="where to write (default: board.json next to board.sqlite)")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Write the whole local board as JSON (for backups and diffs) and print the path."""
+    import json
+
+    from airlie.board import BoardStore
+
+    cfg = _load(config)
+    state_dir = cfg.observability.state_dir.expanduser()
+    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    try:
+        data = store.export()
+    finally:
+        store.close()
+    path = out if out is not None else state_dir / "board.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    console.print(str(path), markup=False, highlight=False, soft_wrap=True)
 
 
 @eval_app.command("run")
