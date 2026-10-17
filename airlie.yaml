@@ -225,6 +225,15 @@ aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 s
 # ---- Host + observability -----------------------------------------------------------------------------------------
 memory: { wired_limit_mb: 106496, os_reserve_gb: 12 }  # docs/wiki/build-spec/01 §1; `task doctor` projects the total
 observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 14 }
+# Sign-in for the web app (docs/superpowers/plans/2026-10-17-sign-in.md): people come as themselves, by Tailscale
+# identity behind `tailscale serve` or a passkey from an invite (`task auth:admin`, `task auth:invite`); the
+# --api-key stays for OpenCode and `airlie mcp`. The user store is observability.state_dir/auth.sqlite.
+# auth:
+#   tailscale: true                # trust Tailscale-User-Login on requests tailscale serve proxies (loopback)
+#   rp_id: studio.tail1234.ts.net  # WebAuthn relying party (default: the request's host)
+#   origins: [https://studio.tail1234.ts.net]
+#   session_days: 30
+#   invite_hours: 24
 
 # ---- Stories (task story; docs/integrations/story.md) -------------------------------------------------------------
 # A Jira issue (or --text) → product's story → architect's layers → each layer built test-first by the studio on

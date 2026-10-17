@@ -13,13 +13,13 @@ from typing import Any
 import httpx
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
 from airlie.config import load_config
 from airlie.serve.app import create_app
 from airlie.serve.mcp_server import airlie_http, build_server, opencode_entry
 from airlie.story import factory
 from airlie.story.state import StoryState
+from tests.unit.serve_helpers import TestClient
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_serve_jobs import finish

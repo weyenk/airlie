@@ -11,7 +11,6 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from airlie.engine import FakeEngine, FakeReply
 from airlie.obs import EventSink
@@ -23,6 +22,7 @@ from airlie.story.board import BoardError, text_card
 from airlie.story.model import StorySetupError
 from airlie.story.state import StoryState, story_lock
 from airlie.topology.studio import StudioOrchestrator
+from tests.unit.serve_helpers import TestClient
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_story_pipeline import STORY_ROLES

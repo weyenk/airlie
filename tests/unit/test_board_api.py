@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
-from fastapi.testclient import TestClient
 
 from airlie.board import BoardStore
 from airlie.serve.app import create_app
+from tests.unit.serve_helpers import TestClient
 from tests.unit.test_serve import FakeUpstream, cfg
 
 

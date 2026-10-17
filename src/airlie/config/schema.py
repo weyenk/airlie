@@ -245,6 +245,21 @@ class ObservabilitySpec(Strict):
     retain_days: int = 14
 
 
+class AuthSpec(Strict):
+    """Who may use `task serve` as a person (docs/superpowers/plans/2026-10-17-sign-in.md)."""
+
+    tailscale: bool = Field(
+        default=False,
+        description="trust the Tailscale-User-Login header `tailscale serve` adds (loopback requests only)",
+    )
+    rp_id: str | None = Field(default=None, description="WebAuthn relying party (default: the request host)")
+    origins: list[str] = Field(
+        default_factory=list, description="WebAuthn origins (default: https://<rp_id> and http localhost)"
+    )
+    session_days: int = Field(default=30, ge=1, description="how long a sign-in cookie lasts")
+    invite_hours: int = Field(default=24, ge=1, description="how long an invite link may be used")
+
+
 class MemorySpec(Strict):
     """Host memory expectations checked by `task doctor` (wiki build-spec 01 §1)."""
 
@@ -424,6 +439,7 @@ class AirlieConfig(Strict):
     teams: TeamsSpec = Field(default_factory=TeamsSpec)
     aggregator: AggregatorSpec = Field(default_factory=AggregatorSpec)
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
+    auth: AuthSpec = Field(default_factory=AuthSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     repo_map: RepoMapSpec = Field(default_factory=RepoMapSpec)
     topology: TopologySpec = Field(default_factory=TopologySpec)

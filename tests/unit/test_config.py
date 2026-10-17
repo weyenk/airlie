@@ -881,3 +881,18 @@ def test_story_board_is_jira_or_local(tmp_path: Path) -> None:
     assert cfg.story.board == "local" and cfg.board.prefix == "HDS"
     with pytest.raises(ConfigError, match=r"story\.board"):
         load_config(write(tmp_path, {**MINIMAL, "story": {"board": "trello"}}))
+
+
+def test_auth_defaults_are_off_with_30_day_sessions_and_24_hour_invites(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.auth.tailscale is False
+    assert cfg.auth.rp_id is None
+    assert cfg.auth.origins == []
+    assert cfg.auth.session_days == 30
+    assert cfg.auth.invite_hours == 24
+
+
+def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:
+    data = {**MINIMAL, "auth": {"session_days": 0}}
+    with pytest.raises(ConfigError, match="auth.session_days"):
+        load_config(write(tmp_path, data))

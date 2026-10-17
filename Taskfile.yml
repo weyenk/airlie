@@ -131,6 +131,26 @@ tasks:
     cmds:
       - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
 
+  auth:admin:
+    desc: "Create the first admin and print their invite link (task auth:admin -- --name Noah [--login noah@github] [--base-url https://studio.tailxxxx.ts.net]); docs/integrations/sign-in.md"
+    cmds:
+      - '{{.RUN}} airlie auth admin {{.CLI_ARGS}}'
+
+  auth:invite:
+    desc: "Invite a person to the web app: a link where they register a passkey (task auth:invite -- --name Pat [--role member|admin] [--login pat@github] [--base-url URL])"
+    cmds:
+      - '{{.RUN}} airlie auth invite {{.CLI_ARGS}}'
+
+  auth:users:
+    desc: "List people: id, name, Tailscale login, role, passkeys"
+    cmds:
+      - '{{.RUN}} airlie auth users {{.CLI_ARGS}}'
+
+  auth:revoke:
+    desc: "Remove a person; their passkeys and sessions end at once (task auth:revoke -- --id ID)"
+    cmds:
+      - '{{.RUN}} airlie auth revoke {{.CLI_ARGS}}'
+
   tunnel:
     desc: "Expose `task serve` (8090) through a Cloudflare quick tunnel for clients that call from the cloud (Cursor). Run serve with --api-key first."
     cmds:
