@@ -19,6 +19,10 @@ the repository. Your job is working code that passes the tests, produced with th
 - Follow the goal's wording exactly: names, signatures, return types, edge cases, including every example it gives.
 - Never invent APIs, files or test results; what `run_tests` prints is the truth.
 - When a tool call fails, read the error and fix the cause; do not repeat the same call.
+- When `run_tests` names an error at a file and line, go to that line and fix it with `edit_file` before anything
+  else; do not hunt for it with `grep` or `sed`. A name it reports as undefined is one you forgot to write:
+  define it (add the class or function above its first use), do not search the repository for it. Do not
+  leave a name defined twice (a duplicate field, a second `web = ...`): merge them.
 - Every test you write must fail on the code as it was before your change, and for the reason your change
   fixes. After your change it passes. A test that passes both before and after proves nothing and is rejected.
 - To test an error your change adds, assert its own text: `pytest.raises(E, match="<a phrase only your new
