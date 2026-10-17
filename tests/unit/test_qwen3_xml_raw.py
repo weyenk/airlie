@@ -6,6 +6,7 @@ Every expected value below is written by hand from the model's chat template: `<
 from __future__ import annotations
 
 import json
+import logging
 import types
 from pathlib import Path
 from typing import Any
@@ -284,6 +285,72 @@ def test_a_call_cut_off_after_its_name_has_no_arguments() -> None:
 def test_hermes_json_arguments_are_passed_on_as_json_text(body: str, arguments: str) -> None:
     info = Qwen3XmlRawToolParser().extract_tool_calls(f"<tool_call>\n{body}\n</tool_call>", REQ)
     assert [(c["name"], c["arguments"]) for c in info.tool_calls] == [("f", arguments)]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"name": "read_file", "parameters": {"path": "src/a.py"}}',
+        '{"name": "read_file", "parameters": "{\\"path\\": \\"src/a.py\\"}"}',
+        '{"name": "read_file", "arguments": {"path": "src/a.py"}, "parameters": {"path": "other.py"}}',
+        '{"name": "read_file", "parameters": {"path": "o.py"}, "arguments": "{\\"path\\": \\"src/a.py\\"}"}',
+    ],
+    ids=["parameters_object", "parameters_string", "arguments_win", "arguments_string_win"],
+)
+def test_hermes_json_parameters_is_read_as_arguments(body: str) -> None:
+    """HDS-5: the coder wrote `parameters`; dropping it left read_file without a path."""
+    text = f"<tool_call>\n{body}\n</tool_call>"
+    assert parse(text) == ([("read_file", {"path": "src/a.py"})], None)
+    for size in (1, 7, 10_000):
+        calls, _ = stream(text, size)
+        assert [(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls] == [
+            ("read_file", {"path": "src/a.py"})
+        ]
+
+
+EMPTY_CALLS = [
+    '<tool_call>\n{"name": "read_file"}\n</tool_call>',
+    '<tool_call>\n{"name": "read_file", "arguments": {}}\n</tool_call>',
+    "<function=read_file></function>",
+    "Reading.\n<tool_call>\n<function=read_file>\n</function>\n</tool_call>",
+]
+
+
+@pytest.mark.parametrize("text", EMPTY_CALLS)
+def test_a_call_without_arguments_is_logged_with_its_raw_text(
+    text: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="airlie.engine.parsers.qwen3_xml_raw")
+    assert parse(text)[0] == [("read_file", {})]  # still returned as an empty call
+    raw = repr(text[text.index("<") :])  # one log line: newlines escaped
+    want = [("airlie.engine.parsers.qwen3_xml_raw", logging.WARNING)]
+    assert [(r.name, r.levelno) for r in caplog.records] == want
+    msg = caplog.records[0].getMessage()
+    assert msg == "airlie qwen3_xml_raw: read_file call has no arguments; raw call: " + raw
+    assert "Reading." not in msg  # the call, not the prose around it
+    for size in (1, 10_000):
+        caplog.clear()
+        calls, _ = stream(text, size)
+        assert [c["function"]["arguments"] for c in calls] == ["{}"]
+        assert [(r.name, r.levelno) for r in caplog.records] == want
+        assert raw in caplog.records[0].getMessage()
+
+
+def test_a_call_with_arguments_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="airlie.engine.parsers.qwen3_xml_raw")
+    for text in (WRAPPED, HERMES, EDIT):
+        parse(text)
+        stream(text, 3)
+    assert caplog.records == []
+
+
+def test_the_logged_raw_call_is_capped(caplog: pytest.LogCaptureFixture) -> None:
+    pad = " " * 5000
+    text = '<tool_call>\n{"name": "read_file",' + pad + '"x": 1}\n</tool_call>'
+    caplog.set_level(logging.WARNING, logger="airlie.engine.parsers.qwen3_xml_raw")
+    parse(text)
+    msg = caplog.records[0].getMessage()
+    assert msg.endswith(repr(text[:2048]))
 
 
 def test_a_typed_value_cut_off_mid_call_stays_text_and_unterminated() -> None:

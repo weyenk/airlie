@@ -8,14 +8,17 @@ Format, from the chat template: [prose] [<tool_call>] <function=NAME>
 (<parameter=K>\\nVALUE\\n</parameter>)* </function> [</tool_call>], one newline on each side of VALUE being
 format. A `</parameter>` ends the value only when the next markup is `<parameter=`, `</function>`, another
 call or the end of the output. Hermes JSON (`<tool_call>{"name": …, "arguments": …}</tool_call>`) is read
-too. Streaming emits each call whole once it is complete; a call cut off by max_tokens keeps unterminated
-arguments, so the agent reports a runaway instead of writing half a file. Registered as `qwen3_xml_raw`;
+too, with `parameters` taken for `arguments` when that is absent. Streaming emits each call whole once it is
+complete; a call cut off by max_tokens keeps unterminated arguments, so the agent reports a runaway instead of
+writing half a file. A call left with no arguments is logged with its raw text: the engine log is the only
+place that text survives. Registered as `qwen3_xml_raw`;
 delete it when a vllm-mlx release parses this format."""
 
 from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 import uuid
 from collections.abc import Iterator
@@ -38,6 +41,9 @@ _NAME_SO_FAR = re.compile(r"[^>\s]*")
 _NON_WS = re.compile(r"\S")
 _STRING = {"string", "str", "text", "varchar", "char", "enum"}
 _JSON = json.JSONDecoder()
+_RAW_CAP = 2048  # characters of raw call text kept in the log
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,6 +53,7 @@ class _Call:
     params: list[tuple[str, str]] = field(default_factory=list)
     json_args: str | None = None
     cut: bool = False  # the output ended inside a value or a tag
+    raw: str = ""  # the call's own text, for the log
 
 
 # A scan finds a _Call, False when the marker was prose, or None while only more output can tell.
@@ -95,7 +102,7 @@ def _scan_json(text: str, j: int, final: bool) -> _Call | Literal[False] | None:
     stop = _after_call(text, end, final)
     if stop is None:
         return None
-    args = obj.get("arguments", {})
+    args = obj.get("arguments", obj.get("parameters", {}))
     json_args = args if isinstance(args, str) else _dumps(args)
     return _Call(obj["name"], stop, json_args=json_args)
 
@@ -154,6 +161,7 @@ def _segments(text: str, start: int, final: bool) -> Iterator[tuple[int, str | _
             pos = m.end()
             yield pos, m.group()
             continue
+        found.raw = text[m.start() : found.end]
         pos = _skip_ws(text, found.end)  # whitespace between calls is format, not prose
         yield pos, found
     stop = len(text) if final else len(text) - _held(text)
@@ -195,6 +203,15 @@ def _typed(value: str, prop: Any) -> Any:
 
 
 def _arguments(call: _Call, request: dict[str, Any] | None) -> str:
+    out = _build_arguments(call, request)
+    if out == "{}":
+        log.warning(
+            "airlie qwen3_xml_raw: %s call has no arguments; raw call: %r", call.name, call.raw[:_RAW_CAP]
+        )
+    return out
+
+
+def _build_arguments(call: _Call, request: dict[str, Any] | None) -> str:
     if call.json_args is not None:
         return call.json_args
     props = _properties(request, call.name)
