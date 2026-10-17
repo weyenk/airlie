@@ -209,12 +209,14 @@ def pr_body(
     rows: list[dict[str, Any]],
     prs: list[tuple[int, str]],
     test_cmd: str | None,
+    mutation: str | None = None,
 ) -> str:
     """The PR text a reviewer reads. Model text stays in its section: titles, scope and table cells are one
     line; the brief and criteria are blockquotes; each finding is one bullet. Each body field is cut, then
     neutralised by `_model`, so GitHub renders no markup from it. The body stays under BODY_LIMIT: findings
     are cut first, and the stack and the merge line always close it. `test_cmd` is the gate the layer passed,
-    as shown; None names no command (a layer built before each layer kept its gate)."""
+    as shown; None names no command (a layer built before each layer kept its gate). `mutation` is how the
+    story's mutation gate went, for every PR of the stack; None (a story from before it) says nothing."""
     layer = layers[i]
     passed = f"`{test_cmd}`" if test_cmd is not None else "the story's test gate"
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
@@ -245,6 +247,7 @@ def pr_body(
         ),
         "",
         f"Tests: {passed} passes on this branch.",
+        *([f"Mutation gate: {mutation}"] if mutation is not None else []),
         "",
         "### Reviewer findings to check",
     ]
@@ -260,3 +263,16 @@ def pr_body(
     findings = [f"- {ZWSP}{_model(_line(str(f), 500))}" for r in rows for f in r["findings"]]
     shown = _fit(findings, BODY_LIMIT - 1 - fixed, "… and {} more findings", gap="")
     return "\n".join([*head, *(shown or ["- none"]), *tail]) + "\n"
+
+
+def mutation_feedback(summary: str) -> str:
+    """What the top layer's coder is told when the story's mutation gate fails: the gate's summary of the
+    mutants that survived, and what to do."""
+    return (
+        "airlie ran the story's mutation gate over the whole story's change, and some mutants of the code "
+        "survived: the tests still pass when the code is changed like this, so they do not pin its "
+        f"behaviour. The gate's summary:\n\n{summary}\n\n"
+        "Strengthen the tests so each of these mutants makes a test fail: assert the exact values, branches "
+        "and edge cases the mutated lines decide. Change the tests, not the code, unless the code is wrong. "
+        "Run run_tests until the whole suite passes, then stop."
+    )

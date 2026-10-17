@@ -339,6 +339,11 @@ class StorySpec(Strict):
     stage_attempts: int = Field(
         default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"
     )
+    mutation_timeout_s: float = Field(
+        default=3600,
+        gt=0,
+        description="how long the story's mutation gate (AGENTS.md's Mutation gate) may run, once per story",
+    )
     product_role: str = "product"
     architect_role: str = "architect"
     build_role: str = "coder"

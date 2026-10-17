@@ -119,6 +119,16 @@ def test_pr_title_and_body() -> None:
     assert "`uv run pytest -q` passes" in body
     assert "1. #11 Storage\n2. #12 Profile (this PR)\n3. #13 Docs" in body
     assert "a human reviews and merges" in body
+    assert "Mutation gate" not in body  # a story from before the mutation gate names none
+
+
+def test_a_pr_body_names_the_storys_mutation_gate_result_under_its_tests() -> None:
+    body = pr_body(
+        CARD, STORY, LAYERS, 0, ROWS, PRS, "uv run pytest -q", "passes on the top layer (`make m`)"
+    )
+    assert (
+        "`uv run pytest -q` passes on this branch.\nMutation gate: passes on the top layer (`make m`)" in body
+    )
 
 
 def test_refine_brief_quotes_card_text_line_by_line_and_caps_it() -> None:

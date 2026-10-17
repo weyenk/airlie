@@ -56,7 +56,11 @@ class StoryState:
     rebuilds it. `base` is the commit the story builds on, as {"ref": "origin/main", "sha": ...}: resolved
     once, so a resume reads and builds on the same code. `gate` is the test gate read from AGENTS.md at that
     commit, as {"commands": [...], "agents_md": <its blob sha>}: read once, so every layer built without a
-    person's --test-cmd, resumed or not, passes the same commands."""
+    person's --test-cmd, resumed or not, passes the same commands. `mutation_gate` is AGENTS.md's Mutation
+    gate at that commit, read with the test gate, as {"commands": [...], "agents_md": <its blob sha>}, or
+    {"commands": []} when it has none. `mutation` is how that gate went on the top layer: {"status": "passed"
+    or "skipped", "attempts": n, "head": <the top layer's commit>, ...}, kept so a resume never runs it again
+    for a layer that is built."""
 
     path: Path
     card: dict[str, Any]
@@ -68,6 +72,8 @@ class StoryState:
     attempt: dict[str, str] | None = None
     base: dict[str, str] | None = None
     gate: dict[str, Any] | None = None
+    mutation_gate: dict[str, Any] | None = None
+    mutation: dict[str, Any] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None

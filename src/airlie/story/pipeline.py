@@ -1,6 +1,7 @@
 """The story pipeline: an issue → product's story → architect's layers → each layer built test-first by the
 studio on its own branch, gated by the repository's test gate (its AGENTS.md at the story's base commit, or a
-person's --test-cmd) → a gh stack of draft PRs → the issue in review.
+person's --test-cmd) → the story's mutation gate, once, on the top layer (AGENTS.md's optional Mutation gate)
+→ a gh stack of draft PRs → the issue in review.
 
 Every stage leaves state, an event and a note on the issue; a stop is a note, never silence. Only a human
 merges: nothing here can."""
@@ -18,8 +19,16 @@ from typing import Any
 
 from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
-from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
-from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
+from airlie.story.briefs import (
+    layer_goal,
+    layer_plan,
+    layers_brief,
+    mutation_feedback,
+    pr_body,
+    pr_title,
+    refine_brief,
+)
+from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate, read_mutation_gate, with_base
 from airlie.story.layer_checks import Finding, checks_for, feedback
 from airlie.story.model import (
     SURROGATE,
@@ -44,6 +53,8 @@ from airlie.teams.worktree import (
     rev_parse,
     squash_since,
 )
+from airlie.tools.protocol import ToolContext
+from airlie.tools.shell import run_cmd
 from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
@@ -53,6 +64,13 @@ CHECK_ATTEMPTS = 2
 """How many times a layer's new and changed tests are checked: the coder gets one retry with the findings."""
 _SHORT = {"vacuous_test": "passes on the layer's base", "assertion_free_test": "has no assertion"}
 """A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
+MUTATION_ATTEMPTS = 2
+"""How many times the story's mutation gate runs: the top layer's coder gets one retry with its summary."""
+MUTATION_OUTPUT_CHARS = 2_000_000
+"""The mutation gate's output is kept whole up to this, then cut to MUTATION_SUMMARY_CHARS by `_cap`."""
+MUTATION_SUMMARY_CHARS = 12_000
+"""How much of the mutation gate's output the coder, the events and a stop reason get (its start and end)."""
+NO_MUTATION_GATE = "the repository's AGENTS.md has no Mutation gate section"
 REASON_CHARS = 800
 """A stop reason is cut to this many characters before it is stored, logged or posted (`_block`)."""
 CANCEL_NOTE_S = 10.0
@@ -159,6 +177,16 @@ def _reason(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+def _mutation_text(mutation: dict[str, Any] | None) -> str | None:
+    """How the story's mutation gate went, for its PRs: None for a story from before it."""
+    if mutation is None:
+        return None
+    if mutation["status"] == "skipped":
+        return f"skipped: {mutation['reason']}"
+    retry = " after one retry" if mutation["attempts"] > 1 else ""
+    return f"passes on the top layer{retry} (`{mutation['commands']}`, over the whole story's change)"
+
+
 def _board_error(st: StoryState, call: str, e: Exception) -> None:
     st.emit("board_error", call=call, error=_redact_urls(f"{type(e).__name__}: {e}"))
 
@@ -189,6 +217,7 @@ class StoryPipeline:
         self.test_cmd = self.person_cmd or ""  # what runs: the story's gate, once _gate has found it
         self.commands: tuple[str, ...] = (self.person_cmd,) if self.person_cmd else ()  # one by one
         self.timeout_s = cfg.tools.shell_timeout_s
+        self.mutation_timeout_s = cfg.story.mutation_timeout_s
         self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
@@ -275,7 +304,9 @@ class StoryPipeline:
         """The command every layer must pass: a person's --test-cmd, else the story's test gate. The gate is
         read once, from the AGENTS.md of the story's base commit (never from a worktree, which a model
         writes), and kept in the state: the story keeps it for its whole life, whatever AGENTS.md says later.
-        A repository with no gate there stops the story, before any model works."""
+        A repository with no gate there stops the story, before any model works. The Mutation gate is read
+        with it, whatever the test gate is (`_read_mutation_gate`)."""
+        self._read_mutation_gate(st, base)
         if self.person_cmd is not None:
             run = shown = self.person_cmd
             self.commands = (self.person_cmd,)
@@ -295,6 +326,28 @@ class StoryPipeline:
             self.commands = tuple(commands)
         self.test_cmd = run
         self._shown_cmd = _redact_urls(shown)
+
+    def _read_mutation_gate(self, st: StoryState, base: dict[str, str]) -> None:
+        """The story's mutation gate: AGENTS.md's Mutation gate at the story's base commit, read once and kept
+        in the state as the test gate is. None there is no stop: the stage is skipped. One that cannot run
+        stops the story, before any model works."""
+        if st.mutation_gate is not None:
+            return
+        try:
+            found = read_mutation_gate(self.repo, base["sha"])
+        except NoTestGate as e:
+            who = self.github_repo or st.github_repo or str(self.repo)
+            raise StoryBlocked(
+                f"{who} has a Mutation gate on {base['ref']} ({base['sha'][:12]}) that cannot run: {e}. Fix "
+                "that section of AGENTS.md, or remove it to build stories without a mutation gate"
+            ) from None
+        if found is None:
+            st.mutation_gate = {"commands": []}
+        else:
+            st.mutation_gate = {"commands": list(found.commands), "agents_md": found.blob}
+            masked = [_redact_urls(c) for c in found.commands]
+            st.emit("mutation_gate", commands=masked, agents_md=found.blob, base=base)
+        st.save()
 
     async def _ask(self, st: StoryState, stage: str, role: str, brief: str) -> str:
         """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
@@ -478,8 +531,12 @@ class StoryPipeline:
             raise StoryBlocked(
                 f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{_kept(wt, branch)}"
             )
+        if i == len(layers) - 1:  # the whole story is built and passes its gate: its mutation gate, once
+            await self._mutation_gate(st, orch, wt, base_sha, nn, layer, branch)
         sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
         remove_worktree(self.repo, wt)
+        if st.mutation is not None and st.mutation["status"] == "passed":
+            st.mutation["head"] = sha  # the commit it passed on, as the stack publishes it
         st.built[nn] = {
             "branch": branch,
             "sha": sha,
@@ -492,6 +549,72 @@ class StoryPipeline:
         st.emit("layer_built", layer=nn, branch=branch, sha=sha)
         built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
         await self.board.comment(card, note(built))
+
+    async def _mutation_gate(
+        self,
+        st: StoryState,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        layer: Layer,
+        branch: str,
+    ) -> None:
+        """The story's mutation gate (AGENTS.md's Mutation gate, `{base}` the story's base commit), once, in
+        the top layer's worktree once its test gate passes: run as the gate runs (the agent environment,
+        killed after story.mutation_timeout_s). A failure goes back to the top layer's coder once with the
+        gate's summary; then the layer's checks and its test gate run again before the mutation gate does. A
+        second failure, or a retry that breaks the checks or the gate, stops the story. No Mutation gate:
+        skipped, with an event. `base_sha` is the layer's own base, for its checks."""
+        commands = (st.mutation_gate or {}).get("commands") or []
+        if not commands:
+            st.mutation = {"status": "skipped", "reason": NO_MUTATION_GATE}
+            st.save()
+            st.emit("mutation_gate_skipped", layer=nn, reason=NO_MUTATION_GATE)
+            return
+        assert st.base is not None  # _base resolved it before any layer was built
+        run = gate_command(with_base(commands, st.base["sha"]))
+        shown = _redact_urls(gate_shown(commands))
+        where = f"layer {nn} ({layer.title})"
+        summary = ""
+        for attempt in range(1, MUTATION_ATTEMPTS + 1):
+            head = commit_wip(wt, f"studio: layer {nn} (mutation gate {attempt})")
+            st.emit("mutation_gate_start", layer=nn, attempt=attempt, commands=shown, base=st.base, head=head)
+            ok, summary = await self._mutate(wt, run)
+            if ok:
+                st.mutation = {"status": "passed", "attempts": attempt, "head": head, "commands": shown}
+                st.save()
+                st.emit("mutation_gate_passed", layer=nn, attempt=attempt, head=head)
+                return
+            st.emit("mutation_gate_failed", layer=nn, attempt=attempt, head=head, summary=summary)
+            if attempt == MUTATION_ATTEMPTS:
+                break
+            st.emit("mutation_gate_retry", layer=nn)
+            await orch.follow_up("build", mutation_feedback(summary))
+            findings = await self._check_tests(st, orch, wt, base_sha, nn)
+            if findings:
+                listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
+                raise StoryBlocked(
+                    f"{where}: after the mutation gate's retry, its tests do not test its change ({listed})"
+                    f"{_kept(wt, branch)}"
+                )
+            if await orch.gate() is not True:
+                raise StoryBlocked(
+                    f"{where}: after the mutation gate's retry, `{self._shown_cmd}` fails on {branch}"
+                    f"{_kept(wt, branch)}"
+                )
+        # the summary last: a stop reason is cut to its start and its end, and the end is what survived
+        raise StoryBlocked(
+            f"{where}: the mutation gate `{shown}` still fails after one retry{_kept(wt, branch)} "
+            f"The gate said: {summary}"
+        )
+
+    async def _mutate(self, wt: Path, command: str) -> tuple[bool, str]:
+        """Run the mutation gate's `command` in `wt` as the test gate runs (tools.shell.run_cmd): whether it
+        passed, and its output, masked and cut to MUTATION_SUMMARY_CHARS (its start and its end)."""
+        ctx = ToolContext(wt, self.mutation_timeout_s, MUTATION_OUTPUT_CHARS)
+        result = await run_cmd(command, ctx, shell=True)
+        return result.ok, _cap(_redact_urls(result.output.strip()), MUTATION_SUMMARY_CHARS)
 
     async def _check_tests(
         self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
@@ -545,7 +668,7 @@ class StoryPipeline:
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
                 # the gate this layer passed: a state from before layers kept theirs has none to name
                 gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(card, story, layers, i, rows, prs, gate)
+                text = pr_body(card, story, layers, i, rows, prs, gate, _mutation_text(st.mutation))
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
