@@ -56,6 +56,16 @@ def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     gitconfig.write_text(
         f'[credential]\n\thelper = "{HELPER}"\n[credential "{URL}"]\n\thelper = "{HELPER}"\n'
     )
+    # start from an unsanitized environment even when this suite runs inside an agent's (a story layer's
+    # gate does: airlie sets these on every process a model's code starts)
+    for name in (*NO_PROMPTS, *NO_SSH, "GH_CONFIG_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    for name in [
+        n
+        for n in os.environ
+        if n == "GIT_CONFIG_COUNT" or n.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    ]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     for name in CREDENTIALS:
