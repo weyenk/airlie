@@ -14,7 +14,7 @@ from typing import Any
 from airlie.subproc import agent_env, kill_group
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
-from airlie.tools.scope import changed_test_files, scoped_steps, tree_fingerprint
+from airlie.tools.scope import autofix_steps, changed_test_files, scoped_steps, tree_fingerprint
 
 GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "reflog", "worktree", "config"}
 
@@ -125,9 +125,13 @@ class RunTests:
 
 
 async def _run_scoped(ctx: ToolContext) -> ToolResult:
-    """The gate with pytest limited to the layer's own test files; when it passes, the whole gate, unless the
-    memo says this very tree already passed it. A pytest step with no test file to run is left out, and the
-    run says so (the layer is written test-first: its tests come before the code)."""
+    """The gate with pytest limited to the layer's own test files, after ruff has formatted and fixed what it
+    safely can (the gate's ruff steps then pass or report only what needs thought). When that passes, the
+    whole gate, unless the memo says this very tree already passed it. A pytest step with no test file to run
+    is left out, and the run says so (the layer is written test-first: its tests come before the code)."""
+    await run_steps(
+        autofix_steps(ctx.test_steps), ctx
+    )  # formatting and safe lint fixes: the result is not news
     files = changed_test_files(ctx.worktree, ctx.scope_base)
     steps = scoped_steps(ctx.test_steps, files)
     first = await run_steps(steps, ctx)

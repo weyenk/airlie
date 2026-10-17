@@ -26,8 +26,8 @@ from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
-from airlie.tools.scope import GateMemo, tree_fingerprint
-from airlie.tools.shell import run_cmd
+from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
+from airlie.tools.shell import run_cmd, run_steps
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
     Answer,
@@ -659,6 +659,11 @@ class StudioOrchestrator:
         cancel."""
         if not test_cmd or self.worktree is None or not self.runs:
             return None
+        if (
+            self.scope_base
+        ):  # the coder's last edit may have come after its last run_tests: mend its style too
+            fix = ToolContext(self.worktree, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars)
+            await run_steps(autofix_steps(self.test_steps), fix)
         if (
             self.scope_base
             and self.gate_memo.passed is not None
