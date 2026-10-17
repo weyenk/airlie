@@ -203,3 +203,26 @@ def test_a_commit_that_fails_rolls_back_and_the_store_keeps_working(tmp_path: Pa
     assert not db.in_transaction
     assert s.create(level="initiative", title="j").key == "AL-2"
     assert [i.title for i in s.list()] == ["i", "j"]
+
+
+def test_create_with_a_number_keeps_it_and_moves_the_counter_past_it(tmp_path: Path) -> None:
+    """An import keeps Jira's numbers: HDS-5 stays HDS-5, and the next allocated key comes after it."""
+    s = store(tmp_path, prefix="HDS")
+    five = s.create(level="initiative", title="five", number=5)
+    assert five.key == "HDS-5"
+    assert s.create(level="initiative", title="next").key == "HDS-6"
+    two = s.create(level="initiative", title="two", number=2)  # below the counter: the counter stays
+    assert two.key == "HDS-2"
+    assert s.create(level="initiative", title="after").key == "HDS-7"
+    assert [i.key for i in s.list()] == ["HDS-2", "HDS-5", "HDS-6", "HDS-7"]  # by number, not insertion
+
+
+def test_create_refuses_a_number_already_taken_or_not_positive(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    s.create(level="initiative", title="one")
+    with pytest.raises(BoardStoreError, match="AL-1 is already on the board"):
+        s.create(level="initiative", title="again", number=1)
+    with pytest.raises(BoardStoreError, match="number"):
+        s.create(level="initiative", title="zero", number=0)
+    assert [i.key for i in s.list()] == ["AL-1"]
+    assert s.create(level="initiative", title="two").key == "AL-2"  # nothing refused moved the counter

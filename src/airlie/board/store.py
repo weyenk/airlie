@@ -101,19 +101,28 @@ class BoardStore:
         parent: str | None = None,
         labels: Sequence[str] = (),
         created_by: str = "noah",
+        number: int | None = None,
     ) -> Item:
-        """A new item, keyed <prefix>-<n>; BoardStoreError for a level that is not one, or a parent that is
-        missing or not exactly one level up."""
+        """A new item, keyed <prefix>-<n>: the next number, or `number` (an import keeping Jira's), after
+        which the counter sits past it. BoardStoreError for a level that is not one, a parent that is missing
+        or not exactly one level up, or a number that is taken or not positive."""
         if level not in LEVELS:
             raise BoardStoreError(f"level must be one of {', '.join(LEVELS)}, not {level!r}")
+        if number is not None and number < 1:
+            raise BoardStoreError(f"number must be positive, not {number}")
         now = time.time()
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._check_parent(level, parent)
-                n = int(self._db.execute("SELECT v FROM meta WHERE k = 'next_n'").fetchone()["v"])
-                self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(n + 1),))
+                next_n = int(self._db.execute("SELECT v FROM meta WHERE k = 'next_n'").fetchone()["v"])
+                n = next_n if number is None else number
                 key = f"{self.prefix}-{n}"
+                if number is not None and self._db.execute(
+                    "SELECT 1 FROM items WHERE key = ?", (key,)
+                ).fetchone():
+                    raise BoardStoreError(f"{key} is already on the board")
+                self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(max(next_n, n + 1)),))
                 self._db.execute(
                     f"INSERT INTO items ({_FIELDS}, n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
