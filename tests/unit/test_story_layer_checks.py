@@ -253,6 +253,21 @@ def test_a_gate_without_pytest_gets_no_checks() -> None:
     assert checks is not None and checks.runner == "uv run pytest"
 
 
+def test_a_vacuous_test_that_matches_an_error_is_told_its_pattern_is_probably_too_loose() -> None:
+    loose = Finding(
+        "vacuous_test",
+        "tests/test_a.py::test_x",
+        "it passes on the layer's base",
+        'def test_x():\n    with pytest.raises(E, match="a.*b"): ...',
+    )
+    plain = Finding(
+        "vacuous_test", "tests/test_a.py::test_z", "it passes on the layer's base", "def test_z(): ..."
+    )
+    text = feedback([loose, plain])
+    assert text.count("`match=` pattern") == 1
+    assert text.index("`match=` pattern") < text.index("test_z")  # under the test that has one
+
+
 def test_feedback_names_each_test_and_why() -> None:
     text = feedback(
         [

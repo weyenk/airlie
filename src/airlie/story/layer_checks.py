@@ -214,11 +214,24 @@ def checks_for(commands: Sequence[str], *, timeout_s: float) -> PytestChecks | N
     return PytestChecks(runner, timeout_s=timeout_s) if runner else None
 
 
+LOOSE_MATCH = (
+    "  its `match=` pattern is probably satisfied by an error that exists without your change (an unknown "
+    "name is refused with a message that lists every valid name). Match a phrase only your new message "
+    "contains, copied from the message your code raises."
+)
+"""Said under a vacuous test that matches an error's text: the usual cause of passing on the base."""
+
+
 def feedback(findings: Sequence[Finding]) -> str:
     """What the coder is told on its retry: each test and why, and what to do."""
+    listed: list[str] = []
+    for f in findings:
+        listed.append(f"- {f.test}: {f.why}")
+        if f.kind == "vacuous_test" and "match=" in f.source:
+            listed.append(LOOSE_MATCH)
     lines = [
         "airlie checked the tests you added or changed, and these need fixing:",
-        *(f"- {f.test}: {f.why}" for f in findings),
+        *listed,
         "Fix each one: assert the behaviour this layer adds, so the test fails without your change and "
         "passes with it. Keep the tests for the acceptance criteria. Run run_tests until the whole suite "
         "passes, then stop.",
