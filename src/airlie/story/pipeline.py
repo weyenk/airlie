@@ -20,6 +20,7 @@ from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import layer_goal, layer_plan, layers_brief, pr_body, pr_title, refine_brief
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
+from airlie.story.layer_checks import Finding, checks_for, feedback
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -48,6 +49,10 @@ from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
 StudioFactory = Callable[[], StudioOrchestrator]
 
+CHECK_ATTEMPTS = 2
+"""How many times a layer's new and changed tests are checked: the coder gets one retry with the findings."""
+_SHORT = {"vacuous_test": "passes on the layer's base", "assertion_free_test": "has no assertion"}
+"""A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
 REASON_CHARS = 800
 """A stop reason is cut to this many characters before it is stored, logged or posted (`_block`)."""
 CANCEL_NOTE_S = 10.0
@@ -182,6 +187,8 @@ class StoryPipeline:
         self.repo = repo.resolve()
         self.person_cmd = (test_cmd or "").strip() or None
         self.test_cmd = self.person_cmd or ""  # what runs: the story's gate, once _gate has found it
+        self.commands: tuple[str, ...] = (self.person_cmd,) if self.person_cmd else ()  # one by one
+        self.timeout_s = cfg.tools.shell_timeout_s
         self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
@@ -271,6 +278,7 @@ class StoryPipeline:
         A repository with no gate there stops the story, before any model works."""
         if self.person_cmd is not None:
             run = shown = self.person_cmd
+            self.commands = (self.person_cmd,)
         else:
             if st.gate is None:
                 try:
@@ -284,6 +292,7 @@ class StoryPipeline:
                 st.emit("gate", commands=masked, agents_md=gate.blob, base=base)
             commands = st.gate["commands"]
             run, shown = gate_command(commands), gate_shown(commands)  # each runs on its own; shown as read
+            self.commands = tuple(commands)
         self.test_cmd = run
         self._shown_cmd = _redact_urls(shown)
 
@@ -437,19 +446,34 @@ class StoryPipeline:
             base_sha=base_sha,
             studio_run=orch.run_dir.run_id,
         )
+        findings: list[Finding] = []
+
+        async def before_gate() -> bool:
+            nonlocal findings
+            findings = await self._check_tests(st, orch, wt, base_sha, nn)
+            return not findings
+
         report = await orch.execute_task(
             layer_goal(story, layers, i),
             repo=self.repo,
             test_cmd=self.test_cmd,
-            plan=layer_plan(story, layers, i, tests_role=self.s.tests_role, build_role=self.s.build_role),
+            test_steps=self.commands,
+            plan=layer_plan(story, layers, i, build_role=self.s.build_role),
             base=base_sha,
             branch=branch,
             synthesise=False,
+            before_gate=before_gate,
         )
         commit_wip(wt, f"studio: {branch} (final)")
         cut = _cut_off(orch)
         if not changed_files(wt, base_sha):
             raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing{cut}{_kept(wt, branch)}")
+        if findings:
+            listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
+            raise StoryBlocked(
+                f"layer {nn} ({layer.title}): its tests still do not test its change after one retry "
+                f"({listed}){cut}{_kept(wt, branch)}"
+            )
         if report.tests.get("studio") is not True:
             raise StoryBlocked(
                 f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{_kept(wt, branch)}"
@@ -468,6 +492,41 @@ class StoryPipeline:
         st.emit("layer_built", layer=nn, branch=branch, sha=sha)
         built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
         await self.board.comment(card, note(built))
+
+    async def _check_tests(
+        self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
+    ) -> list[Finding]:
+        """The checks on the tests the layer added or changed (story.layer_checks), after the coder's build
+        and before the gate: findings go back to the coder once (`follow_up`), and what is left after that is
+        returned, for the layer to stop on. Each finding is an event. A gate that does not run pytest gets no
+        checks, and an event says so."""
+        checks = checks_for(self.commands, timeout_s=self.timeout_s)
+        if checks is None:
+            reason = "the gate runs no pytest: the red and no-assertion checks are for pytest only"
+            st.emit("test_checks_skipped", layer=nn, reason=reason)
+            return []
+        studio_run = orch.run_dir.run_id
+        found: list[Finding] = []
+        for attempt in range(1, CHECK_ATTEMPTS + 1):
+            commit_wip(wt, f"studio: layer {nn} (checks {attempt})")
+            found = await checks.run(wt, base_sha)
+            for f in found:
+                st.emit(
+                    f.kind,
+                    layer=nn,
+                    attempt=attempt,
+                    test=f.test,
+                    why=f.why,
+                    source=f.source,
+                    studio_run=studio_run,
+                )
+            if not found:
+                st.emit("test_checks_passed", layer=nn, attempt=attempt)
+                return []
+            if attempt < CHECK_ATTEMPTS:
+                st.emit("test_checks_retry", layer=nn, findings=len(found))
+                await orch.follow_up("build", feedback(found))
+        return found
 
     async def _publish(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> None:
         if st.done("publish"):

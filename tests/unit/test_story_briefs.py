@@ -55,24 +55,32 @@ def test_layers_brief_states_the_rules_and_the_criteria() -> None:
     assert "at most 4 layers" in text and "AC2" in text and "cropping" in text and '"layers"' in text
 
 
-def test_a_layer_with_criteria_is_tests_first_then_build() -> None:
-    plan = layer_plan(STORY, LAYERS, 1, tests_role="qa", build_role="coder")
-    tests, build = plan.subtasks
-    assert (tests.id, tests.role_hint) == ("tests", "qa")
-    assert (build.id, build.role_hint, build.depends_on) == ("build", "coder", ("tests",))
-    assert "AC2" in tests.brief and "AC1" not in tests.brief and "Do not write production code" in tests.brief
+def test_a_layer_with_criteria_is_one_coder_subtask_that_writes_the_tests_first() -> None:
+    plan = layer_plan(STORY, LAYERS, 1, build_role="coder")
+    [build] = plan.subtasks
+    assert (build.id, build.role_hint, build.depends_on) == ("build", "coder", ())
+    assert "AC2" in build.brief and "AC1" not in build.brief
     assert "layer 2 of 3" in build.brief and "03 Docs" in build.brief and "Show the avatar." in build.brief
-    assert len(schedule(plan)) == 2
+    first = build.brief.index("Write the tests first")
+    assert build.brief.index("**AC2** Given a stored avatar") > first
+    assert "without weakening them" in build.brief
+    assert len(schedule(plan)) == 1
+
+
+def test_a_layer_with_criteria_tells_the_coder_what_makes_a_test_count() -> None:
+    brief = layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
+    assert "behaviour, not the implementation" in brief
+    assert "Every test asserts" in brief
+    # the two checks the pipeline runs on what the coder wrote, named before the coder writes anything
+    assert "must fail on the layer's base" in brief and "with no assertion" in brief
 
 
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
-    for i in (1, 2):  # a layer that owns criteria (tests first), and an enabling one
-        plan = layer_plan(STORY, LAYERS, i, tests_role="qa", build_role="coder")
-        build = plan.subtasks[-1]
+    for i in (1, 2):  # a layer that owns criteria, and an enabling one
+        [build] = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks
         assert build.id == "build"
         [line] = [x for x in build.brief.splitlines() if "AGENTS.md" in x]
         assert line == "Follow AGENTS.md at the repository root, if it has one."
-        assert "AGENTS.md" not in plan.subtasks[0].brief or plan.subtasks[0] is build
 
 
 def test_story_text_and_layer_goal_name_the_story_and_its_layer() -> None:
@@ -83,9 +91,10 @@ def test_story_text_and_layer_goal_name_the_story_and_its_layer() -> None:
 
 
 def test_an_enabling_layer_is_one_build_subtask() -> None:
-    plan = layer_plan(STORY, LAYERS, 2, tests_role="qa", build_role="coder")
+    plan = layer_plan(STORY, LAYERS, 2, build_role="coder")
     assert [s.id for s in plan.subtasks] == ["build"]
     assert "Add tests for what you change" in plan.subtasks[0].brief
+    assert "Write the tests first" not in plan.subtasks[0].brief
 
 
 def test_pr_title_and_body() -> None:
@@ -141,11 +150,6 @@ def test_story_text_lists_the_assumptions() -> None:
         STORY.title, STORY.summary, STORY.acceptance, STORY.out_of_scope, ("the README is current",)
     )
     assert "Assumptions:\n- the README is current" in story_text(story)
-
-
-def test_the_tests_brief_asks_qa_for_the_paths_it_wrote() -> None:
-    tests = layer_plan(STORY, LAYERS, 1, tests_role="qa", build_role="coder").subtasks[0]
-    assert "End your reply with the paths of the test files you wrote." in tests.brief
 
 
 def test_pr_title_is_one_line_under_256_characters_for_a_hostile_title() -> None:

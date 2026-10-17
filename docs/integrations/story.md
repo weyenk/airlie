@@ -9,13 +9,16 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
-| build, per layer | studio: qa writes the failing tests, coder makes them pass, Muse Glimmer reviews both | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
+| build, per layer | studio: the coder writes the failing tests and then the code that makes them pass, airlie checks the new tests, Muse Glimmer reviews | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
 
-A layer that makes no acceptance criterion true (a foundation) has no test-first step: its one build step adds its
-own tests. The reviewer's blocking findings get one fix round; whatever it still finds is listed in the PR for you
-to check and does not block the layer. The test gate decides.
+Each layer is one build step by one coder. A layer that makes acceptance criteria true is test-first: its brief lists
+the criteria and asks for tests proving each one, then the code that makes them pass without weakening them. A layer
+that makes none true (a foundation) adds tests for what it changes. In a pytest repository airlie then checks the
+tests the layer added or changed (*Checks on a layer's tests*), before the test gate. The reviewer's blocking
+findings get one fix round; whatever it still finds is listed in the PR for you to check and does not block the
+layer. The test gate decides.
 
 An issue is built in the repository its `repo:<owner>/<name>` label names (*Which repository*), and every layer
 must pass the `## Test gate` of that repository's `AGENTS.md` (*The test gate*).
@@ -89,7 +92,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.max_layers` | 5 | the most layers the architect may plan |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
-| `story.product_role`, `architect_role`, `tests_role`, `build_role` | `product`, `architect`, `qa`, `coder` | which role does what |
+| `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what (`story.tests_role` was removed on 2026-10-16: the coder writes a layer's tests; a config that still sets it is refused with a note saying to delete it) |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
@@ -198,6 +201,30 @@ node scripts/run-impacted-tests.mjs
   story its gate: `POST /v1/airlie/stories` and `airlie_story` take no test command, and `story.test_cmd` and
   `AIRLIE_TEST_CMDS` are only for `airlie_run`.
 - The coder's brief for each layer says to follow `AGENTS.md` at the repository root.
+- **`run_tests` runs every command:** the coder's `run_tests` tool runs the gate's commands one by one and goes on
+  after one fails, so a lint failure never hides the tests' result. It reports each command as `PASS` or
+  `FAIL (exit N)` with its output (a failing command's output capped at `tools.output_cap_chars`, shared between
+  the failing ones; a passing command's last line), and a `cd` still carries over. Each command gets
+  `tools.shell_timeout_s`. The layer's own gate, after the build, still stops at the first command that fails.
+
+## Checks on a layer's tests
+
+After the coder's build step and before the test gate, airlie checks the test functions the layer added or changed
+(compared with the layer's base commit, by their syntax tree: a reformat is not a change). No model is involved.
+
+- **Red check:** every other file the layer changed is put back as it was at the base (files it added are removed),
+  and only those test functions run, with the gate's own pytest. One that passes there does not test the change:
+  a `vacuous_test` finding. The worktree is the layer's again afterwards.
+- **No-assertion check:** one with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
+  `raise`, or call to a helper of its module that has one: an `assertion_free_test` finding.
+- **One retry:** with findings, the coder is sent back once, in the same conversation, with each test's id and why.
+  Findings after that stop the layer like a failed gate: the note lists them, and the worktree and branch are kept.
+- **Logged:** each finding is an event in the story's `events.jsonl` (`vacuous_test`, `assertion_free_test`, with
+  the layer, the attempt, the test's id, why, its source and the studio run), so they can serve later as negative
+  examples; `test_checks_retry` and `test_checks_passed` mark the outcome.
+- **pytest only:** a test module is a `test_*.py` or `*_test.py` file, and the checks run only when a gate command
+  runs pytest (`pytest`, `python -m pytest`, `uv run pytest`, …), with what comes before `pytest` in that command.
+  Any other repository (a pnpm one, say) gets a `test_checks_skipped` event and its layers are not held up.
 
 ## What stops a story before it starts
 
@@ -276,6 +303,8 @@ note work the other way round: they are posted before their stage is saved, so w
   `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens` to raise. A
   thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has not;
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
+- a layer's new or changed tests still fail airlie's checks after one retry (*Checks on a layer's tests*): the
+  note lists each test and why;
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them. When a subtask's reply in that layer was cut off at its `max_tokens`, the comment names the
   subtask and the `roles.<role>.max_tokens` to raise;

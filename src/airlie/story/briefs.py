@@ -151,9 +151,22 @@ def layer_goal(story: Story, layers: tuple[Layer, ...], i: int) -> str:
     return f"{story.title}: layer {i + 1}/{len(layers)} {layers[i].title}"
 
 
-def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, tests_role: str, build_role: str) -> Plan:
-    """Tests first when the layer owns acceptance criteria (tests_role writes them failing, build_role makes
-    them pass); an enabling layer is one build subtask that adds its own tests."""
+TEST_RULES = """What makes a test count:
+- Test behaviour, not the implementation: call the code the way its users do and check what they observe
+  (return values, files, output, errors), never private helpers or how it is built.
+- Every test asserts: an assertion on the result, or a check that the expected error or warning is raised
+  (in Python: `assert`, `pytest.raises`, `pytest.warns`). A test that only runs code proves nothing.
+- One behaviour per test, named for it; the smallest setup that shows it; no sleeps, network or real clock.
+In a pytest repository airlie checks each test you add or change: it must fail on the layer's base (your
+other changes undone), or it does not test your change; and a test with no assertion fails the check too."""
+"""How the coder writes a layer's tests: the useful part of skills/qa, and the two checks the pipeline runs
+(story.layer_checks)."""
+
+
+def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str) -> Plan:
+    """One build subtask: the coder writes the layer's tests and its code. A layer that owns acceptance
+    criteria lists them and is test-first: tests proving each one, then the code that makes them pass; an
+    enabling layer adds tests for what it changes."""
     layer = layers[i]
     later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     context = (
@@ -169,16 +182,17 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, tests_role: s
     )
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     if not owned:
-        return Plan((), (Subtask("build", f"{build}\nAdd tests for what you change.", build_role),))
+        return Plan(
+            (), (Subtask("build", f"{build}\nAdd tests for what you change.\n\n{TEST_RULES}", build_role),)
+        )
     criteria = "\n".join(f"- {c.line()}" for c in owned)
-    tests = (
-        f"{context}\n\nWrite the tests for these acceptance criteria, and nothing else:\n{criteria}\n\n"
-        "Put them where this repository keeps its tests. Run run_tests: they must fail because the feature "
-        "is missing, not because a test is broken. Do not write production code. End your reply with the "
-        "paths of the test files you wrote."
+    tests_first = (
+        "Write the tests first: at least one test proving each of these acceptance criteria, where this "
+        f"repository keeps its tests:\n{criteria}\n"
+        "Run run_tests and see them fail because the feature is missing, not because a test is broken. Then "
+        "write the code that makes them pass, without weakening them."
     )
-    build += "\nThe tests from subtask 'tests' (below) define done: make them pass without weakening them."
-    return Plan((), (Subtask("tests", tests, tests_role), Subtask("build", build, build_role, ("tests",))))
+    return Plan((), (Subtask("build", f"{build}\n\n{tests_first}\n\n{TEST_RULES}", build_role),))
 
 
 def pr_title(story: Story, layers: tuple[Layer, ...], i: int) -> str:

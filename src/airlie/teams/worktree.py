@@ -107,6 +107,27 @@ def changed_files(worktree: Path, base_sha: str) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
+def put_back(worktree: Path, commit: str, paths: list[str]) -> None:
+    """`paths` in the worktree as they are in `commit`: checked out from it, or removed where it has none.
+    `reset_to_head` undoes it."""
+    if not paths:
+        return
+    there = _git(worktree, "ls-tree", "-z", "--name-only", commit, "--", *paths).stdout.split("\0")
+    kept = [p for p in paths if p in there]
+    if kept:
+        _git(worktree, "checkout", "-q", commit, "--", *kept)
+    for p in paths:
+        if p not in kept:
+            (worktree / p).unlink(missing_ok=True)
+
+
+def reset_to_head(worktree: Path) -> None:
+    """The worktree as its HEAD commit holds it: changes undone and untracked files removed (ignored ones, a
+    virtualenv say, are kept)."""
+    _git(worktree, "reset", "-q", "--hard", "HEAD")
+    _git(worktree, "clean", "-q", "-fd")
+
+
 def find_file(repo: Path, commit: str, path: str) -> tuple[str, str]:
     """What `path` is in `commit`, from git's objects (never a worktree), a symbolic link to another file of
     the commit followed: ("blob", its sha) for a file; ("symlink", where it points) for a link out of the

@@ -4,7 +4,11 @@ the agent environment (airlie.subproc: no credentials)."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import shlex
+import tempfile
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from airlie.subproc import agent_env, kill_group
@@ -18,6 +22,18 @@ async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> Too
     """Run a command a model chose, or code a model wrote, in the worktree: with the agent environment, no
     stdin, and in a process group of its own, so a timeout or the caller being cancelled kills the command
     and everything it started."""
+    rc, text = await _run(cmd, ctx, shell=shell)
+    if rc is None:
+        return ToolResult(False, text)
+    body = cap(text, ctx.output_cap_chars)
+    if rc != 0:
+        body += f"\n[exit {rc}]"
+    return ToolResult(rc == 0, body)
+
+
+async def _run(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> tuple[int | None, str]:
+    """`run_cmd`'s work: (the exit code, the whole output), or (None, why) when the command could not start or
+    timed out."""
     spawn: dict[str, Any] = dict(
         cwd=ctx.worktree,
         env=agent_env(),
@@ -32,21 +48,50 @@ async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> Too
         else:
             proc = await asyncio.create_subprocess_exec(*cmd, **spawn)
     except OSError as e:
-        return ToolResult(False, f"error: {e}")
+        return None, f"error: {e}"
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=ctx.shell_timeout_s)
     except TimeoutError:
         await kill_group(proc)
-        return ToolResult(False, f"error: command timed out after {ctx.shell_timeout_s:g}s")
+        return None, f"error: command timed out after {ctx.shell_timeout_s:g}s"
     except BaseException:  # cancelled: nothing the command started may outlive its caller
         await kill_group(proc)
         raise
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
-    rc = proc.returncode or 0
-    body = cap(text, ctx.output_cap_chars)
-    if rc != 0:
-        body += f"\n[exit {rc}]"
-    return ToolResult(rc == 0, body)
+    return proc.returncode or 0, text
+
+
+async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
+    """Run each of a gate's commands in turn, going on after one fails, and report each: PASS with its last
+    line, or FAIL with its output, the failing ones sharing ctx.output_cap_chars. Each runs in sh as the
+    gate runs it (in a group of its own, so an inline # comment ends at its line) with ctx.shell_timeout_s,
+    from the directory the one before left: a `cd` carries over, as it does in the gate."""
+    cwd = ctx.worktree
+    ran: list[tuple[str, int | None, str]] = []
+    with tempfile.TemporaryDirectory(prefix="airlie-run-tests-") as tmp:
+        where = Path(tmp) / "cwd"
+        for step in steps:
+            script = f"{{ {step}\n}}\nrc=$?\npwd > {shlex.quote(str(where))}\nexit $rc"
+            where.unlink(missing_ok=True)
+            rc, text = await _run(script, dataclasses.replace(ctx, worktree=cwd), shell=True)
+            ran.append((step, rc, text))
+            if where.is_file() and Path(moved := where.read_text().strip()).is_dir():
+                cwd = Path(moved)
+    failed = [i for i, (_, rc, _) in enumerate(ran, 1) if rc != 0]
+    share = ctx.output_cap_chars // max(len(failed), 1)
+    n = len(ran)
+    lines = [f"{n - len(failed)} of {n} gate commands pass"]
+    if failed:
+        lines[0] += "; failed: " + ", ".join(f"[{i}/{n}]" for i in failed)
+    for i, (step, rc, text) in enumerate(ran, 1):
+        if rc == 0:
+            last = next((x for x in reversed(text.splitlines()) if x.strip()), "")
+            lines += [f"[{i}/{n}] PASS: {step}", *([cap(last, 300)] if last else [])]
+        elif rc is None:
+            lines += [f"[{i}/{n}] FAIL ({text.removeprefix('error: ').removeprefix('command ')}): {step}"]
+        else:
+            lines += [f"[{i}/{n}] FAIL (exit {rc}): {step}", cap(text.rstrip("\n"), share)]
+    return ToolResult(not failed, "\n".join(lines))
 
 
 class Shell:
@@ -62,10 +107,15 @@ class Shell:
 
 class RunTests:
     name = "run_tests"
-    description = "Run the project's test command and return its output. Call this after every change."
+    description = (
+        "Run the project's test commands and return each one's result and output. Call this after every "
+        "change."
+    )
     parameters = {"type": "object", "properties": {}, "required": []}
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if ctx.test_steps:
+            return await run_steps(ctx.test_steps, ctx)
         if not ctx.test_cmd:
             return ToolResult(False, "error: no test command configured for this repository")
         return await run_cmd(ctx.test_cmd, ctx, shell=True)
