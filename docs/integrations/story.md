@@ -182,7 +182,7 @@ The coder calls `run_tests` after every change, and a whole-suite gate takes min
 whole gate only once those pass; a tree that passed the whole gate is not run again, by the coder or by the
 studio's final gate (airlie fingerprints the worktree's files). A layer with no test file of its own yet gets a
 failing `run_tests` that says to write its tests first. The gate's own commands are unchanged: the final gate and
-the layer's PR still stand on the whole suite. airlie's own gate runs pytest with `-n auto --maxprocesses 8`
+the layer's PR still stand on the whole suite. Before each run `run_tests` (and the final gate) has ruff mend the style it can: `ruff format`, and `ruff check --fix --unsafe-fixes` (an unsafe fix may change what code does: the tests that run after it are the guard). airlie's own gate runs pytest with `-n auto --maxprocesses 8`
 (pytest-xdist).
 
 ## The test gate: `AGENTS.md`
