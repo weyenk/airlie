@@ -135,6 +135,49 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     assert report.final_answer == "all done"
 
 
+async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings(tmp_path: Path) -> None:
+    """HDS-5, 2026-10-16: fix rounds resent a 58-72k-token conversation and were cut off before acting. Over
+    teams.fresh_continuation_tokens the round starts a new conversation: the brief, where the earlier work is,
+    and the findings."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "chief": [PLAN, SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
+            "docs": [DONE],
+            "reviewer": [CHANGES, APPROVE],
+        }
+    )
+    teams = {"orchestrator": "native", "max_steps": 6, "fresh_continuation_tokens": 1}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"teams": teams}), engine, router=ChiefRouter())
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    fix_req = [r for r in engine.requests if r.role == "coder"][3]
+    assert [m.role for m in fix_req.messages] == ["system", "user"]  # a new conversation, not the old one
+    goal = str(fix_req.messages[1].content)
+    assert "A reviewer found blocking problems" in goal and "PASS:1" in goal and "worktree" in goal
+    fresh = [e for e in events(report) if e["kind"] == "fresh_continuation"]
+    assert len(fresh) == 1 and fresh[0]["subtask"] == "fix"
+    assert report.final_answer == "all done"
+
+
+async def test_a_fix_round_on_a_short_conversation_continues_it(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "chief": [PLAN, SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE, WRITE_PASS, DONE],
+            "docs": [DONE],
+            "reviewer": [CHANGES, APPROVE],
+        }
+    )
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "fix the build", repo=repo, test_cmd="./check.sh"
+    )
+    fix_req = [r for r in engine.requests if r.role == "coder"][3]
+    assert len(fix_req.messages) > 2  # the earlier turns are still there
+    assert not [e for e in events(report) if e["kind"] == "fresh_continuation"]
+
+
 async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_review_that_says_why(
     tmp_path: Path,
 ) -> None:
