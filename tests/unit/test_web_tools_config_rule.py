@@ -65,3 +65,71 @@ def test_web_tools_inherited_from_builtin_are_refused(tmp_path: Path) -> None:
     msg = str(ei.value)
     assert "web tools cannot be combined with mutating tools" in msg
     assert "coder" in msg
+
+
+def test_web_rule_reports_the_specific_mutating_tools(tmp_path: Path) -> None:
+    """The refusal names the specific mutating tools in the parenthetical, not just the rule."""
+    data = {
+        **MINIMAL,
+        "roles": {
+            **MINIMAL["roles"],
+            "coder": {
+                "prompt": "prompts/roles/coder.md",
+                "model": "team",
+                "tools": ["read_file", "git", "web_search"],
+            },
+        },
+    }
+    with pytest.raises(ConfigError) as ei:
+        load_config(write(tmp_path, data))
+    msg = str(ei.value)
+    assert "web tools cannot be combined with mutating tools" in msg
+    assert "coder" in msg
+    assert "git" in msg
+
+
+def test_web_tools_without_any_mutating_tool_load_cleanly(tmp_path: Path) -> None:
+    """Web tools alone are fine: a read-only role with web tools and no mutating tool loads, and
+    validate_references reports no web-rule problem for it."""
+    data = {
+        **MINIMAL,
+        "roles": {
+            **MINIMAL["roles"],
+            "research": {
+                "prompt": "prompts/roles/research.md",
+                "model": "team",
+                "tools": ["read_file", "web_search", "web_fetch"],
+            },
+        },
+    }
+    cfg = load_config(write(tmp_path, data))
+    assert cfg.validate_references() == []
+
+
+def test_empty_tools_list_is_not_treated_as_inheriting_builtin(tmp_path: Path) -> None:
+    """tools: [] means no tools (not the builtin list): only the None-inheriting role is refused."""
+    data = {
+        **MINIMAL,
+        "tools": {
+            "builtin": ["write_file", "web_search"],
+        },
+        "roles": {
+            **MINIMAL["roles"],
+            "coder": {
+                "prompt": "prompts/roles/coder.md",
+                "model": "team",
+                "tools": [],
+            },
+            "research": {
+                "prompt": "prompts/roles/research.md",
+                "model": "team",
+                "tools": None,
+            },
+        },
+    }
+    with pytest.raises(ConfigError) as ei:
+        load_config(write(tmp_path, data))
+    msg = str(ei.value)
+    assert "web tools cannot be combined with mutating tools" in msg
+    assert "research" in msg
+    assert "coder" not in msg
