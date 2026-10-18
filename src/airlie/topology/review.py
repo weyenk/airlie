@@ -9,6 +9,8 @@ from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message
 from airlie.skills import prompt_text
 from airlie.teams.protocol import cut_off_text
+from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
+from airlie.tools.registry import ToolRegistry
 from airlie.topology.studio_plan import extract_json
 
 VERDICTS = ("approve", "request_changes")
@@ -83,10 +85,15 @@ def review_message(
 
 
 class Reviewer:
-    def __init__(self, engine: Engine, role_name: str, role: RoleSpec) -> None:
+    def __init__(
+        self, engine: Engine, role_name: str, role: RoleSpec, tools: ToolRegistry | None = None
+    ) -> None:
+        """`tools`: what the reviewer may look up while it reviews (web_search, web_fetch), in a bounded loop;
+        None, or a registry with no tools, is the plain single call."""
         self.engine = engine
         self.role_name = role_name
         self.role = role
+        self.tools = tools
 
     async def review(
         self,
@@ -109,7 +116,7 @@ class Reviewer:
             max_tokens=self.role.max_tokens,
             thinking=self.role.thinking,
         )
-        res = await self.engine.generate(req)
+        res = await generate_with_tools(self.engine, req, self.tools, self.role.max_steps or DEFAULT_STEPS)
         if res.finish_reason == "length" and not res.text.strip():  # no verdict because max_tokens ended it
             raise EngineError(cut_off_text(self.role_name, self.role, thinking=bool(res.reasoning.strip())))
         return parse_review(res.text)

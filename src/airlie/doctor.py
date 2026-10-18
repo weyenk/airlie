@@ -205,7 +205,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                     "web:search",
                     "warn",
                     f"searxng not reachable at {cfg.web.search.url} (web_search will fail; "
-                    "run: docker run -d -p 8888:8088 searxng/searxng)",
+                    "run: task searxng:up)",
                 )
             )
 

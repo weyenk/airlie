@@ -161,6 +161,31 @@ tasks:
     cmds:
       - cloudflared tunnel --url http://127.0.0.1:8090 {{.CLI_ARGS}}
 
+  searxng:up:
+    desc: "Run SearXNG for web_search in a Tart Linux VM, reached at 127.0.0.1:8888 (task searxng:up -- 9999 for another port): makes the VM, installs SearXNG once, forwards it; needs tart; `task doctor` checks it"
+    cmds:
+      - '{{.RUN}} python scripts/searxng_vm.py up {{.CLI_ARGS}}'
+
+  searxng:status:
+    desc: The SearXNG VM's state, the forward, and whether the JSON search answers
+    cmds:
+      - '{{.RUN}} python scripts/searxng_vm.py status {{.CLI_ARGS}}'
+
+  searxng:down:
+    desc: Stop the SearXNG forward and VM (the VM's disk stays, so the next searxng:up is quick)
+    cmds:
+      - '{{.RUN}} python scripts/searxng_vm.py down'
+
+  searxng:destroy:
+    desc: Stop and delete the SearXNG VM
+    cmds:
+      - '{{.RUN}} python scripts/searxng_vm.py destroy'
+
+  web:e2e:
+    desc: "Ask every web-enabled role (research, ux, design, chief, reviewer) about something after its training data and check it searched and cited what it found (task web:e2e -- --roles chief,ux); needs `task up` and `task searxng:up`"
+    cmds:
+      - '{{.RUN}} python scripts/web_e2e.py {{.CLI_ARGS}}'
+
   opencode:install:
     desc: "Copy airlie's OpenCode chief, its subagents, /studio and /story into ~/.config/opencode and add the airlie MCP server (the airlie_* tools) to its opencode.json, after a backup when it changes the file (restart OpenCode after)"
     cmds:

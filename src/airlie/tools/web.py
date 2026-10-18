@@ -13,6 +13,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from typing import Any, Protocol
 from urllib.parse import urlencode, urlsplit
 
@@ -37,6 +38,67 @@ def check_address(ip: str) -> str | None:
     if a.is_private:
         return "refused: private address"
     return None
+
+
+HTML_TYPES = ("text/html", "application/xhtml+xml")
+MAX_BODY_BYTES = 2_000_000
+"""The most of a response web_fetch reads: a page is read to this, whatever its Content-Length says."""
+_SKIPPED = frozenset({"script", "style", "noscript", "template", "svg", "iframe", "canvas", "head"})
+_BLOCKS = frozenset(
+    {"p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article", "header", "footer", "main"}
+    | {"blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "dt", "dd", "figcaption", "hr"}
+)
+
+
+class _Readable(HTMLParser):
+    """HTML to the text a reader sees: no scripts, styles or markup; the title first; one line per block."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self._parts: list[str] = []
+        self._skip = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "title":
+            self._in_title = True
+        if tag in _SKIPPED and tag != "head":
+            self._skip += 1
+        if tag in _BLOCKS and not self._skip:
+            self._parts.append("\n")
+        if tag.startswith("h") and len(tag) == 2 and tag[1].isdigit() and not self._skip:
+            self._parts.append("# ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+        if tag in _SKIPPED and tag != "head" and self._skip:
+            self._skip -= 1
+        if tag in _BLOCKS and not self._skip:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+        elif not self._skip:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        lines = [" ".join(line.split()) for line in "".join(self._parts).splitlines()]
+        body = "\n".join(line for line in lines if line)
+        title = " ".join(self.title.split())
+        return f"Title: {title}\n\n{body}" if title else body
+
+
+def html_to_text(html: str) -> str:
+    """The readable text of an HTML page: the title, then its visible text one block to a line, headings
+    marked with `# `. Scripts, styles, frames and markup are dropped, and so are comments (the parser ignores
+    them); nothing in the page is executed or fetched."""
+    parser = _Readable()
+    parser.feed(html)
+    parser.close()
+    return parser.text()
 
 
 class WebResponse(Protocol):
@@ -70,14 +132,14 @@ class UrllibClient:
                 return _UrllibResponse(
                     status=resp.status,
                     headers={k.lower(): v for k, v in resp.headers.items()},
-                    body=resp.read(),
+                    body=resp.read(MAX_BODY_BYTES),
                     final_url=resp.url,
                 )
         except urllib.error.HTTPError as e:
             return _UrllibResponse(
                 status=e.code,
                 headers={k.lower(): v for k, v in e.headers.items()},
-                body=e.read(),
+                body=e.read(MAX_BODY_BYTES),
                 final_url=url,
             )
 
@@ -193,6 +255,19 @@ class WebFetch:
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         url = str(args.get("url") or "")
+        result = await self._fetch(url, ctx)
+        self._log(ctx, url, "ok" if result.ok else result.output.splitlines()[0][:120])
+        return result
+
+    def _log(self, ctx: ToolContext, url: str, status: str) -> None:
+        """One line per fetch in the run directory: role, URL, and "ok" or why it was refused or failed."""
+        if ctx.run_dir is None:
+            return
+        line = json.dumps({"role": ctx.role, "url": url, "status": status})
+        with (ctx.run_dir / "web_fetch.jsonl").open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    async def _fetch(self, url: str, ctx: ToolContext) -> ToolResult:
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https"):
             return ToolResult(False, "refused: only http and https")
@@ -226,6 +301,8 @@ class WebFetch:
             return ToolResult(False, "refused: not readable text")
 
         text = resp.body.decode("utf-8", errors="replace")
+        if ctype in HTML_TYPES:
+            text = html_to_text(text)
         out = f"{UNTRUSTED_MARKER}\n{text}"
         if len(out) > ctx.output_cap_chars:
             out = out[: ctx.output_cap_chars] + f"\n… [truncated {len(out) - ctx.output_cap_chars} chars]"
