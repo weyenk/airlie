@@ -230,8 +230,8 @@ class NativeTeam:
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         steps = 0
-        # (tool, observation), plus the arguments for a write: the same answer thrice is a repeat whatever was
-        # asked, except that a write answers "edited x" whatever it wrote (AIR-7 layer 02: three edits running)
+        # (tool, observation), plus the arguments for a write: the same answer thrice is a repeat whatever
+        # was asked, except that a write answers "edited x" whatever it wrote (AIR-7 layer 02: three edits)
         recent: list[tuple[str, ...]] = []
         final_text = ""
         stop: StopReason = "done"
