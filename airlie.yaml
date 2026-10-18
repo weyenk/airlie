@@ -97,10 +97,11 @@ roles:
     prompt: prompts/roles/coder.md
     model: generalist
     max_context: 65536
-    max_tokens: 10240                # caps thinking AND the answer: it must exceed thinking_budget (HDS-3)
-    thinking: true
-    thinking_budget: 2048            # AIR-28 2026-10-18: at 8192 a step whose thinking ran to the cap took nine minutes
-                                     # and ended in one more read; 2048 bounds that at about two
+    max_tokens: 10240                # the answer alone (no thinking): room for a whole-file write (HDS-5)
+    thinking: false                  # 2026-10-18: the architect's brief is the plan. A thinking coder (Qwen3.8) ran its
+                                     # budget out re-deliberating the brief every step and read instead of writing
+                                     # (AIR-7, AIR-28: 10 of 21 steps at the cap); its fast steps were the ones where
+                                     # it did not think
     nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
     green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
     write_schedule: { tests: 0.25, code: 0.75 }   # a test written by a quarter of its steps, code by three quarters,

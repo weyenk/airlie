@@ -50,8 +50,8 @@
         "toolCalling": true,
         "vision": false,
         "maxInputTokens": 112000,
-        "maxOutputTokens": 16384,
-        "thinking": true,
+        "maxOutputTokens": 10240,
+        "thinking": false,
         "streaming": true,
         "editTools": [
           "find-replace",

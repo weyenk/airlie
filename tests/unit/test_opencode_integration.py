@@ -364,7 +364,7 @@ def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking(
     listed = {
         n: tokens for n, tokens in wanted.items() if n in models
     }  # the roles and models the sample lists
-    assert listed == {"coder": 10240, "architect": 16384, "research": 16384, "generalist": 16384}
+    assert listed == {"architect": 16384, "research": 16384, "generalist": 16384}
     for name, tokens in listed.items():
         limit = models[name]["limit"]
         assert tokens <= limit["output"] < limit["context"], name
@@ -377,7 +377,7 @@ def test_the_vscode_samples_thinking_models_have_room_for_a_reply_after_their_th
     groups = json.loads((ROOT / "docs/integrations/vscode-chatLanguageModels.json").read_text())
     listed = {m["id"]: m for group in groups for m in group["models"]}
     thinking = {n for n, m in listed.items() if m["thinking"]}
-    assert thinking == {"generalist", "architect", "coder"} == {n for n in listed if n in wanted}
+    assert thinking == {"generalist", "architect"} == {n for n in listed if n in wanted}
     window = cfg.engines["main"].max_kv_size
     for name in thinking:
         m = listed[name]
