@@ -695,11 +695,11 @@ URL git would then use names `ssh.github.com`, not the story's repository on git
 move the connection instead: a `Host github.com` entry in `~/.ssh/config` with `Hostname ssh.github.com` and
 `Port 443`, or an `includeIf` as above whose file sets `core.sshCommand` to `ssh -o Hostname=ssh.github.com -p 443`.
 
-In OpenCode, the agents airlie installs (the chief and its four subagents, `coder`, `qa`, `docs` and `architect`)
-deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those four, and
-asks you before it hands work to `coder` or `qa`. That guards against a model's slip, not against a determined one:
-the rules match the command line, so a wrapper such as `sh -c "gh pr merge ..."` is not caught under `coder` or
-`qa`, whose shell allows most other commands and runs with your full environment (OpenCode's shells are not
+In OpenCode, the agents airlie installs (the chief and its three subagents, `coder`, `docs` and `architect`)
+deny the commands `gh api*`, `gh pr merge*` and `gh stack merge*`, and the chief delegates only to those three, and
+asks you before it hands work to `coder`. That guards against a model's slip, not against a determined one:
+the rules match the command line, so a wrapper such as `sh -c "gh pr merge ..."` is not caught under `coder`,
+whose shell allows most other commands and runs with your full environment (OpenCode's shells are not
 airlie's).
 
 What really stops a merge is GitHub: a ruleset (or branch protection) on the trunk that only you can update. It
@@ -736,5 +736,5 @@ board is in use on its first line.
 
 ## Not yet
 
-An amigos deliberation (product, qa and architect agreeing a contract), an architect review loop across the
+An amigos deliberation (product, the reviewer and architect agreeing a contract), an architect review loop across the
 whole stack, several stories at once, a Vikunja board, and answering review comments automatically.

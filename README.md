@@ -145,9 +145,8 @@ Every topology injects a deterministic repository map (tree, sizes, Python signa
 - **`studio`** (design: `docs/superpowers/specs/2026-10-13-studio-topology-design.md`): one generalist
   (`chief`, Qwen3.8-27B, also the vision model) scopes the request into a JSON plan of subtasks; the router
   (Kev on llama-server, or the chief's own hint with `router.kind: chief`) assigns each subtask a specialist
-  role from the roles whose prompts carry a `summary:` line, and for roles with a skill library (`qa` →
-  `skills/qa/*.md`) picks the guideline to inject; specialists are prompts over three models (generalist, the
-  coder for `coder`/`qa`/`security`, Muse Glimmer for the `reviewer`) and run as single agents on one worktree,
+  role from the roles whose prompts carry a `summary:` line, and for roles with a skill library (`skills/qa/*.md`, folded into the coder's test brief) picks the guideline to inject; specialists are prompts over three models (generalist, the
+  generalist for `coder`/`security`, Muse Glimmer for the `reviewer`) and run as single agents on one worktree,
   writers one at a time, readers in parallel; after a code subtask the reviewer (a different model family, on
   purpose: judges favour their own family's text) returns a JSON verdict and blocking findings give the coder
   one fix round; the chief synthesises. Run it with `task studio -- "goal" --repo . [--image shot.png]` after
@@ -158,7 +157,7 @@ Every topology injects a deterministic repository map (tree, sizes, Python signa
 **Profiles.** `topology.profiles.<kind>` is a partial config deep-merged over `airlie.yaml` when that kind is
 selected (`extends: <profile>` chains), so each topology declares its own team count, memory settings, contexts
 and models. `--topology` on `task run`/`task eval` and `topology` in `POST /v1/airlie/run` select the profile for
-one run; a profile name that is not a kind (a named variant such as `studio-qwen38`, or a parent other
+one run; a profile name that is not a kind (a named variant, or a parent other
 profiles `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
 profile across every managed engine. A profile that changes engine settings (`max_kv_size`, `server_parsers`,

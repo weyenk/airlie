@@ -169,17 +169,18 @@ def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Pat
 
 
 def test_committed_coder_has_room_for_a_large_edit() -> None:
-    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call."""
+    """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call. The coder thinks now (Qwen3.8), so
+    max_tokens caps its thinking and its answer: 8192 of each."""
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
-    assert cfg.roles["coder"].max_tokens == 8192
+    assert cfg.roles["coder"].max_tokens == 16384
 
 
 def test_committed_default_config_is_valid() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")  # never the person's own
     assert {"coder", "summarizer", "judge", "aggregator"} <= set(cfg.roles)
-    assert {"base", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
+    assert {"generalist", "llama70b", "qwen25_32b"} <= {n for n, m in cfg.models.items() if m.bench}
     assert cfg.engines["main"].kind == "vllm_mlx"
     for name, m in cfg.models.items():
         assert m.revision, f"models.{name} must pin a revision"
@@ -309,7 +310,6 @@ def test_a_thinking_budget_below_one_from_a_profile_or_the_local_file_is_refused
 def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
     base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     variants = [*TOPOLOGY_KINDS, *(n for n in base.topology.profiles if n not in TOPOLOGY_KINDS)]
-    assert "studio-qwen38" in variants  # the profile whose coder thinks
     for name in variants:
         try:
             cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=name)
@@ -325,7 +325,7 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     for name in ("chief", "architect", "research"):
         role = cfg.roles[name]
         assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
-    coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen38").roles["coder"]
+    coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
     assert (coder.model, coder.thinking, coder.thinking_budget, coder.max_tokens) == (
         "generalist",
         True,
@@ -552,7 +552,7 @@ def test_studio_kind_loads_with_defaults_and_role_fields(tmp_path: Path) -> None
     (tmp_path / "skills" / "qa").mkdir(parents=True)
     cfg = load_config(write(tmp_path, data))
     assert cfg.topology.kind == "studio"
-    assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["coder", "qa", "security"]
+    assert cfg.studio.chief_role == "chief" and cfg.studio.review.roles == ["coder", "security"]
     assert cfg.studio.parallel == 3 and cfg.studio.review.rounds == 1
     assert cfg.roles["qa"].skills == (tmp_path / "skills" / "qa").resolve()
     assert cfg.roles["qa"].tools == ["read_file", "run_tests"] and cfg.roles["coder"].tools is None

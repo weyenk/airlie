@@ -6,26 +6,6 @@
     "apiType": "chat-completions",
     "models": [
       {
-        "id": "base",
-        "name": "airlie base: Qwen3-Coder-30B-A3B 4-bit",
-        "url": "http://127.0.0.1:8080/v1/chat/completions",
-        "toolCalling": true,
-        "vision": false,
-        "maxInputTokens": 60000,
-        "maxOutputTokens": 4096,
-        "thinking": false,
-        "streaming": true,
-        "editTools": [
-          "find-replace",
-          "multi-find-replace"
-        ],
-        "modelOptions": {
-          "temperature": 0.3,
-          "top_p": 0.8,
-          "repetition_penalty": 1.05
-        }
-      },
-      {
         "id": "small",
         "name": "airlie small: Qwen3-4B 4-bit (chat only)",
         "url": "http://127.0.0.1:8080/v1/chat/completions",
@@ -65,13 +45,13 @@
     "models": [
       {
         "id": "coder",
-        "name": "airlie coder role (base + coder prompt)",
+        "name": "airlie coder role (generalist + coder prompt)",
         "url": "http://127.0.0.1:8090/v1/chat/completions",
         "toolCalling": true,
         "vision": false,
-        "maxInputTokens": 60000,
-        "maxOutputTokens": 4096,
-        "thinking": false,
+        "maxInputTokens": 112000,
+        "maxOutputTokens": 16384,
+        "thinking": true,
         "streaming": true,
         "editTools": [
           "find-replace",

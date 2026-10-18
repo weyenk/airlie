@@ -14,7 +14,7 @@ task restart -- --topology studio          # vllm-mlx (base, generalist, reviewe
 task serve -- --api-key <choose-a-secret>  # roles and catalog models on 127.0.0.1:8090, bearer auth on /v1
 ```
 
-`task serve` exposes every role (`coder`, `architect`, `chief`, `qa`, …: prompt prepended) and every catalog
+`task serve` exposes every role (`coder`, `architect`, `chief`, …: prompt prepended) and every catalog
 model (`base`, `generalist`, `small`, …: raw) under `/v1/models`.
 
 ## 2. Tunnel

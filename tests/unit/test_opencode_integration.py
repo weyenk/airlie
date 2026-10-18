@@ -1,6 +1,6 @@
 """The OpenCode front door stays in step with airlie: agents name models task serve lists, nothing can merge,
 the chief cannot edit, delegates only to agents that cannot merge, and asks before every shell command and
-before it hands work to coder or qa, the MCP server calls routes that exist, and the commands name tools the
+before it hands work to coder, the MCP server calls routes that exist, and the commands name tools the
 server lists."""
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def test_agents_use_models_task_serve_lists() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     served = {*cfg.roles, *cfg.models}
     agents = {p.stem: front(p)[0] for p in (OC / "agent").glob("*.md")}
-    assert set(agents) == {"chief", "architect", "coder", "qa", "docs"}
+    assert set(agents) == {"chief", "architect", "coder", "docs"}
     assert agents["chief"]["mode"] == "primary" and agents["chief"]["model"] == "airlie/generalist"
     for name, meta in agents.items():
         provider, model = meta["model"].split("/", 1)
@@ -110,21 +110,21 @@ def test_no_agent_can_merge_and_the_chief_cannot_edit() -> None:
     assert front(OC / "agent/chief.md")[0]["permission"]["edit"] == "deny"
 
 
-def test_only_coder_and_qa_run_a_shell_command_without_asking() -> None:
+def test_only_coder_runs_a_shell_command_without_asking() -> None:
     """No allow list stays read-only. On OpenCode 2.0.29 `gh pr view *` took `gh pr view 1 > pr.txt` unasked,
     and a redirect after a compound statement ran unasked under the plain git allows: OpenCode matches each
     command inside by its own text and the redirect is part of none, so no rule can close it. An agent asks
-    before every shell command, its denies aside, unless it is meant to run any (coder and qa)."""
+    before every shell command, its denies aside, unless it is meant to run any (coder)."""
     for p in (OC / "agent").glob("*.md"):
         bash = front(p)[0]["permission"]["bash"]
-        assert list(bash)[0] == "*" and bash["*"] == ("allow" if p.stem in ("coder", "qa") else "ask"), p.name
+        assert list(bash)[0] == "*" and bash["*"] == ("allow" if p.stem == "coder" else "ask"), p.name
         assert "allow" not in [v for k, v in bash.items() if k != "*"], p.name
 
 
 def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
     """It also asks the person before it hands work to one that runs any command. On 2.0.29 the chief handed
     coder a task without asking, and coder runs any shell command as you without asking: no approval stood
-    between a model and a command. So a hand-off to coder or qa asks; architect's and docs' shells ask before
+    between a model and a command. So a hand-off to coder asks; architect's and docs' shells ask before
     every command, so a hand-off to them need not."""
     meta, body = front(OC / "agent/chief.md")
     task = meta["permission"]["task"]
@@ -133,7 +133,7 @@ def test_the_chief_delegates_only_to_agents_here_that_cannot_merge() -> None:
     assert decision(task, "explore") == decision(task, "general") == "deny" and "explore" not in body
     # every agent the chief may hand work to, with or without asking the person
     reachable = [name for name in task if decision(task, name) in ("allow", "ask")]
-    assert sorted(reachable) == ["architect", "coder", "docs", "qa"]
+    assert sorted(reachable) == ["architect", "coder", "docs"]
     for name in reachable:
         path = OC / "agent" / f"{name}.md"
         assert path.is_file(), name
@@ -364,7 +364,7 @@ def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking(
     listed = {
         n: tokens for n, tokens in wanted.items() if n in models
     }  # the roles and models the sample lists
-    assert listed == {"architect": 16384, "research": 16384, "generalist": 16384}
+    assert listed == {"coder": 16384, "architect": 16384, "research": 16384, "generalist": 16384}
     for name, tokens in listed.items():
         limit = models[name]["limit"]
         assert tokens <= limit["output"] < limit["context"], name
@@ -377,7 +377,7 @@ def test_the_vscode_samples_thinking_models_have_room_for_a_reply_after_their_th
     groups = json.loads((ROOT / "docs/integrations/vscode-chatLanguageModels.json").read_text())
     listed = {m["id"]: m for group in groups for m in group["models"]}
     thinking = {n for n, m in listed.items() if m["thinking"]}
-    assert thinking == {"generalist", "architect"} == {n for n in listed if n in wanted}
+    assert thinking == {"generalist", "architect", "coder"} == {n for n in listed if n in wanted}
     window = cfg.engines["main"].max_kv_size
     for name in thinking:
         m = listed[name]

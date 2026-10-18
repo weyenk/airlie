@@ -4,7 +4,6 @@ coder: "Implement, fix or refactor code: features, bug fixes, CLI flags, per an 
 product: "Write user stories, acceptance criteria and PRDs; prioritise features, scope and MVP"
 research: "Compare libraries, tools or approaches; investigate APIs and feasibility; competitive analysis; summarise tradeoffs; technical spikes"
 docs: "Documentation prose: README, changelog, release notes, guides, API reference, config docs"
-qa: "Test strategy: write tests and test cases, edge cases, regression plans, find missing coverage"
 security: "Threat model, secure review"
 design: "UI and visual critique"
 ux: "User flows, usability, journey friction, microcopy, interaction patterns and layout choices"

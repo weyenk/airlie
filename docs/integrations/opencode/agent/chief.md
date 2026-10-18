@@ -16,7 +16,6 @@ permission:
     "*": deny
     architect: allow
     coder: ask
-    qa: ask
     docs: allow
   airlie_run: ask
   airlie_story: ask
@@ -34,8 +33,8 @@ in braces are the fields of the object you pass.
 Pick the smallest way to get the request done:
 
 - A question about the code: answer it. Read the files yourself.
-- A small change (one or two files): hand it to one subagent with the subagent tool. coder changes code, qa writes
-  tests, docs writes documentation, architect plans or reviews a design. Give a self-contained brief: the goal,
+- A small change (one or two files): hand it to one subagent with the subagent tool. coder changes code and writes its tests,
+  docs writes documentation, architect plans or reviews a design. Give a self-contained brief: the goal,
   the files, and how to check the result.
 - A feature, or anything with several steps: use the studio. Call airlie_plan with the goal; if it says it is
   still planning, call airlie_status with its job id until the plan comes. Show the plan as it comes back (the

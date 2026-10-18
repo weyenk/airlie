@@ -8,7 +8,7 @@ for roles also `task serve`.
 
 | agent | how it connects | config |
 | --- | --- | --- |
-| **OpenCode** | OpenAI-compatible provider → `task serve` (roles and raw models) | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists the roles `coder`, `architect`, `qa`, `security`, `docs`, `research`, `product`, `ux`, `design` and the raw models `base`, `generalist`, `small`; `task opencode:install` adds the `chief` agent with subagents, `/studio` and `/story`, and registers `airlie mcp`, the MCP server behind the `airlie_*` tools |
+| **OpenCode** | OpenAI-compatible provider → `task serve` (roles and raw models) | copy [`opencode.json`](opencode.json) to `~/.config/opencode/opencode.json` (global) or into a project root; `/models` lists the roles `coder`, `architect`, `security`, `docs`, `research`, `product`, `ux`, `design` and the raw models `generalist`, `small`; `task opencode:install` adds the `chief` agent with subagents, `/studio` and `/story`, and registers `airlie mcp`, the MCP server behind the `airlie_*` tools |
 | **Claude Code** | Anthropic-compatible `/v1/messages` (vllm-mlx serves it) | environment variables below |
 | **Qwen Code** | OpenAI-compatible | `OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=airlie-local OPENAI_MODEL=base qwen` |
 
@@ -34,8 +34,8 @@ command and keeps the rest of the entry. If you copy the sample or merge the ent
 or OpenCode cannot start the server.
 
 The sample's default model is `airlie/generalist`, the chief's (see below). Pick `airlie/coder` for coding
-(Qwen3-Coder with the coder persona), `airlie/architect` for a plan, `airlie/qa` for tests; the generalist roles
-(`docs`, `research`, `product`, `ux`, `design`) run on Qwen3.8.
+(Qwen3.8 with the coder persona; it writes the tests too), `airlie/architect` for a plan; every role runs on Qwen3.8,
+except the reviewer (Muse Glimmer).
 Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
 assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. The thinking
 models (`architect`, `research`, `generalist`) have `limit.output` 16384, as their `max_tokens` in `airlie.yaml`:
@@ -56,10 +56,10 @@ running. The agent and command files are copies: run the task again after you up
 
 - The **chief** runs on the raw `generalist` (Qwen3.8), the sample's default model (`opencode run --agent chief`
   takes the config's default, not the agent's own: see the known issues). It never edits files. It hands small
-  changes to a subagent with OpenCode's `subagent` tool (its permission key is still `task`), and to these four
-  only: `coder`, `qa`, `docs` or `architect`, whose files name their role models, so `task serve` supplies the
+  changes to a subagent with OpenCode's `subagent` tool (its permission key is still `task`), and to these three
+  only: `coder`, `docs` or `architect`, whose files name their role models, so `task serve` supplies the
   persona (a hand-off to `coder` was seen to run on `airlie/coder`: see the known issues), not OpenCode's built-in
-  `explore`, whose shell has no merge denies. It asks you before it hands work to `coder` or `qa`, which run any
+  `explore`, whose shell has no merge denies. It asks you before it hands work to `coder`, which runs any
   shell command without asking; `docs` and `architect` ask before each of theirs, so a hand-off to them does not.
   It asks you before every shell command of its own, the read-only ones too: a redirect after a compound statement
   ran unasked under per-command allows, so no allow list stays read-only. `--output` on `git diff` and `git log`,
@@ -75,10 +75,9 @@ running. The agent and command files are copies: run the task again after you up
 - **Give `/story` an issue key or link, or a short request of your own, and `/studio` a short goal in your own
   words. Do not paste an issue's body, or any text you did not write, into either:** OpenCode runs `` !`cmd` ``
   spans in a command's arguments, so pasted text can run a shell command.
-- **What stops a merge.** The agents airlie installs (the chief and its four subagents) deny `gh api*`, `gh pr merge*`
-  and `gh stack merge*`, and the chief delegates only to those four, and asks you before it hands work to `coder` or
-  `qa`. That guards against a model's slip, not against a determined one: the rules match the command line, so a
-  wrapper such as `sh -c "gh pr merge ..."` is not caught under `coder` or `qa`, whose shell allows most other
+- **What stops a merge.** The agents airlie installs (the chief and its three subagents) deny `gh api*`, `gh pr merge*`
+  and `gh stack merge*`, and the chief delegates only to those three, and asks you before it hands work to `coder`. That guards against a model's slip, not against a determined one: the rules match the command line, so a
+  wrapper such as `sh -c "gh pr merge ..."` is not caught under `coder`, whose shell allows most other
   commands and has your full environment. The studio's own coder has a shell tool that these rules do not govern at
   all, but that shell, its `run_tests` and `git` tools and the test gate start without your credentials (no gh token
   or login, no SSH agent, no git credential helper, no `ATLASSIAN_*`), so a model there cannot naively `gh pr merge`
@@ -186,9 +185,9 @@ Checked live on OpenCode 2.0.29 on 2026-10-15, against the real engines with the
 Not from that check, but what the rules leave:
 
 - **In the OpenCode door, the person approving is the control.** Every OpenCode agent runs as you. What you
-  approve: each shell command the chief runs, each hand-off to `coder` or `qa`, and `airlie_run` and
+  approve: each shell command the chief runs, each hand-off to `coder`, and `airlie_run` and
   `airlie_story` (a hand-off to `docs` or `architect` does not ask: their shells ask before each command). Once you
-  approve a hand-off, `coder` and `qa` run any command as you, without asking, with your `gh` login, SSH agent and
+  approve a hand-off, `coder` runs any command as you, without asking, with your `gh` login, SSH agent and
   keychain. So approve a hand-off only for a brief you have read. The unattended story pipeline is different: it
   starts its agents without your credentials, and publishes as the bot when `story.github_app.app_id` is set
   (`story.md`, *Publishing as a bot*). *What stops a merge*, above, says what the rules do and do not stop.
