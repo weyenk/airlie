@@ -1083,3 +1083,45 @@ async def test_three_edits_of_one_file_in_a_row_are_not_a_repeat(tmp_path: Path)
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 3
     assert (tmp_path / "wt" / "a.py").read_text() == "x = 10\ny = 20\nz = 30\n"
+
+
+async def test_a_writer_whose_first_reply_is_text_is_told_once_to_act(tmp_path: Path) -> None:
+    """AIR-7 layer 02 fix round, 2026-10-18: the coder answered the reviewer's findings with 2,186 tokens of
+    prose and no tool call, and the run ended as done with nothing changed."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(text="Here is how I would fix it: change _load to register a view, then…"),
+                write("w", "a.py"),
+                FakeReply(text="Done: a.py changed."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    ctx.must_act = True
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 1
+    told = requests_saying(engine, "nothing has been done")
+    assert told == [2, 3]  # said once, after the first reply; carried in the conversation after that
+    assert engine.requests[1].messages[-2].content.startswith("Here is how I would fix it")  # its text kept
+    assert [e["kind"] for e in events.records if e["kind"] == "text_before_action"] == ["text_before_action"]
+
+
+async def test_a_writer_that_answers_with_text_twice_is_done_as_before(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {"coder": [FakeReply(text="I would change a.py."), FakeReply(text="Still just words.")]}
+    )
+    team, ctx = make_team(tmp_path, engine)
+    ctx.must_act = True
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 0 and result.final_text == "Still just words."
+
+
+async def test_a_role_without_write_tools_may_answer_with_text_at_once(tmp_path: Path) -> None:
+    engine = FakeEngine({"architect": [FakeReply(text="The plan: two layers.")]})
+    team, ctx = make_team(tmp_path, engine, role_name="architect", tool_names=("read_file", "list_dir"))
+    ctx.must_act = True
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.final_text == "The plan: two layers."
+    assert requests_saying(engine, "nothing has been done") == []
