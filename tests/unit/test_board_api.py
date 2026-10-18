@@ -109,3 +109,20 @@ def test_the_serve_key_guards_the_board(tmp_path: Path) -> None:
 def test_building_the_app_does_not_touch_the_board_file(tmp_path: Path) -> None:
     create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
     assert not (tmp_path / "state" / "board.sqlite").exists()
+
+
+def test_move_places_a_card_in_a_column(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        for t in "abc":
+            c.post("/v1/board/items", json={"level": "initiative", "title": t})
+        r = c.post("/v1/board/items/AIR-3/move", json={"status": "doing"})
+        assert r.status_code == 200 and r.json()["status"] == "doing"
+        c.post("/v1/board/items/AIR-1/move", json={"status": "doing", "before": "AIR-3"})
+        keys = [i["key"] for i in c.get("/v1/board/items", params={"status": "doing"}).json()["items"]]
+        assert keys == ["AIR-1", "AIR-3"]
+        assert (
+            c.post("/v1/board/items/AIR-2/move", json={"status": "doing", "before": "AIR-9"}).status_code
+            == 422
+        )
+        assert c.post("/v1/board/items/AIR-9/move", json={"status": "doing"}).status_code == 404
+        assert c.post("/v1/board/items/AIR-2/move", json={"status": "shipped"}).status_code == 422

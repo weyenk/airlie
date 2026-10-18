@@ -1,6 +1,6 @@
 """The board over HTTP, under /v1/board (task serve's key middleware guards it like the rest of /v1): list and
-read items, create, change (fields, status, parent), comment, and the export. v1 has one person: every
-comment and item is noah's; a later per-person auth sets the author."""
+read items, create, change (fields, status, parent), move (status and place in a column), comment, and the
+export. v1 has one person: every comment and item is noah's; a later per-person auth sets the author."""
 
 from __future__ import annotations
 
@@ -32,6 +32,12 @@ class ChangeItem(BaseModel):
     status: Status | None = None
     parent: str | None = None
     labels: Sequence[str] | None = None
+
+
+class MoveItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Status
+    before: str | None = None  # the card to land above; none puts it at the bottom of the column
 
 
 class AddComment(BaseModel):
@@ -90,6 +96,14 @@ def board_router(store: BoardStore) -> APIRouter:
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
         return changed.to_dict()
+
+    @router.post("/items/{key}/move")
+    async def move_item(key: str, body: MoveItem) -> dict[str, Any]:
+        item(key)
+        try:
+            return store.move(key, body.status, body.before).to_dict()
+        except BoardStoreError as e:
+            raise HTTPException(422, str(e)) from None
 
     @router.post("/items/{key}/comments")
     async def add_comment(key: str, body: AddComment) -> dict[str, Any]:
