@@ -19,7 +19,7 @@ class Strict(BaseModel):
 KNOWN_TOOLS = frozenset(
     {
         "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
-        "retrieve_value", "decide", "search_knowledge",
+        "retrieve_value", "decide", "search_knowledge", "web_search", "web_fetch",
     }
 )  # fmt: skip
 
@@ -146,6 +146,18 @@ class RoleSpec(Strict):
     max_steps: int | None = Field(
         default=None, ge=1, description="steps per subtask (None = teams.max_steps)"
     )
+
+
+class SearchBackendSpec(Strict):
+    kind: Literal["searxng"]
+    url: str
+
+
+class WebSpec(Strict):
+    search: SearchBackendSpec = Field(
+        default_factory=lambda: SearchBackendSpec(kind="searxng", url="http://127.0.0.1:8888")
+    )
+    fetch_timeout_s: float = 30.0
 
 
 class ToolsSpec(Strict):
@@ -471,6 +483,7 @@ class AirlieConfig(Strict):
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
     board: BoardSpec = Field(default_factory=BoardSpec)
+    web: WebSpec = Field(default_factory=WebSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
