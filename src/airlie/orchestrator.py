@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -75,9 +76,21 @@ class HALObserver:
 class LoggingObserver:
     """M2 observer: writes every step to events.jsonl and a trace file. M3 wraps this with LTS."""
 
-    def __init__(self, sink: EventSink, run_dir: RunDir) -> None:
+    def __init__(
+        self,
+        sink: EventSink,
+        run_dir: RunDir,
+        *,
+        model: str | None = None,
+        role_name: str | None = None,
+        topology: str | None = None,
+    ) -> None:
         self.sink = sink
         self.run_dir = run_dir
+        self.model = model
+        self.role_name = role_name
+        self.topology = topology
+        self.run_span_id = uuid.uuid4().hex  # one run-level span: every step's parent
 
     async def before_step(self, team_id: str, step_num: int) -> str | None:
         return None
@@ -91,8 +104,15 @@ class LoggingObserver:
             ok=step.ok,
             prompt_tokens=step.prompt_tokens,
             completion_tokens=step.completion_tokens,
+            prefill_ms=round(step.prefill_ms, 1),
             gen_ms=round(step.gen_ms, 1),
             tool_ms=round(step.tool_ms, 1),
+            model=self.model,
+            role=self.role_name,
+            topology=self.topology,
+            story=self.run_dir.story_key,
+            span_id=uuid.uuid4().hex,
+            parent_id=self.run_span_id,
         )
         self.run_dir.write_trace(
             f"{step.team_id}/step-{step.step_num:03d}.json",
@@ -128,7 +148,14 @@ class ParallelAgentTeamOrchestrator:
         self.summarizer = build_summarizer(cfg.lts.summarizer, engine)
         self.lts_log = AdmissionLog(self.run_dir.path / "lts")
         self.query = ""
-        self._logging = LoggingObserver(self.sink, self.run_dir)
+        role = self.cfg.roles[self.cfg.teams.role]
+        self._logging = LoggingObserver(
+            self.sink,
+            self.run_dir,
+            model=role.model,
+            role_name=self.cfg.teams.role,
+            topology=self.cfg.topology.kind,
+        )
         self.observer: StepObserver = observer or self._logging
         self.lts: LTSObserver | None = None
         self.hal_observer: HALObserver | None = None

@@ -55,6 +55,9 @@ class StepRecord:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     gen_ms: float = 0.0
+    """Generation only: the request's wall time minus its prefill (ttft); the metrics tab charts tok/s."""
+    prefill_ms: float = 0.0
+    """The request's time to first token (the engine's ttft_ms): prompt processing, not generation."""
     tool_ms: float = 0.0
     accepted_draft_tokens: int | None = None
     draft_tokens: int | None = None

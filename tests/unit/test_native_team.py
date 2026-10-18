@@ -417,6 +417,76 @@ async def test_preamble_precedes_goal(tmp_path: Path) -> None:
     assert goal_msg.startswith("[Repository map]") and "Goal:\nmake it pass" in goal_msg
 
 
+# ---- step timing: prefill (ttft) split from generation, on the StepRecord the observer sees ----
+
+
+class TtftEngine(FakeEngine):
+    """A fake engine whose reply took 800 ms to first token: the split the metrics tab charts."""
+
+    async def generate(self, req, on_token=None):
+        res = await super().generate(req, on_token)
+        res.ttft_ms = 800.0
+        return res
+
+
+class FakeClock:
+    """A scripted monotonic clock: each call returns the current time, then advances by the next delta."""
+
+    def __init__(self, deltas_ms: list[float]) -> None:
+        self._deltas = list(deltas_ms)
+        self.t = 0.0
+
+    def monotonic(self) -> float:
+        t = self.t
+        if self._deltas:
+            self.t += self._deltas.pop(0) / 1000.0
+        return t
+
+
+def _write_then_done() -> FakeEngine:
+    return TtftEngine(
+        {
+            "coder": [
+                FakeReply(
+                    tool_calls=[
+                        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))
+                    ]
+                ),
+                FakeReply(text="done"),
+            ]
+        }
+    )
+
+
+async def test_step_record_splits_prefill_from_generation(tmp_path: Path, monkeypatch) -> None:
+    """A refine-shaped step: 1300 ms of engine time, 800 ms of it prefill (ttft) -> gen_ms is the 500 ms
+    of generation only, and prefill_ms the 800."""
+    team, ctx = make_team(tmp_path, _write_then_done())
+    # the clock native_team reads: run start, then the 1300 ms request, the 12 ms tool, the final turn
+    monkeypatch.setattr("airlie.teams.native_team.time", FakeClock([0, 1300, 0, 12, 0, 0, 0, 0]))
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.steps == 1
+    step = rec.steps[0]
+    assert step.prefill_ms == 800.0
+    assert step.gen_ms == 500.0  # the 1300 ms request minus its 800 ms prefill
+    assert step.gen_ms < step.prefill_ms  # a refine step: large prompt, small completion
+
+
+async def test_step_record_prefill_is_the_result_ttft_and_gen_never_negative(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the engine reports a ttft longer than the wall time around it (a slow client), generation is
+    zero, not negative."""
+    team, ctx = make_team(tmp_path, _write_then_done())
+    monkeypatch.setattr("airlie.teams.native_team.time", FakeClock([0, 100, 0, 12, 0, 0, 0, 0]))
+    rec = Recorder()
+    await team.run(ctx, rec)
+    step = rec.steps[0]
+    assert step.prefill_ms == 800.0
+    assert step.gen_ms == 0.0
+
+
 async def test_only_the_first_tool_call_of_a_reply_is_executed(tmp_path: Path) -> None:
     """Parity with the AutoGen path (2026-10-13): one action per step; later calls in a 'plan' are often
     argument-less, and the history must only carry the call that ran."""
