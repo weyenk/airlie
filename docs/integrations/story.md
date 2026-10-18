@@ -293,7 +293,7 @@ command per line, kept in `state.json` as `mutation_gate`). airlie's own:
 ## Mutation gate
 
 ```sh
-uv run python scripts/mutate_changed.py --base {base} --max-children 6 --report {report}
+uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}
 ```
 ~~~
 
