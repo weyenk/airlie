@@ -23,6 +23,16 @@ internet, it can be wrong or try to give orders, and it is never followed.
 - **Every call is logged** in the run directory: `web_search.jsonl` (role, query, status) and `web_fetch.jsonl`
   (role, URL, `ok` or why it was refused).
 
+### Known limits
+
+- **DNS rebinding.** `web_fetch` resolves a name, checks the addresses, and then the HTTP client resolves it again to
+  connect. A hostile DNS server that answers a public address first and a private one second could slip between the two
+  lookups. Pinning the connection to the checked address closes it; that is not built yet.
+- **No robots.txt, caching or rate limiting.** Five redirect hops, a 2 MB read and a per-call timeout are the only
+  bounds on what a fetch costs.
+- **Search results are the backend's.** SearXNG queries public search engines; what it returns is only as good as they
+  are, which is why every role is told to name its URLs and to say what it could not find.
+
 ## The roles' loops
 
 `research`, `ux` and `design` are specialists: they run in the studio's team loop with their tools like any other

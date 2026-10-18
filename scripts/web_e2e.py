@@ -75,6 +75,9 @@ class RoleResult:
     seen: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     error: str = ""
+    oracle: bool | None = None
+    """For a role whose answer can be checked against a fact the script knows (the reviewer's version check):
+    whether it came out right. Such a role passes on that, with or without a cited URL."""
 
     @property
     def web_calls(self) -> list[dict[str, Any]]:
@@ -90,7 +93,8 @@ class RoleResult:
 
     @property
     def passed(self) -> bool:
-        return not self.error and bool(self.answer.strip()) and bool(self.web_calls) and bool(self.grounded)
+        found = bool(self.grounded) or bool(self.oracle)
+        return not self.error and bool(self.answer.strip()) and bool(self.web_calls) and found
 
 
 def urls_in_results(outputs: list[str], args: list[str]) -> set[str]:
@@ -270,8 +274,12 @@ async def ask_reviewer(cfg: Any) -> RoleResult:
             f"- [{f.severity}] {f.claim} (evidence: {f.evidence})" for f in review.findings
         )
         mentions = latest in result.answer
+        result.oracle = review.verdict == "request_changes" and mentions
         result.notes.append(f"PyPI's latest is {latest}; the change claims {claimed}")
         result.notes.append(f"the review {'names' if mentions else 'does not name'} {latest}")
+        result.notes.append(
+            f"verdict {review.verdict}: {'right' if result.oracle else 'wrong'} for a missing release"
+        )
     except Exception as e:  # noqa: BLE001
         result.error = f"{type(e).__name__}: {e}"
     finally:

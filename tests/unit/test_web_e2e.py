@@ -60,6 +60,15 @@ def test_a_role_that_answered_from_memory_or_invented_its_link_fails() -> None:
     assert not result(error="EngineError: down").passed
 
 
+def test_a_role_with_a_checkable_answer_passes_on_the_check_without_a_cited_url() -> None:
+    right = result(answer="request_changes: 0.6.0 does not exist; latest is 0.5.0", seen=set(), oracle=True)
+    assert right.passed
+    assert not result(answer="approve", seen=set(), oracle=False).passed  # a wrong answer, searched or not
+    assert not result(
+        answer="request_changes", seen=set(), oracle=True, calls=[]
+    ).passed  # right but no search
+
+
 def test_calls_are_read_from_the_run_directorys_logs(tmp_path: Path) -> None:
     (tmp_path / "web_search.jsonl").write_text(
         json.dumps({"role": "chief", "query": "news", "status": "ok"})
