@@ -229,6 +229,37 @@ story undone), and a test with no assertion fails the check too."""
 """How the coder writes the hardening layer's tests (the architect's cases, for mutants that survived)."""
 
 
+_TEST_FILE = re.compile(
+    r"(?<![\w/.-])(?:[\w.-]+/)*(?:tests?/[\w./-]*\.\w+|test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|conftest\.py)"
+)
+
+
+def named_test_files(layer: Layer) -> list[str]:
+    """The test files a layer's scope or brief names, in order of first mention, none twice."""
+    out: list[str] = []
+    for text in (layer.scope, layer.brief):
+        for m in _TEST_FILE.finditer(text):
+            path = m.group(0).rstrip(".")
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def _tests_where(layer: Layer) -> str:
+    """Where the coder puts the layer's tests: the file(s) the layer names, else a new file for the feature
+    (AIR-28, 2026-10-18: a brief naming one file and the rule asking for a NEW one held the coder in a
+    21-step argument with itself)."""
+    named = named_test_files(layer)
+    if not named:
+        return (
+            "Put new tests in a NEW test file named for the feature (e.g. tests/unit/test_<feature>.py), not "
+            "appended to a big existing one."
+        )
+    files = " and ".join(named)
+    which = "the file this layer names" if len(named) == 1 else "the files this layer names"
+    return f"Put new tests in {files}, {which}."
+
+
 def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str, guide: str = "") -> Plan:
     """One build subtask: the coder writes the layer's tests and its code. A layer that owns acceptance
     criteria lists them and is test-first: tests proving each one, then the code that makes them pass; an
@@ -245,8 +276,7 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: s
         context += f"\n\n## Already read for you (do not read these again)\n{guide}"
     build = (
         f"{context}\n\n{layer.brief}\n\nFollow AGENTS.md at the repository root, if it has one.\n"
-        "Put new tests in a NEW test file named for the feature (e.g. tests/unit/test_<feature>.py), not "
-        "appended to a big existing one. Change an existing file with edit_file, not by rewriting it.\n"
+        f"{_tests_where(layer)} Change an existing file with edit_file, not by rewriting it.\n"
         "Stay inside this layer's scope. Run run_tests until the whole suite passes, then stop with two or "
         "three sentences on what you changed."
     )
