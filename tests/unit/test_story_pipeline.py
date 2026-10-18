@@ -22,7 +22,7 @@ from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, Nul
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
 from airlie.story.model import Layer, Story, StorySetupError
-from airlie.story.pipeline import StoryBlocked, StoryPipeline, _layers_note, _reason, _running
+from airlie.story.pipeline import StoryBlocked, StoryPipeline, _layers_note, _reason, _running, build_commit
 from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
 from airlie.teams.worktree import add_worktree
@@ -856,6 +856,7 @@ async def test_a_failed_publish_stops_after_the_build_and_a_resume_publishes_wit
     assert len(gh.calls) == calls and (st.path / "notes.md").read_text() == notes
     started = kinds(st.path / "events.jsonl", "story_start")
     assert [e["resumed"] for e in started] == [False, True, True]
+    assert {e["build"] for e in started} == {build_commit()}  # which airlie code ran this story
 
 
 async def test_a_branch_that_was_already_there_is_never_deleted_by_a_resume(tmp_path: Path) -> None:
@@ -1999,3 +2000,8 @@ async def test_one_go_planning_asks_the_architect_once_and_never_continues_the_c
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))  # the helper's default: 0 and off
     assert st.stage == "review" and len(architect_requests(engine)) == 1
     assert not kinds(st.path / "events.jsonl", "plan_round")
+
+
+def test_the_build_is_the_commit_of_the_checkout_airlie_runs_from() -> None:
+    here = Path(__file__).resolve().parents[2]
+    assert build_commit() == git(here, "rev-parse", "--short", "HEAD").strip()

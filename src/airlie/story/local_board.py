@@ -54,6 +54,10 @@ class LocalBoard:
         stories = self.store.list(level="story", status="approved")
         return self._card(stories[0]) if stories else None
 
+    def status_of(self, card: Card) -> str:
+        """The column `card` is in now, as the board holds it (todo, approved, doing, …)."""
+        return self._item(card.key).status
+
     async def move(self, card: Card, column: Column) -> None:
         self._item(card.key)
         self.store.update(card.key, status=STATUS_OF[column])  # type: ignore[arg-type]

@@ -133,3 +133,11 @@ def test_make_board_picks_the_local_board_from_story_board(
         write(tmp_path, {**MINIMAL, "observability": {"state_dir": str(state)}, "story": {"board": "jira"}})
     )
     assert isinstance(make_board(jira), NullBoard)  # story.board: jira, but no Jira settings
+
+
+async def test_status_of_names_the_column_a_card_is_in_now(tmp_path: Path) -> None:
+    s, b = filled(tmp_path)
+    card = await b.card("AIR-3")
+    assert b.status_of(card) == "todo"
+    s.move("AIR-3", "approved")
+    assert b.status_of(card) == "approved"

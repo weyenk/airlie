@@ -332,6 +332,12 @@ async def tick(cfg: AirlieConfig) -> str:
         card = await board.next_card()
         if card is None:
             return "idle: no issue matches the intake query"
+        taken = ""
+        if isinstance(board, LocalBoard):  # only a person's approval puts a story up for building
+            column = board.status_of(card)
+            if column != "approved":
+                return f"refused: {card.ref} is {column}, not approved (only approved stories are built)"
+            taken = f" (taken from {column})"
         finished = _recorded(cfg, card).get("stage") == "review"  # then the run below has nothing to do
         try:
             where = place(cfg, card)
@@ -346,7 +352,7 @@ async def tick(cfg: AirlieConfig) -> str:
                 line = await _already_in_review(board, card, st)
             else:
                 outcome = f"blocked ({st.blocked})" if st.blocked else st.stage
-                line = f"{card.ref} {card.title}: {outcome}"
+                line = f"{card.ref} {card.title}: {outcome}{taken}"
         # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
         return " ".join(line.split())
 
