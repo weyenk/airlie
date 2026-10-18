@@ -51,15 +51,21 @@ async def test_card_of_an_epic_or_an_unknown_key_is_a_board_error(tmp_path: Path
         await b.card("lowercase-1")
 
 
-async def test_next_card_is_the_oldest_story_in_todo_never_an_epic_or_initiative(tmp_path: Path) -> None:
+async def test_next_card_is_the_oldest_approved_story_never_a_todo_epic_or_initiative(tmp_path: Path) -> None:
     s, b = filled(tmp_path)
+    assert await b.next_card() is None  # nothing is approved: todo stories wait for a person
+    s.update("AIR-1", status="approved")
+    s.update("AIR-2", status="approved")
+    assert await b.next_card() is None  # an initiative and an epic are never built
+    s.update("AIR-4", status="approved")
+    s.update("AIR-3", status="approved")
     first = await b.next_card()
     assert first is not None and first.key == "AIR-3"
     s.update("AIR-3", status="doing")
     second = await b.next_card()
     assert second is not None and second.key == "AIR-4"
     s.update("AIR-4", status="done")
-    assert await b.next_card() is None  # AIR-1 and AIR-2 are still todo
+    assert await b.next_card() is None
 
 
 async def test_move_maps_every_column_onto_a_status(tmp_path: Path) -> None:

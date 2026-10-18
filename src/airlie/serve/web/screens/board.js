@@ -8,6 +8,7 @@ export const title = "Board";
 
 const STATUSES = [
   ["todo", "To do", "mute"],
+  ["approved", "Approved", "info"],
   ["doing", "Doing", "run"],
   ["review", "Review", "warn"],
   ["blocked", "Blocked", "err"],

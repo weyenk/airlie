@@ -1,6 +1,6 @@
 """The story pipeline over airlie's own board (story.board: local): a story item is a Card (without airlie's
-own notes, as with Jira), the oldest story in todo is next, the pipeline's columns are the board's statuses,
-and airlie's notes are comments by airlie."""
+own notes, as with Jira), the oldest approved story is next (todo is where a story waits for a person to
+approve it), the pipeline's columns are the board's statuses, and airlie's notes are comments by airlie."""
 
 from __future__ import annotations
 
@@ -49,8 +49,9 @@ class LocalBoard:
         return self._card(item)
 
     async def next_card(self) -> Card | None:
-        """The oldest story in todo; epics and initiatives are never built."""
-        stories = self.store.list(level="story", status="todo")
+        """The oldest story in approved, which only a person moves a story into (a cancelled one goes back to
+        todo, so it waits to be approved again); epics and initiatives are never built."""
+        stories = self.store.list(level="story", status="approved")
         return self._card(stories[0]) if stories else None
 
     async def move(self, card: Card, column: Column) -> None:
