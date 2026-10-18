@@ -736,5 +736,5 @@ board is in use on its first line.
 
 ## Not yet
 
-An amigos deliberation (product, the coder and architect agreeing a contract), an architect review loop across the
+An amigos deliberation (product, the reviewer and architect agreeing a contract), an architect review loop across the
 whole stack, several stories at once, a Vikunja board, and answering review comments automatically.
