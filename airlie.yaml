@@ -97,9 +97,10 @@ roles:
     prompt: prompts/roles/coder.md
     model: generalist
     max_context: 65536
-    max_tokens: 16384                # caps thinking AND the answer: it must exceed thinking_budget (HDS-3)
+    max_tokens: 10240                # caps thinking AND the answer: it must exceed thinking_budget (HDS-3)
     thinking: true
-    thinking_budget: 8192
+    thinking_budget: 2048            # AIR-28 2026-10-18: at 8192 a step whose thinking ran to the cap took nine minutes
+                                     # and ended in one more read; 2048 bounds that at about two
     nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
     green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
     sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse

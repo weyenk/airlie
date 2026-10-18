@@ -850,3 +850,24 @@ async def test_a_role_without_tools_that_keeps_calling_tools_stops(tmp_path: Pat
     result = await team.run(ctx, Recorder())
     assert not result.ok and result.stop_reason == "no_tools"
     assert len(engine.requests) == 2
+
+
+async def test_a_step_records_what_the_model_thought(tmp_path: Path) -> None:
+    """The reasoning of a thinking reply travels with the step (the trace keeps it: test_step_trace)."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(
+                    reasoning="a.py is the only file; write it",
+                    tool_calls=[
+                        ToolCall("c1", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))
+                    ],
+                ),
+                FakeReply(text="Done."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine, thinking=True, thinking_budget=16, max_tokens=64)
+    rec = Recorder()
+    await team.run(ctx, rec)
+    assert [s.reasoning for s in rec.steps] == ["a.py is the only file; write it"]

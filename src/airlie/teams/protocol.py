@@ -52,6 +52,8 @@ class StepRecord:
     """The observation: the tool's output."""
     ok: bool
     assistant_text: str = ""
+    reasoning: str = ""
+    """What the model thought before the action (a thinking role); the step trace keeps it."""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     gen_ms: float = 0.0
