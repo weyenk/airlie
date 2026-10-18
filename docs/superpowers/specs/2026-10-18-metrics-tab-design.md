@@ -1,6 +1,6 @@
 # The Metrics tab: traceability, observability and performance
 
-Status: agreed in conversation with Noah on 2026-10-18. Mockups are not yet approved. Board story: AIR-7.
+Status: agreed in conversation with Noah on 2026-10-18; mockup approved the same day. Board story: AIR-7.
 Parent: `2026-10-17-web-app-and-local-board-design.md`. Mockup: `docs/superpowers/mockups/2026-10-18-metrics/Metrics.html`.
 
 ## Why
@@ -44,6 +44,10 @@ Noah's decisions:
     call; the cold-storage location is recorded on the story.
   - Days 31–120: summaries stay local and show in the trace.
   - Day 121: summaries are removed; only the cold-storage location remains.
+- **Retention is on by default** (30 / 120 days), run on a schedule installed by `task setup`, so a fresh
+  checkout is portable and needs no manual cron work.
+- **Cold storage is configurable and defaults to iCloud Drive.**
+- **"Looks off" is a human judgement.** The tab flags anomalies; it does not declare anything broken.
 - **Events and metrics stay local forever**: they are small, and the charts and story list rely on them.
 - The mockup is approved by Noah before anything is built (AIR-7's existing rule).
 
@@ -53,7 +57,9 @@ Claude's calls (change them if you disagree):
   `gen_ai.request.model`, token counts) so a viewer such as Phoenix could be pointed at it later. No dependency.
 - The summary is the cheap mechanical layer by default (tool, outcome, sizes, error text). Model-written
   prose is an option, off by default.
-- Tiering runs as a Taskfile task, scheduled nightly; also runnable by hand. It verifies the zip before
+- Tiering runs as a Taskfile task (`task retention:run`), scheduled nightly; also runnable by hand. The
+  schedule follows the existing story-tick pattern: a launchd agent on macOS, a crontab entry elsewhere, both
+  installed by `task setup` (idempotent) and removable with a matching uninstall task. It verifies the zip before
   deleting anything local; a failed move leaves the story in its tier and retries next run.
 - One zip per story, with a manifest, so the tab can list archived stories and say where each lives.
 - If cold storage is not mounted, the tab shows the story as archived with its path and offers
@@ -94,7 +100,7 @@ observability:
   chatter:
     full_days: 30            # full text stays local this long
     summary_days: 120        # summaries stay local until this age
-    cold_storage: ~/airlie-cold   # where the zips go
+    cold_storage: ~/Library/Mobile Documents/com~apple~CloudDocs/airlie-cold   # default: iCloud Drive; any path
     summaries: mechanical    # or: model
 ```
 
@@ -106,9 +112,12 @@ observability:
   status, fix rounds per layer.
 - **Series chart:** tok/s over time per slice, with a p10–p90 band; long ranges bucket per day. A point
   opens the stories overlapping that window.
-- **Looks off:** rule-based, each line opens the matching stories: tok/s drop against the prior period, a
-  story with repeated findings or fix rounds above a threshold, malformed calls never repaired, blocked
-  stories and their age, archived stories whose cold storage is unreachable. Thresholds are config.
+- **Flagged anomalies** (the mockup's "Looks off" panel): the tab flags, the human judges. A flag means
+  "this differs from usual", never "this is broken"; Noah has the context to say whether it is truly off.
+  Each line opens the matching stories. Candidates: a tok/s drop against the prior period, repeated findings
+  or many fix rounds in one story, malformed calls never repaired, blocked stories and their age, archived
+  stories whose cold storage is unreachable. Thresholds are config, wording stays neutral, and a flag can be
+  dismissed.
 - **Stories:** server-side paginated, searchable by key or title, filterable by status, sortable by
   newest / fix rounds / duration / tokens, with a chatter-tier column (full, summary, archived).
 - **Trace:** the selected story as a tree; each node shows status, tokens, timing, tok/s; a step opens its
@@ -140,6 +149,6 @@ wording; chart library or hand-drawn SVG; whether to convert old trace files in 
 
 ## Open questions for Noah
 
-- The "looks off" rules above are Claude's guess at what matters. Add or remove any?
-- Should the retention task be on by default with the 30/120 settings, or off until Noah turns it on?
-- Where is cold storage on this Mac (path or volume)?
+None outstanding as of 2026-10-18. Remaining risk: iCloud Drive may evict or lazily sync large zips; the
+retention task verifies the zip is readable at its destination before deleting local chatter, and the
+"Restore" action must cope with files iCloud has not downloaded yet.
