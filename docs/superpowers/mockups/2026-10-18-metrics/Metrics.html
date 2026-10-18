@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>airlie: Metrics (mockup)</title>
+<style>
+:root,:root[data-theme="dark"]{color-scheme:dark;--bg:#000;--surface:#0e1013;--line:#2b2f36;--line2:#1f2228;--field:#16191e;--field-line:#3a3f47;--ink:#f2f4f7;--ink2:#b4b9c2;--accent:#8fb6e0;--accent-ink:#0a1a2b;--head:#000;--head-ink:#f2f4f7;--head-muted:#a3a8b2;--run-bg:#16283f;--run:#b9d3f2;--ok-bg:#13281c;--ok:#a9ddb9;--warn-bg:#2e230d;--warn:#f0c978;--err-bg:#33171a;--err:#f2b2aa;--mute-bg:#1e2228;--mute:#b4b9c2;--s1:#8fb6e0;--s2:#e0a46b;--s3:#7fcfa6;--s4:#c9a3e8}
+:root[data-theme="light"]{color-scheme:light;--bg:#f3f5f8;--surface:#fff;--line:#dde2ea;--line2:#eaeef3;--field:#fff;--field-line:#c3cad5;--ink:#17191e;--ink2:#4b4f58;--accent:#0b5f7a;--accent-ink:#fff;--head:#17191e;--head-ink:#f3f5f8;--head-muted:#c9cbd1;--run-bg:#e6edfd;--run:#1e3fa8;--ok-bg:#e2f2e9;--ok:#1e5c3e;--warn-bg:#fbf0d9;--warn:#7a4f00;--err-bg:#fbe5e3;--err:#8a2a22;--mute-bg:#eceff3;--mute:#4b4f58;--s1:#0b5f7a;--s2:#b5651d;--s3:#1e7a4c;--s4:#7a3fa6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace}
+header{background:var(--head);border-bottom:1px solid var(--line)}
+.wrap{max-width:1240px;margin:0 auto;padding:0 20px}
+.hd{display:flex;flex-wrap:wrap;align-items:center;gap:8px 28px;min-height:60px}
+.hd b{font-size:20px;color:var(--head-ink)}
+nav{display:flex;gap:22px;flex:1;flex-wrap:wrap}
+nav a{color:var(--head-muted);text-decoration:none;padding:18px 0}
+nav a[aria-current]{color:var(--head-ink);font-weight:600;border-bottom:2px solid #8fb6e0;padding-bottom:16px}
+main{padding:24px 0 56px;display:flex;flex-direction:column;gap:20px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px}
+h1{margin:0;font-size:26px;letter-spacing:-.01em}h2{margin:0;font-size:17px}
+.sub{color:var(--ink2);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+.btn,.field{min-height:40px;border-radius:10px;border:1px solid var(--field-line);background:var(--field);color:var(--ink);font:inherit;padding:0 12px}
+.seg{display:inline-flex;border:1px solid var(--field-line);border-radius:10px;overflow:hidden}
+.seg button{min-height:40px;padding:0 14px;border:0;border-right:1px solid var(--field-line);background:transparent;color:var(--ink2);font:inherit;cursor:pointer}
+.seg button:last-child{border-right:0}.seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.kpi .v{font-size:28px;font-weight:500}.kpi .d{font-size:13px}
+.up{color:var(--ok)}.dn{color:var(--err)}
+.chip{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.c-ok{background:var(--ok-bg);color:var(--ok)}.c-err{background:var(--err-bg);color:var(--err)}.c-run{background:var(--run-bg);color:var(--run)}.c-mute{background:var(--mute-bg);color:var(--mute)}.c-warn{background:var(--warn-bg);color:var(--warn)}
+.grid2{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--ink2);margin:6px 0}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+svg text{fill:var(--ink2);font-size:11px}
+.look li{list-style:none;padding:9px 0;border-bottom:1px solid var(--line2);font-size:14px}.look{margin:8px 0 0;padding:0}.look li:last-child{border:0}
+table{width:100%;border-collapse:collapse}th{text-align:left;font-weight:500;color:var(--ink2);font-size:13px;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px;border-bottom:1px solid var(--line2);font-size:14px}tr.sel td{background:var(--run-bg)}
+.tw{overflow-x:auto}
+.tree{border:1px solid var(--line);border-radius:10px;font-size:13px}
+.node{padding:7px 12px;border-bottom:1px solid var(--line2);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.node:last-child{border-bottom:0}.l1{padding-left:30px}.l2{padding-left:50px}
+.det{padding:10px 12px 10px 70px;background:var(--field);border-bottom:1px solid var(--line2);font-size:12px;white-space:pre-wrap;color:var(--ink2)}
+.tier{font-size:11px;font-weight:600;padding:0 7px;border-radius:5px;border:1px solid var(--line)}
+.ret{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;font-size:13px}
+.ret div{border:1px solid var(--line);border-radius:10px;padding:10px 12px}.ret b{display:block;font-size:13px}
+@media(max-width:800px){.kpis,.ret{grid-template-columns:repeat(2,minmax(0,1fr))}.grid2{grid-template-columns:1fr}.l1{padding-left:18px}.l2{padding-left:28px}.det{padding-left:34px}}
+</style>
+</head>
+<body>
+<header><div class="wrap hd"><b>airlie</b>
+<nav aria-label="Main"><a href="#">Home</a><a href="#">Jobs</a><a href="#">Board</a><a href="#">Topology</a><a href="#" aria-current="page">Metrics</a><a href="#">Admin</a></nav>
+<button class="btn" id="theme" type="button">Light</button></div></header>
+<main class="wrap">
+<div class="row" style="justify-content:space-between">
+  <div><h1>Metrics</h1><div class="sub">Mockup, illustrative numbers. Where to look when something feels off.</div></div>
+  <div class="row">
+    <div class="seg" id="range" role="group" aria-label="Time range"><button>4 hours</button><button>24 hours</button><button>7 days</button><button class="on">30 days</button><button>All time</button><button>Custom…</button></div>
+    <label class="row sub" style="gap:8px">Slice by <select class="field" id="grp"><option>role</option><option>model</option><option>topology</option><option>task</option><option>agent</option></select></label>
+  </div>
+</div>
+
+<div class="kpis">
+  <div class="card kpi"><span class="sub">Generation</span><div class="v mono">24.2 tok/s</div><div class="d dn">down 11% vs prior 30 days</div></div>
+  <div class="card kpi"><span class="sub">Prefill</span><div class="v mono">410 tok/s</div><div class="d sub">steady</div></div>
+  <div class="card kpi"><span class="sub">Stories</span><div class="v mono">19</div><div class="d sub">15 done · 3 blocked · 1 running</div></div>
+  <div class="card kpi"><span class="sub">Fix rounds per layer</span><div class="v mono">1.4</div><div class="d up">down from 1.9</div></div>
+</div>
+
+<div class="grid2">
+  <section class="card" aria-labelledby="tps">
+    <h2 id="tps">Generation speed by <span id="glabel">role</span></h2>
+    <div class="legend"><span><i style="background:var(--s1)"></i>coder 20.1</span><span><i style="background:var(--s2)"></i>architect 23.0</span><span><i style="background:var(--s3)"></i>reviewer 28.4</span><span><i style="background:var(--s4)"></i>product 25.7</span></div>
+    <svg id="chart" viewBox="0 0 640 220" width="100%" role="img" aria-label="Generation tokens per second over 30 days for four roles. Illustrative."></svg>
+    <div class="sub">Click a point to list the stories running in that window. Shaded band: p10 to p90.</div>
+  </section>
+  <section class="card" aria-labelledby="off">
+    <h2 id="off">Looks off</h2>
+    <ul class="look">
+      <li><span class="chip c-warn">slow</span> Coder generation fell 18% since Oct 15</li>
+      <li><span class="chip c-err">loop</span> AIR-5 layer 1: 4 fix rounds, same finding twice</li>
+      <li><span class="chip c-err">parse</span> 2 malformed tool calls never repaired</li>
+      <li><span class="chip c-warn">stuck</span> 3 stories blocked, longest 6 days</li>
+      <li><span class="chip c-mute">cold</span> 4 stories archived, drive not mounted</li>
+    </ul>
+    <div class="sub" style="margin-top:8px">Each line opens the matching stories.</div>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="st">
+  <div class="row" style="justify-content:space-between;margin-bottom:10px">
+    <h2 id="st">Stories <span class="sub">· 19 in range · 300 all time</span></h2>
+    <div class="row">
+      <input class="field" placeholder="Search key or title" aria-label="Search stories" style="width:210px">
+      <select class="field" aria-label="Status"><option>Any status</option><option>Done</option><option>Blocked</option><option>Failed</option><option>Running</option></select>
+      <select class="field" aria-label="Sort"><option>Newest</option><option>Most fix rounds</option><option>Longest</option><option>Most tokens</option></select>
+    </div>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Story</th><th>Status</th><th>Started</th><th>Time</th><th>Fix rounds</th><th>Tokens</th><th>Gen tok/s</th><th>Chatter</th></tr></thead>
+    <tbody>
+      <tr class="sel"><td><b>AIR-5</b> Web search and fetch tools</td><td><span class="chip c-err">blocked</span></td><td>Oct 17</td><td class="mono">41 min</td><td class="mono">4</td><td class="mono">1.2M</td><td class="mono">18.3</td><td><span class="tier c-ok">full</span></td></tr>
+      <tr><td><b>AIR-25</b> AIR-5 follow-up</td><td><span class="chip c-run">review</span></td><td>Oct 17</td><td class="mono">1 h 12</td><td class="mono">1</td><td class="mono">2.0M</td><td class="mono">23.9</td><td><span class="tier c-ok">full</span></td></tr>
+      <tr><td><b>AIR-12</b> Shrink architect wall-clock</td><td><span class="chip c-ok">done</span></td><td>Oct 16</td><td class="mono">58 min</td><td class="mono">2</td><td class="mono">1.6M</td><td class="mono">24.4</td><td><span class="tier c-ok">full</span></td></tr>
+      <tr><td><b>AIR-3</b> Add a slugify function</td><td><span class="chip c-ok">done</span></td><td>Sep 14</td><td class="mono">9 min</td><td class="mono">0</td><td class="mono">140k</td><td class="mono">26.1</td><td><span class="tier c-warn">summary</span></td></tr>
+      <tr><td><b>HDS-2</b> Lang-detect spike</td><td><span class="chip c-ok">done</span></td><td>Jun 2</td><td class="mono">33 min</td><td class="mono">1</td><td class="mono">610k</td><td class="mono">25.0</td><td><span class="tier c-mute">archived</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="row sub" style="justify-content:space-between;margin-top:10px"><span>Showing 1–5 of 19</span><span class="row"><button class="btn" type="button">Previous</button><button class="btn" type="button">Next</button></span></div>
+</section>
+
+<section class="card" aria-labelledby="tr">
+  <div class="row" style="justify-content:space-between;margin-bottom:10px">
+    <h2 id="tr">Trace: AIR-5 <span class="sub">· story → run → layer → team → step. Click a step to open it.</span></h2>
+    <div class="row"><button class="btn" type="button">Copy link</button><button class="btn" type="button">Expand all</button></div>
+  </div>
+  <div class="tree">
+    <div class="node"><b>▾ story AIR-5</b><span class="chip c-err">blocked</span><span class="sub">41 min · 1.2M tokens</span></div>
+    <div class="node l1"><b>▾ layer 1</b><span class="sub">coder · 4 fix rounds · 18.3 tok/s · fork at round 3</span></div>
+    <div class="node l2">▸ step 14 read_file <span class="sub mono">4.4k in · 74 out · 7.4 s</span></div>
+    <div class="node l2" style="background:var(--field)">▾ step 15 write_file <span class="chip c-warn">malformed, repaired</span><span class="sub mono">6.2k in · 202 out · 14.3 s</span><span class="tier c-ok">full</span></div>
+    <div class="det">assistant: Writing the test now.
+args:   {"path": "tests/test_search.py", "content": "...assert tool in [\"web_search]"}
+repair: closing quote restored before ]
+output: ok</div>
+    <div class="node l2">▾ step 16 run_tests <span class="chip c-err">fail</span><span class="sub mono">7.1k in · 61 out · 9.0 s</span><span class="tier c-warn">summary</span></div>
+    <div class="det">summary: run_tests, failed, 2 tests, error SyntaxError at line 41, output 1.8k chars.
+Full text archived Oct 18 → /Volumes/cold/airlie/AIR-5.zip   <a href="#" style="color:var(--accent)">Restore</a></div>
+    <div class="node l1">▸ review <span class="chip c-err">blocking</span><span class="sub">vacuous test, loose match= pattern</span></div>
+    <div class="node l1">▸ fix_round 1, 2, 3, 4</div>
+  </div>
+  <div class="sub" style="margin:12px 0 8px">Chatter lifecycle, all ages configurable. Events and charts above never expire.</div>
+  <div class="ret">
+    <div><b>Days 0–30 · full</b>Prompts, tool calls and outputs open in the trace.</div>
+    <div><b>Day 31 · archive</b>Full text zipped to cold storage; summaries replace it; location recorded.</div>
+    <div><b>Days 31–120 · summary</b>The trace shows per-call summaries.</div>
+    <div><b>Day 121 · pointer</b>Summaries removed; only the cold-storage location remains.</div>
+  </div>
+</section>
+</main>
+<script>
+var r=document.documentElement,b=document.getElementById('theme');
+b.onclick=function(){var d=r.dataset.theme==='dark';r.dataset.theme=d?'light':'dark';b.textContent=d?'Dark':'Light'};
+document.querySelectorAll('#range button').forEach(function(x){x.onclick=function(){document.querySelectorAll('#range button').forEach(function(y){y.classList.remove('on')});x.classList.add('on')}});
+document.getElementById('grp').onchange=function(e){document.getElementById('glabel').textContent=e.target.value};
+var S=[[28,27,26,25,23,21,20],[23,24,22,23,24,23,23],[30,29,31,28,29,28,28],[26,25,27,26,25,26,26]],C=['--s1','--s2','--s3','--s4'],D=['','6 4','2 3','10 3 2 3'];
+var svg=document.getElementById('chart'),W=640,H=220,L=36,B=22,n=7,h='';
+for(var g=0;g<=4;g++){var y=10+(H-B-10)*g/4;h+='<line x1="'+L+'" x2="'+W+'" y1="'+y+'" y2="'+y+'" stroke="var(--line2)"/><text x="0" y="'+(y+4)+'">'+(35-g*5)+'</text>'}
+['Sep 18','Sep 25','Oct 2','Oct 9','Oct 16'].forEach(function(t,i){h+='<text x="'+(L+i*(W-L)/4.4)+'" y="'+(H-4)+'">'+t+'</text>'});
+S.forEach(function(s,k){var p=s.map(function(v,i){return (L+i*(W-L-8)/(n-1)).toFixed(0)+','+(10+(H-B-10)*(1-(v-15)/20)).toFixed(0)}).join(' ');
+if(k===0){var lo=s.map(function(v,i){return (L+i*(W-L-8)/(n-1)).toFixed(0)+','+(10+(H-B-10)*(1-(v+3-15)/20)).toFixed(0)}),hi=s.map(function(v,i){return (L+i*(W-L-8)/(n-1)).toFixed(0)+','+(10+(H-B-10)*(1-(v-3-15)/20)).toFixed(0)}).reverse();h+='<polygon points="'+lo.concat(hi).join(' ')+'" fill="var(--s1)" opacity=".12"/>'}
+h+='<polyline points="'+p+'" fill="none" stroke="var('+C[k]+')" stroke-width="2" stroke-dasharray="'+D[k]+'" stroke-linejoin="round"/>'});
+svg.innerHTML=h;
+</script>
+</body>
+</html>
