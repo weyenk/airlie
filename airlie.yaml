@@ -143,7 +143,7 @@ roles:
   ux:           { prompt: prompts/roles/ux.md, model: generalist, tools: [], vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   design:       { prompt: prompts/roles/design.md, model: generalist, tools: [], vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   docs:         { prompt: prompts/roles/docs.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   qa:           { prompt: prompts/roles/qa.md, model: base, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], skills: skills/qa, max_tokens: 4096, thinking: false, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   security:     { prompt: prompts/roles/security.md, model: base, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [], max_context: 131072, max_tokens: 8192, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
@@ -163,6 +163,9 @@ tools:
   output_cap_chars: 20000
   write_file_max_overwrite_lines: 200   # longer existing files change with edit_file, not a rewrite
 mcp: {}                            # name: { command, args, env } — exposed to teams as extra tools
+web:
+  search: { kind: searxng, url: http://127.0.0.1:8888 }   # web_search backend; `task doctor` checks it
+  fetch_timeout_s: 30
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:

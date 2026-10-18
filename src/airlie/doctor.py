@@ -196,6 +196,19 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
             )
         )
 
+    if cfg.web.search.kind == "searxng":
+        if probe.http_ok(f"{cfg.web.search.url.rstrip('/')}/search?q=doctor&format=json"):
+            results.append(CheckResult("web:search", "ok", f"searxng answers at {cfg.web.search.url}"))
+        else:
+            results.append(
+                CheckResult(
+                    "web:search",
+                    "warn",
+                    f"searxng not reachable at {cfg.web.search.url} (web_search will fail; "
+                    "run: docker run -d -p 8888:8088 searxng/searxng)",
+                )
+            )
+
     want = cfg.memory.wired_limit_mb
     have = probe.sysctl_int("iogpu.wired_limit_mb")
     fix = f"run: sudo sysctl iogpu.wired_limit_mb={want}  (docs/wiki/build-spec/01 §1)"
