@@ -82,6 +82,9 @@ _SHORT = {
 """A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
 MUTATION_REVIEW_ATTEMPTS = 2
 """How many times the architect is asked for a usable mutation review: one retry, then the story stops."""
+MUTATION_REVIEW_STEPS = 8
+"""Steps the architect gets to review the surviving mutants: the brief carries the report and the diff, so it
+reads a few files, not twenty (AIR-5: 20 steps at an 80k-token prompt took 55 minutes)."""
 MUTATION_DIFF_CHARS = 40_000
 """How much of the story's diff the architect's mutation review is shown."""
 MUTATION_OUTPUT_CHARS = 2_000_000
@@ -795,6 +798,7 @@ class StoryPipeline:
                 lambda text: parse_mutation_review(extract_json_block(text)),
                 attempts=MUTATION_REVIEW_ATTEMPTS,
                 at=top,
+                ask=partial(self._ask, steps=MUTATION_REVIEW_STEPS),
             )
         except StoryBlocked as e:  # the summary last: a stop reason keeps its start and its end
             raise StoryBlocked(f"{e}. The mutation gate said: {summary}") from None
