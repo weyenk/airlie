@@ -8,6 +8,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -125,11 +126,22 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
         }
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
     ev = events(report)
     assert [e["verdict"] for e in ev if e["kind"] == "review"] == ["request_changes", "approve"]
     fix = [e for e in ev if e["kind"] == "fix_round"][0]
     assert fix["subtask"] == "fix" and fix["blocking"] == 1
+    # the fix round knows what the first run wrote, so its write nudges do not ask for it again
+    fix_ctxs = [c for c in seen if c.team_id == "fix"]
+    assert [c.already_written for c in fix_ctxs] == [(), ("PASS",)]
     nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
     assert nudge.startswith("A reviewer found blocking problems") and "PASS:1" in nudge
     assert report.final_answer == "all done"

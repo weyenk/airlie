@@ -1043,3 +1043,24 @@ async def test_the_same_observation_three_times_is_a_repeat_whatever_the_argumen
     ctx.tools.add(SameShell())
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action" and result.steps == 3
+
+
+async def test_a_continuation_counts_the_files_already_written(tmp_path: Path) -> None:
+    """AIR-7 2026-10-18: the fix round after a review started with blank flags, told the coder at step 10 it
+    had "written no test" (its tests were in the worktree from the run before) and switched reading off."""
+    engine = FakeEngine({"coder": [*reads(11), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    ctx.already_written = ("tests/unit/test_a.py",)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert requests_saying(engine, "written no test") == []
+    deadlines = [
+        (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
+    ]
+    assert deadlines == [("tests", 3, True), ("code", 9, False)]  # the code is still owed
+    # and the one write-now nudge of a role without a schedule counts an earlier write too
+    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)
+    ctx.already_written = ("a.py",)
+    await team.run(ctx, Recorder())
+    assert told_to_write(engine) == []
