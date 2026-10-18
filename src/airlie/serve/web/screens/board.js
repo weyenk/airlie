@@ -76,10 +76,89 @@ export function render(root, [key], ctx) {
     if (key) openItem(key);
   }
 
+  // ---- dragging: a card dropped on a column lands above the card under the pointer, or at the bottom ----
+  let dragging = null;
+
+  function clearDropMarks() {
+    for (const el of columns.querySelectorAll(".drop-before, .drop-end, .drop-over")) el.classList.remove("drop-before", "drop-end", "drop-over");
+  }
+
+  // The card in `stack` the pointer is above the middle of, or null when it is below them all.
+  function cardBelow(stack, y) {
+    for (const el of stack.querySelectorAll(".item")) {
+      if (el.dataset.key === dragging) continue;
+      const r = el.getBoundingClientRect();
+      if (y < r.top + r.height / 2) return el;
+    }
+    return null;
+  }
+
+  async function drop(status, before) {
+    const key = dragging;
+    dragging = null;
+    clearDropMarks();
+    if (!key || key === before) return;
+    try {
+      const moved = await request(`/v1/board/items/${encodeURIComponent(key)}/move`, { method: "POST", body: { status, before } });
+      ({ items } = await request("/v1/board/items")); // the server owns the order, so take it back whole
+      error.textContent = "";
+      if (!gone) drawColumns();
+      if (!gone && location.hash === `#/board/${encodeURIComponent(moved.key)}`) openItem(moved.key);
+    } catch (e) {
+      if (e?.name !== "AuthError") error.textContent = `Can't move ${key}: ${e.message}`;
+    }
+  }
+
+  function dropZone(stack, status) {
+    stack.addEventListener("dragover", (ev) => {
+      if (!dragging) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      clearDropMarks();
+      stack.classList.add("drop-over");
+      const below = cardBelow(stack, ev.clientY);
+      if (below) below.classList.add("drop-before");
+      else stack.classList.add("drop-end");
+    });
+    stack.addEventListener("dragleave", (ev) => {
+      if (!stack.contains(ev.relatedTarget)) clearDropMarks();
+    });
+    stack.addEventListener("drop", (ev) => {
+      if (!dragging) return;
+      ev.preventDefault();
+      drop(status, cardBelow(stack, ev.clientY)?.dataset.key ?? null);
+    });
+  }
+
   function card(item) {
+    const open = () => ctx.go(`#/board/${encodeURIComponent(item.key)}`);
     return h(
-      "button",
-      { type: "button", class: "item", onclick: () => ctx.go(`#/board/${encodeURIComponent(item.key)}`) },
+      "div",
+      {
+        role: "button",
+        tabindex: "0",
+        draggable: "true",
+        class: "item",
+        dataset: { key: item.key },
+        onclick: open,
+        onkeydown: (ev) => {
+          if (ev.target === ev.currentTarget && (ev.key === "Enter" || ev.key === " ")) {
+            ev.preventDefault();
+            open();
+          }
+        },
+        ondragstart: (ev) => {
+          dragging = item.key;
+          ev.dataTransfer.effectAllowed = "move";
+          ev.dataTransfer.setData("text/plain", item.key);
+          ev.currentTarget.classList.add("dragging");
+        },
+        ondragend: (ev) => {
+          dragging = null;
+          ev.currentTarget.classList.remove("dragging");
+          clearDropMarks();
+        },
+      },
       h("div", { class: "row spread", style: { gap: "6px" } }, h("span", { class: "mono small muted" }, item.key), h("span", { class: "small muted" }, item.level)),
       h("div", { class: "item-title" }, item.title),
       item.labels?.length ? h("div", { class: "row", style: { gap: "4px" } }, item.labels.map((l) => chip("mute", l))) : null,
@@ -93,11 +172,13 @@ export function render(root, [key], ctx) {
       columns,
       STATUSES.map(([status, label, kind]) => {
         const here = shown.filter((i) => i.status === status);
+        const stack = h("div", { class: "stack cards", style: { gap: "8px" } }, here.length ? here.map(card) : h("div", { class: "empty small" }, "—"));
+        dropZone(stack, status);
         return h(
           "section",
           { class: "column", "aria-label": label },
           h("div", { class: "row spread column-head" }, chip(kind, label), h("span", { class: "small muted mono" }, String(here.length))),
-          h("div", { class: "stack", style: { gap: "8px" } }, here.length ? here.map(card) : h("div", { class: "empty small" }, "—")),
+          stack,
         );
       }),
     );

@@ -18,7 +18,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     key TEXT PRIMARY KEY, n INTEGER NOT NULL, level TEXT NOT NULL, title TEXT NOT NULL,
     description TEXT NOT NULL, status TEXT NOT NULL, parent TEXT, labels_json TEXT NOT NULL,
-    created_at REAL NOT NULL, updated_at REAL NOT NULL, created_by TEXT NOT NULL);
+    created_at REAL NOT NULL, updated_at REAL NOT NULL, created_by TEXT NOT NULL, rank REAL);
 CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY, item_key TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL,
     at REAL NOT NULL);
@@ -55,6 +55,9 @@ class BoardStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            if not any(r["name"] == "rank" for r in conn.execute("PRAGMA table_info(items)")):
+                conn.execute("ALTER TABLE items ADD COLUMN rank REAL")  # a board from before ordering
+            conn.execute("UPDATE items SET rank = n WHERE rank IS NULL")
             self._conn = conn
         return self._conn
 
@@ -73,7 +76,7 @@ class BoardStore:
     def list(
         self, *, level: Level | None = None, status: Status | None = None, parent: str | None = None
     ) -> list[Item]:
-        """Items matching every filter given, oldest first."""
+        """Items matching every filter given, in column order: oldest first until a `move` reorders them."""
         where, args = [], []
         for column, value in (("level", level), ("status", status), ("parent", parent)):
             if value is not None:
@@ -82,7 +85,7 @@ class BoardStore:
         sql = f"SELECT {_FIELDS} FROM items"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY n"
+        sql += " ORDER BY rank, n"
         with self._lock:
             rows = self._db.execute(sql, args).fetchall()
             return [self._item(r) for r in rows]
@@ -126,7 +129,8 @@ class BoardStore:
                     raise BoardStoreError(f"{key} is already on the board")
                 self._db.execute("UPDATE meta SET v = ? WHERE k = 'next_n'", (str(max(next_n, n + 1)),))
                 self._db.execute(
-                    f"INSERT INTO items ({_FIELDS}, n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    f"INSERT INTO items ({_FIELDS}, n, rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "CASE WHEN ? THEN ? ELSE (SELECT COALESCE(MAX(rank), 0) + 1 FROM items) END)",
                     (
                         key,
                         level,
@@ -138,6 +142,8 @@ class BoardStore:
                         now,
                         now,
                         created_by,
+                        n,
+                        number is not None,
                         n,
                     ),
                 )
@@ -182,6 +188,41 @@ class BoardStore:
                     sets.append("updated_at = ?")
                     args.append(time.time())
                     self._db.execute(f"UPDATE items SET {', '.join(sets)} WHERE key = ?", (*args, key))
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            return self._get(key)
+
+    def move(self, key: str, status: Status, before: str | None = None) -> Item:
+        """The item set to `status` and placed just above `before` in that column, or at its bottom when
+        `before` is None. BoardStoreError for a status that is not one, or a `before` that is the item itself
+        or not in that column; KeyError for an unknown key. Only a change of status counts as an update."""
+        if status not in STATUSES:
+            raise BoardStoreError(f"status must be one of {', '.join(STATUSES)}, not {status!r}")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                item = self._get(key)
+                column = [
+                    r["key"]
+                    for r in self._db.execute(
+                        "SELECT key FROM items WHERE status = ? AND key != ? ORDER BY rank, n", (status, key)
+                    )
+                ]
+                if before is None:
+                    column.append(key)
+                elif before in column:
+                    column.insert(column.index(before), key)
+                else:
+                    raise BoardStoreError(f"{before} is not in {status}")
+                for i, k in enumerate(column, start=1):
+                    self._db.execute("UPDATE items SET rank = ? WHERE key = ?", (i, k))
+                if item.status != status:
+                    self._db.execute(
+                        "UPDATE items SET status = ?, updated_at = ? WHERE key = ?",
+                        (status, time.time(), key),
+                    )
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")

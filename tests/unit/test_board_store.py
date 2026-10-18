@@ -242,3 +242,54 @@ def test_create_refuses_a_number_already_taken_or_not_positive(tmp_path: Path) -
         s.create(level="initiative", title="zero", number=0)
     assert [i.key for i in s.list()] == ["AIR-1"]
     assert s.create(level="initiative", title="two").key == "AIR-2"  # nothing refused moved the counter
+
+
+def test_move_reorders_a_column_and_changes_status(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    a, b, c = (s.create(level="initiative", title=t).key for t in "abc")
+    assert [i.key for i in s.list()] == [a, b, c]
+    s.move(c, "todo", a)  # c above a
+    assert [i.key for i in s.list(status="todo")] == [c, a, b]
+    s.move(c, "todo")  # to the bottom
+    assert [i.key for i in s.list(status="todo")] == [a, b, c]
+    before = s.get(b).updated_at
+    s.move(b, "todo", c)  # same status: not an update
+    assert s.get(b).updated_at == before
+    moved = s.move(a, "doing")
+    assert moved.status == "doing" and moved.updated_at > before
+    s.move(c, "doing", a)
+    assert [i.key for i in s.list(status="doing")] == [c, a]
+    assert [i.key for i in s.list(status="todo")] == [b]
+
+
+def test_move_refuses_a_bad_target_and_changes_nothing(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    a = s.create(level="initiative", title="a").key
+    b = s.create(level="initiative", title="b").key
+    s.move(b, "doing")
+    with pytest.raises(BoardStoreError):
+        s.move(a, "shipped")  # type: ignore[arg-type]
+    with pytest.raises(BoardStoreError):
+        s.move(a, "todo", b)  # b is in doing
+    with pytest.raises(BoardStoreError):
+        s.move(a, "todo", a)  # itself
+    with pytest.raises(KeyError):
+        s.move("AIR-9", "todo")
+    assert s.get(a).status == "todo" and s.get(b).status == "doing"
+
+
+def test_a_board_from_before_ordering_gains_ranks_in_creation_order(tmp_path: Path) -> None:
+    path = tmp_path / "board.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """CREATE TABLE items (key TEXT PRIMARY KEY, n INTEGER NOT NULL, level TEXT NOT NULL,
+        title TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL, parent TEXT,
+        labels_json TEXT NOT NULL,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL, created_by TEXT NOT NULL);
+        INSERT INTO items VALUES ('AIR-1',1,'initiative','a','','todo',NULL,'[]',1,1,'noah');
+        INSERT INTO items VALUES ('AIR-2',2,'initiative','b','','todo',NULL,'[]',1,1,'noah');"""
+    )
+    conn.commit()
+    conn.close()
+    s = BoardStore(path)
+    assert [i.key for i in s.list()] == ["AIR-1", "AIR-2"]
