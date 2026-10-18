@@ -319,6 +319,7 @@ class NativeTeam:
                     o_t=result.output,
                     ok=result.ok,
                     assistant_text=res.text,
+                    reasoning=res.reasoning,
                     prompt_tokens=res.prompt_tokens,
                     completion_tokens=res.completion_tokens,
                     gen_ms=gen_ms,

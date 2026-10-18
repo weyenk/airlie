@@ -364,7 +364,7 @@ def test_the_samples_thinking_models_have_room_for_a_reply_after_their_thinking(
     listed = {
         n: tokens for n, tokens in wanted.items() if n in models
     }  # the roles and models the sample lists
-    assert listed == {"coder": 16384, "architect": 16384, "research": 16384, "generalist": 16384}
+    assert listed == {"coder": 10240, "architect": 16384, "research": 16384, "generalist": 16384}
     for name, tokens in listed.items():
         limit = models[name]["limit"]
         assert tokens <= limit["output"] < limit["context"], name

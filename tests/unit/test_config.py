@@ -170,10 +170,11 @@ def test_write_file_overwrite_limit_defaults_to_200_and_can_be_set(tmp_path: Pat
 
 def test_committed_coder_has_room_for_a_large_edit() -> None:
     """HDS-5 2026-10-16: 4096 tokens cut a whole-file rewrite off mid-call. The coder thinks now (Qwen3.8), so
-    max_tokens caps its thinking and its answer: 8192 of each."""
+    max_tokens caps its thinking and its answer: 8192 for the answer over a 2048 thinking budget (AIR-28,
+    2026-10-18: at 8192 a step whose thinking ran to the cap cost nine minutes and ended in one more read)."""
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
-    assert cfg.roles["coder"].max_tokens == 16384
+    assert (cfg.roles["coder"].thinking_budget, cfg.roles["coder"].max_tokens) == (2048, 10240)
 
 
 def test_committed_default_config_is_valid() -> None:
@@ -329,8 +330,8 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (coder.model, coder.thinking, coder.thinking_budget, coder.max_tokens) == (
         "generalist",
         True,
-        8192,
-        16384,
+        2048,
+        10240,
     )
 
 

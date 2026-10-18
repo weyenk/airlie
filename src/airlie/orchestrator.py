@@ -101,6 +101,7 @@ class LoggingObserver:
                 "o_t": step.o_t,
                 "ok": step.ok,
                 "assistant_text": step.assistant_text,
+                "reasoning": step.reasoning,
             },
         )
 
