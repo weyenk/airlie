@@ -112,6 +112,26 @@ class EngineSpec(Strict):
         return self.served_names.get(model, model)
 
 
+class WriteScheduleSpec(Strict):
+    """When a role that writes tests and code must have started each, as fractions of its steps: a test
+    write (a path under tests/ or named like a test) by `tests`, a code write by `code`. At a deadline the
+    role is told once to write; WRITE_ONLY_AFTER steps later with still nothing it keeps only its write
+    tools until that write lands (AIR-28, 2026-10-18: the coder read 21 of 40 steps, then 34 of 40)."""
+
+    tests: float = Field(
+        default=0.25, gt=0, le=1, description="fraction of the steps by which a test is written"
+    )
+    code: float = Field(
+        default=0.75, gt=0, le=1, description="fraction of the steps by which code is written"
+    )
+
+    @model_validator(mode="after")
+    def _tests_first(self) -> WriteScheduleSpec:
+        if self.tests > self.code:
+            raise ValueError(f"write_schedule: tests ({self.tests}) must not come after code ({self.code})")
+        return self
+
+
 class RoleSpec(Strict):
     """A persona: prompt file + model + sampling. The engine is derived from the model."""
 
@@ -142,6 +162,11 @@ class RoleSpec(Strict):
         default=False,
         description="a role with run_tests that answers while its last run_tests run failed is told once "
         "that it is not done (the coder: AIR-5 layers ended on 'done' with their own tests red)",
+    )
+    write_schedule: WriteScheduleSpec | None = Field(
+        default=None,
+        description="deadlines for a test write and a code write, as fractions of the steps; None keeps the "
+        "one write-now nudge two-fifths in",
     )
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(

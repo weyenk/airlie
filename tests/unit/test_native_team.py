@@ -12,6 +12,7 @@ from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext
+from airlie.teams.native_team import is_test_path
 from airlie.tools import ToolContext, ToolRegistry
 
 
@@ -871,3 +872,134 @@ async def test_a_step_records_what_the_model_thought(tmp_path: Path) -> None:
     rec = Recorder()
     await team.run(ctx, rec)
     assert [s.reasoning for s in rec.steps] == ["a.py is the only file; write it"]
+
+
+# ---- the write schedule: a test write by one deadline, a code write by a later one ----
+
+SCHEDULE = {"tests": 0.25, "code": 0.75}
+
+
+def write(cid: str, path: str) -> FakeReply:
+    return FakeReply(
+        tool_calls=[ToolCall(cid, "write_file", json.dumps({"path": path, "content": "x = 1\n"}))]
+    )
+
+
+def offered_names(engine: FakeEngine) -> list[set[str]]:
+    return [{t.name for t in (r.tools or [])} for r in engine.requests]
+
+
+def requests_saying(engine: FakeEngine, text: str) -> list[int]:
+    """The 1-based requests whose messages hold `text`."""
+    return [
+        i
+        for i, r in enumerate(engine.requests, 1)
+        if any(m.role == "user" and text in str(m.content) for m in r.messages)
+    ]
+
+
+def test_a_test_write_is_one_under_a_tests_directory_or_named_like_a_test() -> None:
+    for p in (
+        "tests/unit/test_a.py",
+        "test/a.py",
+        "pkg/tests/x.py",
+        "test_a.py",
+        "a_test.py",
+        "a.test.ts",
+        "a.spec.js",
+        "tests/conftest.py",
+        "src/conftest.py",
+    ):
+        assert is_test_path(p), p
+    for p in ("src/airlie/teams/native_team.py", "a.py", "testing/notes.md", "src/contest.py", "latest.py"):
+        assert not is_test_path(p), p
+
+
+async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_deadline_then_loses_reading(
+    tmp_path: Path,
+) -> None:
+    engine = FakeEngine({"coder": [*reads(11), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    # 12 steps: the tests deadline is step 3 (a quarter), the code deadline step 9 (three quarters)
+    told = requests_saying(engine, "written no test")
+    assert told[0] == 4 and told == list(range(4, len(engine.requests) + 1))
+    assert (
+        requests_saying(engine, "written nothing. Stop reading") == []
+    )  # the schedule replaces the old nudge
+    off = requests_saying(engine, "reading is switched off")
+    assert off[0] == 8  # four steps after the deadline, as before
+    names = offered_names(engine)
+    assert names[6] == {"write_file", "read_file", "run_tests"} and names[7] == {"write_file", "run_tests"}
+    assert requests_saying(engine, "written no code")[0] == 10  # the code deadline, step 9, is missed too
+    deadlines = [
+        (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
+    ]
+    assert deadlines == [("tests", 3, False), ("code", 9, False)]
+    assert all(
+        e["team_id"] == "team-1" and e["role"] == "coder"
+        for e in events.records
+        if e["kind"] == "write_deadline"
+    )
+
+
+async def test_a_coder_that_writes_its_test_and_code_in_time_is_never_nudged(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                *reads(1),
+                write("t", "tests/test_a.py"),
+                *reads(2),
+                write("c", "a.py"),
+                *reads(6),
+                FakeReply(text="Done."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert (
+        requests_saying(engine, "written no test") == [] and requests_saying(engine, "written no code") == []
+    )
+    assert all("read_file" in n for n in offered_names(engine)[:-1])
+    deadlines = [
+        (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
+    ]
+    assert deadlines == [("tests", 3, True), ("code", 9, True)]
+
+
+async def test_a_coder_that_wrote_only_tests_is_told_to_write_code_at_the_second_deadline(
+    tmp_path: Path,
+) -> None:
+    engine = FakeEngine(
+        {"coder": [*reads(1), write("t", "tests/test_a.py"), *reads(17), FakeReply(text="Done.")]}
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=20, write_schedule=SCHEDULE)  # deadlines 5 and 15
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert requests_saying(engine, "written no test") == []
+    told = requests_saying(engine, "written no code")
+    assert told[0] == 16 and "15 of your 20 steps" in str(engine.requests[15].messages[-1].content)
+    assert requests_saying(engine, "reading is switched off")[0] == 20  # step 19, four after the deadline
+    assert offered_names(engine)[19] == {"write_file", "run_tests"}
+    deadlines = [
+        (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
+    ]
+    assert deadlines == [("tests", 5, True), ("code", 15, False)]
+
+
+async def test_reading_comes_back_once_the_missed_write_lands(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {"coder": [*reads(7), write("t", "tests/test_a.py"), *reads(2), FakeReply(text="Done.")]}
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    await team.run(ctx, Recorder())
+    names = offered_names(engine)
+    assert names[7] == {"write_file", "run_tests"}  # reading off after the missed tests deadline (step 7)
+    assert names[8] == {
+        "write_file",
+        "read_file",
+        "run_tests",
+    }  # the test was written at step 8: reading is back

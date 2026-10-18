@@ -5,9 +5,12 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import time
 from dataclasses import asdict, replace
+from pathlib import PurePosixPath
 from typing import Any
 
 from airlie.engine.protocol import Engine
@@ -104,10 +107,26 @@ WRITE_NOW = (
 """What a role with write tools is told, once, when it is two-fifths through its steps without a write."""
 
 WRITE_ONLY = (
-    "You still have written nothing after {n} steps, so reading is switched off: only write_file, edit_file "
+    "You still have written {what} after {n} steps, so reading is switched off: only write_file, edit_file "
     "and run_tests are available until you write. Make the change from what you have read."
 )
-"""What a role is told, once, when the nudge did not make it write and its read tools are taken away."""
+"""What a role is told, once, when the nudge did not make it write and its read tools are taken away;
+`what` is nothing, no test or no code."""
+
+TESTS_NOW = (
+    "You have used {n} of your {total} steps and have written no test. Stop reading: you have what you need. "
+    "Write the failing test now, then the code, then run run_tests."
+)
+"""What a role with a write schedule is told, once, at its tests deadline without a test write."""
+
+CODE_NOW = (
+    "You have used {n} of your {total} steps and have written no code. Stop reading: make the change now "
+    "from what you have read, then run run_tests."
+)
+"""What a role with a write schedule is told, once, at its code deadline without a code write."""
+
+_TEST_DIRS = frozenset({"test", "tests"})
+_TEST_NAME = re.compile(r"^(test_.+|.+_test\..+|.+\.(test|spec)\..+|conftest\.py)$")
 
 WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
@@ -137,6 +156,25 @@ ONE_STEP_LEFT = (
     "have found. Stop exploring and write the deliverable."
 )
 """What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
+
+
+def is_test_path(path: str) -> bool:
+    """Whether a written file is a test: under a test/ or tests/ directory, or named like one (test_x.py,
+    x_test.py, x.test.ts, x.spec.js, conftest.py)."""
+    parts = PurePosixPath(path.replace("\\", "/")).parts
+    return any(p in _TEST_DIRS for p in parts[:-1]) or bool(parts and _TEST_NAME.match(parts[-1]))
+
+
+def _written_path(call: ToolCall) -> str | None:
+    """The path a write_file or edit_file call names, or None for another tool or unreadable arguments."""
+    if call.name not in ("write_file", "edit_file"):
+        return None
+    try:
+        args = json.loads(call.arguments)
+    except ValueError:
+        return None
+    path = args.get("path") if isinstance(args, dict) else None
+    return path if isinstance(path, str) else None
 
 
 def _offered(ctx: TeamContext, reading_off: bool) -> list[Any]:
@@ -200,6 +238,17 @@ class NativeTeam:
         wrote = False  # a write_file or edit_file has run
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
+        # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
+        # a nudge at the deadline, then write-only tools WRITE_ONLY_AFTER steps later, until that write lands
+        schedule = ctx.role.write_schedule if can_write else None
+        deadlines: dict[str, int] = {}
+        if schedule is not None:
+            deadlines = {
+                "tests": max(2, math.ceil(ctx.max_steps * schedule.tests)),
+                "code": max(2, math.ceil(ctx.max_steps * schedule.code)),
+            }
+        written = {"tests": False, "code": False}  # a test file, a code file
+        missed: set[str] = set()  # deadlines passed without their write
         repeat_warned = False  # the first repeated action has been said to the role
         red_warned = False  # the role has been told once that it answered with run_tests failing
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
@@ -330,6 +379,9 @@ class NativeTeam:
                 await observer.after_step(step_record)
                 if call.name in ("write_file", "edit_file"):
                     wrote = True
+                    path = _written_path(call)
+                    if path is not None:
+                        written["tests" if is_test_path(path) else "code"] = True
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
@@ -363,11 +415,40 @@ class NativeTeam:
                 final_text = f"stopped: token budget {ctx.token_budget} exhausted"
                 stop = "token_budget"
                 break
-            if can_write and not wrote and steps == write_by:
+            if schedule is not None:
+                for kind, at in deadlines.items():
+                    if steps == at:
+                        if ctx.emit is not None:
+                            ctx.emit(
+                                "write_deadline",
+                                team_id=ctx.team_id,
+                                role=ctx.role_name,
+                                kind_of_write=kind,
+                                step=steps,
+                                met=written[kind],
+                            )
+                        if not written[kind]:
+                            missed.add(kind)
+                            said = TESTS_NOW if kind == "tests" else CODE_NOW
+                            messages.append(
+                                Message(role="user", content=said.format(n=steps, total=ctx.max_steps))
+                            )
+                    if (
+                        kind in missed
+                        and not written[kind]
+                        and steps == at + WRITE_ONLY_AFTER
+                        and steps < ctx.max_steps
+                    ):
+                        reading_off = True
+                        what = "no test" if kind == "tests" else "no code"
+                        messages.append(Message(role="user", content=WRITE_ONLY.format(what=what, n=steps)))
+                if reading_off and all(written[k] for k in missed):
+                    reading_off = False  # the missed write landed: reading is back for what comes next
+            elif can_write and not wrote and steps == write_by:
                 messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
-            if can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
+            elif can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
                 reading_off = True
-                messages.append(Message(role="user", content=WRITE_ONLY.format(n=steps)))
+                messages.append(Message(role="user", content=WRITE_ONLY.format(what="nothing", n=steps)))
             if steps >= ctx.max_steps:
                 last_turn = True
                 messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))

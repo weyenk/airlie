@@ -897,3 +897,19 @@ def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:
     data = {**MINIMAL, "auth": {"session_days": 0}}
     with pytest.raises(ConfigError, match="auth.session_days"):
         load_config(write(tmp_path, data))
+
+
+def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_first(tmp_path: Path) -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    ws = cfg.roles["coder"].write_schedule
+    assert ws is not None and (ws.tests, ws.code) == (0.25, 0.75)
+    assert cfg.roles["architect"].write_schedule is None
+    bad = {
+        **MINIMAL,
+        "roles": {
+            **MINIMAL["roles"],
+            "coder": {**MINIMAL["roles"]["coder"], "write_schedule": {"tests": 0.8, "code": 0.5}},
+        },
+    }
+    with pytest.raises(ConfigError, match="write_schedule"):
+        load_config(write(tmp_path, bad))
