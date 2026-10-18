@@ -157,6 +157,7 @@ def test_body_has_every_sampling_field_and_the_served_name() -> None:
         "min_p": 0.1,
         "presence_penalty": 0.2,
         "chat_template_kwargs": {"enable_thinking": False},
+        "enable_thinking": False,
     }
     streamed = e._body(r, stream=True)
     assert streamed["stream"] is True and streamed["stream_options"] == {"include_usage": True}
@@ -580,6 +581,7 @@ async def test_yes_no_sends_the_constrained_request() -> None:
         "max_tokens": 3,
         "temperature": 0.0,
         "chat_template_kwargs": {"enable_thinking": False},
+        "enable_thinking": False,
     }
     assert e.stats().requests == 1 and e.stats().errors == 0
 
@@ -779,3 +781,20 @@ def test_finish_passes_known_values_through_unchanged() -> None:
         "cancelled",
         "stop",
     ]
+
+
+def test_thinking_off_is_said_at_the_top_level_too_so_a_server_default_budget_leaves_the_reply_alone() -> (
+    None
+):
+    """AIR-7 layer 02, 2026-10-18: the engine ran with --default-thinking-token-budget 2048 from before the
+    coder stopped thinking. vllm-mlx gates its budget processor on the request's top-level enable_thinking
+    (default True), not on chat_template_kwargs, so the non-thinking coder's replies were cut at 2,048 tokens
+    with a </think> stamped in: two test files ended in `assert</think>`."""
+    e, _ = make(spec=role_spec(thinking=False))
+    off = e._body(req(), stream=False)
+    assert off["enable_thinking"] is False and off["chat_template_kwargs"]["enable_thinking"] is False
+    on, _ = make(spec=role_spec(thinking=True, thinking_budget=100))
+    body = on._body(req(), stream=False)
+    assert body["enable_thinking"] is True and body["chat_template_kwargs"]["enable_thinking"] is True
+    forced = e._body(req(thinking=True), stream=False)
+    assert forced["enable_thinking"] is True

@@ -119,6 +119,10 @@ class HTTPEngine:
             "min_p": req.sampling.min_p,
             "presence_penalty": req.sampling.presence_penalty,
             "chat_template_kwargs": {"enable_thinking": bool(thinking), **spec.chat_template_kwargs},
+            # vllm-mlx gates its thinking-budget processor on this top-level field (default True), not on the
+            # template kwarg: without it a server started with a default budget cuts a non-thinking reply at
+            # the budget and stamps </think> into it (AIR-7 layer 02, 2026-10-18)
+            "enable_thinking": bool(thinking),
         }
         if req.sampling.repetition_penalty != 1.0:
             body["repetition_penalty"] = req.sampling.repetition_penalty
@@ -262,6 +266,7 @@ class HTTPEngine:
             "max_tokens": 3,
             "temperature": 0.0,
             "chat_template_kwargs": {"enable_thinking": False},
+            "enable_thinking": False,  # the top-level flag vllm-mlx's thinking-budget processor reads
         }
         self._stats.requests += 1
         r = await self._c().post(f"{self.base_url}/chat/completions", json=body)
