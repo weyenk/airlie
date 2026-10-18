@@ -11,7 +11,7 @@ engines:
     kind: vllm_mlx
     host: 127.0.0.1
     port: 8080
-    models: [base, small, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
+    models: [small, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
     memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
@@ -32,22 +32,10 @@ engines:
 # Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
 # Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
 # spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
-# `base` must be a STANDARD-ATTENTION model: vllm-mlx 0.5.0's prefix cache cannot store hybrid (linear/SSM attention)
-# models such as Qwen3.8-27B, so every agent turn would re-prefill the whole conversation (measured 2026-10-12: a 4k
-# prefix cost 4.3 s on every turn; the same prefix on a standard model hit the cache and dropped to 72 ms).
-# `task doctor` warns on hybrid models. To swap the team model: change `roles.coder.model` (and `aggregator`).
+# The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
+# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped (Noah
+# 2026-10-18: AIR-5 showed its fidelity too low for the speed). To swap the team model: change `roles.coder.model`.
 models:
-  base:                            # Qwen3-Coder-30B-A3B: MoE (3B active), standard GQA attention, coding + tool use
-    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-6bit   # the 4-bit dropped `"` before `]` (HDS-5); 8-bit overruns studio
-    revision: 8730fb50f41e7f3ad7af9d10cb928274e479f071   # 2025-07-31
-    preload: true
-    bench: true
-    tags: [modern, coder, moe]
-    estimated_memory_gb: 24.8
-    kv_mb_per_1k_tokens: 192
-    tool_call_parser: qwen3_xml_raw  # airlie's: values stay raw text (vllm-mlx's qwen3_coder mangles code, bench 2026-10-14)
-    reasoning_parser: qwen3      # server-wide flag (taken from the team model): thinking roles on Qwen3.8 return
-                                 # reasoning_content instead of leaking <think> into content for chat clients
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
@@ -72,14 +60,14 @@ models:
     preload: true
     estimated_memory_gb: 3
     reasoning_parser: qwen3
-  generalist:                      # Qwen3.8-27B: chief + vision in the studio design; hybrid attention (no prefix cache)
+  generalist:                      # Qwen3.8-27B: the team model (coder, security, aggregator) and the chief; vision; hybrid attention
     repo: mlx-community/Qwen3.8-27B-4bit
     revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
-    preload: false
+    preload: true
     bench: true
     estimated_memory_gb: 16.1
     kv_mb_per_1k_tokens: 256
-    tool_call_parser: qwen3_xml_raw  # Qwen3.8 writes the same XML as Qwen3-Coder; the server flag under studio-qwen38
+    tool_call_parser: qwen3_xml_raw  # Qwen3.8 writes Qwen3-Coder's XML; airlie's parser keeps values raw
     reasoning_parser: qwen3
     tags: [modern, coder, vision, hybrid-attention]
   reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer
@@ -107,11 +95,11 @@ models:
 roles:
   coder:                           # the team agent: ReAct loop with repo tools
     prompt: prompts/roles/coder.md
-    model: base
+    model: generalist
     max_context: 65536
-    max_tokens: 8192                 # bounds a runaway generation to ~4 min; room for a large edit (HDS-5)
-    thinking: false                # Qwen3-Coder is a non-thinking model; set true for a thinking base (e.g. generalist)
-    thinking_budget: 16384
+    max_tokens: 16384                # caps thinking AND the answer: it must exceed thinking_budget (HDS-3)
+    thinking: true
+    thinking_budget: 8192
     nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
     green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
     sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
@@ -146,12 +134,11 @@ roles:
   design:       { prompt: prompts/roles/design.md, model: generalist, tools: [web_search, web_fetch], max_steps: 6, vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   docs:         { prompt: prompts/roles/docs.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  qa:           { prompt: prompts/roles/qa.md, model: base, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], skills: skills/qa, max_tokens: 4096, thinking: false, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
-  security:     { prompt: prompts/roles/security.md, model: base, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
+  security:     { prompt: prompts/roles/security.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 8192, thinking: false, chat_template_kwargs: { reasoning_strength: medium }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
-    model: base
+    model: generalist
     max_context: 65536
     max_tokens: 4096
     thinking: false
@@ -206,10 +193,6 @@ topology:
       teams: { k: 1, max_steps: 40 }
       lts: { enabled: false }
       studio: { parallel: 3 }
-    studio-qwen38:                 # the bench variant: Qwen3.8-27B in the coder seat (design §3)
-      extends: studio
-      roles: { coder: { model: generalist, thinking: true, thinking_budget: 8192, max_tokens: 16384 } }
-      models: { base: { preload: false } }   # its coder is generalist; base (security) loads on demand, so the 6-bit fits
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck

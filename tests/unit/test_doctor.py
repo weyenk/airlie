@@ -243,15 +243,15 @@ class ConfigProbe(FakeProbe):
         return self._configs.get(f"{repo}@{revision}")
 
 
-def test_hybrid_attention_model_warns_about_prefix_cache(tmp_path: Path) -> None:
+def test_hybrid_attention_model_is_ok_because_airlies_engine_patches_the_prefix_cache(tmp_path: Path) -> None:
     cfg = make_cfg(
         tmp_path, {"main": {"kind": "vllm_mlx", "port": 8080, "models": ["team"]}}, {"team": "org/model"}
     )
     hybrid = {"text_config": {"layer_types": ["linear_attention", "linear_attention", "full_attention"]}}
     probe = ConfigProbe({"org/model@r1": hybrid}, snapshots={"org/model@r1"})
     r = by_name(run_checks(cfg, probe))["model:team:attention"]
-    assert r.status == "warn"
-    assert "hybrid" in r.detail and "prefix cache" in r.detail
+    assert r.status == "ok"
+    assert "hybrid" in r.detail and "engine patch" in r.detail
 
 
 def test_standard_attention_model_is_ok(tmp_path: Path) -> None:

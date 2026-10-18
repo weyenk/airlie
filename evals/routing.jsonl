@@ -18,10 +18,10 @@
 {"question": "role", "task": "Draft release notes for the new billing features", "expect": "docs"}
 {"question": "role", "task": "Document the environment variables the service reads, for the README", "expect": "docs"}
 {"question": "role", "task": "Rewrite the contributing guide so it is shorter and clearer", "expect": "docs"}
-{"question": "role", "task": "Write edge-case tests for login rate limiting", "expect": "qa"}
-{"question": "role", "task": "Design a regression test plan for the checkout flow", "expect": "qa"}
-{"question": "role", "task": "What test cases are we missing for the coupon validation module?", "expect": "qa"}
-{"question": "role", "task": "Add unit tests for the date parsing helpers", "expect": "qa"}
+{"question": "role", "task": "Write edge-case tests for login rate limiting", "expect": "coder"}
+{"question": "role", "task": "Design a regression test plan for the checkout flow", "expect": "coder"}
+{"question": "role", "task": "What test cases are we missing for the coupon validation module?", "expect": "coder"}
+{"question": "role", "task": "Add unit tests for the date parsing helpers", "expect": "coder"}
 {"question": "role", "task": "Threat model the new OAuth callback endpoint", "expect": "security"}
 {"question": "role", "task": "Review this file upload handler for vulnerabilities", "expect": "security"}
 {"question": "role", "task": "Are we storing session tokens safely? Audit the auth middleware", "expect": "security"}
@@ -44,8 +44,8 @@
 {"question": "role", "task": "How do other SaaS products handle seat-based billing? Gather examples", "expect": "research"}
 {"question": "role", "task": "Update the API reference page to include the new pagination parameters", "expect": "docs"}
 {"question": "role", "task": "Write a migration guide for users upgrading from v1 to v2", "expect": "docs"}
-{"question": "role", "task": "Propose a strategy to catch regressions in our PDF export", "expect": "qa"}
-{"question": "role", "task": "Review these tests and tell me which assertions are weak", "expect": "qa"}
+{"question": "role", "task": "Propose a strategy to catch regressions in our PDF export", "expect": "coder"}
+{"question": "role", "task": "Review these tests and tell me which assertions are weak", "expect": "coder"}
 {"question": "role", "task": "Do a secure code review of the password reset flow", "expect": "security"}
 {"question": "role", "task": "What are the abuse risks of our public invite-link feature?", "expect": "security"}
 {"question": "role", "task": "Give feedback on the typography and visual hierarchy of this landing page", "expect": "design"}

@@ -13,7 +13,7 @@
           "name": "coder",
           "limit": {
             "context": 131072,
-            "output": 4096
+            "output": 16384
           }
         },
         "architect": {
@@ -21,13 +21,6 @@
           "limit": {
             "context": 131072,
             "output": 16384
-          }
-        },
-        "qa": {
-          "name": "qa",
-          "limit": {
-            "context": 131072,
-            "output": 4096
           }
         },
         "security": {
@@ -70,13 +63,6 @@
           "limit": {
             "context": 131072,
             "output": 2048
-          }
-        },
-        "base": {
-          "name": "base",
-          "limit": {
-            "context": 131072,
-            "output": 4096
           }
         },
         "generalist": {

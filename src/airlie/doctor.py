@@ -316,9 +316,10 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 results.append(
                     CheckResult(
                         f"model:{mname}:attention",
-                        "warn",
-                        "hybrid (linear/SSM) attention: vllm-mlx 0.5.0 prefix cache cannot store it, every "
-                        "turn re-prefills the whole conversation; prefer standard attention for team roles",
+                        "ok",
+                        "hybrid (linear/SSM) attention: vllm-mlx 0.5.0's own prefix cache cannot store it, "
+                        "airlie's engine patch (engine/patches/hybrid_prefix_cache.py) does, so a resumed "
+                        "turn is not re-prefilled; another server would re-prefill every turn",
                     )
                 )
             elif hybrid is False:

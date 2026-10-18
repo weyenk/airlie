@@ -106,7 +106,7 @@ def test_the_engine_runs_inside_the_project_environment(
     assert spawned == [["uv", "run", "--quiet", *ENTRY, "serve"], ["llama-server", "-m", "k.gguf"]]
 
 
-@pytest.mark.parametrize("topology", [None, "studio", "studio-qwen38"])
+@pytest.mark.parametrize("topology", [None, "studio"])
 def test_the_shipped_engine_parser_keeps_code_intact(topology: str | None) -> None:
     """The parser airlie.yaml gives the engine keeps an indented `<<` line exactly (bench 2026-10-14)."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=topology)
