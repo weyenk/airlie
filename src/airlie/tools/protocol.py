@@ -27,6 +27,10 @@ class ToolContext:
     write_file_max_overwrite_lines: int = 200
     """write_file refuses to replace an existing file longer than this: such a change goes through edit_file,
     or new tests go in a new file (HDS-5 2026-10-16: a whole-file rewrite ran past the coder's max_tokens)."""
+    run_dir: Path | None = None
+    """The run's directory: when set, tools that log (web fetches, searches) write their records there."""
+    role: str = ""
+    """The role this context serves: tools that log or guard by role (web tools) read it from here."""
 
 
 @dataclass(frozen=True)
