@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
@@ -40,9 +41,22 @@ class Review:
         return [f for f in self.findings if f.severity == "blocking"]
 
 
+def _verdict_object(text: str) -> dict[str, Any] | None:
+    """The last JSON object in `text` whose verdict is one of VERDICTS: a reviewer that thinks aloud before
+    its verdict puts braces in its prose (AIR-7 layer 02, 2026-10-18: `duckdb.query({…})` made the reply
+    unparsable from its first brace, and the fix round was skipped)."""
+    pos = text.rfind("{")
+    while pos >= 0:
+        obj = extract_json(text[pos:])
+        if obj is not None and obj.get("verdict") in VERDICTS:
+            return obj
+        pos = text.rfind("{", 0, pos)
+    return None
+
+
 def parse_review(text: str) -> Review:
-    obj = extract_json(text)
-    if obj is None or obj.get("verdict") not in VERDICTS:
+    obj = _verdict_object(text)
+    if obj is None:
         return Review("unparsable", (), text)
     findings: list[Finding] = []
     for f in obj.get("findings") or []:

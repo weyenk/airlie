@@ -15,8 +15,12 @@ from typing import Any
 from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
 from vllm_mlx.tool_parsers.abstract_tool_parser import ExtractedToolCallInformation, ToolParser
 
+# A header opens the text or follows an end token; with the special tokens stripped (seen 2026-10-18: a
+# reviewer reply came as `to=selfWe need…to=user{…}`) it may also follow sentence punctuation, and `self` and
+# `user` are read as whole recipients before any longer name, so `to=selfWe` is self and then "We".
 _HEADER = re.compile(
-    r"(?:^|<\|eom\|>|<\|eot\|>)\s*(?:<\|start\|>)?\s*(?:assistant\s+)?to=(?P<r>[\w.\-]+)\s*(?:<\|message\|>)?"
+    r"(?:^|<\|eom\|>|<\|eot\|>|(?<=[.!?)\]}\n]))\s*(?:<\|start\|>)?\s*(?:assistant\s+)?"
+    r"to=(?P<r>self|user|[\w.\-]+)\s*(?:<\|message\|>)?"
 )
 _END = re.compile(r"<\|eom\|>|<\|eot\|>|<\|start\|>|<\|message\|>")
 _INVOKE = re.compile(r'<atem:invoke\b[^>]*?\bname="(?P<name>[^"]+)">(?P<body>.*?)</atem:invoke>', re.DOTALL)

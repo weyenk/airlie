@@ -74,3 +74,16 @@ def test_nudge_lists_blocking_findings_with_lines() -> None:
     text = nudge_from_review(parse_review(RC))
     assert text.startswith("A reviewer found blocking problems")
     assert "app/orders.py:41" in text and "minor" not in text
+
+
+def test_parse_review_finds_the_verdict_after_prose_with_braces() -> None:
+    """AIR-7 layer 02, 2026-10-18: Muse's reasoning leaked in front of its verdict, and the first brace in it
+    (`duckdb.query({...})`) made the whole reply unparsable, which skipped the fix round."""
+    text = (
+        'to=selfWe need to produce verdict JSON. The code builds {"a": 1} then fails.\n'
+        '{"verdict": "request_changes", "findings": [{"severity": "blocking", "file": "m.py", "line": 29, '
+        '"claim": "wrong params", "evidence": "docs"}]}'
+    )
+    r = parse_review(text)
+    assert r.verdict == "request_changes" and [f.line for f in r.findings] == [29]
+    assert parse_review('no verdict here {"x": 1}').verdict == "unparsable"
