@@ -9,11 +9,12 @@ link-local or private space is refused before it is fetched."""
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import urllib.error
 import urllib.request
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from airlie.tools.protocol import ToolContext, ToolResult
 
@@ -94,6 +95,78 @@ class SocketResolver:
 
     def resolve(self, host: str) -> list[str]:
         return [str(r[4][0]) for r in socket.getaddrinfo(host, None)]
+
+
+class SearchProvider(Protocol):
+    """Tool-agnostic search seam: a query in, results (url/title/content dicts) out."""
+
+    async def search(self, query: str) -> list[dict[str, str]]: ...
+
+
+class SearXNGProvider:
+    """The SearXNG backend of SearchProvider: GET {base_url}/search?q=<query>&format=json.
+
+    The request goes through the injected WebClient, so tests never open a socket."""
+
+    def __init__(self, base_url: str, client: WebClient, timeout_s: float = 30.0) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._client = client
+        self._timeout_s = timeout_s
+
+    async def search(self, query: str) -> list[dict[str, str]]:
+        url = f"{self._base_url}/search?{urlencode({'q': query, 'format': 'json'})}"
+        resp = self._client.request(url, self._timeout_s)
+        if resp.status != 200:
+            raise RuntimeError(f"searxng returned HTTP {resp.status}")
+        data = json.loads(resp.body.decode("utf-8", errors="replace"))
+        return [
+            {
+                "url": str(r.get("url") or ""),
+                "title": str(r.get("title") or ""),
+                "content": str(r.get("content") or ""),
+            }
+            for r in data.get("results", [])
+        ]
+
+
+class WebSearch:
+    name = "web_search"
+    description = (
+        "Search the web through the configured SearXNG backend and return the results "
+        "(url, title, snippet) as text, marked untrusted."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+
+    def __init__(self, provider: SearchProvider) -> None:
+        self._provider = provider
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        query = str(args.get("query") or "")
+        status = "ok"
+        try:
+            results = await self._provider.search(query)
+        except Exception as e:  # noqa: BLE001 - a provider failure is an observation, not a crash
+            status = "error"
+            self._log(ctx, query, status)
+            return ToolResult(False, f"search failed: {type(e).__name__}: {e}")
+        self._log(ctx, query, status)
+        out = f"{UNTRUSTED_MARKER}\n" + "\n".join(
+            f"{r.get('title', '')}\n{r.get('url', '')}\n{r.get('content', '')}" for r in results
+        )
+        if len(out) > ctx.output_cap_chars:
+            out = out[: ctx.output_cap_chars] + f"\n… [truncated {len(out) - ctx.output_cap_chars} chars]"
+        return ToolResult(True, out)
+
+    def _log(self, ctx: ToolContext, query: str, status: str) -> None:
+        if ctx.run_dir is None:
+            return
+        line = json.dumps({"role": ctx.role, "query": query, "status": status})
+        with (ctx.run_dir / "web_search.jsonl").open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 class WebFetch:
