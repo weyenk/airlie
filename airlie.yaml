@@ -103,6 +103,8 @@ roles:
                                      # and ended in one more read; 2048 bounds that at about two
     nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
     green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
+    write_schedule: { tests: 0.25, code: 0.75 }   # a test written by a quarter of its steps, code by three quarters,
+                                     # else told once, then write-only tools (AIR-28: it read 21 of 40 steps)
     sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
   summarizer:                      # LTS summary keys (15–20 words), stateless
     prompt: prompts/roles/summarizer.md
