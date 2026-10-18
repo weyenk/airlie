@@ -230,9 +230,9 @@ class NativeTeam:
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         steps = 0
-        recent: list[
-            tuple[str, str]
-        ] = []  # (tool, observation): the same answer thrice is a repeat, whatever the arguments
+        # (tool, observation), plus the arguments for a write: the same answer thrice is a repeat whatever
+        # was asked, except that a write answers "edited x" whatever it wrote (AIR-7 layer 02: three edits)
+        recent: list[tuple[str, ...]] = []
         final_text = ""
         stop: StopReason = "done"
         ok = False
@@ -405,7 +405,11 @@ class NativeTeam:
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
-                recent.append((call.name, result.output))
+                recent.append(
+                    (call.name, call.arguments, result.output)
+                    if call.name in ("write_file", "edit_file")
+                    else (call.name, result.output)
+                )
                 recent = recent[-ctx.repeat_limit :]
                 if ctx.stop_when is not None and ctx.stop_when(step_record):
                     forked = True

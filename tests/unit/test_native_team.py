@@ -1064,3 +1064,22 @@ async def test_a_continuation_counts_the_files_already_written(tmp_path: Path) -
     ctx.already_written = ("a.py",)
     await team.run(ctx, Recorder())
     assert told_to_write(engine) == []
+
+
+async def test_three_edits_of_one_file_in_a_row_are_not_a_repeat(tmp_path: Path) -> None:
+    """AIR-7 layer 02, 2026-10-18: a fix round edited src/airlie/metrics/__init__.py three times running, each
+    answered "edited …", and the guard keyed on (tool, observation) stopped the loop as a repeat. A write's
+    observation says nothing about what was written: for a write the arguments count too."""
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    (tmp_path / "wt" / "a.py").write_text("x = 1\ny = 2\nz = 3\n")
+    edits = [
+        FakeReply(
+            tool_calls=[ToolCall(f"e{i}", "edit_file", json.dumps({"path": "a.py", "old": o, "new": n}))]
+        )
+        for i, (o, n) in enumerate((("x = 1", "x = 10"), ("y = 2", "y = 20"), ("z = 3", "z = 30")))
+    ]
+    engine = FakeEngine({"coder": [*edits, FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, tool_names=("write_file", "edit_file", "read_file", "run_tests"))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 3
+    assert (tmp_path / "wt" / "a.py").read_text() == "x = 10\ny = 20\nz = 30\n"
