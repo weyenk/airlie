@@ -169,6 +169,30 @@ ONE_STEP_LEFT = (
 """What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
 
 
+FRESH_RUN = "This is a new run: you have {n} steps and every tool again."
+"""Added to the first message of a resumed conversation whose history held the last run's end-of-budget
+messages (AIR-7 layer 02 fix round, 2026-10-18: the coder read "You have used all 40 of your steps" in its
+history and answered the reviewer's findings with "I'm out of steps, but here is the complete fix")."""
+
+_STALE_BUDGET = tuple(
+    re.compile("^" + re.escape(t).replace(re.escape("{n}"), r"\d+") + "$", re.DOTALL)
+    for t in (LAST_STEP, ONE_STEP_LEFT, LAST_TURN_RETRY, NO_TOOLS)
+)
+
+
+def _without_stale_budget(messages: list[Message]) -> tuple[list[Message], bool]:
+    """`messages` without the user messages that told the last run its steps or tools were gone, and whether
+    any were dropped: a resumed run has a fresh budget, and a history that says otherwise is obeyed."""
+    kept = [
+        m
+        for m in messages
+        if not (
+            m.role == "user" and isinstance(m.content, str) and any(p.match(m.content) for p in _STALE_BUDGET)
+        )
+    ]
+    return kept, len(kept) != len(messages)
+
+
 def is_test_path(path: str) -> bool:
     """Whether a written file is a test: under a test/ or tests/ directory, or named like one (test_x.py,
     x_test.py, x.test.ts, x.spec.js, conftest.py)."""
@@ -223,8 +247,11 @@ class NativeTeam:
         goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble, tools=not toolless)
         messages: list[Message]
         if ctx.initial_state is not None:
-            messages = load_messages(ctx.initial_state["messages"])
-            messages.append(Message(role="user", content=ctx.nudge or goal_msg))
+            messages, stale = _without_stale_budget(load_messages(ctx.initial_state["messages"]))
+            first = ctx.nudge or goal_msg
+            if stale:
+                first = f"{first}\n\n{FRESH_RUN.format(n=ctx.max_steps)}"
+            messages.append(Message(role="user", content=first))
         else:
             parts = None
             if ctx.images:
