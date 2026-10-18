@@ -23,6 +23,8 @@ KNOWN_TOOLS = frozenset(
     }
 )  # fmt: skip
 
+MUTATING_TOOLS = frozenset({"write_file", "edit_file", "shell", "git", "run_tests"})  # fmt: skip
+
 
 class Sampling(Strict):
     temperature: float = 0.7
@@ -554,6 +556,12 @@ class AirlieConfig(Strict):
                     problems.append(
                         f"roles.{rname}.tools names '{t}', which is not a tool ({sorted(KNOWN_TOOLS)})"
                     )
+            effective = set(r.tools if r.tools is not None else self.tools.builtin)
+            if effective & {"web_search", "web_fetch"} and effective & MUTATING_TOOLS:
+                problems.append(
+                    f"role '{rname}': web tools cannot be combined with mutating tools "
+                    f"({', '.join(sorted(effective & MUTATING_TOOLS))})"
+                )
             for label, d in (("skills", r.skills), ("knowledge", r.knowledge)):
                 if d is not None and not d.is_dir():
                     problems.append(f"roles.{rname}.{label}: {d} is not a directory")
