@@ -191,3 +191,64 @@ def test_changed_files_sees_committed_unstaged_and_untracked_work(tmp_path: Path
     assert mc.changed_files("main") == {"a.py", "b.py", "c.py"}
     with pytest.raises(SystemExit, match="merge base"):
         mc.changed_files("no-such-ref")
+
+
+class FakeMutmut:
+    """mutmut stood in for: every `run` is recorded, `results` answers a fixed list."""
+
+    def __init__(self) -> None:
+        self.runs: list[tuple[str, ...]] = []
+
+    def run(self, *args: str) -> int:
+        self.runs.append(args)
+        return 0
+
+    def out(self, *args: str) -> str:
+        return "airlie.engine.sse.x_iter_sse__mutmut_1: killed\nairlie.cli.x_main__mutmut_1: survived\n"
+
+
+def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
+    fake = FakeMutmut()
+    monkeypatch.setattr(mc, "mutmut", fake.run)
+    monkeypatch.setattr(mc, "mutmut_out", fake.out)
+    monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
+    monkeypatch.setattr(
+        mc, "changed_files", lambda base: {"src/airlie/engine/sse.py", "tests/unit/test_new.py"}
+    )
+    monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
+    monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc, "probe_mutant", lambda files: "airlie.engine.sse.x_iter_sse__mutmut_1")
+    monkeypatch.setattr(mc, "read_stats", lambda: STATS)
+    monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", *argv])
+    mc.main()
+    return fake
+
+
+def test_by_default_the_functions_the_changed_tests_run_are_mutated_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = run_main(monkeypatch, ["--base", "origin/main"])
+    assert len(fake.runs) == 2  # the stats probe, then the run
+    assert fake.runs[1] == ("run", "airlie.engine.sse.*")  # x_iter_sse is in that module already
+
+
+def test_gate_only_mutates_the_impacted_enrolled_modules_and_nothing_the_tests_reach_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = run_main(monkeypatch, ["--base", "origin/main", "--gate-only"])
+    assert fake.runs == [("run", "airlie.engine.sse.*")]  # no stats probe, no function globs
+    assert "--gate-only" in capsys.readouterr().out
+
+
+def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeMutmut()
+    monkeypatch.setattr(mc, "mutmut", fake.run)
+    monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
+    monkeypatch.setattr(mc, "changed_files", lambda base: {"tests/unit/test_new.py", "src/airlie/cli.py"})
+    monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
+    monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--gate-only"])
+    assert mc.main() == 0
+    assert fake.runs == [] and "nothing to mutate" in capsys.readouterr().out

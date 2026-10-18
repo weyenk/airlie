@@ -132,6 +132,17 @@ class RoleSpec(Strict):
         description="think on the turn after the last step, the one that must answer without tools: False "
         "writes the answer from what the role has read (the architect's took 14-20 minutes thinking)",
     )
+    nudge_stuck: bool = Field(
+        default=False,
+        description="the first time the role repeats the same action it is told to do something different "
+        "instead of being stopped (a second run of repeats stops it); off where a repeat is the fork "
+        "topology's signal that a team is stuck",
+    )
+    green_before_done: bool = Field(
+        default=False,
+        description="a role with run_tests that answers while its last run_tests run failed is told once "
+        "that it is not done (the coder: AIR-5 layers ended on 'done' with their own tests red)",
+    )
     stop: list[str] = Field(default_factory=list)
     chat_template_kwargs: dict[str, object] = Field(
         default_factory=dict, description="merged over the engine's enable_thinking kwarg per request"

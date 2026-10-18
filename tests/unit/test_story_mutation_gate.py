@@ -9,11 +9,13 @@ import json
 import shlex
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from airlie.config.schema import StorySpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.story import pipeline as pipeline_module
 from airlie.story.board import text_card
 from airlie.story.state import StoryState
 from tests.unit.git_helpers import git
@@ -223,6 +225,28 @@ async def test_survivors_go_to_the_architect_whose_cases_become_one_last_layer_a
     assert "asked for 1 test case(s) in layer 03 (Harden the tests) and ignored 1" in first
     assert "changes a log message only" in top and "changes a log message only" not in first
     assert "mutation gate: mutants survived" in (st.path / "notes.md").read_text()
+
+
+async def test_the_architects_review_of_the_survivors_is_limited_to_a_few_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, int | None] = {}
+    real = pipeline_module.StoryPipeline._ask
+
+    async def recording(
+        self: Any, st: Any, stage: str, role: str, brief: str, at: Any = None, steps: Any = None
+    ) -> str:
+        seen[stage] = steps
+        return await real(self, st, stage, role, brief, at, steps)
+
+    monkeypatch.setattr(pipeline_module.StoryPipeline, "_ask", recording)
+    repo = mutation_repo(tmp_path, "1", "1")
+    st = await pipeline(
+        tmp_path, repo, engine_with([HARDEN], hardening=True), RecordedGh(), test_cmd=None
+    ).run(text_card("avatars"))
+    assert st.blocked is None
+    assert seen["mutation_review"] == pipeline_module.MUTATION_REVIEW_STEPS == 8
+    assert seen["refine"] is None and seen["layers"] is None  # the other stages keep the role's own limit
 
 
 async def test_when_the_architect_ignores_every_survivor_the_stack_is_published_with_its_reasons(

@@ -21,5 +21,5 @@ its last layer passes the test gate and before its PRs open. `{report}` is the f
 surviving-mutant summary from:
 
 ```sh
-uv run python scripts/mutate_changed.py --base {base} --max-children 6 --report {report}
+uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}
 ```

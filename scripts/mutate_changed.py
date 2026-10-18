@@ -12,6 +12,9 @@ Scopes
                only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
             A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
             one file and runs every enrolled module instead.
+            --gate-only drops set 2 (and the stats run it needs): only the enrolled modules a change impacts
+            are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them can fail
+            the run, so a story's gate leaves them to the weekly `--scope project` run.
   enrolled  Every mutant of every enrolled module.
   project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
@@ -222,6 +225,11 @@ def main() -> int:
     ap.add_argument("--scope", choices=("changed", "enrolled", "project"), default="changed")
     ap.add_argument("--base", default="origin/main", help="changed scope: ref to diff against (merge base)")
     ap.add_argument("--max-children", type=int, default=0, help="mutmut workers (0 = mutmut's default)")
+    ap.add_argument(
+        "--gate-only",
+        action="store_true",
+        help="changed scope: mutate the impacted enrolled modules only, not what the changed tests run",
+    )
     ap.add_argument("--list", action="store_true", help="print what would be tested and stop")
     ap.add_argument("--report", type=Path, help="also append the markdown summary to this file")
     args = ap.parse_args()
@@ -257,9 +265,11 @@ def main() -> int:
     globs = ["airlie.*"] if args.scope == "project" else [module_glob(f) for f in sources]
     if sources:
         out += [f"{len(sources)} source file(s):", *[f"- {f}" for f in sources]]
-    if test_files:
+    if test_files and args.gate_only:
+        out.append(f"{len(test_files)} changed test file(s); --gate-only leaves out what they run elsewhere")
+    elif test_files:
         out += [f"{len(test_files)} changed test file(s):", *[f"- {f}" for f in test_files]]
-    if not globs and not test_files:
+    if not globs and (args.gate_only or not test_files):
         out.append("nothing to mutate: no enrolled source and no test file changed")
         say(out, args.report)
         return 0
@@ -270,7 +280,7 @@ def main() -> int:
 
     shutil.rmtree(ROOT / "mutants", ignore_errors=True)
     run_extra = ["--max-children", str(args.max_children)] if args.max_children else []
-    if test_files:
+    if test_files and not args.gate_only:
         # mutmut records which tests execute which functions while it collects stats, so one throwaway
         # mutant is enough to get that map (and it is run again below if it is selected anyway).
         probe = probe_mutant(scope_files)
