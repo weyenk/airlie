@@ -936,7 +936,7 @@ async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_dead
     team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
     ctx.emit = events = Events()
     rec = Recorder()
-    await team.run(ctx, rec)
+    result = await team.run(ctx, rec)
     # 12 steps: the tests deadline is step 3 (a quarter), the code deadline step 9 (three quarters)
     told = requests_saying(engine, "written no test")
     assert told[0] == 4 and told == list(range(4, len(engine.requests) + 1))
@@ -946,9 +946,10 @@ async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_dead
     off = requests_saying(engine, "reading is switched off")
     assert off[0] == 8  # four steps after the deadline, as before
     assert all(n == {"write_file", "read_file", "run_tests"} for n in offered_names(engine)[:-1])
-    assert [s.o_t == REFUSED for s in rec.steps] == [False] * 7 + [
-        True
-    ] * 4  # from step 8 the reads are refused
+    # from step 8 the reads are refused; three identical refusals in a row are a repeat, and this role has no
+    # nudge_stuck, so the run stops there (the coder, which has it, is told once to do something different)
+    assert [s.o_t == REFUSED for s in rec.steps] == [False] * 7 + [True] * 3
+    assert result.stop_reason == "repeated_action" and result.steps == 10
     assert requests_saying(engine, "written no code")[0] == 10  # the code deadline, step 9, is missed too
     deadlines = [
         (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
@@ -1018,3 +1019,27 @@ async def test_reading_comes_back_once_the_missed_write_lands(tmp_path: Path) ->
     # reading off after the missed tests deadline (step 7): step 8's read is refused; the test lands at step
     # 9, and steps 10 and 11 read again
     assert [s.o_t == REFUSED for s in rec.steps][7:] == [True, False, False, False]
+
+
+async def test_the_same_observation_three_times_is_a_repeat_whatever_the_arguments(tmp_path: Path) -> None:
+    """AIR-7 2026-10-18: read_file of one file with offsets 438, 438 and 446 returned the identical cut text
+    three times; the guard keyed on the arguments and let it go on."""
+    calls = [
+        FakeReply(tool_calls=[ToolCall(f"c{i}", "shell", json.dumps({"cmd": f"echo {i}"}))]) for i in range(3)
+    ]
+    engine = FakeEngine({"coder": [*calls, FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+
+    class SameShell:
+        name = "shell"
+        description = "x"
+        parameters = {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+
+        async def run(self, args, c):
+            from airlie.tools import ToolResult
+
+            return ToolResult(True, "the same 20,000 chars")
+
+    ctx.tools.add(SameShell())
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action" and result.steps == 3

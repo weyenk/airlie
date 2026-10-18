@@ -256,3 +256,36 @@ async def test_a_missing_argument_error_shows_a_correct_call_built_from_the_sche
     assert r.output.endswith('A correct call looks like: grep(pattern="...")')
     r = await reg.call(ToolCall("4", "git", "{}"))
     assert r.output.endswith('A correct call looks like: git(args=["..."])')
+
+
+async def test_read_file_takes_a_line_range_and_numbers_the_lines_as_in_the_file(tmp_path: Path) -> None:
+    """AIR-7 2026-10-18: the coder asked read_file for offset 438 three times, for the part of a file the
+    cap had cut, and got the first 20,000 chars back each time: it ignored arguments it did not declare."""
+    c = ctx(tmp_path)
+    (c.worktree / "big.py").write_text("".join(f"line {i}\n" for i in range(1, 11)))
+    reg = ToolRegistry.builtin(["read_file"], c)
+    r = await reg.call(ToolCall("1", "read_file", '{"path": "big.py", "offset": 4, "limit": 3}'))
+    assert r.ok and r.output == "4: line 4\n5: line 5\n6: line 6"
+    r = await reg.call(
+        ToolCall("2", "read_file", '{"path": "big.py", "offset": "9", "limit": "5"}')
+    )  # as strings
+    assert r.ok and r.output == "9: line 9\n10: line 10"
+    r = await reg.call(ToolCall("3", "read_file", '{"path": "big.py", "offset": 40}'))
+    assert r.ok and "offset 40 is past the end: big.py has 10 lines" in r.output
+    r = await reg.call(ToolCall("4", "read_file", '{"path": "big.py", "offset": "x"}'))
+    assert not r.ok and "offset" in r.output
+
+
+async def test_a_cut_read_says_how_to_read_the_rest(tmp_path: Path) -> None:
+    c = ctx(tmp_path, cap=60)
+    (c.worktree / "big.py").write_text("".join(f"line {i} {'x' * 10}\n" for i in range(1, 21)))
+    reg = ToolRegistry.builtin(["read_file"], c)
+    r = await reg.call(ToolCall("1", "read_file", '{"path": "big.py"}'))
+    assert r.ok
+    shown = [ln for ln in r.output.splitlines() if ln[:1].isdigit()]
+    assert shown and all(len(ln) > 0 for ln in shown)
+    last = int(shown[-1].split(":")[0])
+    assert f"[truncated: lines {last + 1}-20 not shown; read on with offset={last + 1}]" in r.output
+    assert "… [truncated" in r.output  # the shape every capped observation has
+    again = await reg.call(ToolCall("2", "read_file", json.dumps({"path": "big.py", "offset": last + 1})))
+    assert again.ok and again.output.startswith(f"{last + 1}: line {last + 1}")
