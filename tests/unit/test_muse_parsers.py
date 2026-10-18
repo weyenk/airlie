@@ -61,3 +61,21 @@ def test_registered_under_muse_glimmer_in_both_registries() -> None:
     ensure_registered()  # idempotent
     assert get_parser("muse_glimmer") is MuseGlimmerReasoningParser
     assert ToolParserManager.get_tool_parser("muse_glimmer") is MuseGlimmerToolParser
+
+
+def test_channels_split_even_when_the_special_tokens_were_stripped() -> None:
+    """AIR-7 layer 02, 2026-10-18: a reviewer reply arrived as `to=selfWe need to produce verdict JSON…
+    to=user{"verdict": …}` with no <|message|> tokens; the header took `selfWe` as the recipient and the
+    reasoning leaked into the content, in front of the verdict."""
+    text = (
+        "to=selfWe need to produce verdict JSON. The diff shows {braces}."
+        'to=user{"verdict": "approve", "findings": []}'
+    )
+    assert split_channels(text) == [
+        ("self", "We need to produce verdict JSON. The diff shows {braces}."),
+        ("user", '{"verdict": "approve", "findings": []}'),
+    ]
+    reasoning, content = MuseGlimmerReasoningParser(None).extract_reasoning(text)
+    assert reasoning == "We need to produce verdict JSON. The diff shows {braces}."
+    assert content == '{"verdict": "approve", "findings": []}'
+    assert split_channels('to=read_file<|message|>{"path": "a"}') == [("read_file", '{"path": "a"}')]
