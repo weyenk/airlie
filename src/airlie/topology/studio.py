@@ -74,6 +74,9 @@ class SubtaskRun:
     review: Review | None = None
     fix_rounds: int = 0
     preamble: str = ""  # what it ran with (the repo map, its skill's guideline): a follow-up runs with it too
+    before: str = (
+        ""  # the worktree's head when it started: its review diff and its later runs' already_written
+    )
 
 
 @dataclass(frozen=True)
@@ -358,6 +361,9 @@ class StudioOrchestrator:
     ) -> TeamContext:
         assert self.worktree is not None
         state, goal, nudge = self._continuation(run, parent, nudge)
+        # a fix round or follow-up continues work that is in the worktree (committed before the review):
+        # its write nudges must count those files, not ask for them again (AIR-7, 2026-10-18)
+        written = tuple(changed_files(self.worktree, run.before)) if parent is not None and run.before else ()
         return TeamContext(
             team_id=run.subtask.id,
             goal=goal,
@@ -371,6 +377,7 @@ class StudioOrchestrator:
             preamble=preamble or None,
             initial_state=state,
             nudge=nudge,
+            already_written=written,
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,
@@ -388,6 +395,7 @@ class StudioOrchestrator:
                 async with self.write_lock, self.sem:
                     assert self.worktree is not None
                     before = head_sha(self.worktree)  # this subtask's own base for the review diff
+                    run.before = before
                     run.result = await self.team.run(ctx, self.observer)
                     await self._review_and_fix(run, role, test_cmd, preamble, before)
             else:

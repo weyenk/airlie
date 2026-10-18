@@ -239,7 +239,7 @@ class NativeTeam:
         corrected = False  # the current streak of unparsed tool calls has had its one correction
         last_corrected = False  # the tool-less last turn has had its one correction
         can_write = bool({"write_file", "edit_file"} & set(ctx.tools.names()))
-        wrote = False  # a write_file or edit_file has run
+        wrote = bool(ctx.already_written)  # a write_file or edit_file has run (here, or in an earlier run)
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
         # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
@@ -251,7 +251,10 @@ class NativeTeam:
                 "tests": max(2, math.ceil(ctx.max_steps * schedule.tests)),
                 "code": max(2, math.ceil(ctx.max_steps * schedule.code)),
             }
-        written = {"tests": False, "code": False}  # a test file, a code file
+        written = {  # a test file, a code file: here, or in the run this one continues
+            "tests": any(is_test_path(p) for p in ctx.already_written),
+            "code": any(not is_test_path(p) for p in ctx.already_written),
+        }
         missed: set[str] = set()  # deadlines passed without their write
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
