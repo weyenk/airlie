@@ -1125,3 +1125,49 @@ async def test_a_role_without_write_tools_may_answer_with_text_at_once(tmp_path:
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.final_text == "The plan: two layers."
     assert requests_saying(engine, "nothing has been done") == []
+
+
+async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages(tmp_path: Path) -> None:
+    """AIR-7 layer 02 fix round, 2026-10-18: the resumed history still said "You have used all 40 of your
+    steps: no more tools" and "No tools are available on this turn", so the coder answered the reviewer's
+    findings with "I'm out of steps, but here is the complete fix" and a code block instead of acting."""
+    from airlie.engine.types import Message
+    from airlie.teams.native_team import LAST_STEP, LAST_TURN_RETRY, ONE_STEP_LEFT, dump_messages
+
+    history = [
+        Message(role="system", content="You are the coder."),
+        Message(role="user", content="Goal:\nmake it pass"),
+        Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
+        Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
+        Message(role="user", content=ONE_STEP_LEFT),
+        Message(role="assistant", content="", tool_calls=(ToolCall("c2", "read_file", '{"path": "a"}'),)),
+        Message(role="tool", content="1: x", tool_call_id="c2", name="read_file"),
+        Message(role="user", content=LAST_STEP.format(n=40)),
+        Message(role="assistant", content="I would fix it like this…"),
+        Message(role="user", content=LAST_TURN_RETRY),
+        Message(role="assistant", content="Final answer: the fix is …"),
+    ]
+    engine = FakeEngine({"coder": [write("w", "a.py"), FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=12)
+    ctx.initial_state = {"messages": dump_messages(history)}
+    ctx.nudge = "A reviewer found blocking problems with your change. Fix each one, run the tests, then stop:"
+    res = await team.run(ctx, Recorder())
+    assert res.ok and res.steps == 1
+    sent = engine.requests[0].messages
+    texts = [str(m.content) for m in sent if m.role == "user"]
+    assert ONE_STEP_LEFT not in texts and LAST_STEP.format(n=40) not in texts and LAST_TURN_RETRY not in texts
+    assert sent[-1].role == "user" and sent[-1].content.startswith(ctx.nudge)
+    assert "12 steps" in str(sent[-1].content) and "every tool" in str(
+        sent[-1].content
+    )  # the budget is fresh
+    assert [m.role for m in sent] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+        "assistant",
+        "user",
+    ]
