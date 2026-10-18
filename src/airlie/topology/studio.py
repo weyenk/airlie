@@ -28,6 +28,7 @@ from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
 from airlie.tools.shell import run_cmd, run_steps
+from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
     Answer,
@@ -218,10 +219,13 @@ class StudioOrchestrator:
     def _tool_names(self, role: RoleSpec) -> list[str]:
         return list(self.cfg.tools.builtin) if role.tools is None else list(role.tools)
 
-    def _tools(self, role: RoleSpec, test_cmd: str | None) -> ToolRegistry:
+    def _tools(self, role: RoleSpec, test_cmd: str | None, role_name: str | None = None) -> ToolRegistry:
         assert self.worktree is not None
+        role_name = role_name or ""
         names = [
-            t for t in self._tool_names(role) if t not in ("decide", "search_knowledge", "retrieve_value")
+            t
+            for t in self._tool_names(role)
+            if t not in ("decide", "search_knowledge", "retrieve_value", "web_search", "web_fetch")
         ]
         ctx = ToolContext(
             self.worktree,
@@ -232,12 +236,18 @@ class StudioOrchestrator:
             self.scope_base,
             self.gate_memo,
             self.cfg.tools.write_file_max_overwrite_lines,
+            self.run_dir.path,
+            role_name,
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:
             attach_decide(reg, self.cfg)
         if role.knowledge is not None and (role.tools is None or "search_knowledge" in role.tools):
             reg.add(SearchKnowledge(KnowledgeIndex.build(role.knowledge)))
+        if "web_search" in self._tool_names(role):
+            reg.add(WebSearch(SearXNGProvider(self.cfg.web.search.url, UrllibClient())))
+        if "web_fetch" in self._tool_names(role):
+            reg.add(WebFetch(timeout_s=self.cfg.web.fetch_timeout_s))
         return reg
 
     def _writes(self, role: RoleSpec) -> bool:
@@ -340,7 +350,7 @@ class StudioOrchestrator:
             team_id=run.subtask.id,
             goal=goal,
             role=role,
-            tools=self._tools(role, test_cmd),
+            tools=self._tools(role, test_cmd, run.role),
             worktree=self.worktree,
             role_name=run.role,
             max_steps=self.step_limit or role.max_steps or self.cfg.teams.max_steps,
