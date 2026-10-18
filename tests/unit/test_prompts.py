@@ -32,5 +32,5 @@ def test_studio_profiles_load_and_route_the_eight_roles() -> None:
     assert cfg.topology.kind == "studio" and cfg.engines["main"].max_kv_size == 131072
     assert cfg.engines["main"].server_parsers is True  # see the profile comment in airlie.yaml
     assert set(routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})) == EIGHT
-    assert cfg.roles["coder"].model == "generalist" and cfg.roles["coder"].thinking is True  # no Qwen3-Coder
+    assert cfg.roles["coder"].model == "generalist"  # no Qwen3-Coder; the coder does not think (2026-10-18)
     assert "base" not in cfg.models and "qa" not in cfg.roles
