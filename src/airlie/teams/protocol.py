@@ -88,6 +88,10 @@ class TeamContext:
     """Image files attached to the goal message as content parts (vision roles)."""
     emit: Callable[..., None] | None = None
     """The run's event sink (`EventSink.emit(kind, **fields)`), for what the team sees that is not a step."""
+    must_act: bool = False
+    """The run's deliverable is a change in the worktree, not text: a role with write tools whose first reply
+    is prose with nothing done is told once to act (the studio's build runs and fix rounds set it; the fork
+    seam, whose branches may answer at once, does not)."""
     already_written: tuple[str, ...] = ()
     """Files this subtask changed in an earlier run (a fix round, a follow-up): the write-now nudge and the
     write schedule count them, so a continuation is not told to write what is already in the worktree."""

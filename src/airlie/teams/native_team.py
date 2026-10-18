@@ -142,6 +142,14 @@ REPEATED = (
 )
 """What a role (nudge_stuck) is told, once, when it repeats an action instead of being stopped."""
 
+ACT_FIRST = (
+    "Your reply is text, and nothing has been done: the task is a change to make, not a question to answer. "
+    "Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few sentences "
+    "on what you changed."
+)
+"""What a role with write tools is told, once, when its first reply is text and no action has run (AIR-7
+layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose and ended)."""
+
 STILL_RED = (
     "Your last run_tests run failed, so you are not done. Fix what it reports and run it again. If something "
     "outside your task blocks it, say in your reply which test fails and why."
@@ -259,6 +267,7 @@ class NativeTeam:
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
         red_warned = False  # the role has been told once that it answered with run_tests failing
+        act_warned = False  # the role has been told once that its first, text-only reply did nothing
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
         has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
@@ -310,6 +319,25 @@ class NativeTeam:
                     stop = "cut_off"
                     break
                 if not UNPARSED_CALL.search(res.text):
+                    if (
+                        ctx.must_act
+                        and can_write
+                        and steps == 0
+                        and res.text.strip()
+                        and not act_warned
+                        and not last_turn
+                    ):
+                        act_warned = True
+                        if ctx.emit is not None:
+                            ctx.emit(
+                                "text_before_action",
+                                team_id=ctx.team_id,
+                                role=ctx.role_name,
+                                chars=len(res.text),
+                            )
+                        messages.append(Message(role="assistant", content=res.text))
+                        messages.append(Message(role="user", content=ACT_FIRST))
+                        continue
                     if (
                         ctx.role.green_before_done
                         and has_run_tests

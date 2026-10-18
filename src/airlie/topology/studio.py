@@ -378,6 +378,7 @@ class StudioOrchestrator:
             initial_state=state,
             nudge=nudge,
             already_written=written,
+            must_act=True,  # a build's deliverable is the change: a first reply of prose is sent back once
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,

@@ -142,6 +142,7 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     # the fix round knows what the first run wrote, so its write nudges do not ask for it again
     fix_ctxs = [c for c in seen if c.team_id == "fix"]
     assert [c.already_written for c in fix_ctxs] == [(), ("PASS",)]
+    assert all(c.must_act for c in seen)  # a build's first reply of prose is sent back once
     nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
     assert nudge.startswith("A reviewer found blocking problems") and "PASS:1" in nudge
     assert report.final_answer == "all done"
@@ -627,7 +628,8 @@ async def test_a_given_plan_skips_the_chief_and_its_roles_beat_the_router(tmp_pa
         async def route(self, brief, criteria, hint=None, *, question="role", instructions=""):  # type: ignore[no-untyped-def]
             return RouteDecision(question, "docs", "docs", "clear", {"docs": 1.0}, 0.99, hint)
 
-    engine = FakeEngine({"qa": [DONE], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
+    # qa answers with text twice: a writer's first reply of prose is sent back once (must_act), then done
+    engine = FakeEngine({"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=Overrider())
     report = await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=given, synthesise=False)
     routes = [e for e in events(report) if e["kind"] == "route"]
@@ -805,7 +807,8 @@ async def test_max_steps_limits_every_subtask_of_the_run_below_the_roles_own(tmp
 
 async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = FakeEngine({"coder": [DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    # the first run answers with text twice (sent back once, then done); the follow-up writes PASS
+    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
 
     async def before_gate() -> bool:
