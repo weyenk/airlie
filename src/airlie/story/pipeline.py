@@ -106,6 +106,23 @@ SURVEY_STEPS = 8
 """Steps the architect gets for the survey: enough to read a handful of files."""
 
 
+def build_commit() -> str | None:
+    """The short commit of the checkout this airlie runs from, for a story's start event: which code ran it.
+    None when the code is not in a git checkout (an installed copy) or git does not answer."""
+    here = Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(here), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
 class StoryBlocked(Exception):
     """A stage cannot finish; the issue goes to blocked with this message."""
 
@@ -273,7 +290,9 @@ class StoryPipeline:
         # rewritten since (by a model, say) is a story that cannot be opened.
         here = self.github_repo or self.publisher.github_repo_of(self.repo)
         st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
-        st.emit("story_start", card=card.title, stage=st.stage, resumed=st.stage != "new")
+        st.emit(
+            "story_start", card=card.title, stage=st.stage, resumed=st.stage != "new", build=build_commit()
+        )
         try:
             if not st.done("publish"):  # a layer to build, or the stack to publish: GitHub comes into it
                 # before any model works in this run: what it plants in the repository's git configuration

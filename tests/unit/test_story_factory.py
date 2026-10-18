@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
+from airlie.board import BoardStore
 from airlie.engine import EngineHealth, FakeEngine
 from airlie.story import factory
 from airlie.story import github_app as github_app_module
@@ -35,6 +36,7 @@ from airlie.story.factory import (
 from airlie.story.gate import missing_gate
 from airlie.story.github_app import GitHubApp
 from airlie.story.jira import JiraBoard
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import RepositoryError, StorySetupError
 from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
@@ -409,6 +411,55 @@ async def test_a_blocked_story_is_still_one_line(tmp_path: Path, monkeypatch: py
     line = await tick(cfg)
     assert line == "AIR-7 Avatar upload: blocked (layer 01: `./check.sh` fails on b1; its worktree is kept)"
     assert "\n" not in line
+
+
+class Rows:
+    """A LocalBoard over a real store, whose next_card is `pick` (a story's key) whatever its column."""
+
+    def __init__(self, tmp_path: Path, pick: str) -> None:
+        self.store = BoardStore(tmp_path / "board.sqlite")
+        self.store.create(level="story", title="todo one", labels=["repo:o/repo"])
+        self.store.create(level="story", title="approved two", labels=["repo:o/repo"])
+        self.store.move("AIR-2", "approved")
+        self.pick = pick
+        self.board = LocalBoard(self.store)
+
+        async def chosen() -> Card:
+            return await self.board.card(self.pick)
+
+        self.board.next_card = chosen  # type: ignore[method-assign]
+
+
+def started_log(monkeypatch: pytest.MonkeyPatch) -> list[Card]:
+    started: list[Card] = []
+
+    class Built:
+        async def run(self, card: Card) -> StoryState:
+            started.append(card)
+            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="review")
+
+    monkeypatch.setattr(factory, "make_pipeline", lambda cfg, **kw: Built())
+    return started
+
+
+async def test_a_tick_over_the_local_board_says_the_column_it_took_the_story_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = Rows(tmp_path, "AIR-2")
+    cfg, _ = tick_setup(tmp_path, monkeypatch, rows.board, Engine(True))
+    started = started_log(monkeypatch)
+    assert await tick(cfg) == "AIR-2 approved two: review (taken from approved)"
+    assert [c.key for c in started] == ["AIR-2"]
+
+
+async def test_a_tick_refuses_a_story_that_is_not_approved_and_moves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = Rows(tmp_path, "AIR-1")  # a board that offers a story waiting for approval
+    cfg, _ = tick_setup(tmp_path, monkeypatch, rows.board, Engine(True))
+    started = started_log(monkeypatch)
+    assert await tick(cfg) == "refused: AIR-1 is todo, not approved (only approved stories are built)"
+    assert started == [] and rows.store.get("AIR-1").status == "todo"
 
 
 async def test_a_tick_with_nothing_in_the_intake_query_is_idle(
