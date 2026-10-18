@@ -26,6 +26,7 @@ from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
+from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
 from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
 from airlie.tools.shell import run_cmd, run_steps
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
@@ -171,7 +172,9 @@ class StudioOrchestrator:
             max_tokens=role.max_tokens,
             thinking=role.thinking,
         )
-        res = await self.engine.generate(req)
+        res = await generate_with_tools(
+            self.engine, req, self._lookup_tools(role_name), role.max_steps or DEFAULT_STEPS
+        )
         if res.finish_reason == "length":
             # max_tokens ended it. With nothing to read (all thinking), or a plan, answer or synthesis cut off
             # inside its json (which parses to nothing, and would be taken for a prose answer), it is no reply
@@ -249,6 +252,15 @@ class StudioOrchestrator:
         if "web_fetch" in self._tool_names(role):
             reg.add(WebFetch(timeout_s=self.cfg.web.fetch_timeout_s))
         return reg
+
+    def _lookup_tools(self, role_name: str) -> ToolRegistry | None:
+        """What a single-call role (the chief, the reviewer) may look up before it answers: its tools, when it
+        has any (web_search and web_fetch: config validation refuses them beside a mutating tool), run in a
+        bounded loop (tools.loop). None when it has none, and for a run with no worktree yet."""
+        role = self.cfg.roles[role_name]
+        if not role.tools or self.worktree is None:
+            return None
+        return self._tools(role, None, role_name)
 
     def _writes(self, role: RoleSpec) -> bool:
         return bool(WRITE_TOOLS & set(self._tool_names(role)))
@@ -404,7 +416,7 @@ class StudioOrchestrator:
         assert self.worktree is not None and run.result is not None
         if not rv.enabled or run.role not in rv.roles:
             return
-        reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role])
+        reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role], self._lookup_tools(rv.role))
         for round_no in range(rv.rounds + 1):
             commit_wip(self.worktree, f"studio: {run.subtask.id} (round {round_no})")
             files = {
