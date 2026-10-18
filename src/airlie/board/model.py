@@ -9,7 +9,7 @@ from typing import Any, Literal, get_args
 Level = Literal["initiative", "epic", "story", "subtask"]
 LEVELS: tuple[Level, ...] = get_args(Level)
 """Top down: an item's parent is the level before its own; an initiative has none."""
-Status = Literal["todo", "doing", "review", "blocked", "done"]
+Status = Literal["todo", "approved", "doing", "review", "blocked", "done"]
 STATUSES: tuple[Status, ...] = get_args(Status)
 
 

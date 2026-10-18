@@ -710,7 +710,9 @@ can refuse a bot but not you: publish as a bot (above), and it keeps everything 
 airlie has a board of its own: initiative → epic → story → subtask, in `observability.state_dir/board.sqlite`,
 served by `task serve` under `/v1/board` (behind the same API key) and shown by the web app. It is the default
 (`story.board: local`): `task story -- AIR-7` builds the story `AIR-7`, and `task story:tick` picks the oldest
-story in `todo` (never an epic or an initiative). Moves and notes go to the item: `intake`=`todo`,
+*approved* story (never an epic or an initiative): a story sits in `todo` until you drag it to *Approved* on the
+board (or move it there from its panel), and only then does the pipeline start it. A cancelled story goes back to
+`todo` and waits for approval again. `task story -- AIR-7` builds a story whatever its status. Moves and notes go to the item: `intake`=`todo`,
 `building`=`doing`, `review`, `blocked`; airlie's notes are comments by `airlie`. `task story:check` says which
 board is in use on its first line.
 
