@@ -19,6 +19,7 @@ from airlie.skills import prompt_text
 from airlie.teams.call_repair import Repair, repair_call
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
 from airlie.tools.jsonargs import history_arguments
+from airlie.tools.protocol import ToolResult
 
 
 def _goal_message(
@@ -130,6 +131,8 @@ _TEST_NAME = re.compile(r"^(test_.+|.+_test\..+|.+\.(test|spec)\..+|conftest\.py
 
 WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
+READ_REFUSED = "reading is switched off: use write_file, edit_file or run_tests"
+"""The observation a read call gets while reading is switched off: the call does not run, the step counts."""
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
 
@@ -177,12 +180,11 @@ def _written_path(call: ToolCall) -> str | None:
     return path if isinstance(path, str) else None
 
 
-def _offered(ctx: TeamContext, reading_off: bool) -> list[Any]:
-    """The tool schemas a turn offers: all of them, or (reading switched off) those that write or test."""
-    schemas = ctx.tools.schemas()
-    if not reading_off:
-        return list(schemas)
-    return [x for x in schemas if x.name in WRITE_TOOLS_ONLY]
+def _offered(ctx: TeamContext) -> list[Any]:
+    """The tool schemas a turn offers: all of them, every turn. The list is rendered at the top of the prompt,
+    so a turn that offered fewer would be a prompt the engine's prefix cache has never seen (AIR-28: one such
+    turn re-prefilled 56,717 tokens). Write-only is enforced where a call runs (READ_REFUSED), not here."""
+    return list(ctx.tools.schemas())
 
 
 def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None) -> None:
@@ -249,6 +251,7 @@ class NativeTeam:
             }
         written = {"tests": False, "code": False}  # a test file, a code file
         missed: set[str] = set()  # deadlines passed without their write
+        escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
         red_warned = False  # the role has been told once that it answered with run_tests failing
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
@@ -265,7 +268,7 @@ class NativeTeam:
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
-                tools=None if last_turn or toolless else _offered(ctx, reading_off),
+                tools=None if last_turn or toolless else _offered(ctx),
                 thinking=ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn),
                 draft_budget=ctx.draft_budget(),
             )
@@ -354,10 +357,22 @@ class NativeTeam:
             messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
-                async with ctx.scheduler.tool_stall(ctx.team_id):
-                    t1 = time.monotonic()
-                    result = await ctx.tools.call(call)
-                    tool_ms = (time.monotonic() - t1) * 1000.0
+                if reading_off and call.name not in WRITE_TOOLS_ONLY:
+                    result = ToolResult(ok=False, output=READ_REFUSED)
+                    tool_ms = 0.0
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "read_refused",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            tool=call.name,
+                        )
+                else:
+                    async with ctx.scheduler.tool_stall(ctx.team_id):
+                        t1 = time.monotonic()
+                        result = await ctx.tools.call(call)
+                        tool_ms = (time.monotonic() - t1) * 1000.0
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
@@ -440,10 +455,11 @@ class NativeTeam:
                         and steps < ctx.max_steps
                     ):
                         reading_off = True
+                        escalated.add(kind)
                         what = "no test" if kind == "tests" else "no code"
                         messages.append(Message(role="user", content=WRITE_ONLY.format(what=what, n=steps)))
-                if reading_off and all(written[k] for k in missed):
-                    reading_off = False  # the missed write landed: reading is back for what comes next
+                if reading_off and all(written[k] for k in escalated):
+                    reading_off = False  # the write reading was switched off for has landed: it is back
             elif can_write and not wrote and steps == write_by:
                 messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
             elif can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:

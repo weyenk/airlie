@@ -18,3 +18,6 @@ Plan layers so each one's tests fail before it and pass after it. A layer that a
 field) comes below the layer that validates or uses it: code that refuses an unknown name already refuses it
 for the wrong reason. Where a criterion could pass on the base by accident, say in the layer's brief which
 message or output proves the new behaviour. Keep a layer small: one concept, a few files, one test file.
+A layer's brief names the behaviour, the files and the test file; it does not dictate the diff (which function
+stays, how a call site reads). The coder decides that; a brief that fixes both ends of a change contradicts
+itself, and the coder stalls on the contradiction.

@@ -94,6 +94,27 @@ def test_the_build_brief_says_new_tests_go_in_a_new_file_and_existing_files_chan
         assert "Change an existing file with edit_file" in brief
 
 
+def test_the_build_brief_puts_tests_where_a_layer_names_a_test_file() -> None:
+    """AIR-28 2026-10-18: the architect named tests/unit/test_native_team.py and the rule said a NEW file; the
+    coder argued with itself about which for 21 steps. The layer's own word wins."""
+    named = Layer(
+        "tools", "Tools", "src/a.py; tests/unit/test_native_team.py", "Offer every schema.", ("AC1",)
+    )
+    brief = layer_plan(STORY, (named, *LAYERS), 0, build_role="coder").subtasks[0].brief
+    assert "Put new tests in tests/unit/test_native_team.py, the file this layer names" in brief
+    assert "NEW test file" not in brief and "Change an existing file with edit_file" in brief
+    in_brief = Layer(
+        "tools", "Tools", "src/a.py", "Add the test to tests/unit/test_native_team.py.", ("AC1",)
+    )
+    brief = layer_plan(STORY, (in_brief, *LAYERS), 0, build_role="coder").subtasks[0].brief
+    assert "Put new tests in tests/unit/test_native_team.py, the file this layer names" in brief
+    two = Layer("t", "T", "tests/unit/test_a.py; tests/unit/test_b.py", "Both.", ("AC1",))
+    brief = layer_plan(STORY, (two, *LAYERS), 0, build_role="coder").subtasks[0].brief
+    assert (
+        "Put new tests in tests/unit/test_a.py and tests/unit/test_b.py, the files this layer names" in brief
+    )
+
+
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
     for i in (1, 2):  # a layer that owns criteria, and an enabling one
         [build] = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks
