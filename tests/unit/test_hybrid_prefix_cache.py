@@ -19,6 +19,10 @@ from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator as G
 from airlie.engine.patches import hybrid_prefix_cache as patch
 
 STEP = 16
+TOL = 5e-3
+"""How far apart two float32 logits may be: a chunked prefill and a whole-prompt one of this tiny random model
+differ by up to about 5e-4 (more than 1e-3 once under parallel load: the test failed that way once), while a
+wrong cache state is off by whole units."""
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +117,7 @@ def test_a_cold_prefill_stores_the_cache_at_the_last_chunk_boundary_and_changes_
     g = generator(model)
     logits = g._run_chunked_text_prefill(request(ids), cache=make_prompt_cache(model))
     plain = logits_of(model, ids)
-    assert mx.allclose(logits[:, -1, :], plain, atol=1e-3).item()
+    assert mx.allclose(logits[:, -1, :], plain, atol=TOL).item()
     assert len(g.prefix_cache) == 1
     assert ids[:48] in g.prefix_cache and ids[:32] not in g.prefix_cache  # one snapshot, the last boundary
 
@@ -130,7 +134,7 @@ def test_a_second_prompt_that_extends_the_first_hits_it_and_gets_the_logits_of_a
     resumed = g._copy_prefix_cache(cached)
     out = model(mx.array(remaining)[None, :], cache=resumed)
     out = out.logits if hasattr(out, "logits") else out
-    assert mx.allclose(out[:, -1, :], logits_of(model, longer), atol=1e-3).item()
+    assert mx.allclose(out[:, -1, :], logits_of(model, longer), atol=TOL).item()
 
 
 def test_continuing_from_a_hit_does_not_change_what_is_stored(model: Any) -> None:
@@ -166,7 +170,7 @@ def test_the_boundary_is_not_stored_inside_the_think_suffix(model: Any) -> None:
 def test_a_generator_with_no_prefix_cache_just_prefills(model: Any) -> None:
     g = generator(model, cache=False)
     logits = g._run_chunked_text_prefill(request(prompt(50)), cache=make_prompt_cache(model))
-    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=1e-3).item()
+    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=TOL).item()
 
 
 def test_a_store_that_fails_is_a_warning_and_the_prefill_still_returns_its_logits(
@@ -179,7 +183,7 @@ def test_a_store_that_fails_is_a_warning_and_the_prefill_still_returns_its_logit
 
     g.prefix_cache.store = boom  # type: ignore[method-assign]
     logits = g._run_chunked_text_prefill(request(prompt(50)), cache=make_prompt_cache(model))
-    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=1e-3).item()
+    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=TOL).item()
     assert "not stored (RuntimeError: disk full)" in caplog.text
 
 
