@@ -114,6 +114,18 @@ WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
 
+REPEATED = (
+    "You have made the same call {n} times in a row with the same result ({tool}). Repeating it changes "
+    "nothing. Do something different: act on what you know, or give your answer."
+)
+"""What a role (nudge_stuck) is told, once, when it repeats an action instead of being stopped."""
+
+STILL_RED = (
+    "Your last run_tests run failed, so you are not done. Fix what it reports and run it again. If something "
+    "outside your task blocks it, say in your reply which test fails and why."
+)
+"""What a role (green_before_done) is told, once, when it answers with its last run_tests run failed."""
+
 LAST_TURN_RETRY = (
     "No tools are available on this turn, so nothing you call can run. Write your answer now, complete, in "
     "your reply, from what you have already read."
@@ -188,6 +200,10 @@ class NativeTeam:
         wrote = False  # a write_file or edit_file has run
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
+        repeat_warned = False  # the first repeated action has been said to the role
+        red_warned = False  # the role has been told once that it answered with run_tests failing
+        last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
+        has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
             step_num = steps + 1
@@ -237,6 +253,17 @@ class NativeTeam:
                     stop = "cut_off"
                     break
                 if not UNPARSED_CALL.search(res.text):
+                    if (
+                        ctx.role.green_before_done
+                        and has_run_tests
+                        and last_tests_ok is False
+                        and not red_warned
+                        and not last_turn
+                    ):
+                        red_warned = True
+                        messages.append(Message(role="assistant", content=res.text))
+                        messages.append(Message(role="user", content=STILL_RED))
+                        continue
                     final_text = res.text
                     ok = True
                     stop = "done"
@@ -304,6 +331,7 @@ class NativeTeam:
                     wrote = True
                 if call.name == "run_tests":
                     last_test_output = result.output
+                    last_tests_ok = result.ok
                 recent.append((call.name, call.arguments, result.output))
                 recent = recent[-ctx.repeat_limit :]
                 if ctx.stop_when is not None and ctx.stop_when(step_record):
@@ -314,9 +342,20 @@ class NativeTeam:
                 stop = "fork_point"
                 break
             if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
-                final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
-                stop = "repeated_action"
-                break
+                if (
+                    ctx.role.nudge_stuck and not repeat_warned
+                ):  # said once; a second run of repeats ends the run
+                    repeat_warned = True
+                    messages.append(
+                        Message(role="user", content=REPEATED.format(n=ctx.repeat_limit, tool=recent[0][0]))
+                    )
+                    recent = []
+                else:
+                    final_text = (
+                        f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
+                    )
+                    stop = "repeated_action"
+                    break
             if (
                 max_prompt + completion_tokens >= ctx.token_budget
             ):  # context size + generated, not resent history

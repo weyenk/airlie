@@ -653,6 +653,64 @@ async def test_a_role_that_writes_after_the_nudge_keeps_its_read_tools(tmp_path:
     assert all("read_file" in {t.name for t in (r.tools or [])} for r in engine.requests[:-1])
 
 
+async def test_a_role_with_nudge_stuck_is_told_once_to_do_something_else_and_stopped_on_the_next_repeat(
+    tmp_path: Path,
+) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 9})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action" and result.steps == 6  # 3 repeats, told, 3 more repeats
+    told = [
+        i
+        for i, r in enumerate(engine.requests, 1)
+        if any("same call 3 times in a row" in str(m.content) for m in r.messages)
+    ]
+    assert told[0] == 4 and told == list(range(4, len(engine.requests) + 1))
+
+
+async def test_a_role_without_nudge_stuck_is_stopped_at_the_first_repeat(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 9})
+    team, ctx = make_team(tmp_path, engine, max_steps=20)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action" and result.steps == 3
+
+
+async def test_a_role_that_can_recover_after_the_nudge_goes_on(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same, same, same, *reads(1), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Done."
+
+
+async def test_a_green_before_done_role_that_answers_with_run_tests_failing_is_told_once_to_go_on(
+    tmp_path: Path,
+) -> None:
+    fail = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+    engine = FakeEngine({"coder": [fail, FakeReply(text="Done."), FakeReply(text="Still done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10, green_before_done=True)
+    # the registry's test command is `echo ok`: make it fail for this test (the context is frozen)
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Still done."  # told once, then its second answer stands
+    told = engine.requests[-1].messages[-1]
+    assert told.role == "user" and "last run_tests run failed" in str(told.content)
+
+
+async def test_a_role_that_answers_green_or_without_the_setting_is_not_held_back(tmp_path: Path) -> None:
+    passing = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+    engine = FakeEngine({"coder": [passing, FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10, green_before_done=True)
+    assert (await team.run(ctx, Recorder())).final_text == "Done."  # `echo ok` passes
+    fail = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+    engine = FakeEngine({"coder": [fail, FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)  # no setting
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
+    assert (await team.run(ctx, Recorder())).final_text == "Done."
+
+
 async def test_a_role_that_has_written_is_not_told_to(tmp_path: Path) -> None:
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
