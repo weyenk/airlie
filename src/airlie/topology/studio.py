@@ -23,7 +23,15 @@ from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.protocol import cut_off_text
-from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, dirty, head_sha
+from airlie.teams.worktree import (
+    add_worktree,
+    changed_files,
+    changed_in_tree,
+    commit_wip,
+    diff_between,
+    dirty,
+    head_sha,
+)
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
@@ -377,9 +385,10 @@ class StudioOrchestrator:
     ) -> TeamContext:
         assert self.worktree is not None
         state, goal, nudge = self._continuation(run, parent, nudge)
-        # a fix round or follow-up continues work that is in the worktree (committed before the review):
-        # its write nudges must count those files, not ask for them again (AIR-7, 2026-10-18)
-        written = tuple(changed_files(self.worktree, run.before)) if parent is not None and run.before else ()
+        # a fix round or follow-up continues work that is in the worktree (committed before the review), and
+        # a first run may start on what the subtasks it depends on left there (a tester's tests): the write
+        # nudges must count those files, not ask for them again (AIR-7, 2026-10-18; AIR-30, 2026-10-19)
+        written = tuple(changed_in_tree(self.worktree, run.before)) if run.before else ()
         return TeamContext(
             team_id=run.subtask.id,
             goal=goal,
@@ -407,18 +416,19 @@ class StudioOrchestrator:
         preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
         writes = self._writes(role)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
-        ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
         try:
             if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
                 async with self.write_lock, self.sem:
                     assert self.worktree is not None
                     before = head_sha(self.worktree)  # this subtask's own base for the review diff
                     run.before = before
+                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
                     run.result = await self.team.run(ctx, self.observer)
                     await self._done_check(run, role, test_cmd, preamble, before)
                     await self._review_and_fix(run, role, test_cmd, preamble, before)
             else:
                 async with self.sem:
+                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
                     run.result = await self.team.run(ctx, self.observer)
         except Exception as e:  # noqa: BLE001 - a broken subtask is reported, never a run-killer
             run.result = TeamResult(

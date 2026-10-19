@@ -154,7 +154,7 @@ def _not_found(path: str, old: str, text: str) -> str:
         wanted = old.splitlines()
         for k, line in enumerate(wanted):
             have = lines[at + k] if at + k < len(lines) else ""
-            if line != have:
+            if line.rstrip() != have.rstrip():  # trailing and whitespace-only differences are not the problem
                 return (
                     f"error: `old` text not found in {path}. Its first line is line {at + 1} of the file; "
                     f"the first line of `old` that differs is its line {k + 1}, `{line}`, where the file "
