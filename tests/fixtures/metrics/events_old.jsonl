@@ -1,0 +1,2 @@
+{"ts": 2000.0, "run_id": "r2", "kind": "step", "team_id": "t1", "step": 1, "tool": "shell", "ok": true, "prompt_tokens": 600, "completion_tokens": 120, "gen_ms": 120.0}
+{"ts": 2001.0, "run_id": "r2", "kind": "step", "team_id": "t1", "step": 2, "tool": "shell", "ok": true, "prompt_tokens": 300, "completion_tokens": 60, "gen_ms": 60.0}
