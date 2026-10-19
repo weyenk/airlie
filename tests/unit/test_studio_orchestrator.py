@@ -115,6 +115,66 @@ async def test_plan_route_run_review_synthesis(tmp_path: Path) -> None:
     assert (report.run_dir.path / "studio" / "PASS").exists()
 
 
+def plan_with_criteria() -> FakeReply:
+    d = json.loads(PLAN.text)
+    d["subtasks"][0]["brief"] = (
+        "make the check pass\n\nAcceptance criteria:\n- AC1: Given a repo When built Then PASS"
+    )
+    return FakeReply(text=json.dumps(d))
+
+
+async def test_a_done_coder_checks_its_diff_against_the_criteria_before_review(tmp_path: Path) -> None:
+    """Lever 3 (Noah, 2026-10-19): the reviewer's blocking finding on AIR-31 layer 02 was a value the brief
+    had named. A coder that stops 'done' on a brief with acceptance criteria is handed its diff and the
+    question first, in a short continuation that may fix a miss; the reviewer sees the result."""
+    repo = repo_with_marker_tests(tmp_path)
+    tick = FakeReply(text="AC1 met: `+ok` in PASS")
+    engine = FakeEngine(
+        {
+            "chief": [plan_with_criteria(), SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE, tick],
+            "docs": [DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    ev = events(report)
+    kinds = [e["kind"] for e in ev]
+    assert kinds.index("done_check") < kinds.index("done_check_done") < kinds.index("review")
+    check = [e for e in ev if e["kind"] == "done_check"][0]
+    assert (check["subtask"], check["role"], check["fresh"]) == ("fix", "coder", False)
+    done = [e for e in ev if e["kind"] == "done_check_done"][0]
+    assert (done["stop_reason"], done["steps"], done["changed"]) == ("done", 0, False)
+    fix_ctxs = [c for c in seen if c.team_id == "fix"]
+    assert [(c.attempt, c.must_act, c.max_steps) for c in fix_ctxs] == [(0, True, 6), (1, False, 12)]
+    nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
+    assert nudge.startswith("Before review") and "```diff" in nudge and "+ok" in nudge
+    assert [e["verdict"] for e in ev if e["kind"] == "review"] == ["approve"]
+    assert report.final_answer == "all done"
+
+
+async def test_the_done_check_is_off_by_config_and_off_for_a_brief_without_criteria(tmp_path: Path) -> None:
+    for plan, studio in ((plan_with_criteria(), {"done_check": False}), (PLAN, {})):
+        base = tmp_path / f"case{len(studio)}"
+        base.mkdir()
+        repo = repo_with_marker_tests(base)
+        engine = FakeEngine(
+            {"chief": [plan, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+        )
+        orch = StudioOrchestrator(cfg_for(base, **studio), engine, router=ChiefRouter())
+        report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+        assert "done_check" not in [e["kind"] for e in events(report)] and report.final_answer == "all done"
+
+
 async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(

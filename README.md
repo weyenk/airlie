@@ -206,7 +206,9 @@ Hugging Face revisions; `bench: true` entries are compared by `task bench:models
 the managed engine loads at start), that run on each model's output, in the engine or, when
 `engines.<e>.server_parsers` is false, in airlie), roles, tools and MCP servers, the router (`jev` on Kev's `/v1/systemone`
 or `chief`), the LTS admission controller, summarizer, scheduler, teams, aggregator, topology profiles, and the
-`studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds). A role may
+`studio` block (chief role, parallelism, the review: which roles are reviewed, how many fix rounds; `done_check`:
+a coder that stops on a brief with acceptance criteria ticks each one against its diff before review, and
+`done_check_steps` is what a miss may cost). A role may
 declare `tools` (a subset of the builtins plus `decide` and `search_knowledge`), `skills` (a directory of
 guidelines with `summary:` frontmatter, routed by Kev), `knowledge` (a directory the `search_knowledge` tool
 indexes with BM25), `vision` (receives the run's images) and `max_steps`. Unknown keys are errors, and every

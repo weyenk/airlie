@@ -63,6 +63,7 @@ def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -
     planning in one go and no survey (the rounds and the survey have tests of their own)."""
     extra = dict(extra or {})
     extra["story"] = {"plan_round_steps": 0, "survey": False, **extra.get("story", {})}
+    kw.setdefault("done_check", False)  # it costs the coder one scripted reply per layer
     return studio_cfg_for(tmp_path, extra=extra, **kw)
 
 

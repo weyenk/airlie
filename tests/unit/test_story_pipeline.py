@@ -126,6 +126,7 @@ def pipeline(
     app: GitHubApp | None = None,
     roles: dict[str, tuple[str, list[str] | None]] = STORY_ROLES,
     github_repo: str | None = None,
+    done_check: bool = False,
 ) -> StoryPipeline:
     """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
     `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
@@ -135,7 +136,8 @@ def pipeline(
         "survey": False,
         **(story or {}),
     }
-    cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings})
+    # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
+    cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings}, done_check=done_check)
     return StoryPipeline(
         cfg,
         board=board or NullBoard(cfg.observability.state_dir / "stories"),
@@ -161,6 +163,18 @@ def happy_engine(**scripts: list[FakeReply]) -> FakeEngine:
         "reviewer": [APPROVE, APPROVE],
     }
     return FakeEngine({**base, **scripts})
+
+
+async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_review(tmp_path: Path) -> None:
+    """Lever 3 (Noah, 2026-10-19): with studio.done_check on (the default), each layer's coder answers the
+    done-check between its build and the review, so a story costs one more coder reply per layer."""
+    repo = repo_with_marker_tests(tmp_path)
+    tick = FakeReply(text="AC1 met: see the diff")
+    engine = happy_engine(coder=[WRITE_PASS, RUN, DONE, tick, NOTE, DONE, tick])
+    st = await pipeline(tmp_path, repo, engine, done_check=True).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    runs = [kinds(st.path.parents[1] / "runs" / r / "events.jsonl", "done_check") for r in st.runs]
+    assert [len(r) for r in runs][-2:] == [1, 1]  # once per built layer, none in refine
 
 
 def worktrees(repo: Path) -> int:
