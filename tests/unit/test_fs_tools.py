@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -82,6 +83,32 @@ async def test_write_file_overwrites_a_short_file_and_creates_a_new_one(tmp_path
 
 def test_write_file_overwrite_limit_defaults_to_200_lines(tmp_path: Path) -> None:
     assert ToolContext(worktree=tmp_path).write_file_max_overwrite_lines == 200
+
+
+def _commit_all(c) -> None:  # type: ignore[no-untyped-def]
+    """The worktree becomes a git repository whose one commit holds what is in it now."""
+    commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]
+    for cmd in (["init", "-q"], ["add", "-A"], commit):
+        subprocess.run(["git", *cmd], cwd=c.worktree, check=True, capture_output=True)
+
+
+async def test_write_file_refuses_a_long_file_that_exists_at_the_base(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    p = put(c, "tests/test_big.py", "x = 1\n" * 300)
+    _commit_all(c)
+    r = await WriteFile().run({"path": "tests/test_big.py", "content": "y = 2\n"}, c)
+    assert not r.ok and "300 lines (over 200)" in r.output and p.read_text() != "y = 2\n"
+
+
+async def test_write_file_rewrites_a_long_file_the_coder_itself_created(tmp_path: Path) -> None:
+    """The limit protects code that was there before the run. A file that is not at the base is the coder's
+    own (AIR-31 layer 02: a 243-line test file it wrote, then could neither rewrite nor edit in one go)."""
+    c = ctx(tmp_path)
+    put(c, "README.md", "hi\n")
+    _commit_all(c)
+    p = put(c, "tests/test_new.py", "x = 1\n" * 300)
+    r = await WriteFile().run({"path": "tests/test_new.py", "content": "y = 2\n"}, c)
+    assert r.ok and p.read_text() == "y = 2\n"
 
 
 def test_write_file_tells_the_model_its_overwrite_limit_before_it_tries() -> None:
