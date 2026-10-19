@@ -28,7 +28,7 @@ export function digest(events) {
     story: null,
   };
   const node = (id) => {
-    if (!m.nodes.has(id)) m.nodes.set(id, { id, role: null, state: "waiting", steps: [], stepCount: 0, stopReason: null, review: null, fixRounds: 0 });
+    if (!m.nodes.has(id)) m.nodes.set(id, { id, role: null, state: "waiting", steps: [], stepCount: 0, stopReason: null, review: null, fixRounds: 0, context: null });
     return m.nodes.get(id);
   };
   for (const e of events) {
@@ -64,6 +64,13 @@ export function digest(events) {
         n.stepCount = Math.max(n.stepCount, e.step || n.steps.length + 1);
         n.steps.push({ step: e.step, tool: e.tool, ok: e.ok !== false });
         if (n.steps.length > 40) n.steps.shift();
+        break;
+      }
+      case "context": {
+        if (e.team_id) {
+          const n = node(e.team_id);
+          n.context = { prompt_tokens: e.prompt_tokens, max_context: e.max_context };
+        }
         break;
       }
       case "review": {
@@ -264,6 +271,7 @@ export function render(root, [rawId], ctx) {
         h("div", null, h("dt", null, "Role"), h("dd", { class: "mono" }, n.role || "routing…")),
         h("div", null, h("dt", null, "Steps"), h("dd", { class: "mono" }, String(n.stepCount))),
         h("div", null, h("dt", null, "State"), h("dd", null, glyph(n))),
+        n.context ? h("div", null, h("dt", null, "Context"), h("dd", null, `${n.context.prompt_tokens} / ${n.context.max_context} tokens`)) : null,
         h("div", null, h("dt", null, "Review"), h("dd", null, n.review ? `${n.review.verdict} · ${n.review.findings} findings` : n.fixRounds ? `fix round ${n.fixRounds}` : "—")),
       ),
       h("h3", { class: "h3" }, "Latest steps"),
