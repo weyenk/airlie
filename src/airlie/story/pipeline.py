@@ -219,6 +219,18 @@ def _reason(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+_DID_NOT_RUN = ("mutmut run failed", "mutmut could not collect")
+"""How scripts/mutate_changed.py ends its report when mutmut did not run to the end (it exits 2 as well; a
+story built on a tree from before that exit code still says this)."""
+
+
+def _mutation_did_not_run(output: str, report: str) -> bool:
+    """Whether the mutation gate gave no verdict: its command exited 2, or its report ends by saying mutmut
+    did not run to the end."""
+    last = report.strip().splitlines()[-1] if report.strip() else ""
+    return output.rstrip().endswith("[exit 2]") or last.startswith(_DID_NOT_RUN)
+
+
 def _mutation_text(st: StoryState) -> str | None:
     """How the story's mutation gate went, for its PRs: None for a story from before it."""
     m, review = st.mutation, st.mutation_review
@@ -227,6 +239,9 @@ def _mutation_text(st: StoryState) -> str | None:
     if m["status"] == "skipped":
         return f"skipped: {m['reason']}"
     ran = f"`{m['commands']}` over the whole story's change"
+    if m["status"] == "unavailable":
+        last = str(m["summary"]).strip().splitlines()[-1] if str(m["summary"]).strip() else "no output"
+        return f"could not run ({ran}): {last}. The story's mutation.log has the whole output"
     if m["status"] == "passed" or review is None:
         return f"passes ({ran})"
     r = MutationReview.from_dict(review)
@@ -786,14 +801,23 @@ class StoryPipeline:
             remove_worktree(self.repo, wt)
         written = report.read_text(encoding="utf-8", errors="replace").strip() if report.is_file() else ""
         summary = _cap(_redact_urls(written or result.output.strip()), MUTATION_SUMMARY_CHARS)
+        (st.path / "mutation.log").write_text(_redact_urls(result.output), encoding="utf-8")  # whole
         if result.ok:
             st.mutation = {"status": "passed", "head": top, "commands": shown}
             st.save()
             st.emit("mutation_gate_passed", head=top)
             return st.mutation
-        st.emit("mutation_gate_failed", head=top, summary=summary)
         if result.output.startswith("error: "):  # it never ran to the end (timed out, or could not start)
+            st.emit("mutation_gate_failed", head=top, summary=summary)
             raise StoryBlocked(f"the mutation gate `{shown}` did not finish: {summary}")
+        if _mutation_did_not_run(result.output, written):
+            # no verdict on the mutants (a baseline test red under mutmut, a crash): nothing for the
+            # architect to review; the PRs say so (AIR-7, 2026-10-18)
+            st.mutation = {"status": "unavailable", "head": top, "commands": shown, "summary": summary}
+            st.save()
+            st.emit("mutation_gate_unavailable", head=top, summary=summary)
+            return st.mutation
+        st.emit("mutation_gate_failed", head=top, summary=summary)
         st.mutation = {"status": "survived", "head": top, "commands": shown, "summary": summary}
         st.save()
         return st.mutation

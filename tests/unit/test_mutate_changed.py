@@ -207,6 +207,40 @@ class FakeMutmut:
         return "airlie.engine.sse.x_iter_sse__mutmut_1: killed\nairlie.cli.x_main__mutmut_1: survived\n"
 
 
+class BrokenMutmut(FakeMutmut):
+    """mutmut whose run does not finish (a red baseline test, a crash)."""
+
+    def run(self, *args: str) -> int:
+        self.runs.append(args)
+        return 1
+
+
+def test_a_mutmut_run_that_does_not_finish_exits_2_not_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AIR-7, 2026-10-18: a baseline test went red under mutmut, the script exited 1 like a survivor would,
+    and the story's architect was sent to review survivors that did not exist. No verdict is exit 2."""
+    fake = BrokenMutmut()
+    monkeypatch.setattr(mc, "mutmut", fake.run)
+    monkeypatch.setattr(mc, "mutmut_out", fake.out)
+    monkeypatch.setattr(mc, "enrolled_files", lambda: SCOPE)
+    monkeypatch.setattr(mc, "changed_files", lambda base: {"src/airlie/engine/sse.py"})
+    monkeypatch.setattr(mc, "changed_tests", lambda changed: [])
+    monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--base", "origin/main", "--gate-only"])
+    assert mc.main() == mc.COULD_NOT_RUN == 2
+    assert capsys.readouterr().out.rstrip().endswith("see the log above")
+
+
+def test_the_mutmut_config_copies_what_the_tests_read_outside_src() -> None:
+    """ops: scripts/searxng_vm.py reads ops/searxng/version, and mutmut runs the tests from its own copy of
+    the tree (AIR-7, 2026-10-18: the baseline went red on it)."""
+    import tomllib
+
+    cfg = tomllib.loads((mc.ROOT / "pyproject.toml").read_text())
+    assert "ops" in cfg["tool"]["mutmut"]["also_copy"]
+
+
 def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
     fake = FakeMutmut()
     monkeypatch.setattr(mc, "mutmut", fake.run)
