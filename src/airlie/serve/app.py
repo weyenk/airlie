@@ -25,6 +25,8 @@ from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.config import AirlieConfig
+from airlie.metrics import series as metrics_series
+from airlie.metrics import summary as metrics_summary
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
@@ -228,7 +230,13 @@ def create_app(
             except NotInvited:
                 return JSONResponse({"error": "not invited"}, status_code=401)
             if principal is None:
-                return JSONResponse({"error": "not signed in"}, status_code=401)
+                # the metrics tab's own phrase (AC6); every other /v1 route keeps 'not signed in'
+                error = (
+                    "missing or invalid API key"
+                    if request.url.path.startswith("/v1/metrics")
+                    else "not signed in"
+                )
+                return JSONResponse({"error": error}, status_code=401)
             request.state.principal = principal
         return await call_next(request)
 
@@ -436,6 +444,78 @@ def create_app(
         if jobs.get(job_id) is None:
             raise HTTPException(404, f"no job '{job_id}'")
         return {"job_id": job_id, "cancelled": jobs.cancel(job_id)}
+
+    METRIC_SLICES = ("role", "model", "topology", "task", "agent")
+    METRIC_NAMES = ("generation_tps", "prefill_tps")
+    """The slice and metric names the metrics tab's API accepts; the web layer (layer 4) uses the same set."""
+
+    def _metric_time(raw: str | None, name: str) -> float | None:
+        """An ISO8601 timestamp or epoch seconds, or None when absent."""
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            from datetime import datetime
+
+            return datetime.fromisoformat(raw).timestamp()
+
+    def _metric_bucket_s(span: float) -> float:
+        """The bucket width a range implies: 4h->5min, 24h->1h, 7d->6h, 30d->1d, all else 1d."""
+        if span <= 4 * 3600:
+            return 300.0
+        if span <= 24 * 3600:
+            return 3600.0
+        if span <= 7 * 86400:
+            return 6 * 3600.0
+        return 86400.0
+
+    def _metrics_auth(request: Request) -> None:
+        """The metrics routes' own 401: the global middleware says 'not signed in', which the other
+        serve/auth tests assert, so the metrics tab gets its own phrase here."""
+        if getattr(request.state, "principal", None) is None:
+            raise HTTPException(401, "missing or invalid API key")
+
+    @app.get("/v1/metrics/summary")
+    async def metrics_summary_route(
+        request: Request,
+        from_: str | None = Query(None, alias="from"),
+        to: str | None = None,
+        slice_: str = Query("role", alias="slice"),
+    ) -> dict[str, Any]:
+        _metrics_auth(request)
+        if slice_ not in METRIC_SLICES:
+            raise HTTPException(422, f"unknown slice '{slice_}'; use one of {', '.join(METRIC_SLICES)}")
+        f = _metric_time(from_, "from")
+        t = _metric_time(to, "to")
+        if f is None or t is None:
+            raise HTTPException(422, "from and to are required")
+        if t <= f:
+            raise HTTPException(422, "to must be after from")
+        return metrics_summary(cfg.observability.state_dir.expanduser(), f, t, slice_)
+
+    @app.get("/v1/metrics/series")
+    async def metrics_series_route(
+        request: Request,
+        from_: str | None = Query(None, alias="from"),
+        to: str | None = None,
+        slice_: str = Query("role", alias="slice"),
+        metric: str = "generation_tps",
+    ) -> list[dict[str, Any]]:
+        _metrics_auth(request)
+        if slice_ not in METRIC_SLICES:
+            raise HTTPException(422, f"unknown slice '{slice_}'; use one of {', '.join(METRIC_SLICES)}")
+        if metric not in METRIC_NAMES:
+            raise HTTPException(422, f"unknown metric '{metric}'; use one of {', '.join(METRIC_NAMES)}")
+        f = _metric_time(from_, "from")
+        t = _metric_time(to, "to")
+        if f is None or t is None:
+            raise HTTPException(422, "from and to are required")
+        if t <= f:
+            raise HTTPException(422, "to must be after from")
+        return metrics_series(
+            cfg.observability.state_dir.expanduser(), metric, slice_, f, t, _metric_bucket_s(t - f)
+        )
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
