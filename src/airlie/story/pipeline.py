@@ -814,7 +814,13 @@ class StoryPipeline:
         st.emit("mutation_gate_start", commands=shown, base=st.base, head=top)
         add_worktree(self.repo, wt, branch=None, start_point=top)
         try:
-            ctx = ToolContext(wt, self.mutation_timeout_s, MUTATION_OUTPUT_CHARS)
+            # the gate writes its summary to the story's directory, outside the worktree
+            ctx = ToolContext(
+                wt,
+                self.mutation_timeout_s,
+                MUTATION_OUTPUT_CHARS,
+                **{**self.cfg.tools.confinement(), "writable": (*self.cfg.tools.writable, report)},
+            )
             result = await run_cmd(gate_command(with_base(commands, st.base["sha"], report)), ctx, shell=True)
         finally:
             remove_worktree(self.repo, wt)
@@ -898,7 +904,7 @@ class StoryPipeline:
         returned, for the layer to stop on. Each finding is an event. A gate that does not run pytest gets no
         checks, and an event says so. `red_base` is what the red check undoes the layer's other changes to,
         when not its own base (the story's, for the hardening layer)."""
-        checks = checks_for(self.commands, timeout_s=self.timeout_s)
+        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement())
         if checks is None:
             reason = "the gate runs no pytest: the red and no-assertion checks are for pytest only"
             st.emit("test_checks_skipped", layer=nn, reason=reason)

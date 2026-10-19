@@ -267,6 +267,7 @@ class StudioOrchestrator:
             self.run_dir.path,
             role_name,
             check_base=self.check_base,
+            **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:
@@ -785,7 +786,12 @@ class StudioOrchestrator:
         if (
             self.scope_base
         ):  # the coder's last edit may have come after its last run_tests: mend its style too
-            fix = ToolContext(self.worktree, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars)
+            fix = ToolContext(
+                self.worktree,
+                self.cfg.tools.shell_timeout_s,
+                self.cfg.tools.output_cap_chars,
+                **self.cfg.tools.confinement(),
+            )
             await run_steps(autofix_steps(self.test_steps), fix)
         if (
             self.scope_base
@@ -794,7 +800,9 @@ class StudioOrchestrator:
         ):
             return True  # run_tests already ran the whole gate on exactly this tree
         tools = self.cfg.tools
-        ctx = ToolContext(self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd)
+        ctx = ToolContext(
+            self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd, **tools.confinement()
+        )
         return (await run_cmd(test_cmd, ctx, shell=True)).ok
 
     def _report(self, goal: str, final: str, t0: float, branch: str, passed: bool | None) -> RunReport:

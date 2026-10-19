@@ -2,10 +2,11 @@
 
 `agent_env` is the environment of every process that runs code a model chose or wrote: the coder's shell,
 run_tests and git tools, and the test gates. It holds no GitHub, SSH or Jira credential, so a model cannot
-`gh pr merge` or `git push` with the person's identity through the environment and the normal tools. It is
-not an OS sandbox: the process still runs as the person's macOS user, and a model that deliberately goes
-after what is stored for that user (the keychain, ~/.ssh, ~/.config/airlie/.env and the checkout's .env with
-the Jira token, the GitHub App's private key) is not stopped by it.
+`gh pr merge` or `git push` with the person's identity through the environment and the normal tools. The
+tools also cannot write outside the worktree (airlie.tools.confine, an OS sandbox on macOS), but they can
+still read as the person's macOS user: a model that deliberately goes after what is stored for that user (the
+keychain, ~/.ssh, ~/.config/airlie/.env and the checkout's .env with the Jira token, the GitHub App's private
+key) is not stopped by either.
 
 airlie's own git runs no repository hook and no fsmonitor, and reads no object through `git replace`
 (`NO_HOOKS`): a model can plant any of them in the repository it works in, and git would run a hook inside

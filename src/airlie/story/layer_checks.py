@@ -15,7 +15,7 @@ import shlex
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from airlie.teams.worktree import changed_files, find_file, put_back, read_blob, reset_to_head
 from airlie.tools.protocol import ToolContext
@@ -163,9 +163,11 @@ def _passed(output: str, ids: Sequence[str]) -> set[str]:
 class PytestChecks:
     """Both checks for a Python repository whose gate runs pytest with `runner` (`pytest_runner`)."""
 
-    def __init__(self, runner: str, *, timeout_s: float) -> None:
+    def __init__(self, runner: str, *, timeout_s: float, confinement: dict[str, Any] | None = None) -> None:
         self.runner = runner
         self.timeout_s = timeout_s
+        self.confinement = confinement or {}
+        """ToolContext's sandbox and writable for the test runs (tools.confinement); default: confined."""
 
     async def run(self, worktree: Path, base: str, *, red_base: str | None = None) -> list[Finding]:
         """The findings on the tests the worktree's HEAD added or changed since `base`. The red check puts the
@@ -189,7 +191,7 @@ class PytestChecks:
         modules and the files beside them in a tests directory (helpers, conftest.py)."""
         others = [p for p in changed_files(worktree, base) if not _test_side(p)]
         ids = sorted({t.id for t in tests})
-        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS)
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
         try:
             put_back(worktree, base, others)
             result = await run_cmd(
@@ -208,10 +210,12 @@ def _test_side(path: str) -> bool:
     )
 
 
-def checks_for(commands: Sequence[str], *, timeout_s: float) -> PytestChecks | None:
+def checks_for(
+    commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
+) -> PytestChecks | None:
     """The checks for a gate of `commands`: pytest's when one of them runs pytest, else None (none run)."""
     runner = pytest_runner(commands)
-    return PytestChecks(runner, timeout_s=timeout_s) if runner else None
+    return PytestChecks(runner, timeout_s=timeout_s, confinement=confinement) if runner else None
 
 
 LOOSE_MATCH = (
