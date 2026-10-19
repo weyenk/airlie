@@ -94,11 +94,36 @@ async def test_edit_file_replaces_exactly_one_occurrence(tmp_path: Path) -> None
     assert (r.ok, r.output) == (True, "edited a.txt") and p.read_text() == "one 2 three\n"
 
 
+async def test_edit_file_names_the_closest_line_when_old_is_misquoted(tmp_path: Path) -> None:
+    """AIR-7 layer 03, 2026-10-18: every failed edit of the day was an anchor quoted from memory (a Qwen2.5
+    coder tried three guesses at `app.include_router(...)` without reading the file). The error names the
+    line that comes closest and says how to see it."""
+    c = ctx(tmp_path)
+    put(
+        c,
+        "app.py",
+        "import x\n\n\ndef make():\n    app.include_router(auth_router(store, resolver, cfg.auth))\n",
+    )
+    r = await EditFile().run(
+        {"path": "app.py", "old": "    app.include_router(auth_router(store, resolver))\n", "new": "..."}, c
+    )
+    assert not r.ok
+    assert r.output == (
+        "error: `old` text not found in app.py. The closest line is 5: "
+        "`    app.include_router(auth_router(store, resolver, cfg.auth))`. Read the file there (read_file "
+        "with offset and limit) and quote it exactly, whitespace included."
+    )
+
+
 async def test_edit_file_messages_for_missing_and_ambiguous_text(tmp_path: Path) -> None:
     c = ctx(tmp_path)
     p = put(c, "a.txt", "x x\nx\n")
     r = await EditFile().run({"path": "a.txt", "old": "zzz", "new": "y"}, c)
-    assert (r.ok, r.output) == (False, "error: `old` text not found in a.txt")
+    assert (r.ok, r.output) == (
+        False,
+        "error: `old` text not found in a.txt. Read the file (read_file with offset and limit) and quote "
+        "the text exactly, whitespace included.",
+    )
     r = await EditFile().run({"path": "a.txt", "old": "x", "new": "y"}, c)
     assert (r.ok, r.output) == (False, "error: `old` text occurs 3 times in a.txt; make it unique")
     p2 = put(c, "b.txt", "x x\n")

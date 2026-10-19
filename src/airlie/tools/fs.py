@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Any
 
@@ -119,6 +120,24 @@ class WriteFile:
         return ToolResult(True, f"wrote {args['path']} ({len(str(args['content']))} chars)")
 
 
+def _not_found(path: str, old: str, text: str) -> str:
+    """The edit_file error for an `old` that is not in the file: the line that comes closest to its first
+    line, and how to see it. Every failed edit of 2026-10-18 (AIR-7) was an anchor quoted from memory."""
+    first = next((line for line in old.splitlines() if line.strip()), "")
+    lines = text.splitlines()
+    close = difflib.get_close_matches(first, lines, n=1, cutoff=0.6) if first and lines else []
+    if close:
+        return (
+            f"error: `old` text not found in {path}. The closest line is {lines.index(close[0]) + 1}: "
+            f"`{close[0]}`. Read the file there (read_file with offset and limit) and quote it exactly, "
+            "whitespace included."
+        )
+    return (
+        f"error: `old` text not found in {path}. Read the file (read_file with offset and limit) and quote "
+        "the text exactly, whitespace included."
+    )
+
+
 class EditFile:
     name = "edit_file"
     description = (
@@ -139,7 +158,7 @@ class EditFile:
         old, new = str(args["old"]), str(args["new"])
         n = text.count(old)
         if n == 0:
-            return ToolResult(False, f"error: `old` text not found in {args['path']}")
+            return ToolResult(False, _not_found(str(args["path"]), old, text))
         if n > 1:
             return ToolResult(False, f"error: `old` text occurs {n} times in {args['path']}; make it unique")
         p.write_text(text.replace(old, new, 1))  # pragma: no mutate  (n == 1 here, so the count is moot)
