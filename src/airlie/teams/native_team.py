@@ -346,7 +346,9 @@ class NativeTeam:
                 final_text = f"engine error: {e}"
                 stop = "engine_error"
                 break
-            gen_ms = (time.monotonic() - g0) * 1000.0
+            total_ms = (time.monotonic() - g0) * 1000.0
+            prefill_ms = res.ttft_ms  # the engine's time to first token: prompt processing, not generation
+            gen_ms = max(0.0, total_ms - res.ttft_ms)  # generation only (a slow client can outlast the ttft)
             prompt_tokens += res.prompt_tokens
             max_prompt = max(max_prompt, res.prompt_tokens)
             completion_tokens += res.completion_tokens
@@ -473,6 +475,7 @@ class NativeTeam:
                     prompt_tokens=res.prompt_tokens,
                     completion_tokens=res.completion_tokens,
                     gen_ms=gen_ms,
+                    prefill_ms=prefill_ms,
                     tool_ms=tool_ms,
                     accepted_draft_tokens=res.accepted_draft_tokens,
                     draft_tokens=res.draft_tokens,
