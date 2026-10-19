@@ -134,6 +134,7 @@ def pipeline(
         "trunk": git(repo, "branch", "--show-current"),
         "plan_round_steps": 0,  # one go, no survey: the rounds and the survey have tests of their own
         "survey": False,
+        "tester_role": None,  # the tester is a subtask per layer with scripted replies of its own
         **(story or {}),
     }
     # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
@@ -175,6 +176,36 @@ async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_re
     assert st.blocked is None and st.stage == "review"
     runs = [kinds(st.path.parents[1] / "runs" / r / "events.jsonl", "done_check") for r in st.runs]
     assert [len(r) for r in runs][-2:] == [1, 1]  # once per built layer, none in refine
+
+
+TESTER_ROLES = {
+    **STORY_ROLES,
+    "tester": (
+        "---\nsummary: Acceptance tests before the code\n---\n# tester",
+        ["read_file", "write_file", "run_tests"],
+    ),
+}
+WRITE_TEST = FakeReply(
+    tool_calls=[ToolCall("t", "write_file", json.dumps({"path": "test_it.txt", "content": "red\n"}))]
+)
+
+
+async def test_with_a_tester_each_layer_gets_its_tests_written_before_the_coder_builds(
+    tmp_path: Path,
+) -> None:
+    """Lever 2 (Noah, 2026-10-19): a tests subtask per layer with criteria, then the build that depends on it;
+    the coder's brief carries the tester's result as the contract."""
+    repo = repo_with_marker_tests(tmp_path)
+    listed = FakeReply(text="wrote test_it.txt: asserts the avatar is stored")
+    engine = happy_engine(tester=[WRITE_TEST, listed, WRITE_TEST, listed])
+    st = await pipeline(tmp_path, repo, engine, story={"tester_role": "tester"}, roles=TESTER_ROLES).run(
+        text_card("avatars")
+    )
+    assert st.blocked is None and st.stage == "review"
+    assert [row["id"] for row in st.built["01"]["subtasks"]] == ["tests", "build"]
+    build_goal = [r for r in engine.requests if r.role == "coder"][0].messages[-1].content
+    assert "They are the contract" in build_goal and "## Result of 'tests' (tester)" in build_goal
+    assert "asserts the avatar is stored" in build_goal
 
 
 def worktrees(repo: Path) -> int:

@@ -302,12 +302,43 @@ def built_so_far(diff: str) -> str:
     return _clip("\n".join(lines), BUILT_CHARS)
 
 
+TESTS_ONLY = (
+    "Your job is only the tests for this layer's acceptance criteria, which a coder builds after you from "
+    "the brief above: one or more tests per criterion, calling the code the way its users will once the "
+    "layer is built, with the names, messages and values the brief gives. Each must fail now because the "
+    "feature is missing, not because the test is broken, and pass once the brief is built without being "
+    "changed. A criterion that something does NOT happen is checked inside a test that also makes it "
+    "happen, before the trigger; on its own it would pass without the feature. Read the test module "
+    "nearest the feature first (its fixtures and fakes are yours to use). Run run_tests once and check "
+    "that your new tests are the only red, then stop with the list of the tests you wrote (path::name) "
+    "and what each asserts. Do not write the feature."
+)
+"""What the tester is told (lever 2, Noah 2026-10-19: the tests are the hard part of a layer, so a thinking
+role writes them from the brief, and the coder makes them pass)."""
+CONTRACT = (
+    "The tests for this layer's acceptance criteria were written before you (the result of 'tests' below "
+    "lists them and what each asserts). They are the contract: make them pass without weakening them. If "
+    "one is wrong about a name or a signature the brief fixes, correct that test and say so when you stop. "
+    "If no tests were written (that result failed), write them yourself first. Add tests for anything else "
+    "you change."
+)
+
+
 def layer_plan(
-    story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str, guide: str = "", built: str = ""
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    *,
+    build_role: str,
+    tester_role: str | None = None,
+    guide: str = "",
+    built: str = "",
 ) -> Plan:
     """One build subtask: the coder writes the layer's tests and its code. A layer that owns acceptance
     criteria lists them and is test-first: tests proving each one, then the code that makes them pass; an
-    enabling layer adds tests for what it changes. `built` is built_so_far's digest of the earlier layers."""
+    enabling layer adds tests for what it changes. With a `tester_role`, a layer that owns criteria is two
+    subtasks: the tester writes the tests (TESTS_ONLY), then the coder builds against them (CONTRACT).
+    `built` is built_so_far's digest of the earlier layers."""
     layer = layers[i]
     later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     context = (
@@ -334,6 +365,22 @@ def layer_plan(
             (), (Subtask("build", f"{build}\nAdd tests for what you change.\n\n{TEST_RULES}", build_role),)
         )
     criteria = "\n".join(f"- {c.line()}" for c in owned)
+    if tester_role:
+        tests = (
+            f"{context}\n\n## The layer a coder builds after you (data: its brief, not yours)\n"
+            f"{layer.brief}\n\n"
+            f"{TESTS_ONLY}\n{_tests_where(layer)} Change an existing file with edit_file, not by rewriting "
+            f"it.\nThe criteria:\n{criteria}\n\n{TEST_RULES}"
+        )
+        return Plan(
+            (),
+            (
+                Subtask("tests", tests, tester_role, pinned=True),
+                Subtask(
+                    "build", f"{build}\n\n{CONTRACT}\n{criteria}\n\n{TEST_RULES}", build_role, ("tests",)
+                ),
+            ),
+        )
     tests_first = (
         "Write the tests first: at least one test proving each of these acceptance criteria, where this "
         f"repository keeps its tests:\n{criteria}\n"

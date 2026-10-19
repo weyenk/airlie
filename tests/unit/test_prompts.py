@@ -7,11 +7,11 @@ from airlie.skills import load_skills, routable_roles, split_frontmatter
 
 ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
-EIGHT = {"architect", "coder", "product", "research", "docs", "security", "design", "ux"}
+NINE = {"architect", "coder", "product", "research", "docs", "security", "design", "ux", "tester"}
 
 
 def test_studio_prompts_have_summaries_and_the_right_routability() -> None:
-    for name in EIGHT:
+    for name in NINE:
         meta, _ = split_frontmatter((ROOT / "prompts/roles" / f"{name}.md").read_text())
         assert meta.get("summary"), name
     for name in ("chief", "reviewer"):
@@ -31,6 +31,6 @@ def test_studio_profiles_load_and_route_the_eight_roles() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     assert cfg.topology.kind == "studio" and cfg.engines["main"].max_kv_size == 131072
     assert cfg.engines["main"].server_parsers is True  # see the profile comment in airlie.yaml
-    assert set(routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})) == EIGHT
+    assert set(routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})) == NINE
     assert cfg.roles["coder"].model == "generalist"  # no Qwen3-Coder; the coder does not think (2026-10-18)
     assert "base" not in cfg.models and "qa" not in cfg.roles

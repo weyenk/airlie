@@ -146,6 +146,7 @@ roles:
   # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
   chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, last_turn_thinking: false, nudge_stuck: true, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  tester:       { prompt: prompts/roles/tester.md, model: generalist, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], max_context: 65536, max_tokens: 16384, thinking: true, thinking_budget: 4096, last_turn_thinking: false, nudge_stuck: true, max_steps: 16, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }   # lever 2 (2026-10-19): writes a layer's acceptance tests before the coder; thinking on, since the test is the design
   product:      { prompt: prompts/roles/product.md, model: generalist, tools: [read_file, list_dir], max_tokens: 4096, thinking: false, max_steps: 8, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   ux:           { prompt: prompts/roles/ux.md, model: generalist, tools: [web_search, web_fetch], max_steps: 6, vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   design:       { prompt: prompts/roles/design.md, model: generalist, tools: [web_search, web_fetch], max_steps: 6, vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
@@ -276,6 +277,7 @@ observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 1
 story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
+  tester_role: tester              # lever 2 (2026-10-19): a thinking role writes a layer's acceptance tests before the coder builds; null: the coder writes its own
   max_layers: 5
   jira:
     statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }

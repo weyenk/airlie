@@ -451,6 +451,7 @@ class StudioOrchestrator:
         s = self.cfg.studio
         if (
             not s.done_check
+            or run.role not in s.review.roles  # it stands in for a review round: a role with none has none
             or res.stop_reason != "done"
             or "acceptance criteria" not in run.subtask.brief.lower()
         ):

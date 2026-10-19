@@ -100,7 +100,8 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
 | `story.mutation_timeout_s` | 3600 | how long the story's mutation gate may run (it runs once per story) |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
-| `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what (`story.tests_role` was removed on 2026-10-16: the coder writes a layer's tests; a config that still sets it is refused with a note saying to delete it) |
+| `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
+| `story.tester_role` | `null` (airlie.yaml: `tester`) | the role that writes a layer's acceptance tests before its coder builds it, as the coder's contract (the coder may correct a test that is wrong about a name the brief fixes, and says so); `null`: the coder writes its own tests, one subtask per layer. The 2026-10-16 qa seat was removed for blowing its context on a fast model; this one is a thinking role with the whole layer brief, 16 steps, and the same checks on what it writes |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 

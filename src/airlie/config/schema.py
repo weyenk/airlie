@@ -456,6 +456,12 @@ class StorySpec(Strict):
     product_role: str = "product"
     architect_role: str = "architect"
     build_role: str = "coder"
+    tester_role: str | None = Field(
+        default=None,
+        description="the role that writes a layer's acceptance tests before its coder builds it, as the "
+        "coder's contract (airlie.yaml seats 'tester'); null: the coder writes its own tests, one subtask "
+        "per layer",
+    )
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
