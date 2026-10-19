@@ -157,12 +157,13 @@ REPEAT_WRITE_ONLY = (
 on goes, not the run, until it writes. A third streak, of refusals, ends the run."""
 
 ACT_FIRST = (
-    "Your reply is text, and nothing has been done: the task is a change to make, not a question to answer. "
-    "Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few sentences "
-    "on what you changed."
+    "Your reply is text, and nothing has been changed: the task is a change to make, not a question to "
+    "answer. Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few "
+    "sentences on what you changed."
 )
-"""What a role with write tools is told, once, when its first reply is text and no action has run (AIR-7
-layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose and ended)."""
+"""What a role with write tools is told, once, when its reply is text and no write of its own has landed yet
+(AIR-7 layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose and ended;
+layer 03: a fix round's one edit missed its anchor and the next reply was prose, taken as done)."""
 
 STILL_RED = (
     "Your last run_tests run failed, so you are not done. Fix what it reports and run it again. If something "
@@ -317,7 +318,8 @@ class NativeTeam:
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
         red_warned = False  # the role has been told once that it answered with run_tests failing
-        act_warned = False  # the role has been told once that its first, text-only reply did nothing
+        act_warned = False  # the role has been told once that its text-only reply changed nothing
+        changed = False  # a write_file or edit_file of this run has landed (a failed one has not)
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
         has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
@@ -372,7 +374,7 @@ class NativeTeam:
                     if (
                         ctx.must_act
                         and can_write
-                        and steps == 0
+                        and not changed
                         and res.text.strip()
                         and not act_warned
                         and not last_turn
@@ -478,6 +480,7 @@ class NativeTeam:
                 await observer.after_step(step_record)
                 if call.name in ("write_file", "edit_file"):
                     wrote = True
+                    changed = changed or result.ok
                     looped = False  # the loop is broken: every tool is back
                     path = _written_path(call)
                     if path is not None:

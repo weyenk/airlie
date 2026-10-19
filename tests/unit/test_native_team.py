@@ -1160,7 +1160,7 @@ async def test_a_writer_whose_first_reply_is_text_is_told_once_to_act(tmp_path: 
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 1
-    told = requests_saying(engine, "nothing has been done")
+    told = requests_saying(engine, "nothing has been changed")
     assert told == [2, 3]  # said once, after the first reply; carried in the conversation after that
     assert engine.requests[1].messages[-2].content.startswith("Here is how I would fix it")  # its text kept
     assert [e["kind"] for e in events.records if e["kind"] == "text_before_action"] == ["text_before_action"]
@@ -1182,7 +1182,29 @@ async def test_a_role_without_write_tools_may_answer_with_text_at_once(tmp_path:
     ctx.must_act = True
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.final_text == "The plan: two layers."
-    assert requests_saying(engine, "nothing has been done") == []
+    assert requests_saying(engine, "nothing has been changed") == []
+
+
+async def test_a_writer_whose_only_edit_failed_and_then_answers_with_text_is_sent_back_once(
+    tmp_path: Path,
+) -> None:
+    """AIR-7 layer 03, 2026-10-18: a fix round's one edit missed its anchor, the next reply was prose, and the
+    run ended as done with nothing changed. A write that failed is no change; a write that landed is."""
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    (tmp_path / "wt" / "a.py").write_text("x = 1\n")
+    miss = FakeReply(
+        tool_calls=[ToolCall("e1", "edit_file", json.dumps({"path": "a.py", "old": "nope", "new": "y"}))]
+    )
+    engine = FakeEngine(
+        {"coder": [miss, FakeReply(text="I give up."), write("w", "b.py"), FakeReply(text="Done.")]}
+    )
+    team, ctx = make_team(tmp_path, engine, tool_names=("write_file", "edit_file", "read_file", "run_tests"))
+    ctx.must_act = True
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 2 and result.final_text == "Done."
+    assert requests_saying(engine, "nothing has been changed")[0] == 3  # after the prose, not after the miss
+    assert [e["kind"] for e in events.records if e["kind"] == "text_before_action"] == ["text_before_action"]
 
 
 async def test_every_step_carries_the_contexts_attempt(tmp_path: Path) -> None:
