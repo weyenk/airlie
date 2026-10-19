@@ -147,6 +147,18 @@ def _not_found(path: str, old: str, text: str) -> str:
     first = next((line for line in old.splitlines() if line.strip()), "")
     lines = text.splitlines()
     close = difflib.get_close_matches(first, lines, n=1, cutoff=0.6) if first and lines else []
+    if close and close[0] == first:  # the anchor is there: say where the quote goes wrong below it
+        at = lines.index(first)
+        wanted = old.splitlines()
+        for k, line in enumerate(wanted):
+            have = lines[at + k] if at + k < len(lines) else ""
+            if line != have:
+                return (
+                    f"error: `old` text not found in {path}. Its first line is line {at + 1} of the file; "
+                    f"the first line of `old` that differs is its line {k + 1}, `{line}`, where the file "
+                    f"has line {at + k + 1}: `{have}`. Read the file there (read_file with offset and "
+                    "limit) and quote it exactly, whitespace included."
+                )
     if close:
         return (
             f"error: `old` text not found in {path}. The closest line is {lines.index(close[0]) + 1}: "

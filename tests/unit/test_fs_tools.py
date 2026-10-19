@@ -129,6 +129,22 @@ async def test_edit_file_replaces_exactly_one_occurrence(tmp_path: Path) -> None
     assert (r.ok, r.output) == (True, "edited a.txt") and p.read_text() == "one 2 three\n"
 
 
+async def test_edit_file_names_the_first_line_of_a_long_old_that_differs(tmp_path: Path) -> None:
+    """AIR-31 layer 03, 2026-10-19: the coder quoted a 12-line `old` of a test it had just written, with one
+    line from memory; the hint named only the first line, which matched, and the coder sent the same `old`
+    again. The error now says which line of `old` is the first to differ, and what the file has there."""
+    c = ctx(tmp_path)
+    put(c, "t.py", "async def test_x() -> None:\n    a = 1\n    b = 2\n    assert a + b == 3\n")
+    old = "async def test_x() -> None:\n    a = 1\n    b = 3\n    assert a + b == 3\n"
+    r = await EditFile().run({"path": "t.py", "old": old, "new": "..."}, c)
+    assert not r.ok
+    assert r.output == (
+        "error: `old` text not found in t.py. Its first line is line 1 of the file; the first line of `old` "
+        "that differs is its line 3, `    b = 3`, where the file has line 3: `    b = 2`. Read the file "
+        "there (read_file with offset and limit) and quote it exactly, whitespace included."
+    )
+
+
 async def test_edit_file_names_the_closest_line_when_old_is_misquoted(tmp_path: Path) -> None:
     """AIR-7 layer 03, 2026-10-18: every failed edit of the day was an anchor quoted from memory (a Qwen2.5
     coder tried three guesses at `app.include_router(...)` without reading the file). The error names the
@@ -182,7 +198,7 @@ async def test_edit_file_loose_match_still_needs_indentation_and_uniqueness(tmp_
     put(c, "t.py", "def f():\n    x = 1\n\n\ndef g():\n    x = 1\n")
     # two-space indentation where the file has four: no exact substring, and no loose match either
     r = await EditFile().run({"path": "t.py", "old": "def f():\n  x = 1", "new": "def f():\n  x = 2"}, c)
-    assert not r.ok and "closest line is 1" in r.output
+    assert not r.ok and "Its first line is line 1 of the file" in r.output
     r = await EditFile().run({"path": "t.py", "old": "    x = 1\n", "new": "    x = 2\n"}, c)  # two spans
     assert (r.ok, r.output) == (False, "error: `old` text occurs 2 times in t.py; make it unique")
     r = await EditFile().run(
