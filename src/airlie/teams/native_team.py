@@ -539,6 +539,8 @@ class NativeTeam:
                     tool_ms=tool_ms,
                     accepted_draft_tokens=res.accepted_draft_tokens,
                     draft_tokens=res.draft_tokens,
+                    model=ctx.role.model,
+                    role=ctx.role_name,
                 )
                 await observer.after_step(step_record)
 

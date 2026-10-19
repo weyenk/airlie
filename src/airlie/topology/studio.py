@@ -158,7 +158,7 @@ class StudioOrchestrator:
         self.team = team_factory or NativeTeam(engine)
         self.router = router or build_router(cfg)
         self.routing_log = RoutingLog(self.run_dir.path / "routing.jsonl")
-        self.observer = LoggingObserver(self.sink, self.run_dir)
+        self.observer = LoggingObserver(self.sink, self.run_dir, topology="studio")
         self.scheduler = SlotScheduler(cfg.scheduler.max_active)
         self.write_lock = asyncio.Lock()
         self.sem = asyncio.Semaphore(cfg.studio.parallel)
