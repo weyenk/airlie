@@ -112,6 +112,18 @@ def diff_commits(repo: Path, base_sha: str, head_sha: str, max_chars: int) -> st
     return _git(repo, "diff", "--no-color", base_sha, head_sha, check=False).stdout[:max_chars]
 
 
+def changed_in_tree(worktree: Path, base_sha: str) -> list[str]:
+    """The files that differ between `base_sha` and the working tree, committed or not, untracked included:
+    what the run and the subtasks before it have written so far."""
+    diff = _git(worktree, "diff", "--name-only", base_sha, check=False).stdout
+    new = _git(worktree, "ls-files", "--others", "--exclude-standard", check=False).stdout
+    seen: dict[str, None] = {}
+    for line in (*diff.splitlines(), *new.splitlines()):
+        if line:
+            seen.setdefault(line, None)
+    return list(seen)
+
+
 def changed_files(worktree: Path, base_sha: str) -> list[str]:
     out = _git(worktree, "diff", "--name-only", base_sha, "HEAD", check=False).stdout
     return [line for line in out.splitlines() if line]
