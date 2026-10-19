@@ -34,6 +34,14 @@ FIX_NUDGE = (
 """What the architect is told when its first plan is refused: sent back in the same conversation, which has
 already read the code, instead of asked again from the start."""
 
+UNFINISHED_NUDGE = (
+    "You ran out of steps before you wrote your plan. Write the whole plan now, in the JSON the brief asks "
+    "for, from what you have already read. Read more only if you cannot plan without it."
+)
+"""What the architect is told when its first round ended with no answer: sent back in the same conversation,
+which has read the code, instead of asked again from the start (AIR-30, 2026-10-19: two fresh starts each
+read five files and stopped with no plan)."""
+
 Emit = Callable[..., None]
 
 
@@ -55,14 +63,24 @@ async def plan_in_rounds[T](
     signal: Callable[[str], Any] | None = None,
 ) -> str:
     """The text of the plan the rounds end on. `first()` runs round 1 and `again(nudge)` each later one, up
-    to `rounds` in all. A round-1 reply `parse` refuses goes back in the same conversation with the reason,
-    up to `fixes` times (`plan_fix` events), and is then a StoryError (the caller asks again from the start);
-    a later round's reply it refuses ends the rounds on the plan before it. `signal(text)` reads the plan's
+    to `rounds` in all; either raises StoryError for a round that ended with no answer. A round 1 with no
+    answer, or whose reply `parse` refuses, goes back in the same conversation (UNFINISHED_NUDGE or the
+    reason), up to `fixes` times in all (`plan_fix` events), and is then a StoryError (the caller asks again
+    from the start); a later round with no answer, or one it refuses, ends the rounds on the plan before
+    it. `signal(text)` reads the plan's
     own verdict (its `refine` object): `worth_another_round: false` ends the rounds on that plan, at once
     (a `plan_check` event says what it said). A round whose plan is `same` as the one before ends them on
     it, whatever the verdict. Each round's plan and the reason the rounds ended are events."""
-    text = await first()
+    nudge: str | None = None
     for attempt in range(fixes + 1):
+        try:
+            text = await (first() if nudge is None else again(nudge))
+        except StoryError as e:
+            if attempt == fixes:
+                raise
+            emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
+            nudge = UNFINISHED_NUDGE
+            continue
         try:
             plan = parse(text)
             break
@@ -70,13 +88,13 @@ async def plan_in_rounds[T](
             if attempt == fixes:
                 raise
             emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
-            text = await again(FIX_NUDGE.format(error=e))
+            nudge = FIX_NUDGE.format(error=e)
     emit("plan_round", round=1, **_shape(plan))
     if _finished(signal, text, 1, emit):
         return _done(text, emit, "architect_done", 1)
     for n in range(2, rounds + 1):
-        later = await again(ROUND_NUDGE)
         try:
+            later = await again(ROUND_NUDGE)
             nxt = parse(later)
         except StoryError as e:
             emit("plan_round_unusable", round=n, error=str(e)[:300])

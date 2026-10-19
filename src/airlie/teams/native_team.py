@@ -381,7 +381,9 @@ class NativeTeam:
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
                 tools=None if last_turn or toolless else _offered(ctx),
-                thinking=ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn),
+                # the tool-less last turn is cheap by default; its one retry, after a tool call, thinks
+                thinking=ctx.role.thinking
+                and (ctx.role.last_turn_thinking or not last_turn or last_corrected),
                 draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()
@@ -477,6 +479,14 @@ class NativeTeam:
                     continue
             corrected = False
             if last_turn:  # it called a tool it was not offered: told once, then there is no answer
+                if ctx.emit is not None:
+                    ctx.emit(
+                        "last_turn_tool_call",
+                        team_id=ctx.team_id,
+                        role=ctx.role_name,
+                        tool=calls[0].name,
+                        ends_run=last_corrected,
+                    )
                 if not last_corrected:
                     last_corrected = True
                     messages.append(Message(role="assistant", content=res.text))
