@@ -93,6 +93,11 @@ def diff_last_commit(worktree: Path, max_chars: int) -> str:
     return _git(worktree, "show", "--format=", "--no-color", "HEAD", check=False).stdout[:max_chars]
 
 
+def dirty(worktree: Path) -> bool:
+    """Whether the worktree has changes not in HEAD (modified, added or untracked files)."""
+    return bool(_git(worktree, "status", "--porcelain", "--untracked-files=all", check=False).stdout.strip())
+
+
 def head_sha(worktree: Path) -> str:
     return _git(worktree, "rev-parse", "HEAD").stdout.strip()
 

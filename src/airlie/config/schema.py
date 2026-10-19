@@ -349,6 +349,12 @@ class StudioSpec(Strict):
     parallel: int = Field(default=3, ge=1, description="independent subtasks in flight")
     result_chars: int = Field(default=6000, ge=0, description="chars of a dependency's result in a brief")
     review: ReviewSpec = Field(default_factory=ReviewSpec)
+    done_check: bool = Field(
+        default=True,
+        description="a coder that stops 'done' on a brief with acceptance criteria is handed its diff and "
+        "asked to tick each criterion, and fix a miss, before the reviewer sees it",
+    )
+    done_check_steps: int = Field(default=12, ge=1, description="steps the done-check may spend on a miss")
 
 
 class JiraStatusesSpec(Strict):

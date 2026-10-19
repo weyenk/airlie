@@ -23,7 +23,7 @@ from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.protocol import cut_off_text
-from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, head_sha
+from airlie.teams.worktree import add_worktree, changed_files, commit_wip, diff_between, dirty, head_sha
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
@@ -51,6 +51,16 @@ FRESH_CONTINUATION = (
     "deal with the following."
 )
 """What a subtask sent back on a long conversation is told instead of seeing that conversation again."""
+DONE_CHECK = (
+    "Before review: check your change against the brief's acceptance criteria and its exact wording. For "
+    "each criterion, quote the lines of the diff below that make it true, or say 'not met'. Where the brief "
+    "names "
+    "a value, a message, a field, or which value to compare, check the diff uses exactly that. Anything not "
+    "met or not exact: fix it now, run run_tests, then stop. If everything is met, reply with the checklist "
+    "and stop."
+)
+"""The done-check: a coder that stopped 'done' reads its own diff against the criteria before the reviewer
+does (AIR-31 layer 02, 2026-10-19: the reviewer's blocking finding was a value the brief had named)."""
 CHARS_PER_TOKEN = 4
 """A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
 
@@ -73,6 +83,9 @@ class SubtaskRun:
     result: TeamResult | None = None
     review: Review | None = None
     fix_rounds: int = 0
+    rounds: int = 0
+    """Continuations run so far (a done-check, fix rounds, a follow-up): the next one's attempt number, which
+    names its trace folder, whether or not the conversation starts again."""
     preamble: str = ""  # what it ran with (the repo map, its skill's guideline): a follow-up runs with it too
     before: str = (
         ""  # the worktree's head when it started: its review diff and its later runs' already_written
@@ -400,6 +413,7 @@ class StudioOrchestrator:
                     before = head_sha(self.worktree)  # this subtask's own base for the review diff
                     run.before = before
                     run.result = await self.team.run(ctx, self.observer)
+                    await self._done_check(run, role, test_cmd, preamble, before)
                     await self._review_and_fix(run, role, test_cmd, preamble, before)
             else:
                 async with self.sem:
@@ -418,6 +432,45 @@ class StudioOrchestrator:
             stop_reason=res.stop_reason,
             steps=res.steps,
             fix_rounds=run.fix_rounds,
+        )
+
+    @staticmethod
+    def _next_attempt(run: SubtaskRun) -> int:
+        run.rounds += 1
+        return run.rounds
+
+    async def _done_check(
+        self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
+    ) -> None:
+        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with DONE_CHECK:
+        a miss it finds is fixed in a short continuation before the reviewer charges a round for it."""
+        res = run.result
+        assert res is not None and self.worktree is not None
+        s = self.cfg.studio
+        if (
+            not s.done_check
+            or res.stop_reason != "done"
+            or "acceptance criteria" not in run.subtask.brief.lower()
+        ):
+            return
+        wip = commit_wip(self.worktree, f"studio: {run.subtask.id} (done-check)")
+        diff = diff_between(self.worktree, before, s.review.diff_chars)
+        if not diff.strip():  # nothing changed: the review says so
+            return
+        nudge = f"{DONE_CHECK}\n\n## Your diff\n```diff\n{diff}\n```"
+        ctx = self._context(
+            run, role, test_cmd, preamble=preamble, parent=res, nudge=nudge, attempt=self._next_attempt(run)
+        )
+        ctx.max_steps = s.done_check_steps
+        ctx.must_act = False  # a checklist that finds everything met is the answer
+        self.sink.emit("done_check", subtask=run.subtask.id, role=run.role, fresh=ctx.initial_state is None)
+        run.result = await self.team.run(ctx, self.observer)
+        self.sink.emit(
+            "done_check_done",
+            subtask=run.subtask.id,
+            stop_reason=run.result.stop_reason,
+            steps=run.result.steps,
+            changed=dirty(self.worktree) or head_sha(self.worktree) != wip,
         )
 
     async def _review_and_fix(
@@ -472,7 +525,7 @@ class StudioOrchestrator:
                 preamble=preamble,
                 parent=run.result,
                 nudge=nudge_from_review(review),
-                attempt=run.fix_rounds,
+                attempt=self._next_attempt(run),
             )
             run.result = await self.team.run(ctx, self.observer)
 
@@ -490,7 +543,7 @@ class StudioOrchestrator:
             preamble=run.preamble,
             parent=run.result,
             nudge=nudge,
-            attempt=run.fix_rounds + 1,  # after the fix rounds, if any
+            attempt=self._next_attempt(run),  # after the done-check and fix rounds, if any
         )
         try:
             async with self.write_lock, self.sem:
