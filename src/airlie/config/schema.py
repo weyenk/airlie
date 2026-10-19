@@ -150,7 +150,8 @@ class RoleSpec(Strict):
     last_turn_thinking: bool = Field(
         default=True,
         description="think on the turn after the last step, the one that must answer without tools: False "
-        "writes the answer from what the role has read (the architect's took 14-20 minutes thinking)",
+        "writes the answer from what the role has read (the architect's took 14-20 minutes thinking); a "
+        "tool call on that turn gets one retry, which thinks either way",
     )
     nudge_stuck: bool = Field(
         default=False,
