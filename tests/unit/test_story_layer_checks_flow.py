@@ -44,6 +44,8 @@ def write(path: str, content: str) -> FakeReply:
 
 FEATURE = write("calc.py", CALC + "\n\ndef mul(a, b):\n    return a * b\n")
 BROKEN = write("calc.py", "def add(a, b):\n    return a - b\n\n\ndef mul(a, b):\n    return a * b\n")
+FIXED = write("calc.py", CALC + "\n\n# fixed after the gate failed\ndef mul(a, b):\n    return a * b\n")
+"""Not FEATURE: a file the size of BROKEN, rewritten in the same second, would be run from BROKEN's .pyc."""
 VACUOUS = write(
     "tests/test_calc.py", "from calc import add\n\n\ndef test_add_again():\n    assert add(2, 2) == 4\n"
 )
@@ -152,7 +154,7 @@ async def test_the_coder_cannot_change_the_testers_tests_with_the_file_tools(tmp
 
 
 async def test_a_failing_final_gate_sends_the_coder_its_output_once(tmp_path: Path) -> None:
-    st, engine = await run(tmp_path, [BROKEN, DONE, FEATURE, DONE], tester=[RED, LISTED])
+    st, engine = await run(tmp_path, [BROKEN, DONE, FIXED, DONE], tester=[RED, LISTED])
     assert st.blocked is None and "01" in st.built
     follow_up = [p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p]
     assert len(follow_up) == 1 and "test_add" in follow_up[0]

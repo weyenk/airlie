@@ -43,6 +43,9 @@ is one too: unittest's self.assertEqual, a mock's assert_called_once_with, a hel
 PYTEST_FLAGS = "-rA -p no:cacheprovider --continue-on-collection-errors"
 """What the check adds to the gate's pytest step: a line per test with its outcome, no cache written into the
 worktree, and every module run when a new one cannot be imported yet (the name it tests is not there)."""
+NO_BYTECODE = "export PYTHONDONTWRITEBYTECODE=1; "
+"""Before the step: the run writes no __pycache__ into the worktree, where it would be the tester's work
+(committed, and locked to the coder) in a repository that does not ignore it."""
 _OUTCOME = re.compile(r"^(PASSED|FAILED|ERROR) (\S+)", re.MULTILINE)
 _EXIT = re.compile(r"\[exit (\d+)\]\s*$")
 _PARAMS = re.compile(r"\[.*\]$")
@@ -208,7 +211,7 @@ class PytestChecks:
             Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source) for t in tests if not t.asserts
         ]
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
-        result = await run_cmd(f"{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
+        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
         code = _EXIT.search(result.output)
         if not result.ok and (code is None or int(code.group(1)) not in _RAN):
             why = f"the suite did not run its tests: {result.output[-_TAIL_CHARS:]}"
