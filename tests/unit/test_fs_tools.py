@@ -111,6 +111,26 @@ async def test_write_file_rewrites_a_long_file_the_coder_itself_created(tmp_path
     assert r.ok and p.read_text() == "y = 2\n"
 
 
+async def test_write_file_rewrites_a_long_file_the_coder_created_even_once_a_round_committed_it(
+    tmp_path: Path,
+) -> None:
+    """AIR-31 layer 03 fix round, 2026-10-19: the review and run_tests commit the work as the run goes, so by
+    the fix round the coder's own test file was in HEAD and write_file refused it as if it were the base's.
+    With the layer's base on the context (scope_base), what was there before is judged against that."""
+    c = ctx(tmp_path)
+    put(c, "README.md", "hi\n")
+    _commit_all(c)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=c.worktree, capture_output=True, text=True).stdout
+    p = put(c, "tests/test_new.py", "x = 1\n" * 300)
+    _commit_all(c)  # a wip commit of the run, as the review and a green run_tests make
+    refused = await WriteFile().run({"path": "tests/test_new.py", "content": "y = 2\n"}, c)
+    assert not refused.ok  # no base known: HEAD is the base
+    r = await WriteFile().run(
+        {"path": "tests/test_new.py", "content": "y = 2\n"}, replace(c, scope_base=base.strip())
+    )
+    assert r.ok and p.read_text() == "y = 2\n"
+
+
 def test_write_file_tells_the_model_its_overwrite_limit_before_it_tries() -> None:
     """A coder that reads a 1300-line test file and rewrites it whole spends minutes generating a reply
     the tool refuses (AIR-31 layer 02, twice in one layer): the description names the limit and the way
