@@ -150,7 +150,8 @@ class RoleSpec(Strict):
     last_turn_thinking: bool = Field(
         default=True,
         description="think on the turn after the last step, the one that must answer without tools: False "
-        "writes the answer from what the role has read (the architect's took 14-20 minutes thinking)",
+        "writes the answer from what the role has read (the architect's took 14-20 minutes thinking); a "
+        "tool call on that turn gets one retry, which thinks either way",
     )
     nudge_stuck: bool = Field(
         default=False,
@@ -162,6 +163,11 @@ class RoleSpec(Strict):
         default=False,
         description="a role with run_tests that answers while its last run_tests run failed is told once "
         "that it is not done (the coder: AIR-5 layers ended on 'done' with their own tests red)",
+    )
+    on_context_full: str = Field(
+        default="stop",
+        description="what the team loop does when the role reaches its max_context: 'stop' ends the run "
+        "with a reason a person can act on; 'trim' drops the oldest tool observations to make room",
     )
     write_schedule: WriteScheduleSpec | None = Field(
         default=None,
@@ -569,6 +575,8 @@ class AirlieConfig(Strict):
                 if not hosts:
                     problems.append(f"router.model '{rm}' must be served by a llama_server engine")
         for rname, r in self.roles.items():
+            if r.on_context_full not in ("stop", "trim"):
+                problems.append(f"roles.{rname}.on_context_full must be one of: stop, trim")
             if r.thinking and r.thinking_budget is not None and r.max_tokens <= r.thinking_budget:
                 problems.append(
                     f"roles.{rname}.max_tokens ({r.max_tokens}) must be larger than "

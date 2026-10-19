@@ -21,6 +21,7 @@ class Recorder(StepObserver):
         self.steps: list[StepRecord] = []
         self.injections: list[tuple[str, int]] = []
         self.inject = inject
+        self.events: list[tuple[str, dict[str, Any]]] = []
 
     async def before_step(self, team_id: str, step_num: int) -> str | None:
         self.injections.append((team_id, step_num))
@@ -32,6 +33,9 @@ class Recorder(StepObserver):
 
     async def after_step(self, step: StepRecord) -> None:
         self.steps.append(step)
+
+    async def emit(self, kind: str, **fields: Any) -> None:
+        self.events.append((kind, fields))
 
 
 def make_team(
@@ -651,6 +655,20 @@ async def test_the_turn_after_the_last_step_thinks_unless_the_role_says_not_to(t
 
     assert await thinking_per_request(True) == [True, True, True]
     assert await thinking_per_request(False) == [True, True, False]  # only the tool-less last turn
+
+
+async def test_a_tool_call_on_a_last_turn_without_thinking_is_retried_with_thinking(tmp_path: Path) -> None:
+    """AIR-30 refine, 2026-10-19: the architect (thinking, last_turn_thinking false) answered its tool-less
+    last turn with a tool call, twice, in both the survey and the layer plan, so the story blocked. The cheap
+    turn is tried first; the one retry thinks, since a plan written from 30k tokens of reading is the hard
+    part the turn exists for."""
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, read, read, FakeReply(text="The plan.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=2)
+    ctx.role = ctx.role.model_copy(update={"thinking": True, "last_turn_thinking": False})
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "The plan."
+    assert [r.thinking for r in engine.requests] == [True, True, False, True]  # the retry thinks
 
 
 async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it_counts(
