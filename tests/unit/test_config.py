@@ -348,6 +348,22 @@ def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
     assert cfg.roles["chief"].model == "generalist" and cfg.engines["main"].max_kv_size == 65536
 
 
+def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
+    """Noah 2026-10-18: Qwen3-Coder 8-bit in the coder seat as an experiment, the default unchanged."""
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    coder8 = base.models["coder8"]
+    assert coder8.repo == "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" and coder8.bench
+    assert not coder8.preload and "coder8" in base.engines["main"].models  # lazy unless the profile asks
+    assert base.roles["coder"].model == "generalist"
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
+    coder = cfg.roles["coder"]
+    assert (coder.model, coder.thinking, coder.max_tokens) == ("coder8", False, 10240)
+    assert [cfg.models[m].preload for m in ("coder8", "generalist", "reviewer")] == [True, True, True]
+    assert cfg.roles["security"].model == "generalist" and cfg.roles["chief"].model == "generalist"
+    assert cfg.engines["main"].max_kv_size == 65536  # 71 GB of weights: no room for the studio's 131k
+
+
 # ---- M0 Task 2: catalog fields ----
 
 

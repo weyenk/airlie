@@ -11,7 +11,7 @@ engines:
     kind: vllm_mlx
     host: 127.0.0.1
     port: 8080
-    models: [small, llama70b, qwen25_32b, generalist, reviewer]   # one process; preloaded + lazy (--models-config)
+    models: [small, llama70b, qwen25_32b, generalist, reviewer, coder8]   # one process; preloaded + lazy (--models-config)
     memory_budget_gb: 90           # vllm-mlx cap on resident WEIGHTS only; the doctor projects weights + KV + os_reserve against memory.wired_limit_mb (104 GB)
     continuous_batching: true
     max_num_seqs: 16               # docs/wiki/build-spec/02 §1
@@ -33,9 +33,22 @@ engines:
 # Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
 # spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
 # The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
-# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped (Noah
-# 2026-10-18: AIR-5 showed its fidelity too low for the speed). To swap the team model: change `roles.coder.model`.
+# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
+# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed) and kept at 8-bit as `coder8`,
+# the coder seat of the `studio-coder8` profile below: an experiment, not the default (Noah 2026-10-18, after AIR-7
+# layer 02 took seven attempts on the non-thinking generalist). To swap the team model: change `roles.coder.model`.
 models:
+  coder8:                          # Qwen3-Coder-30B-A3B at 8-bit: MoE (3B active), standard GQA attention, coding + tool use
+    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit   # the 4-bit dropped `"` before `]` (HDS-5); 8-bit for fidelity
+    revision: 7c6ee1bbb5ee3051c4b3bc6553f24bdc2d01393a   # 2025-07-31
+    preload: false                 # `studio-coder8` preloads it; `task models:pull -- coder8` fetches it (32.5 GB)
+    bench: true
+    tags: [modern, coder, moe]
+    estimated_memory_gb: 32.5
+    kv_mb_per_1k_tokens: 192
+    tool_call_parser: qwen3_xml_raw  # airlie's: values stay raw text (vllm-mlx's qwen3_coder mangles code, bench 2026-10-14)
+    reasoning_parser: qwen3        # server-wide flag (taken from the team model): the thinking generalist roles still
+                                   # return reasoning_content under `studio-coder8`
   llama70b:                        # spec 01 §1 / 02 §1 named model
     repo: mlx-community/Llama-3.3-70B-Instruct-4bit
     revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
@@ -209,6 +222,17 @@ topology:
       engines: { main: { max_kv_size: 65536 } }
       roles: { coder: { model: qwen25_32b, thinking: false, max_tokens: 10240 } }
       models: { qwen25_32b: { preload: true, tool_call_parser: qwen3_xml_raw, reasoning_parser: qwen3 } }
+    studio-coder8:                 # the experiment: Qwen3-Coder 8-bit in the coder seat, everything else as studio
+      # (Noah 2026-10-18). Select it for one run with `--topology studio-coder8`, or for stories by setting
+      # `story.topology`; the resident model set changes, so `task restart -- --topology studio-coder8` first.
+      # Standard attention: vllm-mlx's own prefix cache serves it. `task doctor -- --topology studio-coder8`
+      # projects the memory: 71 GB of resident weights (coder8, generalist, reviewer, small) leave no room for
+      # the studio's 131072 KV (111 GB projected vs the 104 GB wired limit), so the KV is the coder's own
+      # max_context, which caps the reviewer's prompt at 64k too (its reviews ran 16-23k on AIR-7).
+      extends: studio
+      engines: { main: { max_kv_size: 65536 } }
+      roles: { coder: { model: coder8, thinking: false, max_tokens: 10240 } }
+      models: { coder8: { preload: true } }
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck
