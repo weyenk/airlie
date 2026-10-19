@@ -40,6 +40,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_FILES = {"pyproject.toml", "tests/unit/conftest.py"}
+COULD_NOT_RUN = 2
+"""The exit code when mutmut did not run to the end (a red unit test, a crash): no verdict on the mutants, as
+against 1, mutants of enrolled modules survived. airlie's story pipeline tells the two apart (AIR-7,
+2026-10-18: a baseline test went red under mutmut and the architect was sent to review survivors that did
+not exist)."""
 UNCAUGHT = {"survived", "no tests", "suspicious", "segfault", "not checked"}
 CAUGHT = {"killed", "timeout", "caught by type check"}
 RESULT_LINE = re.compile(r"^\s*(?P<name>airlie\.\S+): (?P<status>[a-z ]+?)\s*$")
@@ -288,7 +293,7 @@ def main() -> int:
             say(
                 ["mutmut could not collect coverage stats (a red unit test?); see the log above"], args.report
             )
-            return 1
+            return COULD_NOT_RUN
         functions = functions_run_by(test_files, read_stats())
         extra = function_globs(functions, globs)
         say(
@@ -302,7 +307,7 @@ def main() -> int:
 
     if mutmut("run", *run_extra, *globs) != 0:
         say(["mutmut run failed (a red unit test or a crashed run); see the log above"], args.report)
-        return 1
+        return COULD_NOT_RUN
 
     results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
     gating, info = split_failures(results, enrolled_modules)

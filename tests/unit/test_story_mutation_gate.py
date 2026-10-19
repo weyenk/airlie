@@ -76,10 +76,10 @@ HARDENED = FakeReply(
 TWO_LAYERS_CODER = [WRITE_PASS, RUN, DONE, NOTE, DONE]
 
 
-def tools_dir(tmp_path: Path, *exits: str) -> Path:
+def tools_dir(tmp_path: Path, *exits: str, report: str = REPORT) -> Path:
     """A script outside the repository standing in for the mutation tool: each call logs its argument, its
-    directory and whether GH_TOKEN reached it, writes REPORT to the file it is given, prints NOISE, and exits
-    with the next of `exits` ("sleep" sleeps)."""
+    directory and whether GH_TOKEN reached it, writes `report` to the file it is given, prints NOISE, and
+    exits with the next of `exits` ("sleep" sleeps)."""
     tools = tmp_path / "mut"
     tools.mkdir()
     (tools / "plan").write_text("".join(f"{e}\n" for e in exits))
@@ -91,7 +91,7 @@ def tools_dir(tmp_path: Path, *exits: str) -> Path:
         f'what=$(sed -n "${{n}}p" {tools}/plan)\n'
         'if [ "$what" = sleep ]; then sleep 30; fi\n'
         f"echo '{NOISE}'\n"
-        f"printf '%s\\n' '{REPORT}' > \"$2\"\n"
+        f"printf '%s\\n' '{report}' > \"$2\"\n"
         'exit "$what"\n'
     )
     script.chmod(0o755)
@@ -102,10 +102,10 @@ def mutation_section(tmp_path: Path) -> str:
     return f"\n## Mutation gate\n\n```sh\n{tmp_path / 'mut' / 'mutate.sh'} {{base}} {{report}}\n```\n"
 
 
-def mutation_repo(tmp_path: Path, *exits: str, section: bool = True) -> Path:
+def mutation_repo(tmp_path: Path, *exits: str, section: bool = True, report: str = REPORT) -> Path:
     """repo_with_marker_tests with an AGENTS.md whose Test gate is ./check.sh and whose Mutation gate runs
     tools_dir's script."""
-    tools_dir(tmp_path, *exits)
+    tools_dir(tmp_path, *exits, report=report)
     repo = repo_with_marker_tests(tmp_path)
     text = agents_md("./check.sh") + (mutation_section(tmp_path) if section else "")
     commit_file(repo, "AGENTS.md", text)
@@ -169,6 +169,43 @@ async def test_the_mutation_gate_runs_once_over_the_built_stack_before_publishin
     assert len(prompts(engine, "architect")) == 1  # the layer plan only
     for n in ("01", "02"):  # every PR of the stack says how the story's mutation gate went
         assert "Mutation gate: passes (" in (st.path / f"pr-{n}.md").read_text()
+
+
+DID_NOT_RUN = (
+    "### Mutation testing (changed)\nmutation setup changed (pyproject.toml): every enrolled module\n"
+    "mutmut run failed (a red unit test or a crashed run); see the log above"
+)
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "report"), [("2", REPORT), ("1", DID_NOT_RUN)], ids=["exit 2", "report says so"]
+)
+async def test_a_mutation_gate_with_no_verdict_is_reported_not_reviewed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: str, report: str
+) -> None:
+    """AIR-7, 2026-10-18: a baseline test went red under mutmut, so the gate gave no verdict; the pipeline
+    read its exit 1 as survivors and sent the architect to review a report with no mutants in it, and the
+    output that said why was thrown away. No verdict (exit 2, or a report that ends by saying mutmut did not
+    run to the end, from a tree with the older script) means no review, PRs that say so, and the whole
+    output kept as mutation.log."""
+    monkeypatch.setenv("GH_TOKEN", "ghp_the_persons_own")
+    repo = mutation_repo(tmp_path, exit_code, report=report)
+    engine = happy_engine()
+    st = await pipeline(tmp_path, repo, engine, test_cmd=None).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    assert order(st) == [
+        "layer_built 01",
+        "layer_built 02",
+        "mutation_gate_start",
+        "mutation_gate_unavailable",
+        "published",
+    ]
+    assert st.mutation is not None and st.mutation["status"] == "unavailable" and st.mutation_review is None
+    assert len(prompts(engine, "architect")) == 1  # the layer plan only: nothing to review
+    assert NOISE in (st.path / "mutation.log").read_text()
+    for n in ("01", "02"):
+        text = (st.path / f"pr-{n}.md").read_text()
+        assert "Mutation gate: could not run (" in text and "mutation.log has the whole output" in text
 
 
 async def test_without_a_mutation_gate_section_the_stage_is_skipped_and_says_so(tmp_path: Path) -> None:

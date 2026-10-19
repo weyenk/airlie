@@ -95,6 +95,8 @@ pytest_add_cli_args = [
     "--ignore=tests/unit/test_cli_controller.py",
 ]
 # Taskfile.yml and docs/integrations: tests read the task definitions, the launchd plist and OpenCode's files.
+# ops: scripts/searxng_vm.py reads ops/searxng/version (AIR-7, 2026-10-18: mutmut's baseline run went red on it,
+# and the story's mutation gate could not run).
 also_copy = [
     "airlie.yaml",
     "prompts",
@@ -102,6 +104,7 @@ also_copy = [
     "scripts",
     "knowledge",
     "skills",
+    "ops",
     "Taskfile.yml",
     "docs/integrations",
 ]
