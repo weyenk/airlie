@@ -260,10 +260,51 @@ def _tests_where(layer: Layer) -> str:
     return f"Put new tests in {files}, {which}."
 
 
-def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str, guide: str = "") -> Plan:
+_ADDED_NAME = re.compile(
+    r"^\+(?:\s*(?:async\s+)?def\s+(?P<func>\w+)|\s*class\s+(?P<cls>\w+)|\s{4}(?P<field>[a-z_]\w*)\s*:\s|"
+    r"(?P<const>[A-Z_][A-Z0-9_]*)\s*=)"
+)
+"""An added line of a diff that names something a later layer may need: a function, a class, a field of a
+class (four spaces in, annotated) or a module constant."""
+BUILT_CHARS = 2_400
+"""How much of the digest of the earlier layers a brief carries."""
+
+
+def built_so_far(diff: str) -> str:
+    """What the earlier layers of a story added, from the diff of their stack: each file changed and the
+    names its added lines define, for the coder's brief. AIR-31 layer 02 (2026-10-19): the coder had to
+    know the field names layer 01 added to the config schema, reading was switched off by the write
+    schedule, and it spent 25 steps on refused greps. Empty for an empty diff."""
+    files: dict[str, list[str]] = {}
+    current = None
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            current = line.split(" b/", 1)[1] if " b/" in line else line[len("diff --git ") :]
+            files.setdefault(current, [])
+            continue
+        if current is None or line.startswith("+++"):
+            continue
+        m = _ADDED_NAME.match(line)
+        if m:
+            name = m.group("func") or m.group("cls") or m.group("field") or m.group("const")
+            if name not in files[current]:
+                files[current].append(name)
+    if not files:
+        return ""
+    lines = [
+        "## What the earlier layers of this story added (read nothing to find this; it is in the worktree)"
+    ]
+    for path, names in files.items():
+        lines.append(f"- {path}" + (f": {', '.join(names)}" if names else ""))
+    return _clip("\n".join(lines), BUILT_CHARS)
+
+
+def layer_plan(
+    story: Story, layers: tuple[Layer, ...], i: int, *, build_role: str, guide: str = "", built: str = ""
+) -> Plan:
     """One build subtask: the coder writes the layer's tests and its code. A layer that owns acceptance
     criteria lists them and is test-first: tests proving each one, then the code that makes them pass; an
-    enabling layer adds tests for what it changes."""
+    enabling layer adds tests for what it changes. `built` is built_so_far's digest of the earlier layers."""
     layer = layers[i]
     later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     context = (
@@ -272,6 +313,8 @@ def layer_plan(story: Story, layers: tuple[Layer, ...], i: int, *, build_role: s
         f"Scope of this layer: {layer.scope}\n"
         f"Later layers (not yours; leave their work alone): {later}"
     )
+    if built:
+        context += f"\n\n{built}"
     if guide:
         context += f"\n\n## Already read for you (do not read these again)\n{guide}"
     build = (

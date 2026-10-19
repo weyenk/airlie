@@ -130,6 +130,36 @@ def test_story_text_and_layer_goal_name_the_story_and_its_layer() -> None:
     assert layer_goal(STORY, LAYERS, 1) == "Add avatar upload: layer 2/3 Profile"
 
 
+def test_the_brief_of_a_later_layer_lists_what_the_earlier_layers_added() -> None:
+    """AIR-31 layer 02, 2026-10-19: the coder needed the field names layer 01 added to the config schema,
+    reading was off (the write schedule), and it spent 25 steps on refused greps. The digest of the stack's
+    diff names each file and what its added lines define; a first layer carries none."""
+    from airlie.story.briefs import built_so_far
+
+    diff = (
+        "diff --git a/src/airlie/config/schema.py b/src/airlie/config/schema.py\n"
+        "--- a/src/airlie/config/schema.py\n+++ b/src/airlie/config/schema.py\n"
+        "@@ -1,3 +1,9 @@\n class RoleSpec(Strict):\n+    max_context: int | None = None\n"
+        "+    on_context_full: Literal['stop', 'trim'] = 'stop'\n+\n+\n+CONTEXT_NUDGE_AT = 0.75\n"
+        "+def context_limit(role: RoleSpec) -> int:\n+    return role.max_context or 0\n"
+        "diff --git a/tests/unit/test_context.py b/tests/unit/test_context.py\n"
+        "--- /dev/null\n+++ b/tests/unit/test_context.py\n@@ -0,0 +1,2 @@\n"
+        "+async def test_a_role_has_a_limit():\n+    assert True\n"
+    )
+    digest = built_so_far(diff)
+    assert digest.startswith("## What the earlier layers of this story added")
+    assert (
+        "- src/airlie/config/schema.py: max_context, on_context_full, CONTEXT_NUDGE_AT, context_limit"
+        in digest
+    )
+    assert "- tests/unit/test_context.py: test_a_role_has_a_limit" in digest
+    assert built_so_far("") == ""
+    plan = layer_plan(STORY, LAYERS, 1, build_role="coder", built=digest)
+    brief = plan.subtasks[0].brief
+    assert digest in brief and brief.index(digest) < brief.index(LAYERS[1].brief)
+    assert "What the earlier layers" not in layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
+
+
 def test_an_enabling_layer_is_one_build_subtask() -> None:
     plan = layer_plan(STORY, LAYERS, 2, build_role="coder")
     assert [s.id for s in plan.subtasks] == ["build"]
