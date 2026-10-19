@@ -222,6 +222,18 @@ class ToolsSpec(Strict):
     write_file_max_overwrite_lines: int = Field(
         default=200, ge=1, description="write_file refuses to overwrite an existing file longer than this"
     )
+    sandbox: bool = Field(
+        default=True,
+        description="shell, git, run_tests and the gates cannot write outside the worktree (macOS)",
+    )
+    writable: list[Path] = Field(
+        default_factory=list,
+        description="more directories those commands may write under (a toolchain's cache, say)",
+    )
+
+    def confinement(self) -> dict[str, Any]:
+        """The ToolContext fields that confine commands, as this spec sets them."""
+        return {"sandbox": self.sandbox, "writable": tuple(self.writable)}
 
 
 class MCPServerSpec(Strict):

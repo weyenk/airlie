@@ -403,6 +403,7 @@ class ParallelAgentTeamOrchestrator:
                 self.cfg.tools.output_cap_chars,
                 test_cmd,
                 write_file_max_overwrite_lines=self.cfg.tools.write_file_max_overwrite_lines,
+                **self.cfg.tools.confinement(),
             ),
         )
         observer: StepObserver = self.hal_observer or self.observer

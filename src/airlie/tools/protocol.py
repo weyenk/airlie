@@ -36,6 +36,10 @@ class ToolContext:
     red check of story.layer_checks on the tests changed since `scope_base`, with the layer's other changes
     put back to this commit (the layer's base; the story's, for the hardening layer), and names the ones that
     still pass there. Empty: no check (outside a story run there is no base)."""
+    sandbox: bool = True
+    """Commands run where they cannot write outside the worktree (airlie.tools.confine; macOS only)."""
+    writable: tuple[Path, ...] = ()
+    """Directories a confined command may also write under (tools.writable, or a gate's report file)."""
 
 
 @dataclass(frozen=True)
