@@ -29,6 +29,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "pyjwt[crypto]>=2.10", # story.github_app: the JWT a GitHub App signs with its key
     "webauthn>=2.5", # auth: passkey (WebAuthn) registration and login ceremonies
+    "duckdb>=1.0", # airlie.metrics: DuckDB aggregation over the event JSONL
 ]
 
 [project.scripts]

@@ -1,0 +1,7 @@
+{"ts": 1000.0, "run_id": "r1", "kind": "step", "team_id": "t1", "step": 1, "tool": "shell", "ok": true, "prompt_tokens": 1000, "completion_tokens": 200, "prefill_ms": 50.0, "gen_ms": 100.0, "model": "qwen3-coder", "role": "coder", "topology": "studio", "story": null}
+{"ts": 1001.0, "run_id": "r1", "kind": "step", "team_id": "t1", "step": 2, "tool": "shell", "ok": true, "prompt_tokens": 500, "completion_tokens": 100, "prefill_ms": 25.0, "gen_ms": 50.0, "model": "qwen3-coder", "role": "coder", "topology": "studio", "story": null}
+{"ts": 1002.0, "run_id": "r1", "kind": "step", "team_id": "t2", "step": 1, "tool": "shell", "ok": true, "prompt_tokens": 800, "completion_tokens": 400, "prefill_ms": 40.0, "gen_ms": 80.0, "model": "muse-glimmer", "role": "reviewer", "topology": "studio", "story": null}
+{"ts": 1003.0, "run_id": "r1", "kind": "step", "team_id": "t2", "step": 2, "tool": "shell", "ok": false, "prompt_tokens": 400, "completion_tokens": 200, "prefill_ms": 20.0, "gen_ms": 40.0, "model": "muse-glimmer", "role": "reviewer", "topology": "studio", "story": null}
+{"ts": 1004.0, "run_id": "r1", "kind": "fix_round", "subtask": "s1", "round": 1, "blocking": 2}
+{"ts": 1005.0, "run_id": "r1", "kind": "fix_round", "subtask": "s2", "round": 1, "blocking": 1}
+{"ts": 1006.0, "run_id": "r1", "kind": "layer_built", "layer": "01", "branch": "b1", "sha": "abc"}
