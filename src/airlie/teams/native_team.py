@@ -149,6 +149,13 @@ REPEATED = (
 )
 """What a role (nudge_stuck) is told, once, when it repeats an action instead of being stopped."""
 
+REPEAT_WRITE_ONLY = (
+    "You made the same call again after being told ({tool}). It is switched off: only write_file, edit_file "
+    "and run_tests are available until you write. Make the change now from what you know."
+)
+"""What a role with write tools (nudge_stuck) is told when it repeats again after REPEATED: the tool it loops
+on goes, not the run, until it writes. A third streak, of refusals, ends the run."""
+
 ACT_FIRST = (
     "Your reply is text, and nothing has been done: the task is a change to make, not a question to answer. "
     "Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few sentences "
@@ -284,6 +291,9 @@ class NativeTeam:
         wrote = bool(ctx.already_written)  # a write_file or edit_file has run (here, or in an earlier run)
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
+        looped = (
+            False  # a writer repeated after REPEATED: only write tools until it writes (REPEAT_WRITE_ONLY)
+        )
         # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
         # a nudge at the deadline, then write-only tools WRITE_ONLY_AFTER steps later, until that write lands
         schedule = ctx.role.write_schedule if can_write else None
@@ -430,7 +440,7 @@ class NativeTeam:
             messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
-                if reading_off and call.name not in WRITE_TOOLS_ONLY:
+                if (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY:
                     result = ToolResult(ok=False, output=READ_REFUSED)
                     tool_ms = 0.0
                     if ctx.emit is not None:
@@ -468,6 +478,7 @@ class NativeTeam:
                 await observer.after_step(step_record)
                 if call.name in ("write_file", "edit_file"):
                     wrote = True
+                    looped = False  # the loop is broken: every tool is back
                     path = _written_path(call)
                     if path is not None:
                         written["tests" if is_test_path(path) else "code"] = True
@@ -490,13 +501,19 @@ class NativeTeam:
                 stop = "fork_point"
                 break
             if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
-                if (
-                    ctx.role.nudge_stuck and not repeat_warned
-                ):  # said once; a second run of repeats ends the run
+                tool = recent[0][0]
+                if ctx.role.nudge_stuck and not repeat_warned:  # said once
                     repeat_warned = True
                     messages.append(
-                        Message(role="user", content=REPEATED.format(n=ctx.repeat_limit, tool=recent[0][0]))
+                        Message(role="user", content=REPEATED.format(n=ctx.repeat_limit, tool=tool))
                     )
+                    recent = []
+                elif ctx.role.nudge_stuck and can_write and not looped and tool not in WRITE_TOOLS_ONLY:
+                    # told, and repeating still: a writer loses the tool it loops on, not its run, so the
+                    # change it owes is still possible (AIR-7 layer 02 attempts 4-6, 2026-10-18: every fix
+                    # round ended here, probing, with its change unmade); a streak of refusals ends the run
+                    looped = True
+                    messages.append(Message(role="user", content=REPEAT_WRITE_ONLY.format(tool=tool)))
                     recent = []
                 else:
                     final_text = (

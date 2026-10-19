@@ -667,19 +667,46 @@ async def test_a_role_that_writes_after_the_nudge_keeps_its_read_tools(tmp_path:
     assert all("read_file" in {t.name for t in (r.tools or [])} for r in engine.requests[:-1])
 
 
-async def test_a_role_with_nudge_stuck_is_told_once_to_do_something_else_and_stopped_on_the_next_repeat(
+async def test_a_writer_with_nudge_stuck_that_repeats_again_loses_the_tool_then_its_run(
+    tmp_path: Path,
+) -> None:
+    """AIR-7 layer 02 attempts 4-6, 2026-10-18: every fix round ended as a repeat while probing, its change
+    unmade. Told once; then the tool it loops on is switched off until it writes; a streak of refusals ends
+    the run."""
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 12})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    # 3 repeats, told; 3 more, read_file switched off; 3 refusals, stopped
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    assert requests_saying(engine, "same call 3 times in a row")[0] == 4
+    assert requests_saying(engine, "same call again after being told (read_file)")[0] == 7
+    assert [s.o_t == REFUSED for s in rec.steps] == [False] * 6 + [True] * 3
+
+
+async def test_a_writer_whose_looping_tool_is_switched_off_writes_and_gets_it_back(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    (tmp_path / "wt" / "a").write_text("x\n")
+    engine = FakeEngine({"coder": [*[same] * 6, write("w", "b.py"), *reads(1), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok and result.final_text == "Done." and result.steps == 8
+    assert rec.steps[6].u_t.name == "write_file" and rec.steps[6].ok
+    assert rec.steps[7].u_t.name == "read_file" and rec.steps[7].o_t != REFUSED  # the read is served again
+
+
+async def test_a_role_without_write_tools_that_repeats_again_after_the_nudge_is_stopped(
     tmp_path: Path,
 ) -> None:
     same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
     engine = FakeEngine({"coder": [same] * 9})
-    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True, tool_names=("read_file",))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "repeated_action" and result.steps == 6  # 3 repeats, told, 3 more repeats
-    told = [
-        i
-        for i, r in enumerate(engine.requests, 1)
-        if any("same call 3 times in a row" in str(m.content) for m in r.messages)
-    ]
+    told = requests_saying(engine, "same call 3 times in a row")
     assert told[0] == 4 and told == list(range(4, len(engine.requests) + 1))
 
 
