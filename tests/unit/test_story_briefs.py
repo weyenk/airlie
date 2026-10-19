@@ -78,6 +78,24 @@ def test_a_layer_with_criteria_is_one_coder_subtask_that_writes_the_tests_first(
     assert len(schedule(plan)) == 1
 
 
+def test_with_a_tester_role_a_layer_with_criteria_is_the_tests_then_the_build_against_them() -> None:
+    """Lever 2 (Noah, 2026-10-19): the tests are the hard part; a thinking role writes them from the brief,
+    pinned, and the coder's subtask depends on it and treats them as the contract."""
+    plan = layer_plan(STORY, LAYERS, 1, build_role="coder", tester_role="tester")
+    tests, build = plan.subtasks
+    assert (tests.id, tests.role_hint, tests.depends_on, tests.pinned) == ("tests", "tester", (), True)
+    assert (build.id, build.role_hint, build.depends_on) == ("build", "coder", ("tests",))
+    assert "Show the avatar." in tests.brief and "AC2" in tests.brief and "AC1" not in tests.brief
+    assert "Do not write the feature" in tests.brief and "the only red" in tests.brief
+    assert "NOT happen" in tests.brief and "Every test asserts" in tests.brief
+    assert "They are the contract" in build.brief and "without weakening them" in build.brief
+    assert "Write the tests first" not in build.brief and "AC2" in build.brief
+    assert len(schedule(plan)) == 2
+    # an enabling layer and the hardening layer stay one coder subtask
+    enabling = layer_plan(STORY, LAYERS, 2, build_role="coder", tester_role="tester")
+    assert [x.id for x in enabling.subtasks] == ["build"]
+
+
 def test_a_layer_with_criteria_tells_the_coder_what_makes_a_test_count() -> None:
     brief = layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
     assert "behaviour, not the implementation" in brief
