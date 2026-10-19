@@ -111,6 +111,9 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
             "coder": [
                 FakeReply(tool_calls=[ToolCall("a", "shell", json.dumps({"cmd": "echo one"}))]),
                 FakeReply(tool_calls=[ToolCall("b", "retrieve_value", json.dumps({"entry_id": "nope"}))]),
+                # one more step, so a team's later turn comes after an admission whatever order the two
+                # teams' steps interleave in (a command's start is not one loop step long)
+                FakeReply(tool_calls=[ToolCall("c", "shell", json.dumps({"cmd": "echo two"}))]),
                 FakeReply(text="done 1"),
                 FakeReply(text="done 2"),
             ]
