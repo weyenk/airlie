@@ -138,6 +138,30 @@ def _not_found(path: str, old: str, text: str) -> str:
     )
 
 
+def _loose_span(text: str, old: str) -> tuple[int, int] | None:
+    """The one span of `text` that is `old` with blank lines and trailing whitespace ignored, as (start, end)
+    offsets; None when there is no such span, or more than one. Indentation still counts. A Qwen2.5 coder
+    (AIR-7 layer 03, 2026-10-18) quoted two imports without the blank line between them three times, after
+    reading the file: the quote was right in every way a model can see."""
+    want = [line.rstrip() for line in old.splitlines() if line.strip()]
+    if not want:
+        return None
+    have: list[tuple[str, int, int, int]] = []  # each non-blank line: text, start, end, end with its newline
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if body.strip():
+            have.append((body.rstrip(), pos, pos + len(body), pos + len(line)))
+        pos += len(line)
+    k = len(want)
+    spans = [
+        (have[i][1], have[i + k - 1][3] if old.endswith("\n") else have[i + k - 1][2])
+        for i in range(len(have) - k + 1)
+        if [h[0] for h in have[i : i + k]] == want
+    ]
+    return spans[0] if len(spans) == 1 else None
+
+
 class EditFile:
     name = "edit_file"
     description = (
@@ -158,7 +182,15 @@ class EditFile:
         old, new = str(args["old"]), str(args["new"])
         n = text.count(old)
         if n == 0:
-            return ToolResult(False, _not_found(str(args["path"]), old, text))
+            span = _loose_span(text, old)
+            if span is None:
+                return ToolResult(False, _not_found(str(args["path"]), old, text))
+            p.write_text(text[: span[0]] + new + text[span[1] :])
+            return ToolResult(
+                True,
+                f"edited {args['path']} (`old` matched with its blank lines and trailing spaces ignored; "
+                "quote the file exactly next time)",
+            )
         if n > 1:
             return ToolResult(False, f"error: `old` text occurs {n} times in {args['path']}; make it unique")
         p.write_text(text.replace(old, new, 1))  # pragma: no mutate  (n == 1 here, so the count is moot)
