@@ -101,7 +101,8 @@ def _format_validation_error(e: ValidationError) -> str:
     lines = []
     for err in e.errors():
         loc = ".".join(str(p) for p in err["loc"]) or "<root>"
-        removed = REMOVED.get(loc) if err["type"] == "extra_forbidden" else None
+        # a REMOVED key is no field, so an error at it is always extra_forbidden: the test is not mutated
+        removed = REMOVED.get(loc) if err["type"] == "extra_forbidden" else None  # pragma: no mutate
         lines.append(f"{loc}: {removed or err['msg']}")
     return "config invalid:\n  " + "\n  ".join(lines)
 
