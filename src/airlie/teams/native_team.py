@@ -126,6 +126,13 @@ CODE_NOW = (
 )
 """What a role with a write schedule is told, once, at its code deadline without a code write."""
 
+CHANGE_NOW = (
+    "You have used {n} of your {total} steps in this round and changed nothing: what you were sent back for "
+    "is still there. Make the change now from what you have read, then run run_tests."
+)
+"""What a role with a write schedule is told, once, in a continuation (a fix round, a follow-up) at its one
+deadline without a write of any kind this round."""
+
 _TEST_DIRS = frozenset({"test", "tests"})
 _TEST_NAME = re.compile(r"^(test_.+|.+_test\..+|.+\.(test|spec)\..+|conftest\.py)$")
 
@@ -280,15 +287,21 @@ class NativeTeam:
         # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
         # a nudge at the deadline, then write-only tools WRITE_ONLY_AFTER steps later, until that write lands
         schedule = ctx.role.write_schedule if can_write else None
+        # a continuation (a fix round, a follow-up) has the earlier run's tests and code; what it owes is a
+        # change of its own, by the earlier deadline, and any write this round is that change (AIR-7 layer 02
+        # attempt 5, 2026-10-18: a fix round probed for 28 steps and changed nothing, its deadlines both met)
+        continuing = bool(ctx.already_written)
         deadlines: dict[str, int] = {}
-        if schedule is not None:
+        if schedule is not None and continuing:
+            deadlines = {"code": max(2, math.ceil(ctx.max_steps * schedule.tests))}
+        elif schedule is not None:
             deadlines = {
                 "tests": max(2, math.ceil(ctx.max_steps * schedule.tests)),
                 "code": max(2, math.ceil(ctx.max_steps * schedule.code)),
             }
-        written = {  # a test file, a code file: here, or in the run this one continues
+        written = {  # a test file, a code file: here, or in the run this one continues (its change: here)
             "tests": any(is_test_path(p) for p in ctx.already_written),
-            "code": any(not is_test_path(p) for p in ctx.already_written),
+            "code": False if continuing else any(not is_test_path(p) for p in ctx.already_written),
         }
         missed: set[str] = set()  # deadlines passed without their write
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
@@ -458,6 +471,8 @@ class NativeTeam:
                     path = _written_path(call)
                     if path is not None:
                         written["tests" if is_test_path(path) else "code"] = True
+                    if continuing:
+                        written["code"] = True  # any write is the change this round owes
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
@@ -509,7 +524,7 @@ class NativeTeam:
                             )
                         if not written[kind]:
                             missed.add(kind)
-                            said = TESTS_NOW if kind == "tests" else CODE_NOW
+                            said = CHANGE_NOW if continuing else TESTS_NOW if kind == "tests" else CODE_NOW
                             messages.append(
                                 Message(role="user", content=said.format(n=steps, total=ctx.max_steps))
                             )
@@ -521,7 +536,13 @@ class NativeTeam:
                     ):
                         reading_off = True
                         escalated.add(kind)
-                        what = "no test" if kind == "tests" else "no code"
+                        what = (
+                            "nothing this round"
+                            if continuing
+                            else "no test"
+                            if kind == "tests"
+                            else "no code"
+                        )
                         messages.append(Message(role="user", content=WRITE_ONLY.format(what=what, n=steps)))
                 if reading_off and all(written[k] for k in escalated):
                     reading_off = False  # the write reading was switched off for has landed: it is back
