@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import difflib
 import re
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from airlie.tools.protocol import ToolContext, ToolResult
@@ -89,12 +91,27 @@ class ReadFile:
         return ToolResult(True, _cap_lines(numbered, offset, len(lines), ctx.output_cap_chars))
 
 
+def _at_head(worktree: Path, p: Path) -> bool:
+    """Whether `p` is in the worktree's HEAD commit: code that was there before the run, which the overwrite
+    limit protects. A file the coder created this run is its own to rewrite. No git, or no commit: True."""
+    try:
+        rel = p.resolve().relative_to(worktree.resolve()).as_posix()
+    except ValueError:
+        return True
+    done = subprocess.run(
+        ["git", "-C", str(worktree), "cat-file", "-e", f"HEAD:{rel}"], capture_output=True, check=False
+    )
+    unknown = b"Not a valid object name HEAD" in done.stderr or b"not a git repository" in done.stderr
+    return done.returncode == 0 or unknown
+
+
 class WriteFile:
     name = "write_file"
     description = (
         "Create a text file in the repository with the given content, or overwrite one of at most "
-        f"{ToolContext.write_file_max_overwrite_lines} lines. A longer existing file is refused unread: "
-        "change it with edit_file, or put new content in a new file."
+        f"{ToolContext.write_file_max_overwrite_lines} lines, or any file you created in this run. A longer "
+        "file that was there before is refused unread: change it with edit_file, or put new content in a "
+        "new file."
     )
     parameters = {
         "type": "object",
@@ -105,8 +122,11 @@ class WriteFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
-            if p.is_file() and (n := len(p.read_text(errors="replace").splitlines())) > (
-                limit := ctx.write_file_max_overwrite_lines
+            if (
+                p.is_file()
+                and (n := len(p.read_text(errors="replace").splitlines()))
+                > (limit := ctx.write_file_max_overwrite_lines)
+                and _at_head(ctx.worktree, p)
             ):
                 return ToolResult(
                     False,
