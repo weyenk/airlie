@@ -84,6 +84,14 @@ def test_write_file_overwrite_limit_defaults_to_200_lines(tmp_path: Path) -> Non
     assert ToolContext(worktree=tmp_path).write_file_max_overwrite_lines == 200
 
 
+def test_write_file_tells_the_model_its_overwrite_limit_before_it_tries() -> None:
+    """A coder that reads a 1300-line test file and rewrites it whole spends minutes generating a reply
+    the tool refuses (AIR-31 layer 02, twice in one layer): the description names the limit and the way
+    round it."""
+    d = WriteFile().description
+    assert "at most 200 lines" in d and "edit_file" in d and "new file" in d
+
+
 # ---- edit_file ----
 
 
