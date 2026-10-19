@@ -5,10 +5,11 @@ the agent environment (airlie.subproc: no credentials) and, on macOS, unable to 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shlex
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,11 +57,11 @@ async def _run(
                 # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
                 raise FileNotFoundError(2, "No such file or directory", command[0])
             roots = confine.writable_roots(ctx.worktree, ctx.writable)
-            proc = await asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn)
+            proc = await _spawn(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
         elif shell:
-            proc = await asyncio.create_subprocess_shell(str(cmd), **spawn)
+            proc = await _spawn(asyncio.create_subprocess_shell(str(cmd), **spawn))
         else:
-            proc = await asyncio.create_subprocess_exec(*cmd, **spawn)
+            proc = await _spawn(asyncio.create_subprocess_exec(*cmd, **spawn))
     except OSError as e:
         return None, f"error: {e}"
     try:
@@ -74,6 +75,19 @@ async def _run(
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
     rc = proc.returncode or 0
     return rc, confine.explain(text, rc) if confined else text
+
+
+async def _spawn(starting: Coroutine[Any, Any, asyncio.subprocess.Process]) -> asyncio.subprocess.Process:
+    """The process `starting` makes. A cancel that lands while it is being made (the child already runs:
+    asyncio connects its pipes after the fork) waits for it, kills it and all it started, and goes on: else
+    the caller never has it to kill (PR 105's CI, 2026-10-19: a cancelled gate's sleep outlived the test)."""
+    task = asyncio.ensure_future(starting)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with contextlib.suppress(OSError):  # it never started: nothing to kill
+            await kill_group(await task)
+        raise
 
 
 async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
