@@ -142,6 +142,7 @@ async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path
     # the fix round knows what the first run wrote, so its write nudges do not ask for it again
     fix_ctxs = [c for c in seen if c.team_id == "fix"]
     assert [c.already_written for c in fix_ctxs] == [(), ("PASS",)]
+    assert [c.attempt for c in fix_ctxs] == [0, 1]  # the fix round's steps are traced under fix/round-1
     assert all(c.must_act for c in seen)  # a build's first reply of prose is sent back once
     nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
     assert nudge.startswith("A reviewer found blocking problems") and "PASS:1" in nudge
@@ -163,6 +164,14 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
     )
     teams = {"orchestrator": "native", "max_steps": 6, "fresh_continuation_tokens": 1}
     orch = StudioOrchestrator(cfg_for(tmp_path, extra={"teams": teams}), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
     report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
     fix_req = [r for r in engine.requests if r.role == "coder"][3]
     assert [m.role for m in fix_req.messages] == ["system", "user"]  # a new conversation, not the old one
@@ -170,6 +179,11 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
     assert "A reviewer found blocking problems" in goal and "PASS:1" in goal and "worktree" in goal
     fresh = [e for e in events(report) if e["kind"] == "fresh_continuation"]
     assert len(fresh) == 1 and fresh[0]["subtask"] == "fix"
+    # a new conversation is still the second run of the team: its steps are traced apart from the first's
+    # (AIR-7 layer 02 attempt 5, 2026-10-18: a fresh fix round wrote step-001.json over the build run's)
+    assert [(c.attempt, c.initial_state) for c in seen if c.team_id == "fix"] == [(0, None), (1, None)]
+    trace = report.run_dir.path / "trace" / "fix"
+    assert (trace / "step-001.json").exists() and (trace / "round-1" / "step-001.json").exists()
     assert report.final_answer == "all done"
 
 
@@ -810,6 +824,14 @@ async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp
     # the first run answers with text twice (sent back once, then done); the follow-up writes PASS
     engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
 
     async def before_gate() -> bool:
         await orch.follow_up("build", "write PASS, then stop")
@@ -821,6 +843,7 @@ async def test_before_gate_can_send_a_subtask_back_once_more_before_the_gate(tmp
     assert report.tests == {"studio": True}
     assert engine.requests[-2].messages[-1].content == "write PASS, then stop"
     assert [e["subtask"] for e in events(report) if e["kind"] == "follow_up"] == ["build"]
+    assert [c.attempt for c in seen] == [0, 1]  # the follow-up is the team's next run, after any fix round
 
 
 async def test_a_before_gate_that_says_no_skips_the_gate(tmp_path: Path) -> None:
