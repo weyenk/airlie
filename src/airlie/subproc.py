@@ -21,6 +21,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from functools import cache
@@ -111,18 +112,37 @@ def url_credential_helpers() -> tuple[str, ...]:
     return tuple(dict.fromkeys(listed.splitlines()))
 
 
-def agent_env() -> dict[str, str]:
+def agent_env(worktree: Path | None = None) -> dict[str, str]:
     """The environment for code a model chose or wrote: airlie's own without CREDENTIALS or OWN_PYTHON, gh
     pointed at an empty configuration directory, git and ssh unable to prompt (NO_PROMPTS) or to use SSH
     (NO_SSH), and every git credential helper reset. An empty `credential.helper` empties the list of helpers,
-    and so does each `credential.<url>.helper` set to empty."""
+    and so does each `credential.<url>.helper` set to empty. With a `worktree` (a model's shell there), PATH
+    moves the bin of airlie's own interpreter (the checkout's .venv that `uv run` put first) to the end and
+    starts with the worktree's .venv/bin when there is one: a `python` or `pytest` the model runs there is
+    the worktree's, not airlie's (AIR-30, 2026-10-19)."""
     dropped = (*CREDENTIALS, *OWN_PYTHON)
     env = {name: value for name, value in os.environ.items() if name not in dropped}
+    if worktree is not None:  # a model's shell in a worktree; airlie's own commands keep their PATH
+        env["PATH"] = _agent_path(os.environ.get("PATH", ""), os.environ.get("VIRTUAL_ENV"), worktree)
     env.update(NO_PROMPTS)
     env.update(NO_SSH)
     env["GH_CONFIG_DIR"] = str(gh_config_dir())
     resets = [*url_credential_helpers(), "credential.helper"]
     return with_git_config(env, [(key, "") for key in resets])
+
+
+def _agent_path(path: str, virtual_env: str | None, worktree: Path | None) -> str:
+    """`path` with `worktree/.venv/bin` first when that directory exists, and the bin of airlie's own
+    interpreter (sys.prefix) or active virtual environment moved to the end: still found when the worktree
+    has no tool of its own, never ahead of the worktree's."""
+    own = {str(Path(sys.prefix) / "bin")}
+    if virtual_env:
+        own.add(str(Path(virtual_env) / "bin"))
+    entries = [p for p in path.split(os.pathsep) if p]
+    kept = [p for p in entries if p not in own] + [p for p in entries if p in own]
+    if worktree is not None and (venv_bin := worktree / ".venv" / "bin").is_dir():
+        kept.insert(0, str(venv_bin))
+    return os.pathsep.join(kept)
 
 
 def without_hooks(env: Mapping[str, str]) -> dict[str, str]:
