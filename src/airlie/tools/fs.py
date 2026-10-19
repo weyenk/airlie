@@ -91,17 +91,19 @@ class ReadFile:
         return ToolResult(True, _cap_lines(numbered, offset, len(lines), ctx.output_cap_chars))
 
 
-def _at_head(worktree: Path, p: Path) -> bool:
-    """Whether `p` is in the worktree's HEAD commit: code that was there before the run, which the overwrite
-    limit protects. A file the coder created this run is its own to rewrite. No git, or no commit: True."""
+def _at_base(worktree: Path, p: Path, ref: str) -> bool:
+    """Whether `p` is in the worktree's commit `ref` (the run's base, else HEAD): code that was there before
+    the run, which the overwrite limit protects. A file the coder created this run is its own to rewrite,
+    even once a round has committed it (the review and a green run_tests commit as they go). No git, or no
+    such commit: True."""
     try:
         rel = p.resolve().relative_to(worktree.resolve()).as_posix()
     except ValueError:
         return True
     done = subprocess.run(
-        ["git", "-C", str(worktree), "cat-file", "-e", f"HEAD:{rel}"], capture_output=True, check=False
+        ["git", "-C", str(worktree), "cat-file", "-e", f"{ref}:{rel}"], capture_output=True, check=False
     )
-    unknown = b"Not a valid object name HEAD" in done.stderr or b"not a git repository" in done.stderr
+    unknown = b"Not a valid object name" in done.stderr or b"not a git repository" in done.stderr
     return done.returncode == 0 or unknown
 
 
@@ -126,7 +128,7 @@ class WriteFile:
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
                 > (limit := ctx.write_file_max_overwrite_lines)
-                and _at_head(ctx.worktree, p)
+                and _at_base(ctx.worktree, p, ctx.scope_base or "HEAD")
             ):
                 return ToolResult(
                     False,
