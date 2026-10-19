@@ -10,23 +10,13 @@ from airlie.story.briefs import (
     layer_goal,
     layer_plan,
     layers_brief,
-    mutation_review_brief,
     pr_body,
     pr_title,
     refine_brief,
     story_text,
     survey_brief,
 )
-from airlie.story.model import (
-    HARDEN_SLUG,
-    Criterion,
-    HardenCase,
-    HardenFile,
-    Layer,
-    MutationReview,
-    Story,
-    harden_layer,
-)
+from airlie.story.model import Criterion, Layer, Story
 from airlie.topology.studio_plan import schedule
 
 ISSUE_URL = "https://acme.atlassian.net/browse/AIR-7"
@@ -88,20 +78,38 @@ def test_with_a_tester_role_a_layer_with_criteria_is_the_tests_then_the_build_ag
     assert "Show the avatar." in tests.brief and "AC2" in tests.brief and "AC1" not in tests.brief
     assert "Do not write the feature" in tests.brief and "the only red" in tests.brief
     assert "NOT happen" in tests.brief and "Every test asserts" in tests.brief
-    assert "They are the contract" in build.brief and "without weakening them" in build.brief
+    assert "They are the contract" in build.brief and "cannot change their files" in build.brief
     assert "Write the tests first" not in build.brief and "AC2" in build.brief
+    assert "once they pass, you are done" in build.brief and "whole suite after review" in build.brief
     assert len(schedule(plan)) == 2
-    # an enabling layer and the hardening layer stay one coder subtask
-    enabling = layer_plan(STORY, LAYERS, 2, build_role="coder", tester_role="tester")
-    assert [x.id for x in enabling.subtasks] == ["build"]
+
+
+def test_with_a_tester_role_a_foundation_layer_gets_its_tests_from_its_brief_first_too() -> None:
+    """Noah, 2026-10-19: every layer is test-first through the tester; one with no criterion (a foundation)
+    is tested for what its brief adds."""
+    tests, build = layer_plan(STORY, LAYERS, 2, build_role="coder", tester_role="tester").subtasks
+    assert (tests.id, tests.role_hint, build.id, build.depends_on) == ("tests", "tester", "build", ("tests",))
+    assert "Document avatars." in tests.brief and "foundation" in tests.brief
+    assert "per behaviour the brief adds" in tests.brief and "Do not write the feature" in tests.brief
+
+
+def test_the_coder_after_a_tester_is_not_told_to_put_tests_in_the_testers_files() -> None:
+    """The tester's files are locked to the coder: the coder's brief names no test file of its own."""
+    named = Layer("tools", "Tools", "src/a.py; tests/unit/test_x.py", "Offer every schema.", ("AC1",))
+    tests, build = layer_plan(STORY, (named, *LAYERS), 0, build_role="coder", tester_role="tester").subtasks
+    assert "Put new tests in tests/unit/test_x.py" in tests.brief
+    assert "Put new tests in" not in build.brief and "NEW test file" not in build.brief
+    assert "Run run_tests until the layer's tests pass" in build.brief
 
 
 def test_a_layer_with_criteria_tells_the_coder_what_makes_a_test_count() -> None:
     brief = layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
     assert "behaviour, not the implementation" in brief
     assert "Every test asserts" in brief
-    # the two checks the pipeline runs on what the coder wrote, named before the coder writes anything
-    assert "must fail on the layer's base" in brief and "with no assertion" in brief
+    # the check the pipeline runs on the tests, named before anything is written
+    assert "has no assertion, is sent back to you" in brief and "before the layer's code" not in brief
+    tester = layer_plan(STORY, LAYERS, 0, build_role="coder", tester_role="tester").subtasks[0].brief
+    assert "whole suite on your tests before the layer's code is written" in tester
 
 
 def test_the_build_brief_says_new_tests_go_in_a_new_file_and_existing_files_change_with_edit_file() -> None:
@@ -207,50 +215,7 @@ def test_pr_title_and_body() -> None:
     assert "`uv run pytest -q` passes" in body
     assert "1. #11 Storage\n2. #12 Profile (this PR)\n3. #13 Docs" in body
     assert "a human reviews and merges" in body
-    assert "Mutation gate" not in body  # a story from before the mutation gate names none
-
-
-def test_a_pr_body_names_the_storys_mutation_gate_result_under_its_tests() -> None:
-    body = pr_body(
-        CARD, STORY, LAYERS, 0, ROWS, PRS, "uv run pytest -q", "passes on the top layer (`make m`)"
-    )
-    assert (
-        "`uv run pytest -q` passes on this branch.\nMutation gate: passes on the top layer (`make m`)" in body
-    )
-
-
-def test_a_pr_body_lists_the_ignored_mutants_as_neutralised_bullets() -> None:
-    ignored = [("airlie.x__mutmut_1", "equivalent"), ("airlie.y__mutmut_2", "### heading @someone #12")]
-    body = pr_body(CARD, STORY, LAYERS, 2, ROWS, PRS, "pytest", "mutants survived", ignored)
-    assert "### Surviving mutants the architect ignored\n" in body
-    assert "airlie.x__mutmut_1: equivalent" in body
-    # model text renders no mention or reference, and its "###" stays inside the bullet
-    assert "- \u200bairlie.y__mutmut_2: ### heading @\u200bsomeone #\u200b12\n" in body
-    assert "### Surviving mutants" not in pr_body(CARD, STORY, LAYERS, 2, ROWS, PRS, "pytest")
-
-
-def test_the_mutation_review_brief_carries_the_summary_the_diff_and_the_layers_as_data() -> None:
-    brief = mutation_review_brief(STORY, LAYERS, "- m__mutmut_1: survived", "diff --git a/x b/x", "bad JSON")
-    assert "- m__mutmut_1: survived" in brief and "diff --git a/x b/x" in brief
-    assert "1. Storage" in brief and '"harden"' in brief and '"ignored"' in brief
-    assert "Your previous reply could not be used: bad JSON" in brief
-
-
-def test_the_hardening_layer_is_planned_as_tests_only_against_the_storys_base() -> None:
-    review = MutationReview(
-        (
-            HardenFile(
-                "tests/test_p.py", (HardenCase("test_twice", "an avatar", "two views", "m__mutmut_1"),)
-            ),
-        ),
-        (),
-    )
-    layer = harden_layer(review)
-    assert (layer.slug, layer.title, layer.acceptance) == (HARDEN_SLUG, "Harden the tests", ())
-    [build] = layer_plan(STORY, (*LAYERS, layer), 3, build_role="coder").subtasks
-    assert "test_twice: given an avatar; expect two views (kills m__mutmut_1)" in build.brief
-    assert "Change test files only" in build.brief and "fail on the story's base" in build.brief
-    assert "fail on the layer's base" not in build.brief
+    assert "Mutation gate" not in body  # mutation testing is CI's, on the PR
 
 
 def test_refine_brief_quotes_card_text_line_by_line_and_caps_it() -> None:

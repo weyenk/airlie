@@ -1,13 +1,11 @@
 """A repository's test gate: the commands every change must pass, as the root AGENTS.md lists them under a
-Test gate heading; and its optional Mutation gate, run once per story, in the same format. Each is read from a
-commit (a story's base: the trunk, which only a person merges into), never from a worktree, so a model cannot
-weaken the gate it is held to. The commands run in order, each in a group of its own, joined with && into the
-one command the studio's gate runs."""
+Test gate heading. It is read from a commit (a story's base: the trunk, which only a person merges into),
+never from a worktree, so a model cannot weaken the gate it is held to. The commands run in order, each in a
+group of its own, joined with && into the one command the studio's gate runs."""
 
 from __future__ import annotations
 
 import re
-import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,11 +15,6 @@ from airlie.teams.worktree import find_file, read_blob
 
 AGENTS_MD = "AGENTS.md"
 TEST_GATE = "Test gate"
-MUTATION_GATE = "Mutation gate"
-BASE = "{base}"
-"""What a Mutation gate command names the story's base commit with."""
-REPORT = "{report}"
-"""What a Mutation gate command names the file it writes its markdown summary to with (optional)."""
 EXAMPLE = ("uv sync --frozen", "uv run ruff check .", "uv run pytest -q")
 """The gate a note shows when a repository has none."""
 NO_AGENTS_MD = "it has no AGENTS.md"
@@ -273,20 +266,6 @@ def gate_commands(markdown: str) -> tuple[str, ...]:
     return _commands(block, TEST_GATE)
 
 
-def mutation_commands(markdown: str) -> tuple[str, ...] | None:
-    """The commands of the Mutation gate section, read as the Test gate's are (`gate_commands`), or None when
-    there is no such section: it is optional. A section with no command it can run is NoTestGate."""
-    block = _section(markdown, MUTATION_GATE)
-    return None if block is None else _commands(block, MUTATION_GATE)
-
-
-def with_base(commands: Sequence[str], base: str, report: Path | None = None) -> tuple[str, ...]:
-    """`commands` with every `{base}` replaced by `base`, the story's base commit, and every `{report}` by
-    `report`, the file airlie reads the gate's summary from, quoted for sh; nothing else is touched."""
-    filled = tuple(c.replace(BASE, base) for c in commands)
-    return filled if report is None else tuple(c.replace(REPORT, shlex.quote(str(report))) for c in filled)
-
-
 def read_gate(repo: Path, commit: str) -> Gate:
     """The test gate of the AGENTS.md at the root of `commit` in `repo`, read from git's objects (a link to
     another file of the commit followed). NoTestGate when there is no AGENTS.md there, it is a link out of the
@@ -302,17 +281,6 @@ def read_gate(repo: Path, commit: str) -> Gate:
     if kind != "blob":
         raise NoTestGate(NO_AGENTS_MD)
     return Gate(gate_commands(read_blob(repo, found)), found)
-
-
-def read_mutation_gate(repo: Path, commit: str) -> Gate | None:
-    """The Mutation gate of the AGENTS.md at the root of `commit`, read as `read_gate` reads the test gate,
-    or None when there is none: no AGENTS.md the commit holds (a missing file, or a link out of it or to
-    nothing), or no Mutation gate section in it. A section with no command it can run is NoTestGate."""
-    kind, found = find_file(repo, commit, AGENTS_MD)
-    if kind != "blob":
-        return None
-    commands = mutation_commands(read_blob(repo, found))
-    return None if commands is None else Gate(commands, found)
 
 
 def missing_gate(repository: str, trunk: str, sha: str, problem: str) -> str:

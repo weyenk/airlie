@@ -362,3 +362,18 @@ def test_a_state_whose_repository_pin_or_stage_is_not_text_is_damaged(
     assert str(e.value) == (
         f"{story_dir / 'state.json'} is damaged (its {field} is not text); delete it to start the story over"
     )
+
+
+def test_a_state_saved_with_the_retired_mutation_gate_keys_still_opens(tmp_path: Path) -> None:
+    """A story started before 2026-10-19 kept its mutation gate in the state: those keys are dropped, not
+    read as a damaged file."""
+    card = text_card("x")
+    st = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    st.finish("intake")
+    saved = json.loads((tmp_path / card.key / "state.json").read_text())
+    retired = {"mutation_gate": {"commands": []}, "mutation": None, "mutation_review": None}
+    (tmp_path / card.key / "state.json").write_text(json.dumps({**saved, **retired}))
+    again = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    assert again.stage == "intake"
+    again.save()
+    assert not set(retired) & set(json.loads((tmp_path / card.key / "state.json").read_text()))

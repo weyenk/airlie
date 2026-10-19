@@ -286,3 +286,78 @@ def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--gate-only"])
     assert mc.main() == 0
     assert fake.runs == [] and "nothing to mutate" in capsys.readouterr().out
+
+
+# ---- sharding: a matrix of runs, then one merge ----
+
+
+def test_a_shard_is_parsed_from_i_slash_n_and_refused_out_of_range() -> None:
+    import argparse
+
+    assert mc.parse_shard("2/5") == (2, 5)
+    for bad in ("0/5", "6/5", "two/5", "5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc.parse_shard(bad)
+
+
+def test_shards_split_the_globs_by_weight_cover_each_once_and_agree_run_to_run() -> None:
+    weights = {"a.*": 100, "b.*": 60, "c.*": 50, "d.*": 10, "e.*": 1}
+    parts = [mc.shard_of(weights, (i, 3)) for i in (1, 2, 3)]
+    assert sorted(g for p in parts for g in p) == sorted(weights)  # every glob, in exactly one shard
+    assert parts == [["a.*"], ["b.*", "e.*"], ["c.*", "d.*"]]  # largest first, to the lightest part
+    assert parts == [mc.shard_of(dict(reversed(weights.items())), (i, 3)) for i in (1, 2, 3)]
+    assert mc.shard_of({"a.*": 1}, (2, 2)) == []  # more shards than globs: some have nothing
+
+
+def test_a_packages_init_is_globbed_as_its_own_mutants_only() -> None:
+    """airlie.tools.* would also match every mutant of airlie.tools.fs, which another shard runs."""
+    assert mc.file_globs("src/airlie/tools/__init__.py") == ["airlie.tools.x_*", "airlie.tools.xǁ*"]
+    assert mc.file_globs("src/airlie/tools/fs.py") == ["airlie.tools.fs.*"]
+
+
+def test_the_project_shards_cover_every_module_once() -> None:
+    weights = {g: mc.size(f) for f in mc.project_files() for g in mc.file_globs(f)}
+    parts = [set(mc.shard_of(weights, (i, 5))) for i in range(1, 6)]
+    assert set().union(*parts) == set(weights) and sum(len(p) for p in parts) == len(weights)
+    loads = [sum(weights[g] for g in p) for p in parts]
+    assert max(loads) - min(loads) <= max(weights.values())  # even, to within one module
+
+
+ENROLLED = {"airlie.engine.sse"}
+
+
+def shard_file(where: Path, n: int, status: str, results: dict[str, str]) -> None:
+    mc.write_results(where / f"shard-{n}.json", status, results, f"{n}/3", "changed")
+
+
+def test_merge_gates_on_every_shard_together(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    shard_file(tmp_path, 2, "nothing", {})
+    shard_file(tmp_path, 3, "ran", {"airlie.cli.x_b__mutmut_1": "survived"})  # not enrolled: reported
+    report = tmp_path / "report.md"
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == 0
+    text = report.read_text()
+    assert "3 shard(s)" in text and "all selected mutants of the enrolled modules were caught" in text
+    assert "1 uncaught mutant(s) in modules that are not enrolled" in text
+    shard_file(tmp_path, 2, "ran", {"airlie.engine.sse.x_c__mutmut_2": "survived"})
+    assert mc.merge(tmp_path, 3, None, ENROLLED) == 1
+    assert "- airlie.engine.sse.x_c__mutmut_2: survived" in capsys.readouterr().out
+
+
+def test_merge_fails_when_a_shard_did_not_report_or_could_not_run(tmp_path: Path) -> None:
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    shard_file(tmp_path, 2, "ran", {})
+    report = tmp_path / "report.md"
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == mc.COULD_NOT_RUN  # shard 3 died before writing
+    assert "only 2 of 3 shards reported" in report.read_text()
+    shard_file(tmp_path, 3, "could_not_run", {})
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == mc.COULD_NOT_RUN
+    assert "did not run to the end in shard(s) 3/3" in report.read_text()
+
+
+def test_merge_reads_only_the_shard_files(tmp_path: Path) -> None:
+    """The weekly run uploads mutmut-stats.json beside each shard's record: it is not a shard."""
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text('{"tests_by_mangled_function_name": {}}')
+    assert mc.merge(tmp_path, 1, None, ENROLLED) == 0

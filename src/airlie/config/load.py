@@ -89,6 +89,9 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 REMOVED = {
     "story.tests_role": "removed on 2026-10-16: one coder (story.build_role) now writes a layer's tests and "
     "its code; delete story.tests_role from your config",
+    "story.mutation_timeout_s": "removed on 2026-10-19: airlie no longer runs a story's mutation gate "
+    "(mutation testing runs in the repository's CI, on each PR); delete story.mutation_timeout_s from your "
+    "config",
 }
 """Keys a config may still carry from an older airlie, and what to tell its owner instead of "Extra inputs are
 not permitted"."""

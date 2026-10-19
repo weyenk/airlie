@@ -9,15 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from airlie.story.gate import (
-    Gate,
-    gate_commands,
-    missing_gate,
-    mutation_commands,
-    read_gate,
-    read_mutation_gate,
-    with_base,
-)
+from airlie.story.gate import Gate, gate_commands, missing_gate, read_gate
 from airlie.story.model import NoTestGate
 from airlie.subproc import without_hooks
 from tests.unit.git_helpers import git
@@ -444,78 +436,3 @@ def test_the_note_for_a_missing_gate_names_the_repository_and_the_trunk_and_show
         "fenced block listing the commands every change must pass, one per line, run in order. For example:\n"
         "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```"
     )
-
-
-# ---- the Mutation gate: optional, in the same format ----
-
-MUTATION = (
-    GATE
-    + """
-## Mutation gate
-
-Once per story, over its whole change:
-
-```sh
-uv run python scripts/mutate_changed.py --base {base} --max-children 6
-```
-"""
-)
-
-
-def test_the_mutation_gate_is_the_first_block_under_its_own_heading() -> None:
-    assert mutation_commands(MUTATION) == (
-        "uv run python scripts/mutate_changed.py --base {base} --max-children 6",
-    )
-    assert (
-        gate_commands(MUTATION)[0] == "pnpm install --frozen-lockfile --prefer-offline"
-    )  # the test gate's own
-
-
-def test_a_repository_without_a_mutation_gate_section_has_none() -> None:
-    assert mutation_commands(GATE) is None
-    assert mutation_commands("") is None
-
-
-def test_base_is_replaced_by_the_storys_base_commit_in_every_command() -> None:
-    commands = ("tool --base {base}", "echo {base}..HEAD", "echo ${HOME} {other}")
-    assert with_base(commands, "abc123") == (
-        "tool --base abc123",
-        "echo abc123..HEAD",
-        "echo ${HOME} {other}",
-    )
-
-
-def test_report_is_replaced_by_the_file_airlie_reads_quoted_for_sh() -> None:
-    commands = ("tool --base {base} --report {report}", "true")
-    filled = with_base(commands, "abc123", Path("/state/my story/mutation-report.md"))
-    assert filled == ("tool --base abc123 --report '/state/my story/mutation-report.md'", "true")
-    assert with_base(("tool {report}",), "abc123") == ("tool {report}",)  # no file: left as written
-
-
-@pytest.mark.parametrize(
-    ("block", "problem"),
-    [
-        ("# only a comment\n", "the Mutation gate section of its AGENTS.md lists no command"),
-        ("make mutate &\n", "the Mutation gate section of its AGENTS.md runs a command in the background"),
-        ("make \\\n", "the Mutation gate section of its AGENTS.md continues a command"),
-    ],
-)
-def test_a_mutation_gate_that_cannot_run_is_refused_and_named_as_the_mutation_gate(
-    block: str, problem: str
-) -> None:
-    with pytest.raises(NoTestGate) as e:
-        mutation_commands(f"## Test gate\n```\ntrue\n```\n## Mutation gate\n```\n{block}```\n")
-    assert str(e.value).startswith(problem)
-
-
-def test_the_mutation_gate_is_read_from_the_commit_and_is_none_without_an_agents_md_or_a_section(
-    tmp_path: Path,
-) -> None:
-    repo = a_repo(tmp_path)
-    assert read_mutation_gate(repo, git(repo, "rev-parse", "HEAD")) is None  # no AGENTS.md
-    plain = commit_agents_md(repo, "## Test gate\n```\ntrue\n```\n")
-    assert read_mutation_gate(repo, plain) is None
-    gated = commit_agents_md(repo, "## Test gate\n```\ntrue\n```\n## Mutation gate\n```\nmake mutate\n```\n")
-    (repo / "AGENTS.md").write_text("## Mutation gate\n```\necho uncommitted\n```\n")
-    blob = git(repo, "rev-parse", f"{gated}:AGENTS.md")
-    assert read_mutation_gate(repo, gated) == Gate(("make mutate",), blob)

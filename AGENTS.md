@@ -13,13 +13,3 @@ uv run ruff format --check .
 uv run mypy
 uv run pytest -q -n auto --maxprocesses 8
 ```
-
-## Mutation gate
-
-A story built by airlie runs this once, over the whole story's change against its base (`{base}`), after
-its last layer passes the test gate and before its PRs open. `{report}` is the file airlie reads the
-surviving-mutant summary from:
-
-```sh
-uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}
-```

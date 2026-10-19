@@ -107,6 +107,24 @@ def _at_base(worktree: Path, p: Path, ref: str) -> bool:
     return done.returncode == 0 or unknown
 
 
+LOCKED = (
+    "error: {path} holds this layer's acceptance tests, written before you: they are your contract and you "
+    "cannot change them. Make them pass with the code. If one is wrong about a name or a signature the brief "
+    "fixes, say which and why when you stop."
+)
+
+
+def _locked(ctx: ToolContext, p: Path) -> bool:
+    """Whether `p` is one of `ctx.read_only` (the tester's test files, for the coder)."""
+    if not ctx.read_only:
+        return False
+    try:
+        rel = p.resolve().relative_to(ctx.worktree.resolve()).as_posix()
+    except ValueError:
+        return False
+    return rel in ctx.read_only
+
+
 class WriteFile:
     name = "write_file"
     description = (
@@ -124,6 +142,8 @@ class WriteFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if _locked(ctx, p):
+                return ToolResult(False, LOCKED.format(path=args["path"]))
             if (
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
@@ -211,6 +231,8 @@ class EditFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if _locked(ctx, p):
+                return ToolResult(False, LOCKED.format(path=args["path"]))
             text = p.read_text()
         except Exception as e:  # noqa: BLE001
             return _err(e)

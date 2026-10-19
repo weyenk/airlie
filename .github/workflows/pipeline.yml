@@ -1,8 +1,8 @@
 # The pipeline, one stage per level of the test pyramid. A stage starts only when the one before it is green.
 #
 #   1 static        lint + types (the same `task static` that runs on every push to origin)
-#   2 lowest level  unit tests (mutation testing is not a merge gate: it runs weekly, and once per airlie story
-#                   before the story is published)
+#   2 lowest level  unit tests, then mutation testing of the enrolled modules the change touches, in shards
+#                   (the weekly run covers the whole project)
 #   3 units in concert   functional, contract, integration
 #   4 behavioural        end-to-end, journey
 #   5 environmental      performance, security
@@ -44,6 +44,56 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: task test:unit
+
+  # Mutation testing of the enrolled modules this change touches, split over 5 runners (whole modules,
+  # dealt out by size); `mutation-gate` merges the shards and is the one verdict. Free accounts get 5
+  # concurrent macOS runners: more shards than that only queue.
+  mutation:
+    needs: unit
+    runs-on: macos-14
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the merge base with the PR's base branch
+      - uses: ./.github/actions/setup
+      - name: Mutation-test shard ${{ matrix.shard }} of 5
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+        run: >-
+          task mutate:changed -- --base "$BASE" --gate-only --max-children 3
+          --shard ${{ matrix.shard }}/5 --results mutation/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutation/
+          if-no-files-found: ignore
+
+  mutation-gate:
+    needs: mutation
+    if: always() && needs.mutation.result != 'skipped'
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-shard-*
+          path: mutation
+      - name: Merge the shards and gate
+        run: task mutate:merge -- --merge mutation --expect 5 --report mutation-report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: mutation-report.md
+          if-no-files-found: ignore
 
   # ---- stage 3: units in concert ----
   functional:

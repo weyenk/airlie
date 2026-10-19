@@ -1,6 +1,8 @@
-# Mutation testing over the whole of src/airlie, weekly. The pipeline only mutates what a change touches;
-# this run keeps the rest honest. Enrolled modules must have every mutant caught (the run fails otherwise);
-# every other module is scored in the job summary and the uploaded report, which is the backlog.
+# Mutation testing over the whole of src/airlie, weekly, in shards. The pipeline only mutates what a change
+# touches; this run keeps the rest honest. Enrolled modules must have every mutant caught (the run fails
+# otherwise); every other module is scored in the job summary and the uploaded report, which is the backlog.
+# One runner took more than its 4 hours (2026-10-19), so the modules are dealt out over 5 shards, each with
+# its own limit, and `merge` gates on all of them together.
 name: mutation-weekly
 
 on:
@@ -15,18 +17,45 @@ jobs:
   mutation:
     runs-on: macos-14
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - name: Unit tests first (mutmut needs a green suite)
         run: task test:unit
-      - name: Mutation-test the whole project
-        run: task mutate:project -- --max-children 3 --report mutation-report.md
+      - name: Mutation-test shard ${{ matrix.shard }} of 5 of the whole project
+        run: >-
+          task mutate:project -- --max-children 3 --shard ${{ matrix.shard }}/5
+          --results mutation/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: |
+            mutation/
+            mutants/mutmut-stats.json
+          if-no-files-found: ignore
+
+  merge:
+    needs: mutation
+    if: always()
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-shard-*
+          path: shards
+      - name: Merge the shards and gate
+        run: task mutate:merge -- --merge shards --expect 5 --report mutation-report.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mutation-report
-          path: |
-            mutation-report.md
-            mutants/mutmut-stats.json
+          path: mutation-report.md
           if-no-files-found: ignore

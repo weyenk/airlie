@@ -18,6 +18,15 @@ Scopes
   enrolled  Every mutant of every enrolled module.
   project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
+Sharding (CI runs a matrix of these, then one merge)
+    uv run python scripts/mutate_changed.py --scope project --shard 2/5 --results shard-2.json
+    uv run python scripts/mutate_changed.py --merge shards/ --expect 5 --report mutation-report.md
+  --shard I/N runs only the I-th of N even parts of the selected mutants: whole modules, dealt out by size
+  (largest first, each to the part with the fewest lines so far), so every shard of a run picks the same parts
+  from the same tree. --results writes what the shard ran to a JSON file (CI names it shard-<I>.json). --merge
+  reads every shard-*.json under a directory, gates on all of them together, and writes the one report;
+  --expect N fails it when fewer than N shards reported, so a shard that died before writing cannot pass.
+
 Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. Exit 0 when every selected mutant of an
 enrolled module is caught (killed, or timed out); 1 when one survives, has no covering test, is suspicious
 or crashed the runner, or when mutmut itself fails (a red unit test). Mutants outside the enrolled modules
@@ -50,6 +59,8 @@ CAUGHT = {"killed", "timeout", "caught by type check"}
 RESULT_LINE = re.compile(r"^\s*(?P<name>airlie\.\S+): (?P<status>[a-z ]+?)\s*$")
 ZERO_SHA = "0" * 40
 SHOW_LIMIT = 20
+SHARD_FILES = "shard-*.json"
+"""What --merge reads under its directory: --results files named so (CI names them shard-<I>.json)."""
 
 
 # ---- what changed ----
@@ -106,6 +117,51 @@ def probe_mutant(files: list[str]) -> str | None:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 return f"{module_name(f)}.x_{node.name}__mutmut_1"
     return None
+
+
+def file_globs(path: str) -> list[str]:
+    """The globs of one file's mutants and no other's: a package's __init__ shares its dotted name with every
+    module under it, so its globs are its own function (x_) and method (xǁ) mutants only."""
+    if Path(path).name == "__init__.py":
+        return [f"{module_name(path)}.x_*", f"{module_name(path)}.xǁ*"]
+    return [module_glob(path)]
+
+
+def project_files() -> list[str]:
+    """Every source file of src/airlie, as paths from the repository's root."""
+    return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "src" / "airlie").rglob("*.py"))
+
+
+def size(path: str) -> int:
+    """A file's weight for sharding: its lines (mutants grow with code), at least one."""
+    try:
+        return max(1, len((ROOT / path).read_text().splitlines()))
+    except OSError:
+        return 1
+
+
+def parse_shard(text: str) -> tuple[int, int]:
+    """'2/5' -> (2, 5): the second of five shards, counted from one."""
+    try:
+        i, n = (int(x) for x in text.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--shard takes I/N, as 2/5 (got {text!r})") from None
+    if not 1 <= i <= n:
+        raise argparse.ArgumentTypeError(f"--shard {text}: I must be from 1 to N")
+    return i, n
+
+
+def shard_of(weights: dict[str, int], shard: tuple[int, int]) -> list[str]:
+    """The globs of shard `shard` (I, N) of `weights` (glob -> weight): the largest first, each to the part
+    that weighs least so far (the lower-numbered one on a tie), names breaking ties between equal weights."""
+    i, n = shard
+    parts: list[list[str]] = [[] for _ in range(n)]
+    load = [0] * n
+    for glob in sorted(weights, key=lambda g: (-weights[g], g)):
+        k = min(range(n), key=lambda j: (load[j], j))
+        parts[k].append(glob)
+        load[k] += weights[glob]
+    return sorted(parts[i - 1])
 
 
 def mutant_module(mutant: str) -> str:
@@ -213,6 +269,61 @@ def read_stats() -> dict[str, object]:
     return json.loads((ROOT / "mutants" / "mutmut-stats.json").read_text())  # type: ignore[no-any-return]
 
 
+def write_results(path: Path | None, status: str, results: dict[str, str], shard: str, scope: str) -> None:
+    """A shard's record for --merge: how it ended ("ran", "nothing" or "could_not_run") and every mutant it
+    selected, with mutmut's status."""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"status": status, "shard": shard, "scope": scope, "results": results}
+    path.write_text(json.dumps(record, indent=1, sort_keys=True))
+
+
+def verdict(results: dict[str, str], enrolled_modules: set[str], scope: str) -> tuple[list[str], int]:
+    """The report's verdict lines over `results`, and the exit code: 0 when every mutant of an enrolled module
+    is caught, 1 when one is not."""
+    gating, info = split_failures(results, enrolled_modules)
+    report = [""]
+    if scope == "project" or info:
+        report += score_table(results, enrolled_modules)
+    if info:
+        report.append(
+            f"\n{len(info)} uncaught mutant(s) in modules that are not enrolled (reported, not failed)"
+        )
+    if not gating:
+        report.append("\nall selected mutants of the enrolled modules were caught")
+        return report, 0
+    report.append(f"\n{len(gating)} mutant(s) of enrolled modules not caught:")
+    report += [f"- {n}: {results[n]}" for n in gating]
+    return report, 1
+
+
+def merge(where: Path, expect: int | None, report: Path | None, enrolled_modules: set[str]) -> int:
+    """Gate on every shard's record under `where` together (`--merge`): 2 when a shard could not run or fewer
+    than `expect` reported, else `verdict`'s code."""
+    records = [json.loads(f.read_text()) for f in sorted(where.rglob(SHARD_FILES))]
+    scopes = {str(r.get("scope")) for r in records}
+    out = [f"### Mutation testing ({', '.join(sorted(scopes)) or 'no shard'}, {len(records)} shard(s))"]
+    if expect is not None and len(records) < expect:
+        say([*out, f"only {len(records)} of {expect} shards reported: a shard did not finish"], report)
+        return COULD_NOT_RUN
+    failed = sorted(str(r["shard"]) for r in records if r["status"] == "could_not_run")
+    if failed:
+        say([*out, f"mutmut did not run to the end in shard(s) {', '.join(failed)}; see their logs"], report)
+        return COULD_NOT_RUN
+    results: dict[str, str] = {}
+    for r in records:
+        results.update(r["results"])
+    if not results:
+        say([*out, "nothing to mutate in any shard"], report)
+        return 0
+    lines, code = verdict(results, enrolled_modules, "project" if "project" in scopes else "changed")
+    say([*out, *lines], report)
+    if code:
+        print("run `uv run mutmut show NAME` on a checkout of this commit to see a mutant")
+    return code
+
+
 def say(lines: list[str], report: Path | None = None) -> None:
     text = "\n".join(lines)
     print(text)
@@ -237,10 +348,19 @@ def main() -> int:
     )
     ap.add_argument("--list", action="store_true", help="print what would be tested and stop")
     ap.add_argument("--report", type=Path, help="also append the markdown summary to this file")
+    ap.add_argument("--shard", type=parse_shard, help="run only part I of N of the mutants (I/N, as 2/5)")
+    ap.add_argument("--results", type=Path, help="write the mutants this run selected, for --merge")
+    ap.add_argument(
+        "--merge", type=Path, help="gate on the --results files under this directory, run nothing"
+    )
+    ap.add_argument("--expect", type=int, help="--merge: how many shards must have reported")
     args = ap.parse_args()
 
     scope_files = enrolled_files()
     enrolled_modules = {module_name(f) for f in scope_files}
+    if args.merge is not None:
+        return merge(args.merge, args.expect, args.report, enrolled_modules)
+    shard = f"{args.shard[0]}/{args.shard[1]}" if args.shard else "1/1"
     out: list[str] = [f"### Mutation testing ({args.scope})"]
     test_files: list[str] = []
 
@@ -267,7 +387,12 @@ def main() -> int:
         if unenrolled:
             out += ["changed but not enrolled (not gated):", *[f"- {f}" for f in unenrolled]]
 
-    globs = ["airlie.*"] if args.scope == "project" else [module_glob(f) for f in sources]
+    weights = (
+        {g: size(f) for f in project_files() for g in file_globs(f)}
+        if args.scope == "project"
+        else {module_glob(f): size(f) for f in sources}
+    )
+    globs = ["airlie.*"] if args.scope == "project" and not args.shard else list(weights)
     if sources:
         out += [f"{len(sources)} source file(s):", *[f"- {f}" for f in sources]]
     if test_files and args.gate_only:
@@ -277,6 +402,7 @@ def main() -> int:
     if not globs and (args.gate_only or not test_files):
         out.append("nothing to mutate: no enrolled source and no test file changed")
         say(out, args.report)
+        write_results(args.results, "nothing", {}, shard, args.scope)
         return 0
     if args.list:
         say(out, args.report)
@@ -293,6 +419,7 @@ def main() -> int:
             say(
                 ["mutmut could not collect coverage stats (a red unit test?); see the log above"], args.report
             )
+            write_results(args.results, "could_not_run", {}, shard, args.scope)
             return COULD_NOT_RUN
         functions = functions_run_by(test_files, read_stats())
         extra = function_globs(functions, globs)
@@ -301,30 +428,27 @@ def main() -> int:
             args.report,
         )
         globs += extra
+        weights.update({g: 1 for g in extra})
+    if args.shard:
+        globs = shard_of({g: weights.get(g, 1) for g in globs}, args.shard)
+        say([f"shard {shard}: {len(globs)} of {len(weights)} module glob(s)"], args.report)
     if not globs:
-        say(["the changed tests execute no source function; nothing to mutate"], args.report)
+        say(["nothing to mutate in this selection"], args.report)
+        write_results(args.results, "nothing", {}, shard, args.scope)
         return 0
 
     if mutmut("run", *run_extra, *globs) != 0:
         say(["mutmut run failed (a red unit test or a crashed run); see the log above"], args.report)
+        write_results(args.results, "could_not_run", {}, shard, args.scope)
         return COULD_NOT_RUN
 
     results = selected(parse_results(mutmut_out("results", "--all", "true")), globs)
-    gating, info = split_failures(results, enrolled_modules)
-    report = [""]
-    if args.scope == "project" or info:
-        report += score_table(results, enrolled_modules)
-    if info:
-        report.append(
-            f"\n{len(info)} uncaught mutant(s) in modules that are not enrolled (reported, not failed)"
-        )
-    if not gating:
-        report.append("\nall selected mutants of the enrolled modules were caught")
-        say(report, args.report)
-        return 0
-    report.append(f"\n{len(gating)} mutant(s) of enrolled modules not caught:")
-    report += [f"- {n}: {results[n]}" for n in gating]
+    write_results(args.results, "ran", results, shard, args.scope)
+    report, code = verdict(results, enrolled_modules, args.scope)
     say(report, args.report)
+    if not code:
+        return 0
+    gating, _ = split_failures(results, enrolled_modules)
     for name in gating[:SHOW_LIMIT]:
         print(f"\n## {name}\n{mutmut_out('show', name)}")
     if len(gating) > SHOW_LIMIT:

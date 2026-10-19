@@ -48,6 +48,11 @@ def _damaged(f: Path, why: str) -> StorySetupError:
     return StorySetupError(f"{f} is damaged ({why}); delete it to start the story over")
 
 
+RETIRED = ("mutation_gate", "mutation", "mutation_review")
+"""Keys a state saved before 2026-10-19 can hold, for the story's mutation gate, which airlie no longer runs:
+mutation testing runs in the repository's CI. They are dropped when the state is read."""
+
+
 @dataclass
 class StoryState:
     """stories/<card key>/state.json. `stage` is the last stage that finished. `built` maps a layer number
@@ -56,13 +61,7 @@ class StoryState:
     rebuilds it. `base` is the commit the story builds on, as {"ref": "origin/main", "sha": ...}: resolved
     once, so a resume reads and builds on the same code. `gate` is the test gate read from AGENTS.md at that
     commit, as {"commands": [...], "agents_md": <its blob sha>}: read once, so every layer built without a
-    person's --test-cmd, resumed or not, passes the same commands. `mutation_gate` is AGENTS.md's Mutation
-    gate at that commit, read with the test gate, as {"commands": [...], "agents_md": <its blob sha>}, or
-    {"commands": []} when it has none. `mutation` is how that gate went over the built stack: {"status":
-    "passed", "skipped" or "survived", "head": <the top layer's commit>, "summary" when mutants survived},
-    kept so a resume never runs it again for the same stack. `mutation_review` is the architect's review of
-    the survivors ({"harden": [...], "ignored": [...], "layer": the hardening layer's number or null}); its
-    hardening layer is the last of `layers`."""
+    person's --test-cmd, resumed or not, passes the same commands."""
 
     path: Path
     card: dict[str, Any]
@@ -77,9 +76,6 @@ class StoryState:
     attempt: dict[str, str] | None = None
     base: dict[str, str] | None = None
     gate: dict[str, Any] | None = None
-    mutation_gate: dict[str, Any] | None = None
-    mutation: dict[str, Any] | None = None
-    mutation_review: dict[str, Any] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
     blocked: str | None = None
@@ -110,7 +106,11 @@ class StoryState:
             raise _damaged(f, type(e).__name__) from None
         if text is not None:
             try:
-                st = cls(path=path, **json.loads(text))
+                data = json.loads(text)
+                if isinstance(data, dict):  # a state from before RETIRED keeps working
+                    for key in RETIRED:
+                        data.pop(key, None)
+                st = cls(path=path, **data)
             except (ValueError, TypeError) as e:
                 raise _damaged(f, type(e).__name__) from None
             for name in ("repo", "stage", "github_repo"):

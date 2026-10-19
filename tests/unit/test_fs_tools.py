@@ -377,3 +377,24 @@ async def test_grep_skips_an_unreadable_file_and_keeps_searching(tmp_path: Path)
     finally:
         locked.chmod(0o644)
     assert r.output == "b.txt:1: hit"
+
+
+# ---- locked files: the tester's tests, for the coder ----
+
+
+async def test_write_file_and_edit_file_refuse_a_locked_file_and_say_why(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), read_only=frozenset({"tests/test_calc.py"}))
+    put(c, "tests/test_calc.py", "def test_mul():\n    assert mul(2, 3) == 6\n")
+    for tool, args in (
+        (WriteFile(), {"path": "tests/test_calc.py", "content": "def test_mul():\n    assert True\n"}),
+        (EditFile(), {"path": "tests/test_calc.py", "old": "== 6", "new": "== 6 or True"}),
+        (
+            WriteFile(),
+            {"path": "./tests/../tests/test_calc.py", "content": "x"},
+        ),  # the same file, spelled oddly
+    ):
+        r = await tool.run(args, c)
+        assert not r.ok and "you cannot change them" in r.output and "say which and why" in r.output
+    assert (c.worktree / "tests/test_calc.py").read_text().endswith("== 6\n")
+    # a file beside it is the coder's own
+    assert (await WriteFile().run({"path": "tests/test_more.py", "content": "x = 1\n"}, c)).ok
