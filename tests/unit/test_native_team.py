@@ -1057,13 +1057,44 @@ async def test_a_continuation_counts_the_files_already_written(tmp_path: Path) -
     deadlines = [
         (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
     ]
-    assert deadlines == [("tests", 3, True), ("code", 9, False)]  # the code is still owed
+    assert deadlines == [("code", 3, False)]  # a change of its own is still owed, by the earlier deadline
     # and the one write-now nudge of a role without a schedule counts an earlier write too
     engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
     team, ctx = make_team(tmp_path, engine, max_steps=10)
     ctx.already_written = ("a.py",)
     await team.run(ctx, Recorder())
     assert told_to_write(engine) == []
+
+
+async def test_a_continuation_owes_a_change_of_its_own_by_the_earlier_deadline(tmp_path: Path) -> None:
+    """AIR-7 layer 02 attempt 5, 2026-10-18: the fix round's two deadlines were both met by the first run's
+    files, so nothing pushed it to write; it probed for 28 steps and changed nothing. A continuation has one
+    deadline, the earlier one, for a write of any kind this round, and loses its read tools WRITE_ONLY_AFTER
+    steps later until that write lands."""
+    engine = FakeEngine({"coder": [*reads(8), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    ctx.already_written = ("tests/unit/test_a.py", "a.py")
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    deadlines = [
+        (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
+    ]
+    assert deadlines == [("code", 3, False)]
+    assert min(requests_saying(engine, "changed nothing")) == 4  # said after step 3
+    assert min(requests_saying(engine, "written nothing this round")) == 8  # reading off after step 7
+    assert (
+        requests_saying(engine, "written no code") == [] and requests_saying(engine, "written no test") == []
+    )
+    # an edit of a test file is the change this round owes, as a code edit would be
+    engine = FakeEngine(
+        {"coder": [*reads(2), write("w", "tests/unit/test_b.py"), *reads(5), FakeReply(text="Done.")]}
+    )
+    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    ctx.already_written = ("tests/unit/test_a.py", "a.py")
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    met = [(e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"]
+    assert met == [(3, True)] and requests_saying(engine, "changed nothing") == []
 
 
 async def test_three_edits_of_one_file_in_a_row_are_not_a_repeat(tmp_path: Path) -> None:
