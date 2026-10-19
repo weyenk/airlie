@@ -382,7 +382,9 @@ class NativeTeam:
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),
                 tools=None if last_turn or toolless else _offered(ctx),
-                thinking=ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn),
+                # the tool-less last turn is cheap by default; its one retry, after a tool call, thinks
+                thinking=ctx.role.thinking
+                and (ctx.role.last_turn_thinking or not last_turn or last_corrected),
                 draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()
