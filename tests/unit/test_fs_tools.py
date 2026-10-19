@@ -115,6 +115,47 @@ async def test_edit_file_names_the_closest_line_when_old_is_misquoted(tmp_path: 
     )
 
 
+async def test_edit_file_matches_old_with_blank_lines_and_trailing_spaces_ignored(tmp_path: Path) -> None:
+    """AIR-7 layer 03, 2026-10-18: a Qwen2.5 coder quoted two imports without the blank line between them,
+    three times, after reading the file. When the exact text is absent and exactly one span matches with
+    blank lines and trailing spaces ignored, that span is edited and the reply says so."""
+    c = ctx(tmp_path)
+    p = put(c, "t.py", "from a import A\n\nfrom b import B   \n\n\ndef f():\n    pass\n")
+    r = await EditFile().run(
+        {
+            "path": "t.py",
+            "old": "from a import A\nfrom b import B",
+            "new": "from a import A\nfrom c import C",
+        },
+        c,
+    )
+    assert (r.ok, r.output) == (
+        True,
+        "edited t.py (`old` matched with its blank lines and trailing spaces ignored; quote the file exactly "
+        "next time)",
+    )
+    assert p.read_text() == "from a import A\nfrom c import C\n\n\ndef f():\n    pass\n"
+    # a trailing newline on `old` takes the last line's newline with it, as an exact match would
+    r = await EditFile().run(
+        {"path": "t.py", "old": "def f():\n    pass\n", "new": "def g():\n    pass\n"}, c
+    )
+    assert r.ok and p.read_text() == "from a import A\nfrom c import C\n\n\ndef g():\n    pass\n"
+
+
+async def test_edit_file_loose_match_still_needs_indentation_and_uniqueness(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "t.py", "def f():\n    x = 1\n\n\ndef g():\n    x = 1\n")
+    # two-space indentation where the file has four: no exact substring, and no loose match either
+    r = await EditFile().run({"path": "t.py", "old": "def f():\n  x = 1", "new": "def f():\n  x = 2"}, c)
+    assert not r.ok and "closest line is 1" in r.output
+    r = await EditFile().run({"path": "t.py", "old": "    x = 1\n", "new": "    x = 2\n"}, c)  # two spans
+    assert (r.ok, r.output) == (False, "error: `old` text occurs 2 times in t.py; make it unique")
+    r = await EditFile().run(
+        {"path": "t.py", "old": "def f():\n\n    x = 1", "new": "def f():\n    x = 2"}, c
+    )
+    assert r.ok and (c.worktree / "t.py").read_text() == "def f():\n    x = 2\n\n\ndef g():\n    x = 1\n"
+
+
 async def test_edit_file_messages_for_missing_and_ambiguous_text(tmp_path: Path) -> None:
     c = ctx(tmp_path)
     p = put(c, "a.txt", "x x\nx\n")
