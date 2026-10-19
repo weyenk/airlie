@@ -480,6 +480,14 @@ class NativeTeam:
                     continue
             corrected = False
             if last_turn:  # it called a tool it was not offered: told once, then there is no answer
+                if ctx.emit is not None:
+                    ctx.emit(
+                        "last_turn_tool_call",
+                        team_id=ctx.team_id,
+                        role=ctx.role_name,
+                        tool=calls[0].name,
+                        ends_run=last_corrected,
+                    )
                 if not last_corrected:
                     last_corrected = True
                     messages.append(Message(role="assistant", content=res.text))

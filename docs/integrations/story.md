@@ -161,13 +161,17 @@ The layers stage was the slowest of a story: the architect used all 20 steps rea
 tokens, each step slower than the last) and then spent 14-20 minutes thinking its answer. Four things shorten it:
 
 - **No thinking on the final answer.** `roles.architect.last_turn_thinking: false`: the turn after the last step
-  (no tools) writes the plan from what was read, without a reasoning pass. Any role may set it.
+  (no tools) writes the plan from what was read, without a reasoning pass. Any role may set it. A role that calls a
+  tool on that turn anyway is told once and thinks on the retry; a second call ends the run at `max_steps`. Each
+  call is a `last_turn_tool_call` event (`tool`, `ends_run`).
 - **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
   from the story's base commit, and the architect is told not to read them again.
 - **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then
   goes on in the same conversation for another round and writes it again; the pipeline compares the two (same layers,
   scopes and criteria) and stops on the first round that changed nothing. The role's `max_steps` still caps it
-  (`max_steps / plan_round_steps` rounds). A later plan that cannot be parsed ends the rounds on the one before.
+  (`max_steps / plan_round_steps` rounds). A first round that ends with no plan, or one that cannot be parsed, goes
+  back in the same conversation (twice at most, `plan_fix` events) before the stage starts over. A later round with
+  no plan, or one that cannot be parsed, ends the rounds on the one before.
   Events: `plan_round` (each plan's layers) and `plan_done` (`converged`, `cap` or `malformed`).
 - **A survey beside refine** (`story.survey`): while product refines the request, the architect reads the code it
   touches (8 steps) and takes notes (files and symbols, where the tests live, the registries a new name goes in,

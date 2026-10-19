@@ -685,6 +685,30 @@ async def test_a_tool_call_on_the_last_turn_is_told_once_and_the_answer_after_it
     assert told.role == "user" and "No tools are available on this turn" in str(told.content)
 
 
+async def test_a_tool_call_on_the_last_turn_is_an_event_each_time(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, read, read]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    events: list[tuple[str, dict[str, Any]]] = []
+    ctx.emit = lambda kind, **f: events.append((kind, f))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "max_steps"
+    called = [f for k, f in events if k == "last_turn_tool_call"]
+    assert called == [
+        {"team_id": ctx.team_id, "role": ctx.role_name, "tool": "read_file", "ends_run": False},
+        {"team_id": ctx.team_id, "role": ctx.role_name, "tool": "read_file", "ends_run": True},
+    ]
+
+
+async def test_a_role_without_thinking_does_not_think_on_the_last_turn_retry(tmp_path: Path) -> None:
+    read = FakeReply(tool_calls=[ToolCall("c1", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [read, read, FakeReply(text="The plan.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=1)
+    ctx.role = ctx.role.model_copy(update={"thinking": False, "last_turn_thinking": False})
+    await team.run(ctx, Recorder())
+    assert [r.thinking for r in engine.requests] == [False, False, False]
+
+
 def reads(n: int) -> list[FakeReply]:
     return [
         FakeReply(tool_calls=[ToolCall(f"r{i}", "read_file", json.dumps({"path": f"f{i}"}))])

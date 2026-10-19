@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from airlie.story.model import Layer, StoryError
-from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, plan_in_rounds, same_layers
+from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE, plan_in_rounds, same_layers
 
 
 def layer(slug: str, scope: str = "a.py", ac: tuple[str, ...] = ("AC1",), title: str = "T") -> Layer:
@@ -143,6 +143,51 @@ async def test_a_verdict_that_is_not_an_object_is_no_verdict() -> None:
     assert await run(s) == "a,b|junk"  # round 3 repeated round 2's layers: converged, on round 2's text
     assert not [e for e in s.events if e[0] == "plan_check"]
     assert s.events[-1][1] == {"reason": "converged", "rounds": 3}
+
+
+class Unfinished(Script):
+    """A Script whose "unfinished" entries are a round that stopped with no answer (a StoryError)."""
+
+    async def first(self) -> str:
+        return self._answer(await super().first())
+
+    async def again(self, nudge: str) -> str:
+        return self._answer(await super().again(nudge))
+
+    @staticmethod
+    def _answer(text: str) -> str:
+        if text == "unfinished":
+            raise StoryError("the architect did not finish (max_steps)")
+        return text
+
+
+async def test_a_first_round_with_no_answer_is_asked_for_its_plan_in_the_same_conversation() -> None:
+    s = Unfinished("unfinished", "a,b|stop")
+    assert await run(s) == "a,b|stop"
+    assert s.nudges == [UNFINISHED_NUDGE]
+    fix = [f for k, f in s.events if k == "plan_fix"]
+    assert fix == [{"attempt": 1, "error": "the architect did not finish (max_steps)"}]
+
+
+async def test_a_first_round_that_never_answers_is_a_story_error_after_its_fixes() -> None:
+    s = Unfinished("unfinished", "unfinished", "unfinished")
+    with pytest.raises(StoryError, match="did not finish"):
+        await run(s)
+    assert s.nudges == [UNFINISHED_NUDGE, UNFINISHED_NUDGE]
+
+
+async def test_an_unfinished_and_an_unusable_first_round_share_the_fixes() -> None:
+    s = Unfinished("unfinished", "garbage", "a|stop")
+    assert await run(s) == "a|stop"
+    assert s.nudges == [UNFINISHED_NUDGE, FIX_NUDGE.format(error="no JSON")]
+
+
+async def test_a_later_round_with_no_answer_ends_the_rounds_on_the_plan_before_it() -> None:
+    s = Unfinished("a|more", "unfinished")
+    assert await run(s) == "a|more"
+    unusable = {"round": 2, "error": "the architect did not finish (max_steps)"}
+    assert ("plan_round_unusable", unusable) in s.events
+    assert s.events[-1][1] == {"reason": "malformed", "rounds": 1}
 
 
 def test_two_plans_are_the_same_when_they_have_the_same_layers_owning_the_same_criteria() -> None:
