@@ -97,6 +97,25 @@ export async function request(path, { method = "GET", body, key, signal } = {}) 
   return r.json();
 }
 
+/** The metrics tab's summary: {generation_tps, prefill_tps, stories, fix_rounds_per_layer, by}. */
+export async function metricsSummary({ from, to, slice }) {
+  const q = new URLSearchParams();
+  if (from !== undefined) q.set("from", String(from));
+  q.set("to", String(to));
+  if (slice) q.set("slice", slice);
+  return request(`/v1/metrics/summary?${q}`);
+}
+
+/** The metrics tab's series: one row per bucket, {t, <slice>, p10, p50, p90}. */
+export async function metricsSeries({ metric, from, to, slice }) {
+  const q = new URLSearchParams();
+  if (metric) q.set("metric", metric);
+  if (from !== undefined) q.set("from", String(from));
+  q.set("to", String(to));
+  if (slice) q.set("slice", slice);
+  return request(`/v1/metrics/series?${q}`);
+}
+
 /** Who the server says we are (`/v1/auth/me`), or null for nobody. Never triggers the sign-in handler. */
 export async function whoami() {
   try {

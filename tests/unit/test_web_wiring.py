@@ -160,3 +160,65 @@ def test_repo_airlie_yaml_grants_research_web_tools() -> None:
     assert cfg.web.search.url == "http://127.0.0.1:8888"
     assert set(cfg.roles["research"].tools or []) >= {"web_search", "web_fetch"}
     assert cfg.validate_references() == []
+
+
+# ---- Metrics screen (layer 4): static wiring checks; the gate has no JS runner, so the tests read
+# the shipped sources and assert the literals that prove the screen is wired and complete. ----
+
+WEB = Path(__file__).resolve().parents[2] / "src" / "airlie" / "serve" / "web"
+
+
+def _app_js() -> str:
+    return (WEB / "app.js").read_text()
+
+
+def _api_js() -> str:
+    return (WEB / "api.js").read_text()
+
+
+def _metrics_js() -> str:
+    return (WEB / "screens" / "metrics.js").read_text()
+
+
+def test_app_js_routes_metrics_to_the_metrics_screen() -> None:
+    """AC8: the Metrics nav entry loads screens/metrics.js, not the coming-soon placeholder."""
+    src = _app_js()
+    assert 'import("./screens/metrics.js")' in src
+    assert "coming soon" not in src.lower()
+
+
+def test_api_js_exposes_metrics_summary_and_series_with_the_bearer_key() -> None:
+    """AC9: metricsSummary/metricsSeries call /v1/metrics/summary and /v1/metrics/series via request()."""
+    src = _api_js()
+    assert "export async function metricsSummary" in src
+    assert "export async function metricsSeries" in src
+    assert "/v1/metrics/summary" in src
+    assert "/v1/metrics/series" in src
+
+
+def test_metrics_screen_renders_range_picker_slice_select_tiles_and_chart() -> None:
+    """AC8: the screen has the five range options, five slice options, four stat tiles and a series chart."""
+    src = _metrics_js()
+    for label in ("4 hours", "24 hours", "7 days", "30 days", "All time"):
+        assert label in src, f"missing range option {label!r}"
+    for opt in ("role", "model", "topology", "task", "agent"):
+        assert f'"{opt}"' in src, f"missing slice option {opt!r}"
+    for tile in ("Generation tok/s", "Prefill tok/s", "Stories", "Fix rounds per layer"):
+        assert tile in src, f"missing stat tile {tile!r}"
+    assert "svg" in src and "polyline" in src
+
+
+def test_metrics_chart_plots_one_line_per_slice_with_a_p10_p90_band() -> None:
+    """AC9: the chart renders one line per slice value from the series rows, band from p10 to p90."""
+    src = _metrics_js()
+    assert "p10" in src and "p90" in src
+    assert "polygon" in src
+    assert "generation_tps" in src
+
+
+def test_metrics_screen_labels_missing_slices_unknown_and_guards_empty_data() -> None:
+    """AC10: missing/unknown slice values render as 'unknown' and empty series arrays throw nothing."""
+    src = _metrics_js()
+    assert "'unknown'" in src or '"unknown"' in src
+    assert "?? 'unknown'" in src or '?? "unknown"' in src
+    assert ".length" in src  # the empty-array guard
