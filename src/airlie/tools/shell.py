@@ -1,17 +1,19 @@
 """Builtin process tools: shell, run_tests, git. All timeboxed, output-capped, run inside the worktree with
-the agent environment (airlie.subproc: no credentials)."""
+the agent environment (airlie.subproc: no credentials) and, on macOS, unable to write outside it
+(airlie.tools.confine)."""
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import shlex
+import shutil
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from airlie.subproc import agent_env, kill_group
+from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
 from airlie.tools.scope import autofix_steps, changed_test_files, scoped_steps
@@ -21,8 +23,8 @@ GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "refl
 
 async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> ToolResult:
     """Run a command a model chose, or code a model wrote, in the worktree: with the agent environment, no
-    stdin, and in a process group of its own, so a timeout or the caller being cancelled kills the command
-    and everything it started."""
+    stdin, confined to writing where its work is (ctx.sandbox), and in a process group of its own, so a
+    timeout or the caller being cancelled kills the command and everything it started."""
     rc, text = await _run(cmd, ctx, shell=shell)
     if rc is None:
         return ToolResult(False, text)
@@ -32,19 +34,30 @@ async def run_cmd(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> Too
     return ToolResult(rc == 0, body)
 
 
-async def _run(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> tuple[int | None, str]:
+async def _run(
+    cmd: list[str] | str, ctx: ToolContext, *, shell: bool, cwd: Path | None = None
+) -> tuple[int | None, str]:
     """`run_cmd`'s work: (the exit code, the whole output), or (None, why) when the command could not start or
-    timed out."""
+    timed out. It runs in `cwd` (default: the worktree); what it may write is set by the worktree."""
+    env = agent_env(ctx.worktree)
+    confined = ctx.sandbox and confine.available()
     spawn: dict[str, Any] = dict(
-        cwd=ctx.worktree,
-        env=agent_env(ctx.worktree),
+        cwd=cwd or ctx.worktree,
+        env=env,
         stdin=asyncio.subprocess.DEVNULL,  # never the person's terminal
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,  # its own process group: kill_group reaches what it starts
     )
     try:
-        if shell:
+        if confined:
+            command = ["/bin/sh", "-c", str(cmd)] if shell else [str(c) for c in cmd]
+            if not shell and shutil.which(command[0], path=env.get("PATH")) is None:
+                # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
+                raise FileNotFoundError(2, "No such file or directory", command[0])
+            roots = confine.writable_roots(ctx.worktree, ctx.writable)
+            proc = await asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn)
+        elif shell:
             proc = await asyncio.create_subprocess_shell(str(cmd), **spawn)
         else:
             proc = await asyncio.create_subprocess_exec(*cmd, **spawn)
@@ -59,7 +72,8 @@ async def _run(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> tuple[
         await kill_group(proc)
         raise
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
-    return proc.returncode or 0, text
+    rc = proc.returncode or 0
+    return rc, confine.explain(text, rc) if confined else text
 
 
 async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
@@ -74,7 +88,7 @@ async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
         for step in steps:
             script = f"{{ {step}\n}}\nrc=$?\npwd > {shlex.quote(str(where))}\nexit $rc"
             where.unlink(missing_ok=True)
-            rc, text = await _run(script, dataclasses.replace(ctx, worktree=cwd), shell=True)
+            rc, text = await _run(script, ctx, shell=True, cwd=cwd)
             ran.append((step, rc, text))
             if where.is_file() and Path(moved := where.read_text().strip()).is_dir():
                 cwd = Path(moved)

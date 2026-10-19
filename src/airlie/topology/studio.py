@@ -26,6 +26,7 @@ from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
     add_worktree,
     changed_files,
+    changed_in_tree,
     commit_wip,
     diff_between,
     differs_from,
@@ -164,7 +165,7 @@ class StudioOrchestrator:
         self.team = team_factory or NativeTeam(engine)
         self.router = router or build_router(cfg)
         self.routing_log = RoutingLog(self.run_dir.path / "routing.jsonl")
-        self.observer = LoggingObserver(self.sink, self.run_dir)
+        self.observer = LoggingObserver(self.sink, self.run_dir, topology="studio")
         self.scheduler = SlotScheduler(cfg.scheduler.max_active)
         self.write_lock = asyncio.Lock()
         self.sem = asyncio.Semaphore(cfg.studio.parallel)
@@ -274,6 +275,7 @@ class StudioOrchestrator:
             run_dir=self.run_dir.path,
             role=role_name,
             read_only=self.locked if role_name != self.lock_owner else frozenset(),
+            **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:
@@ -392,9 +394,10 @@ class StudioOrchestrator:
     ) -> TeamContext:
         assert self.worktree is not None
         state, goal, nudge = self._continuation(run, parent, nudge)
-        # a fix round or follow-up continues work that is in the worktree (committed before the review):
-        # its write nudges must count those files, not ask for them again (AIR-7, 2026-10-18)
-        written = tuple(changed_files(self.worktree, run.before)) if parent is not None and run.before else ()
+        # a fix round or follow-up continues work that is in the worktree (committed before the review), and
+        # a first run may start on what the subtasks it depends on left there (a tester's tests): the write
+        # nudges must count those files, not ask for them again (AIR-7, 2026-10-18; AIR-30, 2026-10-19)
+        written = tuple(changed_in_tree(self.worktree, run.before)) if run.before else ()
         return TeamContext(
             team_id=run.subtask.id,
             goal=goal,
@@ -422,18 +425,19 @@ class StudioOrchestrator:
         preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
         writes = self._writes(role)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
-        ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
         try:
             if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
                 async with self.write_lock, self.sem:
                     assert self.worktree is not None
                     before = head_sha(self.worktree)  # this subtask's own base for the review diff
                     run.before = before
+                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
                     run.result = await self.team.run(ctx, self.observer)
                     await self._done_check(run, role, test_cmd, preamble, before)
                     await self._review_and_fix(run, role, test_cmd, preamble, before)
             else:
                 async with self.sem:
+                    ctx = self._context(run, role, test_cmd, preamble=preamble, parent=None, nudge=None)
                     run.result = await self.team.run(ctx, self.observer)
         except Exception as e:  # noqa: BLE001 - a broken subtask is reported, never a run-killer
             run.result = TeamResult(
@@ -832,13 +836,20 @@ class StudioOrchestrator:
             return None, ""
         self._restore_locked()
         if self.scope_base:  # the last edit may have come after the last run_tests: mend its style too
-            fix = ToolContext(self.worktree, self.cfg.tools.shell_timeout_s, self.cfg.tools.output_cap_chars)
+            fix = ToolContext(
+                self.worktree,
+                self.cfg.tools.shell_timeout_s,
+                self.cfg.tools.output_cap_chars,
+                **self.cfg.tools.confinement(),
+            )
             await run_steps(autofix_steps(self.test_steps), fix)
         passed = self.gate_memo.passed  # fingerprinted only when there is a pass to compare with
         if passed is not None and tree_fingerprint(self.worktree) == passed:
             return True, "the whole gate already passed on exactly this tree"
         tools = self.cfg.tools
-        ctx = ToolContext(self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd)
+        ctx = ToolContext(
+            self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd, **tools.confinement()
+        )
         result = await run_cmd(test_cmd, ctx, shell=True)
         if result.ok:
             self.gate_memo.passed = tree_fingerprint(self.worktree)

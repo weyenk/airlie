@@ -15,7 +15,7 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from airlie.teams.worktree import changed_files, find_file, read_blob
 from airlie.tools.protocol import ToolContext
@@ -191,9 +191,11 @@ def _same(test_id: str, reported: str) -> bool:
 class PytestChecks:
     """The pre-code check for a Python repository whose gate runs pytest in `step`."""
 
-    def __init__(self, step: str, *, timeout_s: float) -> None:
+    def __init__(self, step: str, *, timeout_s: float, confinement: dict[str, Any] | None = None) -> None:
         self.step = step
         self.timeout_s = timeout_s
+        self.confinement = confinement or {}
+        """ToolContext's sandbox and writable for the test runs (tools.confinement); default: confined."""
 
     async def run(self, worktree: Path, base: str) -> list[Finding]:
         """The findings on the tests the worktree's HEAD added or changed since `base`, with the suite run on
@@ -205,7 +207,7 @@ class PytestChecks:
         findings += [
             Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source) for t in tests if not t.asserts
         ]
-        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS)
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
         result = await run_cmd(f"{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
         code = _EXIT.search(result.output)
         if not result.ok and (code is None or int(code.group(1)) not in _RAN):
@@ -234,10 +236,13 @@ def static_findings(worktree: Path, base: str) -> list[Finding]:
     return found
 
 
-def checks_for(commands: Sequence[str], *, timeout_s: float) -> PytestChecks | None:
-    """The check for a gate of `commands`: pytest's, on the first command that runs pytest, else None."""
+def checks_for(
+    commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
+) -> PytestChecks | None:
+    """The check for a gate of `commands`: pytest's, on the first command that runs pytest, else None.
+    `confinement` is the ToolContext's sandbox and writable, for the suite the check runs."""
     step = next((c for c in commands if pytest_runner([c]) is not None), None)
-    return PytestChecks(step, timeout_s=timeout_s) if step else None
+    return PytestChecks(step, timeout_s=timeout_s, confinement=confinement) if step else None
 
 
 LOOSE_MATCH = (

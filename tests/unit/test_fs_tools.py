@@ -131,6 +131,21 @@ async def test_write_file_rewrites_a_long_file_the_coder_created_even_once_a_rou
     assert r.ok and p.read_text() == "y = 2\n"
 
 
+async def test_edit_file_skips_whitespace_only_differences_when_naming_the_first_that_differs(
+    tmp_path: Path,
+) -> None:
+    """AIR-30 layer 02, 2026-10-19: the hint named a line of sixteen spaces against an empty line, which the
+    loose match ignores anyway, while the real mismatch was twenty lines down; the coder resent the same
+    `old` three times. Whitespace-only differences do not count; the first real one is named."""
+    c = ctx(tmp_path)
+    put(c, "t.py", "def f():\n\n    a = [\n        m\n        for m in xs\n    ]\n")
+    old = "def f():\n    \n    a = [\n        m for m in xs\n    ]\n"
+    r = await EditFile().run({"path": "t.py", "old": old, "new": "..."}, c)
+    assert not r.ok
+    assert "the first line of `old` that differs is its line 4, `        m for m in xs`" in r.output
+    assert "where the file has line 4: `        m`" in r.output
+
+
 def test_write_file_tells_the_model_its_overwrite_limit_before_it_tries() -> None:
     """A coder that reads a 1300-line test file and rewrites it whole spends minutes generating a reply
     the tool refuses (AIR-31 layer 02, twice in one layer): the description names the limit and the way

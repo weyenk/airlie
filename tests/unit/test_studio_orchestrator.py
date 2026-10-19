@@ -115,6 +115,61 @@ async def test_plan_route_run_review_synthesis(tmp_path: Path) -> None:
     assert (report.run_dir.path / "studio" / "PASS").exists()
 
 
+async def test_a_step_event_names_the_model_role_and_topology_that_took_it(tmp_path: Path) -> None:
+    """2026-10-19: studio step events wrote model, role and topology as null, so the metrics tab could not
+    slice a run by model. Each step names its own subtask's role, and that role's model."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {"chief": [PLAN, SYNTH], "coder": [WRITE_PASS, RUN, DONE], "docs": [DONE], "reviewer": [APPROVE]}
+    )
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "fix the build", repo=repo, test_cmd="./check.sh"
+    )
+    steps = [e for e in events(report) if e["kind"] == "step"]
+    assert steps and {(e["team_id"], e["role"], e["model"], e["topology"]) for e in steps} == {
+        ("fix", "coder", "base", "studio")
+    }
+
+
+async def test_a_subtask_that_follows_a_writer_starts_with_that_writers_files_as_already_written(
+    tmp_path: Path,
+) -> None:
+    """AIR-30 layer 02, 2026-10-19: the tester wrote the layer's tests, then the coder's write schedule asked
+    it for a test by a quarter of its steps and switched its reads off when none came. What the subtasks
+    before it left in the worktree counts as written from the coder's first step."""
+    d = json.loads(PLAN.text)
+    d["subtasks"] = [
+        {"id": "t", "role": "qa", "brief": "write the test"},
+        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+    ]
+    write_test = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
+    )
+    engine = FakeEngine(
+        {
+            "chief": [FakeReply(text=json.dumps(d)), SYNTH],
+            "qa": [write_test, DONE],
+            "coder": [WRITE_PASS, RUN, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
+    report = await orch.execute_task(
+        "fix the build", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    assert report.final_answer == "all done"
+    by_id = {c.team_id: c.already_written for c in seen}
+    assert by_id["t"] == () and by_id["fix"] == ("tests/test_x.py",)
+
+
 def plan_with_criteria() -> FakeReply:
     d = json.loads(PLAN.text)
     d["subtasks"][0]["brief"] = (

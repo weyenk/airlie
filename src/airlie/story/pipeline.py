@@ -708,7 +708,7 @@ class StoryPipeline:
         findings go back to the tester once (`follow_up`), and what is left after that is returned, for the
         layer to stop on. Each finding is an event. A gate that does not run pytest gets no check, and an
         event says so."""
-        checks = checks_for(self.commands, timeout_s=self.timeout_s)
+        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement())
         if checks is None:
             reason = "the gate runs no pytest: the pre-code check is for pytest only"
             st.emit("test_checks_skipped", layer=nn, reason=reason)

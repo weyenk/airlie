@@ -107,8 +107,8 @@ class LoggingObserver:
             prefill_ms=round(step.prefill_ms, 1),
             gen_ms=round(step.gen_ms, 1),
             tool_ms=round(step.tool_ms, 1),
-            model=self.model,
-            role=self.role_name,
+            model=step.model or self.model,
+            role=step.role or self.role_name,
             topology=self.topology,
             story=self.run_dir.story_key,
             span_id=uuid.uuid4().hex,
@@ -403,6 +403,7 @@ class ParallelAgentTeamOrchestrator:
                 self.cfg.tools.output_cap_chars,
                 test_cmd,
                 write_file_max_overwrite_lines=self.cfg.tools.write_file_max_overwrite_lines,
+                **self.cfg.tools.confinement(),
             ),
         )
         observer: StepObserver = self.hal_observer or self.observer

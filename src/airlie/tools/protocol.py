@@ -29,6 +29,10 @@ class ToolContext:
     read_only: frozenset[str] = frozenset()
     """Paths (from the worktree's root) write_file and edit_file refuse: a story layer's acceptance tests, the
     tester's, are the coder's contract (studio.lock)."""
+    sandbox: bool = True
+    """Commands run where they cannot write outside the worktree (airlie.tools.confine; macOS only)."""
+    writable: tuple[Path, ...] = ()
+    """Directories a confined command may also write under (tools.writable, or a gate's report file)."""
 
 
 @dataclass(frozen=True)
