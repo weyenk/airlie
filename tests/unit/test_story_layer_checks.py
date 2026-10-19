@@ -285,3 +285,12 @@ def test_feedback_names_each_test_and_why() -> None:
     assert "- tests/test_a.py::test_x: it passes on the layer's base" in text
     assert "- tests/test_a.py::test_y: it has no assert" in text
     assert "run_tests" in text
+
+
+def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> None:
+    """AIR-31 layer 02: the brief asked for a test proving the feature is a no-op below its threshold. Such a
+    test passes on the base whatever the coder does, so it is told the way out, not only "make it fail"."""
+    text = feedback(
+        [Finding("vacuous_test", "tests/test_a.py::test_nothing", "it passes on the layer's base", "...")]
+    )
+    assert "cannot fail on the base" in text and "same test" in text and "triggers" in text
