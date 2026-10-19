@@ -40,6 +40,12 @@ CREDENTIALS = (
 )
 """Not in an agent's environment: gh's tokens, airlie's Jira settings, serve's API key and the SSH agent."""
 
+OWN_PYTHON = ("VIRTUAL_ENV",)
+"""Not in an agent's environment either: the virtual environment airlie itself runs in (`uv run airlie` sets
+it to airlie's checkout). A story's worktree has its own, which `uv run` there finds by itself; with airlie's
+in the environment, every `uv run` in the worktree warns that it does not match and is ignored, and the coder
+pipes each command through `grep -v VIRTUAL_ENV`, losing its exit code (AIR-7 layer 02, 2026-10-18)."""
+
 NO_PROMPTS = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false", "SSH_ASKPASS": "false"}
 """git and ssh never prompt for a password: in an agent's environment, and in publishing's (both ways)."""
 NO_SSH = {"GIT_SSH_COMMAND": "false"}
@@ -106,11 +112,12 @@ def url_credential_helpers() -> tuple[str, ...]:
 
 
 def agent_env() -> dict[str, str]:
-    """The environment for code a model chose or wrote: airlie's own without CREDENTIALS, gh pointed at an
-    empty configuration directory, git and ssh unable to prompt (NO_PROMPTS) or to use SSH (NO_SSH), and every
-    git credential helper reset. An empty `credential.helper` empties the list of helpers, and so does each
-    `credential.<url>.helper` set to empty."""
-    env = {name: value for name, value in os.environ.items() if name not in CREDENTIALS}
+    """The environment for code a model chose or wrote: airlie's own without CREDENTIALS or OWN_PYTHON, gh
+    pointed at an empty configuration directory, git and ssh unable to prompt (NO_PROMPTS) or to use SSH
+    (NO_SSH), and every git credential helper reset. An empty `credential.helper` empties the list of helpers,
+    and so does each `credential.<url>.helper` set to empty."""
+    dropped = (*CREDENTIALS, *OWN_PYTHON)
+    env = {name: value for name, value in os.environ.items() if name not in dropped}
     env.update(NO_PROMPTS)
     env.update(NO_SSH)
     env["GH_CONFIG_DIR"] = str(gh_config_dir())

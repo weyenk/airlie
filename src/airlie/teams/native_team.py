@@ -246,7 +246,9 @@ class NativeTeam:
         toolless = not ctx.tools.names()
         goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble, tools=not toolless)
         messages: list[Message]
+        attempt = 0  # the first run of this conversation; a resumed one is the next attempt
         if ctx.initial_state is not None:
+            attempt = int(ctx.initial_state.get("attempt", 0)) + 1
             messages, stale = _without_stale_budget(load_messages(ctx.initial_state["messages"]))
             first = ctx.nudge or goal_msg
             if stale:
@@ -444,6 +446,7 @@ class NativeTeam:
                     ok=result.ok,
                     assistant_text=res.text,
                     reasoning=res.reasoning,
+                    attempt=attempt,
                     prompt_tokens=res.prompt_tokens,
                     completion_tokens=res.completion_tokens,
                     gen_ms=gen_ms,
@@ -544,7 +547,11 @@ class NativeTeam:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             wall_ms=(time.monotonic() - t0) * 1000.0,
-            state={"messages": dump_messages(messages)} if ctx.stop_when is not None else None,
+            state=(
+                {"messages": dump_messages(messages), "attempt": attempt}
+                if ctx.stop_when is not None
+                else None
+            ),
             last_test_output=last_test_output,
         )
 

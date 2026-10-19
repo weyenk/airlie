@@ -54,6 +54,9 @@ class StepRecord:
     assistant_text: str = ""
     reasoning: str = ""
     """What the model thought before the action (a thinking role); the step trace keeps it."""
+    attempt: int = 0
+    """Which run of this team's conversation the step belongs to: 0 for the first, then one more for each
+    run resumed from the last one's state (a fix round, a follow-up), whose steps count from 1 again."""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     gen_ms: float = 0.0

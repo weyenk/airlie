@@ -1127,6 +1127,27 @@ async def test_a_role_without_write_tools_may_answer_with_text_at_once(tmp_path:
     assert requests_saying(engine, "nothing has been done") == []
 
 
+async def test_a_resumed_run_counts_its_attempt_in_its_steps_and_its_state(tmp_path: Path) -> None:
+    """The first run is attempt 0; a run resumed from its state is the next attempt (a fix round, a
+    follow-up), so the observer can keep each attempt's steps apart. A state from before attempts were counted
+    is attempt 0."""
+    from airlie.teams.native_team import dump_messages
+
+    engine = FakeEngine({"coder": [write("w", "a.py"), FakeReply(text="done")] * 3})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.stop_when = lambda _s: False  # keeps the state
+    rec = Recorder()
+    first = await team.run(ctx, rec)
+    assert first.state is not None and first.state["attempt"] == 0 and rec.steps[-1].attempt == 0
+    ctx.initial_state = first.state
+    ctx.nudge = "fix it"
+    second = await team.run(ctx, rec)
+    assert second.state is not None and second.state["attempt"] == 1 and rec.steps[-1].attempt == 1
+    ctx.initial_state = {"messages": dump_messages([])}
+    third = await team.run(ctx, rec)
+    assert third.state is not None and third.state["attempt"] == 1 and rec.steps[-1].attempt == 1
+
+
 async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages(tmp_path: Path) -> None:
     """AIR-7 layer 02 fix round, 2026-10-18: the resumed history still said "You have used all 40 of your
     steps: no more tools" and "No tools are available on this turn", so the coder answered the reviewer's
