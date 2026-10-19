@@ -161,7 +161,10 @@ one run; a profile name that is not a kind (a named variant, or a parent other
 profiles `extends`) can be selected the same way and takes its kind from its own `topology.kind` or the file's.
 `--k N` with `N > 1` under the `single` kind selects the `teams` profile. `task doctor` projects memory per
 profile across every managed engine. A profile that changes engine settings (`max_kv_size`, `server_parsers`,
-the resident model set) takes effect at the next `task restart`.
+the resident model set) takes effect at the next `task restart`. `studio-qwen25` is `studio` with Qwen2.5-32B
+(`qwen25_32b`, already in the catalog) in the coder seat, an experiment kept beside the default:
+`task restart -- --topology studio-qwen25`, and `story: { topology: studio-qwen25 }` in `airlie.local.yaml`
+makes `task story:tick` build with it.
 
 ## Learning to Share
 

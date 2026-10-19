@@ -330,6 +330,24 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
 
+def test_the_qwen25_experiment_is_a_profile_beside_the_default() -> None:
+    """Noah 2026-10-18: Qwen2.5-32B in the coder seat as an experiment; the default and its parsers stay."""
+    base = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert base.roles["coder"].model == "generalist"
+    assert base.models["qwen25_32b"].tool_call_parser == "qwen"
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"].model == "generalist"
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
+    coder = cfg.roles["coder"]
+    assert (coder.model, coder.thinking, coder.max_tokens) == ("qwen25_32b", False, 10240)
+    # the server-wide parser follows the coder's model: airlie's, which reads the generalist's XML too
+    assert (cfg.models["qwen25_32b"].tool_call_parser, cfg.models["qwen25_32b"].reasoning_parser) == (
+        "qwen3_xml_raw",
+        "qwen3",
+    )
+    assert [cfg.models[m].preload for m in ("qwen25_32b", "generalist", "reviewer")] == [True, True, True]
+    assert cfg.roles["chief"].model == "generalist" and cfg.engines["main"].max_kv_size == 65536
+
+
 # ---- M0 Task 2: catalog fields ----
 
 
