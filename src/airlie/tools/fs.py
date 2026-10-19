@@ -92,8 +92,9 @@ class ReadFile:
 class WriteFile:
     name = "write_file"
     description = (
-        "Create a text file in the repository with the given content, or overwrite a short one. "
-        "Change a long existing file with edit_file."
+        "Create a text file in the repository with the given content, or overwrite one of at most "
+        f"{ToolContext.write_file_max_overwrite_lines} lines. A longer existing file is refused unread: "
+        "change it with edit_file, or put new content in a new file."
     )
     parameters = {
         "type": "object",
