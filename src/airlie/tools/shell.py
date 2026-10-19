@@ -37,7 +37,7 @@ async def _run(cmd: list[str] | str, ctx: ToolContext, *, shell: bool) -> tuple[
     timed out."""
     spawn: dict[str, Any] = dict(
         cwd=ctx.worktree,
-        env=agent_env(),
+        env=agent_env(ctx.worktree),
         stdin=asyncio.subprocess.DEVNULL,  # never the person's terminal
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,

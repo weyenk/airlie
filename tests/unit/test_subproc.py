@@ -143,6 +143,30 @@ def test_the_agent_environment_has_no_active_virtual_environment(monkeypatch: py
     assert "VIRTUAL_ENV" not in agent_env()
 
 
+def test_the_agent_path_in_a_worktree_puts_airlies_own_interpreter_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AIR-30 layer 02, 2026-10-19: `uv run airlie story tick` put airlie's checkout's .venv/bin first on
+    PATH, so the coder's own `python -m pytest` in its worktree ran airlie's interpreter and tested the code
+    of main, not its layer (a field layer 01 added was "not permitted"). Those bins go last on PATH."""
+    import sys
+
+    own = str(Path(sys.prefix) / "bin")
+    monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/airlie/.venv")
+    monkeypatch.setenv("PATH", f"{own}:/somewhere/airlie/.venv/bin:/usr/bin:/bin")
+    assert agent_env(tmp_path)["PATH"] == f"/usr/bin:/bin:{own}:/somewhere/airlie/.venv/bin"
+    assert agent_env()["PATH"] == os.environ["PATH"]  # airlie's own commands (evals, publishing) keep theirs
+
+
+def test_the_agent_path_starts_with_the_worktrees_own_venv_when_it_has_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert agent_env(tmp_path)["PATH"] == "/usr/bin:/bin"  # no .venv yet: nothing to put first
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    assert agent_env(tmp_path)["PATH"] == f"{tmp_path / '.venv' / 'bin'}:/usr/bin:/bin"
+
+
 def test_url_credential_helpers_lists_each_url_specific_key_once(planted: Path) -> None:
     planted.write_text(
         planted.read_text()
