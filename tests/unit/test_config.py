@@ -928,6 +928,28 @@ def test_auth_refuses_zero_session_days(tmp_path: Path) -> None:
         load_config(write(tmp_path, data))
 
 
+def test_a_role_without_on_context_full_defaults_to_stop(tmp_path: Path) -> None:
+    role = load_config(write(tmp_path, MINIMAL)).roles["coder"]
+    assert role.on_context_full == "stop"
+
+
+def test_on_context_full_must_be_stop_or_trim(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "on_context_full": "pause"}},
+    }
+    with pytest.raises(ConfigError, match=r"roles\.coder\.on_context_full must be one of: stop, trim"):
+        load_config(write(tmp_path, data))
+
+
+def test_on_context_full_trim_loads(tmp_path: Path) -> None:
+    data = {
+        **MINIMAL,
+        "roles": {**MINIMAL["roles"], "coder": {**MINIMAL["roles"]["coder"], "on_context_full": "trim"}},
+    }
+    assert load_config(write(tmp_path, data)).roles["coder"].on_context_full == "trim"
+
+
 def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_first(tmp_path: Path) -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     ws = cfg.roles["coder"].write_schedule

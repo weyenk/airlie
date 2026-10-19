@@ -26,6 +26,7 @@ StopReason = Literal[
     "cut_off",
     "malformed_call",
     "no_tools",
+    "context_full",
 ]
 """cut_off: a reply with no tool call ended at max_tokens: not a finished answer, whatever text it holds.
 malformed_call: two replies in a row held a tool call the server could not parse, left in the text.
