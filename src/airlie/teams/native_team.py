@@ -5,6 +5,7 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -14,7 +15,15 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from airlie.engine.protocol import Engine
-from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, ToolCall, image_part
+from airlie.engine.types import (
+    ContentPart,
+    EngineError,
+    GenRequest,
+    GenResult,
+    Message,
+    ToolCall,
+    image_part,
+)
 from airlie.skills import prompt_text
 from airlie.teams.call_repair import Repair, repair_call
 from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
@@ -140,6 +149,12 @@ WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
 READ_REFUSED = "reading is switched off: use write_file, edit_file or run_tests"
 """The observation a read call gets while reading is switched off: the call does not run, the step counts."""
+ENGINE_RETRIES = 1
+"""How many times one step's generation is asked again after an EngineError, before the run stops. AIR-31
+layer 02 (2026-10-19): vllm-mlx sent one chunk and then nothing for its 600 s inactivity guard; the run ended
+as engine_error with the conversation lost, when the same request a moment later would have gone through."""
+ENGINE_RETRY_S = 5.0
+"""The pause before a retried generation: the engine's guard has just cancelled the request on its side."""
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
 
@@ -255,6 +270,28 @@ class NativeTeam:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
+    async def _generate(self, ctx: TeamContext, req: GenRequest, steps: int) -> GenResult:
+        """One step's generation, asked again up to ENGINE_RETRIES times after an EngineError (a stalled or
+        dropped request) with the conversation intact, after ENGINE_RETRY_S; the last error is raised."""
+        for attempt in range(ENGINE_RETRIES + 1):
+            try:
+                async with ctx.scheduler.generation(ctx.team_id):
+                    return await self.engine.generate(req)
+            except EngineError as e:
+                if attempt == ENGINE_RETRIES:
+                    raise
+                if ctx.emit is not None:
+                    ctx.emit(
+                        "engine_retry",
+                        team_id=ctx.team_id,
+                        role=ctx.role_name,
+                        step=steps + 1,
+                        attempt=attempt + 1,
+                        error=str(e)[:300],
+                    )
+                await asyncio.sleep(ENGINE_RETRY_S)
+        raise AssertionError("unreachable: the last attempt raises or returns")
+
     async def run(self, ctx: TeamContext, observer: StepObserver) -> TeamResult:
         t0 = time.monotonic()
         system = prompt_text(ctx.role.prompt)
@@ -340,8 +377,7 @@ class NativeTeam:
             )
             g0 = time.monotonic()
             try:
-                async with ctx.scheduler.generation(ctx.team_id):
-                    res = await self.engine.generate(req)
+                res = await self._generate(ctx, req, steps)
             except EngineError as e:
                 final_text = f"engine error: {e}"
                 stop = "engine_error"
