@@ -94,8 +94,10 @@ class LoggingObserver:
             gen_ms=round(step.gen_ms, 1),
             tool_ms=round(step.tool_ms, 1),
         )
+        # a later attempt (a fix round) counts its steps from 1 again: its own folder, named as its review
+        folder = step.team_id if step.attempt == 0 else f"{step.team_id}/round-{step.attempt}"
         self.run_dir.write_trace(
-            f"{step.team_id}/step-{step.step_num:03d}.json",
+            f"{folder}/step-{step.step_num:03d}.json",
             {
                 "u_t": {"name": step.u_t.name, "arguments": step.u_t.arguments},
                 "o_t": step.o_t,
