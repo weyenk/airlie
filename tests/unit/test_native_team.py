@@ -1277,6 +1277,46 @@ async def test_a_writer_whose_only_edit_failed_and_then_answers_with_text_is_sen
     assert [e["kind"] for e in events.records if e["kind"] == "text_before_action"] == ["text_before_action"]
 
 
+class FlakyEngine(FakeEngine):
+    """A fake engine whose first `failures` generations raise EngineError, as a stalled request does."""
+
+    def __init__(self, replies: Any, failures: int) -> None:
+        super().__init__(replies)
+        self.failures = failures
+        self.errors = 0
+
+    async def generate(self, req, on_token=None):  # type: ignore[no-untyped-def]
+        from airlie.engine.types import EngineError
+
+        if self.errors < self.failures:
+            self.errors += 1
+            raise EngineError("OUTPUT INACTIVITY TIMEOUT after 600.0s without a generator chunk")
+        return await super().generate(req, on_token)
+
+
+async def test_a_stalled_generation_is_asked_again_once_before_the_run_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AIR-31 layer 02, 2026-10-19: vllm-mlx sent one chunk and then nothing for its 600 s guard; the run
+    ended as engine_error with its conversation lost. One retry of the same step, after a pause, and the
+    run goes on; a second failure in a row still stops it."""
+    from airlie.teams import native_team as nt
+
+    monkeypatch.setattr(nt, "ENGINE_RETRY_S", 0.0)
+    engine = FlakyEngine({"coder": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=1)
+    team, ctx = make_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 1 and engine.errors == 1
+    retries = [e for e in events.records if e["kind"] == "engine_retry"]
+    assert [(e["step"], e["attempt"]) for e in retries] == [(1, 1)]
+    assert "INACTIVITY" in retries[0]["error"]
+    engine = FlakyEngine({"coder": [write("w", "a.py"), FakeReply(text="Done.")]}, failures=2)
+    team, ctx = make_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "engine_error" and engine.errors == 2
+
+
 async def test_every_step_carries_the_contexts_attempt(tmp_path: Path) -> None:
     """The caller numbers the runs of a team (the studio: 0, then one per fix round or follow-up, whether
     the conversation resumes or starts again); the step records carry it, so the observer keeps each run's
