@@ -164,7 +164,9 @@ profile across every managed engine. A profile that changes engine settings (`ma
 the resident model set) takes effect at the next `task restart`. `studio-qwen25` is `studio` with Qwen2.5-32B
 (`qwen25_32b`, already in the catalog) in the coder seat, an experiment kept beside the default:
 `task restart -- --topology studio-qwen25`, and `story: { topology: studio-qwen25 }` in `airlie.local.yaml`
-makes `task story:tick` build with it.
+makes `task story:tick` build with it. `studio-coder8` is the same experiment with Qwen3-Coder 8-bit (`coder8`)
+in the coder seat: `task models:pull -- coder8`, then `task restart -- --topology studio-coder8`, and
+`task bench:models` includes it.
 
 ## Learning to Share
 
