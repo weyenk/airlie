@@ -738,6 +738,7 @@ class StoryPipeline:
             synthesise=False,
             before_gate=before_gate,
             scope_tests=True,
+            check_base=red_base or base_sha,  # the coder's run_tests runs the red check as it is written
         )
         commit_wip(wt, f"studio: {branch} (final)")
         cut = _cut_off(orch)

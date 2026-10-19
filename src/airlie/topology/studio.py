@@ -165,6 +165,7 @@ class StudioOrchestrator:
             None  # steps per subtask for this run, over the role's (planning rounds)
         )
         self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
+        self.check_base = ""  # a commit: a green run_tests then checks its tests fail with it put back
         self.gate_memo = (
             GateMemo()
         )  # the tree that last passed the whole gate, for run_tests and the final gate
@@ -257,6 +258,7 @@ class StudioOrchestrator:
             self.cfg.tools.write_file_max_overwrite_lines,
             self.run_dir.path,
             role_name,
+            check_base=self.check_base,
         )
         reg = ToolRegistry.builtin(names, ctx)
         if role.tools and "decide" in role.tools:
@@ -664,6 +666,7 @@ class StudioOrchestrator:
         test_steps: Sequence[str] = (),
         before_gate: Callable[[], Awaitable[bool]] | None = None,
         scope_tests: bool = False,
+        check_base: str | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
         """Plan, run, review, synthesise.
@@ -677,7 +680,10 @@ class StudioOrchestrator:
         once the plan has (it may `follow_up` a subtask); when it returns False the gate does not run and the
         tests count as failed. `scope_tests` makes run_tests run the gate's pytest on the test files the run
         changed first and the whole gate only once those pass; the final gate is skipped for a tree that
-        passed it already. `max_steps` limits every subtask's steps in this run, follow-ups included."""
+        passed it already. `check_base` (a commit, with `scope_tests`) makes a run_tests that passes the whole
+        gate also run the red check of story.layer_checks, with the run's other changes put back to it, and
+        name the changed tests that still pass there. `max_steps` limits every subtask's steps in this run,
+        follow-ups included."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
         if given is not None:
@@ -697,6 +703,7 @@ class StudioOrchestrator:
         self.base_sha = commit_wip(self.worktree, "studio: base")
         self.test_cmd, self.test_steps = test_cmd, tuple(test_steps)
         self.scope_base = self.base_sha if scope_tests else ""
+        self.check_base = (check_base or "") if scope_tests else ""
         self.gate_memo = GateMemo()
         self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given

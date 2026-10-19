@@ -152,7 +152,49 @@ async def _run_scoped(ctx: ToolContext) -> ToolResult:
     if full.ok and ctx.gate_memo is not None:
         ctx.gate_memo.passed = tree_fingerprint(ctx.worktree)
     note = "your tests pass; the whole suite " + ("passes" if full.ok else "FAILS (see below)")
-    return ToolResult(full.ok, f"{note}\n{full.output}" if not full.ok else f"{note}\n{first.output}")
+    if not full.ok:
+        return ToolResult(False, f"{note}\n{full.output}")
+    checked = await _check_changed_tests(ctx) if ctx.check_base else ""
+    return ToolResult(True, f"{note}\n{first.output}" + (f"\n{checked}" if checked else ""))
+
+
+CHECKED_HEAD = "airlie checked the tests you added or changed: "
+VACUOUS_NOTE = (
+    "a test that only checks that nothing happens cannot fail on the base: put that check in the same test "
+    "that triggers the behaviour."
+)
+
+
+async def _check_changed_tests(ctx: ToolContext) -> str:
+    """The red check of story.layer_checks at the step the tests are written, on a tree that passes the
+    whole gate: the tests changed since `scope_base` run again with the layer's other changes put back to
+    `check_base`, and the ones that still pass there are named, so the coder learns it now and not after
+    the review and the pipeline's own check (AIR-31 layer 02, 2026-10-19). Nothing when every one fails
+    there, or when the gate runs no pytest. The worktree is committed first (the check puts files back and
+    resets to HEAD, as the pipeline does before its check) and is the layer's again after it, whatever the
+    check did; a check that crashes says nothing (the gate has passed, which is the result)."""
+    from airlie.story.layer_checks import checks_for  # story builds on tools: imported here, not above
+    from airlie.teams.worktree import commit_wip, reset_to_head
+
+    checks = checks_for(ctx.test_steps, timeout_s=ctx.shell_timeout_s)
+    if checks is None:
+        return ""
+    commit_wip(ctx.worktree, "studio: run_tests (checks)")
+    try:
+        found = await checks.run(ctx.worktree, ctx.scope_base, red_base=ctx.check_base)
+    except Exception:  # noqa: BLE001 - the check is advice; the gate's result stands
+        return ""
+    finally:
+        reset_to_head(ctx.worktree)
+    vacuous = [f.test for f in found if f.kind == "vacuous_test"]
+    if not vacuous:
+        return ""
+    lines = [
+        CHECKED_HEAD + "these also pass with your change undone, so they do not test it:",
+        *(f"- {t}" for t in vacuous),
+        VACUOUS_NOTE,
+    ]
+    return "\n".join(lines)
 
 
 class Git:

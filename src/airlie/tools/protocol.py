@@ -31,6 +31,11 @@ class ToolContext:
     """The run's directory: when set, tools that log (web fetches, searches) write their records there."""
     role: str = ""
     """The role this context serves: tools that log or guard by role (web tools) read it from here."""
+    check_base: str = ""
+    """A git commit: when set (a story layer's build), a run_tests that passes the whole gate also runs the
+    red check of story.layer_checks on the tests changed since `scope_base`, with the layer's other changes
+    put back to this commit (the layer's base; the story's, for the hardening layer), and names the ones that
+    still pass there. Empty: no check (outside a story run there is no base)."""
 
 
 @dataclass(frozen=True)
