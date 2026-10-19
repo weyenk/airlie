@@ -121,6 +121,25 @@ def test_the_shipped_engine_parser_keeps_code_intact(topology: str | None) -> No
     assert json.loads(call["arguments"]) == {"path": "b.py", "content": "    x = 1 << 3\n"}
 
 
+def test_airlies_parser_reads_json_tool_calls_as_well_as_xml() -> None:
+    """The studio-qwen25 profile puts a JSON-calling coder (Qwen2.5) behind the server-wide qwen3_xml_raw
+    parser so the XML-calling generalist roles keep theirs: vllm-mlx's `qwen` parser would strip the
+    indentation of their values (2026-10-18)."""
+    parsers.ensure_registered()
+    parser = ToolParserManager.get_tool_parser("qwen3_xml_raw")()
+    edit = (
+        '{"name": "edit_file", "arguments": {"path": "a.py", "old": "    x = 1\\n", "new": "    x = 2\\n"}}'
+    )
+    shell = '{"name": "shell", "arguments": "{\\"cmd\\": \\"ls\\"}"}'
+    text = f"Let me look.\n<tool_call>\n{edit}\n</tool_call>\n<tool_call>\n{shell}\n</tool_call>"
+    info = parser.extract_tool_calls(text, None)
+    assert info.tools_called and info.content == "Let me look."
+    assert [(c["name"], json.loads(c["arguments"])) for c in info.tool_calls] == [
+        ("edit_file", {"path": "a.py", "old": "    x = 1\n", "new": "    x = 2\n"}),
+        ("shell", {"cmd": "ls"}),
+    ]
+
+
 def test_every_parser_named_in_airlie_yaml_resolves() -> None:
     from vllm_mlx.reasoning import get_parser
 
