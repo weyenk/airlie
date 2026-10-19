@@ -135,6 +135,14 @@ def test_the_agent_environment_drops_the_credentials_and_resets_each_helper(plan
     assert config_pairs(env) == [(f"credential.{URL}.helper", ""), ("credential.helper", "")]
 
 
+def test_the_agent_environment_has_no_active_virtual_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A story tick runs under `uv run` in airlie's checkout, whose VIRTUAL_ENV the coder's shell inherited:
+    every `uv run` in the story's worktree then warned that it does not match and is ignored (AIR-7 layer 02,
+    2026-10-18: the coder piped each command through `grep -v VIRTUAL_ENV`, losing exit codes)."""
+    monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/airlie/.venv")
+    assert "VIRTUAL_ENV" not in agent_env()
+
+
 def test_url_credential_helpers_lists_each_url_specific_key_once(planted: Path) -> None:
     planted.write_text(
         planted.read_text()
