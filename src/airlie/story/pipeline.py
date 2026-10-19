@@ -22,6 +22,7 @@ from typing import Any
 from airlie.config import AirlieConfig
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
+    built_so_far,
     layer_goal,
     layer_plan,
     layers_brief,
@@ -85,6 +86,9 @@ MUTATION_REVIEW_ATTEMPTS = 2
 MUTATION_REVIEW_STEPS = 8
 """Steps the architect gets to review the surviving mutants: the brief carries the report and the diff, so it
 reads a few files, not twenty (AIR-5: 20 steps at an 80k-token prompt took 55 minutes)."""
+BUILT_DIFF_CHARS = 400_000
+"""How much of the stack's diff built_so_far reads for a layer's brief: only names come out of it, so the cap
+is for memory, not for the brief (briefs.BUILT_CHARS caps that)."""
 MUTATION_DIFF_CHARS = 40_000
 """How much of the story's diff the architect's mutation review is shown."""
 MUTATION_OUTPUT_CHARS = 2_000_000
@@ -708,6 +712,12 @@ class StoryPipeline:
         )
         findings: list[Finding] = []
         guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
+        # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
+        built = (
+            built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
+            if i > 0 and st.base
+            else ""
+        )
 
         # the hardening layer tests code the story's earlier layers wrote: its red check undoes the story
         red_base = st.base["sha"] if layer.slug == HARDEN_SLUG and st.base else None
@@ -722,7 +732,7 @@ class StoryPipeline:
             repo=self.repo,
             test_cmd=self.test_cmd,
             test_steps=self.commands,
-            plan=layer_plan(story, layers, i, build_role=self.s.build_role, guide=guide),
+            plan=layer_plan(story, layers, i, build_role=self.s.build_role, guide=guide, built=built),
             base=base_sha,
             branch=branch,
             synthesise=False,

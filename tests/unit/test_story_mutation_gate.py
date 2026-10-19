@@ -169,6 +169,10 @@ async def test_the_mutation_gate_runs_once_over_the_built_stack_before_publishin
     assert len(prompts(engine, "architect")) == 1  # the layer plan only
     for n in ("01", "02"):  # every PR of the stack says how the story's mutation gate went
         assert "Mutation gate: passes (" in (st.path / f"pr-{n}.md").read_text()
+    # the second layer's coder is told what the first added, the first is told nothing of the kind
+    first, second = prompts(engine, "coder")[0], prompts(engine, "coder")[3]
+    assert "What the earlier layers of this story added" not in first
+    assert "What the earlier layers of this story added" in second and "- PASS" in second
 
 
 DID_NOT_RUN = (
