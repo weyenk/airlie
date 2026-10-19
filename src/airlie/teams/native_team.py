@@ -559,28 +559,51 @@ class NativeTeam:
                             )
 
                 # Check if we've reached the maximum context limit
-                if (
-                    ctx.role.max_context > 0
-                    and max_prompt >= ctx.role.max_context
-                    and ctx.role.on_context_full == "stop"
-                ):
-                    # Stop the run with context_full reason
-                    final_text = f"stopped: context full at {ctx.role.max_context} tokens"
-                    stop = "context_full"
-                    break
-                # If on_context_full is not "stop", we continue (the default behavior)
+                if ctx.role.max_context > 0 and max_prompt >= ctx.role.max_context:
+                    if ctx.role.on_context_full == "stop":
+                        # Stop the run with context_full reason
+                        final_text = f"stopped: context full at {ctx.role.max_context} tokens"
+                        stop = "context_full"
+                        break
+                    elif ctx.role.on_context_full == "trim":
+                        # Trim the oldest tool observations to make room
+                        if ctx.emit is not None:
+                            # Find all tool messages and remove the oldest ones until we're under limit
+                            # We need to identify which messages are tool messages (role="tool")
+                            tool_indices = [i for i, msg in enumerate(messages) if msg.role == "tool"]
+                            if tool_indices:
+                                # Count how many we need to drop
+                                chars_dropped = 0
+                                dropped_count = 0
 
-                # Check if we've reached the maximum context limit
-                if (
-                    ctx.role.max_context > 0
-                    and max_prompt >= ctx.role.max_context
-                    and ctx.role.on_context_full == "stop"
-                ):
-                    # Stop the run with context_full reason
-                    final_text = f"stopped: context full at {ctx.role.max_context} tokens"
-                    stop = "context_full"
-                    break
-                # If on_context_full is not "stop", we continue (the default behavior)
+                                # Remove oldest tool messages until we're under the limit or no more to remove
+                                while tool_indices and max_prompt >= ctx.role.max_context:
+                                    # Remove the oldest tool message
+                                    oldest_idx = tool_indices.pop(0)
+                                    msg = messages[oldest_idx]
+                                    chars_dropped += len(msg.content) if msg.content else 0
+                                    dropped_count += 1
+
+                                    # Replace with placeholder text
+                                    chars_from = len(msg.content) if msg.content else 0
+                                    placeholder = f"[observation dropped: {chars_from} chars from {msg.name}]"
+                                    messages[oldest_idx] = Message(
+                                        role="tool",
+                                        content=placeholder,
+                                        tool_call_id=msg.tool_call_id,
+                                        name=msg.name,
+                                    )
+
+                                # Emit context_trimmed event
+                                ctx.emit(
+                                    "context_trimmed",
+                                    team_id=ctx.team_id,
+                                    role=ctx.role_name,
+                                    step=steps,
+                                    dropped=dropped_count,
+                                    chars=chars_dropped,
+                                )
+                        # Continue with the run after trimming
 
                 if call.name in ("write_file", "edit_file"):
                     wrote = True
