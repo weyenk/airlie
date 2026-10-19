@@ -117,8 +117,9 @@ WRITE_NOW = (
 """What a role with write tools is told, once, when it is two-fifths through its steps without a write."""
 
 WRITE_ONLY = (
-    "You still have written {what} after {n} steps, so reading is switched off: only write_file, edit_file "
-    "and run_tests are available until you write. Make the change from what you have read."
+    "You still have written {what} after {n} steps, so reading is switched off: {k} more reads, then only "
+    "write_file, edit_file and run_tests are available until you write. Make the change from what you have "
+    "read."
 )
 """What a role is told, once, when the nudge did not make it write and its read tools are taken away;
 `what` is nothing, no test or no code."""
@@ -149,6 +150,13 @@ WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
 READ_REFUSED = "reading is switched off: use write_file, edit_file or run_tests"
 """The observation a read call gets while reading is switched off: the call does not run, the step counts."""
+READS_UNDER_HOLD = 3
+"""Reads a role may still make after a missed write deadline switches its reading off, each answered with how
+many remain, before reads are refused: a role that needs one fact gets it, a role that reads forever still
+hits the wall (AIR-31 layer 02, 2026-10-19: two runs spent their last 25 steps on refused greps, never wrote).
+The hold a repeat earns (REPEAT_WRITE_ONLY) grants none: the role was repeating the read it would get."""
+READ_LEFT = "\n\n({k} read(s) left while reading is switched off; then write)"
+"""Appended to a read served under the hold."""
 ENGINE_RETRIES = 1
 """How many times one step's generation is asked again after an EngineError, before the run stops. AIR-31
 layer 02 (2026-10-19): vllm-mlx sent one chunk and then nothing for its 600 s inactivity guard; the run ended
@@ -329,6 +337,7 @@ class NativeTeam:
         wrote = bool(ctx.already_written)  # a write_file or edit_file has run (here, or in an earlier run)
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
+        reads_left = 0  # reads still served under that hold (READS_UNDER_HOLD when it starts)
         looped = (
             False  # a writer repeated after REPEATED: only write tools until it writes (REPEAT_WRITE_ONLY)
         )
@@ -480,7 +489,8 @@ class NativeTeam:
             messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
-                if (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY:
+                held = (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY
+                if held and (looped or reads_left == 0):
                     result = ToolResult(ok=False, output=READ_REFUSED)
                     tool_ms = 0.0
                     if ctx.emit is not None:
@@ -496,6 +506,9 @@ class NativeTeam:
                         t1 = time.monotonic()
                         result = await ctx.tools.call(call)
                         tool_ms = (time.monotonic() - t1) * 1000.0
+                    if held:  # one of the few reads the hold still serves, and it says how many are left
+                        reads_left -= 1
+                        result = replace(result, output=result.output + READ_LEFT.format(k=reads_left))
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
@@ -594,6 +607,7 @@ class NativeTeam:
                         and steps < ctx.max_steps
                     ):
                         reading_off = True
+                        reads_left = READS_UNDER_HOLD
                         escalated.add(kind)
                         what = (
                             "nothing this round"
@@ -602,14 +616,24 @@ class NativeTeam:
                             if kind == "tests"
                             else "no code"
                         )
-                        messages.append(Message(role="user", content=WRITE_ONLY.format(what=what, n=steps)))
+                        messages.append(
+                            Message(
+                                role="user",
+                                content=WRITE_ONLY.format(what=what, n=steps, k=READS_UNDER_HOLD),
+                            )
+                        )
                 if reading_off and all(written[k] for k in escalated):
                     reading_off = False  # the write reading was switched off for has landed: it is back
             elif can_write and not wrote and steps == write_by:
                 messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
             elif can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
                 reading_off = True
-                messages.append(Message(role="user", content=WRITE_ONLY.format(what="nothing", n=steps)))
+                reads_left = READS_UNDER_HOLD
+                messages.append(
+                    Message(
+                        role="user", content=WRITE_ONLY.format(what="nothing", n=steps, k=READS_UNDER_HOLD)
+                    )
+                )
             if steps >= ctx.max_steps:
                 last_turn = True
                 messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))

@@ -700,7 +700,7 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
 ) -> None:
     """AIR-28: the schemas offered never change (a changed tool list is a prompt the engine's prefix cache has
     never seen), so write-only is enforced where the call runs: a read is refused with an observation."""
-    engine = FakeEngine({"coder": [*reads(9), FakeReply(text="Done.")]})
+    engine = FakeEngine({"coder": [*reads(12), FakeReply(text="Done.")]})
     team, ctx = make_team(
         tmp_path, engine, max_steps=12
     )  # nudge at step 4 (12 * 2 // 5 = 4), reading off at 8
@@ -717,13 +717,21 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
         if any("reading is switched off" in str(m.content) for m in r.messages)
     ]
     assert told[0] == 9 and told == list(range(9, len(engine.requests) + 1))
-    # the reads of f0.. find no file (ok=False either way): the refusal shows in the observation
+    # the hold still serves READS_UNDER_HOLD reads (steps 9-11), each saying how many are left; the fourth
+    # (step 12) is refused: the reads of f0.. find no file (ok=False either way); the refusal is the
+    # observation
+    assert [s.o_t.endswith("(2 read(s) left while reading is switched off; then write)") for s in rec.steps][
+        8
+    ]
+    assert [s.o_t.endswith("(0 read(s) left while reading is switched off; then write)") for s in rec.steps][
+        10
+    ]
     assert [
         s.o_t == "reading is switched off: use write_file, edit_file or run_tests" for s in rec.steps
-    ] == [False] * 8 + [True]
+    ] == [False] * 11 + [True]
     refused = [e for e in events.records if e["kind"] == "read_refused"]
     assert [(e["team_id"], e["role"], e["step"], e["tool"]) for e in refused] == [
-        ("team-1", "coder", 9, "read_file")
+        ("team-1", "coder", 12, "read_file")
     ]
 
 
@@ -1043,10 +1051,9 @@ async def test_a_coder_that_only_reads_is_told_to_write_a_test_at_the_first_dead
     off = requests_saying(engine, "reading is switched off")
     assert off[0] == 8  # four steps after the deadline, as before
     assert all(n == {"write_file", "read_file", "run_tests"} for n in offered_names(engine)[:-1])
-    # from step 8 the reads are refused; three identical refusals in a row are a repeat, and this role has no
-    # nudge_stuck, so the run stops there (the coder, which has it, is told once to do something different)
-    assert [s.o_t == REFUSED for s in rec.steps] == [False] * 7 + [True] * 3
-    assert result.stop_reason == "repeated_action" and result.steps == 10
+    # from step 8 the hold serves three more reads (8, 9, 10), then refuses (11); the run ends on its text
+    assert [s.o_t == REFUSED for s in rec.steps] == [False] * 10 + [True]
+    assert result.stop_reason == "done" and result.steps == 11
     assert requests_saying(engine, "written no code")[0] == 10  # the code deadline, step 9, is missed too
     deadlines = [
         (e["kind_of_write"], e["step"], e["met"]) for e in events.records if e["kind"] == "write_deadline"
@@ -1107,15 +1114,16 @@ async def test_a_coder_that_wrote_only_tests_is_told_to_write_code_at_the_second
 
 async def test_reading_comes_back_once_the_missed_write_lands(tmp_path: Path) -> None:
     engine = FakeEngine(
-        {"coder": [*reads(8), write("t", "tests/test_a.py"), *reads(2), FakeReply(text="Done.")]}
+        {"coder": [*reads(12), write("t", "tests/test_a.py"), *reads(2), FakeReply(text="Done.")]}
     )
-    team, ctx = make_team(tmp_path, engine, max_steps=12, write_schedule=SCHEDULE)
+    team, ctx = make_team(tmp_path, engine, max_steps=16, write_schedule=SCHEDULE)  # deadlines 4 and 12
     rec = Recorder()
     await team.run(ctx, rec)
     assert all(n == {"write_file", "read_file", "run_tests"} for n in offered_names(engine)[:-1])
-    # reading off after the missed tests deadline (step 7): step 8's read is refused; the test lands at step
-    # 9, and steps 10 and 11 read again
-    assert [s.o_t == REFUSED for s in rec.steps][7:] == [True, False, False, False]
+    # reading off after the missed tests deadline (step 8): steps 9-11 are the hold's three reads, step 12
+    # is refused; the test lands at step 13, and steps 14 and 15 read again with nothing appended
+    assert [s.o_t == REFUSED for s in rec.steps][8:] == [False, False, False, True, False, False, False]
+    assert "read(s) left" in rec.steps[8].o_t and "read(s) left" not in rec.steps[13].o_t
 
 
 async def test_the_same_observation_three_times_is_a_repeat_whatever_the_arguments(tmp_path: Path) -> None:
