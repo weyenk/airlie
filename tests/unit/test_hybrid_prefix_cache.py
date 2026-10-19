@@ -1,32 +1,41 @@
-"""The hybrid prefix cache patch (airlie.engine.patches.hybrid_prefix_cache) on a tiny random hybrid model.
+"""The hybrid prefix cache patch (airlie.engine.patches.hybrid_prefix_cache) on tiny random models.
 
-The tiny model is Qwen3.8's architecture in miniature (gated delta-net layers beside full-attention ones), so
-the real prefill code of vllm-mlx runs with real ArraysCache and KVCache layers: what is stored, what a
-second prompt hits, and that continuing from the hit gives the logits a full prefill gives."""
+One tiny model is Qwen3.8's architecture in miniature (gated delta-net layers beside full-attention ones), the
+other Gemma 3's (sliding-window layers beside full ones, as Muse Glimmer has), so the real prefill code of
+vllm-mlx runs with real ArraysCache, RotatingKVCache and KVCache layers: what is stored, what the next turn of
+a conversation hits, and that continuing from the hit gives the logits a full prefill gives."""
 
 from __future__ import annotations
 
+import logging
 import types
 from typing import Any
 
 import mlx.core as mx
 import pytest
-from mlx_lm.models import qwen3_5
-from mlx_lm.models.cache import ArraysCache, make_prompt_cache
+from mlx_lm.models import gemma3_text, qwen3_5
+from mlx_lm.models.cache import ArraysCache, RotatingKVCache, make_prompt_cache
 from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator as G
 
 from airlie.engine.patches import hybrid_prefix_cache as patch
 
 STEP = 16
+MARK = 3
+"""The tiny models' turn-start token (`<|im_start|>`): `turn` never produces it otherwise."""
+GEN = [MARK, 4, 4]
+"""A generation prompt (`<|im_start|>assistant\\n`)."""
 TOL = 5e-3
-"""How far apart two float32 logits may be: a chunked prefill and a whole-prompt one of this tiny random model
+"""How far apart two float32 logits of the tiny hybrid model may be: a chunked prefill and a whole-prompt one
 differ by up to about 5e-4 (more than 1e-3 once under parallel load: the test failed that way once), while a
 wrong cache state is off by whole units."""
+GEMMA_TOL = 5e-2
+"""The same for the tiny Gemma models, whose logits are larger: chunked and whole-prompt differ by up to about
+7e-3, a cache state one token off by more than 0.5."""
 
 
 @pytest.fixture(scope="module")
-def model() -> Any:
+def hybrid() -> Any:
     args = qwen3_5.TextModelArgs(
         model_type="qwen3_5_text",
         hidden_size=64,
@@ -48,9 +57,36 @@ def model() -> Any:
             "mrope_interleaved": True,
         },
     )
+    mx.random.seed(0)
     m = qwen3_5.TextModel(args)
     mx.eval(m.parameters())
     return m
+
+
+def gemma(pattern: int) -> Any:
+    """Gemma 3 in miniature: a window of 8 tokens on every layer but each `pattern`th (1: none slides)."""
+    args = gemma3_text.ModelArgs(
+        model_type="gemma3_text",
+        hidden_size=64,
+        num_hidden_layers=6,
+        intermediate_size=128,
+        num_attention_heads=4,
+        head_dim=16,
+        num_key_value_heads=1,
+        vocab_size=300,
+        query_pre_attn_scalar=16,
+        sliding_window=8,
+        sliding_window_pattern=pattern,
+    )
+    mx.random.seed(pattern)
+    m = gemma3_text.Model(args)
+    mx.eval(m.parameters())
+    return m
+
+
+@pytest.fixture(scope="module")
+def sliding() -> Any:
+    return gemma(3)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -58,10 +94,22 @@ def patched() -> None:
     assert patch.apply()
 
 
-def generator(model: Any, *, cache: bool = True, think_suffix: int = 0) -> Any:
+class Tokenizer:
+    """The chat template's generation prompt is GEN; the tokenizer turns the turn-start text into MARK."""
+
+    def apply_chat_template(self, messages: Any, *, tokenize: bool, add_generation_prompt: bool) -> str:
+        return "<user>x</user>" + ("<start>assistant" if add_generation_prompt else "")
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        assert text == "<start>assistant"
+        return GEN[:2]
+
+
+def generator(model: Any, *, cache: bool = True, think_suffix: int = 0, processor: Any = "tok") -> Any:
     """A MLLMBatchGenerator with only what the prefill code reads (its constructor wants a whole model)."""
     g = object.__new__(G)
     g.language_model = model
+    g.processor = types.SimpleNamespace(tokenizer=Tokenizer()) if processor == "tok" else processor
     g.prefill_step_size = STEP
     g._prefill_progress = {}
     g._aborted_request_ids = set()
@@ -86,18 +134,45 @@ def request(ids: list[int], rid: str = "r") -> Any:
     )
 
 
-def logits_of(model: Any, ids: list[int]) -> mx.array:
-    """Last-position logits of one plain forward pass over `ids`."""
-    out = model(mx.array(ids)[None, :], cache=make_prompt_cache(model))
+def cache_for(model: Any) -> list[Any]:
+    return make_prompt_cache(model)
+
+
+def close(model: Any, a: mx.array, b: mx.array) -> bool:
+    return bool(mx.allclose(a, b, atol=GEMMA_TOL if isinstance(model, gemma3_text.Model) else TOL).item())
+
+
+def last(out: Any) -> mx.array:
     return (out.logits if hasattr(out, "logits") else out)[:, -1, :]
 
 
-def prompt(n: int, seed: int = 0) -> list[int]:
+def logits_of(model: Any, ids: list[int]) -> mx.array:
+    """Last-position logits of one plain forward pass over `ids`."""
+    return last(model(mx.array(ids)[None, :], cache=cache_for(model)))
+
+
+def turn(n: int, seed: int = 0) -> list[int]:
+    """`n` tokens of history: never MARK."""
     return [(i * 7 + seed) % 290 + 5 for i in range(n)]
 
 
+def cold(g: Any, ids: list[int]) -> mx.array:
+    return last(g._run_chunked_text_prefill(request(ids), cache=cache_for(g.language_model)))
+
+
+def resume(g: Any, ids: list[int], rid: str = "r2") -> tuple[mx.array, int]:
+    """What the patched prefix-hit path of _process_prompts does with `ids`: fetch, copy, run the rest."""
+    cached, remaining = g.prefix_cache.fetch(ids)
+    assert cached is not None and remaining, "expected a prefix hit"
+    cached_count = len(ids) - len(remaining)
+    out = g._prefill_final(
+        request(ids, rid), mx.array(remaining)[None, :], g._copy_prefix_cache(cached), cached_count
+    )
+    return last(out), cached_count
+
+
 def test_the_patch_replaced_both_prefill_functions_and_the_layer_copy() -> None:
-    assert hasattr(G, "_store_boundary")
+    assert hasattr(G, "_prefill_final")
     for name in ("_run_chunked_text_prefill", "_process_prompts"):
         assert getattr(G, name).__code__.co_filename.startswith("<airlie hybrid prefix cache")
     from mlx_vlm.models.cache import ArraysCache as VlmArraysCache  # the class the engine's model really uses
@@ -112,78 +187,146 @@ def test_the_patch_replaced_both_prefill_functions_and_the_layer_copy() -> None:
         assert patch._recurrent(layer)
 
 
-def test_a_cold_prefill_stores_the_cache_at_the_last_chunk_boundary_and_changes_no_logits(model: Any) -> None:
-    ids = prompt(50)  # chunks of 16: boundaries 16, 32, 48; the final chunk is 48..50
-    g = generator(model)
-    logits = g._run_chunked_text_prefill(request(ids), cache=make_prompt_cache(model))
-    plain = logits_of(model, ids)
-    assert mx.allclose(logits[:, -1, :], plain, atol=TOL).item()
-    assert len(g.prefix_cache) == 1
-    assert ids[:48] in g.prefix_cache and ids[:32] not in g.prefix_cache  # one snapshot, the last boundary
+def test_a_rotating_clone_written_in_place_leaves_the_original_alone() -> None:
+    layer = RotatingKVCache(max_size=4)
+    layer.update_and_fetch(mx.zeros((1, 1, 4, 2)), mx.zeros((1, 1, 4, 2)))
+    clone = G._copy_cache_layer(layer)
+    clone.update_and_fetch(
+        mx.ones((1, 1, 1, 2)), mx.ones((1, 1, 1, 2))
+    )  # one token into a full window: in place
+    mx.eval(clone.keys)
+    assert layer.keys.sum().item() == 0.0 and clone.keys.sum().item() == 2.0
+    assert patch._rotating(layer)
 
 
-def test_a_second_prompt_that_extends_the_first_hits_it_and_gets_the_logits_of_a_full_prefill(
-    model: Any,
+@pytest.mark.parametrize("kind", ["hybrid", "sliding"])
+def test_a_cold_prefill_stores_the_history_before_the_generation_prompt_and_changes_no_logits(
+    kind: str, request_fixture: Any
 ) -> None:
-    ids = prompt(50)
+    model = request_fixture(kind)
+    ids = turn(50) + GEN  # chunks of 16: the final chunk (48..53) is split at the turn start, 50
     g = generator(model)
-    g._run_chunked_text_prefill(request(ids), cache=make_prompt_cache(model))
-    longer = ids + prompt(30, seed=3)  # the next step of a conversation: the same start, then more
-    cached, remaining = g.prefix_cache.fetch(longer)
-    assert cached is not None and len(remaining) == len(longer) - 48  # only what follows the snapshot is new
-    resumed = g._copy_prefix_cache(cached)
-    out = model(mx.array(remaining)[None, :], cache=resumed)
-    out = out.logits if hasattr(out, "logits") else out
-    assert mx.allclose(out[:, -1, :], logits_of(model, longer), atol=TOL).item()
+    assert close(model, cold(g, ids), logits_of(model, ids))
+    assert len(g.prefix_cache) == 1 and ids[:50] in g.prefix_cache
 
 
-def test_continuing_from_a_hit_does_not_change_what_is_stored(model: Any) -> None:
-    ids = prompt(50)
+@pytest.mark.parametrize("kind", ["hybrid", "sliding"])
+def test_each_next_turn_hits_the_last_and_stores_itself_for_the_one_after(
+    kind: str, request_fixture: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    model = request_fixture(kind)
     g = generator(model)
-    g._run_chunked_text_prefill(request(ids), cache=make_prompt_cache(model))
-    cached, _ = g.prefix_cache.fetch(ids + prompt(20, seed=5))
-    before = [mx.array(x) for c in cached if isinstance(c, ArraysCache) for x in c.cache if x is not None]
+    first = turn(50) + GEN
+    cold(g, first)
+    second = (
+        turn(50) + GEN + turn(9, seed=3) + GEN
+    )  # the same history, the reply and a tool result, a new turn
+    with caplog.at_level(logging.INFO, logger=patch.logger.name):
+        logits, cached = resume(g, second)
+    assert cached == 50  # all the history there was
+    assert close(model, logits, logits_of(model, second))
+    assert second[: len(second) - len(GEN)] in g.prefix_cache  # the cache moved on with the conversation
+    assert "HIT prompt_tokens=65 cached=50 stored=62" in caplog.text
+    third = second + turn(5, seed=7) + GEN
+    logits, cached = resume(g, third, "r3")
+    assert cached == len(second) - len(GEN)  # not just the first turn's: only the newest tokens are prefilled
+    assert close(model, logits, logits_of(model, third))
+    assert len(g.prefix_cache) == 1  # each snapshot replaces the one it extends
+
+
+@pytest.mark.parametrize("kind", ["hybrid", "sliding"])
+def test_decoding_from_a_hit_does_not_change_what_is_stored(kind: str, request_fixture: Any) -> None:
+    model = request_fixture(kind)
+    g = generator(model)
+    ids = turn(50) + GEN
+    cold(g, ids)
+    nxt = ids + turn(20, seed=5) + GEN
+    cached, remaining = g.prefix_cache.fetch(nxt)
+    before = [mx.array(a) for a in _arrays(cached)]
     resumed = g._copy_prefix_cache(cached)
-    model(mx.array(prompt(20, seed=5))[None, :], cache=resumed)
-    mx.eval(resumed[0].cache[0])
-    after = [mx.array(x) for c in cached if isinstance(c, ArraysCache) for x in c.cache if x is not None]
+    model(mx.array(remaining)[None, :], cache=resumed)
+    for t in (7, 8, 9):  # decoding: one token at a time, in place in a full window
+        model(mx.array([[t]]), cache=resumed)
+    mx.eval([a for a in _arrays(resumed)])
+    after = _arrays(cached)
     assert len(before) == len(after) and all(
         mx.array_equal(a, b).item() for a, b in zip(before, after, strict=True)
     )
-    again, remaining = g.prefix_cache.fetch(ids + prompt(20, seed=5))
-    assert again is not None and len(remaining) == 20 + 2
+    again, rest = g.prefix_cache.fetch(nxt)
+    assert again is not None and len(rest) == len(nxt) - 50
+    assert close(
+        model, last(model(mx.array(rest)[None, :], cache=g._copy_prefix_cache(again))), logits_of(model, nxt)
+    )
 
 
-def test_a_prompt_in_one_chunk_stores_nothing(model: Any) -> None:
+def _arrays(cache: list[Any]) -> list[mx.array]:
+    out: list[mx.array] = []
+    for c in cache:
+        if isinstance(c, ArraysCache):
+            out += [x for x in c.cache if x is not None]
+        elif getattr(c, "keys", None) is not None:
+            out += [c.keys, c.values]
+    return out
+
+
+@pytest.fixture
+def request_fixture(hybrid: Any, sliding: Any) -> Any:
+    return {"hybrid": hybrid, "sliding": sliding}.__getitem__
+
+
+def test_a_model_whose_layers_all_rewind_keeps_vllm_mlx_s_own_store(caplog: pytest.LogCaptureFixture) -> None:
+    model = gemma(1)  # every layer full attention: plain KVCache
     g = generator(model)
-    g._run_chunked_text_prefill(request(prompt(STEP)), cache=make_prompt_cache(model))
+    ids = turn(50) + GEN
+    with caplog.at_level(logging.INFO, logger=patch.logger.name):
+        assert close(model, cold(g, ids), logits_of(model, ids))
+    assert len(g.prefix_cache) == 0
+    assert "MISS prompt_tokens=53 cached=0 stored=0" in caplog.text
+
+
+def test_a_prompt_in_one_chunk_is_stored_too(hybrid: Any) -> None:
+    g = generator(hybrid)
+    ids = turn(STEP - 4) + GEN
+    assert close(hybrid, cold(g, ids), logits_of(hybrid, ids))
+    assert ids[: STEP - 4] in g.prefix_cache
+
+
+def test_no_turn_start_near_the_end_stores_nothing(hybrid: Any) -> None:
+    g = generator(hybrid)
+    ids = turn(10) + GEN + turn(patch.TAIL + 5, seed=2)  # the only turn start is too far from the end
+    cold(g, ids)
     assert len(g.prefix_cache) == 0
 
 
-def test_the_boundary_is_not_stored_inside_the_think_suffix(model: Any) -> None:
-    ids = prompt(48 + 4)  # the last boundary would be 48; with a suffix of 6 it must stay below 52 - 6 = 46
-    g = generator(model, think_suffix=6)
-    g._run_chunked_text_prefill(request(ids), cache=make_prompt_cache(model))
-    assert len(g.prefix_cache) == 0
+def test_with_no_chat_template_the_key_is_the_prompt_less_the_think_suffix(hybrid: Any) -> None:
+    g = generator(hybrid, think_suffix=2, processor=None)
+    ids = turn(50)
+    assert close(hybrid, cold(g, ids), logits_of(hybrid, ids))
+    assert ids[:48] in g.prefix_cache
 
 
-def test_a_generator_with_no_prefix_cache_just_prefills(model: Any) -> None:
-    g = generator(model, cache=False)
-    logits = g._run_chunked_text_prefill(request(prompt(50)), cache=make_prompt_cache(model))
-    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=TOL).item()
+def test_the_turn_start_token_comes_from_the_chat_template(hybrid: Any) -> None:
+    assert patch._turn_start_token(generator(hybrid)) == MARK
+    assert patch._turn_start_token(generator(hybrid, processor=None)) is None
+
+
+def test_a_generator_with_no_prefix_cache_just_prefills(hybrid: Any) -> None:
+    g = generator(hybrid, cache=False)
+    ids = turn(50) + GEN
+    assert close(hybrid, cold(g, ids), logits_of(hybrid, ids))
 
 
 def test_a_store_that_fails_is_a_warning_and_the_prefill_still_returns_its_logits(
-    model: Any, caplog: pytest.LogCaptureFixture
+    hybrid: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
-    g = generator(model)
+    g = generator(hybrid)
 
     def boom(*a: Any, **k: Any) -> bool:
         raise RuntimeError("disk full")
 
     g.prefix_cache.store = boom  # type: ignore[method-assign]
-    logits = g._run_chunked_text_prefill(request(prompt(50)), cache=make_prompt_cache(model))
-    assert mx.allclose(logits[:, -1, :], logits_of(model, prompt(50)), atol=TOL).item()
+    ids = turn(50) + GEN
+    assert close(hybrid, cold(g, ids), logits_of(hybrid, ids))
     assert "not stored (RuntimeError: disk full)" in caplog.text
 
 

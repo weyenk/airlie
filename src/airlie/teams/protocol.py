@@ -67,6 +67,11 @@ class StepRecord:
     tool_ms: float = 0.0
     accepted_draft_tokens: int | None = None
     draft_tokens: int | None = None
+    model: str | None = None
+    """The model that took the step (its role's), when the team knows it: in the studio each subtask's role
+    has its own, so the step event says which one rather than the run's."""
+    role: str | None = None
+    """The role whose agent took the step."""
 
 
 @dataclass

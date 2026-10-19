@@ -106,8 +106,13 @@ class ForkOrchestrator:
         self.sink = EventSink(self.run_dir.events_path, self.run_dir.run_id)
         self.scheduler = SlotScheduler(cfg.scheduler.max_active, cfg.scheduler.starvation_ms)
         self.team: TeamOrchestrator = team_factory or self._default_team()
+        role = cfg.teams.role
         self.observer = ForkObserver(
-            LoggingObserver(self.sink, self.run_dir), self.sink, after_failures=cfg.fork.after_failures
+            LoggingObserver(
+                self.sink, self.run_dir, model=cfg.roles[role].model, role_name=role, topology="fork"
+            ),
+            self.sink,
+            after_failures=cfg.fork.after_failures,
         )
         self.preamble: str | None = None
         self.total_steps = 0
