@@ -6,7 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from airlie.tools.protocol import ToolContext
+import pytest
+
+from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.scope import (
     GateMemo,
     autofix_steps,
@@ -46,7 +48,11 @@ def repo_with(tmp_path: Path, files: dict[str, str]) -> tuple[Path, str]:
 
 
 def ctx(
-    repo: Path, base: str, memo: GateMemo | None = None, steps: tuple[str, ...] = (PYTEST,)
+    repo: Path,
+    base: str,
+    memo: GateMemo | None = None,
+    steps: tuple[str, ...] = (PYTEST,),
+    check_base: str = "",
 ) -> ToolContext:
     return ToolContext(
         worktree=repo,
@@ -55,6 +61,7 @@ def ctx(
         test_steps=steps,
         scope_base=base,
         gate_memo=memo,
+        check_base=check_base,
     )
 
 
@@ -194,3 +201,74 @@ async def test_run_tests_mends_what_ruff_only_fixes_as_unsafe_before_the_gate_ch
     result = await RunTests().run({}, ctx(repo, base, GateMemo(), steps=steps))
     assert result.ok, result.output
     assert "x = 1 if a else 2" in (repo / "mod.py").read_text()
+
+
+# ---- the red check, at the step the test is written ----
+
+CALC = "def add(a, b):\n    return a + b\n"
+MUL = CALC + "def mul(a, b):\n    return a * b\n"
+TEST_MUL = "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n"
+TEST_ADD_AGAIN = "from calc import add\n\n\ndef test_add_again():\n    assert add(2, 2) == 4\n"
+CHECKED = "these also pass with your change undone"
+
+
+def layer(tmp_path: Path, tests: str) -> tuple[Path, str]:
+    """A repository at a base holding calc.py, with the layer's uncommitted change: mul, and `tests`."""
+    repo, base = repo_with(tmp_path, {"pytest.ini": "[pytest]\n", "calc.py": CALC})
+    (repo / "calc.py").write_text(MUL)
+    (repo / "tests").mkdir()
+    (repo / "tests/test_calc.py").write_text(tests)
+    return repo, base
+
+
+async def test_a_green_run_tests_names_the_new_tests_that_pass_without_the_change(tmp_path: Path) -> None:
+    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
+    assert result.ok, result.output
+    assert "the whole suite passes" in result.output
+    block = result.output[result.output.index("airlie checked the tests you added or changed") :]
+    assert CHECKED in block and "- tests/test_calc.py::test_add_again" in block
+    assert "test_mul" not in block
+    assert "put that check in the same test that triggers the behaviour" in block
+    # the worktree is the layer's again: the change there, nothing left over from the check
+    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""
+
+
+async def test_a_green_run_tests_says_nothing_when_every_new_test_fails_without_the_change(
+    tmp_path: Path,
+) -> None:
+    repo, base = layer(tmp_path, TEST_MUL)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
+    assert result.ok and "the whole suite passes" in result.output
+    assert "airlie checked" not in result.output and CHECKED not in result.output
+    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""
+
+
+async def test_without_a_check_base_a_green_run_tests_runs_no_check(tmp_path: Path) -> None:
+    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo()))
+    assert result.ok and "airlie checked" not in result.output
+    assert git(repo, "rev-parse", "HEAD") == base  # nothing was committed for a check
+
+
+async def test_a_red_run_tests_runs_no_check(tmp_path: Path) -> None:
+    repo, base = layer(tmp_path, TEST_ADD_AGAIN + "\n\n" + FAIL)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
+    assert not result.ok and "airlie checked" not in result.output
+    assert git(repo, "rev-parse", "HEAD") == base
+
+
+async def test_a_check_that_crashes_leaves_the_worktree_as_it_was_and_the_run_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import airlie.story.layer_checks as layer_checks
+
+    async def boom(*a: object, **kw: object) -> ToolResult:
+        raise RuntimeError("pytest exploded")
+
+    monkeypatch.setattr(layer_checks, "run_cmd", boom)  # inside the check, after the change is put back
+    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
+    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
+    assert result.ok and "the whole suite passes" in result.output
+    assert "airlie checked" not in result.output
+    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""
