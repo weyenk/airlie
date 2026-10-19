@@ -341,6 +341,7 @@ class NativeTeam:
         looped = (
             False  # a writer repeated after REPEATED: only write tools until it writes (REPEAT_WRITE_ONLY)
         )
+        context_warned = False  # whether we've already warned about context at 75% for this run
         # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
         # a nudge at the deadline, then write-only tools WRITE_ONLY_AFTER steps later, until that write lands
         schedule = ctx.role.write_schedule if can_write else None
@@ -530,6 +531,57 @@ class NativeTeam:
                     draft_tokens=res.draft_tokens,
                 )
                 await observer.after_step(step_record)
+
+                # Check context limits after each step
+                if ctx.role.max_context > 0 and not context_warned:
+                    # Check if we've crossed the 75% threshold
+                    context_threshold = ctx.role.max_context * 0.75
+                    if max_prompt >= context_threshold:
+                        # Only warn once per run
+                        context_warned = True
+                        # Add the context nudge message
+                        messages.append(
+                            Message(
+                                role="user",
+                                content=f"Your context is at {max_prompt} of {ctx.role.max_context} tokens. "
+                                "Stop reading: write from what you have.",
+                            )
+                        )
+                        # Emit context event
+                        if ctx.emit is not None:
+                            ctx.emit(
+                                "context",
+                                team_id=ctx.team_id,
+                                role=ctx.role_name,
+                                step=steps,
+                                prompt_tokens=max_prompt,
+                                max_context=ctx.role.max_context,
+                            )
+
+                # Check if we've reached the maximum context limit
+                if (
+                    ctx.role.max_context > 0
+                    and max_prompt >= ctx.role.max_context
+                    and ctx.role.on_context_full == "stop"
+                ):
+                    # Stop the run with context_full reason
+                    final_text = f"stopped: context full at {ctx.role.max_context} tokens"
+                    stop = "context_full"
+                    break
+                # If on_context_full is not "stop", we continue (the default behavior)
+
+                # Check if we've reached the maximum context limit
+                if (
+                    ctx.role.max_context > 0
+                    and max_prompt >= ctx.role.max_context
+                    and ctx.role.on_context_full == "stop"
+                ):
+                    # Stop the run with context_full reason
+                    final_text = f"stopped: context full at {ctx.role.max_context} tokens"
+                    stop = "context_full"
+                    break
+                # If on_context_full is not "stop", we continue (the default behavior)
+
                 if call.name in ("write_file", "edit_file"):
                     wrote = True
                     changed = changed or result.ok

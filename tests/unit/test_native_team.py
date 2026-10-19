@@ -21,6 +21,7 @@ class Recorder(StepObserver):
         self.steps: list[StepRecord] = []
         self.injections: list[tuple[str, int]] = []
         self.inject = inject
+        self.events: list[tuple[str, dict[str, Any]]] = []
 
     async def before_step(self, team_id: str, step_num: int) -> str | None:
         self.injections.append((team_id, step_num))
@@ -32,6 +33,9 @@ class Recorder(StepObserver):
 
     async def after_step(self, step: StepRecord) -> None:
         self.steps.append(step)
+
+    async def emit(self, kind: str, **fields: Any) -> None:
+        self.events.append((kind, fields))
 
 
 def make_team(
