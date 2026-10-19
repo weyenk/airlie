@@ -98,6 +98,9 @@ class TeamContext:
     already_written: tuple[str, ...] = ()
     """Files this subtask changed in an earlier run (a fix round, a follow-up): the write-now nudge and the
     write schedule count them, so a continuation is not told to write what is already in the worktree."""
+    attempt: int = 0
+    """Which run of this team this is: 0 for the first, then one more for each fix round or follow-up, whether
+    it resumes the conversation or starts it again. Every step record carries it (its trace folder)."""
 
 
 @dataclass

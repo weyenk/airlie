@@ -358,6 +358,7 @@ class StudioOrchestrator:
         preamble: str,
         parent: TeamResult | None,
         nudge: str | None,
+        attempt: int = 0,
     ) -> TeamContext:
         assert self.worktree is not None
         state, goal, nudge = self._continuation(run, parent, nudge)
@@ -378,6 +379,7 @@ class StudioOrchestrator:
             initial_state=state,
             nudge=nudge,
             already_written=written,
+            attempt=attempt,  # its steps' trace folder, whether or not the conversation starts again
             must_act=True,  # a build's deliverable is the change: a first reply of prose is sent back once
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
@@ -464,7 +466,13 @@ class StudioOrchestrator:
                 "fix_round", subtask=run.subtask.id, round=run.fix_rounds, blocking=len(review.blocking)
             )
             ctx = self._context(
-                run, role, test_cmd, preamble=preamble, parent=run.result, nudge=nudge_from_review(review)
+                run,
+                role,
+                test_cmd,
+                preamble=preamble,
+                parent=run.result,
+                nudge=nudge_from_review(review),
+                attempt=run.fix_rounds,
             )
             run.result = await self.team.run(ctx, self.observer)
 
@@ -475,7 +483,15 @@ class StudioOrchestrator:
         run = self.runs[subtask_id]
         role = self.cfg.roles[run.role]
         self.sink.emit("follow_up", subtask=subtask_id, role=run.role)
-        ctx = self._context(run, role, self.test_cmd, preamble=run.preamble, parent=run.result, nudge=nudge)
+        ctx = self._context(
+            run,
+            role,
+            self.test_cmd,
+            preamble=run.preamble,
+            parent=run.result,
+            nudge=nudge,
+            attempt=run.fix_rounds + 1,  # after the fix rounds, if any
+        )
         try:
             async with self.write_lock, self.sem:
                 run.result = await self.team.run(ctx, self.observer)
