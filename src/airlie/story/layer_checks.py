@@ -233,7 +233,9 @@ def feedback(findings: Sequence[Finding]) -> str:
         "airlie checked the tests you added or changed, and these need fixing:",
         *listed,
         "Fix each one: assert the behaviour this layer adds, so the test fails without your change and "
-        "passes with it. Keep the tests for the acceptance criteria. Run run_tests until the whole suite "
-        "passes, then stop.",
+        "passes with it. A test that only checks that nothing happens (no event, no message, no change) "
+        "cannot fail on the base, where nothing happens either: put that check in the same test that "
+        "triggers the behaviour, before the trigger, or drop it. Keep the tests for the acceptance "
+        "criteria. Run run_tests until the whole suite passes, then stop.",
     ]
     return "\n".join(lines)

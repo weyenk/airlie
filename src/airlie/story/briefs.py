@@ -187,7 +187,10 @@ def layers_brief(
         "layer. A layer's tests must fail before the layer and pass after it: put the layer that adds a name "
         "(a tool, option or field) below the layer that validates or uses it, since code that refuses an "
         "unknown name already refuses it for the wrong reason; where a criterion could pass on the base by "
-        "accident, say in that layer's brief which message or output proves the new behaviour.",
+        "accident, say in that layer's brief which message or output proves the new behaviour. A criterion "
+        "that something does NOT happen (no event, no message, unchanged output) is proven inside a test "
+        "that also makes it happen, never as a test of its own: airlie rejects a test that passes on the "
+        "base, and one that checks for nothing always does.",
         *(
             [
                 f"You will be asked for your plan after every {round_steps} steps, whatever you have read so "

@@ -507,6 +507,9 @@ def test_the_briefs_ask_for_criteria_and_layers_that_are_red_before_the_change()
     assert "names what differs after the change" in refine and "only the new message contains" in refine
     layers = layers_brief(STORY, 3)
     assert "fail before the layer and pass after it" in layers and "adds a name" in layers
+    # a criterion that something does not happen cannot be its own test: airlie rejects tests that pass
+    # on the base (AIR-31 layer 02 blocked on one the brief itself asked for)
+    assert "does NOT happen" in layers and "never as a test of its own" in layers
 
 
 def test_layers_brief_carries_the_guide_and_the_survey_only_when_there_are_some() -> None:
