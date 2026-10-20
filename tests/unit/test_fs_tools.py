@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.fs import LOCKED, EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
@@ -68,7 +68,10 @@ async def test_write_file_refuses_to_overwrite_a_long_existing_file(tmp_path: Pa
     c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
     p = put(c, "tests/test_big.py", "a\nb\nc\nd\n")
     r = await WriteFile().run({"path": "tests/test_big.py", "content": "x = 1\n"}, c)
-    assert not r.ok and "4 lines" in r.output and "edit_file" in r.output and "new file" in r.output
+    assert r.ok is False and r.output == (
+        "error: tests/test_big.py already exists with 4 lines (over 3); write_file does not rewrite a file "
+        "that long. Change it with edit_file, or put new tests in a new file named for the feature."
+    )
     assert p.read_text() == "a\nb\nc\nd\n"
 
 
@@ -409,7 +412,9 @@ async def test_write_file_and_edit_file_refuse_a_locked_file_and_say_why(tmp_pat
         ),  # the same file, spelled oddly
     ):
         r = await tool.run(args, c)
-        assert not r.ok and "you cannot change them" in r.output and "say which and why" in r.output
+        assert r.ok is False and r.output == LOCKED.format(path=args["path"])
+        assert "you cannot change them" in r.output and "say which and why" in r.output
+        assert r.output.startswith(f"error: {args['path']} holds this layer's acceptance tests")
     assert (c.worktree / "tests/test_calc.py").read_text().endswith("== 6\n")
     # a file beside it is the coder's own
     assert (await WriteFile().run({"path": "tests/test_more.py", "content": "x = 1\n"}, c)).ok

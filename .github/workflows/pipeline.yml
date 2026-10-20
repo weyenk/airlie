@@ -1,7 +1,7 @@
 # The pipeline, one stage per level of the test pyramid. A stage starts only when the one before it is green.
 #
 #   1 static        lint + types (the same `task static` that runs on every push to origin)
-#   2 lowest level  unit tests, then mutation testing of the enrolled modules the change touches, in shards
+#   2 lowest level  unit tests, then mutation testing of the enrolled functions the change touched, in shards
 #                   (the weekly run covers the whole project)
 #   3 units in concert   functional, contract, integration
 #   4 behavioural        end-to-end, journey
@@ -45,8 +45,8 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task test:unit
 
-  # Mutation testing of the enrolled modules this change touches, split over 5 runners (whole modules,
-  # dealt out by size); `mutation-gate` merges the shards and is the one verdict. Free accounts get 5
+  # Mutation testing of the functions of enrolled modules this change touched, split over 5 runners (whole
+  # functions, dealt out by size); `mutation-gate` merges the shards and is the one verdict. Free accounts get 5
   # concurrent macOS runners: more shards than that only queue.
   mutation:
     needs: unit

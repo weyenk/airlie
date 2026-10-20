@@ -6,26 +6,29 @@
 
 Scopes
   changed   Two sets of mutants, run together:
-            1. every mutant of an enrolled source file that changed since the merge base with --base
-               (committed, staged, unstaged and untracked), and
+            1. every mutant of each function or method of an enrolled source file that the change touched
+               since the merge base with --base (committed, staged, unstaged and untracked; a new file is
+               all touched). Code the change left alone is not held to the gate here: the weekly
+               `--scope project` run covers it. And
             2. every mutant of any function that a changed or new test file exercises. A new test is
                only good if the mutants in the code it runs get caught, so the suite is asked to prove it.
             A change to the mutation setup (pyproject.toml, tests/unit/conftest.py) is not attributable to
-            one file and runs every enrolled module instead.
-            --gate-only drops set 2 (and the stats run it needs): only the enrolled modules a change impacts
-            are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them can fail
-            the run, so a story's gate leaves them to the weekly `--scope project` run.
+            one function and runs every enrolled module, whole, instead.
+            --gate-only drops set 2 (and the stats run it needs): only the enrolled functions a change
+            touched are mutated. Set 2 is most of a story's mutants (AIR-5: 855 of 1,211) and none of them
+            can fail the run, so the pipeline leaves them to the weekly `--scope project` run.
   enrolled  Every mutant of every enrolled module.
   project   Every mutant in src/airlie. Enrolled modules gate; the rest is reported as the backlog.
 
 Sharding (CI runs a matrix of these, then one merge)
     uv run python scripts/mutate_changed.py --scope project --shard 2/5 --results shard-2.json
     uv run python scripts/mutate_changed.py --merge shards/ --expect 5 --report mutation-report.md
-  --shard I/N runs only the I-th of N even parts of the selected mutants: whole modules, dealt out by size
-  (largest first, each to the part with the fewest lines so far), so every shard of a run picks the same parts
-  from the same tree. --results writes what the shard ran to a JSON file (CI names it shard-<I>.json). --merge
-  reads every shard-*.json under a directory, gates on all of them together, and writes the one report;
-  --expect N fails it when fewer than N shards reported, so a shard that died before writing cannot pass.
+  --shard I/N runs only the I-th of N even parts of the selected mutants, dealt out by size (largest first,
+  each to the part with the fewest lines so far): whole functions for the changed scope, whole modules for
+  the others. Every shard of a run picks the same parts from the same tree. --results writes what the shard
+  ran to a JSON file (CI names it shard-<I>.json). --merge reads every shard-*.json under a directory, gates
+  on all of them together, and writes the one report; --expect N fails it when fewer than N shards
+  reported, so a shard that died before writing cannot pass.
 
 Enrolment is `[tool.airlie.mutation].enrolled` in pyproject.toml. Exit 0 when every selected mutant of an
 enrolled module is caught (killed, or timed out); 1 when one survives, has no covering test, is suspicious
@@ -76,18 +79,90 @@ def resolve_base(base: str) -> str:
     return "HEAD~1" if set(base) == {"0"} else base
 
 
-def changed_files(base: str) -> set[str]:
-    """Paths changed since the merge base with `base`, working tree and untracked files included."""
+def merge_base_of(base: str) -> str:
     base = resolve_base(base)
     try:
-        merge_base = git("merge-base", base, "HEAD")[0]
+        return git("merge-base", base, "HEAD")[0]
     except (subprocess.CalledProcessError, IndexError) as e:
         raise SystemExit(
             f"cannot find a merge base with '{base}'. In CI check out with full history (fetch-depth: 0) "
             f"and pass --base explicitly."
         ) from e
+
+
+def changed_files(base: str) -> set[str]:
+    """Paths changed since the merge base with `base`, working tree and untracked files included."""
+    merge_base = merge_base_of(base)
     changed = set(git("diff", "--name-only", "--diff-filter=ACMR", merge_base))
     return changed | set(git("ls-files", "--others", "--exclude-standard"))
+
+
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+
+
+def touched_lines(diff: str) -> set[int]:
+    """The lines of the new file a `git diff -U0` touched: those it added or changed, and for a hunk that only
+    deleted, the lines on either side of the cut (the function they sit in changed)."""
+    lines: set[int] = set()
+    for start, count in HUNK.findall(diff):
+        first, n = int(start), int(count) if count else 1
+        lines |= set(range(first, first + n)) if n else {first, first + 1}
+    return lines
+
+
+def changed_lines(merge_base: str, path: str) -> set[int] | None:
+    """The lines of `path` (in the working tree) that changed since `merge_base`; None when the whole file is
+    new there."""
+    if not git("ls-tree", "--name-only", merge_base, "--", path):
+        return None
+    out = subprocess.run(
+        ["git", "diff", "-U0", "--no-color", merge_base, "--", path],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return touched_lines(out)
+
+
+def functions_of(path: str) -> list[tuple[str, str, int, int]]:
+    """Each function mutmut mutates in `path`: (its mutant glob, its name as written, first line, last line),
+    the first line counting its decorators. Top-level functions are `<module>.x_<name>__mutmut_*`; methods
+    of a top-level class are `<module>.xǁ<Class>ǁ<name>__mutmut_*`."""
+    tree = ast.parse((ROOT / path).read_text())
+    mod = module_name(path)
+    found: list[tuple[str, str, int, int]] = []
+
+    def add(node: ast.FunctionDef | ast.AsyncFunctionDef, glob: str, name: str) -> None:
+        first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        found.append((glob, name, first, node.end_lineno or node.lineno))
+
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            add(node, f"{mod}.x_{node.name}__mutmut_*", node.name)
+        elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, ast.FunctionDef | ast.AsyncFunctionDef):
+                    add(sub, f"{mod}.xǁ{node.name}ǁ{sub.name}__mutmut_*", f"{node.name}.{sub.name}")
+    return found
+
+
+def changed_functions(merge_base: str, paths: list[str]) -> tuple[dict[str, int], list[str]]:
+    """The mutant globs of the functions and methods of `paths` the change touched, each with its weight
+    (its lines), and one report line per file naming them."""
+    weights: dict[str, int] = {}
+    report: list[str] = []
+    for path in paths:
+        lines = changed_lines(merge_base, path)
+        touched = [
+            (glob, name, last - first + 1)
+            for glob, name, first, last in functions_of(path)
+            if lines is None or any(first <= n <= last for n in lines)
+        ]
+        weights.update({glob: size for glob, _, size in touched})
+        names = ", ".join(name for _, name, _ in touched) or "no function (only module-level code)"
+        report.append(f"- {path}: {names}")
+    return weights, report
 
 
 # ---- what is enrolled, and how files map to mutants ----
@@ -201,7 +276,8 @@ def functions_run_by(test_files: list[str], stats: dict[str, object]) -> list[st
 def function_globs(functions: list[str], already: list[str]) -> list[str]:
     """Mutant globs for `functions`, leaving out those a module glob in `already` selects anyway."""
     covered = tuple(g.removesuffix("*") for g in already)
-    return [f"{fn}__mutmut_*" for fn in functions if not fn.startswith(covered)]
+    globs = [f"{fn}__mutmut_*" for fn in functions]
+    return [g for g in globs if g not in already and not g.startswith(covered)]
 
 
 # ---- reading mutmut's results ----
@@ -363,6 +439,7 @@ def main() -> int:
     shard = f"{args.shard[0]}/{args.shard[1]}" if args.shard else "1/1"
     out: list[str] = [f"### Mutation testing ({args.scope})"]
     test_files: list[str] = []
+    whole = False
 
     if args.scope == "enrolled":
         sources = list(scope_files)
@@ -371,6 +448,7 @@ def main() -> int:
     else:
         changed = changed_files(args.base)
         sources = impacted_sources(changed, scope_files)
+        whole = bool(changed & SETUP_FILES)  # the setup changed: every enrolled module, whole
         test_files = changed_tests(changed)
         skipped = [f for f in test_files if f in mutation_ignored_tests()]
         test_files = [f for f in test_files if f not in skipped]
@@ -387,20 +465,24 @@ def main() -> int:
         if unenrolled:
             out += ["changed but not enrolled (not gated):", *[f"- {f}" for f in unenrolled]]
 
-    weights = (
-        {g: size(f) for f in project_files() for g in file_globs(f)}
-        if args.scope == "project"
-        else {module_glob(f): size(f) for f in sources}
-    )
+    if args.scope == "project":
+        weights = {g: size(f) for f in project_files() for g in file_globs(f)}
+    elif args.scope == "changed" and not whole:
+        weights, touched = changed_functions(merge_base_of(args.base), sources)
+    else:
+        weights = {module_glob(f): size(f) for f in sources}
     globs = ["airlie.*"] if args.scope == "project" and not args.shard else list(weights)
-    if sources:
+    if args.scope == "changed" and sources and not whole:
+        out += [f"{len(weights)} changed function(s) in {len(sources)} enrolled file(s):", *touched]
+    elif sources:
         out += [f"{len(sources)} source file(s):", *[f"- {f}" for f in sources]]
     if test_files and args.gate_only:
         out.append(f"{len(test_files)} changed test file(s); --gate-only leaves out what they run elsewhere")
     elif test_files:
         out += [f"{len(test_files)} changed test file(s):", *[f"- {f}" for f in test_files]]
     if not globs and (args.gate_only or not test_files):
-        out.append("nothing to mutate: no enrolled source and no test file changed")
+        why = "the change touched no enrolled function" if sources else "no enrolled source changed"
+        out.append(f"nothing to mutate: {why}" + ("" if args.gate_only else " and no test file changed"))
         say(out, args.report)
         write_results(args.results, "nothing", {}, shard, args.scope)
         return 0
@@ -431,7 +513,7 @@ def main() -> int:
         weights.update({g: 1 for g in extra})
     if args.shard:
         globs = shard_of({g: weights.get(g, 1) for g in globs}, args.shard)
-        say([f"shard {shard}: {len(globs)} of {len(weights)} module glob(s)"], args.report)
+        say([f"shard {shard}: {len(globs)} of {len(weights)} glob(s)"], args.report)
     if not globs:
         say(["nothing to mutate in this selection"], args.report)
         write_results(args.results, "nothing", {}, shard, args.scope)

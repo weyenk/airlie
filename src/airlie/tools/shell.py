@@ -19,6 +19,9 @@ from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
 from airlie.tools.scope import autofix_steps, changed_test_files, scoped_steps
 
+SH = "/bin/sh"
+"""The shell a confined command runs in. A constant, not a literal in the call: on macOS's case-insensitive
+disk /BIN/SH is the same file, so a mutant that upper-cases it could not be told apart."""
 GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "reflog", "worktree", "config"}
 
 
@@ -52,7 +55,7 @@ async def _run(
     )
     try:
         if confined:
-            command = ["/bin/sh", "-c", str(cmd)] if shell else [str(c) for c in cmd]
+            command = [SH, "-c", str(cmd)] if shell else [str(c) for c in cmd]
             if not shell and shutil.which(command[0], path=env.get("PATH")) is None:
                 # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
                 raise FileNotFoundError(2, "No such file or directory", command[0])
@@ -78,14 +81,16 @@ async def _run(
 
 
 async def _spawn(starting: Coroutine[Any, Any, asyncio.subprocess.Process]) -> asyncio.subprocess.Process:
-    """The process `starting` makes. A cancel that lands while it is being made (the child already runs:
-    asyncio connects its pipes after the fork) waits for it, kills it and all it started, and goes on: else
-    the caller never has it to kill (PR 105's CI, 2026-10-19: a cancelled gate's sleep outlived the test)."""
+    """The process `starting` makes. Anything that stops the wait for it (a cancel that lands while it is
+    being made: the child already runs, asyncio connects its pipes after the fork) waits for it, kills it and
+    all it started, and goes on: else the caller never has it to kill (PR 105's CI, 2026-10-19: a cancelled
+    gate's sleep outlived the test). A start that failed (OSError) has nothing to kill and is raised."""
     task = asyncio.ensure_future(starting)
     try:
         return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        with contextlib.suppress(OSError):  # it never started: nothing to kill
+    except BaseException:
+        # it never started, so there is nothing to kill, and the wait raised the same OSError
+        with contextlib.suppress(OSError):  # pragma: no mutate
             await kill_group(await task)
         raise
 

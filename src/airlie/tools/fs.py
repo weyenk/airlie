@@ -91,6 +91,11 @@ class ReadFile:
         return ToolResult(True, _cap_lines(numbered, offset, len(lines), ctx.output_cap_chars))
 
 
+HEAD = "HEAD"
+"""The worktree's commit when a run has no base. A constant, not a literal in the call: on macOS's
+case-insensitive disk git reads "head" as HEAD too, so a mutant that lowercases it could not be told apart."""
+
+
 def _at_base(worktree: Path, p: Path, ref: str) -> bool:
     """Whether `p` is in the worktree's commit `ref` (the run's base, else HEAD): code that was there before
     the run, which the overwrite limit protects. A file the coder created this run is its own to rewrite,
@@ -115,14 +120,11 @@ LOCKED = (
 
 
 def _locked(ctx: ToolContext, p: Path) -> bool:
-    """Whether `p` is one of `ctx.read_only` (the tester's test files, for the coder)."""
+    """Whether `p` is one of `ctx.read_only` (the tester's test files, for the coder). `p` comes from
+    `resolve`, which refuses a path outside the worktree."""
     if not ctx.read_only:
         return False
-    try:
-        rel = p.resolve().relative_to(ctx.worktree.resolve()).as_posix()
-    except ValueError:
-        return False
-    return rel in ctx.read_only
+    return p.resolve().relative_to(ctx.worktree.resolve()).as_posix() in ctx.read_only
 
 
 class WriteFile:
@@ -148,7 +150,7 @@ class WriteFile:
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
                 > (limit := ctx.write_file_max_overwrite_lines)
-                and _at_base(ctx.worktree, p, ctx.scope_base or "HEAD")
+                and _at_base(ctx.worktree, p, ctx.scope_base or HEAD)
             ):
                 return ToolResult(
                     False,

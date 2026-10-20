@@ -140,8 +140,9 @@ async def test_the_scoped_run_still_runs_the_gates_other_steps_on_everything(tmp
 async def test_with_no_test_file_of_its_own_run_tests_fails_and_says_to_write_them(tmp_path: Path) -> None:
     repo, base = repo_with(tmp_path, {"tests/test_old.py": PASS})
     result = await RunTests().run({}, ctx(repo, base, steps=("echo lint-ok", PYTEST)))
-    assert not result.ok
-    assert "lint-ok" in result.output and "write the layer's tests first" in result.output
+    assert result.ok is False
+    assert "lint-ok" in result.output
+    assert result.output.endswith("\nno test file of yours to run yet: write the layer's tests first.")
     assert "passed" not in result.output.replace("gate commands pass", "")  # pytest never ran
 
 
