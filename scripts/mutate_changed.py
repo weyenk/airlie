@@ -468,7 +468,8 @@ def main() -> int:
     if args.scope == "project":
         weights = {g: size(f) for f in project_files() for g in file_globs(f)}
     elif args.scope == "changed" and not whole:
-        weights, touched = changed_functions(merge_base_of(args.base), sources)
+        # the merge base only when there is a changed enrolled file to map (a shallow checkout has none)
+        weights, touched = changed_functions(merge_base_of(args.base), sources) if sources else ({}, [])
     else:
         weights = {module_glob(f): size(f) for f in sources}
     globs = ["airlie.*"] if args.scope == "project" and not args.shard else list(weights)
