@@ -6,7 +6,13 @@ export function h(tag, attrs, ...children) {
     for (const [k, v] of Object.entries(attrs)) {
       if (v === null || v === undefined || v === false) continue;
       if (k === "class") el.className = v;
-      else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+      else if (k === "style" && typeof v === "object") {
+        for (const [name, value] of Object.entries(v)) {
+          if (value === null || value === undefined) continue;
+          if (name.startsWith("--")) el.style.setProperty(name, String(value));
+          else Object.assign(el.style, { [name]: value });
+        }
+      }
       else if (k === "dataset") Object.assign(el.dataset, v);
       else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2).toLowerCase(), v);
       else if (k === "value" && "value" in el) el.value = v;
