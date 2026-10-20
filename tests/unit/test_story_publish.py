@@ -39,7 +39,7 @@ from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
 from tests.unit.git_helpers import git
 from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 
@@ -287,11 +287,16 @@ async def test_run_cmd_kills_what_the_command_started_when_it_times_out(
     assert await eventually(lambda: not running(sleeper))  # and the sleep is not left running
 
 
-async def test_run_cmd_kills_what_the_command_started_when_its_caller_is_cancelled(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_run_cmd_kills_what_the_command_started_when_its_caller_is_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: bool, cancel: Any
+) -> None:
+    import airlie.story.publish as publish_mod
+
+    gate = StartGate(monkeypatch, publish_mod, hold=hold)
     sleeper = unique_sleep()
     task = asyncio.create_task(run_cmd(["sh", "-c", f"{sleeper} & wait"], tmp_path, yours()))
-    assert await eventually(lambda: running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
-    task.cancel()
+    await cancel(task, gate, sleeper)
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=10)  # at once, not when the sleep has run its 30 s out
     assert await eventually(lambda: not running(sleeper))

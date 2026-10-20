@@ -9,6 +9,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -19,7 +20,7 @@ from airlie.orchestrator import ParallelAgentTeamOrchestrator
 from airlie.teams.protocol import TeamResult
 from airlie.topology.fork import ForkOrchestrator
 from airlie.topology.protocol import build_topology
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 
 
 def repo_with_marker_tests(tmp_path: Path) -> Path:
@@ -303,11 +304,16 @@ async def test_a_team_test_gate_kills_what_the_test_command_started_when_it_time
     assert await eventually(lambda: not running(sleeper))
 
 
-async def test_cancelling_a_team_test_gate_kills_what_the_test_command_started(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_cancelling_a_team_test_gate_kills_what_the_test_command_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: bool, cancel: Any
+) -> None:
+    import airlie.orchestrator as orchestrator_mod
+
+    gate = StartGate(monkeypatch, orchestrator_mod, hold=hold)
     sleeper = unique_sleep()
     task = asyncio.create_task(team_tests(tmp_path, 60, f"{sleeper} & wait"))
-    assert await eventually(lambda: running(f"^{sleeper}"))
-    task.cancel()
+    await cancel(task, gate, sleeper)
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)
     assert await eventually(lambda: not running(sleeper))

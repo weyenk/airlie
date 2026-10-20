@@ -19,7 +19,7 @@ from airlie.router import ChiefRouter, RouteDecision
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
@@ -879,11 +879,16 @@ async def test_the_test_gate_kills_what_the_test_command_started_when_it_times_o
     assert await eventually(lambda: not running(sleeper))
 
 
-async def test_cancelling_the_test_gate_kills_what_the_test_command_started(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_cancelling_the_test_gate_kills_what_the_test_command_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: bool, cancel: Any
+) -> None:
+    from airlie.tools import shell as shell_mod
+
+    gate_ = StartGate(monkeypatch, shell_mod, hold=hold)
     sleeper = unique_sleep()
     task = asyncio.create_task(gate(tmp_path, 60)._tests_pass(f"{sleeper} & wait"))
-    assert await eventually(lambda: running(f"^{sleeper}"))
-    task.cancel()
+    await cancel(task, gate_, sleeper)
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)
     assert await eventually(lambda: not running(sleeper))

@@ -8,6 +8,7 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,7 @@ from airlie.engine import ToolCall
 from airlie.tools import ToolContext, ToolRegistry, ToolResult, resolve
 from airlie.tools import confine as confine_mod
 from airlie.tools.shell import run_cmd
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 
 
 def ctx(tmp_path: Path, **kw) -> ToolContext:
@@ -114,47 +115,6 @@ async def test_a_shell_timeout_kills_what_the_command_started(tmp_path: Path) ->
     assert not r.ok and "timed out after 1s" in r.output
     assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
     assert await eventually(lambda: not running(sleeper))  # and the sleep is not left running
-
-
-async def test_cancelling_a_shell_call_kills_what_the_command_started(tmp_path: Path) -> None:
-    sleeper = unique_sleep()
-    reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=60))
-    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
-    assert await eventually(lambda: running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
-    assert await eventually(lambda: not running(sleeper))
-
-
-@pytest.mark.parametrize("sandbox", [False, True])
-async def test_a_cancel_while_the_command_is_still_being_started_kills_it_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
-) -> None:
-    """The child runs before asyncio has connected its pipes: a cancel in that moment (PR 105's CI, a slow
-    runner) used to leave the caller without the process to kill, and the command ran on."""
-    started = asyncio.Event()
-
-    def slow(real):  # type: ignore[no-untyped-def]
-        async def spawn(*args, **kwargs):  # type: ignore[no-untyped-def]
-            proc = await real(*args, **kwargs)
-            started.set()
-            await asyncio.sleep(2)  # the cancel lands here, with the child already running
-            return proc
-
-        return spawn
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", slow(asyncio.create_subprocess_shell))
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", slow(asyncio.create_subprocess_exec))
-    sleeper = unique_sleep()
-    reg = ToolRegistry.builtin(["shell"], replace(ctx(tmp_path, timeout=60), sandbox=sandbox))
-    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
-    await asyncio.wait_for(started.wait(), 20)
-    assert await eventually(lambda: running(f"^{sleeper}"))
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 20)
-    assert await eventually(lambda: not running(sleeper))
 
 
 async def test_a_command_reads_no_stdin_so_it_never_waits_on_the_persons_terminal(tmp_path: Path) -> None:
@@ -379,29 +339,19 @@ async def test_the_sandbox_note_is_for_a_confined_command_that_failed_on_a_refus
 
 
 @pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
-async def test_a_cancel_once_the_command_has_started_kills_it_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_cancelling_a_shell_call_kills_what_the_command_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool, hold: bool, cancel: Any
 ) -> None:
-    """The other half of a cancel: it lands while the command runs, not while it starts. Timing alone does
-    not say which half a test hits (PR 105's CI: a slow runner's cancels all landed mid-start), so the test
-    waits for the start to have returned."""
+    """Mid-start (the child runs, its pipes not yet connected) or once running: either way nothing the
+    command started outlives the cancel. The test, not the machine's speed, says which (StartGate)."""
     from airlie.tools import shell as shell_mod
 
-    up = asyncio.Event()
-    real = shell_mod.started
-
-    async def noted(starting):  # type: ignore[no-untyped-def]
-        proc = await real(starting)
-        up.set()
-        return proc
-
-    monkeypatch.setattr(shell_mod, "started", noted)
+    gate = StartGate(monkeypatch, shell_mod, hold=hold)
     sleeper = unique_sleep()
-    c = replace(ctx(tmp_path, timeout=60), sandbox=sandbox)
-    task = asyncio.create_task(run_cmd(f"{sleeper} & wait", c, shell=True))
-    await asyncio.wait_for(up.wait(), 20)
-    assert await eventually(lambda: running(f"^{sleeper}"))
-    task.cancel()
+    reg = ToolRegistry.builtin(["shell"], replace(ctx(tmp_path, timeout=60), sandbox=sandbox))
+    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
+    await cancel(task, gate, sleeper)
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 20)
+        await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
     assert await eventually(lambda: not running(sleeper))

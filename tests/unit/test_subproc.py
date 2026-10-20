@@ -415,20 +415,21 @@ async def test_a_process_whose_start_is_cancelled_is_killed_with_all_it_started(
     from airlie.subproc import started
 
     sleeper = unique_sleep()
-    begun = asyncio.Event()
+    begun, release = asyncio.Event(), asyncio.Event()
 
-    async def slow_start() -> asyncio.subprocess.Process:
+    async def held_start() -> asyncio.subprocess.Process:
         proc = await asyncio.create_subprocess_shell(
             f"{sleeper} & wait", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
         )
         begun.set()
-        await asyncio.sleep(2)  # the cancel lands here, with the child already running
+        await release.wait()  # the start returns when the test says, after its cancel
         return proc
 
-    task = asyncio.create_task(started(slow_start()))
+    task = asyncio.create_task(started(held_start()))
     await asyncio.wait_for(begun.wait(), 20)
     assert await eventually(lambda: running(f"^{sleeper}"))
     task.cancel()
+    release.set()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)
     assert await eventually(lambda: not running(sleeper))
