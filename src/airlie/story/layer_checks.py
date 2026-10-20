@@ -29,6 +29,7 @@ Kind = Literal[
     "unparseable_test",
     "no_new_test",
     "suite_did_not_run",
+    "lint_fails",
 ]
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
 EXISTING_FAILS = (
