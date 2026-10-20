@@ -49,6 +49,7 @@ from airlie.story.model import (
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
+from airlie.story.tester_lint import lint_for
 from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
     changed_files,
@@ -75,6 +76,7 @@ _SHORT = {
     "unparseable_test": "does not parse",
     "no_new_test": "(no new test)",
     "suite_did_not_run": "did not run the tests",
+    "lint_fails": "fails on the tester's files",
 }
 """A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
 BUILT_DIFF_CHARS = 400_000
@@ -707,8 +709,11 @@ class StoryPipeline:
         """The pre-code check (story.layer_checks) on the tests the tester wrote, before the coder builds:
         findings go back to the tester once (`follow_up`), and what is left after that is returned, for the
         layer to stop on. Each finding is an event. A gate that does not run pytest gets no check, and an
-        event says so."""
-        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement())
+        event says so. Before each run, the gate's ruff steps fix what they can in the tester's files and
+        report the rest (tester_lint), so the coder is never left a lint error in files it cannot edit."""
+        confinement = self.cfg.tools.confinement()
+        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
+        lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         if checks is None:
             reason = "the gate runs no pytest: the pre-code check is for pytest only"
             st.emit("test_checks_skipped", layer=nn, reason=reason)
@@ -717,7 +722,14 @@ class StoryPipeline:
         found: list[Finding] = []
         for attempt in range(1, CHECK_ATTEMPTS + 1):
             commit_wip(wt, f"studio: layer {nn} (pre-code check {attempt})")
-            found = await checks.run(wt, base_sha)
+            found = []
+            if lint is not None:
+                fixed = await lint.fix(wt, base_sha)
+                if fixed:
+                    commit_wip(wt, f"studio: layer {nn} (lint fixes {attempt})")
+                    st.emit("tester_lint_fixed", layer=nn, attempt=attempt, files=fixed)
+                found = await lint.check(wt, base_sha)
+            found += await checks.run(wt, base_sha)
             self._emit_findings(st, found, nn, attempt, studio_run)
             if not found:
                 st.emit("test_checks_passed", layer=nn, attempt=attempt)
