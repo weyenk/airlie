@@ -460,19 +460,14 @@ class StorySpec(Strict):
         description="while product refines the request, the architect reads the code it touches and takes "
         "notes the layer planning starts from",
     )
-    mutation_timeout_s: float = Field(
-        default=3600,
-        gt=0,
-        description="how long the story's mutation gate (AGENTS.md's Mutation gate) may run, once per story",
-    )
     product_role: str = "product"
     architect_role: str = "architect"
     build_role: str = "coder"
     tester_role: str | None = Field(
         default=None,
-        description="the role that writes a layer's acceptance tests before its coder builds it, as the "
-        "coder's contract (airlie.yaml seats 'tester'); null: the coder writes its own tests, one subtask "
-        "per layer",
+        description="the role that writes every layer's tests before its coder builds it, as the coder's "
+        "contract: checked to fail before any code is written, then read-only to the coder (airlie.yaml "
+        "seats 'tester'); null: the coder writes its own tests, one subtask per layer",
     )
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)

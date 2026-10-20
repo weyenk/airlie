@@ -1,10 +1,10 @@
-"""Scoped test runs for a layer's coder: its own tests first, the whole gate once those pass.
+"""Scoped test runs for a story layer: its own tests, not the whole suite.
 
-A story layer's coder calls run_tests after every change, and the repository's gate runs the whole suite each
-time (minutes). Scoped, run_tests runs the gate with pytest limited to the test files the layer added or
-changed (seconds); only when those pass does it run the whole gate, and not again for a tree it already
-passed (`GateMemo`). The studio's own final gate asks the same memo, so a tree that passed in the coder's
-last run_tests is not run a third time.
+A story layer's tester and coder call run_tests after every change, and the repository's gate runs the whole
+suite each time (minutes). Scoped, run_tests runs the gate with pytest limited to the test files the layer
+added or changed (seconds), and that is the subtask's measure of done. The whole gate is the studio's, once
+the subtasks are done and reviewed; it remembers the tree that last passed it (`GateMemo`), so a gate asked
+again of the same files does not run again.
 """
 
 from __future__ import annotations

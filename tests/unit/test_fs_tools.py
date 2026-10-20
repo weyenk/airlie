@@ -6,7 +6,9 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
+import pytest
+
+from airlie.tools.fs import LOCKED, EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
@@ -68,7 +70,10 @@ async def test_write_file_refuses_to_overwrite_a_long_existing_file(tmp_path: Pa
     c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
     p = put(c, "tests/test_big.py", "a\nb\nc\nd\n")
     r = await WriteFile().run({"path": "tests/test_big.py", "content": "x = 1\n"}, c)
-    assert not r.ok and "4 lines" in r.output and "edit_file" in r.output and "new file" in r.output
+    assert r.ok is False and r.output == (
+        "error: tests/test_big.py already exists with 4 lines (over 3); write_file does not rewrite a file "
+        "that long. Change it with edit_file, or put new tests in a new file named for the feature."
+    )
     assert p.read_text() == "a\nb\nc\nd\n"
 
 
@@ -392,3 +397,124 @@ async def test_grep_skips_an_unreadable_file_and_keeps_searching(tmp_path: Path)
     finally:
         locked.chmod(0o644)
     assert r.output == "b.txt:1: hit"
+
+
+# ---- locked files: the tester's tests, for the coder ----
+
+
+async def test_write_file_and_edit_file_refuse_a_locked_file_and_say_why(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), read_only=frozenset({"tests/test_calc.py"}))
+    put(c, "tests/test_calc.py", "def test_mul():\n    assert mul(2, 3) == 6\n")
+    for tool, args in (
+        (WriteFile(), {"path": "tests/test_calc.py", "content": "def test_mul():\n    assert True\n"}),
+        (EditFile(), {"path": "tests/test_calc.py", "old": "== 6", "new": "== 6 or True"}),
+        (
+            WriteFile(),
+            {"path": "./tests/../tests/test_calc.py", "content": "x"},
+        ),  # the same file, spelled oddly
+    ):
+        r = await tool.run(args, c)
+        assert r.ok is False and r.output == LOCKED.format(path=args["path"])
+        assert "you cannot change them" in r.output and "say which and why" in r.output
+        assert r.output.startswith(f"error: {args['path']} holds this layer's acceptance tests")
+    assert (c.worktree / "tests/test_calc.py").read_text().endswith("== 6\n")
+    # a file beside it is the coder's own
+    assert (await WriteFile().run({"path": "tests/test_more.py", "content": "x = 1\n"}, c)).ok
+
+
+# ---- the helpers, to the character (PR 105's mutation gate: fs.py had 65 surviving mutants) ----
+
+
+async def test_read_file_takes_an_empty_or_zero_line_argument_as_the_start(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\nbeta\ngamma\n")
+    whole = "1: alpha\n2: beta\n3: gamma"
+    for args in ({}, {"offset": ""}, {"offset": 0}, {"limit": ""}, {"offset": "", "limit": ""}):
+        r = await ReadFile().run({"path": "a.py", **args}, c)
+        assert r.ok and r.output == whole, args
+    assert (await ReadFile().run({"path": "a.py", "offset": 2, "limit": 1}, c)).output == "2: beta"
+
+
+def test_cap_lines_keeps_whole_lines_up_to_the_limit_and_says_what_is_missing() -> None:
+    from airlie.tools.fs import _cap_lines
+
+    lines = ["1: aa", "2: bb", "3: cc"]  # 17 characters joined
+    assert _cap_lines(lines, 1, 3, 17) == "1: aa\n2: bb\n3: cc"  # exactly the limit: whole
+    assert _cap_lines(lines, 1, 3, 11) == (  # two lines and their newline are exactly 11
+        "1: aa\n2: bb\n… [truncated: lines 3-3 not shown; read on with offset=3] [truncated 6 chars]"
+    )
+    assert _cap_lines(lines, 1, 3, 10) == (  # one character short of the second line
+        "1: aa\n… [truncated: lines 2-3 not shown; read on with offset=2] [truncated 12 chars]"
+    )
+    assert _cap_lines(lines[1:], 2, 9, 5) == (  # a read that started at line 2 of 9
+        "2: bb\n… [truncated: lines 3-9 not shown; read on with offset=3] [truncated 6 chars]"
+    )
+
+
+async def test_the_overwrite_limit_holds_in_a_repository_with_nothing_committed(tmp_path: Path) -> None:
+    """git 2.4x says "invalid object name" where older ones said "Not a valid object name": the limit was
+    read from that text, and a repository with no commit lost it."""
+    c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
+    subprocess.run(["git", "init", "-q"], cwd=c.worktree, check=True)
+    p = put(c, "big.py", "a\nb\nc\nd\n")
+    r = await WriteFile().run({"path": "big.py", "content": "x = 1\n"}, c)
+    assert r.ok is False and "already exists with 4 lines" in r.output and p.read_text() == "a\nb\nc\nd\n"
+
+
+async def test_a_long_file_created_after_the_base_commit_may_be_rewritten(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), write_file_max_overwrite_lines=3)
+    put(c, "kept.py", "x = 1\n")
+    _commit_all(c)
+    p = put(c, "new.py", "a\nb\nc\nd\n")  # not in HEAD
+    assert (await WriteFile().run({"path": "new.py", "content": "y = 2\n"}, c)).ok
+    assert p.read_text() == "y = 2\n"
+
+
+def test_not_found_names_the_end_of_the_file_when_old_runs_past_it() -> None:
+    from airlie.tools.fs import _not_found
+
+    assert _not_found("a.txt", "b\nc\n", "a\nb\n") == (
+        "error: `old` text not found in a.txt. Its first line is line 2 of the file; the first line of `old` "
+        "that differs is its line 2, `c`, where the file has line 3: ``. Read the file there (read_file with "
+        "offset and limit) and quote it exactly, whitespace included."
+    )
+
+
+def test_not_found_for_a_blank_old_names_no_line_even_where_the_file_has_blank_ones() -> None:
+    from airlie.tools.fs import _not_found
+
+    generic = (
+        "error: `old` text not found in a.txt. Read the file (read_file with offset and limit) and quote the "
+        "text exactly, whitespace included."
+    )
+    assert _not_found("a.txt", "\n \n", "a\n\nb\n") == generic
+    assert _not_found("a.txt", "zzz", "") == generic  # an empty file has no closest line
+
+
+def test_loose_span_is_the_exact_offsets_of_the_lines_it_matched() -> None:
+    from airlie.tools.fs import _loose_span
+
+    text = "aX\r\n\nb  \nc\n"  # a CRLF line ending in X, a blank line, trailing spaces
+    assert _loose_span(text, "aX\nb\n") == (0, 9)  # through b's newline, since `old` ends with one
+    assert _loose_span(text, "aX\nb") == (0, 8)  # to the end of b's text (its spaces too), since it does not
+    assert _loose_span(text, "c\n") == (9, 11)  # the last line of the file
+    assert _loose_span(text, "b\nc") == (5, 10)
+    assert _loose_span(text, "a\nb\n") is None  # aX is not a
+    assert _loose_span("x\nx\n", "x\n") is None  # twice: no one span
+
+
+def test_asking_git_whether_a_file_is_at_the_base_prints_nothing(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """git's own output (rev-parse prints the commit) stays out of the process's: a model's tool output is
+    what the tool returns, not what leaked to the terminal."""
+    from airlie.tools.fs import _at_base
+
+    c = ctx(tmp_path)
+    put(c, "kept.py", "x = 1\n")
+    _commit_all(c)
+    capfd.readouterr()
+    assert _at_base(c.worktree, c.worktree / "kept.py", "HEAD") is True
+    assert _at_base(c.worktree, c.worktree / "new.py", "HEAD") is False
+    assert _at_base(c.worktree, c.worktree / "kept.py", "no-such-ref") is True  # no such commit
+    assert capfd.readouterr() == ("", "")

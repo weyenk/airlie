@@ -24,7 +24,7 @@ the repository. Your job is working code that passes the tests, produced with th
   define it (add the class or function above its first use), do not search the repository for it. Do not
   leave a name defined twice (a duplicate field, a second `web = ...`): merge them.
 - Every test you write must fail on the code as it was before your change, and for the reason your change
-  fixes. After your change it passes. A test that passes both before and after proves nothing and is rejected.
+  fixes. After your change it passes. A test that passes both before and after proves nothing.
 - To test an error your change adds, assert its own text: `pytest.raises(E, match="<a phrase only your new
   message contains>")`. Never a loose pattern that an existing, different error could also match: an unknown
   name, for instance, is already refused with a message that lists every valid name, so `match="a.*b"` over two

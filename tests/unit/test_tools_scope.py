@@ -1,4 +1,5 @@
-"""Scoped run_tests: the layer's own tests first, the whole gate once those pass (airlie.tools.scope)."""
+"""Scoped run_tests: a story layer's own tests, never the whole suite, which is the pipeline's after review
+(airlie.tools.scope)."""
 
 from __future__ import annotations
 
@@ -6,11 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-from airlie.tools.protocol import ToolContext, ToolResult
+from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import (
-    GateMemo,
     autofix_steps,
     changed_test_files,
     scope_step,
@@ -47,21 +45,13 @@ def repo_with(tmp_path: Path, files: dict[str, str]) -> tuple[Path, str]:
     return repo, git(repo, "rev-parse", "HEAD")
 
 
-def ctx(
-    repo: Path,
-    base: str,
-    memo: GateMemo | None = None,
-    steps: tuple[str, ...] = (PYTEST,),
-    check_base: str = "",
-) -> ToolContext:
+def ctx(repo: Path, base: str, steps: tuple[str, ...] = (PYTEST,)) -> ToolContext:
     return ToolContext(
         worktree=repo,
         shell_timeout_s=120.0,
         test_cmd=" && ".join(steps),
         test_steps=steps,
         scope_base=base,
-        gate_memo=memo,
-        check_base=check_base,
     )
 
 
@@ -129,35 +119,30 @@ async def test_run_tests_runs_only_the_changed_tests_until_they_pass(tmp_path: P
     assert "test_new_bad" in result.output and "test_bad" not in result.output.replace("test_new_bad", "")
 
 
-async def test_when_the_changed_tests_pass_the_whole_suite_runs_and_can_still_fail(tmp_path: Path) -> None:
+async def test_when_the_changed_tests_pass_run_tests_passes_without_the_whole_suite(tmp_path: Path) -> None:
+    """Noah, 2026-10-19: once the layer's own tests pass, the subtask is done; the whole suite is the
+    pipeline's final gate, after review. A red test elsewhere does not hold the coder back here."""
     repo, base = repo_with(tmp_path, {"tests/test_old.py": FAIL})
     (repo / "tests/test_new.py").write_text(PASS)
-    memo = GateMemo()
-    result = await RunTests().run({}, ctx(repo, base, memo))
-    assert not result.ok
-    assert "your tests pass; the whole suite FAILS" in result.output and "test_bad" in result.output
-    assert memo.passed is None
+    result = await RunTests().run({}, ctx(repo, base))
+    assert result.ok, result.output
+    assert "scoped to your 1 test file(s); the pipeline runs the whole suite after review" in result.output
+    assert "test_bad" not in result.output and "1 passed" in result.output
 
 
-async def test_a_tree_that_passed_the_whole_suite_is_not_run_again(tmp_path: Path) -> None:
+async def test_the_scoped_run_still_runs_the_gates_other_steps_on_everything(tmp_path: Path) -> None:
     repo, base = repo_with(tmp_path, {"tests/test_old.py": PASS})
     (repo / "tests/test_new.py").write_text(PASS.replace("ok", "new_ok"))
-    memo = GateMemo()
-    first = await RunTests().run({}, ctx(repo, base, memo))
-    assert first.ok and "the whole suite passes" in first.output
-    assert memo.passed == tree_fingerprint(repo)
-    again = await RunTests().run({}, ctx(repo, base, memo))
-    assert again.ok and "already passed on exactly this tree" in again.output
-    (repo / "tests/test_new.py").write_text(PASS.replace("ok", "other"))  # an edit: it runs again
-    third = await RunTests().run({}, ctx(repo, base, memo))
-    assert third.ok and "the whole suite passes" in third.output
+    result = await RunTests().run({}, ctx(repo, base, steps=("echo lint-ok", "false", PYTEST)))
+    assert not result.ok and "lint-ok" in result.output and "FAIL (exit 1): false" in result.output
 
 
 async def test_with_no_test_file_of_its_own_run_tests_fails_and_says_to_write_them(tmp_path: Path) -> None:
     repo, base = repo_with(tmp_path, {"tests/test_old.py": PASS})
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), steps=("echo lint-ok", PYTEST)))
-    assert not result.ok
-    assert "lint-ok" in result.output and "write the layer's tests first" in result.output
+    result = await RunTests().run({}, ctx(repo, base, steps=("echo lint-ok", PYTEST)))
+    assert result.ok is False
+    assert "lint-ok" in result.output
+    assert result.output.endswith("\nno test file of yours to run yet: write the layer's tests first.")
     assert "passed" not in result.output.replace("gate commands pass", "")  # pytest never ran
 
 
@@ -179,7 +164,7 @@ async def test_run_tests_formats_the_code_before_the_gate_checks_it(tmp_path: Pa
     (repo / "tests/test_new.py").write_text(PASS)
     (repo / "mod.py").write_text("x   =   1\n")  # unformatted
     steps = ("uv run ruff format --check .", PYTEST)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), steps=steps))
+    result = await RunTests().run({}, ctx(repo, base, steps=steps))
     assert result.ok, result.output
     assert (repo / "mod.py").read_text() == "x = 1\n"
 
@@ -198,77 +183,6 @@ async def test_run_tests_mends_what_ruff_only_fixes_as_unsafe_before_the_gate_ch
     base = git(repo, "rev-parse", "HEAD")
     (repo / "tests/test_new.py").write_text(PASS.replace("ok", "new_ok"))
     steps = ("uv run ruff check .", PYTEST)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), steps=steps))
+    result = await RunTests().run({}, ctx(repo, base, steps=steps))
     assert result.ok, result.output
     assert "x = 1 if a else 2" in (repo / "mod.py").read_text()
-
-
-# ---- the red check, at the step the test is written ----
-
-CALC = "def add(a, b):\n    return a + b\n"
-MUL = CALC + "def mul(a, b):\n    return a * b\n"
-TEST_MUL = "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n"
-TEST_ADD_AGAIN = "from calc import add\n\n\ndef test_add_again():\n    assert add(2, 2) == 4\n"
-CHECKED = "these also pass with your change undone"
-
-
-def layer(tmp_path: Path, tests: str) -> tuple[Path, str]:
-    """A repository at a base holding calc.py, with the layer's uncommitted change: mul, and `tests`."""
-    repo, base = repo_with(tmp_path, {"pytest.ini": "[pytest]\n", "calc.py": CALC})
-    (repo / "calc.py").write_text(MUL)
-    (repo / "tests").mkdir()
-    (repo / "tests/test_calc.py").write_text(tests)
-    return repo, base
-
-
-async def test_a_green_run_tests_names_the_new_tests_that_pass_without_the_change(tmp_path: Path) -> None:
-    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
-    assert result.ok, result.output
-    assert "the whole suite passes" in result.output
-    block = result.output[result.output.index("airlie checked the tests you added or changed") :]
-    assert CHECKED in block and "- tests/test_calc.py::test_add_again" in block
-    assert "test_mul" not in block
-    assert "put that check in the same test that triggers the behaviour" in block
-    # the worktree is the layer's again: the change there, nothing left over from the check
-    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""
-
-
-async def test_a_green_run_tests_says_nothing_when_every_new_test_fails_without_the_change(
-    tmp_path: Path,
-) -> None:
-    repo, base = layer(tmp_path, TEST_MUL)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
-    assert result.ok and "the whole suite passes" in result.output
-    assert "airlie checked" not in result.output and CHECKED not in result.output
-    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""
-
-
-async def test_without_a_check_base_a_green_run_tests_runs_no_check(tmp_path: Path) -> None:
-    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo()))
-    assert result.ok and "airlie checked" not in result.output
-    assert git(repo, "rev-parse", "HEAD") == base  # nothing was committed for a check
-
-
-async def test_a_red_run_tests_runs_no_check(tmp_path: Path) -> None:
-    repo, base = layer(tmp_path, TEST_ADD_AGAIN + "\n\n" + FAIL)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
-    assert not result.ok and "airlie checked" not in result.output
-    assert git(repo, "rev-parse", "HEAD") == base
-
-
-async def test_a_check_that_crashes_leaves_the_worktree_as_it_was_and_the_run_green(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import airlie.story.layer_checks as layer_checks
-
-    async def boom(*a: object, **kw: object) -> ToolResult:
-        raise RuntimeError("pytest exploded")
-
-    monkeypatch.setattr(layer_checks, "run_cmd", boom)  # inside the check, after the change is put back
-    repo, base = layer(tmp_path, TEST_MUL + "\n\n" + TEST_ADD_AGAIN)
-    result = await RunTests().run({}, ctx(repo, base, GateMemo(), check_base=base))
-    assert result.ok and "the whole suite passes" in result.output
-    assert "airlie checked" not in result.output
-    assert (repo / "calc.py").read_text() == MUL and git(repo, "status", "--porcelain") == ""

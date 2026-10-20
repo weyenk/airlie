@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,8 +29,10 @@ from airlie.teams.worktree import (
     changed_in_tree,
     commit_wip,
     diff_between,
+    differs_from,
     dirty,
     head_sha,
+    put_back,
 )
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
@@ -69,6 +71,11 @@ DONE_CHECK = (
 )
 """The done-check: a coder that stopped 'done' reads its own diff against the criteria before the reviewer
 does (AIR-31 layer 02, 2026-10-19: the reviewer's blocking finding was a value the brief had named)."""
+GATE_FAILED = (
+    "Your tests pass, but the whole suite fails with your change: the output is below. Fix the code so the "
+    "whole suite passes; the acceptance tests stay as they are. Run run_tests, then stop."
+)
+"""What the subtask named by execute_task's `gate_follow_up` is told when the final gate fails."""
 CHARS_PER_TOKEN = 4
 """A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
 
@@ -173,10 +180,12 @@ class StudioOrchestrator:
             None  # steps per subtask for this run, over the role's (planning rounds)
         )
         self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
-        self.check_base = ""  # a commit: a green run_tests then checks its tests fail with it put back
-        self.gate_memo = (
-            GateMemo()
-        )  # the tree that last passed the whole gate, for run_tests and the final gate
+        self.gate_memo = GateMemo()  # the tree that last passed the final gate: asked again, it does not run
+        self.locked: frozenset[str] = frozenset()  # files only `lock_owner` may write (`lock`)
+        self.lock_owner = ""
+        self.lock_commit = ""
+        self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
+        self.halted = False  # a checkpoint said no: the subtasks after it did not run
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
 
@@ -262,11 +271,10 @@ class StudioOrchestrator:
             test_cmd,
             self.test_steps,
             self.scope_base,
-            self.gate_memo,
-            self.cfg.tools.write_file_max_overwrite_lines,
-            self.run_dir.path,
-            role_name,
-            check_base=self.check_base,
+            write_file_max_overwrite_lines=self.cfg.tools.write_file_max_overwrite_lines,
+            run_dir=self.run_dir.path,
+            role=role_name,
+            read_only=self.locked if role_name != self.lock_owner else frozenset(),
             **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
@@ -577,14 +585,41 @@ class StudioOrchestrator:
             fix_rounds=run.fix_rounds,
         )
 
+    def lock(self, paths: Sequence[str], owner: str) -> None:
+        """From now on only role `owner` may write `paths` (from the worktree's root): the file tools refuse
+        them to every other role, and the final gate puts them back as they are now, whatever a shell
+        did to them. The worktree is committed first: that commit is what they are put back to."""
+        assert self.worktree is not None
+        self.lock_commit = commit_wip(self.worktree, f"studio: {owner} (locked)")
+        self.locked, self.lock_owner = frozenset(paths), owner
+        self.sink.emit("locked", owner=owner, paths=sorted(self.locked))
+
+    def _restore_locked(self) -> None:
+        """The locked files as `lock` found them: a change to one (a shell's, since the file tools refuse) is
+        undone before the gate, and an event names it."""
+        if not self.locked or self.worktree is None:
+            return
+        changed = differs_from(self.worktree, self.lock_commit, sorted(self.locked))
+        if changed:
+            put_back(self.worktree, self.lock_commit, changed)
+            self.sink.emit("locked_restored", paths=changed)
+
     async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
         for wave in schedule(plan, satisfied=frozenset(self.runs)):
+            if self.halted:
+                return
             runs: list[SubtaskRun] = []
             for s in wave:
                 role, d = await self._route(s)
                 runs.append(SubtaskRun(s, role, d))
                 self.runs[s.id] = runs[-1]
             await asyncio.gather(*(self._run_subtask(r, test_cmd) for r in runs))
+            for r in runs:
+                check = self.checkpoints.get(r.subtask.id)
+                if check is not None and not await check():
+                    self.halted = True
+                    self.sink.emit("halted", after=r.subtask.id)
+                    return
 
     # ---- the run ----
     def check_plan(self, plan: Plan) -> None:
@@ -678,7 +713,8 @@ class StudioOrchestrator:
         test_steps: Sequence[str] = (),
         before_gate: Callable[[], Awaitable[bool]] | None = None,
         scope_tests: bool = False,
-        check_base: str | None = None,
+        checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None = None,
+        gate_follow_up: str | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
         """Plan, run, review, synthesise.
@@ -690,12 +726,12 @@ class StudioOrchestrator:
         `synthesise=False` skips the chief's closing call: the answer is then each subtask's own result.
         `test_steps` are the gate's commands (`test_cmd` joined): run_tests reports each. `before_gate` runs
         once the plan has (it may `follow_up` a subtask); when it returns False the gate does not run and the
-        tests count as failed. `scope_tests` makes run_tests run the gate's pytest on the test files the run
-        changed first and the whole gate only once those pass; the final gate is skipped for a tree that
-        passed it already. `check_base` (a commit, with `scope_tests`) makes a run_tests that passes the whole
-        gate also run the red check of story.layer_checks, with the run's other changes put back to it, and
-        name the changed tests that still pass there. `max_steps` limits every subtask's steps in this run,
-        follow-ups included."""
+        tests count as failed. `scope_tests` makes run_tests run the gate with pytest limited to the test
+        files the run changed: the whole gate is the final one. `checkpoints` maps a subtask's id to a check
+        that runs once it is done, before the subtasks after it (it may `follow_up` it, or `lock` its files);
+        one that returns False stops the plan there, and the tests count as failed. `gate_follow_up` names the
+        subtask sent the output of a failing final gate once (GATE_FAILED), before the gate runs again.
+        `max_steps` limits every subtask's steps in this run, follow-ups included."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
         if given is not None:
@@ -715,8 +751,8 @@ class StudioOrchestrator:
         self.base_sha = commit_wip(self.worktree, "studio: base")
         self.test_cmd, self.test_steps = test_cmd, tuple(test_steps)
         self.scope_base = self.base_sha if scope_tests else ""
-        self.check_base = (check_base or "") if scope_tests else ""
         self.gate_memo = GateMemo()
+        self.checkpoints, self.halted = dict(checkpoints or {}), False
         self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given
         final = ""
@@ -727,8 +763,8 @@ class StudioOrchestrator:
         if chosen is not None:
             await self._run_plan(chosen, test_cmd)
             final = await self._synthesise(query_text, test_cmd) if synthesise else self._results_text()
-        checked = chosen is None or before_gate is None or await before_gate()
-        passed = await self._tests_pass(test_cmd) if checked else False
+        checked = not self.halted and (chosen is None or before_gate is None or await before_gate())
+        passed = await self._gate(test_cmd, gate_follow_up) if checked else False
         report = self._report(query_text, final, t0, name or "(detached)", passed)
         self.sink.emit(
             "run_done",
@@ -777,15 +813,29 @@ class StudioOrchestrator:
             return final
         return ""  # unreachable: the last round always returns
 
-    async def _tests_pass(self, test_cmd: str | None) -> bool | None:
-        """The test gate. The test command loads the code the roles wrote, so it runs as run_tests runs it
-        (tools.shell.run_cmd): with the agent environment, and killed with all it started on a timeout or a
-        cancel."""
+    async def _gate(self, test_cmd: str | None, follow_up: str | None) -> bool | None:
+        """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, that
+        subtask is sent its output once (GATE_FAILED) and the gate runs again."""
+        passed, output = await self._tests_pass(test_cmd)
+        run = self.runs.get(follow_up) if follow_up is not None else None
+        # only a subtask that finished is sent back: one cut off or broken has its own stop to report
+        if passed is not False or run is None or run.result is None or not run.result.ok:
+            return passed
+        assert follow_up is not None
+        self.sink.emit("gate_failed", follow_up=follow_up)
+        tail = output[-self.cfg.tools.output_cap_chars :]
+        await self.follow_up(follow_up, f"{GATE_FAILED}\n\n```\n{tail}\n```")
+        return (await self._tests_pass(test_cmd))[0]
+
+    async def _tests_pass(self, test_cmd: str | None) -> tuple[bool | None, str]:
+        """The test gate, and its output. The test command loads the code the roles wrote, so it runs as
+        run_tests runs it (tools.shell.run_cmd): with the agent environment, and killed with all it started
+        on a timeout or a cancel. Locked files are put back first (`lock`). A tree that passed it already
+        (`gate_memo`) passes without running it again."""
         if not test_cmd or self.worktree is None or not self.runs:
-            return None
-        if (
-            self.scope_base
-        ):  # the coder's last edit may have come after its last run_tests: mend its style too
+            return None, ""
+        self._restore_locked()
+        if self.scope_base:  # the last edit may have come after the last run_tests: mend its style too
             fix = ToolContext(
                 self.worktree,
                 self.cfg.tools.shell_timeout_s,
@@ -793,17 +843,17 @@ class StudioOrchestrator:
                 **self.cfg.tools.confinement(),
             )
             await run_steps(autofix_steps(self.test_steps), fix)
-        if (
-            self.scope_base
-            and self.gate_memo.passed is not None
-            and tree_fingerprint(self.worktree) == self.gate_memo.passed
-        ):
-            return True  # run_tests already ran the whole gate on exactly this tree
+        passed = self.gate_memo.passed  # fingerprinted only when there is a pass to compare with
+        if passed is not None and tree_fingerprint(self.worktree) == passed:
+            return True, "the whole gate already passed on exactly this tree"
         tools = self.cfg.tools
         ctx = ToolContext(
             self.worktree, tools.shell_timeout_s, tools.output_cap_chars, test_cmd, **tools.confinement()
         )
-        return (await run_cmd(test_cmd, ctx, shell=True)).ok
+        result = await run_cmd(test_cmd, ctx, shell=True)
+        if result.ok:
+            self.gate_memo.passed = tree_fingerprint(self.worktree)
+        return result.ok, result.output
 
     def _report(self, goal: str, final: str, t0: float, branch: str, passed: bool | None) -> RunReport:
         teams = [r.result for r in self.runs.values() if r.result is not None]

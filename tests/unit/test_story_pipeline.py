@@ -621,8 +621,7 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
         # build; ./check.sh runs no pytest, so the checks on a layer's tests say they did not run
         *("layer_start", "test_checks_skipped", "layer_built"),
         *("layer_start", "test_checks_skipped", "layer_built"),
-        # no Mutation gate in this repository: the story's mutation gate says it was skipped
-        *("mutation_gate_skipped", "stage"),
+        "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
     ]
     assert {e["run_id"] for e in log} == {
@@ -648,8 +647,7 @@ async def test_a_pr_body_is_written_as_utf_8_whatever_the_locale(tmp_path: Path,
     prs = [(p["number"], p["url"]) for p in st.prs]
     for i, pr in enumerate(st.prs):
         nn = f"{i + 1:02d}"
-        skipped = "skipped: the repository's AGENTS.md has no Mutation gate section"
-        body = pr_body(ISSUE, story, layers, i, st.built[nn]["subtasks"], prs, "./check.sh", skipped)
+        body = pr_body(ISSUE, story, layers, i, st.built[nn]["subtasks"], prs, "./check.sh")
         assert (st.path / f"pr-{nn}.md").read_bytes().decode("utf-8") == body  # the file, read back as UTF-8
         assert gh.bodies[pr["branch"]] == body  # and what gh reads from --body-file
     first = gh.bodies[st.prs[0]["branch"]]

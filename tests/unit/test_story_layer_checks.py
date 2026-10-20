@@ -1,5 +1,6 @@
-"""The checks a layer's new and changed tests must pass, on fake git repositories: each fails on the layer's
-base (red check, run with pytest) and asserts something (AST)."""
+"""The pre-code check a layer's tests must pass before any code is written, on fake git repositories: the
+whole suite runs on the tester's tree, each new test fails there and every other test passes (pytest), and
+each new test asserts something (AST)."""
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from airlie.story.layer_checks import (
     checks_for,
     feedback,
     pytest_runner,
+    static_findings,
 )
 from tests.unit.git_helpers import git
 
@@ -118,12 +120,7 @@ def test_a_test_with_no_assertion_is_a_finding(tmp_path: Path) -> None:
 async def test_assertion_free_tests_are_reported_with_why(tmp_path: Path) -> None:
     root, base = repo(tmp_path, {"calc.py": CALC})
     commit(
-        root,
-        "layer",
-        {
-            "calc.py": CALC + "def mul(a, b):\n    return a * b\n",
-            "tests/test_calc.py": "from calc import mul\n\n\ndef test_mul():\n    mul(2, 3)\n",
-        },
+        root, "tests", {"tests/test_calc.py": "from calc import mul\n\n\ndef test_mul():\n    mul(2, 3)\n"}
     )
     found = await findings(root, base)
     assert [(f.kind, f.test) for f in found] == [("assertion_free_test", "tests/test_calc.py::test_mul")]
@@ -131,82 +128,110 @@ async def test_assertion_free_tests_are_reported_with_why(tmp_path: Path) -> Non
     assert found[0].source == "def test_mul():\n    mul(2, 3)"
 
 
-# ---- red check ----
+# ---- the pre-code run: new tests red, the rest green ----
+
+TEST_MUL = "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n"
+TEST_ADD_AGAIN = "def test_add_again():\n    from calc import add\n\n    assert add(2, 2) == 4\n"
 
 
-async def test_a_test_that_passes_on_the_base_is_caught(tmp_path: Path) -> None:
-    root, base = repo(tmp_path, {"calc.py": CALC})
-    head = commit(
-        root,
-        "layer",
-        {
-            "calc.py": CALC + "def mul(a, b):\n    return a * b\n",
-            "tests/test_calc.py": (
-                "from calc import add\n\n\n"
-                "def test_add_again():\n    assert add(2, 2) == 4\n\n\n"
-                "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n"
-            ),
-        },
-    )
-    found = await findings(root, base)
-    assert [(f.kind, f.test) for f in found] == [("vacuous_test", "tests/test_calc.py::test_add_again")]
-    assert "passes on the layer's base" in found[0].why
-    # the worktree is the layer's again, as it was
-    assert git(root, "rev-parse", "HEAD") == head and git(root, "status", "--porcelain") == ""
-    assert "def mul" in (root / "calc.py").read_text()
-
-
-async def test_a_real_red_test_passes_the_check(tmp_path: Path) -> None:
-    root, base = repo(tmp_path, {"calc.py": CALC})
-    commit(
-        root,
-        "layer",
-        {
-            "calc.py": CALC + "def mul(a, b):\n    return a * b\n",
-            "src/new_module.py": "VALUE = 6\n",  # added since the base: gone while the check runs
-            "tests/test_calc.py": "from calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6\n",
-            "tests/test_value.py": (
-                "import sys\nsys.path.insert(0, 'src')\n\n\n"
-                "def test_value():\n    from new_module import VALUE\n\n    assert VALUE == 6\n"
-            ),
-        },
-    )
+async def test_a_new_test_that_fails_before_the_code_passes_the_check(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    head = commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
     assert await findings(root, base) == []
-    assert (root / "src/new_module.py").is_file() and git(root, "status", "--porcelain") == ""
+    assert git(root, "rev-parse", "HEAD") == head and git(root, "status", "--porcelain") == ""
 
 
-async def test_a_changed_test_that_still_passes_on_the_base_is_caught_and_unrelated_ones_are_not_run(
+async def test_a_new_test_that_passes_before_the_code_is_caught(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL + "\n\n" + TEST_ADD_AGAIN})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_mul.py::test_add_again")]
+    assert "passes before the layer's code is written" in found[0].why
+    assert "def test_add_again" in found[0].source
+
+
+async def test_a_new_module_that_cannot_import_its_feature_yet_counts_as_red_and_the_rest_still_runs(
     tmp_path: Path,
 ) -> None:
+    """A test module that imports the name the layer adds cannot be collected before the code: that is the
+    red the check wants, and every other module still runs (--continue-on-collection-errors)."""
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    commit(
+        root,
+        "tests",
+        {"tests/test_mul.py": "from calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6\n"},
+    )
+    assert await findings(root, base) == []
+    # the old module still ran, and still had to pass: break it, and the check says so
+    commit(root, "old broken", {"calc.py": "def add(a, b):\n    return a - b\n"})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("existing_test_fails", "tests/test_calc.py::test_add")]
+
+
+async def test_an_existing_test_the_new_tests_break_is_caught(tmp_path: Path) -> None:
     root, base = repo(
         tmp_path,
         {
             "calc.py": CALC,
-            "tests/test_calc.py": OLD_TESTS,
-            "tests/test_other.py": "def test_other():\n    assert 1 + 1 == 2\n",
+            "tests/test_calc.py": (
+                "def test_add(base):\n    from calc import add\n\n    assert add(base, 2) == 3\n"
+            ),
+            "tests/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef base():\n    return 1\n",
         },
     )
     commit(
         root,
-        "layer",
+        "tests",
         {
-            "calc.py": "def add(a, b):\n    return int(a) + int(b)\n",
-            # test_add changed: a new case the change makes pass; the old one still passes on the base
-            "tests/test_calc.py": OLD_TESTS + "    assert add('1', '2') == 3\n",
-            # reformatted only, and passing on the base: unrelated to the change, so never run or reported
-            "tests/test_other.py": "def test_other():\n    assert 1+1 == 2\n",
+            "tests/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef base():\n    return 10\n",
+            "tests/test_mul.py": TEST_MUL,
         },
     )
-    assert await findings(root, base) == []
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("existing_test_fails", "tests/test_calc.py::test_add")]
+    assert "conftest.py" in found[0].why
+
+
+async def test_a_changed_test_is_held_to_the_same_red(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    commit(root, "tests", {"tests/test_calc.py": OLD_TESTS + "    assert add('1', '2') == 3\n"})
+    assert await findings(root, base) == []  # strings are not summed as numbers yet: red
     commit(root, "weaker", {"tests/test_calc.py": OLD_TESTS.replace("== 3", "== 3 or True")})
     found = await findings(root, base)
-    assert [(f.kind, f.test) for f in found] == [("vacuous_test", "tests/test_calc.py::test_add")]
+    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_calc.py::test_add")]
 
 
-async def test_a_layer_with_no_new_or_changed_tests_has_no_findings(tmp_path: Path) -> None:
+async def test_a_layer_with_no_new_or_changed_tests_is_a_finding(tmp_path: Path) -> None:
     root, base = repo(tmp_path, {"calc.py": CALC})
-    commit(root, "layer", {"calc.py": CALC + "# a comment\n"})
-    assert await findings(root, base) == []
+    commit(root, "tests", {"calc.py": CALC + "# a comment\n"})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("no_new_test", "(none)")]
+
+
+async def test_a_suite_that_does_not_run_its_tests_is_a_finding_with_its_output(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
+    found = await PytestChecks(f"{PYTEST} --no-such-flag", timeout_s=120).run(root, base)
+    assert [f.kind for f in found] == ["suite_did_not_run"]
+    assert "no-such-flag" in found[0].why
+
+
+def test_static_findings_read_the_tests_and_run_none(tmp_path: Path) -> None:
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    commit(
+        root,
+        "layer",
+        {
+            "tests/test_bad.py": "def test_x(:\n    pass\n",
+            "tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n    add(1, 2)\n\n\n"
+            "def test_add_again():\n    assert add(2, 2) == 4\n",
+        },
+    )
+    kinds = sorted((f.kind, f.test) for f in static_findings(root, base))
+    assert kinds == [
+        ("assertion_free_test", "tests/test_calc.py::test_add"),
+        ("unparseable_test", "tests/test_bad.py"),
+    ]
 
 
 async def test_a_test_module_that_does_not_parse_is_a_finding_with_the_error(tmp_path: Path) -> None:
@@ -232,7 +257,7 @@ async def test_an_unparseable_module_is_reported_beside_findings_in_other_module
         },
     )
     kinds = sorted(f.kind for f in await findings(root, base))
-    assert kinds == ["assertion_free_test", "unparseable_test", "vacuous_test"]
+    assert kinds == ["assertion_free_test", "passes_before_code", "unparseable_test"]
 
 
 # ---- the seam: only a pytest gate gets these checks ----
@@ -249,19 +274,19 @@ def test_the_pytest_runner_comes_from_the_gate() -> None:
 
 def test_a_gate_without_pytest_gets_no_checks() -> None:
     assert checks_for(["pnpm test"], timeout_s=60) is None
-    checks = checks_for(["uv run pytest -q"], timeout_s=60)
-    assert checks is not None and checks.runner == "uv run pytest"
+    checks = checks_for(["uv run ruff check .", "uv run pytest -q -n auto"], timeout_s=60)
+    assert checks is not None and checks.step == "uv run pytest -q -n auto"  # the gate's own step, whole
 
 
-def test_a_vacuous_test_that_matches_an_error_is_told_its_pattern_is_probably_too_loose() -> None:
+def test_a_test_that_passes_before_the_code_and_matches_an_error_is_told_its_pattern_is_too_loose() -> None:
     loose = Finding(
-        "vacuous_test",
+        "passes_before_code",
         "tests/test_a.py::test_x",
-        "it passes on the layer's base",
+        "it passes before the code",
         'def test_x():\n    with pytest.raises(E, match="a.*b"): ...',
     )
     plain = Finding(
-        "vacuous_test", "tests/test_a.py::test_z", "it passes on the layer's base", "def test_z(): ..."
+        "passes_before_code", "tests/test_a.py::test_z", "it passes before the code", "def test_z(): ..."
     )
     text = feedback([loose, plain])
     assert text.count("`match=` pattern") == 1
@@ -272,9 +297,9 @@ def test_feedback_names_each_test_and_why() -> None:
     text = feedback(
         [
             Finding(
-                "vacuous_test",
+                "passes_before_code",
                 "tests/test_a.py::test_x",
-                "it passes on the layer's base",
+                "it passes before the code",
                 "def test_x(): ...",
             ),
             Finding(
@@ -282,15 +307,17 @@ def test_feedback_names_each_test_and_why() -> None:
             ),
         ]
     )
-    assert "- tests/test_a.py::test_x: it passes on the layer's base" in text
+    assert "- tests/test_a.py::test_x: it passes before the code" in text
     assert "- tests/test_a.py::test_y: it has no assert" in text
-    assert "run_tests" in text
+    assert "your new tests are the only red" in text and "Do not write the feature" in text
+    coder = feedback([Finding("assertion_free_test", "t::x", "it has no assert", "")], before_code=False)
+    assert "Run run_tests until your tests pass" in coder and "Do not write the feature" not in coder
 
 
 def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> None:
     """AIR-31 layer 02: the brief asked for a test proving the feature is a no-op below its threshold. Such a
-    test passes on the base whatever the coder does, so it is told the way out, not only "make it fail"."""
+    test passes before the code whatever the tester does, so it is told the way out, not only "fail"."""
     text = feedback(
-        [Finding("vacuous_test", "tests/test_a.py::test_nothing", "it passes on the layer's base", "...")]
+        [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
     )
-    assert "cannot fail on the base" in text and "same test" in text and "triggers" in text
+    assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text

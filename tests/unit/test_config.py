@@ -887,6 +887,17 @@ def test_an_old_local_config_that_sets_story_tests_role_says_what_replaced_it(tm
     )
 
 
+def test_an_old_local_config_that_sets_the_mutation_timeout_says_where_mutation_testing_went(
+    tmp_path: Path,
+) -> None:
+    base = write(tmp_path, MINIMAL)
+    (tmp_path / "airlie.local.yaml").write_text("story: {mutation_timeout_s: 60}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert "story.mutation_timeout_s: removed on 2026-10-19" in str(err.value)
+    assert "runs in the repository's CI, on each PR" in str(err.value)
+
+
 def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path) -> None:
     base = write(tmp_path, MINIMAL)
     (tmp_path / "airlie.local.yaml").write_text("story: {jira: {api_key: t0ken-SYNTHETIC}}\n")

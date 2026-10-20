@@ -19,7 +19,7 @@ from airlie.router import ChiefRouter, RouteDecision
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
 ROLES: dict[str, tuple[str, list[str] | None]] = {
@@ -873,38 +873,134 @@ def gate(tmp_path: Path, timeout_s: float) -> StudioOrchestrator:
 async def test_the_test_gate_kills_what_the_test_command_started_when_it_times_out(tmp_path: Path) -> None:
     sleeper = unique_sleep()
     started = time.monotonic()
-    assert await asyncio.wait_for(gate(tmp_path, 1)._tests_pass(f"{sleeper} & wait"), 20) is False
+    passed, output = await asyncio.wait_for(gate(tmp_path, 1)._tests_pass(f"{sleeper} & wait"), 20)
+    assert passed is False and "timed out" in output
     assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
     assert await eventually(lambda: not running(sleeper))
 
 
-async def test_cancelling_the_test_gate_kills_what_the_test_command_started(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_cancelling_the_test_gate_kills_what_the_test_command_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: bool, cancel: Any
+) -> None:
+    from airlie.tools import shell as shell_mod
+
+    gate_ = StartGate(monkeypatch, shell_mod, hold=hold)
     sleeper = unique_sleep()
     task = asyncio.create_task(gate(tmp_path, 60)._tests_pass(f"{sleeper} & wait"))
-    assert await eventually(lambda: running(f"^{sleeper}"))
-    task.cancel()
+    await cancel(task, gate_, sleeper)
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 20)
     assert await eventually(lambda: not running(sleeper))
 
 
-async def test_the_final_gate_skips_a_tree_run_tests_already_passed_whole(tmp_path: Path) -> None:
+async def test_the_final_gate_remembers_the_tree_it_passed_and_does_not_run_on_it_again(
+    tmp_path: Path,
+) -> None:
+    """GateMemo (kept, Noah 2026-10-19): the final gate is the only whole run now, and it writes the memo."""
     from airlie.tools.scope import tree_fingerprint
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     orch = gate(tmp_path, 30)
-    orch.scope_base = "base"
-    assert await orch._tests_pass("exit 1") is False  # no memo: it runs, and fails
-    orch.gate_memo.passed = tree_fingerprint(tmp_path)
-    assert await orch._tests_pass("exit 1") is True  # this tree passed already: not run
+    assert (await orch._tests_pass("exit 1"))[0] is False  # no memo: it runs, and fails
+    assert orch.gate_memo.passed is None  # a failure is not remembered
+    assert (await orch._tests_pass("true"))[0] is True
+    assert orch.gate_memo.passed == tree_fingerprint(tmp_path)  # a pass is
+    passed, said = await orch._tests_pass("exit 1")
+    assert passed is True and "already passed on exactly this tree" in said  # the same tree: not run
     (tmp_path / "new.txt").write_text("edit")
-    assert await orch._tests_pass("exit 1") is False  # an edit since: it runs
-    orch.scope_base = ""
-    orch.gate_memo.passed = tree_fingerprint(tmp_path)
-    assert await orch._tests_pass("exit 1") is False  # an unscoped run always runs the gate
+    assert (await orch._tests_pass("exit 1"))[0] is False  # an edit since: it runs
 
 
 ONE_BUILD = Plan((), (Subtask("build", "make the check pass", "coder"),))
+TESTS_THEN_BUILD = Plan(
+    (),
+    (
+        Subtask("tests", "write the note", "qa", pinned=True),
+        Subtask("build", "make the check pass", "coder", ("tests",)),
+    ),
+)
+WRITE_NOTE = FakeReply(
+    tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "note.txt", "content": "the contract\n"}))]
+)
+WRITE_PASS = FakeReply(
+    tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "PASS", "content": "ok\n"}))]
+)
+
+
+async def test_a_checkpoint_that_says_no_stops_the_plan_before_the_next_subtask(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_NOTE, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    asked: list[str] = []
+
+    async def no() -> bool:
+        asked.append("tests")
+        return False
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": no},
+    )
+    assert asked == ["tests"] and report.tests == {"studio": False}
+    assert [r.role for r in engine.requests] == ["qa", "qa"]  # the coder never ran
+    assert [e["after"] for e in events(report) if e["kind"] == "halted"] == ["tests"]
+
+
+async def test_locked_files_are_refused_to_other_roles_and_put_back_before_the_gate(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    overwrite = FakeReply(
+        tool_calls=[ToolCall("o", "write_file", json.dumps({"path": "note.txt", "content": "weaker\n"}))]
+    )
+    engine = FakeEngine(
+        {"qa": [WRITE_NOTE, DONE], "coder": [overwrite, WRITE_PASS, DONE], "reviewer": [APPROVE]}
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def lock() -> bool:
+        orch.lock(["note.txt"], orch.runs["tests"].role)
+        return True
+
+    async def a_shell_edits_it() -> bool:  # what the file tools refuse, a shell could still do
+        assert orch.worktree is not None
+        (orch.worktree / "note.txt").write_text("weaker\n")
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=a_shell_edits_it,
+    )
+    assert report.tests == {"studio": True}
+    refused = [
+        m.content for r in engine.requests if r.role == "coder" for m in r.messages if m.role == "tool"
+    ]
+    assert any("you cannot change them" in m for m in refused)
+    assert orch.worktree is not None and (orch.worktree / "note.txt").read_text() == "the contract\n"
+    log = events(report)
+    assert [e["paths"] for e in log if e["kind"] == "locked"] == [["note.txt"]]
+    assert [e["paths"] for e in log if e["kind"] == "locked_restored"] == [["note.txt"]]
+
+
+async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    assert report.tests == {"studio": True}
+    told = [r.messages[-1].content for r in engine.requests if r.role == "coder"]
+    assert sum("the whole suite fails with your change" in t and "1 failed" in t for t in told) == 1
+    assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
 
 
 async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_whole_command(

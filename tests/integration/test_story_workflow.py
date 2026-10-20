@@ -45,11 +45,11 @@ MILESTONES = [
     "layer_start",
     "test_checks_passed",
     "layer_built",
-    "mutation_gate_skipped",
     "published",
     "story_done",
 ]
-"""The events a story that builds first time logs, in this order (others come between them)."""
+"""The events a story that builds first time logs, in this order (others come between them). Mutation testing
+is CI's, on the PR: the story has no stage for it."""
 
 SUBTRACT = "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
 TEST_SUBTRACT = (

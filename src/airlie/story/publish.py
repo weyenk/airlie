@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, repo_slug
-from airlie.subproc import NO_PROMPTS, agent_env, kill_group, with_git_config, without_hooks
+from airlie.subproc import NO_PROMPTS, agent_env, kill_group, started, with_git_config, without_hooks
 from airlie.teams.worktree import remote_url
 
 Runner = Callable[[list[str], Path, Mapping[str, str]], Awaitable[str]]
@@ -263,14 +263,16 @@ async def run_cmd(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
     timeout, or the caller being cancelled, kills all of them. A failure's output is masked with `env`'s
     tokens."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=cwd,
-            env=dict(env),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # its own process group: killpg reaches what it starts
+        proc = await started(
+            asyncio.create_subprocess_exec(
+                *args,
+                cwd=cwd,
+                env=dict(env),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # its own process group: killpg reaches what it starts
+            )
         )
     except OSError as e:  # gh or git is not installed (`check` reports that), or cwd is gone
         raise CannotStart(f"`{' '.join(args)}` could not start: {e}") from None

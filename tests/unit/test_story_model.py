@@ -8,14 +8,12 @@ import pytest
 from airlie.story.model import (
     Criterion,
     Layer,
-    MutationReview,
     NotActionable,
     Story,
     StoryError,
     StorySetupError,
     branch_name,
     parse_layers,
-    parse_mutation_review,
     parse_story,
     slugify,
 )
@@ -211,52 +209,3 @@ def test_a_lone_surrogate_is_refused_in_every_field_a_layer_reply_writes() -> No
         with pytest.raises(StoryError, match=re.escape(named) + ".*lone surrogate"):
             parse_layers({"layers": [{**layer, **patch}]}, story, 3)
     assert parse_layers({"layers": [{**layer, "brief": PAIR}]}, story, 3)[0].brief == PAIR
-
-
-def test_parse_mutation_review_reads_cases_and_ignored_and_round_trips() -> None:
-    obj = {
-        "harden": [
-            {
-                "test_file": "tests/test_p.py",
-                "cases": [
-                    {"name": "test_a", "given": "g", "expect": "e", "kills": ["m__mutmut_1", "m__mutmut_2"]}
-                ],
-            }
-        ],
-        "ignored": [{"mutant": "m__mutmut_3", "why": "equivalent"}],
-    }
-    review = parse_mutation_review(obj)
-    assert review.cases == 1 and review.harden[0].cases[0].kills == "m__mutmut_1, m__mutmut_2"
-    assert review.ignored == (("m__mutmut_3", "equivalent"),)
-    assert MutationReview.from_dict(review.to_dict()) == review
-    assert (
-        parse_mutation_review({"ignored": [{"mutant": "m", "why": "w"}]}).harden == ()
-    )  # harden may be left out
-
-
-@pytest.mark.parametrize(
-    ("obj", "problem"),
-    [
-        (None, "no JSON object"),
-        ({"harden": {}, "ignored": []}, '"harden" and "ignored" must each be a list'),
-        ({"harden": [], "ignored": []}, "hardens nothing and ignores nothing"),
-        (
-            {"harden": [{"test_file": "t.py", "cases": []}]},
-            "harden item 1 (t.py) needs a non-empty 'cases' list",
-        ),
-        ({"harden": [{"cases": [{}]}]}, "harden item 1 needs a non-empty 'test_file'"),
-        (
-            {"harden": [{"test_file": "t.py", "cases": [{"name": "a", "given": "g", "expect": "e"}]}]},
-            "harden item 1 case 1 needs 'kills'",
-        ),
-        (
-            {"harden": [{"test_file": "t.py", "cases": [{"kills": "m"}]}]},
-            "harden item 1 case 1 needs a non-empty 'name'",
-        ),
-        ({"ignored": [{"mutant": "m"}]}, "ignored item 1 needs a non-empty 'why'"),
-        ({"ignored": ["m"]}, "ignored item 1 must be an object"),
-    ],
-)
-def test_an_unusable_mutation_review_says_what_to_fix(obj: dict[str, object] | None, problem: str) -> None:
-    with pytest.raises(StoryError, match=re.escape(problem)):
-        parse_mutation_review(obj)

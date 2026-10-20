@@ -133,3 +133,24 @@ def test_empty_tools_list_is_not_treated_as_inheriting_builtin(tmp_path: Path) -
     assert "web tools cannot be combined with mutating tools" in msg
     assert "research" in msg
     assert "coder" not in msg
+
+
+def test_web_fetch_alone_beside_a_mutating_tool_is_refused_naming_exactly_the_mutating_tools(
+    tmp_path: Path,
+) -> None:
+    """web_fetch counts on its own, and the parenthetical lists only the mutating tools, sorted, comma-joined
+    (PR 105's mutation gate: no test held either)."""
+    data = {
+        **MINIMAL,
+        "roles": {
+            **MINIMAL["roles"],
+            "coder": {
+                "prompt": "prompts/roles/coder.md",
+                "model": "team",
+                "tools": ["read_file", "web_fetch", "git", "edit_file"],
+            },
+        },
+    }
+    with pytest.raises(ConfigError) as ei:
+        load_config(write(tmp_path, data))
+    assert "role 'coder': web tools cannot be combined with mutating tools (edit_file, git)" in str(ei.value)

@@ -66,10 +66,7 @@ def _orchestrator(tmp_path: Path, cfg) -> StudioOrchestrator:
     orch.test_cmd = None
     orch.test_steps = ()
     orch.scope_base = ""
-    orch.check_base = ""
-    from airlie.tools.scope import GateMemo
-
-    orch.gate_memo = GateMemo()
+    orch.locked, orch.lock_owner = frozenset(), ""
     orch.run_dir = _RunDir(tmp_path / "run")
     return orch
 

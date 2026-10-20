@@ -1,8 +1,9 @@
-"""Checks on the tests a layer added or changed, run by the pipeline after the coder's build and before
-the gate, with no model. Red check: with every other change of the layer put back to its base, those tests
-run, and one that passes there does not test the change (`vacuous_test`). No-assertion check: one with
-nothing in it that can fail it but a crash (`assertion_free_test`). Python and pytest only, behind
-`checks_for`: any other gate gets none, and the pipeline logs that they did not run.
+"""The pre-code check on a layer's tests, run by the pipeline with no model, after the tester has written
+them and before the coder builds anything. The whole suite runs on the tester's tree: each new test must fail
+there, since the code it tests is not written yet (`passes_before_code`), and every test the layer did not
+touch must still pass (`existing_test_fails`). A test with nothing in it that can fail it but a crash is
+refused without running (`assertion_free_test`), as is a test module that does not parse. Python and pytest
+only, behind `checks_for`: any other gate gets none, and the pipeline logs that they did not run.
 
 The test files are model output, read as data: parsed with `ast`, never imported here. The tests themselves
 run as the gate runs them (tools.shell.run_cmd: the agent environment, killed on a timeout)."""
@@ -11,31 +12,51 @@ from __future__ import annotations
 
 import ast
 import re
-import shlex
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Literal
 
-from airlie.teams.worktree import changed_files, find_file, put_back, read_blob, reset_to_head
+from airlie.teams.worktree import changed_files, find_file, read_blob
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import is_test_module, pytest_runner
 from airlie.tools.shell import run_cmd
 
-Kind = Literal["vacuous_test", "assertion_free_test", "unparseable_test"]
-VACUOUS = (
-    "it passes on the layer's base with the layer's other changes undone, so it does not test this change"
+Kind = Literal[
+    "passes_before_code",
+    "existing_test_fails",
+    "assertion_free_test",
+    "unparseable_test",
+    "no_new_test",
+    "suite_did_not_run",
+]
+PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
+EXISTING_FAILS = (
+    "it passed before this layer and fails with the new tests in place: a fixture, conftest.py or shared "
+    "helper the tests changed broke it"
 )
 ASSERTION_FREE = "it has no assert, pytest.raises, pytest.warns or other check, so only a crash can fail it"
+NO_NEW_TEST = "the layer has no new or changed test to build against"
 CHECK_CALLS = frozenset({"raises", "warns", "deprecated_call", "fail", "expect"})
 """Calls that are a check: pytest's, and expect(...) (playwright's). Any call whose name starts with "assert"
 is one too: unittest's self.assertEqual, a mock's assert_called_once_with, a helper's assert_valid."""
-_PASSED = re.compile(r"^PASSED (\S+)", re.MULTILINE)
+PYTEST_FLAGS = "-rA -p no:cacheprovider --continue-on-collection-errors"
+"""What the check adds to the gate's pytest step: a line per test with its outcome, no cache written into the
+worktree, and every module run when a new one cannot be imported yet (the name it tests is not there)."""
+NO_BYTECODE = "export PYTHONDONTWRITEBYTECODE=1; "
+"""Before the step: the run writes no __pycache__ into the worktree, where it would be the tester's work
+(committed, and locked to the coder) in a repository that does not ignore it."""
+_OUTCOME = re.compile(r"^(PASSED|FAILED|ERROR) (\S+)", re.MULTILINE)
+_EXIT = re.compile(r"\[exit (\d+)\]\s*$")
 _PARAMS = re.compile(r"\[.*\]$")
+_RAN = frozenset({0, 1})
+"""pytest's exit codes for a run that ran the tests: all passed, or some failed."""
 _SOURCE_CHARS = 4_000
 """How much of a test's source a finding keeps (for the events, as a negative example)."""
 _OUTPUT_CHARS = 2_000_000
-"""pytest's output is read for its PASSED lines, not shown: it is kept whole up to this."""
+"""pytest's output is read for its outcome lines, not shown: it is kept whole up to this."""
+_TAIL_CHARS = 2_000
+"""How much of the end of a run that did not run the tests a finding keeps."""
 
 
 @dataclass(frozen=True)
@@ -153,93 +174,108 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
     return found
 
 
-def _passed(output: str, ids: Sequence[str]) -> set[str]:
-    """Which of `ids` pytest's -rA summary reports PASSED (any of a parametrized test's cases counts). Its ids
-    are from pytest's rootdir, which can be below the repository's root: a match on the end is a match."""
-    passed = {_PARAMS.sub("", m) for m in _PASSED.findall(output)}
-    return {i for i in ids if any(i == p or i.endswith("/" + p) for p in passed)}
+def _outcomes(output: str) -> dict[str, str]:
+    """Each test id pytest's -rA summary names, with PASSED, FAILED or ERROR (a parametrized test's cases are
+    one id: any case that is not PASSED makes it so). A module that cannot be collected is an ERROR on the
+    module's path."""
+    out: dict[str, str] = {}
+    for outcome, node in _OUTCOME.findall(output):
+        key = _PARAMS.sub("", node)
+        if out.get(key) in (None, "PASSED"):
+            out[key] = outcome
+    return out
+
+
+def _same(test_id: str, reported: str) -> bool:
+    """`reported` (from pytest's rootdir, which can be below the repository's root) names `test_id`."""
+    return test_id == reported or test_id.endswith("/" + reported)
 
 
 class PytestChecks:
-    """Both checks for a Python repository whose gate runs pytest with `runner` (`pytest_runner`)."""
+    """The pre-code check for a Python repository whose gate runs pytest in `step`."""
 
-    def __init__(self, runner: str, *, timeout_s: float, confinement: dict[str, Any] | None = None) -> None:
-        self.runner = runner
+    def __init__(self, step: str, *, timeout_s: float, confinement: dict[str, Any] | None = None) -> None:
+        self.step = step
         self.timeout_s = timeout_s
         self.confinement = confinement or {}
         """ToolContext's sandbox and writable for the test runs (tools.confinement); default: confined."""
 
-    async def run(self, worktree: Path, base: str, *, red_base: str | None = None) -> list[Finding]:
-        """The findings on the tests the worktree's HEAD added or changed since `base`. The red check puts the
-        other changes since `red_base` back (default `base`): a layer that tests code an earlier layer wrote
-        (the hardening layer) is checked against the story's base. The worktree must hold no uncommitted
-        change: the red check puts files back, and leaves it as its HEAD holds it."""
+    async def run(self, worktree: Path, base: str) -> list[Finding]:
+        """The findings on the tests the worktree's HEAD added or changed since `base`, with the suite run on
+        that HEAD. The worktree must hold no uncommitted change (the pipeline commits the tester's work)."""
         findings = unparseable_tests(worktree, base)
         tests = changed_tests(worktree, base)
         if not tests:
-            return findings
-        green = await self._pass_on_base(worktree, red_base or base, tests)
+            return findings or [Finding("no_new_test", "(none)", NO_NEW_TEST, "")]
+        findings += [
+            Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source) for t in tests if not t.asserts
+        ]
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
+        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
+        code = _EXIT.search(result.output)
+        if not result.ok and (code is None or int(code.group(1)) not in _RAN):
+            why = f"the suite did not run its tests: {result.output[-_TAIL_CHARS:]}"
+            return [*findings, Finding("suite_did_not_run", self.step, why, "")]
+        outcomes = _outcomes(result.output)
+        modules = {t.path for t in tests} | {f.test for f in findings if f.kind == "unparseable_test"}
         for t in tests:
-            if t.id in green:
-                findings.append(Finding("vacuous_test", t.id, VACUOUS, t.source))
-            if not t.asserts:
-                findings.append(Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source))
+            if any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
+                findings.append(Finding("passes_before_code", t.id, PASSES_BEFORE_CODE, t.source))
+        for k, o in outcomes.items():
+            if o != "PASSED" and not any(_same(m, k.split("::")[0]) for m in modules):
+                findings.append(Finding("existing_test_fails", k, EXISTING_FAILS, ""))
         return findings
 
-    async def _pass_on_base(self, worktree: Path, base: str, tests: list[ChangedTest]) -> set[str]:
-        """The ids of `tests` that pass with every file the layer changed put back to `base`, but its test
-        modules and the files beside them in a tests directory (helpers, conftest.py)."""
-        others = [p for p in changed_files(worktree, base) if not _test_side(p)]
-        ids = sorted({t.id for t in tests})
-        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
-        try:
-            put_back(worktree, base, others)
-            result = await run_cmd(
-                f"{self.runner} -rA -p no:cacheprovider {shlex.join(ids)}", ctx, shell=True
-            )
-        finally:
-            reset_to_head(worktree)
-        return _passed(result.output, ids)
 
-
-def _test_side(path: str) -> bool:
-    """A file the red check leaves as the layer has it: a test module, or a file under a tests directory."""
-    parts = PurePosixPath(path).parts
-    return (
-        is_test_module(path) or any(p in ("tests", "test") for p in parts[:-1]) or parts[-1] == "conftest.py"
-    )
+def static_findings(worktree: Path, base: str) -> list[Finding]:
+    """The checks that read the tests and run none: a module that does not parse, a test with no check in
+    it. For a layer with no tester, whose tests and code come in one subtask and cannot be run before it."""
+    found = unparseable_tests(worktree, base)
+    found += [
+        Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source)
+        for t in changed_tests(worktree, base)
+        if not t.asserts
+    ]
+    return found
 
 
 def checks_for(
     commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
 ) -> PytestChecks | None:
-    """The checks for a gate of `commands`: pytest's when one of them runs pytest, else None (none run)."""
-    runner = pytest_runner(commands)
-    return PytestChecks(runner, timeout_s=timeout_s, confinement=confinement) if runner else None
+    """The check for a gate of `commands`: pytest's, on the first command that runs pytest, else None.
+    `confinement` is the ToolContext's sandbox and writable, for the suite the check runs."""
+    step = next((c for c in commands if pytest_runner([c]) is not None), None)
+    return PytestChecks(step, timeout_s=timeout_s, confinement=confinement) if step else None
 
 
 LOOSE_MATCH = (
-    "  its `match=` pattern is probably satisfied by an error that exists without your change (an unknown "
-    "name is refused with a message that lists every valid name). Match a phrase only your new message "
-    "contains, copied from the message your code raises."
+    "  its `match=` pattern is probably satisfied by an error that exists without the layer's code (an "
+    "unknown name is refused with a message that lists every valid name). Match a phrase only the new "
+    "message contains, as the brief gives it."
 )
-"""Said under a vacuous test that matches an error's text: the usual cause of passing on the base."""
+"""Said under a test that passes before the code and matches an error's text: the usual cause."""
 
 
-def feedback(findings: Sequence[Finding]) -> str:
-    """What the coder is told on its retry: each test and why, and what to do."""
+def feedback(findings: Sequence[Finding], *, before_code: bool = True) -> str:
+    """What the tests' author is told on its retry: each finding and why, and what to do. `before_code` is
+    the tester's (the code is not written yet); else the coder's, which wrote tests and code together."""
     listed: list[str] = []
     for f in findings:
         listed.append(f"- {f.test}: {f.why}")
-        if f.kind == "vacuous_test" and "match=" in f.source:
+        if f.kind == "passes_before_code" and "match=" in f.source:
             listed.append(LOOSE_MATCH)
-    lines = [
-        "airlie checked the tests you added or changed, and these need fixing:",
-        *listed,
-        "Fix each one: assert the behaviour this layer adds, so the test fails without your change and "
-        "passes with it. A test that only checks that nothing happens (no event, no message, no change) "
-        "cannot fail on the base, where nothing happens either: put that check in the same test that "
-        "triggers the behaviour, before the trigger, or drop it. Keep the tests for the acceptance "
-        "criteria. Run run_tests until the whole suite passes, then stop.",
-    ]
-    return "\n".join(lines)
+    if before_code:
+        what = (
+            "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
+            "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
+            "message, no change) passes now, where nothing happens either: put that check in the same test "
+            "that triggers the behaviour, before the trigger, or drop it. Every test that was there before "
+            "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
+            "run_tests and check that your new tests are the only red, then stop."
+        )
+    else:
+        what = (
+            "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
+            "Run run_tests until your tests pass, then stop."
+        )
+    return "\n".join(["airlie checked the tests, and these need fixing:", *listed, what])

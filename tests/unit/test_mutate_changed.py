@@ -227,6 +227,9 @@ def test_a_mutmut_run_that_does_not_finish_exits_2_not_1(
     monkeypatch.setattr(mc, "changed_files", lambda base: {"src/airlie/engine/sse.py"})
     monkeypatch.setattr(mc, "changed_tests", lambda changed: [])
     monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc, "merge_base_of", lambda base: "base")
+    touched = ({"airlie.engine.sse.x_iter_sse__mutmut_*": 20}, ["- src/airlie/engine/sse.py: iter_sse"])
+    monkeypatch.setattr(mc, "changed_functions", lambda merge_base, paths: touched)
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--base", "origin/main", "--gate-only"])
     assert mc.main() == mc.COULD_NOT_RUN == 2
     assert capsys.readouterr().out.rstrip().endswith("see the log above")
@@ -251,6 +254,10 @@ def run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> FakeMutmut:
     )
     monkeypatch.setattr(mc, "changed_tests", lambda changed: ["tests/unit/test_new.py"])
     monkeypatch.setattr(mc, "mutation_ignored_tests", lambda: [])
+    monkeypatch.setattr(mc, "merge_base_of", lambda base: "base")
+    # the change touched iter_sse only
+    touched = ({"airlie.engine.sse.x_iter_sse__mutmut_*": 20}, ["- src/airlie/engine/sse.py: iter_sse"])
+    monkeypatch.setattr(mc, "changed_functions", lambda merge_base, paths: touched)
     monkeypatch.setattr(mc, "probe_mutant", lambda files: "airlie.engine.sse.x_iter_sse__mutmut_1")
     monkeypatch.setattr(mc, "read_stats", lambda: STATS)
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", *argv])
@@ -263,15 +270,19 @@ def test_by_default_the_functions_the_changed_tests_run_are_mutated_too(
 ) -> None:
     fake = run_main(monkeypatch, ["--base", "origin/main"])
     assert len(fake.runs) == 2  # the stats probe, then the run
-    assert fake.runs[1] == ("run", "airlie.engine.sse.*")  # x_iter_sse is in that module already
+    # the changed function, then what the changed test runs beyond it (x_iter_sse is selected already)
+    assert fake.runs[1][:2] == ("run", "airlie.engine.sse.x_iter_sse__mutmut_*")
+    assert fake.runs[1].count("airlie.engine.sse.x_iter_sse__mutmut_*") == 1
 
 
 def test_gate_only_mutates_the_impacted_enrolled_modules_and_nothing_the_tests_reach_elsewhere(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     fake = run_main(monkeypatch, ["--base", "origin/main", "--gate-only"])
-    assert fake.runs == [("run", "airlie.engine.sse.*")]  # no stats probe, no function globs
-    assert "--gate-only" in capsys.readouterr().out
+    # no stats probe, and only the function the change touched
+    assert fake.runs == [("run", "airlie.engine.sse.x_iter_sse__mutmut_*")]
+    out = capsys.readouterr().out
+    assert "--gate-only" in out and "1 changed function(s) in 1 enrolled file(s)" in out
 
 
 def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
@@ -286,3 +297,155 @@ def test_gate_only_with_no_enrolled_change_has_nothing_to_mutate(
     monkeypatch.setattr(mc.sys, "argv", ["mutate_changed.py", "--gate-only"])
     assert mc.main() == 0
     assert fake.runs == [] and "nothing to mutate" in capsys.readouterr().out
+
+
+# ---- sharding: a matrix of runs, then one merge ----
+
+
+def test_a_shard_is_parsed_from_i_slash_n_and_refused_out_of_range() -> None:
+    import argparse
+
+    assert mc.parse_shard("2/5") == (2, 5)
+    for bad in ("0/5", "6/5", "two/5", "5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            mc.parse_shard(bad)
+
+
+def test_shards_split_the_globs_by_weight_cover_each_once_and_agree_run_to_run() -> None:
+    weights = {"a.*": 100, "b.*": 60, "c.*": 50, "d.*": 10, "e.*": 1}
+    parts = [mc.shard_of(weights, (i, 3)) for i in (1, 2, 3)]
+    assert sorted(g for p in parts for g in p) == sorted(weights)  # every glob, in exactly one shard
+    assert parts == [["a.*"], ["b.*", "e.*"], ["c.*", "d.*"]]  # largest first, to the lightest part
+    assert parts == [mc.shard_of(dict(reversed(weights.items())), (i, 3)) for i in (1, 2, 3)]
+    assert mc.shard_of({"a.*": 1}, (2, 2)) == []  # more shards than globs: some have nothing
+
+
+def test_a_packages_init_is_globbed_as_its_own_mutants_only() -> None:
+    """airlie.tools.* would also match every mutant of airlie.tools.fs, which another shard runs."""
+    assert mc.file_globs("src/airlie/tools/__init__.py") == ["airlie.tools.x_*", "airlie.tools.xǁ*"]
+    assert mc.file_globs("src/airlie/tools/fs.py") == ["airlie.tools.fs.*"]
+
+
+def test_the_project_shards_cover_every_module_once() -> None:
+    weights = {g: mc.size(f) for f in mc.project_files() for g in mc.file_globs(f)}
+    parts = [set(mc.shard_of(weights, (i, 5))) for i in range(1, 6)]
+    assert set().union(*parts) == set(weights) and sum(len(p) for p in parts) == len(weights)
+    loads = [sum(weights[g] for g in p) for p in parts]
+    assert max(loads) - min(loads) <= max(weights.values())  # even, to within one module
+
+
+ENROLLED = {"airlie.engine.sse"}
+
+
+def shard_file(where: Path, n: int, status: str, results: dict[str, str]) -> None:
+    mc.write_results(where / f"shard-{n}.json", status, results, f"{n}/3", "changed")
+
+
+def test_merge_gates_on_every_shard_together(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    shard_file(tmp_path, 2, "nothing", {})
+    shard_file(tmp_path, 3, "ran", {"airlie.cli.x_b__mutmut_1": "survived"})  # not enrolled: reported
+    report = tmp_path / "report.md"
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == 0
+    text = report.read_text()
+    assert "3 shard(s)" in text and "all selected mutants of the enrolled modules were caught" in text
+    assert "1 uncaught mutant(s) in modules that are not enrolled" in text
+    shard_file(tmp_path, 2, "ran", {"airlie.engine.sse.x_c__mutmut_2": "survived"})
+    assert mc.merge(tmp_path, 3, None, ENROLLED) == 1
+    assert "- airlie.engine.sse.x_c__mutmut_2: survived" in capsys.readouterr().out
+
+
+def test_merge_fails_when_a_shard_did_not_report_or_could_not_run(tmp_path: Path) -> None:
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    shard_file(tmp_path, 2, "ran", {})
+    report = tmp_path / "report.md"
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == mc.COULD_NOT_RUN  # shard 3 died before writing
+    assert "only 2 of 3 shards reported" in report.read_text()
+    shard_file(tmp_path, 3, "could_not_run", {})
+    assert mc.merge(tmp_path, 3, report, ENROLLED) == mc.COULD_NOT_RUN
+    assert "did not run to the end in shard(s) 3/3" in report.read_text()
+
+
+def test_merge_reads_only_the_shard_files(tmp_path: Path) -> None:
+    """The weekly run uploads mutmut-stats.json beside each shard's record: it is not a shard."""
+    shard_file(tmp_path, 1, "ran", {"airlie.engine.sse.x_a__mutmut_1": "killed"})
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text('{"tests_by_mangled_function_name": {}}')
+    assert mc.merge(tmp_path, 1, None, ENROLLED) == 0
+
+
+# ---- the changed scope: only the functions a change touched ----
+
+
+def test_a_zero_context_diff_names_the_lines_it_touched() -> None:
+    diff = (
+        "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+        "@@ -3 +3 @@ def f():\n-    return 1\n+    return 2\n"  # one line changed
+        "@@ -10,0 +11,2 @@\n+a\n+b\n"  # two added
+        "@@ -20,3 +21,0 @@\n-x\n-y\n-z\n"  # three deleted after line 21: both sides of the cut
+    )
+    assert mc.touched_lines(diff) == {3, 11, 12, 21, 22}
+
+
+MODULE = """X = 1
+
+
+def plain(a):
+    return a + 1
+
+
+@decorated
+async def waits(a):
+    return a
+
+
+class Tool:
+    name = "tool"
+
+    def run(self, a):
+        return a * 2
+"""
+
+
+def module_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """One module under a ROOT of its own: under mutmut, the real src/ is the mutated copy."""
+    (tmp_path / "src" / "airlie").mkdir(parents=True)
+    (tmp_path / "src" / "airlie" / "m.py").write_text(MODULE)
+    monkeypatch.setattr(mc, "ROOT", tmp_path)
+    return "src/airlie/m.py"
+
+
+def test_functions_are_named_as_mutmut_names_their_mutants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fnmatch
+
+    path = module_root(tmp_path, monkeypatch)
+    assert mc.functions_of(path) == [
+        ("airlie.m.x_plain__mutmut_*", "plain", 4, 5),
+        ("airlie.m.x_waits__mutmut_*", "waits", 8, 10),  # from its decorator
+        ("airlie.m.xǁToolǁrun__mutmut_*", "Tool.run", 16, 17),
+    ]
+    assert fnmatch.fnmatchcase("airlie.m.xǁToolǁrun__mutmut_9", "airlie.m.xǁToolǁrun__mutmut_*")
+    assert not fnmatch.fnmatchcase("airlie.m.x_plain__mutmut_9", "airlie.m.xǁToolǁrun__mutmut_*")
+
+
+def test_only_the_functions_a_change_touched_are_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PR is held to the gate for the code it changed (2026-10-20: whole hub modules made one shard run past
+    its 90 minutes, and held a PR to every old gap in a file it touched once)."""
+    path = module_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(mc, "changed_lines", lambda base, p: {5, 1})  # in plain, and module-level code
+    weights, report = mc.changed_functions("base", [path])
+    assert weights == {"airlie.m.x_plain__mutmut_*": 2}
+    assert report == [f"- {path}: plain"]
+    monkeypatch.setattr(mc, "changed_lines", lambda base, p: {1, 14})  # outside every function
+    assert mc.changed_functions("base", [path]) == ({}, [f"- {path}: no function (only module-level code)"])
+    monkeypatch.setattr(mc, "changed_lines", lambda base, p: None)  # a new file: every function in it
+    weights, _ = mc.changed_functions("base", [path])
+    assert sorted(weights) == [
+        "airlie.m.x_plain__mutmut_*",
+        "airlie.m.x_waits__mutmut_*",
+        "airlie.m.xǁToolǁrun__mutmut_*",
+    ]

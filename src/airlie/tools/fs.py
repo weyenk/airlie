@@ -27,11 +27,12 @@ def _err(e: Exception) -> ToolResult:
     return ToolResult(False, f"error: {e}")
 
 
-def _line_arg(args: dict[str, Any], name: str, default: int) -> int:
-    """An optional 1-based line argument, given as a number or a numeric string (models send both)."""
+def _line_arg(args: dict[str, Any], name: str) -> int | None:
+    """An optional 1-based line argument, given as a number or a numeric string (models send both); None when
+    it is not given (absent, or empty)."""
     raw = args.get(name)
     if raw is None or raw == "":
-        return default
+        return None
     try:
         value = int(str(raw).strip())
     except ValueError:
@@ -79,8 +80,8 @@ class ReadFile:
         try:
             p = resolve(ctx, str(args["path"]))
             text = p.read_text(errors="replace")
-            offset = _line_arg(args, "offset", 1)
-            limit = _line_arg(args, "limit", 0) if args.get("limit") not in (None, "") else 0
+            offset = _line_arg(args, "offset") or 1
+            limit = _line_arg(args, "limit")
         except Exception as e:  # noqa: BLE001
             return _err(e)
         lines = text.splitlines()
@@ -91,20 +92,44 @@ class ReadFile:
         return ToolResult(True, _cap_lines(numbered, offset, len(lines), ctx.output_cap_chars))
 
 
+HEAD = "HEAD"
+GIT = "git"
+"""The worktree's commit when a run has no base, and the program that reads it. Constants, not literals in
+the calls: on macOS's case-insensitive disk git reads "head" as HEAD and finds GIT as git, so a mutant that
+changes their case could not be told apart."""
+
+
+def _git_ok(worktree: Path, *args: str) -> bool:
+    """Whether `git -C worktree <args>` succeeds. What it prints is kept from the tool's own output."""
+    return subprocess.run([GIT, "-C", str(worktree), *args], capture_output=True).returncode == 0
+
+
 def _at_base(worktree: Path, p: Path, ref: str) -> bool:
     """Whether `p` is in the worktree's commit `ref` (the run's base, else HEAD): code that was there before
     the run, which the overwrite limit protects. A file the coder created this run is its own to rewrite,
     even once a round has committed it (the review and a green run_tests commit as they go). No git, or no
-    such commit: True."""
-    try:
-        rel = p.resolve().relative_to(worktree.resolve()).as_posix()
-    except ValueError:
+    such commit (a repository with nothing committed yet): True. `p` comes from `resolve`, in the worktree.
+    Asked of git, not read from its error text: git 2.4x says "invalid object name" where older ones said
+    "Not a valid object name", and a repository with no commit lost the limit (PR 105's mutation gate)."""
+    if not _git_ok(worktree, "rev-parse", f"{ref}^{{commit}}"):  # only its exit code is read
         return True
-    done = subprocess.run(
-        ["git", "-C", str(worktree), "cat-file", "-e", f"{ref}:{rel}"], capture_output=True, check=False
-    )
-    unknown = b"Not a valid object name" in done.stderr or b"not a git repository" in done.stderr
-    return done.returncode == 0 or unknown
+    rel = p.resolve().relative_to(worktree.resolve()).as_posix()
+    return _git_ok(worktree, "cat-file", "-e", f"{ref}:{rel}")
+
+
+LOCKED = (
+    "error: {path} holds this layer's acceptance tests, written before you: they are your contract and you "
+    "cannot change them. Make them pass with the code. If one is wrong about a name or a signature the brief "
+    "fixes, say which and why when you stop."
+)
+
+
+def _locked(ctx: ToolContext, p: Path) -> bool:
+    """Whether `p` is one of `ctx.read_only` (the tester's test files, for the coder). `p` comes from
+    `resolve`, which refuses a path outside the worktree."""
+    if not ctx.read_only:
+        return False
+    return p.resolve().relative_to(ctx.worktree.resolve()).as_posix() in ctx.read_only
 
 
 class WriteFile:
@@ -124,11 +149,13 @@ class WriteFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if _locked(ctx, p):
+                return ToolResult(False, LOCKED.format(path=args["path"]))
             if (
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
                 > (limit := ctx.write_file_max_overwrite_lines)
-                and _at_base(ctx.worktree, p, ctx.scope_base or "HEAD")
+                and _at_base(ctx.worktree, p, ctx.scope_base or HEAD)
             ):
                 return ToolResult(
                     False,
@@ -143,13 +170,21 @@ class WriteFile:
         return ToolResult(True, f"wrote {args['path']} ({len(str(args['content']))} chars)")
 
 
+def _closest(line: str, lines: list[str]) -> str | None:
+    """The line of `lines` closest to `line` (at least 0.6 alike), or None."""
+    # n=1 only caps a list whose first item is the answer, and 0.6 is difflib's default: neither changes it
+    found = difflib.get_close_matches(line, lines, n=1, cutoff=0.6)  # pragma: no mutate
+    return found[0] if found else None
+
+
 def _not_found(path: str, old: str, text: str) -> str:
     """The edit_file error for an `old` that is not in the file: the line that comes closest to its first
     line, and how to see it. Every failed edit of 2026-10-18 (AIR-7) was an anchor quoted from memory."""
-    first = next((line for line in old.splitlines() if line.strip()), "")
+    # a blank `old` has no first line: any default that is no line of the file reads the same
+    first = next((line for line in old.splitlines() if line.strip()), "")  # pragma: no mutate
     lines = text.splitlines()
-    close = difflib.get_close_matches(first, lines, n=1, cutoff=0.6) if first and lines else []
-    if close and close[0] == first:  # the anchor is there: say where the quote goes wrong below it
+    close = _closest(first, lines) if first and lines else None
+    if close == first:  # the anchor is there: say where the quote goes wrong below it
         at = lines.index(first)
         wanted = old.splitlines()
         for k, line in enumerate(wanted):
@@ -161,10 +196,10 @@ def _not_found(path: str, old: str, text: str) -> str:
                     f"has line {at + k + 1}: `{have}`. Read the file there (read_file with offset and "
                     "limit) and quote it exactly, whitespace included."
                 )
-    if close:
+    if close is not None:
         return (
-            f"error: `old` text not found in {path}. The closest line is {lines.index(close[0]) + 1}: "
-            f"`{close[0]}`. Read the file there (read_file with offset and limit) and quote it exactly, "
+            f"error: `old` text not found in {path}. The closest line is {lines.index(close) + 1}: "
+            f"`{close}`. Read the file there (read_file with offset and limit) and quote it exactly, "
             "whitespace included."
         )
     return (
@@ -191,8 +226,8 @@ def _loose_span(text: str, old: str) -> tuple[int, int] | None:
     k = len(want)
     spans = [
         (have[i][1], have[i + k - 1][3] if old.endswith("\n") else have[i + k - 1][2])
-        for i in range(len(have) - k + 1)
-        if [h[0] for h in have[i : i + k]] == want
+        for i in range(len(have))
+        if [h[0] for h in have[i : i + k]] == want  # a slice past the end is short: never `want`
     ]
     return spans[0] if len(spans) == 1 else None
 
@@ -211,6 +246,8 @@ class EditFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if _locked(ctx, p):
+                return ToolResult(False, LOCKED.format(path=args["path"]))
             text = p.read_text()
         except Exception as e:  # noqa: BLE001
             return _err(e)

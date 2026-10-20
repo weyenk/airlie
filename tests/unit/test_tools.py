@@ -6,13 +6,17 @@ import asyncio
 import json
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from airlie.engine import ToolCall
 from airlie.tools import ToolContext, ToolRegistry, ToolResult, resolve
-from tests.unit.proc_helpers import eventually, running, unique_sleep
+from airlie.tools import confine as confine_mod
+from airlie.tools.shell import run_cmd
+from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 
 
 def ctx(tmp_path: Path, **kw) -> ToolContext:
@@ -111,17 +115,6 @@ async def test_a_shell_timeout_kills_what_the_command_started(tmp_path: Path) ->
     assert not r.ok and "timed out after 1s" in r.output
     assert time.monotonic() - started < 5  # it did not sit out the sleep, which holds the output pipe
     assert await eventually(lambda: not running(sleeper))  # and the sleep is not left running
-
-
-async def test_cancelling_a_shell_call_kills_what_the_command_started(tmp_path: Path) -> None:
-    sleeper = unique_sleep()
-    reg = ToolRegistry.builtin(["shell"], ctx(tmp_path, timeout=60))
-    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
-    assert await eventually(lambda: running(f"^{sleeper}"))  # the sleep itself is up, not only its shell
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
-    assert await eventually(lambda: not running(sleeper))
 
 
 async def test_a_command_reads_no_stdin_so_it_never_waits_on_the_persons_terminal(tmp_path: Path) -> None:
@@ -289,3 +282,76 @@ async def test_a_cut_read_says_how_to_read_the_rest(tmp_path: Path) -> None:
     assert "… [truncated" in r.output  # the shape every capped observation has
     again = await reg.call(ToolCall("2", "read_file", json.dumps({"path": "big.py", "offset": last + 1})))
     assert again.ok and again.output.startswith(f"{last + 1}: line {last + 1}")
+
+
+# ---- how run_cmd starts a command: confined or not, through sh or not ----
+
+needs_sandbox = pytest.mark.skipif(
+    not confine_mod.available(), reason="no sandbox-exec here (or already in one)"
+)
+
+
+async def test_an_unconfined_command_runs_in_the_worktree_without_a_shell(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), sandbox=False)
+    r = await run_cmd(["pwd"], c, shell=False)
+    assert r.ok and Path(r.output.strip()).resolve() == c.worktree.resolve()
+    missing = await run_cmd(["no-such-program-airlie"], c, shell=False)
+    assert missing.ok is False and "No such file or directory" in missing.output
+
+
+def venv_tool(c: ToolContext) -> None:
+    """A program only the worktree's .venv/bin has: agent_env puts that directory first on PATH."""
+    bin_dir = c.worktree / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "only-in-the-venv").write_text("#!/bin/sh\necho from-the-venv\n")
+    (bin_dir / "only-in-the-venv").chmod(0o755)
+
+
+@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
+async def test_a_command_is_found_on_the_worktrees_path(tmp_path: Path, sandbox: bool) -> None:
+    c = replace(ctx(tmp_path), sandbox=sandbox)
+    venv_tool(c)
+    r = await run_cmd(["only-in-the-venv"], c, shell=False)
+    assert r.ok and r.output.strip() == "from-the-venv"
+
+
+@needs_sandbox
+async def test_a_confined_command_that_is_not_there_fails_as_an_unconfined_one_does(tmp_path: Path) -> None:
+    r = await run_cmd(["no-such-program-airlie"], ctx(tmp_path), shell=False)
+    assert r.ok is False and "No such file or directory" in r.output and "exit 71" not in r.output
+
+
+REFUSED_SAYS = "echo 'touch: /etc/x: Operation not permitted'"
+
+
+async def test_the_sandbox_note_is_for_a_confined_command_that_failed_on_a_refused_write(
+    tmp_path: Path,
+) -> None:
+    unconfined = replace(ctx(tmp_path), sandbox=False)
+    r = await run_cmd(f"{REFUSED_SAYS}; exit 1", unconfined, shell=True)
+    assert r.ok is False and confine_mod.NOTE not in r.output  # not confined: not airlie's sandbox
+    if not confine_mod.available():
+        return
+    confined = ctx(tmp_path)
+    assert confine_mod.NOTE in (await run_cmd(f"{REFUSED_SAYS}; exit 1", confined, shell=True)).output
+    ok = await run_cmd(REFUSED_SAYS, confined, shell=True)  # it says so, but it did not fail
+    assert ok.ok and confine_mod.NOTE not in ok.output
+
+
+@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
+@pytest.mark.parametrize(("hold", "cancel"), cancel_phases())
+async def test_cancelling_a_shell_call_kills_what_the_command_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool, hold: bool, cancel: Any
+) -> None:
+    """Mid-start (the child runs, its pipes not yet connected) or once running: either way nothing the
+    command started outlives the cancel. The test, not the machine's speed, says which (StartGate)."""
+    from airlie.tools import shell as shell_mod
+
+    gate = StartGate(monkeypatch, shell_mod, hold=hold)
+    sleeper = unique_sleep()
+    reg = ToolRegistry.builtin(["shell"], replace(ctx(tmp_path, timeout=60), sandbox=sandbox))
+    task = asyncio.create_task(reg.call(shell_call(f"{sleeper} & wait")))
+    await cancel(task, gate, sleeper)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)  # at once, not when the sleep has run its 30 s out
+    assert await eventually(lambda: not running(sleeper))

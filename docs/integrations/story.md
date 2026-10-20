@@ -9,17 +9,19 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
-| build, per layer | studio: the coder writes the failing tests and then the code that makes them pass, airlie checks the new tests, Muse Glimmer reviews | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
-| mutation gate, once | airlie; the architect (Qwen3.8) reviews any survivors | the repository's optional `## Mutation gate` run over the whole built stack; survivors that matter become one last *Harden the tests* layer, built by the coder; skipped, with an event, when `AGENTS.md` has none |
+| build, per layer | studio: the tester writes the failing tests, airlie checks they fail before any code is written, the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
 
-Each layer is one build step by one coder. A layer that makes acceptance criteria true is test-first: its brief lists
-the criteria and asks for tests proving each one, then the code that makes them pass without weakening them. A layer
-that makes none true (a foundation) adds tests for what it changes. In a pytest repository airlie then checks the
-tests the layer added or changed (*Checks on a layer's tests*), before the test gate. The reviewer's blocking
-findings get one fix round; whatever it still finds is listed in the PR for you to check and does not block the
-layer. The test gate decides.
+Each layer is test-first, in two steps (with `story.tester_role` set, as airlie.yaml does). The tester writes the
+layer's tests: one or more per acceptance criterion the layer owns, or, for a foundation that makes none true, per
+behaviour its brief adds. In a pytest repository airlie then runs the whole suite before any code is written
+(*The pre-code check*): each new test must fail and every other test must pass. The tester's files are then
+read-only to the coder, who writes the code that makes them pass; the coder is done when the layer's tests pass.
+The reviewer's blocking findings get one fix round; whatever it still finds is listed in the PR for you to check and
+does not block the layer. Then the whole suite runs once, as the test gate: if it fails, the coder gets its output
+once, and the gate decides. Mutation testing is not a stage here: the repository's CI runs it on each PR (airlie's
+own: the `mutation` jobs of `.github/workflows/pipeline.yml`).
 
 An issue is built in the repository its `repo:<owner>/<name>` label names (*Which repository*), and every layer
 must pass the `## Test gate` of that repository's `AGENTS.md` (*The test gate*).
@@ -98,10 +100,9 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
-| `story.mutation_timeout_s` | 3600 | how long the story's mutation gate may run (it runs once per story) |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
-| `story.tester_role` | `null` (airlie.yaml: `tester`) | the role that writes a layer's acceptance tests before its coder builds it, as the coder's contract (the coder may correct a test that is wrong about a name the brief fixes, and says so); `null`: the coder writes its own tests, one subtask per layer. The 2026-10-16 qa seat was removed for blowing its context on a fast model; this one is a thinking role with the whole layer brief, 16 steps, and the same checks on what it writes |
+| `story.tester_role` | `null` (airlie.yaml: `tester`) | the role that writes every layer's tests before its coder builds it, as the coder's contract: checked to fail before any code is written, then read-only to the coder (a test wrong about a name the brief fixes is named in the coder's reply, not changed); `null`: the coder writes its own tests, one subtask per layer, and they are only read for assertions. The 2026-10-16 qa seat was removed for blowing its context on a fast model; this one is a thinking role with the whole layer brief, 16 steps, and the same checks on what it writes |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
@@ -196,14 +197,14 @@ It patches vllm-mlx's source textually and refuses (a warning, the engine runs u
 that has changed; `AIRLIE_HYBRID_PREFIX_CACHE=0` turns it off and `AIRLIE_HYBRID_PREFIX_CACHE_DEBUG=1` logs each
 store. Needs an engine restart to take effect.
 
-### Scoped `run_tests` for the coder
+### Scoped `run_tests` for the tester and the coder
 
-The coder calls `run_tests` after every change, and a whole-suite gate takes minutes each time. In a story layer
-`run_tests` runs the gate with pytest limited to the test files the layer added or changed (seconds) and runs the
-whole gate only once those pass; a tree that passed the whole gate is not run again, by the coder or by the
-studio's final gate (airlie fingerprints the worktree's files). A layer with no test file of its own yet gets a
-failing `run_tests` that says to write its tests first. The gate's own commands are unchanged: the final gate and
-the layer's PR still stand on the whole suite. Before each run `run_tests` (and the final gate) has ruff mend the style it can: `ruff format`, and `ruff check --fix --unsafe-fixes` (an unsafe fix may change what code does: the tests that run after it are the guard). airlie's own gate runs pytest with `-n auto --maxprocesses 8`
+The tester and the coder call `run_tests` after every change, and a whole-suite gate takes minutes each time. In a
+story layer `run_tests` runs the gate with pytest limited to the test files the layer added or changed (seconds),
+and nothing more: when those pass, the coder is done. The whole suite runs once, as the studio's final gate after
+review, and a tree that passed it is not run again (airlie fingerprints the worktree's files: `GateMemo`). A layer
+with no test file of its own yet gets a failing `run_tests` that says to write its tests first. The gate's own
+commands are unchanged: the final gate and the layer's PR still stand on the whole suite. Before each run `run_tests` (and the final gate) has ruff mend the style it can: `ruff format`, and `ruff check --fix --unsafe-fixes` (an unsafe fix may change what code does: the tests that run after it are the guard). airlie's own gate runs pytest with `-n auto --maxprocesses 8`
 (pytest-xdist).
 
 ## The test gate: `AGENTS.md`
@@ -266,71 +267,44 @@ node scripts/run-impacted-tests.mjs
   the failing ones; a passing command's last line), and a `cd` still carries over. Each command gets
   `tools.shell_timeout_s`. The layer's own gate, after the build, still stops at the first command that fails.
 
-## Checks on a layer's tests
+## The pre-code check
 
-After the coder's build step and before the test gate, airlie checks the test functions the layer added or changed
-(compared with the layer's base commit, by their syntax tree: a reformat is not a change). No model is involved.
+After the tester writes a layer's tests and before the coder starts, airlie checks the test functions the tester
+added or changed (compared with the layer's base commit, by their syntax tree: a reformat is not a change). No model
+is involved.
 
-- **Red check:** every other file the layer changed is put back as it was at the base (files it added are removed),
-  and only those test functions run, with the gate's own pytest. One that passes there does not test the change:
-  a `vacuous_test` finding. The worktree is the layer's again afterwards. The *Harden the tests* layer (*The
-  mutation gate*) is the exception: its tests test code the earlier layers wrote, so every other file the whole
-  story changed is put back as it was at the story's base.
+- **Red before the code:** the whole suite runs on the tester's tree, with the gate's own pytest command and
+  `-rA -p no:cacheprovider --continue-on-collection-errors` (a new module that imports the name the layer adds
+  cannot be collected yet: that counts as red, and every other module still runs). A new test that passes there
+  does not test what the layer builds: a `passes_before_code` finding. A test the layer did not touch that fails
+  there was broken by the new tests (a fixture, `conftest.py`, a shared helper): an `existing_test_fails` finding.
+  A suite that did not run its tests at all (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run`
+  finding, and a layer with no new test a `no_new_test` one.
 - **No-assertion check:** one with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
-  `raise`, or call to a helper of its module that has one: an `assertion_free_test` finding.
-- **One retry:** with findings, the coder is sent back once, in the same conversation, with each test's id and why.
-  Findings after that stop the layer like a failed gate: the note lists them, and the worktree and branch are kept.
-- **Logged:** each finding is an event in the story's `events.jsonl` (`vacuous_test`, `assertion_free_test`, with
-  the layer, the attempt, the test's id, why, its source and the studio run), so they can serve later as negative
-  examples; `test_checks_retry` and `test_checks_passed` mark the outcome.
-- **pytest only:** a test module is a `test_*.py` or `*_test.py` file, and the checks run only when a gate command
-  runs pytest (`pytest`, `python -m pytest`, `uv run pytest`, …), with what comes before `pytest` in that command.
-  Any other repository (a pnpm one, say) gets a `test_checks_skipped` event and its layers are not held up.
+  `raise`, or call to a helper of its module that has one: an `assertion_free_test` finding. A test module that
+  does not parse is an `unparseable_test` one.
+- **One retry, for the tester:** with findings, the tester is sent back once, in the same conversation, with each
+  test's id and why. Findings after that stop the layer before the coder starts: the note lists them, and the
+  worktree and branch are kept.
+- **Then locked:** once the check passes, every file the tester changed is read-only to the coder: `write_file`
+  and `edit_file` refuse them (with a `locked` event naming them), and before the final gate any change to them
+  (by a shell, say) is put back, with a `locked_restored` event.
+- **The final gate, with one follow-up:** after review, the whole suite runs. If it fails, the coder is sent its
+  output once (a `gate_failed` event) and the gate runs again; a second failure stops the layer.
+- **Without a tester** (`story.tester_role: null`), the coder writes tests and code together: its tests are only
+  read (the no-assertion and parse checks), after the build, with one retry for the coder.
+- **Logged:** each finding is an event in the story's `events.jsonl` (`passes_before_code`, `existing_test_fails`,
+  `assertion_free_test`, …, with the layer, the attempt, the test's id, why, its source and the studio run), so
+  they can serve later as negative examples; `test_checks_retry` and `test_checks_passed` mark the outcome.
+- **pytest only:** a test module is a `test_*.py` or `*_test.py` file, and the check runs only when a gate command
+  runs pytest (`pytest`, `python -m pytest`, `uv run pytest`, …). Any other repository (a pnpm one, say) gets a
+  `test_checks_skipped` event and its layers are not held up.
 
-## The mutation gate: `AGENTS.md`, optional
-
-One coder writes a layer's tests and its code, so a story is held to one more check on its tests before anyone
-reviews it: mutation testing, once, over the whole story. It is the commands under a `Mutation gate` heading of
-the same `AGENTS.md`, found and read exactly as the test gate is (the trunk's, at the story's base commit, one
-command per line, kept in `state.json` as `mutation_gate`). airlie's own:
-
-~~~markdown
-## Mutation gate
-
-```sh
-uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}
-```
-~~~
-
-- **`{base}`** in a command is replaced by the story's base commit, so the commands see the whole story's change;
-  **`{report}`** by a file in the story's directory (quoted for `sh`). A gate that writes its summary of the
-  surviving mutants there is read from it; otherwise its output is (its start and its end, 12,000 characters).
-- **When:** once, after every layer the architect planned is built and before the stack is published, in a
-  detached worktree of the top layer's commit (it holds every layer), without your credentials, as the test gate
-  runs. It may take `story.mutation_timeout_s` (an hour by default); a gate that runs longer, or cannot start,
-  stops the story.
-- **Exit 0 passes**, and the stack is published. Anything else means mutants survived.
-- **Survivors go to the architect, never the coder.** Read-only at the top layer's commit, it gets the summary,
-  the story's diff against its base, and the story and its layers, and decides which survivors matter: it drops
-  equivalent mutants and ones in logging or message text, with a reason for each, and describes a test case for
-  each of the rest (`{"harden": [{"test_file", "cases": [{"name", "given", "expect", "kills"}]}], "ignored":
-  [{"mutant", "why"}]}`). An unusable reply gets one retry; a second stops the story, with the summary in the note.
-- **Cases become one last layer**, *Harden the tests*, stacked on top: built by the coder like any layer (the
-  same test gate, review and checks), with a brief that is the architect's cases and says to change tests only.
-  Its red check undoes the whole story, not just the layer below (*Checks on a layer's tests*), since its tests
-  test code the earlier layers wrote; a `test_checks_red_base` event says so. The mutation gate is **not** run
-  again after it: one run per story.
-- **Everything ignored:** the stack is published as it is, and the top PR lists each ignored mutant and why.
-- **No section, no stage:** a repository whose `AGENTS.md` has no `Mutation gate` (a TypeScript one, say) skips it,
-  with a `mutation_gate_skipped` event. A section with no command, or one that cannot run as written, stops the
-  story before refine, as a bad test gate does. `--test-cmd` does not replace it.
-- **Logged:** `mutation_gate_start`, `mutation_gate_passed`, `mutation_gate_failed` (with the summary),
-  `mutation_gate_skipped`, and `mutation_review` (the architect's verdict: cases asked for, test files, mutants
-  ignored, the hardening layer) in the story's `events.jsonl`; the issue gets a comment with the verdict.
-- **In the PRs:** every PR of the stack says how it went (passes, skipped, or the architect's verdict).
-- **Run once:** the result and the review are kept in `state.json` (`mutation`, with the top layer's commit, and
-  `mutation_review`), so a resume never runs the gate again for the same stack, nor asks the architect again once
-  it answered; a hardening layer that stopped is rebuilt like any other.
+Mutation testing is the repository's CI's, on every PR, not a stage of the story: airlie's own pipeline runs
+`task mutate:changed -- --gate-only` over the functions the PR changed, in 5 shards and merges them (`task mutate:merge`); the
+weekly run covers the whole project. Before 2026-10-19 a story ran an `AGENTS.md` *Mutation gate* once and an
+architect-planned *Harden the tests* layer built tests for the survivors; its tests failed the red check often
+for no fault in them, and it is gone. A state saved with its keys still opens.
 
 ## What stops a story before it starts
 
@@ -346,7 +320,6 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 | that directory is not a git repository, has no `story.remote`, or its remote names another repository | which, with the clone or `git remote add` command to run, or the URL found and the one the label wants |
 | the label changed after the story started | from what to what |
 | no test gate on the trunk: no `AGENTS.md` (or a link out of the repository, or to nothing), no `Test gate` section, no command in its block, a command continued onto the next line, one run in the background with `&`, or bash's `&>`, `&>>` or `|&` | the repository, the trunk and its commit, and what to add, with a three-line example |
-| a `Mutation gate` section with no command, or a command that cannot run as written (the same rules) | the repository, the trunk and its commit, and the problem |
 | the trunk cannot be fetched | why, and to run the story again: it builds only on the remote's trunk |
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets
@@ -389,9 +362,9 @@ failure is in the next one:
 | stopped after | the failure was in |
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
-| `'intake'` | refining the story, or fetching the trunk or reading its test gate or mutation gate |
+| `'intake'` | refining the story, or fetching the trunk or reading its test gate |
 | `'refine'` | planning the layers, or posting the story's comment |
-| `'layers'` | building a layer, the story's mutation gate, the architect's review of its survivors or the hardening layer, or posting the layer plan's comment or a built layer's |
+| `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
 | `'publish'` | telling the issue (the PR links or the move to *In Review*): the PRs are open |
 
@@ -410,8 +383,8 @@ note work the other way round: they are posted before their stage is saved, so w
   `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens` to raise. A
   thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has not;
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
-- a layer's new or changed tests still fail airlie's checks after one retry (*Checks on a layer's tests*): the
-  note lists each test and why;
+- a layer's tests still fail airlie's pre-code check after the tester's retry (*The pre-code check*): the note
+  lists each test and why, and the coder never started;
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them. When a subtask's reply in that layer was cut off at its `max_tokens`, the comment names the
   subtask and the `roles.<role>.max_tokens` to raise;

@@ -12,12 +12,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from airlie.subproc import agent_env, kill_group
+from airlie.subproc import agent_env, kill_group, started
 from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
-from airlie.tools.scope import autofix_steps, changed_test_files, scoped_steps, tree_fingerprint
+from airlie.tools.scope import autofix_steps, changed_test_files, scoped_steps
 
+SH = "/bin/sh"
+"""The shell a confined command runs in. A constant, not a literal in the call: on macOS's case-insensitive
+disk /BIN/SH is the same file, so a mutant that upper-cases it could not be told apart."""
 GIT_DENY = {"push", "fetch", "pull", "remote", "clone", "submodule", "gc", "reflog", "worktree", "config"}
 
 
@@ -51,16 +54,16 @@ async def _run(
     )
     try:
         if confined:
-            command = ["/bin/sh", "-c", str(cmd)] if shell else [str(c) for c in cmd]
+            command = [SH, "-c", str(cmd)] if shell else [str(c) for c in cmd]
             if not shell and shutil.which(command[0], path=env.get("PATH")) is None:
                 # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
                 raise FileNotFoundError(2, "No such file or directory", command[0])
             roots = confine.writable_roots(ctx.worktree, ctx.writable)
-            proc = await asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn)
+            proc = await started(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
         elif shell:
-            proc = await asyncio.create_subprocess_shell(str(cmd), **spawn)
+            proc = await started(asyncio.create_subprocess_shell(str(cmd), **spawn))
         else:
-            proc = await asyncio.create_subprocess_exec(*cmd, **spawn)
+            proc = await started(asyncio.create_subprocess_exec(*cmd, **spawn))
     except OSError as e:
         return None, f"error: {e}"
     try:
@@ -124,7 +127,7 @@ class RunTests:
     name = "run_tests"
     description = (
         "Run the project's test commands and return each one's result and output. Call this after every "
-        "change. It runs your own tests first and the whole suite once those pass."
+        "change. In a story layer it runs your own tests: the ones you added or changed."
     )
     parameters = {"type": "object", "properties": {}, "required": []}
 
@@ -140,79 +143,20 @@ class RunTests:
 
 async def _run_scoped(ctx: ToolContext) -> ToolResult:
     """The gate with pytest limited to the layer's own test files, after ruff has formatted and fixed what it
-    safely can (the gate's ruff steps then pass or report only what needs thought). When that passes, the
-    whole gate, unless the memo says this very tree already passed it. A pytest step with no test file to run
-    is left out, and the run says so (the layer is written test-first: its tests come before the code)."""
+    safely can (the gate's ruff steps then pass or report only what needs thought). That is the whole of it:
+    the pipeline runs the whole gate once the subtask is done and reviewed. A pytest step with no test file to
+    run is left out, and the run says so (the layer is written test-first: its tests come before the code)."""
     await run_steps(
         autofix_steps(ctx.test_steps), ctx
     )  # formatting and safe lint fixes: the result is not news
     files = changed_test_files(ctx.worktree, ctx.scope_base)
-    steps = scoped_steps(ctx.test_steps, files)
-    first = await run_steps(steps, ctx)
-    if not first.ok:
-        head = f"scoped to your {len(files)} test file(s); the whole suite runs once these pass\n"
-        return ToolResult(False, head + first.output)
+    result = await run_steps(scoped_steps(ctx.test_steps, files), ctx)
     if not files:
         return ToolResult(
-            False,
-            first.output + "\nno test file of yours to run yet: write the layer's tests first. The whole "
-            "suite has not run.",
+            False, result.output + "\nno test file of yours to run yet: write the layer's tests first."
         )
-    if ctx.gate_memo is not None:
-        here = tree_fingerprint(ctx.worktree)
-        if here is not None and here == ctx.gate_memo.passed:
-            return ToolResult(True, first.output + "\nthe whole suite already passed on exactly this tree")
-    full = await run_steps(ctx.test_steps, ctx)
-    if full.ok and ctx.gate_memo is not None:
-        ctx.gate_memo.passed = tree_fingerprint(ctx.worktree)
-    note = "your tests pass; the whole suite " + ("passes" if full.ok else "FAILS (see below)")
-    if not full.ok:
-        return ToolResult(False, f"{note}\n{full.output}")
-    checked = await _check_changed_tests(ctx) if ctx.check_base else ""
-    return ToolResult(True, f"{note}\n{first.output}" + (f"\n{checked}" if checked else ""))
-
-
-CHECKED_HEAD = "airlie checked the tests you added or changed: "
-VACUOUS_NOTE = (
-    "a test that only checks that nothing happens cannot fail on the base: put that check in the same test "
-    "that triggers the behaviour."
-)
-
-
-async def _check_changed_tests(ctx: ToolContext) -> str:
-    """The red check of story.layer_checks at the step the tests are written, on a tree that passes the
-    whole gate: the tests changed since `scope_base` run again with the layer's other changes put back to
-    `check_base`, and the ones that still pass there are named, so the coder learns it now and not after
-    the review and the pipeline's own check (AIR-31 layer 02, 2026-10-19). Nothing when every one fails
-    there, or when the gate runs no pytest. The worktree is committed first (the check puts files back and
-    resets to HEAD, as the pipeline does before its check) and is the layer's again after it, whatever the
-    check did; a check that crashes says nothing (the gate has passed, which is the result)."""
-    from airlie.story.layer_checks import checks_for  # story builds on tools: imported here, not above
-    from airlie.teams.worktree import commit_wip, reset_to_head
-
-    checks = checks_for(
-        ctx.test_steps,
-        timeout_s=ctx.shell_timeout_s,
-        confinement={"sandbox": ctx.sandbox, "writable": ctx.writable},
-    )
-    if checks is None:
-        return ""
-    commit_wip(ctx.worktree, "studio: run_tests (checks)")
-    try:
-        found = await checks.run(ctx.worktree, ctx.scope_base, red_base=ctx.check_base)
-    except Exception:  # noqa: BLE001 - the check is advice; the gate's result stands
-        return ""
-    finally:
-        reset_to_head(ctx.worktree)
-    vacuous = [f.test for f in found if f.kind == "vacuous_test"]
-    if not vacuous:
-        return ""
-    lines = [
-        CHECKED_HEAD + "these also pass with your change undone, so they do not test it:",
-        *(f"- {t}" for t in vacuous),
-        VACUOUS_NOTE,
-    ]
-    return "\n".join(lines)
+    head = f"scoped to your {len(files)} test file(s); the pipeline runs the whole suite after review\n"
+    return ToolResult(result.ok, head + result.output)
 
 
 class Git:

@@ -143,6 +143,14 @@ def put_back(worktree: Path, commit: str, paths: list[str]) -> None:
             (worktree / p).unlink(missing_ok=True)
 
 
+def differs_from(worktree: Path, commit: str, paths: list[str]) -> list[str]:
+    """Which of `paths` the worktree's files (committed or not) have changed or removed since `commit`."""
+    if not paths:
+        return []
+    out = _git(worktree, "diff", "--name-only", commit, "--", *paths, check=False).stdout
+    return [line for line in out.splitlines() if line]
+
+
 def reset_to_head(worktree: Path) -> None:
     """The worktree as its HEAD commit holds it: changes undone and untracked files removed (ignored ones, a
     virtualenv say, are kept)."""

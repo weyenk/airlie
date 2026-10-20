@@ -267,6 +267,11 @@ tasks:
     cmds:
       - '{{.RUN}} python scripts/mutate_changed.py --scope project {{.CLI_ARGS}}'
 
+  mutate:merge:
+    desc: "Gate on the --results files of sharded mutation runs (task mutate:merge -- --merge shards/ --expect 5)"
+    cmds:
+      - '{{.RUN}} python scripts/mutate_changed.py {{.CLI_ARGS}}'
+
   mutate:results:
     desc: "List surviving mutants of the last run (task mutate:results -- --all true); inspect one with `uv run mutmut show NAME`"
     cmds:

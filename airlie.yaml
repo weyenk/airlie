@@ -277,7 +277,7 @@ observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 1
 story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
-  tester_role: tester              # lever 2 (2026-10-19): a thinking role writes a layer's acceptance tests before the coder builds; null: the coder writes its own
+  tester_role: tester              # lever 2 (2026-10-19): a thinking role writes every layer's tests, checked red before the coder builds; null: the coder writes its own
   max_layers: 5
   jira:
     statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }
