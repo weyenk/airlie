@@ -405,3 +405,37 @@ async def test_a_process_that_runs_model_code_has_no_credential_and_cannot_get_o
     fill = credential_fill(env, tmp_path)  # what the process gets when it asks git for a password
     assert fill.returncode != 0 and "planted" not in fill.stdout + fill.stderr
     assert "terminal prompts disabled" in fill.stderr and time.monotonic() - started < 5
+
+
+async def test_a_process_whose_start_is_cancelled_is_killed_with_all_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The child runs before asyncio has connected its pipes: a cancel in that moment left the caller
+    without the process to kill (PR 105's CI). `started` waits for it and kills its group."""
+    from airlie.subproc import started
+
+    sleeper = unique_sleep()
+    begun = asyncio.Event()
+
+    async def slow_start() -> asyncio.subprocess.Process:
+        proc = await asyncio.create_subprocess_shell(
+            f"{sleeper} & wait", stdout=asyncio.subprocess.DEVNULL, start_new_session=True
+        )
+        begun.set()
+        await asyncio.sleep(2)  # the cancel lands here, with the child already running
+        return proc
+
+    task = asyncio.create_task(started(slow_start()))
+    await asyncio.wait_for(begun.wait(), 20)
+    assert await eventually(lambda: running(f"^{sleeper}"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)
+    assert await eventually(lambda: not running(sleeper))
+
+
+async def test_a_start_that_fails_is_raised_as_it_was() -> None:
+    from airlie.subproc import started
+
+    with pytest.raises(FileNotFoundError):
+        await started(asyncio.create_subprocess_exec("/no/such/program-airlie"))

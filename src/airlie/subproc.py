@@ -24,9 +24,10 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Coroutine, Iterable, Mapping
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 CREDENTIALS = (
     "GH_TOKEN",
@@ -151,6 +152,22 @@ def without_hooks(env: Mapping[str, str]) -> dict[str, str]:
     GitHub App's token), which must run nothing a model planted in the repository and read no object it
     replaced."""
     return with_git_config(env, NO_HOOKS)
+
+
+async def started(starting: Coroutine[Any, Any, asyncio.subprocess.Process]) -> asyncio.subprocess.Process:
+    """The process `starting` (an asyncio.create_subprocess_* call) makes. Anything that stops the wait for it
+    (a cancel that lands while it is being made: the child already runs, asyncio connects its pipes after the
+    fork) waits for it, kills it and all it started (`kill_group`), and goes on: else the caller never has it
+    to kill (PR 105's CI, 2026-10-19: a cancelled gate's sleep outlived the test). A start that failed
+    (OSError) has nothing to kill and is raised."""
+    task = asyncio.ensure_future(starting)
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        # it never started, so there is nothing to kill, and the wait raised the same OSError
+        with contextlib.suppress(OSError):  # pragma: no mutate
+            await kill_group(await task)
+        raise
 
 
 async def kill_group(proc: asyncio.subprocess.Process) -> None:

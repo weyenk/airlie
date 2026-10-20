@@ -5,15 +5,14 @@ the agent environment (airlie.subproc: no credentials) and, on macOS, unable to 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import shlex
 import shutil
 import tempfile
-from collections.abc import Coroutine, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from airlie.subproc import agent_env, kill_group
+from airlie.subproc import agent_env, kill_group, started
 from airlie.tools import confine
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap
@@ -60,11 +59,11 @@ async def _run(
                 # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
                 raise FileNotFoundError(2, "No such file or directory", command[0])
             roots = confine.writable_roots(ctx.worktree, ctx.writable)
-            proc = await _spawn(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
+            proc = await started(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
         elif shell:
-            proc = await _spawn(asyncio.create_subprocess_shell(str(cmd), **spawn))
+            proc = await started(asyncio.create_subprocess_shell(str(cmd), **spawn))
         else:
-            proc = await _spawn(asyncio.create_subprocess_exec(*cmd, **spawn))
+            proc = await started(asyncio.create_subprocess_exec(*cmd, **spawn))
     except OSError as e:
         return None, f"error: {e}"
     try:
@@ -78,21 +77,6 @@ async def _run(
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
     rc = proc.returncode or 0
     return rc, confine.explain(text, rc) if confined else text
-
-
-async def _spawn(starting: Coroutine[Any, Any, asyncio.subprocess.Process]) -> asyncio.subprocess.Process:
-    """The process `starting` makes. Anything that stops the wait for it (a cancel that lands while it is
-    being made: the child already runs, asyncio connects its pipes after the fork) waits for it, kills it and
-    all it started, and goes on: else the caller never has it to kill (PR 105's CI, 2026-10-19: a cancelled
-    gate's sleep outlived the test). A start that failed (OSError) has nothing to kill and is raised."""
-    task = asyncio.ensure_future(starting)
-    try:
-        return await asyncio.shield(task)
-    except BaseException:
-        # it never started, so there is nothing to kill, and the wait raised the same OSError
-        with contextlib.suppress(OSError):  # pragma: no mutate
-            await kill_group(await task)
-        raise
 
 
 async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
