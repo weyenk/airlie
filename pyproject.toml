@@ -67,8 +67,8 @@ line-length = 110
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-per-file-ignores = { "tests/unit/test_serve_web.py" = ["E501"] }  # the board story's locked acceptance tests carry long docstrings
 
 [tool.mypy]
 python_version = "3.12"

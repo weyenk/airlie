@@ -83,7 +83,8 @@ def test_board_js_sets_the_column_count_from_statuses(tmp_path: Path) -> None:
 
 
 def test_app_css_uses_the_column_count_not_a_hardcoded_five(tmp_path: Path) -> None:
-    """AC6: app.css drives .columns from var(--board-columns) in the base and 1023px rules, with no repeat(5,)."""
+    """AC6: app.css drives .columns from var(--board-columns) in the base and 1023px rules, with no
+    repeat(5,)."""
     css = _board_client(tmp_path).get("/app/app.css").text
     assert "var(--board-columns)" in css
     assert css.count("var(--board-columns)") >= 2  # base rule and the max-width: 1023px rule
@@ -91,7 +92,8 @@ def test_app_css_uses_the_column_count_not_a_hardcoded_five(tmp_path: Path) -> N
 
 
 def test_board_columns_are_capped_and_the_grid_can_shrink(tmp_path: Path) -> None:
-    """AC1/AC2: each column is capped at 360px, and .column/.item carry min-width: 0 so the grid can shrink."""
+    """AC1/AC2: each column is capped at 360px, and .column/.item carry min-width: 0 so the grid can
+    shrink."""
     css = _board_client(tmp_path).get("/app/app.css").text
     assert "minmax(180px, 360px)" in css  # the new cap on the base .columns rule
     assert "min-width: 0" in _rule(css, ".column")
@@ -99,7 +101,8 @@ def test_board_columns_are_capped_and_the_grid_can_shrink(tmp_path: Path) -> Non
 
 
 def test_board_card_label_chips_wrap_inside_their_column(tmp_path: Path) -> None:
-    """AC5: a card's label chip wraps (the global .chip is white-space: nowrap, so the scoped rule must override)."""
+    """AC5: a card's label chip wraps (the global .chip is white-space: nowrap, so the scoped rule must
+    override)."""
     css = _board_client(tmp_path).get("/app/app.css").text
     body = _rule(css, ".item .chip")
     assert "white-space: normal" in body
