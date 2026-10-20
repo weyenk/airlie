@@ -102,3 +102,76 @@ def test_board_columns_element_carries_board_columns_derived_from_statuses(tmp_p
     assert "STATUSES.length" in value.group(1), (
         f"--board-columns value {value.group(1)!r} is not derived from STATUSES.length"
     )
+
+
+def _served_app_css(tmp_path: Path) -> str:
+    """The app.css a browser receives from the running web app (what task serve hands out)."""
+    client = TestClient(create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream())))
+    css = client.get("/app/app.css")
+    assert css.status_code == 200
+    return css.text
+
+
+def _rule_block(text: str, selector: str) -> str:
+    """The balanced `{...}` block of the first rule whose selector is exactly `selector`.
+
+    The boundary guards keep `.column` from matching the plural `.columns` (and vice versa), so a
+    selector is only matched when it stands alone, not as a prefix of a longer class name."""
+    pattern = r"(?<![\w-])" + re.escape(selector) + r"\b\s*\{"
+    m = re.search(pattern, text)
+    assert m is not None, f"no rule for {selector!r} found"
+    return _balanced(text, m.end() - 1)
+
+
+def test_base_columns_rule_uses_board_columns_var(tmp_path: Path) -> None:
+    """AC1: the base .columns rule sets grid-template-columns to repeat(var(--board-columns),
+    minmax(180px, 360px)) — the literal 5 is gone and the 1fr upper bound is replaced by a 360px cap."""
+    css = _served_app_css(tmp_path)
+    block = _rule_block(css, ".columns")
+    assert "repeat(var(--board-columns), minmax(180px, 360px))" in block, (
+        f"base .columns must set grid-template-columns to "
+        f"repeat(var(--board-columns), minmax(180px, 360px)); got:\n{block}"
+    )
+    # The literal 5 is gone from this rule (proven here, in the same test that asserts the new string).
+    assert "repeat(5" not in block, f"base .columns still uses a literal 5 in its grid template:\n{block}"
+
+
+def test_media_columns_rule_uses_board_columns_var_and_keeps_snap(tmp_path: Path) -> None:
+    """AC2: the @media (max-width: 1023px) .columns rule sets repeat(var(--board-columns),
+    minmax(220px, 360px)) — the literal 5 is gone — and keeps scroll-snap-type: x mandatory with
+    .column scroll-snap-align: start, so the 375px board still snaps to column starts."""
+    css = _served_app_css(tmp_path)
+    media = re.search(r"@media\s*\(max-width:\s*1023px\)\s*\{", css)
+    assert media is not None, "the @media (max-width: 1023px) block is missing from app.css"
+    media_block = _balanced(css, media.end() - 1)
+    columns = _rule_block(media_block, ".columns")
+    assert "repeat(var(--board-columns), minmax(220px, 360px))" in columns, (
+        f"media .columns must set grid-template-columns to "
+        f"repeat(var(--board-columns), minmax(220px, 360px)); got:\n{columns}"
+    )
+    assert "repeat(5" not in columns, (
+        f"media .columns still uses a literal 5 in its grid template:\n{columns}"
+    )
+    # The snap behaviour must survive the change (regression guard for the 375px sideways scroll).
+    assert "scroll-snap-type: x mandatory" in columns, (
+        f"media .columns must keep scroll-snap-type: x mandatory; got:\n{columns}"
+    )
+    column = _rule_block(media_block, ".column")
+    assert "scroll-snap-align: start" in column, (
+        f"media .column must keep scroll-snap-align: start; got:\n{column}"
+    )
+
+
+def test_columns_and_column_declare_min_width_zero(tmp_path: Path) -> None:
+    """AC5: .columns and its grid items (.column) declare min-width: 0, so card text and nowrap
+    labels such as repo:weyenk/airlie wrap or clip inside the column instead of widening it."""
+    css = _served_app_css(tmp_path)
+    columns = _rule_block(css, ".columns")
+    assert "min-width: 0" in columns, (
+        f".columns must declare min-width: 0 so it can shrink inside the flex row; got:\n{columns}"
+    )
+    column = _rule_block(css, ".column")
+    assert "min-width: 0" in column, (
+        f".column must declare min-width: 0 so nowrap card text wraps/clips instead of widening "
+        f"the grid item; got:\n{column}"
+    )

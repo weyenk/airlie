@@ -961,7 +961,7 @@ a.jobrow:hover strong {
   flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  grid-template-columns: repeat(var(--board-columns), minmax(180px, 360px));
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 8px;
@@ -975,6 +975,7 @@ a.jobrow:hover strong {
   flex-direction: column;
   gap: 10px;
   min-height: 160px;
+  min-width: 0;
 }
 .column-head {
   padding-bottom: 6px;
@@ -1058,7 +1059,7 @@ a.jobrow:hover strong {
 
 @media (max-width: 1023px) {
   .columns {
-    grid-template-columns: repeat(5, minmax(220px, 1fr));
+    grid-template-columns: repeat(var(--board-columns), minmax(220px, 360px));
     scroll-snap-type: x mandatory;
   }
   .column {
