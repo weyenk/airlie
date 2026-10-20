@@ -127,8 +127,8 @@ def errors(page: Page) -> list[str]:
     return seen
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "check"
+def _slug(text: str, limit: int = 60) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:limit] or "check"
 
 
 @dataclass
@@ -197,6 +197,7 @@ class _Checked:
 
 @pytest.fixture
 def evidence(page: Page, request: pytest.FixtureRequest) -> Iterator[Evidence]:
-    found = Evidence(page, EVIDENCE / _slug(request.node.nodeid.split("::", 1)[-1]))
+    # the whole test id: cut short, the cases of one parametrized test would share a folder
+    found = Evidence(page, EVIDENCE / _slug(request.node.nodeid.split("::", 1)[-1], limit=200))
     yield found
     found.write_index(request.node.nodeid)
