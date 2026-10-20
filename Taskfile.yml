@@ -326,9 +326,15 @@ tasks:
       - '{{.RUN}} python scripts/run_layer.py integration {{.CLI_ARGS}}'
 
   test:e2e:
-    desc: "Stage 4, behavioural: end-to-end tests (tests/e2e)"
+    desc: "Stage 4, behavioural: the web app in Chromium (tests/e2e) in the e2e image (ops/e2e/Containerfile), under Apple's container here and Docker in GitHub (E2E_ENGINE=docker); a screenshot of every check lands in test-results/e2e/evidence/ (task test:e2e -- -k board)"
+    vars:
+      ENGINE: '{{.E2E_ENGINE | default "container"}}'
     cmds:
-      - '{{.RUN}} python scripts/run_layer.py e2e {{.CLI_ARGS}}'
+      - '{{if eq .ENGINE "container"}}container system start --disable-kernel-install > /dev/null{{else}}true{{end}}'
+      - rm -rf test-results && mkdir -p test-results/e2e
+      # the build's log, not -q: container 1.5.0's quiet build can hang with no output
+      - '{{.ENGINE}} build --progress plain -t airlie-e2e -f ops/e2e/Containerfile . > test-results/build.log 2>&1 || { tail -40 test-results/build.log; exit 1; }'
+      - '{{.ENGINE}} run --rm -v "{{.ROOT_DIR}}/test-results/e2e:/src/test-results" airlie-e2e {{.CLI_ARGS}}'
 
   test:journey:
     desc: "Stage 4, behavioural: user-journey tests (tests/journey)"

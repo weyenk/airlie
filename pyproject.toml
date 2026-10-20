@@ -8,8 +8,8 @@ license = { text = "PolyForm-Noncommercial-1.0.0" }
 dependencies = [
     # Spec 01 §3 dependency list, floors raised to current releases (2026-10-12).
     "mlx>=0.32.2; sys_platform == 'darwin'",
-    "mlx-lm==0.32.0",
-    "vllm-mlx==0.5.0",
+    "mlx-lm==0.32.0; sys_platform == 'darwin'",
+    "vllm-mlx==0.5.0; sys_platform == 'darwin'",
     "torch>=2.8", # used solely for LTS controller RL training (spec 03)
     "transformers>=5.7",
     "peft>=0.14", # LoRA adapters for the admission controller
@@ -44,6 +44,7 @@ dev = [
     "types-PyYAML",
     "mutmut>=3.8.0",
     "pytest-xdist>=3.8.0",
+    "pytest-playwright>=0.10.0",
 ]
 
 [build-system]
@@ -58,8 +59,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "live: needs a running engine on the Mac (run with `task test:live`)",
+    "e2e: drives the web app in Chromium, in the e2e container (run with `task test:e2e`)",
 ]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not e2e'"
 
 [tool.ruff]
 extend-exclude = ["docs"]   # plan/spec markdown carries illustrative code blocks ruff must not format

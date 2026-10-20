@@ -10,3 +10,4 @@ airlie.local.yaml
 .DS_Store
 .env
 mutants/
+test-results/

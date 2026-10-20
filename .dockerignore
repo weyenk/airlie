@@ -1,0 +1,14 @@
+# What the e2e image (ops/e2e/Containerfile) is built without: local environments, caches, results, secrets.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+mutants
+runs
+test-results
+.env
+airlie.local.yaml
+.claude
