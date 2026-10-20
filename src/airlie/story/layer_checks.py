@@ -47,6 +47,9 @@ NO_BYTECODE = "export PYTHONDONTWRITEBYTECODE=1; "
 """Before the step: the run writes no __pycache__ into the worktree, where it would be the tester's work
 (committed, and locked to the coder) in a repository that does not ignore it."""
 _OUTCOME = re.compile(r"^(PASSED|FAILED|ERROR) (\S+)", re.MULTILINE)
+_SUMMARY = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
+"""The header of pytest's -rA summary. The suite's is the last one: a test that runs pytest on a fixture
+repository prints that run's own, which -rA shows above it in the test's captured output."""
 _EXIT = re.compile(r"\[exit (\d+)\]\s*$")
 _PARAMS = re.compile(r"\[.*\]$")
 _RAN = frozenset({0, 1})
@@ -177,9 +180,9 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
 def _outcomes(output: str) -> dict[str, str]:
     """Each test id pytest's -rA summary names, with PASSED, FAILED or ERROR (a parametrized test's cases are
     one id: any case that is not PASSED makes it so). A module that cannot be collected is an ERROR on the
-    module's path."""
+    module's path. Only the suite's summary is read, never a test's captured output (_SUMMARY)."""
     out: dict[str, str] = {}
-    for outcome, node in _OUTCOME.findall(output):
+    for outcome, node in _OUTCOME.findall(_SUMMARY.split(output)[-1]):
         key = _PARAMS.sub("", node)
         if out.get(key) in (None, "PASSED"):
             out[key] = outcome

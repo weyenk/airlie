@@ -192,6 +192,20 @@ async def test_an_existing_test_the_new_tests_break_is_caught(tmp_path: Path) ->
     assert "conftest.py" in found[0].why
 
 
+async def test_outcome_lines_in_a_passing_tests_captured_output_are_not_its_suites(tmp_path: Path) -> None:
+    """A test that runs pytest on a fixture repository prints that run's summary, which -rA shows under the
+    passing test's captured output: those lines are not the suite's outcomes (AIR-16 blocked on one)."""
+    inner = (
+        "=========================== short test summary info ============================\n"
+        "FAILED tests/integration/test_bad.py::test_bad - assert False\n"
+        "1 failed, 1 passed in 0.01s\n"
+    )
+    old = OLD_TESTS + f"\n\ndef test_runs_a_fixture_suite():\n    print({inner!r})\n    assert True\n"
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": old})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
+    assert await findings(root, base) == []
+
+
 async def test_a_changed_test_is_held_to_the_same_red(tmp_path: Path) -> None:
     root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
     commit(root, "tests", {"tests/test_calc.py": OLD_TESTS + "    assert add('1', '2') == 3\n"})
