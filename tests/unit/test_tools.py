@@ -376,3 +376,32 @@ async def test_the_sandbox_note_is_for_a_confined_command_that_failed_on_a_refus
     assert confine_mod.NOTE in (await run_cmd(f"{REFUSED_SAYS}; exit 1", confined, shell=True)).output
     ok = await run_cmd(REFUSED_SAYS, confined, shell=True)  # it says so, but it did not fail
     assert ok.ok and confine_mod.NOTE not in ok.output
+
+
+@pytest.mark.parametrize("sandbox", [False, pytest.param(True, marks=needs_sandbox)])
+async def test_a_cancel_once_the_command_has_started_kills_it_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
+) -> None:
+    """The other half of a cancel: it lands while the command runs, not while it starts. Timing alone does
+    not say which half a test hits (PR 105's CI: a slow runner's cancels all landed mid-start), so the test
+    waits for the start to have returned."""
+    from airlie.tools import shell as shell_mod
+
+    up = asyncio.Event()
+    real = shell_mod.started
+
+    async def noted(starting):  # type: ignore[no-untyped-def]
+        proc = await real(starting)
+        up.set()
+        return proc
+
+    monkeypatch.setattr(shell_mod, "started", noted)
+    sleeper = unique_sleep()
+    c = replace(ctx(tmp_path, timeout=60), sandbox=sandbox)
+    task = asyncio.create_task(run_cmd(f"{sleeper} & wait", c, shell=True))
+    await asyncio.wait_for(up.wait(), 20)
+    assert await eventually(lambda: running(f"^{sleeper}"))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 20)
+    assert await eventually(lambda: not running(sleeper))
