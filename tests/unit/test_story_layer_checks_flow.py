@@ -15,7 +15,7 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.story.board import text_card
 from airlie.story.state import StoryState
 from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import STORY, TESTER_ROLES, fenced, kinds, pipeline
+from tests.unit.test_story_pipeline import STORY, TESTER_ROLES, agents_md, fenced, kinds, pipeline
 from tests.unit.test_studio_orchestrator import APPROVE, DONE
 
 PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q"
@@ -54,10 +54,14 @@ NO_ASSERT = write("tests/test_calc.py", "from calc import mul\n\n\ndef test_mul(
 LISTED = FakeReply(text="wrote tests/test_calc.py::test_mul: asserts mul(2, 3) == 6")
 
 
-def calc_repo(tmp_path: Path) -> Path:
+def calc_repo(tmp_path: Path, gate: tuple[str, ...] = ()) -> Path:
+    """The calc repository; with `gate`, an AGENTS.md whose Test gate runs it and a strict ruff.toml."""
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
     (repo / "pytest.ini").write_text("[pytest]\n")
+    if gate:
+        (repo / "AGENTS.md").write_text(agents_md(*gate))
+        (repo / "ruff.toml").write_text('line-length = 60\n\n[lint]\nselect = ["E", "F", "I"]\n')
     (repo / "calc.py").write_text(CALC)
     (repo / "tests" / "test_base.py").write_text(
         "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
@@ -73,18 +77,21 @@ async def run(
     coder: list[FakeReply],
     tester: list[FakeReply] | None = None,
     test_cmd: str = PYTEST,
+    gate: tuple[str, ...] = (),
 ) -> tuple[StoryState, FakeEngine]:
-    """The one-layer story, with a tester when `tester` is given (its replies), else the coder alone."""
+    """The one-layer story, with a tester when `tester` is given (its replies), else the coder alone. With
+    `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`."""
     scripts = {"product": [STORY], "architect": [LAYERS], "coder": coder, "reviewer": [APPROVE, APPROVE]}
     if tester is not None:
         scripts["tester"] = tester
     engine = FakeEngine(scripts)
-    repo = calc_repo(tmp_path)
+    repo = calc_repo(tmp_path, gate)
+    cmd = None if gate else test_cmd
     if tester is None:
-        story = pipeline(tmp_path, repo, engine, test_cmd=test_cmd)
+        story = pipeline(tmp_path, repo, engine, test_cmd=cmd)
     else:
         story = pipeline(
-            tmp_path, repo, engine, test_cmd=test_cmd, story={"tester_role": "tester"}, roles=TESTER_ROLES
+            tmp_path, repo, engine, test_cmd=cmd, story={"tester_role": "tester"}, roles=TESTER_ROLES
         )
     st = await story.run(text_card("multiply"))
     return st, engine
@@ -96,6 +103,19 @@ def prompts(engine: FakeEngine, role: str) -> list[str]:
 
 def built_file(tmp_path: Path, st: StoryState, path: str) -> str:
     return git(tmp_path / "repo", "show", f"{st.built['01']['branch']}:{path}")
+
+
+RUFF = f"{shlex.quote(sys.executable)} -m ruff"
+RUFF_GATE = (f"{RUFF} check .", f"{RUFF} format --check .", PYTEST)
+UNSORTED = write(
+    "tests/test_calc.py",
+    "from calc import mul\nimport os\n\n\ndef test_mul():\n    assert mul(2,3)==6 and os.sep\n",
+)
+TOO_LONG = write(
+    "tests/test_calc.py",
+    "from calc import mul\n\n\ndef test_mul():\n    # " + "words " * 12 + "end\n    assert mul(2, 3) == 6\n",
+)
+"""A comment too long for the line length: ruff format does not wrap comments, so only the tester can."""
 
 
 # ---- with a tester: red before the code ----
@@ -198,3 +218,37 @@ async def test_a_gate_without_pytest_skips_the_checks_and_still_locks_the_tester
     assert skipped["layer"] == "01" and "pytest" in skipped["reason"]
     studio_events = tmp_path / "state" / "runs" / st.built["01"]["run_id"] / "events.jsonl"
     assert [e["paths"] for e in kinds(studio_events, "locked")] == [["tests/test_calc.py"]]
+
+
+# ---- with a tester and ruff in the gate: lint before the tester is done ----
+
+
+async def test_what_ruff_can_fix_in_the_testers_tests_is_fixed_before_the_coder_starts(
+    tmp_path: Path,
+) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE], tester=[UNSORTED, LISTED], gate=RUFF_GATE)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    [fixed] = kinds(st.path / "events.jsonl", "tester_lint_fixed")
+    assert (fixed["attempt"], fixed["files"]) == (1, ["tests/test_calc.py"])
+    built = built_file(tmp_path, st, "tests/test_calc.py")
+    assert built.startswith("import os\n\nfrom calc import mul\n") and "mul(2, 3) == 6" in built
+    assert kinds(st.path / "events.jsonl", "test_checks_retry") == []  # nothing was left to fix by hand
+
+
+async def test_what_ruff_cannot_fix_goes_back_to_the_tester_with_the_rule(tmp_path: Path) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE], tester=[TOO_LONG, LISTED, RED, LISTED], gate=RUFF_GATE)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    [found] = kinds(st.path / "events.jsonl", "lint_fails")
+    assert (found["attempt"], found["test"]) == (1, RUFF_GATE[0])
+    [retry] = [p for p in prompts(engine, "tester") if "fix these by hand" in p]
+    assert "E501" in retry and "tests/test_calc.py" in retry
+
+
+async def test_a_lint_error_still_there_after_the_retry_stops_the_layer_before_the_coder(
+    tmp_path: Path,
+) -> None:
+    st, engine = await run(
+        tmp_path, [FEATURE, DONE], tester=[TOO_LONG, LISTED, TOO_LONG, LISTED], gate=RUFF_GATE
+    )
+    assert st.blocked is not None and "fails on the tester's files" in st.blocked
+    assert prompts(engine, "coder") == []

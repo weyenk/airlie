@@ -1,0 +1,106 @@
+"""The gate's linters on the tester's files, before the tester is done: each ruff step of the gate is run
+first as its fixer (`ruff check --fix`, `ruff format`) and then as itself, on the Python files the layer
+changed and nothing else. What the fixers cannot fix is a `lint_fails` finding, which goes back to the tester
+with the pre-code check's: the coder cannot edit the tester's files, so a lint error left in them would fail
+the layer's gate with no one able to fix it (AIR-16 layer 01 loosened pyproject.toml to get past one).
+
+Only a gate step that is a plain ruff command is read (no ;, &&, | or substitution): its own spelling of ruff
+(`uv run ruff`, a path) is kept, its own targets are not. Type checkers are not run here: before the code,
+the tester's imports of the names the layer adds are meant to fail them."""
+
+from __future__ import annotations
+
+import re
+import shlex
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from airlie.story.layer_checks import Finding
+from airlie.teams.worktree import changed_files, differs_from
+from airlie.tools.protocol import ToolContext
+from airlie.tools.shell import run_cmd
+
+LINT_FAILS = "the gate's lint step fails on the tester's files after airlie ran its fixer: fix these by hand"
+_RUFF = re.compile(r"^(?P<ruff>[^;&|<>`$()]*?\bruff)\s+(?P<sub>check|format)\b(?P<rest>[^;&|<>`$()]*)$")
+_PYTHON = (".py", ".pyi")
+_OUTPUT_CHARS = 8_000
+"""How much of a lint step's output a finding keeps: ruff names each error with its line."""
+
+
+@dataclass(frozen=True)
+class RuffStep:
+    """A gate step that runs ruff: the command as the gate spells it, and the ruff before its subcommand."""
+
+    step: str
+    ruff: str
+    sub: str
+
+    def fixer(self, files: str) -> str:
+        fix = "check --fix" if self.sub == "check" else "format"
+        return f"{self.ruff} {fix} --no-cache --force-exclude -- {files}"
+
+    def check(self, files: str) -> str:
+        sub = "check" if self.sub == "check" else "format --check"
+        return f"{self.ruff} {sub} --no-cache --force-exclude -- {files}"
+
+
+def ruff_steps(commands: Sequence[str]) -> tuple[RuffStep, ...]:
+    """The gate's ruff steps: `ruff check` (not one that already fixes) and `ruff format --check`."""
+    steps: list[RuffStep] = []
+    for c in commands:
+        m = _RUFF.match(c.strip())
+        if m is None:
+            continue
+        rest = m["rest"].split()
+        if (m["sub"] == "check" and "--fix" not in rest) or (m["sub"] == "format" and "--check" in rest):
+            steps.append(RuffStep(c.strip(), m["ruff"].strip(), m["sub"]))
+    return tuple(steps)
+
+
+class LayerLint:
+    """The gate's ruff steps, run on the files a worktree's HEAD changed since `base`."""
+
+    def __init__(
+        self, steps: Sequence[RuffStep], *, timeout_s: float, confinement: dict[str, Any] | None = None
+    ) -> None:
+        self.steps = tuple(steps)
+        self.timeout_s = timeout_s
+        self.confinement = confinement or {}
+
+    def _files(self, worktree: Path, base: str) -> list[str]:
+        return [p for p in changed_files(worktree, base) if p.endswith(_PYTHON) and (worktree / p).is_file()]
+
+    async def fix(self, worktree: Path, base: str) -> list[str]:
+        """Run each step's fixer on the changed files; return the files it changed (left uncommitted)."""
+        files = self._files(worktree, base)
+        if not files:
+            return []
+        quoted = " ".join(shlex.quote(f) for f in files)
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
+        for s in self.steps:
+            await run_cmd(s.fixer(quoted), ctx, shell=True)  # what it could not fix, check() reports
+        return differs_from(worktree, "HEAD", files)
+
+    async def check(self, worktree: Path, base: str) -> list[Finding]:
+        """A `lint_fails` finding for each step that still fails on the changed files, with its output."""
+        files = self._files(worktree, base)
+        if not files:
+            return []
+        quoted = " ".join(shlex.quote(f) for f in files)
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
+        found: list[Finding] = []
+        for s in self.steps:
+            result = await run_cmd(s.check(quoted), ctx, shell=True)
+            if not result.ok:
+                found.append(Finding("lint_fails", s.step, f"{LINT_FAILS}\n{result.output.strip()}", ""))
+        return found
+
+
+def lint_for(
+    commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
+) -> LayerLint | None:
+    """The tester's lint for a gate of `commands`, or None when the gate runs no ruff."""
+    steps = ruff_steps(commands)
+    return LayerLint(steps, timeout_s=timeout_s, confinement=confinement) if steps else None
