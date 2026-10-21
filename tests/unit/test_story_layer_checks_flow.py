@@ -252,3 +252,72 @@ async def test_a_lint_error_still_there_after_the_retry_stops_the_layer_before_t
     )
     assert st.blocked is not None and "fails on the tester's files" in st.blocked
     assert prompts(engine, "coder") == []
+
+
+# ---- a wrong acceptance test goes back to the tester (AIR-9 layer 02, 2026-10-21) ----
+
+WRONG = write(
+    "tests/test_calc.py",
+    "from calc import mul\n\n\ndef test_mul():\n    [r] = [mul(2, 3), mul(1, 1)]\n    assert r == 6\n",
+)
+"""Red before the code (mul is not there) and red after it, for a mistake of its own: it unpacks one value
+from two, as AIR-9's unpacked one comment from a card with two."""
+MENDED = FakeReply(text="test_mul unpacked two values into one: it now asserts mul(2, 3) == 6 directly")
+STILL_RIGHT = FakeReply(text="the test is right; the code is wrong")
+
+
+async def test_a_test_wrong_in_itself_is_mended_by_the_tester_and_the_layer_is_built(tmp_path: Path) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE], tester=[WRONG, LISTED, RED, MENDED])
+    assert st.blocked is None and "01" in st.built, st.blocked
+    assert built_file(tmp_path, st, "tests/test_calc.py") == TEST_MUL.rstrip("\n")
+    events = st.path / "events.jsonl"
+    assert [e["tests"] for e in kinds(events, "locked_tests_fail")] == [["tests/test_calc.py::test_mul"]]
+    assert [e["files"] for e in kinds(events, "tests_mended")] == [["tests/test_calc.py"]]
+    [asked] = [p for p in prompts(engine, "tester") if "fails only in your tests" in p]
+    assert (
+        "tests/test_calc.py::test_mul" in asked and DONE.text in asked
+    )  # the failure, and the coder's account
+    assert [p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p] == []
+    # locked again as mended: the gate's restore keeps the mend
+    [_, relocked] = kinds(tmp_path / "state" / "runs" / st.built["01"]["run_id"] / "events.jsonl", "locked")
+    assert relocked["paths"] == ["tests/test_calc.py"]
+
+
+async def test_a_mend_that_passes_before_the_code_is_undone_and_the_coder_is_sent_the_gate(
+    tmp_path: Path,
+) -> None:
+    weakened = write("tests/test_calc.py", "def test_mul():\n    assert True\n")
+    st, engine = await run(tmp_path, [FEATURE, DONE, DONE], tester=[WRONG, LISTED, weakened, MENDED])
+    assert st.blocked is not None and "01" not in st.built
+    events = st.path / "events.jsonl"
+    [undone] = kinds(events, "tests_mend_undone")
+    assert undone["why"] == "tests/test_calc.py::test_mul"
+    assert [e["test"] for e in kinds(events, "passes_before_code")] == ["tests/test_calc.py::test_mul"]
+    assert kinds(events, "tests_mended") == []
+    assert len([p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p]) == 1
+
+
+async def test_a_mend_that_changes_the_code_is_undone(tmp_path: Path) -> None:
+    st, engine = await run(
+        tmp_path, [FEATURE, DONE, DONE], tester=[WRONG, LISTED, RED, write("calc.py", CALC), MENDED]
+    )
+    assert st.blocked is not None and "01" not in st.built
+    [undone] = kinds(st.path / "events.jsonl", "tests_mend_undone")
+    assert undone["why"] == "it changed calc.py"
+
+
+async def test_a_tester_that_stands_by_its_tests_changes_nothing_and_the_coder_is_sent_the_gate(
+    tmp_path: Path,
+) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE, DONE], tester=[WRONG, LISTED, STILL_RIGHT])
+    assert st.blocked is not None
+    events = st.path / "events.jsonl"
+    assert len(kinds(events, "tests_not_mended")) == 1 and kinds(events, "tests_mended") == []
+    assert len([p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p]) == 1
+
+
+async def test_a_gate_failing_outside_the_testers_files_does_not_ask_the_tester(tmp_path: Path) -> None:
+    st, engine = await run(tmp_path, [BROKEN, DONE, FIXED, DONE], tester=[RED, LISTED])
+    assert st.blocked is None and "01" in st.built
+    assert kinds(st.path / "events.jsonl", "locked_tests_fail") == []
+    assert [p for p in prompts(engine, "tester") if "fails only in your tests" in p] == []

@@ -34,7 +34,7 @@ from airlie.story.briefs import (
 )
 from airlie.story.context import repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
-from airlie.story.layer_checks import Finding, checks_for, feedback, static_findings
+from airlie.story.layer_checks import Finding, amend_feedback, checks_for, feedback, in_files, static_findings
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -57,7 +57,9 @@ from airlie.teams.worktree import (
     commit_wip,
     delete_branch,
     diff_commits,
+    put_back,
     remove_worktree,
+    reset_to_head,
     rev_parse,
     squash_since,
 )
@@ -673,6 +675,7 @@ class StoryPipeline:
             scope_tests=True,
             checkpoints={"tests": before_code} if tester else None,
             gate_follow_up="build",
+            amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn) if tester else None,
         )
         commit_wip(wt, f"studio: {branch} (final)")
         cut = _cut_off(orch)
@@ -738,6 +741,60 @@ class StoryPipeline:
                 st.emit("test_checks_retry", layer=nn, findings=len(found))
                 await orch.follow_up("tests", feedback(found))
         return found
+
+    async def _amend_tests(
+        self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
+    ) -> bool:
+        """When the final gate fails after the build and every test that fails is one of the tester's locked
+        files, the tester is sent back once to mend its own tests (AMEND, with what the coder and the reviewer
+        said): the coder cannot change them (AIR-9 layer 02, 2026-10-21: a test unpacked one comment from a
+        card with two, the code was right, and the layer blocked). A mend is kept only when it changed nothing
+        but those files and every one of the tester's tests still holds before the code: the pre-code check,
+        run with the coder's files put back as they were when the tests were locked. Kept, the files are
+        locked again as they now are; else they are put back. Returns whether a mend was kept."""
+        confinement = self.cfg.tools.confinement()
+        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
+        locked = orch.locked
+        if checks is None or not locked or "tests" not in orch.runs:
+            return False
+        failing = await checks.failing(wt)
+        if not failing or not all(in_files(t, locked) for t in failing):
+            return False  # the suite did not run, it passes, or something besides the tests is red
+        st.emit("locked_tests_fail", layer=nn, tests=failing)
+        build = orch.runs.get("build")
+        account = build.result.final_text if build is not None and build.result is not None else ""
+        review = [f"{f.file}: {f.claim}" for f in build.review.blocking] if build and build.review else []
+        before = commit_wip(wt, f"studio: layer {nn} (before the tests' mend)")
+        await orch.follow_up("tests", amend_feedback(failing, account, review))
+        commit_wip(wt, f"studio: layer {nn} (the tests' mend)")
+        lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
+        if lint is not None and await lint.fix(wt, before):
+            commit_wip(wt, f"studio: layer {nn} (lint fixes, the tests' mend)")
+        changed = changed_files(wt, before)
+        if not changed:
+            st.emit("tests_not_mended", layer=nn, tests=failing)
+            return False
+        outside = [p for p in changed if p not in locked]
+        found: list[Finding] = []
+        if not outside:
+            found = await lint.check(wt, before) if lint is not None else []
+            # the coder's files as they were when the tests were locked: the tests alone, as before the code
+            code = [p for p in changed_files(wt, orch.lock_commit) if p not in locked]
+            put_back(wt, orch.lock_commit, code)
+            try:
+                found += await checks.run(wt, base_sha)
+            finally:
+                reset_to_head(wt)
+        if outside or found:
+            self._emit_findings(st, found, nn, 1, orch.run_dir.run_id)
+            why = f"it changed {', '.join(outside)}" if outside else "; ".join(f.test for f in found)
+            st.emit("tests_mend_undone", layer=nn, why=why)
+            put_back(wt, before, changed)
+            commit_wip(wt, f"studio: layer {nn} (the tests' mend undone)")
+            return False
+        orch.lock(sorted(locked), orch.lock_owner)
+        st.emit("tests_mended", layer=nn, files=changed)
+        return True
 
     async def _check_static(
         self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str

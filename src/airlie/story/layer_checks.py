@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -214,13 +214,10 @@ class PytestChecks:
         findings += [
             Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source) for t in tests if not t.asserts
         ]
-        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
-        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
-        code = _EXIT.search(result.output)
-        if not result.ok and (code is None or int(code.group(1)) not in _RAN):
-            why = f"the suite did not run its tests: {result.output[-_TAIL_CHARS:]}"
+        outcomes, output = await self._suite(worktree)
+        if outcomes is None:
+            why = f"the suite did not run its tests: {output[-_TAIL_CHARS:]}"
             return [*findings, Finding("suite_did_not_run", self.step, why, "")]
-        outcomes = _outcomes(result.output)
         modules = {t.path for t in tests} | {f.test for f in findings if f.kind == "unparseable_test"}
         for t in tests:
             if any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
@@ -229,6 +226,29 @@ class PytestChecks:
             if o != "PASSED" and not any(_same(m, k.split("::")[0]) for m in modules):
                 findings.append(Finding("existing_test_fails", k, EXISTING_FAILS, ""))
         return findings
+
+    async def failing(self, worktree: Path) -> list[str] | None:
+        """The ids of the tests that do not pass on the worktree as it is (a module that cannot be collected
+        is its path), with the whole outcome read from -rA, not from a capped gate output; None when the
+        suite did not run its tests."""
+        outcomes, _ = await self._suite(worktree)
+        return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
+
+    async def _suite(self, worktree: Path) -> tuple[dict[str, str] | None, str]:
+        """The gate's pytest step run on the worktree with PYTEST_FLAGS: each test's outcome (None when the
+        suite did not run its tests), and the output."""
+        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
+        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
+        code = _EXIT.search(result.output)
+        if not result.ok and (code is None or int(code.group(1)) not in _RAN):
+            return None, result.output
+        return _outcomes(result.output), result.output
+
+
+def in_files(test_id: str, paths: Collection[str]) -> bool:
+    """Whether pytest's `test_id` (a node id, or a module's path) is a test in one of `paths` (from the
+    repository's root)."""
+    return any(_same(p, test_id.split("::")[0]) for p in paths)
 
 
 def static_findings(worktree: Path, base: str) -> list[Finding]:
@@ -283,3 +303,29 @@ def feedback(findings: Sequence[Finding], *, before_code: bool = True) -> str:
             "Run run_tests until your tests pass, then stop."
         )
     return "\n".join(["airlie checked the tests, and these need fixing:", *listed, what])
+
+
+AMEND = (
+    "The coder has built the layer, and the whole gate now fails only in your tests, which the coder cannot "
+    "change. Check each failing test against the brief. If it is wrong in itself (how it sets up, unpacks or "
+    "reads its data, a name or a signature the brief does not fix), fix that mistake in the test and nothing "
+    "else: keep every check of what the layer must do, change no file but your tests, and do not touch the "
+    "code. airlie checks again that each of your tests still fails without the layer's code, and undoes a "
+    "change that does not. If your tests are right and the code is wrong, change nothing and say why. Run "
+    "run_tests, then stop."
+)
+"""What the tester is told when the gate fails only in its locked tests (AIR-9 layer 02, 2026-10-21: one of
+them unpacked one comment from a card that had two, and only the tester could change it)."""
+_ACCOUNT_CHARS = 3_000
+"""How much of the coder's closing text the tester is shown."""
+
+
+def amend_feedback(failing: Sequence[str], account: str, review: Sequence[str] = ()) -> str:
+    """What the tester is told (AMEND): the failing tests, what the coder said when it stopped, and the
+    reviewer's blocking findings, if any."""
+    lines = ["Failing:", *(f"- {t}" for t in failing)]
+    if account.strip():
+        lines += ["", "What the coder said when it stopped:", account.strip()[:_ACCOUNT_CHARS]]
+    if review:
+        lines += ["", "The reviewer's blocking findings:", *(f"- {r}" for r in review)]
+    return "\n".join([AMEND, "", *lines])
