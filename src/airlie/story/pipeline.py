@@ -79,6 +79,7 @@ _SHORT = {
     "no_new_test": "(no new test)",
     "suite_did_not_run": "did not run the tests",
     "lint_fails": "fails on the tester's files",
+    "engine_error": "could not reach the engine",
 }
 """A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
 BUILT_DIFF_CHARS = 400_000
@@ -679,6 +680,12 @@ class StoryPipeline:
         )
         commit_wip(wt, f"studio: {branch} (final)")
         cut = _cut_off(orch)
+        if findings and all(f.kind == "engine_error" for f in findings):
+            why = findings[0].why
+            raise StoryBlocked(
+                f"layer {nn} ({layer.title}): the {findings[0].test} could not reach the engine ({why}); "
+                f"start it (`task up`) and run the story again{_kept(wt, branch)}"
+            )
         if findings:
             listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
             whose = "the tester's tests do not hold before the code" if tester else "its tests need fixing"
@@ -724,6 +731,13 @@ class StoryPipeline:
         studio_run = orch.run_dir.run_id
         found: list[Finding] = []
         for attempt in range(1, CHECK_ATTEMPTS + 1):
+            ended = orch.runs["tests"].result if "tests" in orch.runs else None
+            if ended is not None and ended.stop_reason == "engine_error":
+                # the tester never got an answer: nothing of its is there to check, and it is not its to fix
+                # (AIR-9 layer 02, 2026-10-21: an engine that was down read as "no new test", twice)
+                found = [Finding("engine_error", orch.runs["tests"].role, ended.final_text, "")]
+                self._emit_findings(st, found, nn, attempt, studio_run)
+                return found
             commit_wip(wt, f"studio: layer {nn} (pre-code check {attempt})")
             found = []
             if lint is not None:
@@ -733,6 +747,12 @@ class StoryPipeline:
                     st.emit("tester_lint_fixed", layer=nn, attempt=attempt, files=fixed)
                 found = await lint.check(wt, base_sha)
             found += await checks.run(wt, base_sha)
+            if (
+                checks.failing_at_base
+            ):  # red on the base already: not the tester's to fix, but the gate's to see
+                st.emit(
+                    "existing_tests_fail_at_base", layer=nn, attempt=attempt, tests=checks.failing_at_base
+                )
             self._emit_findings(st, found, nn, attempt, studio_run)
             if not found:
                 st.emit("test_checks_passed", layer=nn, attempt=attempt)

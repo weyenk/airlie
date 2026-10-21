@@ -192,6 +192,20 @@ async def test_an_existing_test_the_new_tests_break_is_caught(tmp_path: Path) ->
     assert "conftest.py" in found[0].why
 
 
+async def test_an_existing_test_that_already_fails_on_the_base_is_not_the_new_tests_doing(
+    tmp_path: Path,
+) -> None:
+    """AIR-9 layer 02, 2026-10-21: an existing test that opened the person's own auth database failed in the
+    confined suite on the base as well, and the tester was sent back for it, then the layer blocked on it."""
+    broken = "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 4\n"
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": broken})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
+    checks = PytestChecks(PYTEST, timeout_s=120)
+    assert await checks.run(root, base) == []
+    assert checks.failing_at_base == ["tests/test_calc.py::test_add"]
+    assert git(root, "worktree", "list").count("\n") == 0  # the base's checkout is gone again
+
+
 async def test_outcome_lines_in_a_passing_tests_captured_output_are_not_its_suites(tmp_path: Path) -> None:
     """A test that runs pytest on a fixture repository prints that run's summary, which -rA shows under the
     passing test's captured output: those lines are not the suite's outcomes (AIR-16 blocked on one)."""

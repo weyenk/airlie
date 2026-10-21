@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from airlie.teams.worktree import changed_files, find_file, read_blob
+from airlie.teams.worktree import add_worktree, changed_files, find_file, read_blob, remove_worktree
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import is_test_module, pytest_runner
 from airlie.tools.shell import run_cmd
@@ -30,10 +31,13 @@ Kind = Literal[
     "no_new_test",
     "suite_did_not_run",
     "lint_fails",
+    "engine_error",
 ]
+"""What a finding is about. `engine_error` is the pipeline's, not a check's: the tester's run ended on an
+engine failure, so there is nothing of its to check and a retry would meet the same engine."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
 EXISTING_FAILS = (
-    "it passed before this layer and fails with the new tests in place: a fixture, conftest.py or shared "
+    "it passes on the layer's base and fails with the new tests in place: a fixture, conftest.py or shared "
     "helper the tests changed broke it"
 )
 ASSERTION_FREE = "it has no assert, pytest.raises, pytest.warns or other check, so only a crash can fail it"
@@ -203,6 +207,9 @@ class PytestChecks:
         self.timeout_s = timeout_s
         self.confinement = confinement or {}
         """ToolContext's sandbox and writable for the test runs (tools.confinement); default: confined."""
+        self.failing_at_base: list[str] = []
+        """The existing tests the last `run` found failing that fail on the base as well, so are not a
+        finding: the layer's tests did not break them (AIR-9 layer 02, 2026-10-21)."""
 
     async def run(self, worktree: Path, base: str) -> list[Finding]:
         """The findings on the tests the worktree's HEAD added or changed since `base`, with the suite run on
@@ -222,9 +229,17 @@ class PytestChecks:
         for t in tests:
             if any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
                 findings.append(Finding("passes_before_code", t.id, PASSES_BEFORE_CODE, t.source))
-        for k, o in outcomes.items():
-            if o != "PASSED" and not any(_same(m, k.split("::")[0]) for m in modules):
-                findings.append(Finding("existing_test_fails", k, EXISTING_FAILS, ""))
+        existing = [
+            k
+            for k, o in outcomes.items()
+            if o != "PASSED" and not any(_same(m, k.split("::")[0]) for m in modules)
+        ]
+        self.failing_at_base = await self._failing_at(worktree, base, existing) if existing else []
+        findings += [
+            Finding("existing_test_fails", k, EXISTING_FAILS, "")
+            for k in existing
+            if k not in self.failing_at_base
+        ]
         return findings
 
     async def failing(self, worktree: Path) -> list[str] | None:
@@ -234,11 +249,27 @@ class PytestChecks:
         outcomes, _ = await self._suite(worktree)
         return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
 
-    async def _suite(self, worktree: Path) -> tuple[dict[str, str] | None, str]:
-        """The gate's pytest step run on the worktree with PYTEST_FLAGS: each test's outcome (None when the
-        suite did not run its tests), and the output."""
+    async def _failing_at(self, worktree: Path, base: str, tests: list[str]) -> list[str]:
+        """Which of `tests` (ids from the worktree's suite) fail on `base` too: run alone, confined as the
+        suite is, in a detached checkout of `base` beside the worktree that is removed after. A run that does
+        not run them (a module the base lacks) counts none as failing there, so they stay findings."""
+        tree = worktree.parent / f"{worktree.name}.base"
+        remove_worktree(worktree, tree)  # one a killed run left behind
+        add_worktree(worktree, tree, branch=None, start_point=base)
+        try:
+            outcomes, _ = await self._suite(tree, tests)
+        finally:
+            remove_worktree(worktree, tree)
+        if outcomes is None:
+            return []
+        return [t for t in tests if any(o != "PASSED" and _same(t, k) for k, o in outcomes.items())]
+
+    async def _suite(self, worktree: Path, tests: Sequence[str] = ()) -> tuple[dict[str, str] | None, str]:
+        """The gate's pytest step run on the worktree with PYTEST_FLAGS (on `tests` alone when given): each
+        test's outcome (None when the suite did not run its tests), and the output."""
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
-        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}", ctx, shell=True)
+        only = f" {shlex.join(tests)}" if tests else ""
+        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}{only}", ctx, shell=True)
         code = _EXIT.search(result.output)
         if not result.ok and (code is None or int(code.group(1)) not in _RAN):
             return None, result.output
