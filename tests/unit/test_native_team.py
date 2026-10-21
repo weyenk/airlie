@@ -1286,6 +1286,28 @@ async def test_a_writer_whose_first_reply_is_text_is_told_once_to_act(tmp_path: 
     assert [e["kind"] for e in events.records if e["kind"] == "text_before_action"] == ["text_before_action"]
 
 
+async def test_a_writer_whose_reply_is_empty_is_told_once_to_act(tmp_path: Path) -> None:
+    """AIR-9 layer 02 tester retry, 2026-10-21: sent back to add two missing imports, the tester thought for
+    six steps of reads, then replied with nothing (no text, no call), and the run ended as done with the lint
+    failure still there. An empty reply is no more an answer than prose is."""
+    engine = FakeEngine(
+        {
+            "coder": [
+                FakeReply(reasoning="Let me reconsider the whole design of the test…"),
+                write("w", "a.py"),
+                FakeReply(text="Done: a.py changed."),
+            ]
+        }
+    )
+    team, ctx = make_team(tmp_path, engine)
+    ctx.must_act = True
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 1 and result.final_text == "Done: a.py changed."
+    assert requests_saying(engine, "nothing has been changed") == [2, 3]
+    assert [e["chars"] for e in events.records if e["kind"] == "text_before_action"] == [0]
+
+
 async def test_a_writer_that_answers_with_text_twice_is_done_as_before(tmp_path: Path) -> None:
     engine = FakeEngine(
         {"coder": [FakeReply(text="I would change a.py."), FakeReply(text="Still just words.")]}
