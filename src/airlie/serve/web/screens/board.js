@@ -32,7 +32,7 @@ export function render(root, [key], ctx) {
   let items = [];
   let gone = false;
 
-  const columns = h("div", { class: "columns" });
+  const columns = h("div", { class: "columns", style: { "--board-columns": String(STATUSES.length) } });
   const filter = h("div", { role: "group", "aria-label": "Level", class: "seg-group" });
   const panel = h("aside", { class: "panel", hidden: true });
   const error = h("div", { class: "error" });
