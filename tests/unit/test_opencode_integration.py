@@ -233,11 +233,15 @@ def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None
     assert permission["airlie_run"] == permission["airlie_story"] == "ask"
 
 
-def test_the_mcp_server_calls_only_routes_serve_has() -> None:
+def test_the_mcp_server_calls_only_routes_serve_has(tmp_path: Path) -> None:
     src = (ROOT / "src/airlie/serve/mcp_server.py").read_text()
     used = set(re.findall(r'"(/v1/airlie/[a-z]+)', src))
     assert used == {"/v1/airlie/plans", "/v1/airlie/runs", "/v1/airlie/jobs", "/v1/airlie/stories"}
-    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    # the app opens its auth store under state_dir: the person's own one is outside a confined run's reach
+    # (the story pre-code check runs the suite confined; AIR-9 layer 02 blocked on it, 2026-10-21)
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"observability": {"state_dir": str(tmp_path / "state")}}))
+    cfg = load_config(ROOT / "airlie.yaml", local)
     app = create_app(cfg, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
     paths = {getattr(r, "path", "") for r in app.routes}
     for u in used:

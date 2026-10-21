@@ -10,10 +10,15 @@ import json
 import shlex
 import sys
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.engine.types import EngineError
 from airlie.story.board import text_card
 from airlie.story.state import StoryState
+from airlie.teams import native_team
 from tests.unit.git_helpers import git
 from tests.unit.test_story_pipeline import STORY, TESTER_ROLES, agents_md, fenced, kinds, pipeline
 from tests.unit.test_studio_orchestrator import APPROVE, DONE
@@ -54,8 +59,9 @@ NO_ASSERT = write("tests/test_calc.py", "from calc import mul\n\n\ndef test_mul(
 LISTED = FakeReply(text="wrote tests/test_calc.py::test_mul: asserts mul(2, 3) == 6")
 
 
-def calc_repo(tmp_path: Path, gate: tuple[str, ...] = ()) -> Path:
-    """The calc repository; with `gate`, an AGENTS.md whose Test gate runs it and a strict ruff.toml."""
+def calc_repo(tmp_path: Path, gate: tuple[str, ...] = (), base_test: str = "assert add(1, 2) == 3") -> Path:
+    """The calc repository; with `gate`, an AGENTS.md whose Test gate runs it and a strict ruff.toml.
+    `base_test` is the existing test's assertion."""
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
     (repo / "pytest.ini").write_text("[pytest]\n")
@@ -64,7 +70,7 @@ def calc_repo(tmp_path: Path, gate: tuple[str, ...] = ()) -> Path:
         (repo / "ruff.toml").write_text('line-length = 60\n\n[lint]\nselect = ["E", "F", "I"]\n')
     (repo / "calc.py").write_text(CALC)
     (repo / "tests" / "test_base.py").write_text(
-        "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+        f"from calc import add\n\n\ndef test_add():\n    {base_test}\n"
     )
     git(repo, "init", "-q")
     git(repo, "add", "-A")
@@ -78,14 +84,15 @@ async def run(
     tester: list[FakeReply] | None = None,
     test_cmd: str = PYTEST,
     gate: tuple[str, ...] = (),
+    base_test: str = "assert add(1, 2) == 3",
 ) -> tuple[StoryState, FakeEngine]:
     """The one-layer story, with a tester when `tester` is given (its replies), else the coder alone. With
-    `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`."""
+    `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`; `base_test` as in calc_repo."""
     scripts = {"product": [STORY], "architect": [LAYERS], "coder": coder, "reviewer": [APPROVE, APPROVE]}
     if tester is not None:
         scripts["tester"] = tester
     engine = FakeEngine(scripts)
-    repo = calc_repo(tmp_path, gate)
+    repo = calc_repo(tmp_path, gate, base_test)
     cmd = None if gate else test_cmd
     if tester is None:
         story = pipeline(tmp_path, repo, engine, test_cmd=cmd)
@@ -146,6 +153,50 @@ async def test_a_test_that_passes_before_the_code_goes_back_to_the_tester_once(t
     retry = [p for p in prompts(engine, "tester") if "tests/test_calc.py::test_add_again" in p]
     assert len(retry) == 1 and "passes before the layer's code is written" in retry[0]
     assert len(kinds(events, "test_checks_retry")) == 1
+
+
+async def test_an_existing_test_already_red_on_the_base_does_not_send_the_tester_back(tmp_path: Path) -> None:
+    """AIR-9 layer 02, 2026-10-21: a test red on the base in the confined suite was blamed on the tester's
+    tests, and the layer blocked on it. It is the base's: an event names it and the coder starts."""
+    st, engine = await run(
+        tmp_path, [FEATURE, DONE, DONE, DONE], tester=[RED, LISTED], base_test="assert add(1, 2) == 4"
+    )
+    events = st.path / "events.jsonl"
+    [at_base] = kinds(events, "existing_tests_fail_at_base")
+    assert at_base["tests"] == ["tests/test_base.py::test_add"]
+    assert kinds(events, "existing_test_fails") == [] and kinds(events, "test_checks_retry") == []
+    assert [e["layer"] for e in kinds(events, "test_checks_passed")] == ["01"]
+    assert prompts(engine, "coder")  # the coder ran
+
+
+class DownForTester(FakeEngine):
+    """The engine refusing every request of the tester's, as one that is not running does."""
+
+    async def generate(self, req: Any, on_token: Any = None) -> Any:
+        if req.role == "tester":
+            raise EngineError("ConnectError: All connection attempts failed")
+        return await super().generate(req, on_token)
+
+
+async def test_an_engine_the_tester_cannot_reach_stops_the_layer_as_the_engines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AIR-9 layer 02, 2026-10-21: the engine was down, the tester's run ended on it, and the layer stopped on
+    "no new test" after a retry that met the same engine. Now: no check, no retry, a stop that says why."""
+    monkeypatch.setattr(native_team, "ENGINE_RETRY_S", 0.0)
+    scripts = {"product": [STORY], "architect": [LAYERS], "coder": [FEATURE, DONE], "reviewer": [APPROVE]}
+    engine = DownForTester(scripts)
+    repo = calc_repo(tmp_path)
+    story = pipeline(
+        tmp_path, repo, engine, test_cmd=PYTEST, story={"tester_role": "tester"}, roles=TESTER_ROLES
+    )
+    st = await story.run(text_card("multiply"))
+    assert st.blocked is not None and "the tester could not reach the engine" in st.blocked
+    assert "ConnectError" in st.blocked and "task up" in st.blocked
+    events = st.path / "events.jsonl"
+    assert [e["attempt"] for e in kinds(events, "engine_error")] == [1]
+    assert kinds(events, "no_new_test") == [] and kinds(events, "test_checks_retry") == []
+    assert prompts(engine, "coder") == []  # the coder never started
 
 
 async def test_tests_still_green_before_the_code_after_the_retry_stop_the_layer_before_the_coder(
