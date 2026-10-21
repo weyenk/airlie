@@ -1425,3 +1425,94 @@ async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages
         "assistant",
         "user",
     ]
+
+
+# ---- a repeat is a repeat through run-to-run noise and round a cycle (AIR-9 layer 02, 2026-10-21) ----
+
+PYTEST_RUN = (
+    "{dots}  [100%]\n"
+    "tmp_path = PosixPath('/private/var/T/pytest-of-noah/pytest-{n}/popen-gw{w}/test_x0')\n"
+    "E   ValueError: too many values to unpack (expected 1)\n"
+    "{failed} failed, 57 passed in 0.{n}s"
+)
+
+
+class ScriptedShell:
+    """A shell tool answering each call with the next of `outputs`."""
+
+    name = "shell"
+    description = "x"
+    parameters = {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}
+
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = iter(outputs)
+
+    async def run(self, args, c):
+        from airlie.tools import ToolResult
+
+        return ToolResult(False, next(self.outputs))
+
+
+def shells(n: int) -> list[FakeReply]:
+    return [
+        FakeReply(tool_calls=[ToolCall(f"s{i}", "shell", json.dumps({"cmd": "pytest"}))]) for i in range(n)
+    ]
+
+
+async def test_the_same_test_run_three_times_is_a_repeat_whatever_its_timings_and_tmp_paths(
+    tmp_path: Path,
+) -> None:
+    """AIR-9 layer 02: ten run_tests in a row with the one failure each time, told apart only by the run's
+    duration, its tmp_path root, its xdist worker and the order of the progress dots."""
+    runs = [
+        PYTEST_RUN.format(dots=d, n=n, w=w, failed=1)
+        for d, n, w in ((".F...", 52521, 6), ("...F.", 52522, 3), ("F....", 52523, 1))
+    ]
+    engine = FakeEngine({"coder": [*shells(3), FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.tools.add(ScriptedShell(runs))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action" and result.steps == 3
+
+
+async def test_a_test_run_whose_failure_count_changes_is_not_a_repeat(tmp_path: Path) -> None:
+    """The noise is blanked, not the result: a run that fails fewer tests each time is a fix loop."""
+    runs = [PYTEST_RUN.format(dots=".F...", n=52521, w=6, failed=f) for f in (3, 2, 1)]
+    engine = FakeEngine({"coder": [*shells(3), FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.tools.add(ScriptedShell(runs))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 3
+
+
+async def test_going_round_the_same_three_reads_three_times_is_a_repeat(tmp_path: Path) -> None:
+    """AIR-9 layer 02: a follow-up read the same three files in turn for 16 steps; a guard that looked for one
+    call repeated never fired. Without nudge_stuck the run stops after the third round."""
+    engine = FakeEngine({"coder": [*reads(3) * 4, FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20)
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    assert result.final_text == "stopped: repeated the same action 3 times (read_file)"
+
+
+async def test_a_writer_going_round_a_cycle_is_told_then_loses_its_reads(tmp_path: Path) -> None:
+    """The cycle earns what one repeated call does: told once (CYCLED), then reading is switched off until
+    it writes."""
+    engine = FakeEngine({"coder": [*reads(2) * 6, FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    rec = Recorder()
+    await team.run(ctx, rec)
+    assert requests_saying(engine, "same 2 calls over and over, 3 times in a row")[0] == 7
+    assert requests_saying(engine, "same call again after being told (read_file)")[0] == 13
+    assert [s.o_t == REFUSED for s in rec.steps][:12] == [False] * 12
+
+
+async def test_two_reads_in_turn_whose_results_change_are_not_a_repeat(tmp_path: Path) -> None:
+    (tmp_path / "wt").mkdir(exist_ok=True)
+    runs = [PYTEST_RUN.format(dots=".", n=1, w=1, failed=f) for f in (3, 2, 1)]
+    calls = [r for pair in zip(reads(1) * 3, shells(3), strict=True) for r in pair]
+    engine = FakeEngine({"coder": [*calls, FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    ctx.tools.add(ScriptedShell(runs))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "done" and result.steps == 6

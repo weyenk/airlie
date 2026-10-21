@@ -186,6 +186,7 @@ class StudioOrchestrator:
         self.lock_commit = ""
         self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
         self.halted = False  # a checkpoint said no: the subtasks after it did not run
+        self.amend_tests: Callable[[], Awaitable[bool]] | None = None  # execute_task's `amend_tests`
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
 
@@ -715,6 +716,7 @@ class StudioOrchestrator:
         scope_tests: bool = False,
         checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None = None,
         gate_follow_up: str | None = None,
+        amend_tests: Callable[[], Awaitable[bool]] | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
         """Plan, run, review, synthesise.
@@ -731,6 +733,9 @@ class StudioOrchestrator:
         that runs once it is done, before the subtasks after it (it may `follow_up` it, or `lock` its files);
         one that returns False stops the plan there, and the tests count as failed. `gate_follow_up` names the
         subtask sent the output of a failing final gate once (GATE_FAILED), before the gate runs again.
+        `amend_tests` runs first when that gate fails and that subtask finished: it may send the locked tests'
+        author back to mend its own tests (and `lock` them again), and returns whether it changed them; when
+        it did, the gate runs again before the follow-up.
         `max_steps` limits every subtask's steps in this run, follow-ups included."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
@@ -753,6 +758,7 @@ class StudioOrchestrator:
         self.scope_base = self.base_sha if scope_tests else ""
         self.gate_memo = GateMemo()
         self.checkpoints, self.halted = dict(checkpoints or {}), False
+        self.amend_tests = amend_tests
         self._prepare(self.worktree, test_cmd)
         chosen: Plan | None = given
         final = ""
@@ -814,7 +820,8 @@ class StudioOrchestrator:
         return ""  # unreachable: the last round always returns
 
     async def _gate(self, test_cmd: str | None, follow_up: str | None) -> bool | None:
-        """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, that
+        """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, the
+        locked tests may be mended first (`amend_tests`, then the gate again), and if it still fails that
         subtask is sent its output once (GATE_FAILED) and the gate runs again."""
         passed, output = await self._tests_pass(test_cmd)
         run = self.runs.get(follow_up) if follow_up is not None else None
@@ -822,6 +829,11 @@ class StudioOrchestrator:
         if passed is not False or run is None or run.result is None or not run.result.ok:
             return passed
         assert follow_up is not None
+        # a coder cannot change a wrong acceptance test (AIR-9 layer 02, 2026-10-21): its author can
+        if self.amend_tests is not None and await self.amend_tests():
+            passed, output = await self._tests_pass(test_cmd)
+            if passed is not False:
+                return passed
         self.sink.emit("gate_failed", follow_up=follow_up)
         tail = output[-self.cfg.tools.output_cap_chars :]
         await self.follow_up(follow_up, f"{GATE_FAILED}\n\n```\n{tail}\n```")

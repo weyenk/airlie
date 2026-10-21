@@ -172,6 +172,45 @@ REPEATED = (
 )
 """What a role (nudge_stuck) is told, once, when it repeats an action instead of being stopped."""
 
+CYCLED = (
+    "You have made the same {p} calls over and over, {n} times in a row, with the same results ({tool}). "
+    "Going round them again changes nothing. Do something different: act on what you know, or give your "
+    "answer."
+)
+"""REPEATED for a cycle of calls rather than one call (AIR-9 layer 02, 2026-10-21: a follow-up read the
+same three files in turn for 16 steps, and a guard that looked for one call repeated never fired)."""
+MAX_CYCLE = 3
+"""The longest cycle of calls the repeat guard looks for: a cycle of up to this many calls, gone round
+repeat_limit times with the same results, is a repeat as one call repeated is."""
+_VOLATILE = (
+    (re.compile(r"^[.FEsxXp]+\s*(\[\s*\d+%\])?[ \t]*$", re.MULTILINE), ""),  # pytest's progress dots
+    (re.compile(r"\b\d+(\.\d+)?s\b"), "#s"),  # a duration: "in 0.69s"
+    (re.compile(r"pytest-\d+"), "pytest-#"),  # pytest's numbered tmp_path root
+    (re.compile(r"\bgw\d+\b"), "gw#"),  # an xdist worker
+    (re.compile(r"\b0x[0-9a-f]+\b"), "0x#"),  # an object's address in a repr
+)
+"""What changes between two runs of the same command with nothing else changed, blanked before observations
+are compared for a repeat (AIR-9 layer 02, 2026-10-21: ten run_tests in a row with one failure each time
+differed only in timings, tmp paths and xdist's dot order, so none was ever the same)."""
+
+
+def _settled(output: str) -> str:
+    """`output` with what differs between identical runs blanked (_VOLATILE), for the repeat guard."""
+    for pattern, blank in _VOLATILE:
+        output = pattern.sub(blank, output)
+    return output
+
+
+def _loop(recent: list[tuple[str, ...]], limit: int) -> tuple[str, ...] | None:
+    """The calls `recent` (oldest first) ends going round `limit` times: one call repeated, or a cycle of up
+    to MAX_CYCLE calls, each round with the same results. Their tool names, in order; None for no loop."""
+    for p in range(1, MAX_CYCLE + 1):
+        tail = recent[-p * limit :]
+        if len(tail) == p * limit and tail == tail[-p:] * limit:
+            return tuple(r[0] for r in tail[-p:])
+    return None
+
+
 REPEAT_WRITE_ONLY = (
     "You made the same call again after being told ({tool}). It is switched off: only write_file, edit_file "
     "and run_tests are available until you write. Make the change now from what you know."
@@ -629,12 +668,13 @@ class NativeTeam:
                 if call.name == "run_tests":
                     last_test_output = result.output
                     last_tests_ok = result.ok
+                seen = _settled(result.output)
                 recent.append(
-                    (call.name, call.arguments, result.output)
+                    (call.name, call.arguments, seen)
                     if call.name in ("write_file", "edit_file")
-                    else (call.name, result.output)
+                    else (call.name, seen)
                 )
-                recent = recent[-ctx.repeat_limit :]
+                recent = recent[-ctx.repeat_limit * MAX_CYCLE :]
                 if ctx.stop_when is not None and ctx.stop_when(step_record):
                     forked = True
                     break
@@ -642,15 +682,24 @@ class NativeTeam:
                 final_text = "fork point: stuck, handing over to branches"
                 stop = "fork_point"
                 break
-            if len(recent) == ctx.repeat_limit and len(set(recent)) == 1:
-                tool = recent[0][0]
+            cycle = _loop(recent, ctx.repeat_limit)
+            if cycle is not None:
+                tool = ", ".join(dict.fromkeys(cycle))
                 if ctx.role.nudge_stuck and not repeat_warned:  # said once
                     repeat_warned = True
-                    messages.append(
-                        Message(role="user", content=REPEATED.format(n=ctx.repeat_limit, tool=tool))
+                    told = (
+                        REPEATED.format(n=ctx.repeat_limit, tool=tool)
+                        if len(cycle) == 1
+                        else CYCLED.format(p=len(cycle), n=ctx.repeat_limit, tool=tool)
                     )
+                    messages.append(Message(role="user", content=told))
                     recent = []
-                elif ctx.role.nudge_stuck and can_write and not looped and tool not in WRITE_TOOLS_ONLY:
+                elif (
+                    ctx.role.nudge_stuck
+                    and can_write
+                    and not looped
+                    and any(t not in WRITE_TOOLS_ONLY for t in cycle)
+                ):
                     # told, and repeating still: a writer loses the tool it loops on, not its run, so the
                     # change it owes is still possible (AIR-7 layer 02 attempts 4-6, 2026-10-18: every fix
                     # round ended here, probing, with its change unmade); a streak of refusals ends the run
@@ -658,9 +707,7 @@ class NativeTeam:
                     messages.append(Message(role="user", content=REPEAT_WRITE_ONLY.format(tool=tool)))
                     recent = []
                 else:
-                    final_text = (
-                        f"stopped: repeated the same action {ctx.repeat_limit} times ({recent[0][0]})"
-                    )
+                    final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({tool})"
                     stop = "repeated_action"
                     break
             if (
