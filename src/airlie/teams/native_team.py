@@ -219,13 +219,14 @@ REPEAT_WRITE_ONLY = (
 on goes, not the run, until it writes. A third streak, of refusals, ends the run."""
 
 ACT_FIRST = (
-    "Your reply is text, and nothing has been changed: the task is a change to make, not a question to "
-    "answer. Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few "
+    "Your reply called no tool, and nothing has been changed: the task is a change to make, not a question "
+    "to answer. Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few "
     "sentences on what you changed."
 )
-"""What a role with write tools is told, once, when its reply is text and no write of its own has landed yet
-(AIR-7 layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose and ended;
-layer 03: a fix round's one edit missed its anchor and the next reply was prose, taken as done)."""
+"""What a role with write tools is told, once, when its reply is text (or empty) and no write of its own has
+landed yet (AIR-7 layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose
+and ended; layer 03: a fix round's one edit missed its anchor and the next reply was prose, taken as done;
+AIR-9 layer 02, 2026-10-21: a tester's retry read for six steps, then replied with nothing, taken as done)."""
 
 STILL_RED = (
     "Your last run_tests run failed, so you are not done. Fix what it reports and run it again. If something "
@@ -460,14 +461,7 @@ class NativeTeam:
                     stop = "cut_off"
                     break
                 if not UNPARSED_CALL.search(res.text):
-                    if (
-                        ctx.must_act
-                        and can_write
-                        and not changed
-                        and res.text.strip()
-                        and not act_warned
-                        and not last_turn
-                    ):
+                    if ctx.must_act and can_write and not changed and not act_warned and not last_turn:
                         act_warned = True
                         if ctx.emit is not None:
                             ctx.emit(
