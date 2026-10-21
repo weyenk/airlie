@@ -250,6 +250,18 @@ async def run_one(
         return await pipe.run(card)
 
 
+async def restack_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path | None = None) -> str:
+    """Move the stopped story of `card` onto the remote's trunk as it is now (StoryPipeline.restack), while
+    holding the one-story lock: a story being built is never moved under it. Returns the line to print; a
+    story that cannot be moved is a RestackError, with nothing changed."""
+    with story_lock(stories_dir(cfg)) as held:
+        if not held:
+            raise StoryBusy("another story is in flight (one at a time); try again when it finishes")
+        where = await placed(cfg, board, card, repo)
+        pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
+        return await pipe.restack(card)
+
+
 def _why(e: Exception) -> str:
     """What a board said when it refused a call, masked and cut short, for the line a tick logs."""
     return _cap(_redact_urls(f"{type(e).__name__}: {e}"), 200)

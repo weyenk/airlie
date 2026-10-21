@@ -410,6 +410,14 @@ the refine, or `AGENTS.md` after the start, changes nothing: to start over, dele
 events, notes and PR bodies stay beside it) and the layer branches it made. To make the tick retry a blocked story,
 move the issue back to *To Do*.
 
+**Restack** a stopped story when the trunk has moved on with something it needs (a fix to a test its gate runs,
+say): `task story:restack -- AIR-7`. Its built layers are replayed in order on the trunk, fetched now, in a checkout
+of their own, and each must pass the story's gate there, confined as the studio runs it. Only then do the layer
+branches move (together), the stopped layer's kept worktree and branch are removed (they were built on the old
+layers), and the story's base becomes the trunk: the next `task story -- AIR-7` builds the stopped layer on today's
+code. A conflict or a failing gate names the layer and changes nothing. A story that has published its PRs is not
+moved, and the story keeps its test gate.
+
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and
