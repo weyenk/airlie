@@ -8,7 +8,7 @@
 #   5 environmental      performance, security
 #
 # Stages 3-5 run `task test:<layer>`, which succeeds while tests/<layer>/ is empty; add tests there and the
-# stage starts enforcing them. Nothing here builds or serves the application.
+# stage starts enforcing them. Only the e2e stage serves the application: its web app, in a container.
 name: pipeline
 
 on:
@@ -130,16 +130,30 @@ jobs:
         if: hashFiles('tests/integration/**/test_*.py') != ''
 
   # ---- stage 4: behavioural ----
+  # The web app in Chromium, in the e2e image (ops/e2e/Containerfile): the image a Mac runs under Apple's
+  # container, built and run here with the runner's Docker (macOS runners cannot run Apple's container). The
+  # screenshot of every check is kept, pass or fail.
   e2e:
     needs: [functional, contract, integration]
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
+      - uses: arduino/setup-task@v2
         if: hashFiles('tests/e2e/**/test_*.py') != ''
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
       - run: task test:e2e
         if: hashFiles('tests/e2e/**/test_*.py') != ''
+        env:
+          E2E_ENGINE: docker
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('tests/e2e/**/test_*.py') != ''
+        with:
+          name: e2e-evidence
+          path: test-results/
+          if-no-files-found: ignore
 
   journey:
     needs: [functional, contract, integration]
