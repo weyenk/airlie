@@ -23,6 +23,34 @@ function statusChip(status) {
   return chip(kind, label);
 }
 
+// A story's repository is its one repo:<owner>/<name> label (story/checkout.py), any case; the panel edits
+// it as its own field and the other labels beside it.
+const REPO = /^repo:/i;
+const REPO_PATTERN = "(repo:)?[A-Za-z0-9._\\-]+/[A-Za-z0-9._\\-]+";
+
+function repoOf(labels) {
+  const found = (labels || []).find((l) => REPO.test(l));
+  return found ? found.replace(REPO, "") : "";
+}
+
+function otherLabels(labels) {
+  return (labels || []).filter((l) => !REPO.test(l));
+}
+
+function labelsFrom(repoField, labelsField) {
+  const repo = repoField.value.trim().replace(REPO, "");
+  const rest = labelsField.value.split(",").map((s) => s.trim()).filter((l) => l && !REPO.test(l));
+  return repo ? [`repo:${repo}`, ...rest] : rest;
+}
+
+function repoInput(value) {
+  return h("input", { class: "field mono", value, placeholder: "Repository: owner/name", pattern: REPO_PATTERN, title: "owner/name, the GitHub repository", "aria-label": "Repository" });
+}
+
+function labelsInput(value) {
+  return h("input", { class: "field mono", value, placeholder: "Other labels, comma separated", "aria-label": "Labels" });
+}
+
 function when(epoch) {
   return epoch ? new Date(epoch * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
 }
@@ -227,11 +255,16 @@ export function render(root, [key], ctx) {
     };
     const titleField = h("input", { class: "field", value: item.title, "aria-label": "Title" });
     const descField = h("textarea", { class: "field", rows: 5, "aria-label": "Description" }, item.description || "");
+    const repoField = repoInput(repoOf(item.labels));
+    const labelsField = labelsInput(otherLabels(item.labels).join(", "));
     const commentField = h("textarea", { class: "field", rows: 2, placeholder: "Add a comment", "aria-label": "Comment" });
     const parent = item.parent ? h("a", { href: `#/board/${encodeURIComponent(item.parent)}`, class: "mono small" }, `↑ ${item.parent}`) : null;
     panelFrame(
       `${item.key} · ${item.title}`,
       h("div", { class: "row" }, statusChip(item.status), chip("mute", item.level), parent),
+      repoOf(item.labels)
+        ? h("div", { class: "small" }, "Repository ", h("span", { class: "mono" }, repoOf(item.labels)))
+        : h("div", { class: "small muted" }, "No repository: set one under Edit."),
       h("div", { class: "row", "aria-label": "Move to" }, STATUSES.filter(([s]) => s !== item.status).map(([s, label]) => h("button", { type: "button", class: "btn small", onclick: () => patch({ status: s }) }, label))),
       item.description ? h("div", { class: "desc" }, markdown(item.description)) : h("div", { class: "muted small" }, "No description."),
       h(
@@ -245,11 +278,13 @@ export function render(root, [key], ctx) {
             style: { marginTop: "8px" },
             onsubmit: (ev) => {
               ev.preventDefault();
-              patch({ title: titleField.value.trim() || item.title, description: descField.value });
+              patch({ title: titleField.value.trim() || item.title, description: descField.value, labels: labelsFrom(repoField, labelsField) });
             },
           },
           titleField,
           descField,
+          repoField,
+          labelsField,
           h("button", { type: "submit", class: "btn small" }, "Save"),
         ),
       ),
@@ -257,7 +292,7 @@ export function render(root, [key], ctx) {
         ? h(
             "section",
             { class: "stack", style: { gap: "8px" } },
-            h("div", { class: "row spread" }, h("h3", { class: "h3" }, `${PLURAL[CHILD[item.level]]} (${children.length})`), h("button", { type: "button", class: "btn small", onclick: () => openNew(CHILD[item.level], item.key) }, "Add child")),
+            h("div", { class: "row spread" }, h("h3", { class: "h3" }, `${PLURAL[CHILD[item.level]]} (${children.length})`), h("button", { type: "button", class: "btn small", onclick: () => openNew(CHILD[item.level], item.key, repoOf(item.labels)) }, "Add child")),
             children.length ? h("div", { class: "stack", style: { gap: "6px" } }, children.map((c) => h("a", { href: `#/board/${encodeURIComponent(c.key)}`, class: "child" }, h("span", { class: "mono small muted" }, c.key), " ", c.title, " ", statusChip(c.status)))) : h("div", { class: "muted small" }, "None yet."),
           )
         : null,
@@ -293,10 +328,11 @@ export function render(root, [key], ctx) {
     );
   }
 
-  function openNew(newLevel, parentKey) {
+  function openNew(newLevel, parentKey, parentRepo = "") {
     const titleField = h("input", { class: "field", placeholder: "Title", required: true, "aria-label": "Title" });
     const descField = h("textarea", { class: "field", rows: 4, placeholder: "Description (Markdown)", "aria-label": "Description" });
-    const labelsField = h("input", { class: "field mono", placeholder: "labels, comma separated (repo:owner/name)", "aria-label": "Labels" });
+    const repoField = repoInput(parentRepo);
+    const labelsField = labelsInput("");
     const err = h("span", { class: "error" });
     panelFrame(
       `New ${newLevel}${parentKey ? ` under ${parentKey}` : ""}`,
@@ -308,7 +344,7 @@ export function render(root, [key], ctx) {
             ev.preventDefault();
             const body = { level: newLevel, title: titleField.value.trim(), description: descField.value };
             if (parentKey) body.parent = parentKey;
-            const labels = labelsField.value.split(",").map((s) => s.trim()).filter(Boolean);
+            const labels = labelsFrom(repoField, labelsField);
             if (labels.length) body.labels = labels;
             try {
               const created = await request("/v1/board/items", { method: "POST", body });
@@ -322,6 +358,7 @@ export function render(root, [key], ctx) {
         },
         titleField,
         descField,
+        repoField,
         labelsField,
         h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary small" }, "Create"), h("button", { type: "button", class: "btn small", onclick: closePanel }, "Cancel")),
         err,
