@@ -62,7 +62,8 @@ class LocalBoard:
         self._item(card.key)
         self.store.update(card.key, status=STATUS_OF[column])  # type: ignore[arg-type]
 
-    async def comment(self, card: Card, text: str) -> None:
-        """`text` as given (the pipeline passes note(text), as it does to every board), by airlie."""
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
+        """`text` as given (the pipeline passes note(text), as it does to every board), by `role` when one is
+        given, else by airlie."""
         self._item(card.key)
-        self.store.comment(card.key, "airlie", text)
+        self.store.comment(card.key, role or "airlie", text)

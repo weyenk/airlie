@@ -92,6 +92,24 @@ async def test_comment_stores_the_pipelines_note_as_given_by_airlie(tmp_path: Pa
     assert c.author == "airlie" and c.text == NOTE_PREFIX + "blocked: the gate failed"
 
 
+async def test_a_note_without_a_role_is_stored_by_airlie_with_the_prefix(tmp_path: Path) -> None:
+    """AC2: the no-role path is unchanged — a plain pipeline note is authored by airlie, prefix and all."""
+    s, b = filled(tmp_path)
+    card = await b.card("AIR-3")
+    await b.comment(card, note("blocked: the gate failed"), role=None)
+    [c] = s.get("AIR-3").comments
+    assert c.author == "airlie" and c.text == NOTE_PREFIX + "blocked: the gate failed"
+
+
+async def test_a_note_with_a_role_is_stored_by_that_role_but_keeps_the_prefix(tmp_path: Path) -> None:
+    """The new seam: a note posted with a role is authored by that role, but the prefix still leads it."""
+    s, b = filled(tmp_path)
+    card = await b.card("AIR-3")
+    await b.comment(card, note("the design is ready"), role="architect")
+    [c] = s.get("AIR-3").comments
+    assert c.author == "architect" and c.text == NOTE_PREFIX + "the design is ready"
+
+
 async def test_a_note_then_a_move_lands_once_and_moves_the_item(tmp_path: Path) -> None:
     s, b = filled(tmp_path)
     card = await b.card("AIR-3")
