@@ -1089,6 +1089,41 @@ def story_tick(config: ConfigOpt = None) -> None:
     )
 
 
+@story_app.command("restack")
+def story_restack(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="the stopped story's issue (AIR-7 or its link)")
+    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Move a stopped story onto the trunk as it is now: its built layers are replayed on the trunk, fetched
+    now, and each must pass the story's gate there; then their branches move, the stopped layer's attempt is
+    removed, and the next `task story` builds on today's trunk. A conflict or a failing gate changes nothing.
+    A story that has published its PRs is not moved."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+    from airlie.story.restack import RestackError
+
+    if ref is None:
+        err.print("[red]pass the story's issue (AIR-7 or its link)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+
+    async def go() -> str:
+        board, card = await factory.card_for(cfg, ref, None)
+        return await factory.restack_one(cfg, board=board, card=card, repo=repo)
+
+    try:
+        line = _run_stoppable(go())
+    except (factory.StoryBusy, BoardError, StorySetupError, RestackError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @story_app.command("check")
 def story_check(
     ref: Annotated[

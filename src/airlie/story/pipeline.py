@@ -47,6 +47,7 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.publish import Publisher, PublishError
+from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_for
@@ -57,6 +58,7 @@ from airlie.teams.worktree import (
     commit_wip,
     delete_branch,
     diff_commits,
+    move_branches,
     put_back,
     remove_worktree,
     reset_to_head,
@@ -592,6 +594,63 @@ class StoryPipeline:
         delete_branch(self.repo, st.attempt["branch"])
         st.attempt = None
         st.save()
+
+    async def restack(self, card: Card) -> str:
+        """Move the stopped story of `card` onto the remote's trunk as it is now (story.restack): its built
+        layers replayed in order on the trunk, fetched now, and each held to the story's gate there; then
+        their branches move together, the stopped attempt (built on the old layers) goes as a resume would
+        remove it, and the state's base becomes the trunk, so the next run builds on today's code. A story
+        that has not started or has published, a fetch that fails, a conflict or a red gate is a RestackError,
+        and nothing is changed. Returns the line to print."""
+        if not (self.stories_dir / card.key / "state.json").is_file():
+            raise RestackError(f"story {card.key} has no base yet (it has not started): run it instead")
+        here = self.github_repo or self.publisher.github_repo_of(self.repo)
+        st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
+        if st.base is None:
+            raise RestackError(f"story {card.key} has no base yet (it has not started): run it instead")
+        if st.prs or st.done("publish"):
+            raise RestackError(
+                f"story {card.key} has published its PRs; moving their branches would rewrite what reviewers "
+                "have, so it is not restacked"
+            )
+        old = dict(st.base)
+        try:
+            ref = await self._trunk_ref(st)
+            self._gate(st, old)  # the story's own gate, the one every layer was held to
+        except StoryBlocked as e:
+            raise RestackError(str(e)) from None
+        new = rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
+        if new is None:
+            raise RestackError(f"the trunk '{ref}' does not exist in {self.repo} after it was fetched")
+        if new == old["sha"]:
+            return f"story {card.key} is already on {ref} ({new[:12]}): nothing to restack"
+        layers = {nn: str(st.built[nn]["sha"]) for nn in sorted(st.built)}
+        moved = await replay(
+            self.repo,
+            st.path / "restack",
+            new,
+            layers,
+            gate=self.test_cmd,
+            shown=self._shown_cmd,
+            timeout_s=self.timeout_s,
+            output_chars=self.cfg.tools.output_cap_chars,
+            confinement=self.cfg.tools.confinement(),
+        )
+        move_branches(self.repo, {str(st.built[nn]["branch"]): (layers[nn], moved[nn]) for nn in moved})
+        for nn, sha in moved.items():
+            st.built[nn]["sha"] = sha
+        self._clear_attempt(st)
+        st.base = {"ref": ref, "sha": new}
+        st.save()
+        st.emit(
+            "restacked",
+            base={"from": old["sha"], "to": new},
+            layers={nn: {"from": layers[nn], "to": moved[nn]} for nn in moved},
+        )
+        what = ", ".join(f"layer {nn}" for nn in moved) or "no built layer"
+        line = f"restacked onto {ref} ({new[:12]}): {what} replayed and passing `{self._shown_cmd}`"
+        await self.board.comment(card, note(line))
+        return f"story {card.key} {line}"
 
     async def _build(
         self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], i: int

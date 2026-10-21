@@ -90,6 +90,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 
+  story:restack:
+    desc: "Move a stopped story onto the trunk as it is now: its built layers replayed and gated there, then the next task story builds on today's trunk (task story:restack -- ISSUE)"
+    cmds:
+      - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
+
   story:check:
     desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
     cmds:
