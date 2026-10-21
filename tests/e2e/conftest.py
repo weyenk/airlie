@@ -91,7 +91,17 @@ def _seed(state: Path) -> None:
 
 @pytest.fixture(scope="session")
 def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
-    root = tmp_path_factory.mktemp("airlie")
+    """The server the read-only checks share: nothing may change its board."""
+    yield from _serve(tmp_path_factory.mktemp("airlie"))
+
+
+@pytest.fixture
+def own_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
+    """A server of the test's own, on the same board, for a test that changes the board."""
+    yield from _serve(tmp_path_factory.mktemp("airlie"))
+
+
+def _serve(root: Path) -> Iterator[Server]:
     config = _config(root)
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)

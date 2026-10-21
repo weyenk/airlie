@@ -8,6 +8,7 @@ import re
 import pytest
 from playwright.sync_api import Page
 
+from airlie.board.store import BoardStore
 from tests.e2e.conftest import KEY, Evidence, Server
 
 pytestmark = pytest.mark.e2e
@@ -101,3 +102,73 @@ def test_the_board_loads_at_phone_width(
     ).to_be_visible()
     evidence.shot("nothing logged an error", held=not errors)
     assert errors == []
+
+
+def _board(server: Server) -> BoardStore:
+    return BoardStore(server.state / "board.sqlite")
+
+
+def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evidence: Evidence) -> None:
+    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
+    panel = signed_in.locator("aside.panel")
+    evidence.expect(panel, "the panel names the card's repository").to_contain_text(
+        "Repository weyenk/airlie"
+    )
+    panel.get_by_text("Edit", exact=True).click()
+    repo = panel.get_by_label("Repository")
+    evidence.expect(repo, "Edit holds the repository as owner/name").to_have_value("weyenk/airlie")
+    repo.fill("weyenk/OpenHand")
+    panel.get_by_label("Labels").fill("web, board")
+    panel.get_by_role("button", name="Save").click()
+    evidence.expect(panel, "the panel names the new repository").to_contain_text("Repository weyenk/OpenHand")
+    card = signed_in.locator(".item", has_text="Board: panel width")
+    evidence.expect(card, "the card carries the new repo: label").to_contain_text("repo:weyenk/OpenHand")
+    board = _board(own_server)
+    try:
+        labels = board.get("AIR-4").labels
+    finally:
+        board.close()
+    evidence.shot(
+        "the board stored one repo: label and the others",
+        card,
+        held=labels == ("repo:weyenk/OpenHand", "web", "board"),
+    )
+    assert labels == ("repo:weyenk/OpenHand", "web", "board")
+
+
+def test_a_repository_that_is_not_owner_slash_name_is_not_saved(
+    signed_in: Page, own_server: Server, evidence: Evidence
+) -> None:
+    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
+    panel = signed_in.locator("aside.panel")
+    panel.get_by_text("Edit", exact=True).click()
+    panel.get_by_label("Repository").fill("OpenHand")
+    panel.get_by_role("button", name="Save").click()
+    evidence.expect(panel, "the panel keeps the old repository").to_contain_text("Repository weyenk/airlie")
+    board = _board(own_server)
+    try:
+        labels = board.get("AIR-4").labels
+    finally:
+        board.close()
+    assert labels == ("repo:weyenk/airlie",)
+
+
+def test_a_new_child_starts_with_its_parents_repository(
+    signed_in: Page, own_server: Server, evidence: Evidence
+) -> None:
+    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
+    panel = signed_in.locator("aside.panel")
+    panel.get_by_role("button", name="Add child").click()
+    repo = panel.get_by_label("Repository")
+    evidence.expect(repo, "the new subtask has its story's repository").to_have_value("weyenk/airlie")
+    panel.get_by_label("Title").fill("Panel width on phones")
+    repo.fill("weyenk/OpenHand")
+    panel.get_by_role("button", name="Create").click()
+    evidence.expect(signed_in, "Create opens the new card").to_have_url(re.compile(r"#/board/AIR-8$"))
+    evidence.expect(panel, "the new card names its repository").to_contain_text("Repository weyenk/OpenHand")
+    board = _board(own_server)
+    try:
+        made = board.get("AIR-8")
+    finally:
+        board.close()
+    assert (made.parent, made.labels) == ("AIR-4", ("repo:weyenk/OpenHand",))
