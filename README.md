@@ -228,6 +228,35 @@ studio chief refuses one it cannot parse, and the reviewer one with no text.
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.
 
+## Prompts
+
+What a model is told lives in Markdown files, not in Python. A role's own prompt is `prompts/roles/<role>.md`,
+chosen by `roles.<role>.prompt` in `airlie.yaml`. Everything else is a hub file in the package, one text each, loaded
+by id (`from airlie.prompts import text`): `src/airlie/prompts/rules/` holds the standing instructions placed in a
+brief or goal message, and `src/airlie/prompts/steering/` the nudges sent partway through a run when something
+goes wrong. They ship with the code they are sent from, so there is no config key and no override directory.
+
+A hub file is YAML front matter, then the exact text sent as a format string (`{name}` is filled in, `{{` and `}}`
+write a literal brace). The id is the file name:
+
+| Key | Holds |
+| --- | --- |
+| `kind` | `rule` or `steering`, the folder it is in |
+| `roles` | the roles that can receive it, or `any` |
+| `fields` | the `{placeholders}` the body uses; the loader checks they match exactly |
+| `when` | steering only: the condition that sends it, in a sentence |
+| `governs` | the subjects it instructs on, each with its stance (`tests.location: new-file`) |
+| `yields_to` | ids it deliberately gives way to when they disagree |
+| `why` | the incident behind the wording: what went wrong, the run, the date |
+
+The contradiction check runs in `pytest` (`tests/unit/test_prompt_contradictions.py`): two rules, or two steering
+texts, that reach the same role with different stances on one subject fail the gate unless one `yields_to` the
+other. Steering outranks rules, so it is never compared with a rule; that is its job, as when "reading is switched
+off" overrides a role prompt that says to read first. `task prompts:audit` is the model's read of the same
+ground (above). Every steering text a run sends is also a `steer` event, with its `id`, the `role` and where it
+went (`team_id` and `step`, a `subtask`, or a story's `layer` or planning `round`), so the events show which
+nudges still fire. Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
+
 ## Hardware
 
 Built for a Mac Studio M5 Max with 128 GB unified memory. Set the wired limit once (spec 01 §1):

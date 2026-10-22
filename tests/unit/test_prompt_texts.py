@@ -6,7 +6,8 @@ data/prompt_texts.json holds what each rendered to before anything moved. The mo
 (the old constant becomes `text(id, ...)`), never its key and never the JSON: the models get the same bytes.
 
 Regenerate the JSON only for a deliberate change to what a model is told:
-    AIRLIE_WRITE_PROMPT_TEXTS=1 uv run pytest tests/unit/test_prompt_texts.py -q"""
+    AIRLIE_WRITE_PROMPT_TEXTS=1 uv run pytest tests/unit/test_prompt_texts.py -q
+That run writes the file and then fails on purpose, so a variable left exported cannot disarm the guard."""
 
 import json
 import os
@@ -15,6 +16,8 @@ from dataclasses import replace
 from functools import partial
 from itertools import product
 from pathlib import Path
+
+import pytest
 
 from airlie.prompts import text
 from airlie.story.board import text_card
@@ -232,4 +235,7 @@ def test_every_text_is_byte_identical_to_the_golden_snapshot() -> None:
     rendered = {k: f() for k, f in sorted(CASES.items())}
     if os.environ.get("AIRLIE_WRITE_PROMPT_TEXTS") == "1":
         GOLDEN.write_text(json.dumps(rendered, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        # the file now holds what was just rendered, so the comparison below could not fail: a variable left
+        # exported would turn the guard off without a word
+        pytest.fail("prompt_texts.json regenerated; rerun without AIRLIE_WRITE_PROMPT_TEXTS")
     assert rendered == json.loads(GOLDEN.read_text(encoding="utf-8"))
