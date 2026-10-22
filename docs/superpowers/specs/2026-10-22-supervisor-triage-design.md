@@ -1,6 +1,6 @@
 # The supervisor: Muse helps the tester and coder before a layer blocks (layer 1, the trial)
 
-Status: draft for Noah's review, 2026-10-22. Nothing here is built.
+Status: approved by Noah on 2026-10-22. Nothing here is built yet.
 
 ## Why
 
