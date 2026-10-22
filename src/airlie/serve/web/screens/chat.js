@@ -1,5 +1,5 @@
 // Chat: the thread (kept in sessionStorage), a streamed prose reply, the status strip, the composer with the
-// repository picker, the + that opens Start new work, and the / menu of chat skills (/story first).
+// + that opens Start new work, and the / menu of chat skills (/story starts work, /clear a fresh session).
 import { request, stream } from "../api.js";
 import { jobCard, storyCard } from "../cards.js";
 import { append, chip, clear, h, icon } from "../dom.js";
@@ -9,11 +9,10 @@ export const title = "Chat";
 
 const THREAD = "airlie.chat";
 const DRAFT = "airlie.chat.draft";
-const REPO = "airlie.repo";
 const HISTORY = 20; // turns sent back to the model
 
 const WELCOME =
-  "Hi, I'm airlie's assistant. Ask me how airlie works or what's going on. I can't build anything from here: type / for commands such as /story, or use Start new work.";
+  "Hi, I'm airlie's assistant. Ask me how airlie works or what's going on. I can't build anything from here: type / for commands such as /story or /clear, or use Start new work.";
 const QUICK = ["What can you do?", "What's running right now?", "Start new work"];
 
 // ---- storage ----
@@ -32,13 +31,7 @@ function save(key, value) {
     /* this page only */
   }
 }
-export function rememberedRepo() {
-  try {
-    return localStorage.getItem(REPO) || "";
-  } catch {
-    return "";
-  }
-}
+export { rememberedRepo } from "../cards.js";
 
 // ---- screen ----
 export function render(root, _params, ctx) {
@@ -58,21 +51,12 @@ export function render(root, _params, ctx) {
   });
   const send = h("button", { type: "submit", class: "round primary", "aria-label": "Send" }, icon("send", 20));
   const plus = h("button", { type: "button", class: "round", "aria-label": "Start new work", title: "Start new work", onclick: () => ctx.go("#/start") }, icon("plus", 20));
-  const repoPick = h("select", { class: "repo-pick mono", "aria-label": "Repository" });
-  repoPick.addEventListener("change", () => {
-    try {
-      localStorage.setItem(REPO, repoPick.value);
-    } catch {
-      /* this page only */
-    }
-  });
   const menu = h("div", { class: "slash-menu", role: "listbox", "aria-label": "Commands", hidden: true });
   const composer = h(
     "form",
     { class: "composer", "aria-label": "Message airlie", onsubmit: onSend },
     menu,
     h("div", { class: "composer-row" }, plus, input, send),
-    h("div", { class: "row small muted composer-meta" }, h("span", null, "repository"), repoPick, h("a", { href: "#/start" }, "Start new work")),
   );
 
   root.append(h("div", { class: "chat" }, strip, scroller, composer));
@@ -91,7 +75,7 @@ export function render(root, _params, ctx) {
     } else if (item.action === "story" && !item.streaming && item.text && !item.error && !item.cut) {
       body.append(
         storyCard(item.storyText ?? item.text, {
-          repo: () => repoPick.value || rememberedRepo(),
+          repos: () => repos,
           onEdit: (t) => {
             item.storyText = t;
             save(THREAD, withoutEls(thread));
@@ -163,12 +147,26 @@ export function render(root, _params, ctx) {
     onSend(new Event("submit"));
   }
 
+  /** /clear: a fresh session. The thread and draft go; a reply still streaming is stopped. */
+  function clearThread() {
+    busy?.abort();
+    thread.length = 0;
+    save(THREAD, thread);
+    input.value = "";
+    save(DRAFT, "");
+    closeMenu();
+    autosize();
+    renderThread();
+    input.focus();
+  }
+
   // -- sending --
   async function onSend(ev) {
     ev.preventDefault();
     const text = input.value.trim();
     if (!text || busy) return;
     const skill = skillOf(text);
+    if (skill?.action === "clear") return clearThread();
     const sent = skill ? skill.rest : text;
     if (!sent) {
       input.focus(); // "/story" alone: say what for
@@ -241,6 +239,7 @@ export function render(root, _params, ctx) {
 
   // -- the / menu --
   let skills = [];
+  let repos = [];
   let shown = [];
   let active = 0;
 
@@ -348,15 +347,9 @@ export function render(root, _params, ctx) {
 
   async function loadRepos() {
     try {
-      const { repos } = await request("/v1/airlie/repos");
-      const remembered = rememberedRepo();
-      append(clear(repoPick), [
-        repos.length ? null : h("option", { value: "" }, "no repositories"),
-        repos.map((r) => h("option", { value: r, selected: r === remembered || null }, shortRepo(r))),
-      ]);
-      if (!remembered && repos.length) repoPick.value = repos[0];
+      ({ repos } = await request("/v1/airlie/repos"));
     } catch {
-      append(clear(repoPick), [h("option", { value: "" }, "repositories unavailable")]);
+      repos = []; // the story card then says to pick one
     }
   }
 

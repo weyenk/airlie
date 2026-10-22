@@ -104,6 +104,39 @@ def test_start_story_posts_the_text_and_repository_and_shows_a_job_card(
     assert posted == [{"text": STORY + "\nEdited.", "repo": REPO}]
 
 
+def test_the_composer_has_no_repository_row_and_the_story_card_has_the_picker(
+    signed_in: Page, server: Server, evidence: Evidence
+) -> None:
+    server.upstream.reply = STORY
+    open_chat(signed_in, server, [REPO, "/work/other"])
+    evidence.expect(
+        signed_in.get_by_label("Repository"), "no repository picker under the message box"
+    ).to_have_count(0)
+    say(signed_in, "/story the chat gets a New chat button")
+    picker = signed_in.locator(".story-card").get_by_label("Repository")
+    evidence.expect(picker, "the story card has its own picker").to_be_visible()
+    evidence.expect(picker.locator("option"), "one option per repository").to_have_count(2)
+
+
+def test_clear_starts_a_fresh_session_without_asking_the_model(
+    signed_in: Page, server: Server, evidence: Evidence
+) -> None:
+    server.upstream.reply = "An answer."
+    open_chat(signed_in, server, [REPO])
+    say(signed_in, "is there a way to clear this chat")
+    evidence.expect(signed_in.locator(".me"), "the question is in the thread").to_have_count(1)
+    asked = len(server.upstream.requests)
+    box = signed_in.get_by_label("Message", exact=True)
+    box.press_sequentially("/cl")
+    signed_in.get_by_role("listbox", name="Commands").get_by_role("option", name="/clear").click()
+    box.press("Enter")
+    evidence.expect(signed_in.locator(".me"), "the thread is empty").to_have_count(0)
+    evidence.expect(
+        signed_in.get_by_text("Hi, I'm airlie's assistant"), "the welcome is back"
+    ).to_be_visible()
+    assert len(server.upstream.requests) == asked
+
+
 def test_start_story_without_a_repository_says_to_pick_one_and_posts_nothing(
     signed_in: Page, server: Server, evidence: Evidence
 ) -> None:
