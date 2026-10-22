@@ -60,16 +60,23 @@ TEST_DIRS = frozenset({"tests", "test"})
 SCOPE = "## In scope"
 
 
-def _scope_block(repo: Path, focus: list[Path]) -> list[str]:
-    """The focus files with their outline and line numbers, so a role sees the files it will change."""
-    blocks: list[str] = []
+def _scope_block(repo: Path, focus: list[Path], *, room: int) -> list[str]:
+    """The focus files with their outline and line numbers, so a role sees the files it will change, within
+    `room` characters: a file's whole outline if it fits, else its `path: N lines` line, else nothing."""
+    lines: list[str] = []
+    room -= len(SCOPE) + 1
     for rel in focus:
         try:
             source = (repo / rel).read_text(errors="replace")
         except OSError:  # a file this user cannot read
             continue
-        blocks.append(outline(rel.as_posix(), source, head_chars=0))
-    return [SCOPE, *blocks] if blocks else []
+        whole = outline(rel.as_posix(), source, head_chars=0)
+        for text in (whole, whole.split("\n", 1)[0]):
+            if len(text) + 1 <= room:
+                room -= len(text) + 1
+                lines.append(text)
+                break
+    return [SCOPE, *lines] if lines else []
 
 
 def _rank(top: str, files: list[Path], focus: set[Path]) -> int:
@@ -123,25 +130,27 @@ def _render(
     tracked = [rel for rel in files if rel in sizes]
     wanted = {Path(f.removeprefix("./")) for f in focus}
     in_scope = [rel for rel in tracked if rel in wanted]
-    lines = [HEADER]
-    if test_cmd:
-        lines.append(f"test command: {test_cmd}")
-    lines += _scope_block(repo, in_scope)
+    budget = max_chars - len(TRUNCATED)  # room for the marker, so a cut map is never over `max_chars`
+    head = [HEADER, *([f"test command: {test_cmd}"] if test_cmd else [])]
     groups: dict[str, list[Path]] = {}
     for rel in tracked:
         groups.setdefault(rel.parts[0] if len(rel.parts) > 1 else "", []).append(rel)
-    lines += [f"{top}/ ({len(group)} files)" for top, group in sorted(groups.items()) if top]
+    dirs = [f"{top}/ ({len(group)} files)" for top, group in sorted(groups.items()) if top]
+    reserved = len("\n".join([*head, *dirs]))  # always present: what is left goes to the focus files
+    lines = [*head, *_scope_block(repo, in_scope, room=budget - reserved), *dirs]
     used = len("\n".join(lines))
+    if used > budget:
+        return "\n".join(lines), True
     scope = set(in_scope)
     order = sorted(groups.items(), key=lambda g: (_rank(g[0], g[1], scope), -_code_count(g[1]), g[0]))
     for top, group in order:
         block = _dir_block(repo, group, sizes, depth)
-        if used + 1 + len("\n".join(block)) <= max_chars:
+        if used + 1 + len("\n".join(block)) <= budget:
             used += 1 + len("\n".join(block))
             lines += block
             continue
         if top:  # too large whole: its direct files and subdirectories, as many as fit
-            lines += _one_level(repo, top, group, sizes, scope, room=max_chars - used)
+            lines += _one_level(repo, top, group, sizes, scope, room=budget - used)
         return "\n".join(lines), True
     return "\n".join(lines), False
 
@@ -196,8 +205,10 @@ def build_repo_map(
     if cache_file is not None and cache_file.is_file():
         return cache_file.read_text(), True
     text, cut = _render(repo, files, test_cmd=test_cmd, depth=depth, max_chars=max_chars, focus=focus)
-    if cut or len(text) > max_chars:
-        text = text[:max_chars].rstrip() + TRUNCATED
+    if cut:
+        text += TRUNCATED
+    if len(text) > max_chars:  # a guard: only when the header and directory lines alone are over the cap
+        text = text[: max_chars - len(TRUNCATED)].rstrip() + TRUNCATED
     if cache_file is not None:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(text)

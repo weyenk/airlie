@@ -141,7 +141,9 @@ def test_an_untracked_focus_path_is_left_out(tmp_path: Path) -> None:
         cache_dir=None,
         focus=["src/pkg/new.py"],
     )
-    assert "new.py" not in text
+    assert "new.py" not in text and "## In scope" not in text
+    assert any(line.startswith("src/ (") for line in _lines(text))
+    assert any(line.startswith("tests/ (") for line in _lines(text))
 
 
 def test_every_top_level_directory_is_named_even_when_truncated(tmp_path: Path) -> None:
@@ -179,3 +181,20 @@ def test_code_directories_with_more_code_come_first(tmp_path: Path) -> None:
         git_repo(tmp_path, files), test_cmd=None, max_chars=6000, depth=3, cache_dir=None
     )
     assert text.index("src/pkg/m0.py") < text.index("scripts/s0.py")
+
+
+def test_large_focus_files_never_push_out_the_top_level_directories(tmp_path: Path) -> None:
+    big = "".join(
+        f"def function_number_{i}(argument: int) -> int:\n    return argument\n\n" for i in range(80)
+    )
+    files = {f"src/pkg/big{i}.py": big for i in range(3)}
+    files |= {"tests/test_a.py": "def test_a():\n    pass\n", "docs/a.md": "x\n"}
+    focus = [f"src/pkg/big{i}.py" for i in range(3)]
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd="task test", max_chars=1500, depth=3, cache_dir=None, focus=focus
+    )
+    assert len(text) <= 1500 and text.endswith("[map truncated]")
+    for d in ("src", "tests", "docs"):
+        assert any(line.startswith(f"{d}/ (") for line in _lines(text))
+    assert "## In scope" in text and "src/pkg/big0.py:" in text  # the outline got what the directories left
+    assert text.index("## In scope") < text.index("src/ (")
