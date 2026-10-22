@@ -249,6 +249,12 @@ class PytestChecks:
         outcomes, _ = await self._suite(worktree)
         return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
 
+    async def run_one(self, worktree: Path, test: str) -> str:
+        """The gate's pytest step on the node id `test` alone, confined as the suite is, for a reader (Muse)
+        that wants to see one test fail: the end of the output, where pytest says why."""
+        _, output = await self._suite(worktree, [test])
+        return output[-_TAIL_CHARS:]
+
     async def _failing_at(self, worktree: Path, base: str, tests: list[str]) -> list[str]:
         """Which of `tests` (ids from the worktree's suite) fail on `base` too: run alone, confined as the
         suite is, in a detached checkout of `base` beside the worktree that is removed after. A run that does

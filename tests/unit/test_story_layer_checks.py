@@ -349,3 +349,12 @@ def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> N
         [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
     )
     assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text
+
+
+async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
+    root, _ = repo(
+        tmp_path,
+        {"tests/test_a.py": "def test_good():\n    assert True\n\n\ndef test_bad():\n    assert missing\n"},
+    )
+    out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
+    assert "NameError" in out and "test_good" not in out
