@@ -41,6 +41,15 @@ async def test_hypotheses_calls_the_role_once_and_falls_back_on_unparsable_outpu
     assert await hypotheses(engine, "judge", role, goal="g", diff="", test_tail="", width=2) is None
 
 
+async def test_hypotheses_system_message_has_no_front_matter(tmp_path: Path) -> None:
+    (tmp_path / "judge.md").write_text("---\nsummary: s\n---\n# coder\nbody\n")
+    role = RoleSpec(prompt=tmp_path / "judge.md", model="small", thinking=False, max_tokens=200)
+    engine = FakeEngine({"judge": [FakeReply(text="1. A is wrong\n2. B is wrong")]})
+    await hypotheses(engine, "judge", role, goal="g", diff="+x", test_tail="FAILED", width=2)
+    system = engine.requests[0].messages[0]
+    assert system.role == "system" and system.content == "# coder\nbody\n"
+
+
 def test_nudge_text_names_branch_hypothesis_and_failure() -> None:
     n = nudge_text("r1-2", 2, "the CLI parses qty as str", "FAILED test_x")
     assert n.startswith("You are now branch r1-2 of 2")

@@ -25,6 +25,7 @@ from airlie.obs import EventSink, RunDir
 from airlie.repo_map import build_repo_map
 from airlie.report import RunReport, write_report
 from airlie.scheduler import HALSpeculativeScheduler, SlotScheduler
+from airlie.skills import prompt_text
 from airlie.subproc import agent_env, kill_group, started
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.aggregate import Aggregator, LLMAggregator, TeamOutcome, TestScoreAggregator
@@ -206,7 +207,7 @@ class ParallelAgentTeamOrchestrator:
         summary_prompt = render_keys(summaries, max_keys=self.cfg.lts.max_keys)
         role_name = self.cfg.teams.role
         role = self.cfg.roles[role_name]
-        messages = [Message(role="system", content=role.prompt.read_text())]
+        messages = [Message(role="system", content=prompt_text(role.prompt))]
         messages += [Message(role=h["role"], content=h["content"]) for h in history]  # type: ignore[arg-type]
         messages.append(Message(role="user", content=prompt + summary_prompt))
         res = await self.engine.generate(

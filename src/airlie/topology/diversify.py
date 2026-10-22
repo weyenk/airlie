@@ -9,6 +9,7 @@ from typing import Any
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message
+from airlie.skills import prompt_text
 
 _NUMBERED = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
 _FAILED = re.compile(r"(\d+) failed")
@@ -37,7 +38,7 @@ async def hypotheses(
     req = GenRequest(
         role=role_name,
         messages=[
-            Message(role="system", content=role.prompt.read_text()),
+            Message(role="system", content=prompt_text(role.prompt)),
             Message(role="user", content=prompt),
         ],
         sampling=role.sampling,
