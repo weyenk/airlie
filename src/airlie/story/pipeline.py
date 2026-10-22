@@ -88,6 +88,7 @@ CHECK_ATTEMPTS = 2
 layer with none) gets one retry with the findings."""
 _SHORT = {
     "passes_before_code": "passes before the code is written",
+    "existing_test_changed": "is an existing test the tests changed (still passing)",
     "existing_test_fails": "fails with the new tests in place",
     "assertion_free_test": "has no assertion",
     "unparseable_test": "does not parse",
@@ -1088,6 +1089,7 @@ class StoryPipeline:
                 test=f.test,
                 why=f.why,
                 source=f.source,
+                before=f.before,
                 studio_run=studio_run,
             )
 

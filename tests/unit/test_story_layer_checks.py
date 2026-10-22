@@ -17,6 +17,7 @@ from airlie.story.layer_checks import (
     changed_tests,
     checks_for,
     feedback,
+    findings_text,
     pytest_runner,
     static_findings,
 )
@@ -229,7 +230,36 @@ async def test_a_changed_test_is_held_to_the_same_red(tmp_path: Path) -> None:
     assert await findings(root, base) == []  # strings are not summed as numbers yet: red
     commit(root, "weaker", {"tests/test_calc.py": OLD_TESTS.replace("== 3", "== 3 or True")})
     found = await findings(root, base)
-    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_calc.py::test_add")]
+    assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
+    assert found[0].before.endswith("assert add(1, 2) == 3") and "or True" in found[0].source
+
+
+SPLIT_BASE = (
+    "from calc import add\n\n\ndef test_add():\n    total = add(1, 2)\n    assert total == 3\n"
+    "    assert add(0, 0) == 0\n"
+)
+SPLIT = (
+    "from calc import add\n\n\ndef test_add():\n    total = add(1, 2)\n    assert total == 3\n\n\n"
+    "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n    assert add(0, 0) == 0\n"
+)
+"""A new test inserted inside an existing one, as an edit anchored mid-function does: the existing test's last
+line ends up under the new one (AIR-9 layer 05, 2026-10-22)."""
+
+
+async def test_an_existing_test_split_by_an_insert_is_named_with_its_base_version(tmp_path: Path) -> None:
+    """AIR-9 layer 05, 2026-10-22: the split test was reported as "passes before the layer's code is written",
+    so the tester (and the supervisor) took it for a new test to make red, and the retry never put it back."""
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": SPLIT_BASE})
+    commit(root, "tests", {"tests/test_calc.py": SPLIT})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
+    [split] = found
+    assert "add(0, 0)" in split.before and "add(0, 0)" not in split.source  # where it used to end
+    told = feedback(found)
+    assert "already there on the layer's base" in told and "assert add(0, 0) == 0" in told
+    assert "passes before the layer's code" not in told
+    shown = findings_text(found)
+    assert shown.index("on the base:") < shown.index("add(0, 0)") < shown.index("now:")
 
 
 async def test_a_layer_with_no_new_or_changed_tests_is_a_finding(tmp_path: Path) -> None:

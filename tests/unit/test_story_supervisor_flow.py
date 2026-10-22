@@ -34,6 +34,7 @@ from tests.unit.test_story_layer_checks_flow import (
     WRONG,
     DownForTester,
     calc_repo,
+    write,
 )
 from tests.unit.test_story_pipeline import STORY, TESTER_ROLES, kinds, pipeline
 from tests.unit.test_studio_orchestrator import APPROVE, DONE
@@ -275,3 +276,42 @@ async def test_advice_for_a_subtask_that_never_ran_goes_to_the_configured_role(t
     for subtask, role in (("tests", "tester"), ("build", pipe.s.build_role)):
         told = await pipe._advise(adv, orch, "static_retry", subtask, "TOLD", found)  # type: ignore[arg-type]
         assert told == "advice" and adv.advised[-1][1:3] == (subtask, role)
+
+
+BASE_TEST = "assert add(1, 2) == 3\n    assert add(0, 0) == 0"
+SPLIT_WRITE = write(
+    "tests/test_base.py",
+    "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n"
+    "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n    assert add(0, 0) == 0\n",
+)
+"""The tester's new test written inside the existing test_add: test_add's last line ends up under it."""
+
+
+async def test_muse_and_the_tester_see_an_existing_test_the_tester_split_as_it_was_on_the_base(
+    tmp_path: Path,
+) -> None:
+    """AIR-9 layer 05, 2026-10-22: the tester split an existing test with an insert. The check said the cut
+    test "passes before the layer's code is written", Muse read its lost lines as stray leftovers, and the
+    tester spent its retry trying to make an existing test red. Both are now told it is an existing test the
+    edit changed, with the test as it was on the base."""
+    engine = scripted(
+        tester=[SPLIT_WRITE, LISTED, SPLIT_WRITE, LISTED],
+        supervisor=[
+            answer("put test_add back as it was"),
+            block_answer("test_add was split", fix="restore it"),
+        ],
+    )
+    repo = calc_repo(tmp_path, base_test=BASE_TEST)
+    story = {"tester_role": "tester", "supervisor": {"enabled": True}}
+    st = await pipeline(tmp_path, repo, engine, test_cmd=PYTEST, story=story, roles=SUPERVISOR_ROLES).run(
+        text_card("multiply")
+    )
+    events = st.path / "events.jsonl"
+    [changed, _] = kinds(events, "existing_test_changed")
+    assert changed["test"] == "tests/test_base.py::test_add" and "add(0, 0)" in changed["before"]
+    assert kinds(events, "passes_before_code") == []
+    asked = "\n".join(str(m.content) for r in engine.requests if r.role == "supervisor" for m in r.messages)
+    assert "on the base:" in asked and "assert add(0, 0) == 0" in asked and "now:" in asked
+    told = last_user_message(engine, "tester")
+    assert "already there on the layer's base" in told and "assert add(0, 0) == 0" in told
+    assert st.blocked is not None and "is an existing test the tests changed" in st.blocked
