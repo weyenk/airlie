@@ -57,6 +57,12 @@ class _Source:
     yields_to: tuple[str, ...]
 
 
+def reaches(roles: Iterable[str], role: str) -> bool:
+    """Whether a text whose `roles` is this reaches `role`: it names the role, or `any`. A role prompt names
+    only its own role. The audit (`audit.py`) builds each role's instruction set with the same test."""
+    return role in roles or _ANY in roles
+
+
 def role_tags(prompt: Path) -> tuple[dict[str, str], tuple[str, ...]]:
     """The `governs` subjects (subject -> value) and the `yields_to` sources of a role prompt, from its flat
     front matter. A prompt without tags gives `({}, ())`. A bare `governs:` line is an error, not an ignored
@@ -86,7 +92,7 @@ def conflicts(texts: Iterable[PromptText], role_prompts: Mapping[str, Path]) -> 
     sources = sorted(_sources(texts, role_prompts), key=lambda s: s.name)
     found: list[Conflict] = []
     for role in sorted({r for s in sources for r in s.roles} - {_ANY}):
-        reaching = [s for s in sources if role in s.roles or _ANY in s.roles]
+        reaching = [s for s in sources if reaches(s.roles, role)]
         for kind in _KINDS:
             for a, b in combinations([s for s in reaching if s.kind == kind], 2):
                 if a.name in b.yields_to or b.name in a.yields_to:
