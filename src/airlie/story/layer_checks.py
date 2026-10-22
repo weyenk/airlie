@@ -26,6 +26,7 @@ from airlie.tools.shell import run_cmd
 
 Kind = Literal[
     "passes_before_code",
+    "existing_test_changed",
     "existing_test_fails",
     "assertion_free_test",
     "unparseable_test",
@@ -37,6 +38,15 @@ Kind = Literal[
 """What a finding is about. `engine_error` is the pipeline's, not a check's: the tester's run ended on an
 engine failure, so there is nothing of its to check and a retry would meet the same engine."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
+EXISTING_CHANGED = (
+    "it was already there on the layer's base and still passes, so your edit changed it without testing "
+    "anything new. An edit anchored inside a test splits it: the rest of its body ends up under your new "
+    "test. Put it back as it was on the base (below), unless the brief asks you to change it, and add new "
+    "tests after it ends"
+)
+"""Why an existing test the layer changed and that still passes comes back: it is no new red, and the usual
+cause is a split (AIR-9 layer 05, 2026-10-22: reported as passing before the code, it read as a new test to
+make red, and neither the tester nor the supervisor saw that it had been cut in two)."""
 EXISTING_FAILS = (
     "it passes on the layer's base and fails with the new tests in place: a fixture, conftest.py or shared "
     "helper the tests changed broke it"
@@ -71,12 +81,13 @@ _TAIL_CHARS = 2_000
 @dataclass(frozen=True)
 class ChangedTest:
     """A test function the layer added or changed: its file, its name in it ("test_x" or "TestY::test_x"),
-    its source, and whether it holds a check (`asserts`)."""
+    its source, whether it holds a check (`asserts`), and its source on the base ("" when it is new there)."""
 
     path: str
     name: str
     source: str
     asserts: bool
+    before: str = ""
 
     @property
     def id(self) -> str:
@@ -86,10 +97,14 @@ class ChangedTest:
 
 @dataclass(frozen=True)
 class Finding:
+    """What the check found: its kind, the test (or step), why, the test's source, and its source on the base
+    when the layer changed a test that was there ("" otherwise)."""
+
     kind: Kind
     test: str
     why: str
     source: str
+    before: str = ""
 
 
 def _test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
@@ -173,13 +188,17 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
         if tree is None:
             continue
         before = _parse(_base_text(worktree, base, path))
-        old = {name: ast.dump(fn) for name, fn in _test_functions(before)} if before else {}
+        base_text = _base_text(worktree, base, path)
+        before = _parse(base_text)
+        old = {name: fn for name, fn in _test_functions(before)} if before else {}
         helpers = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
         for name, fn in _test_functions(tree):
-            if old.get(name) == ast.dump(fn):
+            was = old.get(name)
+            if was is not None and ast.dump(was) == ast.dump(fn):
                 continue
             source = (ast.get_source_segment(text, fn) or "")[:_SOURCE_CHARS]
-            found.append(ChangedTest(path, name, source, _checks(fn, helpers, {fn.name})))
+            was_source = (ast.get_source_segment(base_text or "", was) or "")[:_SOURCE_CHARS] if was else ""
+            found.append(ChangedTest(path, name, source, _checks(fn, helpers, {fn.name}), was_source))
     return found
 
 
@@ -220,7 +239,9 @@ class PytestChecks:
         if not tests:
             return findings or [Finding("no_new_test", "(none)", NO_NEW_TEST, "")]
         findings += [
-            Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source) for t in tests if not t.asserts
+            Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source, t.before)
+            for t in tests
+            if not t.asserts
         ]
         outcomes, output = await self._suite(worktree)
         if outcomes is None:
@@ -229,7 +250,12 @@ class PytestChecks:
         modules = {t.path for t in tests} | {f.test for f in findings if f.kind == "unparseable_test"}
         for t in tests:
             if any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
-                findings.append(Finding("passes_before_code", t.id, PASSES_BEFORE_CODE, t.source))
+                if t.before:  # it was there: a test the edit changed, not a new one that is not red
+                    findings.append(
+                        Finding("existing_test_changed", t.id, EXISTING_CHANGED, t.source, t.before)
+                    )
+                else:
+                    findings.append(Finding("passes_before_code", t.id, PASSES_BEFORE_CODE, t.source))
         existing = [
             k
             for k, o in outcomes.items()
@@ -328,6 +354,8 @@ def feedback(findings: Sequence[Finding], *, before_code: bool = True, advice: s
         listed.append(f"- {f.test}: {f.why}")
         if f.kind == "passes_before_code" and "match=" in f.source:
             listed.append(LOOSE_MATCH)
+        if f.kind == "existing_test_changed":
+            listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
     if before_code:
         what = (
             "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
@@ -358,7 +386,10 @@ def findings_text(found: Sequence[Finding]) -> str:
     blocks = []
     for f in found:
         block = f"kind: {f.kind}\ntest: {f.test}\nwhy: {f.why}"
-        if f.source:
+        if f.before:  # the test was there: both whole, so a test cut in two shows where it used to end
+            block += f"\non the base:\n{f.before[:_EVIDENCE_SOURCE_CHARS]}"
+            block += f"\nnow:\n{f.source[:_EVIDENCE_SOURCE_CHARS]}"
+        elif f.source:
             block += f"\nsource:\n{f.source[:_EVIDENCE_SOURCE_CHARS]}"
         blocks.append(block)
     return "\n\n".join(blocks)
