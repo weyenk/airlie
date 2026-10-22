@@ -253,9 +253,12 @@ The contradiction check runs in `pytest` (`tests/unit/test_prompt_contradictions
 texts, that reach the same role with different stances on one subject fail the gate unless one `yields_to` the
 other. Steering outranks rules, so it is never compared with a rule; that is its job, as when "reading is switched
 off" overrides a role prompt that says to read first. `task prompts:audit` is the model's read of the same
-ground (above). Every steering text a run sends is also a `steer` event, with its `id`, the `role` and where it
-went (`team_id` and `step`, a `subtask`, or a story's `layer` or planning `round`), so the events show which
-nudges still fire. Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
+ground (above). The team loop, studio, fork and the story pipeline record each steering text they send as a
+`steer` event, with its `id`, the `role` and where it went (`team_id` and `step`, a `subtask`, or a story's
+`layer` or planning `round`), so those events show which nudges still fire. `no-more-tools` is the exception: the
+single-call loop behind a role's one-shot calls (`tools/loop.py`, used by the chief, the reviewer and the
+supervisor's triage) has no event stream, so its silence says nothing about whether it fired. Design:
+`docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
 
 ## Hardware
 
