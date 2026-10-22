@@ -19,11 +19,6 @@ from pathlib import Path
 from airlie.prompts import text
 from airlie.story.board import text_card
 from airlie.story.briefs import (
-    CONTRACT,
-    PRE_CODE_CHECK,
-    STATIC_CHECK,
-    TEST_RULES,
-    TESTS_ONLY,
     built_so_far,
     layer_plan,
     layers_brief,
@@ -31,10 +26,8 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.layer_checks import (
-    AMEND,
     ASSERTION_FREE,
     EXISTING_FAILS,
-    LOOSE_MATCH,
     PASSES_BEFORE_CODE,
     Finding,
     amend_feedback,
@@ -42,7 +35,6 @@ from airlie.story.layer_checks import (
     findings_text,
 )
 from airlie.story.model import Layer
-from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
@@ -129,16 +121,16 @@ CASES: dict[str, Callable[[], str]] = {
     # serve/app.py puts a blank line before the rule; test_serve.py pins that, this case only restates it
     "client-bridge": lambda: "\n\n" + text("client-bridge"),
     # --- story/briefs.py, story/rounds.py, story/layer_checks.py
-    "test-rules": lambda: TEST_RULES,
-    "pre-code-check": lambda: PRE_CODE_CHECK,
-    "static-check": lambda: STATIC_CHECK,
-    "tests-only": lambda: TESTS_ONLY,
-    "tests-contract": lambda: CONTRACT,
-    "plan-round": lambda: ROUND_NUDGE,
-    "plan-fix": lambda: FIX_NUDGE.format(error="bad json"),
-    "plan-unfinished": lambda: UNFINISHED_NUDGE,
-    "amend": lambda: AMEND,
-    "loose-match": lambda: LOOSE_MATCH,
+    "test-rules": lambda: text("test-rules"),
+    "pre-code-check": lambda: text("pre-code-check"),
+    "static-check": lambda: text("static-check"),
+    "tests-only": lambda: text("tests-only"),
+    "tests-contract": lambda: text("tests-contract"),
+    "plan-round": lambda: text("plan-round"),
+    "plan-fix": lambda: text("plan-fix", error="bad json"),
+    "plan-unfinished": lambda: text("plan-unfinished"),
+    "amend": lambda: text("amend"),
+    "loose-match": lambda: "  " + text("loose-match"),  # feedback indents it under its finding
 }
 
 # --- text assembled by a function: every branch of the prose it picks

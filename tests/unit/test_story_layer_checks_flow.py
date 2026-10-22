@@ -16,6 +16,7 @@ import pytest
 
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.engine.types import EngineError
+from airlie.prompts import text as hub_text
 from airlie.story.board import text_card
 from airlie.story.state import StoryState
 from airlie.teams import native_team
@@ -108,6 +109,11 @@ def prompts(engine: FakeEngine, role: str) -> list[str]:
     return [r.messages[-1].content for r in engine.requests if r.role == role]
 
 
+def steers(st: StoryState) -> list[tuple[str, str, str]]:
+    """The story's `steer` events: the hub texts the pipeline sent a layer's roles (id, role, layer)."""
+    return [(e["id"], e["role"], e["layer"]) for e in kinds(st.path / "events.jsonl", "steer")]
+
+
 def built_file(tmp_path: Path, st: StoryState, path: str) -> str:
     return git(tmp_path / "repo", "show", f"{st.built['01']['branch']}:{path}")
 
@@ -153,6 +159,15 @@ async def test_a_test_that_passes_before_the_code_goes_back_to_the_tester_once(t
     retry = [p for p in prompts(engine, "tester") if "tests/test_calc.py::test_add_again" in p]
     assert len(retry) == 1 and "passes before the layer's code is written" in retry[0]
     assert len(kinds(events, "test_checks_retry")) == 1
+
+
+async def test_the_testers_retry_is_a_steer_event_per_hub_text_it_holds(tmp_path: Path) -> None:
+    """Spec 2026-10-22-prompt-hub, "Steering events": what the pipeline sends a role is counted by hub id."""
+    st, engine = await run(tmp_path, [FEATURE, DONE], tester=[VACUOUS, LISTED, RED, LISTED])
+    assert st.blocked is None and "01" in st.built
+    assert steers(st) == [("checks-found", "tester", "01"), ("checks-fix-before-code", "tester", "01")]
+    [retry] = [p for p in prompts(engine, "tester") if "tests/test_calc.py::test_add_again" in p]
+    assert hub_text("checks-found") in retry and hub_text("checks-fix-before-code") in retry
 
 
 async def test_an_existing_test_already_red_on_the_base_does_not_send_the_tester_back(tmp_path: Path) -> None:
@@ -252,6 +267,8 @@ async def test_without_a_tester_an_assertion_free_test_gets_the_coder_one_retry(
     retry = [p for p in prompts(engine, "coder") if "tests/test_calc.py::test_mul" in p]
     assert len(retry) == 1 and "Run run_tests until your tests pass" in retry[0]
     assert built_file(tmp_path, st, "tests/test_calc.py").endswith("assert mul(2, 3) == 6")
+    assert steers(st) == [("checks-found", "coder", "01"), ("checks-fix-with-code", "coder", "01")]
+    assert hub_text("checks-fix-with-code") in retry[0]
 
 
 async def test_without_a_tester_an_assertion_free_test_twice_stops_the_layer(tmp_path: Path) -> None:
@@ -329,6 +346,8 @@ async def test_a_test_wrong_in_itself_is_mended_by_the_tester_and_the_layer_is_b
         "tests/test_calc.py::test_mul" in asked and DONE.text in asked
     )  # the failure, and the coder's account
     assert [p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p] == []
+    assert steers(st) == [("amend", "tester", "01")]  # the mend is the only text the pipeline sent
+    assert asked.startswith(hub_text("amend"))
     # locked again as mended: the gate's restore keeps the mend
     [_, relocked] = kinds(tmp_path / "state" / "runs" / st.built["01"]["run_id"] / "events.jsonl", "locked")
     assert relocked["paths"] == ["tests/test_calc.py"]
