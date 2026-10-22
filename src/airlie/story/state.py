@@ -78,6 +78,10 @@ class StoryState:
     gate: dict[str, Any] | None = None
     prs: list[dict[str, Any]] = field(default_factory=list)
     runs: list[str] = field(default_factory=list)
+    handled_comments: list[str] = field(default_factory=list)
+    """The ids/times of the person comments the chief has already relayed: a comment is answered exactly once
+    across ticks. A state.json written before the marker existed loads with an empty list (asdict/save keep
+    it, so a fresh story saves one)."""
     blocked: str | None = None
     github_repo: str | None = None
 
