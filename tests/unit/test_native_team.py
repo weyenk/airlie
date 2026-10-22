@@ -1610,3 +1610,128 @@ async def test_two_reads_in_turn_whose_results_change_are_not_a_repeat(tmp_path:
     ctx.tools.add(ScriptedShell(runs))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 6
+
+
+CUT = "Your reasoning on the last turn, cut at the budget:"
+GO_ON = "Do not start over: continue from here and decide."
+
+
+def thought(words: int, tag: str = "t") -> str:
+    """Reasoning of `words` words (the FakeEngine counts a reply's completion tokens in words)."""
+    return " ".join(f"{tag}{i}" for i in range(words))
+
+
+def cut_read(tag: str, path: str = "a", words: int = 8) -> FakeReply:
+    """A read whose thinking ran to an 8-token budget: reasoning only, so its completion tokens are the
+    budget."""
+    return FakeReply(
+        reasoning=thought(words, tag),
+        tool_calls=[ToolCall(f"c-{tag}", "read_file", json.dumps({"path": path}))],
+    )
+
+
+def carried(engine: FakeEngine, i: int) -> list[str]:
+    """The carried-reasoning messages in the i-th (1-based) request."""
+    said = [str(m.content) for m in engine.requests[i - 1].messages if m.role == "user"]
+    return [s for s in said if CUT in s]
+
+
+def thinking_team(tmp_path: Path, engine: FakeEngine, **role_fields: Any) -> tuple[NativeTeam, TeamContext]:
+    fields = {"thinking": True, "thinking_budget": 8, "max_tokens": 64, **role_fields}
+    return make_team(tmp_path, engine, **fields)
+
+
+async def test_a_read_after_thinking_cut_at_the_budget_gets_its_reasoning_back_next_turn(
+    tmp_path: Path,
+) -> None:
+    """AIR-30 (AIR-28's coder, 2026-10-18): a turn cut at the thinking budget read one more file, and the next
+    turn began the same argument from zero. Its reasoning comes back, after the tool result, to go on from."""
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 1) == []
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+    last = engine.requests[1].messages
+    assert [m.role for m in last[-2:]] == ["tool", "user"]  # right after the observation
+
+
+async def test_the_carried_reasoning_is_replaced_by_the_next_cut_not_stacked(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+    assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]
+
+
+async def test_a_turn_under_the_budget_leaves_the_last_carried_reasoning_where_it_is(tmp_path: Path) -> None:
+    under = FakeReply(reasoning=thought(3, "u"), tool_calls=[ToolCall("u", "read_file", '{"path": "u"}')])
+    engine = FakeEngine({"coder": [cut_read("a"), under, FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+
+
+async def test_only_the_tail_of_the_reasoning_is_carried(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a", words=20), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, carried_reasoning_chars=10)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(20, 'a')[-10:]}\n\n{GO_ON}"]
+
+
+@pytest.mark.parametrize(
+    ("reply", "fields"),
+    [
+        (FakeReply(reasoning=thought(7), tool_calls=[ToolCall("c", "read_file", '{"path": "a"}')]), {}),
+        (
+            FakeReply(
+                reasoning=thought(8),
+                tool_calls=[ToolCall("c", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))],
+            ),
+            {},
+        ),
+        (FakeReply(reasoning=thought(8), tool_calls=[ToolCall("c", "run_tests", "{}")]), {}),
+        (cut_read("a"), {"carried_reasoning_chars": 0}),
+        (cut_read("a"), {"thinking_budget": None}),
+        (FakeReply(text=thought(8), tool_calls=[ToolCall("c", "read_file", '{"path": "a"}')]), {}),
+    ],
+    ids=["under-budget", "a-write", "run-tests", "switched-off", "uncapped", "no-reasoning"],
+)
+async def test_nothing_is_carried_from_a_turn_that_was_not_a_read_cut_at_the_budget(
+    tmp_path: Path, reply: FakeReply, fields: dict[str, Any]
+) -> None:
+    engine = FakeEngine({"coder": [reply, FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, **fields)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == []
+
+
+async def test_a_role_without_thinking_never_gets_reasoning_carried(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, thinking=False)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == []
+
+
+async def test_carrying_reasoning_is_a_reasoning_carried_event(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    events: list[tuple[str, dict[str, Any]]] = []
+    ctx.emit = lambda kind, **f: events.append((kind, f))
+    await team.run(ctx, Recorder())
+    n = len(thought(8, "a"))
+    assert [f for k, f in events if k == "reasoning_carried"] == [
+        {"team_id": ctx.team_id, "role": ctx.role_name, "step": 1, "chars": n},
+        {"team_id": ctx.team_id, "role": ctx.role_name, "step": 2, "chars": n},
+    ]
+
+
+async def test_a_resumed_conversation_replaces_the_reasoning_its_last_run_carried(tmp_path: Path) -> None:
+    first = FakeEngine({"coder": [cut_read("a")]})
+    team, ctx = thinking_team(tmp_path, first, max_steps=1)
+    ctx.stop_when = lambda step: True
+    state = (await team.run(ctx, Recorder())).state
+    engine = FakeEngine({"coder": [cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    ctx.initial_state = state
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]

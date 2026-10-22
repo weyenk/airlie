@@ -166,6 +166,11 @@ tokens, each step slower than the last) and then spent 14-20 minutes thinking it
   (no tools) writes the plan from what was read, without a reasoning pass. Any role may set it. A role that calls a
   tool on that turn anyway is told once and thinks on the retry; a second call ends the run at `max_steps`. Each
   call is a `last_turn_tool_call` event (`tool`, `ends_run`).
+- **A cut deliberation continues.** When a thinking turn runs to its `thinking_budget` and its action is a read
+  (not a write or `run_tests`), the next turn gets the last `carried_reasoning_chars` (default 1500; 0 is off)
+  characters of that reasoning back, after the tool result: "Your reasoning on the last turn, cut at the
+  budget: … Do not start over: continue from here and decide." One such message at a time: the next replaces it.
+  Each is a `reasoning_carried` event (`step`, `chars`) (AIR-30).
 - **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
   from the story's base commit, and the architect is told not to read them again.
 - **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then
