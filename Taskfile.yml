@@ -110,6 +110,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie supervisor verdict {{.CLI_ARGS}}'
 
+  supervisor:try:
+    desc: "Muse's triage of a worktree as the first pre-code retry asks for it, with no ledger row (task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID] [--round 0] [--subtask tests] [--brief-file F])"
+    cmds:
+      - '{{.RUN}} airlie supervisor try {{.CLI_ARGS}}'
+
   story:check:
     desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
     cmds:

@@ -1258,6 +1258,115 @@ def supervisor_verdict(
     console.print(f"recorded: #{intervention_id} {verdict}", markup=False, highlight=False)
 
 
+@supervisor_app.command("try")
+def supervisor_try(
+    worktree: Annotated[
+        Path, typer.Option("--worktree", help="a checkout whose HEAD holds the tester's tests over --base")
+    ],
+    base: Annotated[
+        str, typer.Option("--base", help="the layer's base commit: the gate is read from its AGENTS.md")
+    ],
+    run: Annotated[
+        str | None,
+        typer.Option("--run", help="a studio run id: Muse reads the role's last steps from its trace"),
+    ] = None,
+    subtask: Annotated[str, typer.Option("--subtask", help="the subtask whose trace Muse reads")] = "tests",
+    round_: Annotated[
+        int | None,
+        typer.Option(
+            "--round",
+            min=0,
+            help="the attempt whose trace Muse reads: 0 is the first run, N its round-N retry (default: the "
+            "newest, as in a story; 0 is what Muse read at the first retry)",
+        ),
+    ] = None,
+    brief_file: Annotated[
+        Path | None, typer.Option("--brief-file", help="the layer's brief, for Muse to read (default: none)")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Muse's triage of a worktree, as a story's first pre-code retry asks for it, against the configured
+    engine: the pre-code check (the gate's ruff fixers and checks, then pytest's), its findings, Muse's
+    answer as JSON, and what it cost. A try is not an intervention: it writes no ledger row. Like a story,
+    the fixers edit the worktree's changed files (left uncommitted)."""
+    import asyncio
+    import dataclasses
+    import json
+
+    from airlie.story.gate import read_gate
+    from airlie.story.layer_checks import Finding, checks_for, feedback, findings_text
+    from airlie.story.model import NoTestGate
+    from airlie.story.tester_lint import lint_for
+    from airlie.supervisor.evidence import TriageInput, trace_tail
+    from airlie.supervisor.layer import DIFF_CAP
+    from airlie.supervisor.triage import Triaged, TriageFailed, triage_for
+    from airlie.teams.worktree import diff_between
+
+    cfg = _story_cfg(config)
+    wt = worktree.expanduser().resolve()
+    try:
+        commands = read_gate(wt, base).commands  # the base's, as a story reads it: never what a model wrote
+    except NoTestGate as e:
+        err.print(f"[red]no test gate at {escape(base)}: {escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    confinement, timeout_s = cfg.tools.confinement(), cfg.tools.shell_timeout_s
+    checks = checks_for(commands, timeout_s=timeout_s, confinement=confinement)
+    if checks is None:
+        err.print("[red]the gate runs no pytest: the pre-code check is for pytest only[/red]")
+        raise typer.Exit(1)
+    lint = lint_for(commands, timeout_s=timeout_s, confinement=confinement)
+    spec, s = cfg.story.supervisor, cfg.story
+    role = (s.tester_role if subtask == "tests" else None) or s.build_role
+    trace_dir = cfg.observability.state_dir.expanduser() / "runs" / (run or "") / "trace"
+
+    async def check() -> list[Finding]:
+        """The pipeline's pre-code check, in its order."""
+        found: list[Finding] = []
+        if lint is not None:
+            await lint.fix(wt, base)
+            found = await lint.check(wt, base)
+        return found + await checks.run(wt, base)
+
+    async def ask(found: list[Finding]) -> Triaged:
+        inp = TriageInput(
+            trigger="precode_retry",
+            role=role,
+            subtask=subtask,
+            told=feedback(found),
+            evidence=findings_text(found),
+            kinds=tuple(f.kind for f in found),
+            brief=brief_file.read_text(encoding="utf-8") if brief_file is not None else "",
+            trace=trace_tail(trace_dir, subtask, spec.trace_steps, round_=round_) if run else "",
+            diff=diff_between(wt, base, DIFF_CAP),
+            events="",
+            earlier=(),
+            recall=(),
+        )
+        engine = _http_engine(cfg, cfg.engine_for_role(spec.role))
+        try:
+            return await triage_for(cfg, engine, checks)(inp, wt)
+        finally:
+            await engine.stop()
+
+    def show(text: str) -> None:
+        console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+    found = asyncio.run(check())
+    if not found:
+        show("no findings: the pre-code check passes, so there is nothing for Muse to triage")
+        return
+    show("findings")
+    show(findings_text(found))
+    try:
+        triaged = asyncio.run(ask(found))
+    except TriageFailed as e:
+        err.print(f"[red]Muse gave no answer: {escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    show("answer")
+    show(json.dumps(dataclasses.asdict(triaged.answer), indent=2, ensure_ascii=False))
+    show(f"seconds {triaged.seconds:.1f}  tokens {triaged.tokens}")
+
+
 @board_app.command("export")
 def board_export(
     out: Annotated[

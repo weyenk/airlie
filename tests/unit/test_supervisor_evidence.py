@@ -58,6 +58,16 @@ def test_trace_tail_reads_the_latest_round_and_its_last_steps(tmp_path: Path) ->
     assert "retry 5" not in tail and "first-run" not in tail
 
 
+def test_trace_tail_reads_a_given_round_when_asked(tmp_path: Path) -> None:
+    """`airlie supervisor try` replays the first retry: what Muse read then is the first run, not the retry
+    that came after it."""
+    write_step(tmp_path / "tests", 1, reasoning="first-run 1")
+    write_step(tmp_path / "tests" / "round-1", 1, reasoning="retry 1")
+    assert "first-run 1" in trace_tail(tmp_path, "tests", steps=3, round_=0)
+    assert "retry 1" in trace_tail(tmp_path, "tests", steps=3, round_=1)
+    assert trace_tail(tmp_path, "tests", steps=3, round_=2) == ""
+
+
 def test_trace_tail_picks_the_highest_round_not_the_last_by_name(tmp_path: Path) -> None:
     write_step(tmp_path / "tests" / "round-2", 1, reasoning="round two")
     write_step(tmp_path / "tests" / "round-10", 1, reasoning="round ten")

@@ -22,7 +22,8 @@ from airlie.supervisor.ledger import Intervention, Ledger, Outcome, Trigger
 from airlie.supervisor.triage import Triage, TriageFailed
 from airlie.teams.worktree import diff_between
 
-_DIFF_CAP = 20_000
+DIFF_CAP = 20_000
+"""How much of the layer's diff Muse is shown (`airlie supervisor try` shows the same)."""
 _STUCK_MESSAGES = 8
 _STUCK_MESSAGE_CAP = 800
 
@@ -209,7 +210,7 @@ class LayerSupervisor:
             kinds=kinds,
             brief=self.brief,
             trace=trace_tail(self.trace_dir, subtask, self.spec.trace_steps),
-            diff=diff_between(self.worktree, self.base_sha, _DIFF_CAP),
+            diff=diff_between(self.worktree, self.base_sha, DIFF_CAP),
             events=layer_events(self.events, self.layer),
             earlier=tuple(self.ledger.for_layer(self.story, self.layer)),
             recall=tuple(self.ledger.recall(trigger, kinds, self.spec.recall)),

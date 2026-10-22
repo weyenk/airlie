@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from airlie.config import RoleSpec
+from airlie.config import AirlieConfig, RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import GenRequest, Message
 from airlie.skills import prompt_text
@@ -127,3 +127,22 @@ class Triage:
         except AnswerError as e:
             raise TriageFailed("unparsable", str(e)) from e
         return Triaged(answer, loop.time() - started, res.prompt_tokens + res.completion_tokens)
+
+
+def triage_for(cfg: AirlieConfig, engine: Engine, checks: OneTestRunner | None) -> Triage:
+    """story.supervisor's Triage on `engine`: its role, with read_file, list_dir and grep confined to the
+    worktree each call is given, and run_test when the gate runs pytest (`checks`). The pipeline and
+    `airlie supervisor try` both build it here, so a try asks Muse exactly as a story does."""
+    spec = cfg.story.supervisor
+    tools_cfg = cfg.tools
+
+    def tools(worktree: Path) -> ToolRegistry:
+        ctx = ToolContext(
+            worktree, tools_cfg.shell_timeout_s, tools_cfg.output_cap_chars, **tools_cfg.confinement()
+        )
+        registry = ToolRegistry.builtin(["read_file", "list_dir", "grep"], ctx)
+        if checks is not None:
+            registry.add(RunOneTest(checks))
+        return registry
+
+    return Triage(engine, spec.role, cfg.roles[spec.role], tools, spec.timeout_s)

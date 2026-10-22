@@ -63,7 +63,7 @@ from airlie.story.tester_lint import lint_for
 from airlie.supervisor.advice import with_advice
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
-from airlie.supervisor.triage import RunOneTest, Triage
+from airlie.supervisor.triage import triage_for
 from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
     changed_files,
@@ -78,8 +78,6 @@ from airlie.teams.worktree import (
     rev_parse,
     squash_since,
 )
-from airlie.tools.protocol import ToolContext
-from airlie.tools.registry import ToolRegistry
 from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
@@ -837,25 +835,15 @@ class StoryPipeline:
         try:
             if self.ledger is None:
                 self.ledger = Ledger(self.cfg.observability.state_dir / "supervisor.sqlite")
-            role = self.cfg.roles[spec.role]
-            prompt_text(role.prompt)  # read now: a prompt that is gone is one setup fallback, not one a call
-            tools_cfg = self.cfg.tools
-            checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=tools_cfg.confinement())
-
-            def tools(worktree: Path) -> ToolRegistry:
-                ctx = ToolContext(
-                    worktree, tools_cfg.shell_timeout_s, tools_cfg.output_cap_chars, **tools_cfg.confinement()
-                )
-                registry = ToolRegistry.builtin(["read_file", "list_dir", "grep"], ctx)
-                if checks is not None:
-                    registry.add(RunOneTest(checks))
-                return registry
-
+            # read now: a prompt that is gone is one setup fallback, not one a call
+            prompt_text(self.cfg.roles[spec.role].prompt)
+            confinement = self.cfg.tools.confinement()
+            checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
             owned = [c.line() for c in Story.from_dict(st.story or {}).acceptance if c.id in layer.acceptance]
             brief = layer.brief + "".join(f"\n- {c}" for c in owned)
             return LayerSupervisor(
                 ledger=self.ledger,
-                triage=Triage(orch.engine, spec.role, role, tools, spec.timeout_s),
+                triage=triage_for(self.cfg, orch.engine, checks),
                 spec=spec,
                 story=card.key,
                 layer=nn,

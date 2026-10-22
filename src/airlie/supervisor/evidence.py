@@ -59,10 +59,17 @@ def _render_step(n: int, data: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def trace_tail(trace_dir: Path, subtask: str, steps: int, chars: int = 12_000) -> str:
-    """The last `steps` steps of the role's newest attempt on `subtask`, or "" when it left no trace."""
-    folder = _newest_step_folder(trace_dir / subtask)
-    if folder is None:
+def trace_tail(
+    trace_dir: Path, subtask: str, steps: int, chars: int = 12_000, *, round_: int | None = None
+) -> str:
+    """The last `steps` steps of the role's newest attempt on `subtask`, or "" when it left no trace.
+    `round_` reads that attempt instead (0 is the first run): a replay asks what Muse read at the time, before
+    the retries that came after it."""
+    if round_ is None:
+        folder = _newest_step_folder(trace_dir / subtask)
+    else:
+        folder = trace_dir / subtask if round_ == 0 else trace_dir / subtask / f"round-{round_}"
+    if folder is None or not folder.is_dir():
         return ""
     files = sorted(
         (int(m.group(1)), f) for f in folder.glob("step-*.json") if (m := _STEP_FILE.fullmatch(f.name))

@@ -744,6 +744,11 @@ its latest outcome (`helped`, `not_helped`, `blocked`, `unknown`) and your verdi
   aside, and the blocks where it named a fix worth one more attempt.
 - `task supervisor:verdict -- ID right|wrong [NOTE]` records whether an intervention was right; the latest
   verdict wins.
+- `task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID] [--round 0]` asks Muse about a worktree
+  outside a story, as the first pre-code retry would: it runs the pre-code check (the gate is read from the
+  base's AGENTS.md, and the ruff fixers edit the changed files as in a story), prints the findings, Muse's
+  answer and its seconds and tokens, and writes no ledger row. `--run` shows Muse that studio run's trace,
+  `--round 0` its first attempt (what Muse read at the first retry).
 
 To turn it off, set `story: { supervisor: { enabled: false } }` in `airlie.local.yaml`. The design is
 `docs/superpowers/specs/2026-10-22-supervisor-triage-design.md`.
