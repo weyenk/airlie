@@ -153,3 +153,19 @@ Built (Noah's go, 2026-10-22):
 
 Not chosen: patching vllm-mlx's batched video path in `engine/patches` (it is upstream's code, and the fix would
 sit in the batch generator's request setup); refusing video until vllm-mlx fixes it.
+
+### Live, after the change (2026-10-22)
+
+The same engine, this branch's serve on port 8091, one request per file. The times are long because a story
+(AIR-9) was using the engine at the same time.
+
+| file | kind | answer |
+| --- | --- | --- |
+| 640×360 JPEG with "GIRAFFE" | image | "GIRAFFE" |
+| 4032×3024 JPEG (12 MP) with "ZEBRA" | image, scaled to 1536 | "ZEBRA" |
+| 4 s mp4, a red square moving right | video, 4 frames | "Diagonally up and to the right" (right is correct; "up" is the model's) |
+| server.log | text | the `ERROR disk full on /var/data` line and its time |
+| one-page PDF | pdf | "the invoice total is **4,312 dollars**" |
+
+Not checked live: real iPhone footage (HEVC .mov) and a photo with EXIF rotation from a phone. Both are covered
+only by unit tests with files made in code.
