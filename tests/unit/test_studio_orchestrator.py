@@ -861,6 +861,22 @@ async def test_the_repo_map_is_of_the_worktree_the_roles_build_on_not_of_the_per
     assert "feature_only.py" in chief.requests[0].messages[1].content
 
 
+async def test_the_story_build_maps_the_layers_files(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "m.py").write_text("def made() -> None: ...\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "m")
+    cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
+    build = Plan((), (Subtask("build", "write it", "docs"),))
+    engine = FakeEngine({"docs": [DONE]})
+    await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo, plan=build, detach=True, synthesise=False, map_focus=["src/m.py"]
+    )
+    first = next(r for r in engine.requests if r.role == "docs").messages[1].content
+    assert "## In scope" in first and "made" in first
+
+
 # ---- the test gate ----
 
 

@@ -654,7 +654,7 @@ class StudioOrchestrator:
         """Raise PlanError when a plan from outside the chief cannot run (see the module's `check_plan`)."""
         check_plan(self.cfg, plan)
 
-    def _prepare(self, repo: Path, test_cmd: str | None) -> None:
+    def _prepare(self, repo: Path, test_cmd: str | None, focus: Sequence[str] = ()) -> None:
         if not self.cfg.repo_map.enabled:
             return
         text, cached = build_repo_map(
@@ -663,6 +663,7 @@ class StudioOrchestrator:
             max_chars=self.cfg.repo_map.max_chars,
             depth=self.cfg.repo_map.depth,
             cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
+            focus=focus,
         )
         self.preamble = text
         self.sink.emit("repo_map", chars=len(text), cached=cached)
@@ -743,6 +744,7 @@ class StudioOrchestrator:
         scope_tests: bool = False,
         checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None = None,
         gate_follow_up: str | None = None,
+        map_focus: Sequence[str] = (),
         amend_tests: Callable[[], Awaitable[bool]] | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
@@ -786,7 +788,7 @@ class StudioOrchestrator:
         self.gate_memo = GateMemo()
         self.checkpoints, self.halted = dict(checkpoints or {}), False
         self.amend_tests = amend_tests
-        self._prepare(self.worktree, test_cmd)
+        self._prepare(self.worktree, test_cmd, map_focus)
         chosen: Plan | None = given
         final = ""
         if given is not None:

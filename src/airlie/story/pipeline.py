@@ -33,7 +33,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.context import guide_budget, repo_guide
+from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import (
     Finding,
@@ -774,6 +774,7 @@ class StoryPipeline:
                 scope_tests=True,
                 checkpoints={"tests": before_code} if tester else None,
                 gate_follow_up="build",
+                map_focus=named_paths(layer.scope),
                 amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn, sup) if tester else None,
             )
             commit_wip(wt, f"studio: {branch} (final)")

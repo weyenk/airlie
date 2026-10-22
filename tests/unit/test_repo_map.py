@@ -93,3 +93,68 @@ def test_a_tracked_path_the_checkout_cannot_stat_or_read_does_not_stop_the_map(t
     assert cached is False and "config.cfg" not in text and "gone.py" not in text  # nothing to stat: left out
     assert "pkg/report.py" in text and "def total_cost(" in text and ".gitignore" in text  # the rest is there
     assert "pkg/locked.py (" in text and "hidden" not in text  # listed; its signatures could not be read
+
+
+def _focus_repo(tmp_path: Path) -> Path:
+    return git_repo(
+        tmp_path,
+        {
+            "src/pkg/a.py": "def alpha() -> int:\n    return 1\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "README.md": "hi\n",
+            **{f"docs/page{i:03}.md": "x" * 2000 for i in range(200)},
+        },
+    )
+
+
+def _lines(text: str) -> list[str]:
+    return text.splitlines()
+
+
+def test_code_and_tests_come_before_docs_that_outweigh_the_budget(tmp_path: Path) -> None:
+    text, _ = build_repo_map(_focus_repo(tmp_path), test_cmd=None, max_chars=3000, depth=3, cache_dir=None)
+    assert "src/pkg/a.py" in text and "tests/test_a.py" in text
+    assert "docs/ (200 files)" in _lines(text)
+
+
+def test_focus_files_come_first_with_their_outline(tmp_path: Path) -> None:
+    text, _ = build_repo_map(
+        _focus_repo(tmp_path),
+        test_cmd="task test",
+        max_chars=3000,
+        depth=3,
+        cache_dir=None,
+        focus=["src/pkg/a.py"],
+    )
+    assert "## In scope" in text
+    scope = text.index("## In scope")
+    assert scope < text.index("docs/ (") and scope < text.index("src/ (")
+    assert "1: def alpha" in text[scope : text.index("src/ (")]
+
+
+def test_an_untracked_focus_path_is_left_out(tmp_path: Path) -> None:
+    text, _ = build_repo_map(
+        _focus_repo(tmp_path),
+        test_cmd=None,
+        max_chars=3000,
+        depth=3,
+        cache_dir=None,
+        focus=["src/pkg/new.py"],
+    )
+    assert "new.py" not in text
+
+
+def test_every_top_level_directory_is_named_even_when_truncated(tmp_path: Path) -> None:
+    text, _ = build_repo_map(_focus_repo(tmp_path), test_cmd=None, max_chars=400, depth=3, cache_dir=None)
+    for d in ("docs", "src", "tests"):
+        assert any(line.startswith(f"{d}/ (") for line in _lines(text))
+    assert text.endswith("[map truncated]")
+
+
+def test_focus_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    repo, cache = _focus_repo(tmp_path), tmp_path / "cache"
+    plain, _ = build_repo_map(repo, test_cmd=None, max_chars=3000, depth=3, cache_dir=cache)
+    focused, cached = build_repo_map(
+        repo, test_cmd=None, max_chars=3000, depth=3, cache_dir=cache, focus=["src/pkg/a.py"]
+    )
+    assert cached is False and "## In scope" in focused and "## In scope" not in plain
