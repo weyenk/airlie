@@ -1,11 +1,14 @@
 """Chat attachments (design 2026-10-22-chat-attachments): a file a person attaches in Chat is stored under
 observability.state_dir/uploads as `<id>` beside `<id>.json`, and each request that names it gets what the
-chat model can take: a picture or a video as a data URL, a text file or a PDF's text in a fence, anything
-else as one line saying what it is. The kind is read from the bytes, never taken from the browser."""
+chat model can take: a picture scaled to max_image_px, a video as frames airlie samples from it (vllm-mlx
+0.5.0's batched engine refuses video parts), a text file or a PDF's text in a fence, anything else as one
+line saying what it is. The kind is read from the bytes, never taken from the browser. What is derived from
+an upload (a scaled picture, a video's frames, a PDF's text) is kept beside it as `<id>.*`."""
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import mimetypes
 import re
@@ -31,6 +34,10 @@ _AUDIO = {b"M4A ", b"M4B ", b"M4P ", b"F4A "}
 
 class UploadTooLarge(Exception):
     """The body ran past its kind's limit; the message names the limit."""
+
+
+class Unreadable(ValueError):
+    """A picture or video whose bytes could not be decoded; the message says why."""
 
 
 @dataclass(frozen=True)
@@ -179,24 +186,101 @@ class UploadStore:
         return self.root / upload.id
 
     def sweep(self) -> int:
-        """Delete uploads older than keep_days, and parts a crash left behind. Returns how many went."""
+        """Delete uploads older than keep_days with everything derived from them, and parts a crash left
+        behind. An upload's age is its .json's. Returns how many uploads went."""
         self._swept = self.now()
         cutoff = self._swept - self.spec.keep_days * DAY
-        gone = 0
-        for p in self.root.iterdir():
+
+        def old(p: Path) -> bool:
             try:
-                if p.stat().st_mtime >= cutoff:
-                    continue
-                p.unlink()
-                gone += p.suffix == ""  # the upload itself; its .json and .txt go with it
+                return p.stat().st_mtime < cutoff
             except OSError:
-                continue
+                return False
+
+        files = list(self.root.iterdir())
+        expired = {p.stem for p in files if p.suffix == ".json" and old(p)}
+        gone = 0
+        for p in files:
+            uid = p.name[:32]
+            if uid in expired or (not (self.root / f"{uid}.json").exists() and old(p)):
+                p.unlink(missing_ok=True)
+                gone += p.name == uid
         return gone
 
     # ---- what the model gets ----
-    def data_url(self, upload: Upload) -> str:
-        data = base64.b64encode(self.path(upload).read_bytes()).decode("ascii")
-        return f"data:{upload.mime};base64,{data}"
+    def picture(self, upload: Upload) -> str:
+        """A picture as a data URL, at most max_image_px on its long edge and turned upright (EXIF). One
+        that already fits is sent as it is; the scaled copy is kept as `<id>.px<N>.<ext>`."""
+        px = self.spec.max_image_px
+        for ext, mime in (("jpg", "image/jpeg"), ("png", "image/png")):
+            cached = self.root / f"{upload.id}.px{px}.{ext}"
+            if cached.is_file():
+                return _data_url(mime, cached.read_bytes())
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
+        try:
+            with Image.open(self.path(upload)) as img:
+                upright = img.getexif().get(0x0112, 1) in (0, 1)
+                if max(img.size) <= px and upright and upload.mime in ("image/png", "image/jpeg"):
+                    return _data_url(upload.mime, self.path(upload).read_bytes())
+                img.seek(0)  # a GIF's first frame
+                out = ImageOps.exif_transpose(img)
+                out.thumbnail((px, px), Image.Resampling.LANCZOS)
+                alpha = out.mode in ("RGBA", "LA") or (out.mode == "P" and "transparency" in out.info)
+                ext, mime, fmt = ("png", "image/png", "PNG") if alpha else ("jpg", "image/jpeg", "JPEG")
+                out = out.convert("RGBA" if alpha else "RGB")
+                buf = io.BytesIO()
+                out.save(buf, fmt, **({} if alpha else {"quality": 85}))
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as e:
+            raise Unreadable(f"it could not be read as a picture ({e})") from e
+        (self.root / f"{upload.id}.px{px}.{ext}").write_bytes(buf.getvalue())
+        return _data_url(mime, buf.getvalue())
+
+    def frames(self, upload: Upload) -> tuple[float, list[tuple[float, str]]]:
+        """(duration in seconds, [(t, JPEG data URL)]): video_fps frames a second, at most video_max_frames
+        spread evenly over the clip, each at most video_frame_px on its long edge. Kept as
+        `<id>.frames-<fps>-<max>-<px>.json`, so a video in the history is decoded once."""
+        s = self.spec
+        cache = self.root / f"{upload.id}.frames-{s.video_fps:g}-{s.video_max_frames}-{s.video_frame_px}.json"
+        if cache.is_file():
+            got = json.loads(cache.read_text())
+            return float(got["duration"]), [(float(t), str(u)) for t, u in got["frames"]]
+        import cv2
+
+        cap = cv2.VideoCapture(str(self.path(upload)))
+        try:
+            if not cap.isOpened():
+                raise Unreadable("it could not be read as a video")
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            picked: list[tuple[float, Any]] = []
+            if fps > 0 and count > 0:
+                duration = count / fps
+                n = max(1, min(s.video_max_frames, int(duration * s.video_fps)))
+                for i in range(n):
+                    t = (i + 0.5) * duration / n
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, min(count - 1, int(t * fps)))
+                    ok, frame = cap.read()
+                    if ok:
+                        picked.append((t, frame))
+            else:  # no frame count (some webm): read through, keeping one frame in every step
+                native = fps if fps > 0 else 30.0
+                step, i = max(1, round(native / s.video_fps)), 0
+                while len(picked) < s.video_max_frames:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    if i % step == 0:
+                        picked.append((i / native, frame))
+                    i += 1
+                duration = i / native
+        finally:
+            cap.release()
+        if not picked:
+            raise Unreadable("it could not be read as a video (no frame decoded)")
+        out = [(t, _data_url("image/jpeg", _jpeg(cv2, frame, s.video_frame_px))) for t, frame in picked]
+        cache.write_text(json.dumps({"duration": duration, "frames": out}))
+        return duration, out
 
     def text_of(self, upload: Upload) -> tuple[str, bool]:
         """(text, cut): a text file's or a PDF's text, at most max_text_kb of it."""
@@ -231,6 +315,27 @@ class UploadStore:
         return text
 
 
+def _data_url(mime: str, data: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _jpeg(cv2: Any, frame: Any, px: int) -> bytes:
+    h, w = frame.shape[:2]
+    scale = px / max(h, w)
+    if scale < 1:
+        frame = cv2.resize(
+            frame, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA
+        )
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise Unreadable("a frame could not be encoded")
+    return bytes(buf.tobytes())
+
+
+def _seconds(t: float) -> str:
+    return f"{t:.1f} s" if t < 60 else f"{int(t // 60)} min {t % 60:.0f} s"
+
+
 def fence(text: str) -> str:
     """A fence longer than any run of backticks inside, so a file's own fences cannot close it."""
     longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
@@ -245,10 +350,14 @@ def file_line(upload: Upload, why: str) -> str:
 def as_parts(store: UploadStore, upload: Upload, *, media: bool) -> list[dict[str, Any]]:
     """The content parts the model gets for one attachment. `media`: send a picture or video as itself
     (False past the history caps, or for a role without vision)."""
-    if upload.kind == "image" and media:
-        return [{"type": "image_url", "image_url": {"url": store.data_url(upload)}}]
-    if upload.kind == "video" and media:
-        return [{"type": "video_url", "video_url": {"url": store.data_url(upload)}}]
+    if upload.kind in MEDIA and media:
+        try:
+            if upload.kind == "image":
+                return [{"type": "image_url", "image_url": {"url": store.picture(upload)}}]
+            return video_parts(upload, *store.frames(upload))
+        except Exception as e:  # a broken picture or clip: say so, the conversation goes on
+            why = str(e) if isinstance(e, Unreadable) else f"it could not be read ({e})"
+            return [{"type": "text", "text": file_line(upload, f"{why}.")}]
     if upload.kind in MEDIA:
         return [{"type": "text", "text": f"[earlier {upload.kind} `{upload.name}`]"}]
     if upload.kind in ("text", "pdf"):
@@ -263,6 +372,20 @@ def as_parts(store: UploadStore, upload: Upload, *, media: bool) -> list[dict[st
         head = f"Attached file `{upload.name}` ({human(upload.size)}){note}:"
         return [{"type": "text", "text": f"{head}\n{fence(text)}"}]
     return [{"type": "text", "text": file_line(upload, "its contents can't be read from chat.")}]
+
+
+def video_parts(upload: Upload, duration: float, frames: list[tuple[float, str]]) -> list[dict[str, Any]]:
+    """A note on what the frames are, then each frame after its time: the model sees a video as pictures."""
+    n = len(frames)
+    every = f", one every {_seconds(duration / n)}" if n > 1 else ""
+    note = f"Video `{upload.name}` ({_seconds(duration)}): {n} frame{'s' if n != 1 else ''}{every}, in order."
+    parts: list[dict[str, Any]] = [{"type": "text", "text": note}]
+    for t, url in frames:
+        parts += [
+            {"type": "text", "text": f"t={_seconds(t)}"},
+            {"type": "image_url", "image_url": {"url": url}},
+        ]
+    return parts
 
 
 def has_uploads(messages: list[Any]) -> bool:
@@ -280,8 +403,8 @@ def resolve(
     *,
     can_see: Callable[[Upload], bool],
     vision: bool,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Messages with every `airlie_upload` part replaced, and whether a video goes as video. The newest
+) -> list[dict[str, Any]]:
+    """Messages with every `airlie_upload` part replaced. The newest
     history_images pictures and history_videos videos go as pixels; older ones become a note. An id that
     is gone, or not this person's, becomes a placeholder: the conversation goes on."""
     spec = store.spec
@@ -319,5 +442,4 @@ def resolve(
         for j, p in enumerate(messages[i]["content"]):
             parts.extend(replaced.get((i, j), [p]))
         out[i]["content"] = parts
-    video = any((u := found[n]) is not None and u.kind == "video" for n in media)
-    return out, video
+    return out

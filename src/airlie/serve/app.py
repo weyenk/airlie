@@ -370,18 +370,14 @@ def create_app(
             if isinstance(parts, list) and sum(p.get("type") == "airlie_upload" for p in parts) > limit:
                 raise HTTPException(400, f"a message may carry up to {limit} attachments")
         principal = owner_of(request)
-        msgs, video = await asyncio.to_thread(
+        msgs = await asyncio.to_thread(  # decoding a picture or a video, or reading a PDF, blocks
             resolve,
             msgs,
             uploads,
             can_see=lambda u: may_see(principal, u),
             vision=cfg.roles["chat"].vision,
         )
-        out = {**body, "messages": msgs}
-        if video:  # the engine samples the frames itself; these keep a long clip inside the context
-            out.setdefault("video_fps", cfg.chat.attachments.video_fps)
-            out.setdefault("video_max_frames", cfg.chat.attachments.video_max_frames)
-        return out
+        return {**body, "messages": msgs}
 
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any], request: Request) -> Any:

@@ -10,11 +10,11 @@ The chat role runs on `generalist` (Qwen3.8-27B, `tags: [vision]`), which vllm-m
 Its OpenAI route takes these content parts (checked in `vllm_mlx/api/utils.py` and `models/mllm.py`):
 
 - `image_url` with a `data:image/...;base64` URL. It decodes up to 20 MB.
-- `video_url` with a `data:video/...;base64` URL. It decodes up to 500 MB, samples frames itself with OpenCV
-  (installed), and reads `video_fps` / `video_max_frames` from the request body.
+- `video_url` with a `data:video/...;base64` URL, on paper: it decodes up to 500 MB and samples frames itself
+  with OpenCV. Live, the batched engine refuses it (see *Live findings* below), so airlie samples the frames.
 - `audio_url`, but only for omni models. Qwen3.8 is not one.
 
-So pictures and video reach the model as pixels. Any other file reaches it only as text, or as a line that
+So pictures, and a video's frames, reach the model as pixels. Any other file reaches it only as text, or as a line that
 says what the file is.
 
 ## The flow
@@ -45,9 +45,12 @@ says what the file is.
 3. **Send.** A user message with attachments goes to `/v1/chat/completions` as a content list:
    `[{"type": "text", "text": "..."}, {"type": "airlie_upload", "upload": "<id>"}, ...]`. The chat route turns
    each `airlie_upload` part into what the model can take:
-   - `image` becomes an `image_url` data URL.
-   - `video` becomes a `video_url` data URL. The request gets `video_fps` and `video_max_frames` from config
-     (default 1 fps and 32 frames, so a long clip stays inside the context).
+   - `image` becomes an `image_url` data URL, scaled to `max_image_px` (default 1536) on its long edge and
+     turned upright (EXIF). A picture that already fits is sent as it is.
+   - `video` becomes frames airlie samples with OpenCV: `video_fps` a second (default 1), at most
+     `video_max_frames` (default 32) spread over a longer clip, each `video_frame_px` (default 448) on its long
+     edge. They go as JPEG `image_url` parts after a note (``Video `clip.mp4` (4.0 s): 4 frames, one every
+     1.0 s, in order.``), each after its time (`t=0.5 s`).
    - `text` and `pdf` become a text part: ``Attached file `name` (12 KB):`` and then the text in a fence. The
      text is cut at `max_text_kb` (default 200) with a note saying it was cut and how big the file is. A PDF
      with no text layer (a scan) says so.
@@ -71,7 +74,8 @@ says what the file is.
 ```yaml
 chat:
   attachments: { max_image_mb: 20, max_video_mb: 100, max_file_mb: 25, max_text_kb: 200, max_per_message: 10,
-                 keep_days: 30, video_fps: 1.0, video_max_frames: 32, history_images: 4, history_videos: 1 }
+                 keep_days: 30, max_image_px: 1536, video_fps: 1.0, video_max_frames: 32, video_frame_px: 448,
+                 history_images: 4, history_videos: 1 }
 ```
 
 The video default is 100 MB because the Cloudflare quick tunnel refuses bodies over 100 MB. Tailscale has no
@@ -94,7 +98,8 @@ such limit, so you can raise it in `airlie.local.yaml`. The chat role gets `visi
 - Each kind's limit gives a 413 that names the limit, and leaves no partial file behind.
 - Without sign-in the route is a 401. Another person's id is a 404.
 - The keep sweep deletes old files.
-- The chat route turns each kind into its part, as described above, and sets `video_fps` / `video_max_frames`.
+- The chat route turns each kind into its part, as described above. A picture is scaled (alpha stays PNG),
+  a sideways photo is turned upright, and a video's frames come in time order at `video_frame_px`.
 - Text is cut at the limit with the note. PDF text is extracted, using a fixture PDF.
 - A missing id becomes the placeholder. Pictures and videos past the history caps become `[earlier ...]`.
 - A non-chat model with an `airlie_upload` part is a 400.
@@ -104,7 +109,7 @@ such limit, so you can raise it in `airlie.local.yaml`. The chat role gets `visi
 - The + opens the file chooser and no longer goes to Start new work. The quick reply still does.
 - A PNG shows a thumbnail chip. Sent, it shows in my bubble, and the upstream got an `image_url` with exactly
   those bytes.
-- A small mp4 gives a `video_url` part and the frame settings.
+- A real 2 s mp4 gives the note and two `t=` labelled JPEG frames.
 - A `.txt` file reaches the upstream as a fenced text part with its name.
 - A zip shows a chip and gives the "can't be read" line.
 - A file over the limit gives a chip with the size message, Send stays off, and × clears it.
@@ -129,7 +134,7 @@ serve on port 8091:
   (`longest_edge` in `preprocessor_config.json`), so a 12 MP iPhone photo is about 12k tokens. The engine caps
   a request at 32,768 tokens (`max_request_tokens`), so three photos would be refused.
 
-Proposed (needs Noah's go):
+Built (Noah's go, 2026-10-22):
 
 1. **airlie samples the video itself.** OpenCV takes frames at `video_fps`, at most `video_max_frames`, each
    scaled to at most `video_frame_px` (default 448) on its long edge. They are sent as pictures in time order,

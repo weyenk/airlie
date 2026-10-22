@@ -1,7 +1,7 @@
 """Chat attachments in Chromium (design 2026-10-22-chat-attachments): the + opens the file chooser, a picked
-file uploads as a chip, and the chat route hands the model a picture or video as itself, a text file as its
-text, anything else as a line saying what it is. Each check leaves its screenshot in test-results/evidence/
-(conftest.Evidence)."""
+file uploads as a chip, and the chat route hands the model a picture as itself, a video as frames airlie
+sampled, a text file as its text, anything else as a line saying what it is. Each check leaves its
+screenshot in test-results/evidence/ (conftest.Evidence)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,11 @@ import base64
 import re
 import struct
 import zlib
+from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 from playwright.sync_api import FilePayload, Page
 
@@ -18,8 +21,6 @@ from tests.e2e.conftest import Evidence, Server
 from tests.e2e.test_chat import open_chat, say
 
 pytestmark = pytest.mark.e2e
-
-MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 200
 
 
 def png(w: int = 24, h: int = 16) -> bytes:
@@ -36,6 +37,18 @@ def png(w: int = 24, h: int = 16) -> bytes:
         + chunk(b"IDAT", zlib.compress(rows))
         + chunk(b"IEND", b"")
     )
+
+
+def clip(folder: Path) -> bytes:
+    """A real 2 s mp4 (a red square crossing a white frame), as a phone would hand over."""
+    path = folder / "clip.mp4"
+    out = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (320, 240))
+    for i in range(20):
+        frame = np.full((240, 320, 3), 255, np.uint8)
+        cv2.rectangle(frame, (10 + i * 12, 90), (60 + i * 12, 140), (0, 0, 255), -1)
+        out.write(frame)
+    out.release()
+    return path.read_bytes()
 
 
 def attach(page: Page, *files: FilePayload) -> None:
@@ -109,18 +122,22 @@ def test_after_a_reload_the_picture_is_still_there_and_the_thread_holds_no_bytes
     assert "base64" not in stored and "kept.png" in stored
 
 
-def test_a_video_reaches_the_model_as_video_with_the_frame_settings(
-    signed_in: Page, server: Server, evidence: Evidence
+def test_a_video_reaches_the_model_as_frames_airlie_sampled(
+    signed_in: Page, server: Server, evidence: Evidence, tmp_path: Path
 ) -> None:
     open_chat(signed_in, server, [])
-    attach(signed_in, {"name": "clip.mp4", "mimeType": "video/mp4", "buffer": MP4})
+    attach(signed_in, {"name": "clip.mp4", "mimeType": "video/mp4", "buffer": clip(tmp_path)})
     evidence.expect(chip(signed_in, "clip.mp4"), "the chip names the video").to_be_visible()
     evidence.expect(signed_in.get_by_role("button", name="Send"), "uploaded").to_be_enabled()
     say(signed_in, "what happens here?")
     evidence.expect(signed_in.locator(".me video"), "my bubble has the player").to_have_count(1)
-    body = server.upstream.requests[-1]
-    assert body["messages"][-1]["content"][1]["video_url"]["url"].startswith("data:video/mp4;base64,")
-    assert body["video_fps"] == 1.0 and body["video_max_frames"] == 32
+    parts = last_user_parts(server)[1:]
+    assert parts[0] == {
+        "type": "text",
+        "text": "Video `clip.mp4` (2.0 s): 2 frames, one every 1.0 s, in order.",
+    }
+    assert [p["text"] for p in parts[1::2]] == ["t=0.5 s", "t=1.5 s"]
+    assert all(p["image_url"]["url"].startswith("data:image/jpeg;base64,") for p in parts[2::2])
 
 
 def test_a_text_file_reaches_the_model_as_its_text_and_a_zip_as_a_line(

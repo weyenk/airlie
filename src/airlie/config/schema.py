@@ -225,8 +225,14 @@ class AttachmentsSpec(Strict):
     )
     max_per_message: int = Field(default=10, ge=1)
     keep_days: int = Field(default=30, ge=1, description="an upload older than this is deleted")
-    video_fps: float = Field(default=1.0, gt=0, description="frames a second the engine samples from a video")
-    video_max_frames: int = Field(default=32, ge=1)
+    max_image_px: int = Field(
+        default=1536,
+        ge=64,
+        description="a picture is scaled to this long edge before it is sent; the file is kept",
+    )
+    video_fps: float = Field(default=1.0, gt=0, description="frames a second airlie samples from a video")
+    video_max_frames: int = Field(default=32, ge=1, description="a longer video's frames are spread over it")
+    video_frame_px: int = Field(default=448, ge=64, description="long edge of each sampled frame")
     history_images: int = Field(
         default=4, ge=0, description="pictures sent as pixels per request, newest first; older become a note"
     )

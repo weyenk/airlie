@@ -31,6 +31,11 @@ dependencies = [
     "webauthn>=2.5", # auth: passkey (WebAuthn) registration and login ceremonies
     "duckdb>=1.0", # airlie.metrics: DuckDB aggregation over the event JSONL
     "pypdf>=6.21", # chat attachments: the text of an attached PDF
+    "pillow>=11", # chat attachments: a picture scaled before it is sent
+    # chat attachments: airlie samples a video's frames (vllm-mlx 0.5.0's batched engine refuses video). The
+    # build vllm-mlx installs on the Mac; headless on Linux (the e2e image): one cv2 either way.
+    "opencv-python>=4.10 ; sys_platform == 'darwin'",
+    "opencv-python-headless>=4.10 ; sys_platform == 'linux'",
 ]
 
 [project.scripts]

@@ -177,12 +177,15 @@ web:
   fetch_timeout_s: 30
 
 # ---- Chat attachments (design 2026-10-22-chat-attachments) -------------------------------------------------------
-# Files the + in the web app's Chat attaches, under observability.state_dir/uploads. A picture or a video reaches the
-# chat role (vision: true) as itself; a text file or a PDF as its text, cut at max_text_kb; anything else as a line
-# saying what it is. 100 MB of video is what the Cloudflare quick tunnel lets through; Tailscale has no such limit.
+# Files the + in the web app's Chat attaches, under observability.state_dir/uploads. The chat role (vision: true)
+# gets a picture scaled to max_image_px, a video as frames airlie samples (video_fps a second, at most
+# video_max_frames, video_frame_px each: vllm-mlx 0.5.0's batched engine refuses video parts), a text file or a PDF
+# as its text cut at max_text_kb, anything else as a line saying what it is. 100 MB of video is what the Cloudflare
+# quick tunnel lets through; Tailscale has no such limit.
 chat:
   attachments: { max_image_mb: 20, max_video_mb: 100, max_file_mb: 25, max_text_kb: 200, max_per_message: 10,
-                 keep_days: 30, video_fps: 1.0, video_max_frames: 32, history_images: 4, history_videos: 1 }
+                 keep_days: 30, max_image_px: 1536, video_fps: 1.0, video_max_frames: 32, video_frame_px: 448,
+                 history_images: 4, history_videos: 1 }
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:
