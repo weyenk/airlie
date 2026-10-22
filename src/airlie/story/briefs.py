@@ -14,10 +14,11 @@ from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
 
 BODY_LIMIT = 60_000
+"""GitHub refuses a PR body of 65,536 characters or more; pr_body keeps its text under this many."""
+
 GUIDE_HEADING = (
     "Read for you: whole files are complete, do not read them again; outlines give the line to read from"
 )
-"""GitHub refuses a PR body of 65,536 characters or more; pr_body keeps its text under this many."""
 
 ZWSP = "\N{ZERO WIDTH SPACE}"
 """Invisible: placed where markup would start, so GitHub reads the text after it as plain text."""

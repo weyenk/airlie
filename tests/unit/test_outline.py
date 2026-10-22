@@ -45,3 +45,12 @@ def test_non_python_gets_line_count_and_head() -> None:
     assert lines[0] == "ci.yml: 100 lines"
     assert lines[1] == "key0: value0"
     assert len("\n".join(lines[1:])) <= 50
+
+
+def test_a_python_file_with_no_defs_gets_its_head() -> None:
+    """A constants module parses but has nothing to outline: its head shows what it holds."""
+    assert outline("src/c.py", "A = 1\nB = 2\n", head_chars=1000).splitlines() == [
+        "src/c.py: 2 lines",
+        "A = 1",
+        "B = 2",
+    ]

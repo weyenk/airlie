@@ -27,7 +27,7 @@ def named_paths(text: str) -> list[str]:
     """The paths `text` names, in order of first mention, none twice."""
     seen: list[str] = []
     for m in _PATH.finditer(text):
-        path = m.group(1).lstrip("./")
+        path = m.group(1).removeprefix("./")
         if path not in seen:
             seen.append(path)
     return seen
@@ -44,6 +44,16 @@ def guide_budget(cfg: AirlieConfig, roles: Sequence[str]) -> int:
 
 
 _ALSO = "### Also named (not shown)"
+
+
+_BACKTICKS = re.compile(r"`+")
+
+
+def _fenced(body: str) -> str:
+    """`body` in a code fence longer than any backtick run in it, so a Markdown file's own ``` fences
+    cannot close it early and spill the rest of the file into the brief as markup."""
+    fence = "`" * max(3, 1 + max((len(m.group()) for m in _BACKTICKS.finditer(body)), default=0))
+    return f"{fence}\n{body}\n{fence}"
 
 
 def _assemble(parts: list[str], listed: list[str]) -> str:
@@ -70,26 +80,21 @@ def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
             parts.append(head + _clip(guide, limit))
     files = [(p, b) for p in named_paths(text) if (b := _blob(repo, commit, p)) is not None]
     lines = [f"- {p} ({len(b.splitlines())} lines)" for p, b in files]
-    fits_outline = (
-        True  # once even an outline does not fit, the rest are listed; a whole form is tried for every file
-    )
     shown = 0
     for k, (path, body) in enumerate(files):
         n = len(body.splitlines())
         rest = lines[k + 1 :]
-        whole = f"### {path} (whole, {n} lines)\n```\n{body}\n```"
+        whole = f"### {path} (whole, {n} lines)\n{_fenced(body)}"
         if len(_assemble([*parts, whole], rest)) <= budget_chars:
             parts.append(whole)
             shown = k + 1
             continue
-        if fits_outline:
-            heading = f"### {path} (outline: read a span with read_file offset and limit)"
-            card = f"{heading}\n```\n{outline(path, body, head_chars=FILE_HEAD_CHARS)}\n```"
-            if len(_assemble([*parts, card], rest)) <= budget_chars:
-                parts.append(card)
-                shown = k + 1
-                continue
-            fits_outline = False
+        heading = f"### {path} (outline: read a span with read_file offset and limit)"
+        card = f"{heading}\n{_fenced(outline(path, body, head_chars=FILE_HEAD_CHARS))}"
+        if len(_assemble([*parts, card], rest)) <= budget_chars:
+            parts.append(card)
+            shown = k + 1
+            continue
         break
     listed = lines[shown:]
     while listed and len(_assemble(parts, listed)) > budget_chars:

@@ -28,6 +28,24 @@ def test_paths_in_prose_are_found_once_in_order() -> None:
     assert named_paths("no paths, just version 1.2.3 and e.g. foo.py") == []
 
 
+def test_a_leading_dot_slash_is_dropped_but_a_dot_directory_is_kept() -> None:
+    assert named_paths("see ./.github/workflows/a.yml") == [".github/workflows/a.yml"]
+
+
+def test_a_markdown_file_with_fences_cannot_break_out_of_its_own(tmp_path: Path) -> None:
+    body = "# Notes\n\n```sh\ntask test\n```\n\nafter the fence\n"
+    repo, sha = repo_with(tmp_path, {"docs/a.md": body})
+    whole = repo_guide(repo, sha, "Read docs/a.md", budget_chars=10_000)
+    assert f"### docs/a.md (whole, 7 lines)\n````\n{body}\n````" in whole
+    big = body + "".join(f"line {i}\n" for i in range(3000))
+    (tmp_path / "big").mkdir()
+    repo2, sha2 = repo_with(tmp_path / "big", {"docs/a.md": big})
+    card = repo_guide(repo2, sha2, "Read docs/a.md", budget_chars=4_000)
+    assert (
+        "(outline: read a span" in card and "\n````\ndocs/a.md: " in card and card.rstrip().endswith("````")
+    )
+
+
 def test_the_guide_is_agents_md_and_the_files_the_story_names_that_exist(tmp_path: Path) -> None:
     repo, sha = repo_with(tmp_path, {"AGENTS.md": "# rules\nrun the gate\n", "src/m.py": "x = 1\n"})
     guide = repo_guide(repo, sha, "Change src/m.py and src/missing.py", budget_chars=10_000)

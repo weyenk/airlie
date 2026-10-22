@@ -2,7 +2,7 @@
 
 Shared by the repo map (signatures without lines) and the brief's "read for you" block (outline with
 lines), so a story role sees a file's shape without spending a step to read it. A file that is not Python,
-or does not parse, gets its line count and head instead. No model call."""
+does not parse, or has no defs or classes gets its line count and head instead. No model call."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _head(source: str, head_chars: int) -> str:
 def outline(path: str, source: str, *, head_chars: int) -> str:
     header = f"{path}: {len(source.splitlines())} lines"
     entries = outline_entries(source) if path.endswith(".py") else None
-    if entries is None:
+    if not entries:  # not Python, does not parse, or a module of constants with nothing to outline
         head = _head(source, head_chars)
         return f"{header}\n{head}" if head else header
     return "\n".join([header, *(f"{e.line}: {INDENT * e.depth}{e.text}" for e in entries)])
