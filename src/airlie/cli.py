@@ -1133,6 +1133,30 @@ def story_restack(
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@story_app.command("steps")
+def story_steps(
+    keys: Annotated[list[str], typer.Argument(metavar="KEY...", help="story keys (AIR-9 AIR-31)")],
+    repo: Annotated[
+        Path | None, typer.Option(help="repository the stories built in (default: the current directory)")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """The steps each story role spent before its first write: reads, pages, repeats, and reads of files the
+    layer's brief already names, from the stories' run traces. Nothing runs and nothing is written."""
+    from airlie.obs.step_report import render, story_segments
+
+    cfg = _load(config)
+    caps = {name: spec.max_steps or cfg.teams.max_steps for name, spec in cfg.roles.items()}
+    state_dir = cfg.observability.state_dir.expanduser()
+    segments = []
+    for key in keys:
+        if not (state_dir / "stories" / key / "state.json").exists():
+            err.print(f"[red]no story {escape(key)} under {escape(str(state_dir))}[/red]", emoji=False)
+            raise typer.Exit(1)
+        segments += story_segments(state_dir, key, repo or Path.cwd(), caps)
+    console.print(render(segments), markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @story_app.command("check")
 def story_check(
     ref: Annotated[
