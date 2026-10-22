@@ -975,3 +975,8 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
     }
     with pytest.raises(ConfigError, match="write_schedule"):
         load_config(write(tmp_path, bad))
+
+
+def test_the_tester_has_twenty_steps() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.roles["tester"].max_steps == 20
