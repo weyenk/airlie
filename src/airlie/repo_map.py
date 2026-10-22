@@ -11,7 +11,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from airlie.outline import outline, outline_entries
+from airlie.outline import outline_entries
 from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 HEADER = "[Repository map]"
@@ -57,26 +57,6 @@ CODE_SUFFIXES = frozenset(
     [".py", ".js", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".h", ".cpp"]
 )
 TEST_DIRS = frozenset({"tests", "test"})
-SCOPE = "## In scope"
-
-
-def _scope_block(repo: Path, focus: list[Path], *, room: int) -> list[str]:
-    """The focus files with their outline and line numbers, so a role sees the files it will change, within
-    `room` characters: a file's whole outline if it fits, else its `path: N lines` line, else nothing."""
-    lines: list[str] = []
-    room -= len(SCOPE) + 1
-    for rel in focus:
-        try:
-            source = (repo / rel).read_text(errors="replace")
-        except OSError:  # a file this user cannot read
-            continue
-        whole = outline(rel.as_posix(), source, head_chars=0)
-        for text in (whole, whole.split("\n", 1)[0]):
-            if len(text) + 1 <= room:
-                room -= len(text) + 1
-                lines.append(text)
-                break
-    return [SCOPE, *lines] if lines else []
 
 
 def _rank(top: str, files: list[Path], focus: set[Path]) -> int:
@@ -104,12 +84,15 @@ def _file_line(repo: Path, rel: Path, size: int) -> str:
     return entry
 
 
-def _dir_block(repo: Path, files: list[Path], sizes: dict[Path, int], depth: int) -> list[str]:
-    """One top-level directory's file lines; what lies deeper than `depth` is one `dir/ …` line."""
+def _dir_block(
+    repo: Path, files: list[Path], sizes: dict[Path, int], depth: int, focus: set[Path]
+) -> list[str]:
+    """One top-level directory's file lines; what lies deeper than `depth` is one `dir/ …` line, except a
+    focus file, which is shown at any depth."""
     lines: list[str] = []
     shown_dirs: set[Path] = set()
     for rel in files:
-        if len(rel.parts) > depth:
+        if len(rel.parts) > depth and rel not in focus:
             d = Path(*rel.parts[:depth])
             if d not in shown_dirs:
                 shown_dirs.add(d)
@@ -119,48 +102,19 @@ def _dir_block(repo: Path, files: list[Path], sizes: dict[Path, int], depth: int
     return lines
 
 
-def _render(
-    repo: Path, files: list[Path], *, test_cmd: str | None, depth: int, max_chars: int, focus: Sequence[str]
-) -> tuple[str, bool]:
-    """(map text, whether it ran out of budget). The budget goes to the header and test command, the focus
-    files, a line for every top-level directory, and then the directories expanded in `_rank` order."""
-    sizes = {
-        rel: st.st_size for rel in files if (st := _stat(repo / rel)) is not None
-    }  # left out, as in the fingerprint
-    tracked = [rel for rel in files if rel in sizes]
-    wanted = {Path(f.removeprefix("./")) for f in focus}
-    in_scope = [rel for rel in tracked if rel in wanted]
-    budget = max_chars - len(TRUNCATED)  # room for the marker, so a cut map is never over `max_chars`
-    head = [HEADER, *([f"test command: {test_cmd}"] if test_cmd else [])]
-    groups: dict[str, list[Path]] = {}
-    for rel in tracked:
-        groups.setdefault(rel.parts[0] if len(rel.parts) > 1 else "", []).append(rel)
-    dirs = [f"{top}/ ({len(group)} files)" for top, group in sorted(groups.items()) if top]
-    reserved = len("\n".join([*head, *dirs]))  # always present: what is left goes to the focus files
-    lines = [*head, *_scope_block(repo, in_scope, room=budget - reserved), *dirs]
-    used = len("\n".join(lines))
-    if used > budget:
-        return "\n".join(lines), True
-    scope = set(in_scope)
-    order = sorted(groups.items(), key=lambda g: (_rank(g[0], g[1], scope), -_code_count(g[1]), g[0]))
-    for top, group in order:
-        block = _dir_block(repo, group, sizes, depth)
-        if used + 1 + len("\n".join(block)) <= budget:
-            used += 1 + len("\n".join(block))
-            lines += block
-            continue
-        if top:  # too large whole: its direct files and subdirectories, as many as fit
-            lines += _one_level(repo, top, group, sizes, scope, room=budget - used)
-        return "\n".join(lines), True
-    return "\n".join(lines), False
+Choice = tuple[str, ...]
+"""One entry of an expanded directory: the line to show, then shorter stand-ins if it does not fit."""
 
 
-def _one_level(
-    repo: Path, top: str, files: list[Path], sizes: dict[Path, int], focus: set[Path], *, room: int
-) -> list[str]:
-    """A directory too large to expand whole: its direct files, then each subdirectory as a count line, in
-    the order of `_rank` (focus, code, tests, name), while they fit in `room` characters."""
-    base = Path(top)  # a directory that only holds one subdirectory (`src/pkg/`) is looked through
+def _parts(
+    repo: Path, top: Path, files: list[Path], sizes: dict[Path, int], focus: set[Path]
+) -> tuple[list[Choice], list[Choice]]:
+    """A directory too large to expand whole, as (toward the focus, the rest). Toward the focus: each
+    subdirectory that holds a focus file as a count line and then descended into, and the focus files
+    themselves. The rest, deepest directory first: its other files (with signatures, else name and size),
+    then its other subdirectories as count lines in `_rank` order. A role's files stay in view however deep
+    they are and however many files sit beside them."""
+    base = top  # a directory that only holds one subdirectory (`src/pkg/`) is looked through
     while True:
         n = len(base.parts) + 1
         direct = [f for f in files if len(f.parts) == n]
@@ -171,15 +125,82 @@ def _one_level(
         if direct or len(subs) != 1:
             break
         base = base / next(iter(subs))
-    wanted = [_file_line(repo, f, sizes[f]) for f in direct]
     ranked = sorted(subs.items(), key=lambda g: (_rank(g[0], g[1], focus), -_code_count(g[1]), g[0]))
-    wanted += [f"{base}/{sub}/ ({len(group)} files)" for sub, group in ranked]
-    kept: list[str] = []
-    for line in wanted:
-        if len(line) + 1 <= room:  # a line too long for what is left is passed over
-            room -= len(line) + 1
-            kept.append(line)
-    return kept
+    toward: list[Choice] = []
+    rest: list[Choice] = []
+    for sub, group in ranked:
+        if any(f in focus for f in group):
+            inner_toward, inner_rest = _parts(repo, base / sub, group, sizes, focus)
+            toward += [(f"{base / sub}/ ({len(group)} files)",), *inner_toward]
+            rest += inner_rest
+    for f in direct:
+        (toward if f in focus else rest).append((_file_line(repo, f, sizes[f]), f"{f} ({_size(sizes[f])})"))
+    rest += [
+        (f"{base / sub}/ ({len(group)} files)",)
+        for sub, group in ranked
+        if not any(f in focus for f in group)
+    ]
+    return toward, rest
+
+
+def _render(
+    repo: Path, files: list[Path], *, test_cmd: str | None, depth: int, max_chars: int, focus: Sequence[str]
+) -> tuple[str, bool]:
+    """(map text, whether something did not fit). The budget goes to the header and test command, a line for
+    every top-level directory, and then the directories in `_rank` order, each whole if it fits, else as
+    much of its `_parts` as fits. The directories that hold focus files go first, and when one is too large
+    its way to the focus files is shown before any directory's rest, so `tests/` is not left out because
+    `src/` had many files."""
+    sizes = {
+        rel: st.st_size for rel in files if (st := _stat(repo / rel)) is not None
+    }  # left out, as in the fingerprint
+    tracked = [rel for rel in files if rel in sizes]
+    wanted = {Path(f.removeprefix("./")) for f in focus}
+    scope = {rel for rel in tracked if rel in wanted}
+    budget = max_chars - len(TRUNCATED)  # room for the marker, so a cut map is never over `max_chars`
+    head = [HEADER, *([f"test command: {test_cmd}"] if test_cmd else [])]
+    groups: dict[str, list[Path]] = {}
+    for rel in tracked:
+        groups.setdefault(rel.parts[0] if len(rel.parts) > 1 else "", []).append(rel)
+    dirs = [f"{top}/ ({len(group)} files)" for top, group in sorted(groups.items()) if top]
+    room = budget - len("\n".join([*head, *dirs]))  # always present
+    if room < 0:
+        return "\n".join([*head, *dirs]), True
+    order = sorted(groups.items(), key=lambda g: (_rank(g[0], g[1], scope), -_code_count(g[1]), g[0]))
+    shown: dict[str, list[str]] = {top: [] for top, _ in order}
+    later: dict[str, list[Choice]] = {}
+    cut = False
+
+    def take(top: str, choices: list[Choice]) -> None:
+        nonlocal room
+        for choice in choices:  # the first stand-in that fits; an entry nothing of fits is passed over
+            line = next((c for c in choice if len(c) + 1 <= room), None)
+            if line is not None:
+                room -= len(line) + 1
+                shown[top].append(line)
+
+    def place(top: str, group: list[Path]) -> None:
+        nonlocal room, cut
+        block = _dir_block(repo, group, sizes, depth, scope)
+        if len("\n".join(block)) + 1 <= room:
+            room -= len("\n".join(block)) + 1
+            shown[top] = block
+            return
+        cut = True
+        toward, later[top] = _parts(repo, Path(top), group, sizes, scope)
+        take(top, toward)
+
+    for top, group in order:
+        if _rank(top, group, scope) == 0:
+            place(top, group)
+    for top, group in order:
+        if top in later:
+            take(top, later[top])
+        elif not shown[top]:
+            place(top, group)
+            take(top, later.get(top, []))
+    lines = [*head, *dirs, *(line for top, _ in order for line in shown[top])]
+    return "\n".join(lines), cut
 
 
 def build_repo_map(
@@ -191,8 +212,8 @@ def build_repo_map(
     cache_dir: Path | None,
     focus: Sequence[str] = (),
 ) -> tuple[str, bool]:
-    """Returns (map text, served_from_cache). `focus` is the paths the role will work on: their outline comes
-    first, and the directories that hold them are expanded before the rest."""
+    """Returns (map text, served_from_cache). `focus` is the paths the role will work on: the directories
+    that hold them are expanded first, toward those files. Their outlines are the story guide's to give."""
     files = _tracked(repo)
     fingerprint = hashlib.sha256()
     for rel in files:

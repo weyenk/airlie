@@ -874,7 +874,7 @@ async def test_the_story_build_maps_the_layers_files(tmp_path: Path) -> None:
         "g", repo=repo, plan=build, detach=True, synthesise=False, map_focus=["src/m.py"]
     )
     first = next(r for r in engine.requests if r.role == "docs").messages[1].content
-    assert "## In scope" in first and "made" in first
+    assert "src/m.py (" in first and "def made() -> None" in first and "## In scope" not in first
 
 
 # ---- the test gate ----
