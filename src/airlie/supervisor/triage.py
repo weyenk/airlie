@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
-from airlie.engine.types import EngineError, GenRequest, Message
+from airlie.engine.types import GenRequest, Message
 from airlie.skills import prompt_text
 from airlie.supervisor.answer import Answer, AnswerError, parse_answer
 from airlie.supervisor.evidence import TriageInput, triage_message
@@ -91,31 +91,35 @@ class Triage:
         """The role's model name, for the ledger."""
 
     async def __call__(self, inp: TriageInput, worktree: Path) -> Triaged:
-        # chat_template_kwargs is not a GenRequest field: the engine reads it from the role's spec by name, as
-        # it does for the reviewer.
-        req = GenRequest(
-            role=self.role_name,
-            messages=[
-                Message(role="system", content=prompt_text(self.role.prompt)),
-                Message(role="user", content=triage_message(inp)),
-            ],
-            sampling=self.role.sampling,
-            max_tokens=self.role.max_tokens,
-            thinking=self.role.thinking,
-        )
+        # The request is built inside the guard too: a missing prompt file or a broken tools factory is a
+        # fallback like any other failure, never a stopped run.
         loop = asyncio.get_running_loop()
         started = loop.time()
         try:
+            # chat_template_kwargs is not a GenRequest field: the engine reads it from the role's spec by
+            # name, as it does for the reviewer.
+            req = GenRequest(
+                role=self.role_name,
+                messages=[
+                    Message(role="system", content=prompt_text(self.role.prompt)),
+                    Message(role="user", content=triage_message(inp)),
+                ],
+                sampling=self.role.sampling,
+                max_tokens=self.role.max_tokens,
+                thinking=self.role.thinking,
+            )
             res = await asyncio.wait_for(
                 generate_with_tools(
                     self.engine, req, self.tools(worktree), self.role.max_steps or DEFAULT_STEPS
                 ),
                 self.timeout_s,
             )
+        except TriageFailed:
+            raise
         except TimeoutError as e:
             raise TriageFailed("timeout", f"no answer in {self.timeout_s:g}s") from e
-        except (EngineError, OSError) as e:
-            raise TriageFailed("engine_error", str(e)) from e
+        except Exception as e:  # noqa: BLE001  # whatever broke, the run goes on without Muse; cancellation is not an Exception
+            raise TriageFailed("engine_error", f"{type(e).__name__}: {e}") from e
         if res.finish_reason == "length" and not res.text.strip():
             raise TriageFailed("cut_off", "max_tokens ended the reply before an answer")
         try:

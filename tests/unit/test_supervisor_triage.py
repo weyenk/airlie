@@ -133,3 +133,22 @@ async def test_an_answer_with_no_message_is_usable_only_at_a_block(tmp_path: Pat
         an_input(trigger="block"), tmp_path
     )
     assert out.answer.message is None
+
+
+async def test_a_missing_prompt_file_is_a_triage_failure(tmp_path: Path) -> None:
+    t = triage(FakeEngine({"supervisor": [FakeReply(text=json.dumps(GOOD))]}))
+    t.role = t.role.model_copy(update={"prompt": tmp_path / "gone.md"})
+    with pytest.raises(TriageFailed) as e:
+        await t(an_input(), tmp_path)
+    assert e.value.reason == "engine_error"
+
+
+async def test_a_tools_factory_that_raises_is_a_triage_failure(tmp_path: Path) -> None:
+    def broken(worktree: Path) -> ToolRegistry:
+        raise RuntimeError("no registry")
+
+    t = triage(FakeEngine({"supervisor": [FakeReply(text=json.dumps(GOOD))]}))
+    t.tools = broken
+    with pytest.raises(TriageFailed, match="RuntimeError: no registry") as e:
+        await t(an_input(), tmp_path)
+    assert e.value.reason == "engine_error"
