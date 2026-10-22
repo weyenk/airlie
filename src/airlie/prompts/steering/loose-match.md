@@ -2,6 +2,8 @@
 kind: steering
 roles: [tester]
 when: A test the pre-code check found passing before the code has a `match=` pattern in its source; said under that finding in the tester's retry, indented two spaces by the code.
+governs:
+  tests.match: new-phrase
 why: |
   Said under a test that passes before the code and matches an error's text: the usual cause.
 

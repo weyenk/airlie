@@ -2,6 +2,12 @@
 kind: rule
 roles: [architect]
 fields: [max_layers]
+governs:
+  layers.order: bottom-first
+  layers.new-name: below-use
+  layers.size: small
+  tests.fail-first: required
+  tests.negative: inside-trigger
 why: |
   How the architect cuts a story into layers. No docstring in the code. The cap, the dependency order and
   one criterion per layer since b34f992 (2026-10-14). The red-before-green sentences came with 44b022d

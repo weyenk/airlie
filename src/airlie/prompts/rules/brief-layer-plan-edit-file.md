@@ -1,6 +1,8 @@
 ---
 kind: rule
 roles: [tester, coder]
+governs:
+  file.rewrite: never
 why: |
   In every build brief and tester brief. No docstring in the code; added with ba3cb08 (2026-10-16, HDS-5
   layer 01: Qwen3-Coder rewrote all of a 17,000-character test file in one write_file, was cut off at

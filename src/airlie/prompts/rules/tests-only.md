@@ -1,6 +1,15 @@
 ---
 kind: rule
 roles: [tester]
+governs:
+  feature.code: never
+  tests.criteria: each
+  tests.no-criteria: per-behaviour
+  tests.fail-first: required
+  tests.negative: inside-trigger
+  reading: first
+  done.when: only-new-red
+  answer.form: test-list
 why: |
   What the tester is told (lever 2, Noah 2026-10-19: the tests are the hard part of a layer, so a thinking
   role writes them from the brief, and the coder makes them pass).

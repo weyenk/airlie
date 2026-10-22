@@ -2,6 +2,20 @@
 kind: steering
 roles: [architect]
 when: The architect plans in rounds and a round's plan was usable but not final; this starts the next round, in the same conversation.
+governs:
+  plan.form: json
+  reading: named-only
+yields_to:
+  - code-now
+  - context-pressure
+  - one-step-left
+  - plan-fix
+  - plan-unfinished
+  - read-left
+  - read-refused
+  - tests-now
+  - write-now
+  - write-only
 why: |
   What the architect is told to start each later round.
 

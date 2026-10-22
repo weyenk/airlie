@@ -1,6 +1,10 @@
 ---
 kind: rule
 roles: [tester]
+governs:
+  tests.fail-first: required
+  tests.old: still-pass
+  tests.assert: always
 why: |
   What the tester is told of the check its tests meet (story.layer_checks).
 

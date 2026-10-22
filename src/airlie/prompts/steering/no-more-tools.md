@@ -2,6 +2,8 @@
 kind: steering
 roles: [any]
 when: A chief or reviewer in the single-call tool loop has used all its tool calls; the last request offers no tools and ends with this.
+governs:
+  answer.when: now
 why: |
   What the chief and the reviewer, the roles that make one model call and may look something up first, are
   told when they have used all their tool calls: the loop's last request offers no tools and asks for the

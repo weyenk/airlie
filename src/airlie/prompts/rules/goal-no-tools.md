@@ -1,6 +1,9 @@
 ---
 kind: rule
 roles: [any]
+governs:
+  tools: none
+  deliverable.files: fenced
 why: |
   told to use tools it does not have, a model invents them (2026-10-16: Read, list_files)
 

@@ -3,6 +3,8 @@ kind: steering
 roles: [any]
 fields: [k]
 when: A read is served under the hold while reading is switched off; it is appended to that read's observation, after a blank line.
+governs:
+  reading: stop
 why: |
   Appended to a read served under the hold.
 

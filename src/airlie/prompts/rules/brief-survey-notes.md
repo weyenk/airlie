@@ -1,6 +1,8 @@
 ---
 kind: rule
 roles: [architect]
+governs:
+  notes.form: bullets
 why: |
   What the survey's notes hold. No docstring in the code; added with the survey (ed0402e, 2026-10-17).
 ---

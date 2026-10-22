@@ -1,6 +1,10 @@
 ---
 kind: rule
 roles: [coder]
+governs:
+  scope: layer
+  done.when: tests-pass
+  answer.form: summary
 why: |
   The close of every build brief: the layer's scope, and when to stop. No docstring in the code; since the
   story briefs were written (b34f992, 2026-10-14), done when the layer's tests pass since 1741541

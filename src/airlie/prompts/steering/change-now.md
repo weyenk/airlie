@@ -3,6 +3,8 @@ kind: steering
 roles: [any]
 fields: [n, total]
 when: A role with a write schedule, in a continuation (a fix round, a follow-up), reaches its one deadline without a write of any kind this round; said once.
+governs:
+  writing: now
 why: |
   What a role with a write schedule is told, once, in a continuation (a fix round, a follow-up) at its one
   deadline without a write of any kind this round.

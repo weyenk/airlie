@@ -1,6 +1,10 @@
 ---
 kind: rule
 roles: [tester, coder]
+governs:
+  tests.target: behaviour
+  tests.assert: always
+  tests.scope: one-behaviour
 why: |
   How a layer's tests are written: the useful part of skills/qa.
 

@@ -3,6 +3,10 @@ kind: steering
 roles: [any]
 fields: [n, total]
 when: A role with write tools and no write schedule reaches two-fifths of its steps without a write; said once.
+governs:
+  reading: stop
+  writing: now
+  tests.order: first
 why: |
   What a role with write tools is told, once, when it is two-fifths through its steps without a write.
 ---

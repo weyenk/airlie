@@ -3,6 +3,8 @@ kind: steering
 roles: [any]
 fields: [label, width]
 when: A fork point starts a branch; its nudge opens with this, naming the branch and how many branches there are.
+governs:
+  approach: different
 why: |
   The opening of every fork branch's nudge since fork diversification was built (feat(fork), 2026-10-13,
   aa2ee3e): the branch goes on from the parent's conversation in its own copy of the repository, and is told

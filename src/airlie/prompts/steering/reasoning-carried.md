@@ -3,6 +3,8 @@ kind: steering
 roles: [any]
 fields: [tail]
 when: A read's turn thought until thinking_budget cut it; sent after the read's observation, replacing the one carried before it.
+governs:
+  reasoning: continue
 why: |
   What follows the observation of a read whose turn's thinking ran to thinking_budget (AIR-30). The engine
   keeps reasoning only in the step trace, and vllm-mlx's MLLM path rewrites the Qwen template so past assistant

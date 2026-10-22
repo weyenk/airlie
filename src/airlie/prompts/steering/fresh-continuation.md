@@ -2,6 +2,8 @@
 kind: steering
 roles: [any]
 when: A subtask sent back with a nudge (a fix round, a follow-up) has a stored conversation over teams.fresh_continuation_tokens, so it starts a new one; this goes between its brief and the nudge.
+governs:
+  history: worktree
 why: |
   What a subtask sent back on a long conversation is told instead of seeing that conversation again.
 

@@ -1,6 +1,9 @@
 ---
 kind: rule
 roles: [architect]
+governs:
+  layers.order: bottom-first
+  reading: first
 why: |
   The opening of the architect's layers brief: a stack of pull requests, bottom first. No docstring in the
   code; since the story briefs were written (b34f992, 2026-10-14).

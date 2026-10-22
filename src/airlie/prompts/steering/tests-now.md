@@ -3,6 +3,10 @@ kind: steering
 roles: [any]
 fields: [n, total]
 when: A role with a write schedule reaches its tests deadline without a test write; said once.
+governs:
+  reading: stop
+  tests.order: first
+  writing: now
 why: |
   What a role with a write schedule is told, once, at its tests deadline without a test write.
 ---

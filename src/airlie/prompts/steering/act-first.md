@@ -2,6 +2,8 @@
 kind: steering
 roles: [any]
 when: A role with write tools, in a run that must act, replies with text (or nothing) before any write of its own has landed; said once.
+governs:
+  writing: now
 why: |
   What a role with write tools is told, once, when its reply is text (or empty) and no write of its own has
   landed yet (AIR-7 layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose

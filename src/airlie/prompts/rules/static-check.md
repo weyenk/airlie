@@ -1,6 +1,8 @@
 ---
 kind: rule
 roles: [coder]
+governs:
+  tests.assert: always
 why: |
   What a coder with no tester before it is told of the check its tests meet (static_findings).
 

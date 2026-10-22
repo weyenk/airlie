@@ -3,6 +3,9 @@ kind: steering
 roles: [any]
 fields: [max_prompt, max_context]
 when: A step takes the role's prompt to 75% of its max_context; said once per run.
+governs:
+  reading: stop
+  writing: now
 why: |
   Added 2026-10-19 (9d6cdff, "Team loop: 75% nudge and stop at the role's max_context") as an inline
   f-string with no docstring: once a step takes the prompt to 75% of the role's max_context, the role is

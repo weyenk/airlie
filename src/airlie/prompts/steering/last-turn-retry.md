@@ -2,6 +2,8 @@
 kind: steering
 roles: [any]
 when: The role calls a tool on the turn after its last step, which offers none; said once, and a second call ends the run.
+governs:
+  answer.when: now
 why: |
   What a role is told once when it calls a tool on the turn that offers none (a second time ends the run).
 ---

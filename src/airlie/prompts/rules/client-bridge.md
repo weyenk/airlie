@@ -1,6 +1,8 @@
 ---
 kind: rule
 roles: [any]
+governs:
+  tools.names: client
 why: |
   Follows a role's prompt when the client's own request opens with a system message (OpenCode, VS Code):
   the role prompt goes first, then this, then the client's instructions, so the role's tool names do not

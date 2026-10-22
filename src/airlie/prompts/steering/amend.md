@@ -2,6 +2,9 @@
 kind: steering
 roles: [tester]
 when: After the build, the whole gate fails only in the tester's locked tests; the tester is sent back once, with the failing tests, what the coder said and the reviewer's blocking findings after this.
+governs:
+  gate-failure.fix: tests
+  tests.criteria: each
 why: |
   What the tester is told when the gate fails only in its locked tests (AIR-9 layer 02, 2026-10-21: one of
   them unpacked one comment from a card that had two, and only the tester could change it).

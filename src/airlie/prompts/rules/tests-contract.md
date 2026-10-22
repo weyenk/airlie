@@ -1,6 +1,11 @@
 ---
 kind: rule
 roles: [coder]
+governs:
+  tests.acceptance: unchanged
+  tests.extra-location: new-file
+  tests.cover: changes
+  done.when: tests-pass
 why: |
   What the coder is told when a tester wrote the layer's tests before it. No docstring in the code; added
   with the tester seat (3bda4e1, 2026-10-19, lever 2: on AIR-31 layer 02 the coder had the code right by

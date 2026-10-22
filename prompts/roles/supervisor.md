@@ -1,6 +1,9 @@
 ---
 summary: The studio's supervisor: triages a stuck role and gives it one next action (not routable)
 routable: false
+governs.reading: first
+governs.repo.edit: read-only
+governs.answer.form: json
 ---
 # supervisor
 

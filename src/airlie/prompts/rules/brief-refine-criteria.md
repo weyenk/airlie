@@ -1,6 +1,12 @@
 ---
 kind: rule
 roles: [product]
+governs:
+  criteria.form: given-when-then
+  criteria.names: what-differs
+  criteria.refusal: new-phrase
+  story.size: thin-slice
+  questions: assume
 why: |
   How product writes acceptance criteria. No docstring in the code. Given/When/Then, the thinnest slice and
   stated assumptions since b34f992 (2026-10-14). "Each criterion names what differs" and the refusal

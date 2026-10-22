@@ -1,6 +1,9 @@
 ---
 kind: rule
 roles: [architect]
+governs:
+  answer.form: notes
+  reading: first
 why: |
   The opening of the survey brief: the architect reads the code the request touches while product refines
   it, and takes notes for the layer planning. No docstring in the code; added with the survey (ed0402e,

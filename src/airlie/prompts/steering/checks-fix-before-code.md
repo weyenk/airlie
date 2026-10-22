@@ -2,6 +2,14 @@
 kind: steering
 roles: [tester]
 when: The pre-code check found something in the tester's tests and the tester gets its one retry; it closes the retry, after the findings and the supervisor's advice, if any.
+governs:
+  tests.findings: fix
+  tests.fail-first: required
+  tests.negative: inside-trigger
+  tests.old: still-pass
+  tests.criteria: each
+  feature.code: never
+  done.when: only-new-red
 why: |
   What the tester is told to do with the findings, the last thing it reads on its retry (`feedback` with
   `before_code`). No docstring in the code; added with 1741541 (2026-10-19). The sentences on a test that

@@ -2,6 +2,9 @@
 kind: steering
 roles: [any]
 when: A coder stopped done on a brief with acceptance criteria and has a diff; it is sent this and the diff, before the review.
+governs:
+  self-check: criteria
+  brief.wording: exact
 why: |
   The done-check: a coder that stopped 'done' reads its own diff against the criteria before the reviewer
   does (AIR-31 layer 02, 2026-10-19: the reviewer's blocking finding was a value the brief had named).

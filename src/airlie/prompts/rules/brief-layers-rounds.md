@@ -2,6 +2,9 @@
 kind: rule
 roles: [architect]
 fields: [round_steps]
+governs:
+  plan.form: json
+  reading: first
 why: |
   In the layers brief when the architect plans in rounds (story.plan_round_steps); the code puts a space and
   REFINE_FIELD (the plan's `refine` object, an output format kept beside its parser) after it. No docstring

@@ -2,6 +2,10 @@
 kind: rule
 roles: [coder]
 fields: [criteria]
+governs:
+  tests.order: first
+  tests.criteria: each
+  tests.fail-first: required
 why: |
   A layer with no tester that owns criteria: the coder writes their tests first and sees them fail. No
   docstring in the code; test-first layer plans since b34f992 (2026-10-14), worded as now since 28107dd

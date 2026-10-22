@@ -1,5 +1,14 @@
 ---
 summary: Tests that pin a layer's behaviour before its code exists
+governs.reading: first
+governs.tests.criteria: each
+governs.tests.no-criteria: per-behaviour
+governs.tests.fail-first: required
+governs.tests.target: behaviour
+governs.tests.negative: inside-trigger
+governs.feature.code: never
+governs.done.when: only-new-red
+governs.answer.form: test-list
 ---
 # tester
 
