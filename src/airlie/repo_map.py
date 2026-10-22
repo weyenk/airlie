@@ -5,12 +5,12 @@ signatures via ast. No model call. Cached per (path, mtime, size) of the tracked
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import os
 import subprocess
 from pathlib import Path
 
+from airlie.outline import outline_entries
 from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 HEADER = "[Repository map]"
@@ -41,17 +41,11 @@ def _stat(path: Path) -> os.stat_result | None:
 
 def _signatures(path: Path) -> list[str]:
     try:
-        tree = ast.parse(path.read_text(errors="replace"))
-    except (SyntaxError, ValueError, OSError):  # OSError: a file this user cannot read
+        entries = outline_entries(path.read_text(errors="replace"))
+    except OSError:  # a file this user cannot read
         return []
-    sigs: list[str] = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            sigs.append(f"class {node.name}")
-        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            ret = f" -> {ast.unparse(node.returns)}" if node.returns else ""
-            sigs.append(f"def {node.name}({ast.unparse(node.args)}){ret}")
-    return sigs
+    # the map has always written `def`, async or not
+    return [e.text.removeprefix("async ") for e in entries or [] if e.depth == 0]
 
 
 def _size(n: int) -> str:
