@@ -15,6 +15,7 @@ from typing import Any
 
 from airlie.story.context import named_paths
 from airlie.teams.worktree import find_file
+from airlie.tools.fs import paths_arg
 
 READ_TOOLS = frozenset({"read_file", "list_dir", "grep"})
 WRITE_TOOLS = frozenset({"write_file", "edit_file"})
@@ -40,10 +41,19 @@ class Segment:
     max_steps_hit: bool
 
 
+def _parsed(text: str) -> Any:
+    """`text` as JSON, or None when it does not parse: a run killed mid-write leaves a cut last line in
+    events.jsonl and a partial step file, and one such line must not cost the whole report."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
 def _jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [e for line in path.read_text().splitlines() if isinstance(e := _parsed(line), dict)]
 
 
 def _call(step: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -62,14 +72,31 @@ def _call(step: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 def _offset(args: Mapping[str, Any]) -> int:
+    """The first line a read shows: 1 when not given, as read_file takes it."""
     try:
-        return int(args.get("offset") or 0)
+        return int(args.get("offset") or 1)
     except (TypeError, ValueError):
-        return 0
+        return 1
+
+
+def _reads(args: Mapping[str, Any]) -> list[tuple[str, int]]:
+    """(path, first line) for each file one read_file call read: a `paths` call reads each of them from line
+    1, a `path` call reads one from its offset. A `paths` value read_file refuses read nothing."""
+    if args.get("paths") is not None:
+        try:
+            return [(p.removeprefix("./"), 1) for p in paths_arg(args["paths"])]
+        except ValueError:
+            return []
+    return [(str(args.get("path") or "").removeprefix("./"), _offset(args))]
 
 
 def _step_files(folder: Path) -> list[Path]:
     return sorted(folder.glob("step-*.json"), key=lambda p: int(p.stem.removeprefix("step-")))
+
+
+def _steps(files: list[Path]) -> list[dict[str, Any]]:
+    """The steps of a trace folder; a step file that does not parse (a partial write) is left out."""
+    return [step for f in files if isinstance(step := _parsed(f.read_text()), dict)]
 
 
 def _exists_at(repo: Path, sha: str | None, path: str) -> bool:
@@ -93,16 +120,15 @@ def _segment(
     for name, args in before:
         if name != "read_file":
             continue
-        path = str(args.get("path") or "").lstrip("./")
-        offset = _offset(args)
-        seen = offsets[path]
-        if seen and offset > max(seen):
-            pages += 1
-        elif seen:
-            repeats += 1
-        seen.append(offset)
-        if path in brief_paths:
-            brief_reads += 1
+        for path, offset in _reads(args):
+            seen = offsets[path]
+            if seen and offset > max(seen):
+                pages += 1
+            elif seen:
+                repeats += 1
+            seen.append(offset)
+            if path in brief_paths:
+                brief_reads += 1
     return Segment(
         story=story,
         run=run,
@@ -151,13 +177,13 @@ def story_segments(state_dir: Path, story: str, repo: Path, max_steps: Mapping[s
         trace = run_dir / "trace"
         folders = sorted(p for p in trace.rglob("*") if p.is_dir()) if trace.exists() else []
         for folder in folders:
-            files = _step_files(folder)
-            if not files:
+            steps = _steps(_step_files(folder))
+            if not steps:
                 continue
             seg = folder.relative_to(trace).as_posix()
             subtask = seg.split("/")[0]
             role = roles.get(subtask, subtask)
-            calls = [_call(json.loads(f.read_text())) for f in files]
+            calls = [_call(step) for step in steps]
             out.append(_segment(story, run, layer, seg, role, calls, brief_paths, max_steps.get(role)))
     return out
 

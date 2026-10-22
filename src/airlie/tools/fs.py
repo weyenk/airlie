@@ -71,7 +71,7 @@ READ_PATHS_MAX = 5
 under the output cap of a single read, so batching never adds context per step."""
 
 
-def _paths_arg(raw: Any) -> list[str]:
+def paths_arg(raw: Any) -> list[str]:
     """The `paths` argument as a list of paths: a list, or (some models send it so) a string holding a JSON
     list. Raises ValueError for anything else, and for more than READ_PATHS_MAX."""
     value = raw
@@ -152,7 +152,7 @@ class ReadFile:
         if _line_arg_given(args):
             return ToolResult(False, "error: offset and limit read one file: use path")
         try:
-            paths = _paths_arg(args["paths"])
+            paths = paths_arg(args["paths"])
         except ValueError as e:
             return _err(e)
         sections: list[str] = []

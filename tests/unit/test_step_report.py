@@ -26,10 +26,11 @@ def _lines(path: Path, events: list[dict[str, object]]) -> None:
     path.write_text("".join(json.dumps(e) + "\n" for e in events))
 
 
-def _fixture(tmp_path: Path, brief: str = "") -> tuple[Path, Path]:
+def _fixture(tmp_path: Path, brief: str = "", extra: tuple[str, ...] = ()) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
-    (repo / "src" / "a.py").write_text("x = 1\n")
+    for name in ("src/a.py", *extra):
+        (repo / name).write_text("x = 1\n")
     git(repo, "init", "-q")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base")
@@ -110,3 +111,51 @@ def test_render_has_one_row_per_role(tmp_path: Path) -> None:
     text = render(story_segments(state, STORY, repo, {}))
     assert "| tester |" in text
     assert "| coder |" in text
+
+
+def test_a_multi_path_read_counts_each_path(tmp_path: Path) -> None:
+    """read_file(paths=[...]) reads each path once, from line 1: two batched reads of three different brief
+    files are three brief-file reads and no repeat (a list, and a JSON-list string as some models send)."""
+    brief = "Change src/a.py, src/b.py and src/c.py."
+    state, repo = _fixture(tmp_path, brief=brief, extra=("src/b.py", "src/c.py"))
+    _trace(
+        state,
+        "batched",
+        [
+            _call("read_file", paths=["src/a.py", "./src/b.py"]),
+            _call("read_file", paths=json.dumps(["src/c.py"])),
+            _call("write_file", path="t.py", content=""),
+        ],
+    )
+    _lines(
+        state / "runs" / RUN / "events.jsonl", [{"kind": "subtask_start", "subtask": "batched", "role": "t"}]
+    )
+    seg = _by_seg(story_segments(state, STORY, repo, {}))["batched"]
+    assert (seg.brief_file_reads, seg.repeats, seg.pages, seg.reads_before_write) == (3, 0, 0, 2)
+
+
+def test_a_multi_path_read_then_the_same_file_from_the_start_is_a_repeat(tmp_path: Path) -> None:
+    state, repo = _fixture(tmp_path)
+    _trace(
+        state,
+        "again",
+        [_call("read_file", paths=["src/a.py"]), _call("read_file", path="src/a.py"), _call("edit_file")],
+    )
+    _lines(
+        state / "runs" / RUN / "events.jsonl", [{"kind": "subtask_start", "subtask": "again", "role": "t"}]
+    )
+    seg = _by_seg(story_segments(state, STORY, repo, {}))["again"]
+    assert (seg.repeats, seg.pages) == (1, 0)
+
+
+def test_a_killed_run_s_partial_lines_and_step_files_are_skipped(tmp_path: Path) -> None:
+    """A run killed mid-write leaves a cut last line in events.jsonl and a step file that does not parse:
+    those are left out and the rest of the report is built."""
+    state, repo = _fixture(tmp_path)
+    events = state / "runs" / RUN / "events.jsonl"
+    events.write_text(events.read_text() + '{"kind": "subtask_st')
+    story_events = state / "stories" / STORY / "events.jsonl"
+    story_events.write_text(story_events.read_text() + "{not json\n")
+    (state / "runs" / RUN / "trace" / "tests" / "step-005.json").write_text('{"u_t": "{\'name')
+    seg = _by_seg(story_segments(state, STORY, repo, {}))["tests"]
+    assert (seg.role, seg.layer, seg.steps, seg.first_write) == ("tester", "01", 4, 4)
