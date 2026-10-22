@@ -1,6 +1,6 @@
 # The prompt hub: rules and steering in files, with a contradiction check
 
-Status: draft for Noah's review, 2026-10-22. Nothing here is built.
+Status: approved by Noah on 2026-10-22. Nothing here is built yet.
 
 ## Why
 
