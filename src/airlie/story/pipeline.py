@@ -14,12 +14,13 @@ import contextlib
 import re
 import subprocess
 import traceback
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig
+from airlie.skills import prompt_text
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
@@ -34,7 +35,15 @@ from airlie.story.briefs import (
 )
 from airlie.story.context import repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
-from airlie.story.layer_checks import Finding, amend_feedback, checks_for, feedback, in_files, static_findings
+from airlie.story.layer_checks import (
+    Finding,
+    amend_feedback,
+    checks_for,
+    feedback,
+    findings_text,
+    in_files,
+    static_findings,
+)
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -51,6 +60,10 @@ from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_for
+from airlie.supervisor.advice import with_advice
+from airlie.supervisor.layer import LayerSupervisor
+from airlie.supervisor.ledger import Ledger
+from airlie.supervisor.triage import triage_for
 from airlie.teams.protocol import cut_off_text
 from airlie.teams.worktree import (
     changed_files,
@@ -119,7 +132,12 @@ def build_commit() -> str | None:
 
 
 class StoryBlocked(Exception):
-    """A stage cannot finish; the issue goes to blocked with this message."""
+    """A stage cannot finish; the issue goes to blocked with this message. `diagnosis` is the supervisor's
+    reading of why, when a layer stopped and it had one: the note shows it beside the reason, never in it."""
+
+    def __init__(self, reason: str, diagnosis: str | None = None) -> None:
+        super().__init__(reason)
+        self.diagnosis = diagnosis
 
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
@@ -248,6 +266,10 @@ class StoryPipeline:
         self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
+        self.ledger: Ledger | None = None
+        """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
+        that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
+        pipeline that cannot be made."""
 
     async def run(self, card: Card) -> StoryState:
         """Run, or resume, the story for `card`. A stop leaves `blocked` set; nothing is raised for it. Only a
@@ -292,7 +314,7 @@ class StoryPipeline:
             await self._publish(st, card, story, layers)
             await self._finish(st, card)
         except StoryBlocked as e:
-            await self._block(st, card, str(e))
+            await self._block(st, card, str(e), e.diagnosis)
         except asyncio.CancelledError:
             await self._cancelled(st, card)
             raise
@@ -688,92 +710,181 @@ class StoryPipeline:
             base_sha=base_sha,
             studio_run=orch.run_dir.run_id,
         )
-        findings: list[Finding] = []
-        guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
-        # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
-        built = (
-            built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
-            if i > 0 and st.base
-            else ""
-        )
-        plan = layer_plan(
-            story,
-            layers,
-            i,
-            build_role=self.s.build_role,
-            tester_role=self.s.tester_role,
-            guide=guide,
-            built=built,
-        )
-        tester = any(s.id == "tests" for s in plan.subtasks)
+        sup = self._supervisor(st, card, layer, nn, orch, wt, base_sha)
+        orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
+        try:
+            findings: list[Finding] = []
+            guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
+            # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
+            built = (
+                built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
+                if i > 0 and st.base
+                else ""
+            )
+            plan = layer_plan(
+                story,
+                layers,
+                i,
+                build_role=self.s.build_role,
+                tester_role=self.s.tester_role,
+                guide=guide,
+                built=built,
+            )
+            tester = any(s.id == "tests" for s in plan.subtasks)
 
-        async def before_code() -> bool:
-            """After the tester, before the coder: the pre-code check, then its files locked to the coder."""
-            nonlocal findings
-            findings = await self._check_tests(st, orch, wt, base_sha, nn)
+            async def before_code() -> bool:
+                """After the tester, before the coder: the pre-code check, then its files locked to the
+                coder."""
+                nonlocal findings
+                findings = await self._check_tests(st, orch, wt, base_sha, nn, sup)
+                if findings:
+                    return False
+                commit_wip(wt, f"studio: layer {nn} (tests)")  # a skipped check committed nothing
+                orch.lock(changed_files(wt, base_sha), orch.runs["tests"].role)
+                return True
+
+            async def before_gate() -> bool:
+                nonlocal findings
+                findings = await self._check_static(st, orch, wt, base_sha, nn, sup)
+                return not findings
+
+            report = await orch.execute_task(
+                layer_goal(story, layers, i),
+                repo=self.repo,
+                test_cmd=self.test_cmd,
+                test_steps=self.commands,
+                plan=plan,
+                base=base_sha,
+                branch=branch,
+                synthesise=False,
+                before_gate=None if tester else before_gate,
+                scope_tests=True,
+                checkpoints={"tests": before_code} if tester else None,
+                gate_follow_up="build",
+                amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn, sup) if tester else None,
+            )
+            commit_wip(wt, f"studio: {branch} (final)")
+            cut, kept = _cut_off(orch), _kept(wt, branch)
+            if findings and all(f.kind == "engine_error" for f in findings):
+                why = findings[0].why
+                raise StoryBlocked(
+                    f"layer {nn} ({layer.title}): the {findings[0].test} could not reach the engine ({why}); "
+                    f"start it (`task up`) and run the story again{kept}"
+                )
             if findings:
-                return False
-            commit_wip(wt, f"studio: layer {nn} (tests)")  # a skipped check committed nothing
-            orch.lock(changed_files(wt, base_sha), orch.runs["tests"].role)
-            return True
+                listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
+                whose = (
+                    "the tester's tests do not hold before the code" if tester else "its tests need fixing"
+                )
+                reason = f"layer {nn} ({layer.title}): {whose} after one retry ({listed}){cut}{kept}"
+                diagnosis = await self._at_block(
+                    sup,
+                    orch,
+                    "tests" if tester else "build",
+                    reason,
+                    kinds=[f.kind for f in findings],
+                    evidence=findings_text(findings),
+                )
+                raise StoryBlocked(reason, diagnosis)
+            if not changed_files(wt, base_sha):
+                reason = f"layer {nn} ({layer.title}) changed nothing{cut}{kept}"
+                diagnosis = await self._at_block(
+                    sup, orch, "build", reason, kinds=("changed_nothing",), evidence=reason
+                )
+                raise StoryBlocked(reason, diagnosis)
+            if report.tests.get("studio") is not True:
+                reason = f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{kept}"
+                diagnosis = await self._at_block(
+                    sup, orch, "build", reason, kinds=("gate_fails",), evidence=reason
+                )
+                raise StoryBlocked(reason, diagnosis)
+            sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
+            remove_worktree(self.repo, wt)
+            st.built[nn] = {
+                "branch": branch,
+                "sha": sha,
+                "run_id": report.run_id,
+                "subtasks": _rows(orch),
+                "gate": self._shown_cmd,  # what this layer passed, for its PR: a resume can pass another
+            }
+            st.attempt = None
+            st.save()
+            st.emit("layer_built", layer=nn, branch=branch, sha=sha)
+            built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
+            await self.board.comment(card, note(built))
+        finally:
+            if sup is not None:
+                sup.close()  # after every subtask has finished: an advice in flight is never cut off
 
-        async def before_gate() -> bool:
-            nonlocal findings
-            findings = await self._check_static(st, orch, wt, base_sha, nn)
-            return not findings
+    def _supervisor(
+        self,
+        st: StoryState,
+        card: Card,
+        layer: Layer,
+        nn: str,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+    ) -> LayerSupervisor | None:
+        """The layer's supervisor (story.supervisor), or None when it is off. One that cannot be set up (its
+        role's prompt gone, a ledger that cannot be opened) is a `supervisor_fallback` event and None: the
+        layer then runs as it does without one, since a broken supervisor never stops a run."""
+        spec = self.s.supervisor
+        if not spec.enabled:
+            return None
+        try:
+            if self.ledger is None:
+                self.ledger = Ledger(self.cfg.observability.state_dir / "supervisor.sqlite")
+            # read now: a prompt that is gone is one setup fallback, not one a call
+            prompt_text(self.cfg.roles[spec.role].prompt)
+            confinement = self.cfg.tools.confinement()
+            checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
+            owned = [c.line() for c in Story.from_dict(st.story or {}).acceptance if c.id in layer.acceptance]
+            brief = layer.brief + "".join(f"\n- {c}" for c in owned)
+            return LayerSupervisor(
+                ledger=self.ledger,
+                triage=triage_for(self.cfg, orch.engine, checks),
+                spec=spec,
+                story=card.key,
+                layer=nn,
+                studio_run=orch.run_dir.run_id,
+                trace_dir=orch.run_dir.path / "trace",
+                worktree=wt,
+                base_sha=base_sha,
+                brief=brief,
+                events=st.path / "events.jsonl",
+                emit=st.emit,
+            )
+        except Exception as e:  # noqa: BLE001 - a supervisor that cannot be set up leaves the layer as it was
+            st.emit("supervisor_fallback", trigger=None, reason=f"setup: {type(e).__name__}", layer=nn)
+            return None
 
-        report = await orch.execute_task(
-            layer_goal(story, layers, i),
-            repo=self.repo,
-            test_cmd=self.test_cmd,
-            test_steps=self.commands,
-            plan=plan,
-            base=base_sha,
-            branch=branch,
-            synthesise=False,
-            before_gate=None if tester else before_gate,
-            scope_tests=True,
-            checkpoints={"tests": before_code} if tester else None,
-            gate_follow_up="build",
-            amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn) if tester else None,
+    async def _at_block(
+        self,
+        sup: LayerSupervisor | None,
+        orch: StudioOrchestrator,
+        subtask: str,
+        reason: str,
+        *,
+        kinds: Sequence[str],
+        evidence: str,
+    ) -> str | None:
+        """The supervisor's reading of why the layer stopped, for the card; None without one, or on its
+        fallback. The role is the subtask's as it ran, or the configured one when it never ran."""
+        if sup is None:
+            return None
+        return await sup.at_block(
+            subtask, self._role_of(orch, subtask), reason, kinds=kinds, evidence=evidence
         )
-        commit_wip(wt, f"studio: {branch} (final)")
-        cut = _cut_off(orch)
-        if findings and all(f.kind == "engine_error" for f in findings):
-            why = findings[0].why
-            raise StoryBlocked(
-                f"layer {nn} ({layer.title}): the {findings[0].test} could not reach the engine ({why}); "
-                f"start it (`task up`) and run the story again{_kept(wt, branch)}"
-            )
-        if findings:
-            listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
-            whose = "the tester's tests do not hold before the code" if tester else "its tests need fixing"
-            raise StoryBlocked(
-                f"layer {nn} ({layer.title}): {whose} after one retry ({listed}){cut}{_kept(wt, branch)}"
-            )
-        if not changed_files(wt, base_sha):
-            raise StoryBlocked(f"layer {nn} ({layer.title}) changed nothing{cut}{_kept(wt, branch)}")
-        if report.tests.get("studio") is not True:
-            raise StoryBlocked(
-                f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{_kept(wt, branch)}"
-            )
-        sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
-        remove_worktree(self.repo, wt)
-        st.built[nn] = {
-            "branch": branch,
-            "sha": sha,
-            "run_id": report.run_id,
-            "subtasks": _rows(orch),
-            "gate": self._shown_cmd,  # what this layer passed, for its PR: a resume can pass another
-        }
-        st.attempt = None
-        st.save()
-        st.emit("layer_built", layer=nn, branch=branch, sha=sha)
-        built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
-        await self.board.comment(card, note(built))
 
     async def _check_tests(
-        self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
+        self,
+        st: StoryState,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        sup: LayerSupervisor | None = None,
     ) -> list[Finding]:
         """The pre-code check (story.layer_checks) on the tests the tester wrote, before the coder builds:
         findings go back to the tester once (`follow_up`), and what is left after that is returned, for the
@@ -796,6 +907,8 @@ class StoryPipeline:
                 # (AIR-9 layer 02, 2026-10-21: an engine that was down read as "no new test", twice)
                 found = [Finding("engine_error", orch.runs["tests"].role, ended.final_text, "")]
                 self._emit_findings(st, found, nn, attempt, studio_run)
+                if sup is not None:
+                    sup.settle("precode_retry", "unknown", subtask="tests")
                 return found
             commit_wip(wt, f"studio: layer {nn} (pre-code check {attempt})")
             found = []
@@ -813,16 +926,25 @@ class StoryPipeline:
                     "existing_tests_fail_at_base", layer=nn, attempt=attempt, tests=checks.failing_at_base
                 )
             self._emit_findings(st, found, nn, attempt, studio_run)
+            if sup is not None and attempt > 1:
+                sup.settle("precode_retry", "not_helped" if found else "helped", subtask="tests")
             if not found:
                 st.emit("test_checks_passed", layer=nn, attempt=attempt)
                 return []
             if attempt < CHECK_ATTEMPTS:
                 st.emit("test_checks_retry", layer=nn, findings=len(found))
-                await orch.follow_up("tests", feedback(found))
+                advice = await self._advise(sup, orch, "precode_retry", "tests", feedback(found), found)
+                await orch.follow_up("tests", feedback(found, advice=advice))
         return found
 
     async def _amend_tests(
-        self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
+        self,
+        st: StoryState,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        sup: LayerSupervisor | None = None,
     ) -> bool:
         """When the final gate fails after the build and every test that fails is one of the tester's locked
         files, the tester is sent back once to mend its own tests (AMEND, with what the coder and the reviewer
@@ -844,7 +966,18 @@ class StoryPipeline:
         account = build.result.final_text if build is not None and build.result is not None else ""
         review = [f"{f.file}: {f.claim}" for f in build.review.blocking] if build and build.review else []
         before = commit_wip(wt, f"studio: layer {nn} (before the tests' mend)")
-        await orch.follow_up("tests", amend_feedback(failing, account, review))
+        told = amend_feedback(failing, account, review)
+        advice = None
+        if sup is not None:
+            advice = await sup.advise(
+                "amend",
+                "tests",
+                orch.runs["tests"].role,
+                told,
+                kinds=("locked_tests_fail",),
+                evidence="\n".join(failing),
+            )
+        await orch.follow_up("tests", with_advice(told, advice))
         commit_wip(wt, f"studio: layer {nn} (the tests' mend)")
         lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         if lint is not None and await lint.fix(wt, before):
@@ -852,6 +985,7 @@ class StoryPipeline:
         changed = changed_files(wt, before)
         if not changed:
             st.emit("tests_not_mended", layer=nn, tests=failing)
+            self._settle_amend(sup, "not_helped")
             return False
         outside = [p for p in changed if p not in locked]
         found: list[Finding] = []
@@ -870,13 +1004,26 @@ class StoryPipeline:
             st.emit("tests_mend_undone", layer=nn, why=why)
             put_back(wt, before, changed)
             commit_wip(wt, f"studio: layer {nn} (the tests' mend undone)")
+            self._settle_amend(sup, "not_helped")
             return False
         orch.lock(sorted(locked), orch.lock_owner)
         st.emit("tests_mended", layer=nn, files=changed)
+        self._settle_amend(sup, "helped")
         return True
 
+    @staticmethod
+    def _settle_amend(sup: LayerSupervisor | None, outcome: str) -> None:
+        if sup is not None:
+            sup.settle("amend", outcome, subtask="tests")
+
     async def _check_static(
-        self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
+        self,
+        st: StoryState,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        sup: LayerSupervisor | None = None,
     ) -> list[Finding]:
         """For a layer with no tester, whose coder writes its tests and code together: the checks that read
         the tests (layer_checks.static_findings), after the build and before the gate, with one retry for the
@@ -891,13 +1038,45 @@ class StoryPipeline:
             commit_wip(wt, f"studio: layer {nn} (checks {attempt})")
             found = static_findings(wt, base_sha)
             self._emit_findings(st, found, nn, attempt, studio_run)
+            if sup is not None and attempt > 1:
+                sup.settle("static_retry", "not_helped" if found else "helped", subtask="build")
             if not found:
                 st.emit("test_checks_passed", layer=nn, attempt=attempt)
                 return []
             if attempt < CHECK_ATTEMPTS:
                 st.emit("test_checks_retry", layer=nn, findings=len(found))
-                await orch.follow_up("build", feedback(found, before_code=False))
+                told = feedback(found, before_code=False)
+                advice = await self._advise(sup, orch, "static_retry", "build", told, found)
+                await orch.follow_up("build", feedback(found, before_code=False, advice=advice))
         return found
+
+    async def _advise(
+        self,
+        sup: LayerSupervisor | None,
+        orch: StudioOrchestrator,
+        trigger: str,
+        subtask: str,
+        told: str,
+        found: Sequence[Finding],
+    ) -> str | None:
+        """The supervisor's advice for a retry on `found`, to add to `told`; None without one. The role is
+        found as `_at_block` finds it: a subtask with no run never stops the retry."""
+        if sup is None:
+            return None
+        return await sup.advise(
+            trigger,
+            subtask,
+            self._role_of(orch, subtask),
+            told,
+            kinds=[f.kind for f in found],
+            evidence=findings_text(found),
+        )
+
+    def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
+        """The subtask's role as it ran, or the configured one when it never ran."""
+        run = orch.runs.get(subtask)
+        configured = self.s.tester_role if subtask == "tests" else None
+        return run.role if run is not None else configured or self.s.build_role
 
     @staticmethod
     def _emit_findings(st: StoryState, found: list[Finding], nn: str, attempt: int, studio_run: str) -> None:
@@ -952,19 +1131,27 @@ class StoryPipeline:
         await self.board.move(card, "review")
         st.finish("review")
 
-    async def _block(self, st: StoryState, card: Card, reason: str) -> None:
+    async def _block(self, st: StoryState, card: Card, reason: str, diagnosis: str | None = None) -> None:
         """Every stop ends here: the reason is masked and then cut (once, for all of them), kept in the state
         and the events, posted as a note, and the issue moved to blocked. The note and the move are separate
         calls, so a note that fails does not keep the issue out of Blocked. A cancel that lands while the
-        board is being told is a cancel like any other (back to intake, with a note), not a stop."""
+        board is being told is a cancel like any other (back to intake, with a note), not a stop. A
+        supervisor's `diagnosis` is masked and cut the same way, on its own, and goes in the note and the
+        event beside the reason; the state keeps the reason alone."""
         # masked first: a cut through a password would leave a piece of it
         reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
-        st.emit("blocked", stage=st.stage, reason=reason)
+        said = ""
+        if diagnosis is None:
+            st.emit("blocked", stage=st.stage, reason=reason)
+        else:
+            diagnosis = _cap(_redact_urls(diagnosis))
+            st.emit("blocked", stage=st.stage, reason=reason, diagnosis=diagnosis)
+            said = f"\nSupervisor: {diagnosis}"
         try:
             await self._tell(
-                st, card, f"stopped after '{st.stage}': {reason}\nResume: {card.resume}.", "blocked"
+                st, card, f"stopped after '{st.stage}': {reason}{said}\nResume: {card.resume}.", "blocked"
             )
         except asyncio.CancelledError:  # run's own handler is behind us: this stop is being handled
             await self._cancelled(st, card)

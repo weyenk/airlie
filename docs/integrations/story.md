@@ -720,6 +720,42 @@ board is in use on its first line.
 - **Keeping Jira:** `story.board: jira` in `airlie.local.yaml` takes stories from the Jira project instead
   (*Setup*, above); `story.board` is the only switch.
 
+## The supervisor (trial)
+
+When a layer gets into trouble, Muse (the reviewer model, as the `supervisor` role) reads the trace and says
+what it sees. It runs in story runs only: `task run` and `task studio` outside a story get no supervisor. It
+is advisory only: nothing it says adds an attempt, reroutes a retry, skips one, or clears a finding. It never
+edits code or tests; its tools are `read_file`, `list_dir`, `grep` and, when the gate runs pytest, `run_test`.
+The rules are always kept whole: in the retry feedback to the tests' author, Muse's section goes after the
+findings and before the rules; everywhere else it goes after the unchanged text. It speaks at six trouble
+points: when the pre-code check of the tests finds a problem, before the coder starts (`precode_retry`), at
+the static-check retry (`static_retry`), at the gate retry (`gate_retry`), when a test is amended (`amend`),
+when the repeat guard fires (`repeat_guard`), and when a layer blocks (`block`). A block's note on the issue
+may carry a `Supervisor:` diagnosis. If Muse errors, times out, answers in a form that cannot be read, or has
+used its six consultations for the layer (`per_layer`, not the role's `max_steps`), the text is today's and a
+`supervisor_fallback` event is emitted; the run never stops because of it.
+
+The ledger is `observability.state_dir/supervisor.sqlite` (`~/.local/state/airlie/` by default), beside the
+board and separate from it. It is append-only (SQL triggers refuse an update or a delete): every intervention,
+its latest outcome (`helped`, `not_helped`, `blocked`, `unknown`) and your verdict, fallbacks included.
+
+- `task supervisor:log [-- --limit N]` lists the newest interventions, one line each.
+- `task supervisor:stats` shows, by trigger, how often a retry helped with Muse's answer and how often it
+  helped with today's text alone (Muse's fallbacks: the no-Muse baseline to compare against); how often
+  Muse's answers helped by category; the blocks, counted apart (a block always ends `blocked`); how often
+  Muse stood aside; and the blocks where it named a fix worth one more attempt.
+- `task supervisor:verdict -- ID right|wrong [NOTE]` records whether an intervention was right; the latest
+  verdict wins.
+- `task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID] [--round 0]` asks Muse about a worktree
+  outside a story, as the first pre-code retry would: it runs the pre-code check on the worktree's HEAD (the
+  gate is read from the base's AGENTS.md; uncommitted changes are not checked), prints the findings, Muse's
+  answer and its seconds and tokens, and writes no ledger row. It changes nothing: the check, the ruff
+  fixers and Muse work in a throwaway detached tree that is removed after. `--run` shows Muse that studio
+  run's trace, `--round 0` its first attempt (what Muse read at the first retry).
+
+To turn it off, set `story: { supervisor: { enabled: false } }` in `airlie.local.yaml`. The design is
+`docs/superpowers/specs/2026-10-22-supervisor-triage-design.md`.
+
 ## Not yet
 
 An amigos deliberation (product, the reviewer and architect agreeing a contract), an architect review loop across the

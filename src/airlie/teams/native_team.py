@@ -6,6 +6,7 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import re
@@ -25,8 +26,17 @@ from airlie.engine.types import (
     image_part,
 )
 from airlie.skills import prompt_text
+from airlie.supervisor.advice import with_advice
 from airlie.teams.call_repair import Repair, repair_call
-from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
+from airlie.teams.protocol import (
+    StepObserver,
+    StepRecord,
+    StopReason,
+    StuckAdvisor,
+    TeamContext,
+    TeamResult,
+    cut_off_text,
+)
 from airlie.tools.jsonargs import history_arguments
 from airlie.tools.protocol import ToolResult
 
@@ -314,6 +324,25 @@ def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None
     )
 
 
+async def _advised(
+    advisor: StuckAdvisor, ctx: TeamContext, told: str, messages: list[Message]
+) -> tuple[str, bool]:
+    """`told` with the advisor's section after it, and whether the advisor was asked (so is owed an outcome).
+    An advisor that fails leaves the fixed text: the repeat guard never waits on it or stops for it."""
+    try:
+        advice = await advisor.stuck(ctx.team_id, ctx.role_name, told, list(messages))
+    except Exception:  # noqa: BLE001 - any advisor failure means the fixed nudge, never a stopped run
+        return told, False
+    return with_advice(told, advice), True
+
+
+def _settled_stuck(advisor: StuckAdvisor | None, team_id: str, helped: bool) -> None:
+    """Tell the advisor what came of its nudge; a failure there is its own, and does not touch the run."""
+    if advisor is not None:
+        with contextlib.suppress(Exception):
+            advisor.stuck_settled(team_id, helped)
+
+
 class NativeTeam:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -404,6 +433,7 @@ class NativeTeam:
         missed: set[str] = set()  # deadlines passed without their write
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
+        advised = False  # on_stuck was asked about that nudge, and has not yet heard what came of it
         red_warned = False  # the role has been told once that it answered with run_tests failing
         act_warned = False  # the role has been told once that its text-only reply changed nothing
         changed = False  # a write_file or edit_file of this run has landed (a failed one has not)
@@ -686,6 +716,8 @@ class NativeTeam:
                         if len(cycle) == 1
                         else CYCLED.format(p=len(cycle), n=ctx.repeat_limit, tool=tool)
                     )
+                    if ctx.on_stuck is not None:
+                        told, advised = await _advised(ctx.on_stuck, ctx, told, messages)
                     messages.append(Message(role="user", content=told))
                     recent = []
                 elif (
@@ -700,6 +732,9 @@ class NativeTeam:
                     looped = True
                     messages.append(Message(role="user", content=REPEAT_WRITE_ONLY.format(tool=tool)))
                     recent = []
+                    if advised:  # told, and repeating still: the advice did not help
+                        _settled_stuck(ctx.on_stuck, ctx.team_id, False)
+                        advised = False
                 else:
                     final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({tool})"
                     stop = "repeated_action"
@@ -768,6 +803,8 @@ class NativeTeam:
                 continue
             if steps == ctx.max_steps - 1:
                 messages.append(Message(role="user", content=ONE_STEP_LEFT))
+        if advised:  # the advised nudge was not settled by a repeat after it: the run's result settles it
+            _settled_stuck(ctx.on_stuck, ctx.team_id, ok)
         return TeamResult(
             team_id=ctx.team_id,
             ok=ok,

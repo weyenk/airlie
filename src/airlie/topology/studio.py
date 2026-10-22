@@ -5,11 +5,12 @@ chief synthesises."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.engine.protocol import Engine
@@ -21,8 +22,9 @@ from airlie.report import RunReport
 from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
+from airlie.supervisor.advice import with_advice
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
-from airlie.teams.protocol import cut_off_text
+from airlie.teams.protocol import StuckAdvisor, cut_off_text
 from airlie.teams.worktree import (
     add_worktree,
     changed_files,
@@ -87,6 +89,29 @@ def _estimated_tokens(state: dict[str, Any]) -> int:
         for m in state.get("messages", [])
     )
     return chars // CHARS_PER_TOKEN
+
+
+class Advisor(StuckAdvisor, Protocol):
+    """A second reader for the studio's retries (the supervisor, in a story run): it may add a diagnosis to
+    what a role is sent back with, and hears what came of it. As the team's repeat guard it is a StuckAdvisor
+    too."""
+
+    async def advise(
+        self,
+        trigger: str,
+        subtask: str,
+        role: str,
+        told: str,
+        *,
+        kinds: Sequence[str] = (),
+        evidence: str = "",
+    ) -> str | None:
+        """The advice to add to `told`; None for none."""
+        ...
+
+    def settle(self, trigger: str, outcome: str, detail: str = "", *, subtask: str | None = None) -> None:
+        """What came of the latest advice for `trigger` (and `subtask`)."""
+        ...
 
 
 @dataclass
@@ -189,6 +214,7 @@ class StudioOrchestrator:
         self.amend_tests: Callable[[], Awaitable[bool]] | None = None  # execute_task's `amend_tests`
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
+        self.advisor: Advisor | None = None  # the supervisor, in a story run: the gate retry and repeat guard
 
     # ---- chief ----
     async def _chief(self, user: str, *, with_images: bool) -> str:
@@ -418,6 +444,7 @@ class StudioOrchestrator:
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,
+            on_stuck=self.advisor,
         )
 
     async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:
@@ -836,8 +863,22 @@ class StudioOrchestrator:
                 return passed
         self.sink.emit("gate_failed", follow_up=follow_up)
         tail = output[-self.cfg.tools.output_cap_chars :]
-        await self.follow_up(follow_up, f"{GATE_FAILED}\n\n```\n{tail}\n```")
-        return (await self._tests_pass(test_cmd))[0]
+        text = f"{GATE_FAILED}\n\n```\n{tail}\n```"
+        if self.advisor is not None:
+            try:
+                # `text` carries the gate's tail already: it is not sent a second time as evidence
+                advice = await self.advisor.advise(
+                    "gate_retry", follow_up, run.role, text, kinds=("gate_fails",)
+                )
+            except Exception:  # noqa: BLE001 - an advisor that fails leaves GATE_FAILED as it is, never a stop
+                advice = None
+            text = with_advice(text, advice)
+        await self.follow_up(follow_up, text)
+        passed = (await self._tests_pass(test_cmd))[0]
+        if self.advisor is not None:
+            with contextlib.suppress(Exception):  # an outcome it cannot record does not touch the run
+                self.advisor.settle("gate_retry", "helped" if passed else "not_helped", subtask=follow_up)
+        return passed
 
     async def _tests_pass(self, test_cmd: str | None) -> tuple[bool | None, str]:
         """The test gate, and its output. The test command loads the code the roles wrote, so it runs as

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Coroutine
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -15,6 +15,9 @@ from rich.table import Table
 from airlie import __version__
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 from airlie.story.state import StoryState
+
+if TYPE_CHECKING:
+    from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -44,6 +47,12 @@ story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
 app.add_typer(story_app, name="story")
+supervisor_app = typer.Typer(
+    no_args_is_help=True,
+    help="The supervisor's ledger: what Muse advised at each trouble point, what came of it, your verdict "
+    "(docs/integrations/story.md).",
+)
+app.add_typer(supervisor_app, name="supervisor")
 board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
@@ -1159,6 +1168,231 @@ def story_check(
     for p in checked.problems:
         err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
     raise typer.Exit(1)
+
+
+def _supervisor_ledger(config: Path | None) -> Ledger | None:
+    """The ledger, or None when no intervention has been recorded yet (reading never creates the file)."""
+    from airlie.supervisor.ledger import Ledger
+
+    path = (_load(config).observability.state_dir / "supervisor.sqlite").expanduser()
+    if not path.exists():
+        console.print("no interventions yet")
+        return None
+    return Ledger(path)
+
+
+@supervisor_app.command("log")
+def supervisor_log(
+    limit: Annotated[int, typer.Option(min=1, help="how many of the newest interventions")] = 20,
+    config: ConfigOpt = None,
+) -> None:
+    """The newest interventions: id, time, story/layer, trigger, category or fallback, outcome."""
+    ledger = _supervisor_ledger(config)
+    if ledger is None:
+        return
+    try:
+        rows = ledger.recent(limit)
+    finally:
+        ledger.close()
+    if not rows:
+        console.print("no interventions yet")
+    for r in rows:
+        when = datetime.fromtimestamp(r.at).strftime("%Y-%m-%d %H:%M")
+        what = r.category if r.fallback is None else f"fallback:{r.fallback}"
+        line = f"#{r.id}  {when}  {r.story}/{r.layer}  {r.trigger}  {what}  {r.outcome or 'open'}"
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@supervisor_app.command("stats")
+def supervisor_stats(config: ConfigOpt = None) -> None:
+    """How often a retry helped, by trigger: with Muse's answer, and with today's text alone (its fallbacks,
+    the no-Muse baseline); with Muse's answer by category; the blocks, apart (a block always ends blocked);
+    how often Muse stood aside; the blocks it named a fix for."""
+    ledger = _supervisor_ledger(config)
+    if ledger is None:
+        return
+    try:
+        s = ledger.stats()
+    finally:
+        ledger.close()
+    if not s.total:
+        console.print("no interventions yet")
+        return
+    out = ["help by trigger, Muse's answer used (helped/retries)"]
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_trigger.items())]
+    out.append("help by trigger, today's text alone: Muse fell back (helped/retries)")
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.fallback_by_trigger.items())]
+    out.append("help by category, Muse's answer used (helped/retries)")
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_category.items())]
+    out.append(f"blocks  {s.blocks}  (not in help: a block always ends blocked)")
+    out.append(f"fallbacks  {s.fallbacks}/{s.total}")
+    ids = " ".join(f"#{i}" for i in s.blocks_with_fix) or "none"
+    out.append(f"blocks Muse could have fixed with one more attempt  {ids}")
+    for line in out:
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@supervisor_app.command("verdict")
+def supervisor_verdict(
+    intervention_id: Annotated[
+        int, typer.Argument(metavar="ID", help="the intervention's id (supervisor:log)")
+    ],
+    verdict: Annotated[str, typer.Argument(help="right or wrong")],
+    note: Annotated[str, typer.Argument(help="why, if it helps")] = "",
+    config: ConfigOpt = None,
+) -> None:
+    """Record whether Muse's advice was right; the latest verdict on an intervention wins."""
+    from airlie.supervisor.ledger import Ledger, LedgerError, Verdict
+
+    if verdict not in ("right", "wrong"):
+        err.print("[red]the verdict is right or wrong[/red]")
+        raise typer.Exit(2)
+    path = (_load(config).observability.state_dir / "supervisor.sqlite").expanduser()
+    if not path.exists():
+        err.print("[red]no interventions yet[/red]")
+        raise typer.Exit(1)
+    ledger = Ledger(path)
+    try:
+        ledger.verdict(intervention_id, cast("Verdict", verdict), note)
+    except LedgerError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    finally:
+        ledger.close()
+    console.print(f"recorded: #{intervention_id} {verdict}", markup=False, highlight=False)
+
+
+@supervisor_app.command("try")
+def supervisor_try(
+    worktree: Annotated[
+        Path,
+        typer.Option(
+            "--worktree",
+            help="a checkout whose HEAD holds the tester's tests over --base: only HEAD's commits are "
+            "checked, so uncommitted tests are ignored",
+        ),
+    ],
+    base: Annotated[
+        str, typer.Option("--base", help="the layer's base commit: the gate is read from its AGENTS.md")
+    ],
+    run: Annotated[
+        str | None,
+        typer.Option("--run", help="a studio run id: Muse reads the role's last steps from its trace"),
+    ] = None,
+    subtask: Annotated[str, typer.Option("--subtask", help="the subtask whose trace Muse reads")] = "tests",
+    round_: Annotated[
+        int | None,
+        typer.Option(
+            "--round",
+            min=0,
+            help="the attempt whose trace Muse reads: 0 is the first run, N its round-N retry (default: the "
+            "newest, as in a story; 0 is what Muse read at the first retry)",
+        ),
+    ] = None,
+    brief_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--brief-file",
+            exists=True,
+            dir_okay=False,
+            help="the layer's brief, for Muse to read (default: none)",
+        ),
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Muse's triage of a worktree, as a story's first pre-code retry asks for it, against the configured
+    engine: the pre-code check (the gate's ruff fixers and checks, then pytest's), its findings, Muse's
+    answer as JSON, and what it cost. A try is not an intervention: it writes no ledger row. It changes
+    nothing either: the check, its fixers and Muse work in a throwaway detached tree at the worktree's HEAD,
+    where the fixers' edits are committed as a story commits them, and which is removed after."""
+    import asyncio
+    import dataclasses
+    import json
+    import shutil
+    import tempfile
+
+    from airlie.story.gate import read_gate
+    from airlie.story.layer_checks import Finding, checks_for, feedback, findings_text
+    from airlie.story.model import NoTestGate
+    from airlie.story.tester_lint import lint_for
+    from airlie.supervisor.evidence import TriageInput, trace_tail
+    from airlie.supervisor.layer import DIFF_CAP
+    from airlie.supervisor.triage import Triaged, TriageFailed, triage_for
+    from airlie.teams.worktree import add_worktree, commit_wip, diff_between, remove_worktree
+
+    cfg = _story_cfg(config)
+    wt = worktree.expanduser().resolve()
+    try:
+        commands = read_gate(wt, base).commands  # the base's, as a story reads it: never what a model wrote
+    except NoTestGate as e:
+        err.print(f"[red]no test gate at {escape(base)}: {escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    confinement, timeout_s = cfg.tools.confinement(), cfg.tools.shell_timeout_s
+    checks = checks_for(commands, timeout_s=timeout_s, confinement=confinement)
+    if checks is None:
+        err.print("[red]the gate runs no pytest: the pre-code check is for pytest only[/red]")
+        raise typer.Exit(1)
+    lint = lint_for(commands, timeout_s=timeout_s, confinement=confinement)
+    spec, s = cfg.story.supervisor, cfg.story
+    role = (s.tester_role if subtask == "tests" else None) or s.build_role
+    trace_dir = cfg.observability.state_dir.expanduser() / "runs" / (run or "") / "trace"
+    if run and not (trace_dir / subtask).is_dir():
+        err.print(f"no trace for {run}/{subtask} in {trace_dir}: Muse reads no steps", markup=False)
+
+    async def check(tree: Path) -> list[Finding]:
+        """The pipeline's pre-code check, in its order; the fixers' edits committed as it commits them."""
+        found: list[Finding] = []
+        if lint is not None:
+            if await lint.fix(tree, base):
+                commit_wip(tree, "supervisor try: lint fixes")
+            found = await lint.check(tree, base)
+        return found + await checks.run(tree, base)
+
+    async def ask(tree: Path, found: list[Finding]) -> Triaged:
+        inp = TriageInput(
+            trigger="precode_retry",
+            role=role,
+            subtask=subtask,
+            told=feedback(found),
+            evidence=findings_text(found),
+            kinds=tuple(f.kind for f in found),
+            brief=brief_file.read_text(encoding="utf-8") if brief_file is not None else "",
+            trace=trace_tail(trace_dir, subtask, spec.trace_steps, round_=round_) if run else "",
+            diff=diff_between(tree, base, DIFF_CAP),
+            events="",
+            earlier=(),
+            recall=(),
+        )
+        engine = _http_engine(cfg, cfg.engine_for_role(spec.role))
+        try:
+            return await triage_for(cfg, engine, checks)(inp, tree)
+        finally:
+            await engine.stop()
+
+    def show(text: str) -> None:
+        console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+    scratch = Path(tempfile.mkdtemp(prefix="airlie-try-"))
+    tree = scratch / "tree"
+    try:
+        add_worktree(wt, tree, branch=None, start_point="HEAD")  # detached: no branch is left behind
+        found = asyncio.run(check(tree))
+        if not found:
+            show("no findings: the pre-code check passes, so there is nothing for Muse to triage")
+            return
+        show("findings")
+        show(findings_text(found))
+        try:
+            triaged = asyncio.run(ask(tree, found))
+        except TriageFailed as e:
+            err.print(f"[red]Muse gave no answer: {escape(str(e))}[/red]", emoji=False)
+            raise typer.Exit(1) from None
+    finally:
+        remove_worktree(wt, tree)
+        shutil.rmtree(scratch, ignore_errors=True)
+    show("answer")
+    show(json.dumps(dataclasses.asdict(triaged.answer), indent=2, ensure_ascii=False))
+    show(f"seconds {triaged.seconds:.1f}  tokens {triaged.tokens}")
 
 
 @board_app.command("export")

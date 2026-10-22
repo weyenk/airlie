@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from airlie.supervisor.advice import with_advice
 from airlie.teams.worktree import add_worktree, changed_files, find_file, read_blob, remove_worktree
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import is_test_module, pytest_runner
@@ -249,6 +250,12 @@ class PytestChecks:
         outcomes, _ = await self._suite(worktree)
         return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
 
+    async def run_one(self, worktree: Path, test: str) -> str:
+        """The gate's pytest step on the node id `test` alone, confined as the suite is, for a reader (Muse)
+        that wants to see one test fail: the end of the output, where pytest says why."""
+        _, output = await self._suite(worktree, [test])
+        return output[-_TAIL_CHARS:]
+
     async def _failing_at(self, worktree: Path, base: str, tests: list[str]) -> list[str]:
         """Which of `tests` (ids from the worktree's suite) fail on `base` too: run alone, confined as the
         suite is, in a detached checkout of `base` beside the worktree that is removed after. A run that does
@@ -311,9 +318,11 @@ LOOSE_MATCH = (
 """Said under a test that passes before the code and matches an error's text: the usual cause."""
 
 
-def feedback(findings: Sequence[Finding], *, before_code: bool = True) -> str:
+def feedback(findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None) -> str:
     """What the tests' author is told on its retry: each finding and why, and what to do. `before_code` is
-    the tester's (the code is not written yet); else the coder's, which wrote tests and code together."""
+    the tester's (the code is not written yet); else the coder's, which wrote tests and code together.
+    `advice` is the supervisor's: its section goes after the findings and before the rules, so the rules are
+    the last thing the role reads, whole, whatever the advice says. With none, the text is today's."""
     listed: list[str] = []
     for f in findings:
         listed.append(f"- {f.test}: {f.why}")
@@ -333,7 +342,26 @@ def feedback(findings: Sequence[Finding], *, before_code: bool = True) -> str:
             "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
             "Run run_tests until your tests pass, then stop."
         )
-    return "\n".join(["airlie checked the tests, and these need fixing:", *listed, what])
+    found = "\n".join(["airlie checked the tests, and these need fixing:", *listed])
+    if not advice:
+        return f"{found}\n{what}"
+    return f"{with_advice(found, advice)}\n\n{what}"
+
+
+_EVIDENCE_SOURCE_CHARS = 1_500
+"""How much of a finding's test source the supervisor is shown."""
+
+
+def findings_text(found: Sequence[Finding]) -> str:
+    """The findings as the supervisor reads them: one block per finding, with its kind, its test, why, and
+    the start of the test's source (what the role is told lists the test and why, not the source)."""
+    blocks = []
+    for f in found:
+        block = f"kind: {f.kind}\ntest: {f.test}\nwhy: {f.why}"
+        if f.source:
+            block += f"\nsource:\n{f.source[:_EVIDENCE_SOURCE_CHARS]}"
+        blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 AMEND = (
