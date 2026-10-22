@@ -95,6 +95,21 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  supervisor:log:
+    desc: "The newest supervisor interventions: id, time, story/layer, trigger, category, outcome (task supervisor:log -- --limit 50)"
+    cmds:
+      - '{{.RUN}} airlie supervisor log {{.CLI_ARGS}}'
+
+  supervisor:stats:
+    desc: "How often Muse's advice helped, by trigger and by category, its fallbacks, and the blocks it named a fix for"
+    cmds:
+      - '{{.RUN}} airlie supervisor stats {{.CLI_ARGS}}'
+
+  supervisor:verdict:
+    desc: "Record whether an intervention was right or wrong (task supervisor:verdict -- ID right|wrong [NOTE])"
+    cmds:
+      - '{{.RUN}} airlie supervisor verdict {{.CLI_ARGS}}'
+
   story:check:
     desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
     cmds:

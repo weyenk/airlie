@@ -21,8 +21,8 @@ def intervention(**kw: Any) -> Intervention:
             fix_if_attempt=kw.pop("fix_if_attempt", None),
         )
     return Intervention(
-        story="AIR-1",
-        layer="01",
+        story=kw.pop("story", "AIR-1"),
+        layer=kw.pop("layer", "01"),
         studio_run="run-1",
         subtask="s1",
         role="coder",

@@ -720,6 +720,32 @@ board is in use on its first line.
 - **Keeping Jira:** `story.board: jira` in `airlie.local.yaml` takes stories from the Jira project instead
   (*Setup*, above); `story.board` is the only switch.
 
+## The supervisor (trial)
+
+When a layer gets into trouble, Muse (the reviewer model, as the `supervisor` role) reads the trace and says
+what it sees. It is advisory only: nothing it says adds an attempt, reroutes a retry, skips one, or clears a
+finding. It never edits code or tests; its tools are `read_file`, `list_dir`, `grep` and `run_test`. Each
+message airlie sends today still goes out whole, with Muse's section added after the findings (before the rule
+paragraph for the reviewer's feedback). It speaks at six trouble points: before the coder starts when the
+tests already pass (`precode_retry`), at the static-check retry (`static_retry`), at the gate retry
+(`gate_retry`), when a test is amended (`amend`), when the repeat guard fires (`repeat_guard`), and when a
+layer blocks (`block`). A block's note on the issue may carry a `Supervisor:` diagnosis. If Muse errors, times
+out, answers in a form that cannot be read, or has used its six turns for the layer (`per_layer`), the text is
+today's and a `supervisor_fallback` event is emitted; the run never stops because of it.
+
+The ledger is `observability.state_dir/supervisor.sqlite` (`~/.local/state/airlie/` by default), beside the
+board and separate from it. It is append-only (SQL triggers refuse an update or a delete): every intervention,
+its latest outcome (`helped`, `not_helped`, `blocked`, `unknown`) and your verdict, fallbacks included.
+
+- `task supervisor:log [-- --limit N]` lists the newest interventions, one line each.
+- `task supervisor:stats` shows how often the advice helped by trigger and by category, how often Muse stood
+  aside, and the blocks where it named a fix worth one more attempt.
+- `task supervisor:verdict -- ID right|wrong [NOTE]` records whether an intervention was right; the latest
+  verdict wins.
+
+To turn it off, set `story: { supervisor: { enabled: false } }` in `airlie.local.yaml`. The design is
+`docs/superpowers/specs/2026-10-22-supervisor-triage-design.md`.
+
 ## Not yet
 
 An amigos deliberation (product, the reviewer and architect agreeing a contract), an architect review loop across the

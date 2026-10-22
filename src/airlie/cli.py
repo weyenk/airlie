@@ -44,6 +44,12 @@ story_app = typer.Typer(
     no_args_is_help=True, help="Stories: a Jira issue or a request → stacked draft PRs (only a human merges)."
 )
 app.add_typer(story_app, name="story")
+supervisor_app = typer.Typer(
+    no_args_is_help=True,
+    help="The supervisor's ledger: what Muse advised at each trouble point, what came of it, your verdict "
+    "(docs/integrations/story.md).",
+)
+app.add_typer(supervisor_app, name="supervisor")
 board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
@@ -1159,6 +1165,94 @@ def story_check(
     for p in checked.problems:
         err.print(f"[red]✗[/red] {escape(p)}", emoji=False, soft_wrap=True)
     raise typer.Exit(1)
+
+
+def _supervisor_ledger(config: Path | None):  # type: ignore[no-untyped-def]
+    """The ledger, or None when no intervention has been recorded yet (reading never creates the file)."""
+    from airlie.supervisor.ledger import Ledger
+
+    path = (_load(config).observability.state_dir / "supervisor.sqlite").expanduser()
+    if not path.exists():
+        console.print("no interventions yet")
+        return None
+    return Ledger(path)
+
+
+@supervisor_app.command("log")
+def supervisor_log(
+    limit: Annotated[int, typer.Option(min=1, help="how many of the newest interventions")] = 20,
+    config: ConfigOpt = None,
+) -> None:
+    """The newest interventions: id, time, story/layer, trigger, category or fallback, outcome."""
+    ledger = _supervisor_ledger(config)
+    if ledger is None:
+        return
+    try:
+        rows = ledger.recent(limit)
+    finally:
+        ledger.close()
+    if not rows:
+        console.print("no interventions yet")
+    for r in rows:
+        when = datetime.fromtimestamp(r.at).strftime("%Y-%m-%d %H:%M")
+        what = r.category if r.fallback is None else f"fallback:{r.fallback}"
+        line = f"#{r.id}  {when}  {r.story}/{r.layer}  {r.trigger}  {what}  {r.outcome or 'open'}"
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@supervisor_app.command("stats")
+def supervisor_stats(config: ConfigOpt = None) -> None:
+    """How often Muse's advice helped, by trigger and by category; how often it stood aside; the blocks it
+    named a fix for."""
+    ledger = _supervisor_ledger(config)
+    if ledger is None:
+        return
+    try:
+        s = ledger.stats()
+    finally:
+        ledger.close()
+    if not s.total:
+        console.print("no interventions yet")
+        return
+    out = ["help by trigger"]
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_trigger.items())]
+    out.append("help by category")
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_category.items())]
+    out.append(f"fallbacks  {s.fallbacks}/{s.total}")
+    ids = " ".join(f"#{i}" for i in s.blocks_with_fix) or "none"
+    out.append(f"blocks Muse could have fixed with one more attempt  {ids}")
+    for line in out:
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@supervisor_app.command("verdict")
+def supervisor_verdict(
+    intervention_id: Annotated[
+        int, typer.Argument(metavar="ID", help="the intervention's id (supervisor:log)")
+    ],
+    verdict: Annotated[str, typer.Argument(help="right or wrong")],
+    note: Annotated[str, typer.Argument(help="why, if it helps")] = "",
+    config: ConfigOpt = None,
+) -> None:
+    """Record whether Muse's advice was right; the latest verdict on an intervention wins."""
+    from airlie.supervisor.ledger import Ledger, LedgerError
+
+    if verdict not in ("right", "wrong"):
+        err.print("[red]the verdict is right or wrong[/red]")
+        raise typer.Exit(2)
+    path = (_load(config).observability.state_dir / "supervisor.sqlite").expanduser()
+    if not path.exists():
+        err.print("[red]no interventions yet[/red]")
+        raise typer.Exit(1)
+    ledger = Ledger(path)
+    try:
+        ledger.verdict(intervention_id, verdict, note)  # type: ignore[arg-type]
+    except LedgerError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    finally:
+        ledger.close()
+    console.print(f"recorded: #{intervention_id} {verdict}", markup=False, highlight=False)
 
 
 @board_app.command("export")
