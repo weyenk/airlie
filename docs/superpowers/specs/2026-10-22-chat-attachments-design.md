@@ -112,3 +112,39 @@ such limit, so you can raise it in `airlie.local.yaml`. The chat role gets `visi
 
 **Live (AC5-style), from a clean state on the Mac:** ask about an iPhone photo and a short iPhone video
 (HEVC .mov), and attach a log file and a PDF. Check that the answers show the model saw each one.
+
+## Live findings (2026-10-22, the running engine) and the proposed change
+
+Run against the real engine (`generalist` on vllm-mlx 0.5.0, `--continuous-batching`), through this branch's
+serve on port 8091:
+
+- **Pictures work.** A 640×360 JPEG with a word on it got a 200 in 4.8 s.
+- **Video fails, both ways the API offers.** A `video_url` part is a 500. The batched engine converts content
+  parts only when a request has images, so the raw `video_url` reaches Qwen's chat template, which raises
+  `Unexpected item type in content`. A `{"type": "video"}` part gets through the template, and the engine
+  decodes the clip and samples 8 frames. Then the batch generator hands those frames to the model as 8 pictures
+  while the prompt has a single video slot: `0 image placeholders, but 8 images were supplied`. This is an
+  engine bug, not something airlie sends wrong.
+- **Large pictures would overflow a request.** The model's processor takes up to 16.7 M pixels
+  (`longest_edge` in `preprocessor_config.json`), so a 12 MP iPhone photo is about 12k tokens. The engine caps
+  a request at 32,768 tokens (`max_request_tokens`), so three photos would be refused.
+
+Proposed (needs Noah's go):
+
+1. **airlie samples the video itself.** OpenCV takes frames at `video_fps`, at most `video_max_frames`, each
+   scaled to at most `video_frame_px` (default 448) on its long edge. They are sent as pictures in time order,
+   after a text note: ``Video `clip.mp4`, 4.0 s: 4 frames at 1 fps, in order.`` and a `t=1.0 s` label before
+   each frame. This goes through the picture path, which works, and doesn't depend on which engine serves the
+   model. 32 frames at 448 px come to about 6k tokens. The history caps still count a video as one video.
+2. **Pictures are scaled before they are sent.** At most `max_image_px` (default 1536) on the long edge,
+   which is about 2.5k tokens for a photo. PNG and WebP stay PNG (transparency); JPEG and GIF become JPEG.
+   The stored original is never changed.
+3. **New direct dependencies:** `pillow`, already installed through transformers, and OpenCV:
+   `opencv-python` on macOS (the build vllm-mlx already installs) and `opencv-python-headless` on Linux, for
+   the e2e container. These are platform markers, so only one `cv2` is ever installed.
+4. **Tests:** unit tests for frame sampling (count, fps, labels, scaling, a clip that can't be decoded becomes
+   a line saying so) and for picture scaling. The e2e video check uses a real 2 s mp4 and asserts the frames
+   arrive as `image_url` parts. Last, the live check again: picture, video, log and PDF.
+
+Not chosen: patching vllm-mlx's batched video path in `engine/patches` (it is upstream's code, and the fix would
+sit in the batch generator's request setup); refusing video until vllm-mlx fixes it.
