@@ -288,3 +288,55 @@ def test_an_unknown_trigger_or_outcome_cannot_be_settled(tmp_path: Path) -> None
         sup.settle("retry", "helped")
     with pytest.raises(ValueError):
         sup.settle("gate_retry", "fine")
+
+
+async def test_parallel_subtasks_each_get_their_own_outcome(tmp_path: Path) -> None:
+    sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD, GOOD])
+    await sup.stuck("tests", "REPEATED", [])
+    await sup.stuck("build", "REPEATED", [])
+    sup.stuck_settled("tests", True)
+    sup.stuck_settled("build", False)
+    by_subtask = {r.subtask: r.outcome for r in led.recent()}
+    assert by_subtask == {"tests": "helped", "build": "not_helped"}
+
+
+async def test_settle_without_a_subtask_takes_the_latest_row_of_any(tmp_path: Path) -> None:
+    sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD, GOOD])
+    await sup.advise("gate_retry", "build", "coder", "TOLD")
+    await sup.advise("gate_retry", "docs", "coder", "TOLD")
+    sup.settle("gate_retry", "helped")
+    assert [(r.subtask, r.outcome) for r in led.recent()] == [("docs", "helped"), ("build", None)]
+
+
+async def test_a_block_cannot_be_advised(tmp_path: Path) -> None:
+    sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD])
+    with pytest.raises(ValueError):
+        await sup.advise("block", "tests", "tester", "TOLD")
+    assert led.recent() == [] and sup.engine.requests == []
+
+
+async def test_an_emit_that_raises_does_not_stop_the_run(tmp_path: Path) -> None:
+    sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD, "not json"])
+
+    def broken(kind: str, **fields: Any) -> None:
+        raise RuntimeError("events.jsonl is gone")
+
+    sup.emit = broken
+    assert await sup.advise("precode_retry", "tests", "tester", "TOLD") == GOOD["message"]
+    assert await sup.advise("gate_retry", "build", "coder", "TOLD") is None
+    assert len(led.recent()) == 2
+
+
+async def test_an_outcome_the_ledger_cannot_write_is_a_fallback(tmp_path: Path) -> None:
+    sup, led, events = layer_supervisor(tmp_path, answers=[GOOD, GOOD])
+    await sup.advise("precode_retry", "tests", "tester", "TOLD")
+    await sup.advise("amend", "tests", "tester", "TOLD")
+    [amend, precode] = led.recent()
+    led.close()
+    sup.settle("precode_retry", "helped")
+    sup.close()
+    after = [(kind, f["trigger"], f["reason"], f["ledger_id"]) for kind, f in events[2:]]
+    assert after == [
+        ("supervisor_fallback", "precode_retry", "ledger: ProgrammingError", precode.id),
+        ("supervisor_fallback", "amend", "ledger: ProgrammingError", amend.id),
+    ]

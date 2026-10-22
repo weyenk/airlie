@@ -9,6 +9,7 @@ too, which is what the trial compares Muse against."""
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast, get_args
@@ -71,8 +72,9 @@ class LayerSupervisor:
         self.emit = emit
         self.triage_calls = 0
         """Muse requests actually made on this layer: what the cap counts (a capped call makes none)."""
-        self._open: dict[str, list[int]] = {}
-        """Ledger ids with no outcome yet, by trigger, oldest first."""
+        self._open: dict[tuple[str, str], list[int]] = {}
+        """Ledger ids with no outcome yet, by (trigger, subtask): subtasks of one layer can run side by side,
+        and each retry's outcome must go to its own row."""
 
     # ---- asking --------------------------------------------------------------------------------------------
 
@@ -89,9 +91,11 @@ class LayerSupervisor:
         """Muse's message for the role, to add to `told`; None on any fallback. The row stays open for
         `settle`."""
         trig = _trigger(trigger)
+        if trig == "block":
+            raise ValueError("a block goes through at_block, which settles it at once")
         ledger_id, answer = await self._triage(trig, subtask, role, told, tuple(kinds), evidence)
         if ledger_id is not None:
-            self._open.setdefault(trig, []).append(ledger_id)
+            self._open.setdefault((trig, subtask), []).append(ledger_id)
         return answer.message if answer else None
 
     async def at_block(
@@ -116,22 +120,25 @@ class LayerSupervisor:
         return await self.advise("repeat_guard", subtask, _STUCK_ROLE, told, evidence=shown)
 
     def stuck_settled(self, subtask: str, helped: bool) -> None:
-        """`subtask` is not matched on: a layer's repeat-guard rows are settled by trigger, latest first."""
-        self.settle("repeat_guard", "helped" if helped else "not_helped")
+        self.settle("repeat_guard", "helped" if helped else "not_helped", subtask=subtask)
 
     # ---- what came of it -----------------------------------------------------------------------------------
 
-    def settle(self, trigger: str, outcome: str, detail: str = "") -> None:
-        """The outcome of the latest open intervention for `trigger`, which is then closed; with none open,
-        nothing happens (a second settle of the same retry is ignored)."""
+    def settle(self, trigger: str, outcome: str, detail: str = "", *, subtask: str | None = None) -> None:
+        """The outcome of the latest open intervention for `trigger` (and `subtask`, when given), which is
+        then closed; with none open, nothing happens (a second settle of the same retry is ignored)."""
         trig, out = _trigger(trigger), _outcome(outcome)
-        ids = self._open.get(trig)
-        if ids:
-            self._write_outcome(trig, ids.pop(), out, detail)
+        keys = [k for k, ids in self._open.items() if ids and k[0] == trig and subtask in (None, k[1])]
+        if not keys:
+            return
+        ids = self._open[max(keys, key=lambda k: max(self._open[k]))]
+        latest = max(ids)
+        ids.remove(latest)
+        self._write_outcome(trig, latest, out, detail)
 
     def close(self) -> None:
         """The layer is over: whatever is still open is `unknown`, so no row is left without an outcome."""
-        for trig, ids in self._open.items():
+        for (trig, _), ids in self._open.items():
             for ledger_id in ids:
                 self._write_outcome(trig, ledger_id, "unknown", "")
         self._open.clear()
@@ -182,7 +189,7 @@ class LayerSupervisor:
         if answer is None:
             self._fallback(trigger, fallback or "", ledger_id)
             return ledger_id, None
-        self.emit(
+        self._emit(
             "supervisor_triage",
             trigger=trigger,
             category=answer.category,
@@ -210,8 +217,13 @@ class LayerSupervisor:
             recall=tuple(self.ledger.recall(trigger, kinds, self.spec.recall)),
         )
 
+    def _emit(self, kind: str, **fields: object) -> None:
+        # an event that cannot be written never stops the run
+        with contextlib.suppress(Exception):
+            self.emit(kind, **fields)
+
     def _fallback(self, trigger: str, reason: str, ledger_id: int | None) -> None:
-        self.emit(
+        self._emit(
             "supervisor_fallback", trigger=trigger, reason=reason, ledger_id=ledger_id, layer=self.layer
         )
 
