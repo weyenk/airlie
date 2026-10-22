@@ -44,6 +44,7 @@ from airlie.story.model import Layer
 from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE
 from airlie.teams.native_team import (
     ACT_FIRST,
+    CARRIED,
     CHANGE_NOW,
     CODE_NOW,
     CYCLED,
@@ -73,6 +74,15 @@ GOLDEN = Path(__file__).parent / "data" / "prompt_texts.json"
 
 N, TOTAL, K, WHAT, TOOL, P, LABEL, WIDTH = 7, 40, 3, "no test", "read_file", 2, "b", 3
 HINT = "/tmp/wt"
+TAIL, MAX_PROMPT, MAX_CONTEXT = "…sample tail…", 49200, 65536
+
+
+def _context_pressure() -> str:
+    """native_team's run builds this inline, in an f-string, once a step takes the prompt to 75% of
+    max_context."""
+    max_prompt, max_context = MAX_PROMPT, MAX_CONTEXT
+    return f"Your context is at {max_prompt} of {max_context} tokens. Stop reading: write from what you have."
+
 
 # serve/app.py builds this inline, in the closure that handles a chat request.
 CLIENT_BRIDGE = (
@@ -144,6 +154,8 @@ CASES: dict[str, Callable[[], str]] = {
     "last-turn-retry": lambda: LAST_TURN_RETRY,
     "one-step-left": lambda: ONE_STEP_LEFT,
     "fresh-run": lambda: FRESH_RUN.format(n=N),
+    "reasoning-carried": lambda: CARRIED.format(tail=TAIL),
+    "context-pressure": _context_pressure,
     # --- tools/loop.py, topology/studio.py, serve/app.py
     "no-more-tools": lambda: NO_MORE_TOOLS,
     "fresh-continuation": lambda: FRESH_CONTINUATION,
