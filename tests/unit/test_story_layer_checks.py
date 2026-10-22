@@ -8,7 +8,10 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
 from airlie.story.layer_checks import (
+    LOOSE_MATCH,
     Finding,
     PytestChecks,
     changed_tests,
@@ -340,6 +343,46 @@ def test_feedback_names_each_test_and_why() -> None:
     assert "your new tests are the only red" in text and "Do not write the feature" in text
     coder = feedback([Finding("assertion_free_test", "t::x", "it has no assert", "")], before_code=False)
     assert "Run run_tests until your tests pass" in coder and "Do not write the feature" not in coder
+
+
+TODAYS_HEADER = "airlie checked the tests, and these need fixing:"
+TODAYS_TESTER = (
+    "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
+    "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
+    "message, no change) passes now, where nothing happens either: put that check in the same test "
+    "that triggers the behaviour, before the trigger, or drop it. Every test that was there before "
+    "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
+    "run_tests and check that your new tests are the only red, then stop."
+)
+TODAYS_CODER = (
+    "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
+    "Run run_tests until your tests pass, then stop."
+)
+
+
+@pytest.mark.parametrize("before_code,what", [(True, TODAYS_TESTER), (False, TODAYS_CODER)])
+@pytest.mark.parametrize(
+    "found",
+    [
+        [],
+        [
+            Finding("passes_before_code", "t::a", "it passes before the code", 'raises(E, match="x")'),
+            Finding("assertion_free_test", "t::b", "it has no assert", ""),
+        ],
+    ],
+)
+@pytest.mark.parametrize("advice", [None, ""])
+def test_with_no_advice_feedback_is_exactly_todays_text(
+    before_code: bool, what: str, found: list[Finding], advice: str | None
+) -> None:
+    """The supervisor's off switch: no advice, and the role reads the text it read before the supervisor."""
+    listed: list[str] = []
+    for f in found:
+        listed.append(f"- {f.test}: {f.why}")
+        if f.kind == "passes_before_code":
+            listed.append(LOOSE_MATCH)
+    todays = "\n".join([TODAYS_HEADER, *listed, what])
+    assert feedback(found, before_code=before_code, advice=advice) == todays
 
 
 def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> None:

@@ -101,7 +101,7 @@ tasks:
       - '{{.RUN}} airlie supervisor log {{.CLI_ARGS}}'
 
   supervisor:stats:
-    desc: "How often Muse's advice helped, by trigger and by category, its fallbacks, and the blocks it named a fix for"
+    desc: "How often a retry helped with Muse's answer and with today's text alone (its fallbacks), by trigger; the blocks apart, and those it named a fix for"
     cmds:
       - '{{.RUN}} airlie supervisor stats {{.CLI_ARGS}}'
 

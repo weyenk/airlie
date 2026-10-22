@@ -162,7 +162,7 @@ class LayerSupervisor:
                 try:
                     triaged = await self.triage(inp, self.worktree)
                 except TriageFailed as e:
-                    fallback = e.reason
+                    fallback, seconds, tokens = e.reason, e.seconds, e.tokens  # what the failed call cost
                 else:
                     answer, seconds, tokens = triaged.answer, triaged.seconds, triaged.tokens
         try:

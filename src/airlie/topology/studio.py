@@ -866,8 +866,9 @@ class StudioOrchestrator:
         text = f"{GATE_FAILED}\n\n```\n{tail}\n```"
         if self.advisor is not None:
             try:
+                # `text` carries the gate's tail already: it is not sent a second time as evidence
                 advice = await self.advisor.advise(
-                    "gate_retry", follow_up, run.role, text, kinds=("gate_fails",), evidence=tail
+                    "gate_retry", follow_up, run.role, text, kinds=("gate_fails",)
                 )
             except Exception:  # noqa: BLE001 - an advisor that fails leaves GATE_FAILED as it is, never a stop
                 advice = None

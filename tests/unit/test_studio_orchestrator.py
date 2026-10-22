@@ -1027,9 +1027,8 @@ async def test_the_gate_follow_up_carries_the_advisors_section_and_its_outcome(t
     assert follow_up.endswith(f"```\n\n{SUPERVISOR}\nFix rounding in mul.") and "1 failed" in follow_up
     [(trigger, subtask, role, text, kinds, evidence)] = adv.advised
     assert (trigger, subtask, role, kinds) == ("gate_retry", "build", "coder", ("gate_fails",))
-    assert (
-        text == follow_up.split(f"\n\n{SUPERVISOR}")[0] and "1 failed" in evidence
-    )  # the fixed text, the tail
+    # the fixed text carries the gate's tail already: it is not sent to Muse a second time as evidence
+    assert text == follow_up.split(f"\n\n{SUPERVISOR}")[0] and "1 failed" in text and evidence == ""
     assert adv.settled == [("gate_retry", "helped", "build")]
 
 

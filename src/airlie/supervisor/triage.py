@@ -10,11 +10,11 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from airlie.config import AirlieConfig, RoleSpec
-from airlie.engine.protocol import Engine
-from airlie.engine.types import GenRequest, Message
+from airlie.engine.protocol import Engine, OnToken
+from airlie.engine.types import GenRequest, GenResult, Message
 from airlie.skills import prompt_text
 from airlie.supervisor.answer import Answer, AnswerError, parse_answer
 from airlie.supervisor.evidence import TriageInput, triage_message
@@ -57,11 +57,31 @@ class RunOneTest:
 
 
 class TriageFailed(Exception):
-    """Muse gave no usable answer. `reason` is one of engine_error, timeout, unparsable, cut_off."""
+    """Muse gave no usable answer. `reason` is one of engine_error, timeout, unparsable, cut_off; `seconds`
+    and `tokens` are what the attempt took all the same, for the ledger."""
 
-    def __init__(self, reason: str, detail: str = "") -> None:
+    def __init__(self, reason: str, detail: str = "", *, seconds: float = 0.0, tokens: int = 0) -> None:
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
+        self.seconds = seconds
+        self.tokens = tokens
+
+
+class _Counted:
+    """The engine, adding up the tokens of every request made through it: a triage is a tool loop of several
+    requests, and its cost is all of them, not the last."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+        self.tokens = 0
+
+    async def generate(self, req: GenRequest, on_token: OnToken | None = None) -> GenResult:
+        res = await self.engine.generate(req, on_token)
+        self.tokens += res.prompt_tokens + res.completion_tokens
+        return res
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.engine, name)
 
 
 @dataclass(frozen=True)
@@ -79,22 +99,30 @@ class Triage:
         role: RoleSpec,
         tools: Callable[[Path], ToolRegistry],
         timeout_s: float,
+        *,
+        model: str | None = None,
     ) -> None:
         """`tools`: the registry for a worktree (read_file, list_dir, grep and run_test), built per call
-        because the tools are confined to the worktree they are given."""
+        because the tools are confined to the worktree they are given. `model`: what the ledger records as
+        the model Muse ran on (the weights, from the catalog); the role's seat name without one."""
         self.engine = engine
         self.role_name = role_name
         self.role = role
         self.tools = tools
         self.timeout_s = timeout_s
-        self.model = role.model
-        """The role's model name, for the ledger."""
+        self.model = model or role.model
+        """The model for the ledger: a seat (`reviewer`) can be pointed at other weights between rows."""
 
     async def __call__(self, inp: TriageInput, worktree: Path) -> Triaged:
         # The request is built inside the guard too: a missing prompt file or a broken tools factory is a
         # fallback like any other failure, never a stopped run.
         loop = asyncio.get_running_loop()
         started = loop.time()
+        engine = _Counted(self.engine)
+
+        def failed(reason: str, detail: str) -> TriageFailed:
+            return TriageFailed(reason, detail, seconds=loop.time() - started, tokens=engine.tokens)
+
         try:
             # chat_template_kwargs is not a GenRequest field: the engine reads it from the role's spec by
             # name, as it does for the reviewer.
@@ -110,23 +138,21 @@ class Triage:
             )
             res = await asyncio.wait_for(
                 generate_with_tools(
-                    self.engine, req, self.tools(worktree), self.role.max_steps or DEFAULT_STEPS
+                    cast(Engine, engine), req, self.tools(worktree), self.role.max_steps or DEFAULT_STEPS
                 ),
                 self.timeout_s,
             )
-        except TriageFailed:
-            raise
         except TimeoutError as e:
-            raise TriageFailed("timeout", f"no answer in {self.timeout_s:g}s") from e
+            raise failed("timeout", f"no answer in {self.timeout_s:g}s") from e
         except Exception as e:  # noqa: BLE001  # whatever broke, the run goes on without Muse; cancellation is not an Exception
-            raise TriageFailed("engine_error", f"{type(e).__name__}: {e}") from e
+            raise failed("engine_error", f"{type(e).__name__}: {e}") from e
         if res.finish_reason == "length" and not res.text.strip():
-            raise TriageFailed("cut_off", "max_tokens ended the reply before an answer")
+            raise failed("cut_off", "max_tokens ended the reply before an answer")
         try:
             answer = parse_answer(res.text, block=inp.trigger == "block")
         except AnswerError as e:
-            raise TriageFailed("unparsable", str(e)) from e
-        return Triaged(answer, loop.time() - started, res.prompt_tokens + res.completion_tokens)
+            raise failed("unparsable", str(e)) from e
+        return Triaged(answer, loop.time() - started, engine.tokens)
 
 
 def triage_for(cfg: AirlieConfig, engine: Engine, checks: OneTestRunner | None) -> Triage:
@@ -145,4 +171,8 @@ def triage_for(cfg: AirlieConfig, engine: Engine, checks: OneTestRunner | None) 
             registry.add(RunOneTest(checks))
         return registry
 
-    return Triage(engine, spec.role, cfg.roles[spec.role], tools, spec.timeout_s)
+    role = cfg.roles[spec.role]
+    weights = cfg.models.get(role.model)
+    return Triage(
+        engine, spec.role, role, tools, spec.timeout_s, model=weights.repo if weights is not None else None
+    )

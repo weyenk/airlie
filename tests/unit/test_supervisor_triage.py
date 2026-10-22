@@ -10,14 +10,16 @@ from typing import Any
 
 import pytest
 
-from airlie.config import RoleSpec
+from airlie.config import RoleSpec, load_config
 from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.types import GenRequest, GenResult, ToolCall
 from airlie.supervisor.evidence import TriageInput
-from airlie.supervisor.triage import RunOneTest, Triage, TriageFailed
+from airlie.supervisor.triage import RunOneTest, Triage, TriageFailed, triage_for
 from airlie.tools.fs import ReadFile
 from airlie.tools.protocol import ToolContext
 from airlie.tools.registry import ToolRegistry
+
+REPO = Path(__file__).resolve().parents[2]
 
 GOOD: dict[str, Any] = {
     "category": "missing_import",
@@ -152,3 +154,42 @@ async def test_a_tools_factory_that_raises_is_a_triage_failure(tmp_path: Path) -
     with pytest.raises(TriageFailed, match="RuntimeError: no registry") as e:
         await t(an_input(), tmp_path)
     assert e.value.reason == "engine_error"
+
+
+class CountingEngine(FakeEngine):
+    """A FakeEngine that keeps every result it gave, to add up the tokens of a whole tool loop."""
+
+    def __init__(self, scripts: dict[str, list[FakeReply]]) -> None:
+        super().__init__(scripts)
+        self.results: list[GenResult] = []
+
+    async def generate(self, req: GenRequest, on_token: Any = None) -> GenResult:
+        res = await super().generate(req, on_token)
+        self.results.append(res)
+        return res
+
+
+async def test_the_tokens_are_those_of_every_request_in_the_tool_loop(tmp_path: Path) -> None:
+    call = ToolCall("c", "run_test", json.dumps({"test": "tests/test_a.py::test_a"}))
+    engine = CountingEngine({"supervisor": [FakeReply(tool_calls=[call]), FakeReply(text=json.dumps(GOOD))]})
+    out = await triage(engine, StubChecks("NameError"))(an_input(), tmp_path)
+    assert len(engine.results) == 2
+    assert out.tokens == sum(r.prompt_tokens + r.completion_tokens for r in engine.results)
+    last = engine.results[-1]
+    assert out.tokens > last.prompt_tokens + last.completion_tokens
+
+
+async def test_a_failure_still_says_how_long_it_took_and_what_it_spent(tmp_path: Path) -> None:
+    with pytest.raises(TriageFailed) as e:
+        await triage(CountingEngine({"supervisor": [FakeReply(text="no json here")]}))(an_input(), tmp_path)
+    assert e.value.seconds > 0 and e.value.tokens > 0
+    with pytest.raises(TriageFailed) as slow:
+        await triage(SlowEngine(seconds=5), timeout_s=0.05)(an_input(), tmp_path)
+    assert slow.value.seconds >= 0.05
+
+
+def test_the_ledger_names_the_model_muse_runs_on_not_its_seat() -> None:
+    cfg = load_config(REPO / "airlie.yaml")
+    seat = cfg.roles[cfg.story.supervisor.role].model
+    t = triage_for(cfg, FakeEngine({}), None)
+    assert t.model == cfg.models[seat].repo and t.model.startswith("mlx-community/")

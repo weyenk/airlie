@@ -9,17 +9,19 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from airlie.engine import FakeEngine, FakeReply
 from airlie.story.board import text_card
-from airlie.story.layer_checks import feedback
+from airlie.story.layer_checks import Finding, feedback
 from airlie.story.state import StoryState
 from airlie.supervisor.advice import SUPERVISOR
 from airlie.supervisor.ledger import Ledger, Row
 from airlie.teams import native_team
+from tests.unit.advisor_doubles import RecordingAdvisor
 from tests.unit.test_story_layer_checks_flow import (
     FEATURE,
     LAYERS,
@@ -258,3 +260,18 @@ async def test_a_supervisor_that_cannot_be_set_up_leaves_the_layer_as_today(tmp_
     assert fallback["reason"] == "setup: FileNotFoundError" and fallback["layer"] == "01"
     assert SUPERVISOR not in last_user_message(engine, "tester")
     assert not [r for r in engine.requests if r.role == "supervisor"]
+
+
+async def test_advice_for_a_subtask_that_never_ran_goes_to_the_configured_role(tmp_path: Path) -> None:
+    """Like a block's diagnosis: a retry whose subtask has no run asks Muse for the role the config names,
+    and never raises."""
+    pipe = pipeline(
+        tmp_path, calc_repo(tmp_path), scripted(tester=[]), test_cmd=PYTEST,
+        story={"tester_role": "tester", "supervisor": {"enabled": True}}, roles=SUPERVISOR_ROLES,
+    )  # fmt: skip
+    adv = RecordingAdvisor("advice")
+    orch = SimpleNamespace(runs={})
+    found = [Finding("assertion_free_test", "t::x", "it has no assert", "")]
+    for subtask, role in (("tests", "tester"), ("build", pipe.s.build_role)):
+        told = await pipe._advise(adv, orch, "static_retry", subtask, "TOLD", found)  # type: ignore[arg-type]
+        assert told == "advice" and adv.advised[-1][1:3] == (subtask, role)

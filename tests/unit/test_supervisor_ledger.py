@@ -89,6 +89,14 @@ def test_recall_returns_only_helped_rows_with_the_same_trigger_and_a_shared_kind
     assert [r.id for r in led.recall("precode_retry", ["passes_before_code"])] == [a]
 
 
+def test_a_fallback_that_helped_is_not_recalled(tmp_path: Path) -> None:
+    """A fallback row has no answer: the retry that helped was today's text, not a fix Muse gave."""
+    led = Ledger(tmp_path / "s.sqlite")
+    a = led.record(intervention(answer=None, fallback="timeout"))
+    led.outcome(a, "helped")
+    assert led.recall("precode_retry", ["passes_before_code"]) == []
+
+
 def test_stats_count_help_by_trigger_and_category_and_list_blocks_with_a_fix(tmp_path: Path) -> None:
     led = Ledger(tmp_path / "s.sqlite")
     a = led.record(intervention(trigger="precode_retry", category="missing_import"))
@@ -96,15 +104,34 @@ def test_stats_count_help_by_trigger_and_category_and_list_blocks_with_a_fix(tmp
     b = led.record(intervention(trigger="block", fix_if_attempt="add the import"))
     led.outcome(b, "blocked")
     s = led.stats()
-    assert s.by_trigger["precode_retry"] == (1, 1) and s.by_category["missing_import"] == (2, 1)
-    assert s.blocks_with_fix == [b] and s.total == 2
+    assert s.by_trigger == {"precode_retry": (1, 1)} and s.by_category == {"missing_import": (1, 1)}
+    assert s.blocks == 1 and s.blocks_with_fix == [b] and s.total == 2
 
 
-def test_a_fallback_counts_by_trigger_but_not_by_category(tmp_path: Path) -> None:
+def test_a_fallback_counts_as_the_baseline_not_as_muses_help(tmp_path: Path) -> None:
     led = Ledger(tmp_path / "s.sqlite")
     led.record(intervention(trigger="gate_retry", answer=None, fallback="timeout"))
     s = led.stats()
-    assert s.by_trigger["gate_retry"] == (1, 0) and s.by_category == {} and s.total == 1
+    assert s.by_trigger == {} and s.fallback_by_trigger == {"gate_retry": (1, 0)}
+    assert s.by_category == {} and s.fallbacks == 1 and s.total == 1
+
+
+def test_stats_keep_answered_fallback_and_block_rows_apart(tmp_path: Path) -> None:
+    """Muse's help is counted on its answers alone; a fallback retry is the no-Muse baseline beside it; a
+    block always ends blocked, so it is counted on its own and in neither."""
+    led = Ledger(tmp_path / "s.sqlite")
+    for outcome in ("helped", "not_helped", "helped"):
+        led.outcome(led.record(intervention(trigger="precode_retry", category="missing_import")), outcome)
+    for outcome in ("helped", "not_helped"):
+        led.outcome(led.record(intervention(trigger="precode_retry", answer=None, fallback="cap")), outcome)
+    led.outcome(led.record(intervention(trigger="gate_retry", answer=None, fallback="timeout")), "helped")
+    led.outcome(led.record(intervention(trigger="block", category="missing_import")), "blocked")
+    led.outcome(led.record(intervention(trigger="block", answer=None, fallback="timeout")), "blocked")
+    s = led.stats()
+    assert s.by_trigger == {"precode_retry": (3, 2)}
+    assert s.fallback_by_trigger == {"precode_retry": (2, 1), "gate_retry": (1, 1)}
+    assert s.by_category == {"missing_import": (3, 2)}
+    assert (s.blocks, s.fallbacks, s.total) == (2, 4, 8)
 
 
 def test_recent_and_for_layer_are_newest_first(tmp_path: Path) -> None:

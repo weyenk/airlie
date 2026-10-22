@@ -873,10 +873,9 @@ class StoryPipeline:
         fallback. The role is the subtask's as it ran, or the configured one when it never ran."""
         if sup is None:
             return None
-        run = orch.runs.get(subtask)
-        configured = self.s.tester_role if subtask == "tests" else None
-        role = run.role if run is not None else configured or self.s.build_role
-        return await sup.at_block(subtask, role, reason, kinds=kinds, evidence=evidence)
+        return await sup.at_block(
+            subtask, self._role_of(orch, subtask), reason, kinds=kinds, evidence=evidence
+        )
 
     async def _check_tests(
         self,
@@ -1051,8 +1050,8 @@ class StoryPipeline:
                 await orch.follow_up("build", feedback(found, before_code=False, advice=advice))
         return found
 
-    @staticmethod
     async def _advise(
+        self,
         sup: LayerSupervisor | None,
         orch: StudioOrchestrator,
         trigger: str,
@@ -1060,17 +1059,24 @@ class StoryPipeline:
         told: str,
         found: Sequence[Finding],
     ) -> str | None:
-        """The supervisor's advice for a retry on `found`, to add to `told`; None without one."""
+        """The supervisor's advice for a retry on `found`, to add to `told`; None without one. The role is
+        found as `_at_block` finds it: a subtask with no run never stops the retry."""
         if sup is None:
             return None
         return await sup.advise(
             trigger,
             subtask,
-            orch.runs[subtask].role,
+            self._role_of(orch, subtask),
             told,
             kinds=[f.kind for f in found],
             evidence=findings_text(found),
         )
+
+    def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
+        """The subtask's role as it ran, or the configured one when it never ran."""
+        run = orch.runs.get(subtask)
+        configured = self.s.tester_role if subtask == "tests" else None
+        return run.role if run is not None else configured or self.s.build_role
 
     @staticmethod
     def _emit_findings(st: StoryState, found: list[Finding], nn: str, attempt: int, studio_run: str) -> None:

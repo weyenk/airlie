@@ -108,9 +108,16 @@ class Row:
 
 @dataclass(frozen=True)
 class Stats:
-    by_trigger: dict[str, tuple[int, int]]  # (interventions, helped)
-    by_category: dict[str, tuple[int, int]]  # fallback rows have no category and are left out
-    fallbacks: int
+    """The trial's numbers. Help is counted per retry, as (retries, helped), on two sides: `by_trigger` and
+    `by_category` the retries that carried Muse's answer, `fallback_by_trigger` the ones where it stood aside
+    and the role got today's text alone, the no-Muse baseline to set beside them. A block ends the layer, so
+    its outcome is always `blocked`: blocks are counted on their own (`blocks`), in neither side."""
+
+    by_trigger: dict[str, tuple[int, int]]  # answered retries: (interventions, helped)
+    fallback_by_trigger: dict[str, tuple[int, int]]  # fallback retries: (interventions, helped)
+    by_category: dict[str, tuple[int, int]]  # answered retries, by Muse's category
+    blocks: int
+    fallbacks: int  # every row where Muse stood aside, blocks included
     total: int
     blocks_with_fix: list[int]  # intervention ids: Muse blocked a layer but named a fix worth attempting
 
@@ -228,26 +235,38 @@ class Ledger:
         return self._rows("WHERE i.story = ? AND i.layer = ?", (story, layer))
 
     def recall(self, trigger: Trigger, kinds: Sequence[str], limit: int = 3) -> list[Row]:
-        """Past interventions that helped on the same trigger and share a kind of finding with `kinds`,
-        newest first: what worked before in a case like this one."""
+        """Past answers that helped on the same trigger and share a kind of finding with `kinds`, newest
+        first: what worked before in a case like this one. A fallback row is never one: it helped, if it did,
+        with today's text, and has no fix to show."""
         wanted = set(kinds)
-        rows = self._rows("WHERE i.trigger = ?", (trigger,))
+        rows = self._rows("WHERE i.trigger = ? AND i.fallback IS NULL AND i.message != ''", (trigger,))
         return [r for r in rows if r.outcome == "helped" and wanted & set(r.kinds)][:limit]
 
     def stats(self) -> Stats:
         rows = self._rows()
         by_trigger: dict[str, tuple[int, int]] = {}
+        fallback_by_trigger: dict[str, tuple[int, int]] = {}
         by_category: dict[str, tuple[int, int]] = {}
+
+        def count(table: dict[str, tuple[int, int]], key: str, helped: int) -> None:
+            n, h = table.get(key, (0, 0))
+            table[key] = (n + 1, h + helped)
+
         for r in rows:
+            if r.trigger == "block":
+                continue
             helped = 1 if r.outcome == "helped" else 0
-            n, h = by_trigger.get(r.trigger, (0, 0))
-            by_trigger[r.trigger] = (n + 1, h + helped)
+            if r.fallback is not None:
+                count(fallback_by_trigger, r.trigger, helped)
+                continue
+            count(by_trigger, r.trigger, helped)
             if r.category is not None:
-                n, h = by_category.get(r.category, (0, 0))
-                by_category[r.category] = (n + 1, h + helped)
+                count(by_category, r.category, helped)
         return Stats(
             by_trigger=by_trigger,
+            fallback_by_trigger=fallback_by_trigger,
             by_category=by_category,
+            blocks=sum(1 for r in rows if r.trigger == "block"),
             fallbacks=sum(1 for r in rows if r.fallback is not None),
             total=len(rows),
             blocks_with_fix=sorted(r.id for r in rows if r.trigger == "block" and r.fix_if_attempt),

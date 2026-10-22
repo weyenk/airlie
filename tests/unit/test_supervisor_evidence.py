@@ -137,9 +137,17 @@ def test_brief_and_diff_are_capped() -> None:
 
 
 def test_a_recalled_row_is_one_block_capped_at_600() -> None:
-    msg = triage_message(inp(recall=(row(1, message="m" * 2_000),)))
+    msg = triage_message(inp(recall=(row(1, diagnosis="d" * 2_000, message="m" * 2_000),)))
     section = msg.split("## Fixes that helped before\n")[1]
     assert len(section) <= 600 and "precode_retry" in section and "missing_import" in section
+
+
+def test_a_long_recalled_message_still_leaves_its_owner_and_outcome() -> None:
+    """The cap shortens what Muse said, never the fields that say what kind of fix it was and how it went."""
+    msg = triage_message(inp(recall=(row(1, diagnosis="d" * 2_000, message="m" * 2_000),)))
+    section = msg.split("## Fixes that helped before\n")[1]
+    assert section.endswith("| outcome: helped") and "owner tester" in section
+    assert "d" * 200 in section and "m" * 200 in section
 
 
 def test_a_fallback_row_shows_its_reason() -> None:

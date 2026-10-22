@@ -30,11 +30,13 @@ def test_log_and_stats_read_the_ledger(tmp_path: Path) -> None:
     assert "AIR-9/02" in out and "missing_import" in out and "helped" in out
     assert "fallback:timeout" in out and "open" in out
     stats = invoke(tmp_path, "supervisor", "stats").stdout
-    assert "missing_import  1/1" in stats
-    assert "precode_retry  1/2" in stats
-    assert "fallbacks  1/3" in stats
-    assert f"#{b}" in stats
-    assert stats.index("help by trigger") < stats.index("help by category") < stats.index("fallbacks")
+    answered, rest = stats.split("help by trigger, today's text alone")
+    baseline, rest = rest.split("help by category")
+    by_category, rest = rest.split("blocks  ")
+    assert answered.startswith("help by trigger, Muse's answer") and "precode_retry  1/1" in answered
+    assert "precode_retry  0/1" in baseline and "block" not in answered + baseline
+    assert "missing_import  1/1" in by_category and "environment" not in by_category
+    assert rest.startswith("1") and "fallbacks  1/3" in rest and f"#{b}" in rest
 
 
 def test_a_verdict_is_recorded_and_an_unknown_id_fails(tmp_path: Path) -> None:

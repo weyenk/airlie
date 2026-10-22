@@ -1,8 +1,10 @@
 """What Muse reads: the tail of the role's trace, the layer's events, and the one triage message that
 carries them with the findings and the earlier interventions.
 
-Everything here is cut keeping the END: the last steps and the last lines are what show how a role got
-stuck, and the start of a long trace is the part least likely to matter."""
+A trace, the events and the earlier interventions are cut keeping the END: the last steps and the last lines
+are what show how a role got stuck, and the start of a long trace is the part least likely to matter. A brief,
+a diff, a tool's observation and a recalled fix are cut keeping the START, where what they are about is
+said."""
 
 from __future__ import annotations
 
@@ -16,6 +18,9 @@ from airlie.supervisor.ledger import Row
 _BRIEF_CAP = 8_000
 _DIFF_CAP = 20_000
 _RECALL_ROW_CAP = 600
+_RECALL_TEXT_CAP = 250
+"""Each of a recalled row's diagnosis and message: cut on their own, so the row's trigger, category, owner
+and outcome always fit in its cap."""
 _EARLIER_CAP = 4_000
 _REASONING_TAIL = 1_500
 _OBSERVATION_HEAD = 300
@@ -118,11 +123,14 @@ class TriageInput:
     recall: tuple[Row, ...]
 
 
-def _block(r: Row) -> str:
+def _block(r: Row, text_cap: int | None = None) -> str:
     what = f"fallback:{r.fallback}" if r.fallback else (r.category or "none")
+    diagnosis, message = r.diagnosis or "", r.message or ""
+    if text_cap is not None:
+        diagnosis, message = _head(diagnosis, text_cap), _head(message, text_cap)
     return (
-        f"- {r.trigger} | {what} | owner {r.owner or 'none'} | diagnosis: {r.diagnosis or ''} | "
-        f"message: {r.message or ''} | outcome: {r.outcome or 'unknown'}"
+        f"- {r.trigger} | {what} | owner {r.owner or 'none'} | diagnosis: {diagnosis} | "
+        f"message: {message} | outcome: {r.outcome or 'unknown'}"
     )
 
 
@@ -156,7 +164,7 @@ def triage_message(inp: TriageInput) -> str:
         ("Earlier on this layer", _earlier(inp.earlier)),
         (
             "Fixes that helped before",
-            "\n".join(_head(_block(r), _RECALL_ROW_CAP) for r in inp.recall),
+            "\n".join(_head(_block(r, _RECALL_TEXT_CAP), _RECALL_ROW_CAP) for r in inp.recall),
         ),
     ]
     return "\n\n".join(f"## {title}\n{body}" for title, body in sections if body.strip())

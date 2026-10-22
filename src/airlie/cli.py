@@ -1205,8 +1205,9 @@ def supervisor_log(
 
 @supervisor_app.command("stats")
 def supervisor_stats(config: ConfigOpt = None) -> None:
-    """How often Muse's advice helped, by trigger and by category; how often it stood aside; the blocks it
-    named a fix for."""
+    """How often a retry helped, by trigger: with Muse's answer, and with today's text alone (its fallbacks,
+    the no-Muse baseline); with Muse's answer by category; the blocks, apart (a block always ends blocked);
+    how often Muse stood aside; the blocks it named a fix for."""
     ledger = _supervisor_ledger(config)
     if ledger is None:
         return
@@ -1217,10 +1218,13 @@ def supervisor_stats(config: ConfigOpt = None) -> None:
     if not s.total:
         console.print("no interventions yet")
         return
-    out = ["help by trigger"]
+    out = ["help by trigger, Muse's answer used (helped/retries)"]
     out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_trigger.items())]
-    out.append("help by category")
+    out.append("help by trigger, today's text alone: Muse fell back (helped/retries)")
+    out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.fallback_by_trigger.items())]
+    out.append("help by category, Muse's answer used (helped/retries)")
     out += [f"  {k}  {h}/{n}" for k, (n, h) in sorted(s.by_category.items())]
+    out.append(f"blocks  {s.blocks}  (not in help: a block always ends blocked)")
     out.append(f"fallbacks  {s.fallbacks}/{s.total}")
     ids = " ".join(f"#{i}" for i in s.blocks_with_fix) or "none"
     out.append(f"blocks Muse could have fixed with one more attempt  {ids}")

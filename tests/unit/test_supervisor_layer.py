@@ -15,6 +15,7 @@ from airlie.config import RoleSpec
 from airlie.config.schema import SupervisorSpec
 from airlie.engine.fake import FakeEngine, FakeReply
 from airlie.engine.types import Message
+from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Intervention, Ledger
 from airlie.supervisor.triage import Triage
@@ -142,6 +143,15 @@ async def test_a_failed_triage_is_a_recorded_fallback_and_no_advice(tmp_path: Pa
     ]
 
 
+async def test_a_failed_triage_records_the_time_and_tokens_it_spent(tmp_path: Path) -> None:
+    sup, led, _ = layer_supervisor(tmp_path, answers=["not json"], per_layer=1)
+    await sup.advise("gate_retry", "build", "coder", "TOLD")
+    await sup.advise("gate_retry", "build", "coder", "TOLD")  # capped: no call, nothing spent
+    capped, failed = led.recent()
+    assert failed.fallback == "unparsable" and failed.seconds and failed.seconds > 0 and failed.tokens
+    assert (capped.fallback, capped.seconds, capped.tokens) == ("cap", 0.0, 0)
+
+
 async def test_a_fallback_row_is_still_settled(tmp_path: Path) -> None:
     sup, led, _ = layer_supervisor(tmp_path, answers=["not json"])
     await sup.advise("gate_retry", "build", "coder", "TOLD")
@@ -232,12 +242,14 @@ async def test_fixes_that_helped_before_are_recalled(tmp_path: Path) -> None:
     led = Ledger(tmp_path / "supervisor.sqlite")
     past = Intervention(
         story="AIR-0", layer="01", studio_run="r0", subtask="tests", role="tester", trigger="precode_retry",
-        kinds=("passes_before_code",), answer=None, fallback=None, model="muse", seconds=1.0, tokens=1,
+        kinds=("passes_before_code",), answer=Answer(**{**GOOD, "evidence": (), "message": "Import Path."}),
+        fallback=None, model="muse", seconds=1.0, tokens=1,
     )  # fmt: skip
     led.outcome(led.record(past), "helped")
     sup, _, _ = layer_supervisor(tmp_path, answers=[GOOD], ledger=led)
     await sup.advise("precode_retry", "tests", "tester", "TOLD", kinds=("passes_before_code",))
-    assert "Fixes that helped before" in sup.engine.requests[0].messages[1].content
+    sent = sup.engine.requests[0].messages[1].content
+    assert "Fixes that helped before" in sent and "Import Path." in sent.split("Fixes that helped")[1]
 
 
 async def test_evidence_that_cannot_be_built_is_a_fallback(tmp_path: Path) -> None:
