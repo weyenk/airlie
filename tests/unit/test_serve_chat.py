@@ -142,4 +142,5 @@ def test_the_shipped_config_serves_story_and_does_not_route_to_chat() -> None:
     assert [s["name"] for s in skills.json()["skills"]] == [
         p.stem for p in sorted((ROOT / "skills/chat").glob("*.md"))
     ]
-    assert {"name": "story", "action": "story"}.items() <= skills.json()["skills"][0].items()
+    by_name = {s["name"]: s for s in skills.json()["skills"]}
+    assert by_name["story"]["action"] == "story" and by_name["clear"]["action"] == "clear"
