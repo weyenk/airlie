@@ -1,6 +1,7 @@
 // Chat: the thread (kept in sessionStorage), a streamed prose reply, the status strip, the composer with the
-// + that opens Start new work, and the / menu of chat skills (/story starts work, /clear a fresh session).
-import { request, stream } from "../api.js";
+// + that attaches pictures, video and files (design 2026-10-22-chat-attachments), and the / menu of chat skills
+// (/story starts work, /clear a fresh session). The thread keeps an attachment's id and name, never its bytes.
+import { request, stream, upload, uploadUrl } from "../api.js";
 import { jobCard, storyCard } from "../cards.js";
 import { append, chip, clear, h, icon } from "../dom.js";
 import { markdown } from "../md.js";
@@ -50,13 +51,17 @@ export function render(root, _params, ctx) {
     value: load(DRAFT, ""),
   });
   const send = h("button", { type: "submit", class: "round primary", "aria-label": "Send" }, icon("send", 20));
-  const plus = h("button", { type: "button", class: "round", "aria-label": "Start new work", title: "Start new work", onclick: () => ctx.go("#/start") }, icon("plus", 20));
+  const picker = h("input", { type: "file", multiple: true, hidden: true, "aria-label": "Files to attach" });
+  const plus = h("button", { type: "button", class: "round", "aria-label": "Attach a file", title: "Attach a picture, video or file", onclick: () => picker.click() }, icon("plus", 20));
+  const tray = h("div", { class: "attach-tray", role: "list", "aria-label": "Attachments", hidden: true });
   const menu = h("div", { class: "slash-menu", role: "listbox", "aria-label": "Commands", hidden: true });
   const composer = h(
     "form",
     { class: "composer", "aria-label": "Message airlie", onsubmit: onSend },
     menu,
+    tray,
     h("div", { class: "composer-row" }, plus, input, send),
+    picker,
   );
 
   root.append(h("div", { class: "chat" }, strip, scroller, composer));
@@ -98,7 +103,7 @@ export function render(root, _params, ctx) {
   }
 
   function renderItem(item) {
-    if (item.role === "user") return h("div", { class: "me" }, item.text);
+    if (item.role === "user") return h("div", { class: "me" }, item.attachments?.length ? sentFiles(item.attachments) : null, item.text);
     if (item.role === "card") return jobCard(item);
     const bubble = bubbleFor(item);
     item.el = bubble;
@@ -147,9 +152,14 @@ export function render(root, _params, ctx) {
     onSend(new Event("submit"));
   }
 
-  /** /clear: a fresh session. The thread and draft go; a reply still streaming is stopped. */
+  /** /clear: a fresh session. The thread, the draft and any attachment not yet sent go; a reply still
+   * streaming is stopped. Stored files are left to expire (chat.attachments.keep_days). */
   function clearThread() {
     busy?.abort();
+    for (const p of pending.splice(0)) p.abort?.abort();
+    paintTray();
+    for (const u of urls.values()) URL.revokeObjectURL(u);
+    urls.clear();
     thread.length = 0;
     save(THREAD, thread);
     input.value = "";
@@ -164,28 +174,31 @@ export function render(root, _params, ctx) {
   async function onSend(ev) {
     ev.preventDefault();
     const text = input.value.trim();
-    if (!text || busy) return;
+    if (busy || pending.some((p) => p.state !== "done")) return; // still uploading, or a chip to remove
+    if (!text && !pending.length) return;
     const skill = skillOf(text);
     if (skill?.action === "clear") return clearThread();
     const sent = skill ? skill.rest : text;
-    if (!sent) {
+    if (!sent && !pending.length) {
       input.focus(); // "/story" alone: say what for
       return;
     }
+    const attachments = pending.splice(0).map((p) => p.meta);
+    paintTray();
     input.value = "";
     save(DRAFT, "");
     closeMenu();
     autosize();
-    const mine = { role: "user", text, sent };
+    const mine = { role: "user", text, sent, ...(attachments.length ? { attachments } : {}) };
     push(mine);
     const reply = { role: "chat", text: "", streaming: true, thinking: false, action: skill?.action || "" };
     push(reply);
     const messages = thread
       .filter((m) => m.role === "user" || (m.role === "chat" && m.text))
       .slice(-HISTORY)
-      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.sent ?? m.text }));
+      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: contentOf(m) }));
     busy = new AbortController();
-    send.disabled = true;
+    updateSend();
     let lastPaint = 0;
     const repaint = (force) => {
       const now = performance.now();
@@ -218,6 +231,8 @@ export function render(root, _params, ctx) {
         thread.splice(thread.indexOf(mine), 2);
         save(THREAD, thread);
         save(DRAFT, text);
+        pending.push(...attachments.map((meta) => ({ state: "done", meta, name: meta.name, size: meta.size, kind: meta.kind })));
+        paintTray();
         return;
       }
       if (e?.name === "StreamCut") reply.cut = true;
@@ -227,9 +242,178 @@ export function render(root, _params, ctx) {
       if (reply.el) fill(reply.el, reply);
       save(THREAD, withoutEls(thread));
       busy = null;
-      send.disabled = false;
+      updateSend();
       scrollDown();
       refreshStrip();
+    }
+  }
+
+  /** A turn as the chat route takes it: text, or text and an `airlie_upload` part per attachment. */
+  function contentOf(m) {
+    if (m.role !== "user" || !m.attachments?.length) return m.sent ?? m.text;
+    const parts = m.sent ? [{ type: "text", text: m.sent }] : [];
+    for (const a of m.attachments) parts.push({ type: "airlie_upload", upload: a.id, name: a.name });
+    return parts;
+  }
+
+  // -- attachments --
+  const pending = []; // {state: "uploading"|"done"|"error", name, size, kind, progress, meta, error, abort, url}
+  const urls = new Map(); // upload id -> object URL of a picture or video shown in the thread
+  let limits = { max_per_message: 10, max_image_mb: 20, max_video_mb: 100, max_file_mb: 25 };
+
+  /** The kind the server will most likely decide, from the browser's type: for the size check before
+   * uploading. The server reads the bytes and has the last word. */
+  function guessKind(file) {
+    if (/^image\/(png|jpeg|gif|webp)$/.test(file.type)) return "image";
+    if (/^video\//.test(file.type)) return "video";
+    return "file";
+  }
+
+  function limitMb(kind) {
+    return kind === "image" ? limits.max_image_mb : kind === "video" ? limits.max_video_mb : limits.max_file_mb;
+  }
+
+  function sizeText(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function addFiles(files) {
+    for (const file of files) {
+      const kind = guessKind(file);
+      const p = { state: "uploading", name: file.name || "file", size: file.size, kind, progress: 0 };
+      pending.push(p);
+      if (kind === "image" || kind === "video") p.url = URL.createObjectURL(file);
+      if (pending.length > limits.max_per_message) {
+        Object.assign(p, { state: "error", error: `up to ${limits.max_per_message} attachments a message` });
+        continue;
+      }
+      if (file.size > limitMb(kind) * 1024 * 1024) {
+        const what = kind === "image" ? "a picture" : kind === "video" ? "a video" : "a file";
+        Object.assign(p, { state: "error", error: `too large: ${what} may be up to ${limitMb(kind)} MB` });
+        continue;
+      }
+      if (!file.size) {
+        Object.assign(p, { state: "error", error: "the file is empty" });
+        continue;
+      }
+      p.abort = new AbortController();
+      upload(file, {
+        signal: p.abort.signal,
+        onProgress: (f) => {
+          p.progress = f;
+          paintTray();
+        },
+      })
+        .then((meta) => {
+          Object.assign(p, { state: "done", meta, kind: meta.kind });
+          if (p.url && (meta.kind === "image" || meta.kind === "video")) urls.set(meta.id, p.url);
+          else if (p.url) URL.revokeObjectURL(p.url);
+        })
+        .catch((e) => {
+          if (e?.name === "AbortError") return;
+          Object.assign(p, { state: "error", error: e?.name === "AuthError" ? "sign in again, then attach it" : e.message });
+        })
+        .finally(paintTray);
+    }
+    paintTray();
+  }
+
+  function remove(p) {
+    p.abort?.abort();
+    if (p.url && !(p.meta && urls.get(p.meta.id) === p.url)) URL.revokeObjectURL(p.url);
+    pending.splice(pending.indexOf(p), 1);
+    paintTray();
+  }
+
+  function fileIcon(kind) {
+    return h("span", { class: "attach-icon", "aria-hidden": "true" }, icon(kind === "video" ? "play" : "file", 18));
+  }
+
+  function paintTray() {
+    append(
+      clear(tray),
+      pending.map((p) =>
+        h(
+          "div",
+          { class: `attach-chip ${p.state}`, role: "listitem", "aria-label": p.name },
+          p.kind === "image" && p.url ? h("img", { src: p.url, alt: "" }) : fileIcon(p.kind),
+          h(
+            "span",
+            { class: "stack attach-text" },
+            h("span", { class: "attach-name" }, p.name),
+            p.state === "error"
+              ? h("span", { class: "error small" }, p.error)
+              : h("span", { class: "small muted" }, p.state === "uploading" ? `uploading ${Math.round(p.progress * 100)}%` : sizeText(p.size)),
+            p.state === "uploading" ? h("progress", { max: 1, value: p.progress, "aria-label": `Uploading ${p.name}` }) : null,
+          ),
+          h("button", { type: "button", class: "attach-remove", "aria-label": `Remove ${p.name}`, onclick: () => remove(p) }, icon("close", 16)),
+        ),
+      ),
+    );
+    tray.hidden = !pending.length;
+    updateSend();
+  }
+
+  function updateSend() {
+    send.disabled = Boolean(busy) || pending.some((p) => p.state !== "done");
+  }
+
+  /** What I attached, in my bubble: a picture as itself (fetched again after a reload), a video I attached on
+   * this page as a player, anything else as its name. */
+  function sentFiles(attachments) {
+    return h(
+      "div",
+      { class: "me-files" },
+      attachments.map((a) => {
+        const url = urls.get(a.id);
+        if (a.kind === "image") {
+          const img = h("img", { alt: a.name, src: url || null });
+          if (!url) {
+            uploadUrl(a.id)
+              .then((u) => {
+                urls.set(a.id, u);
+                img.src = u;
+              })
+              .catch(() => img.replaceWith(h("span", { class: "me-file" }, fileIcon("file"), `${a.name} (no longer available)`)));
+          }
+          return img;
+        }
+        if (a.kind === "video" && url) return h("video", { src: url, controls: true, playsinline: true, preload: "metadata", "aria-label": a.name });
+        return h("span", { class: "me-file" }, fileIcon(a.kind), `${a.name} · ${sizeText(a.size)}`);
+      }),
+    );
+  }
+
+  picker.addEventListener("change", () => {
+    addFiles([...picker.files]);
+    picker.value = ""; // the same file can be picked again
+  });
+  composer.addEventListener("dragover", (ev) => {
+    if (![...(ev.dataTransfer?.types ?? [])].includes("Files")) return;
+    ev.preventDefault();
+    composer.classList.add("dropping");
+  });
+  composer.addEventListener("dragleave", () => composer.classList.remove("dropping"));
+  composer.addEventListener("drop", (ev) => {
+    composer.classList.remove("dropping");
+    if (!ev.dataTransfer?.files?.length) return;
+    ev.preventDefault();
+    addFiles([...ev.dataTransfer.files]);
+  });
+  input.addEventListener("paste", (ev) => {
+    const files = [...(ev.clipboardData?.files ?? [])];
+    if (!files.length) return;
+    ev.preventDefault();
+    addFiles(files);
+  });
+
+  async function loadLimits() {
+    try {
+      limits = await request("/v1/airlie/chat/attachments");
+    } catch {
+      /* the defaults; the server checks again */
     }
   }
 
@@ -358,11 +542,14 @@ export function render(root, _params, ctx) {
   refreshStrip();
   loadRepos();
   loadSkills();
+  loadLimits();
   timer = setInterval(refreshStrip, 15000);
   if (matchMedia("(min-width: 768px)").matches) input.focus();
 
   return () => {
     clearInterval(timer);
     busy?.abort();
+    for (const p of pending) p.abort?.abort();
+    for (const u of urls.values()) URL.revokeObjectURL(u);
   };
 }

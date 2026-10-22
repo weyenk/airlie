@@ -211,6 +211,32 @@ class WebSpec(Strict):
     fetch_timeout_s: float = 30.0
 
 
+class AttachmentsSpec(Strict):
+    """Files attached in the web app's Chat (design 2026-10-22-chat-attachments), kept under
+    observability.state_dir/uploads."""
+
+    max_image_mb: float = Field(default=20, gt=0, description="a picture (png, jpeg, webp, gif)")
+    max_video_mb: float = Field(
+        default=100, gt=0, description="a video (mp4, mov, webm); the Cloudflare quick tunnel refuses >100 MB"
+    )
+    max_file_mb: float = Field(default=25, gt=0, description="any other file: text, PDF, anything")
+    max_text_kb: int = Field(
+        default=200, ge=1, description="text of a file or PDF given to the model, then cut"
+    )
+    max_per_message: int = Field(default=10, ge=1)
+    keep_days: int = Field(default=30, ge=1, description="an upload older than this is deleted")
+    video_fps: float = Field(default=1.0, gt=0, description="frames a second the engine samples from a video")
+    video_max_frames: int = Field(default=32, ge=1)
+    history_images: int = Field(
+        default=4, ge=0, description="pictures sent as pixels per request, newest first; older become a note"
+    )
+    history_videos: int = Field(default=1, ge=0, description="videos sent as video per request, newest first")
+
+
+class ChatSpec(Strict):
+    attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
+
+
 class ToolsSpec(Strict):
     builtin: list[str] = Field(
         default_factory=lambda: [
@@ -569,6 +595,7 @@ class AirlieConfig(Strict):
     story: StorySpec = Field(default_factory=StorySpec)
     board: BoardSpec = Field(default_factory=BoardSpec)
     web: WebSpec = Field(default_factory=WebSpec)
+    chat: ChatSpec = Field(default_factory=ChatSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
