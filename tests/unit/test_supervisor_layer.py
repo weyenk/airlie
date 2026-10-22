@@ -265,11 +265,11 @@ async def test_stuck_shows_muse_the_last_eight_messages(tmp_path: Path) -> None:
     sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD])
     messages = [Message(role="user", content=f"m{i}") for i in range(10)]
     messages.append(Message(role="assistant", content="y" * 900))
-    assert await sup.stuck("build", "REPEATED", messages) == GOOD["message"]
+    assert await sup.stuck("build", "coder", "REPEATED", messages) == GOOD["message"]
     sent = sup.engine.requests[0].messages[1].content
     assert "user: m3" in sent and "user: m2" not in sent
     assert "assistant: " + "y" * 800 in sent and "y" * 801 not in sent
-    assert led.recent()[0].trigger == "repeat_guard"
+    assert led.recent()[0].trigger == "repeat_guard" and led.recent()[0].role == "coder"
     sup.stuck_settled("build", False)
     sup.stuck_settled("build", True)
     assert led.recent()[0].outcome == "not_helped"
@@ -292,8 +292,8 @@ def test_an_unknown_trigger_or_outcome_cannot_be_settled(tmp_path: Path) -> None
 
 async def test_parallel_subtasks_each_get_their_own_outcome(tmp_path: Path) -> None:
     sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD, GOOD])
-    await sup.stuck("tests", "REPEATED", [])
-    await sup.stuck("build", "REPEATED", [])
+    await sup.stuck("tests", "tester", "REPEATED", [])
+    await sup.stuck("build", "coder", "REPEATED", [])
     sup.stuck_settled("tests", True)
     sup.stuck_settled("build", False)
     by_subtask = {r.subtask: r.outcome for r in led.recent()}

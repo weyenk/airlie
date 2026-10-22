@@ -5,13 +5,13 @@ keys), `after_step` receives the step triplet for admission."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from airlie.config import RoleSpec
-from airlie.engine.types import ToolCall
+from airlie.engine.types import Message, ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.tools import ToolRegistry
 
@@ -41,6 +41,20 @@ def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> s
     if role.thinking and role.thinking_budget is not None and role.max_tokens <= role.thinking_budget:
         fix += f" above its thinking_budget ({role.thinking_budget})"
     return f"the reply was cut off at max_tokens ({role.max_tokens}) before it ended{still}; {fix}"
+
+
+class StuckAdvisor(Protocol):
+    """A second reader for the repeat guard: when a role is told it repeats (REPEATED, CYCLED), it may add a
+    diagnosis to that message, and it hears whether the role got going again. The supervisor implements it;
+    outside a story run there is none."""
+
+    async def stuck(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        """The advice to add to `told`, from the team's conversation so far; None for none."""
+        ...
+
+    def stuck_settled(self, subtask: str, helped: bool) -> None:
+        """Whether the role went on after the advised nudge (its run's result) or repeated again."""
+        ...
 
 
 @dataclass
@@ -110,6 +124,8 @@ class TeamContext:
     attempt: int = 0
     """Which run of this team this is: 0 for the first, then one more for each fix round or follow-up, whether
     it resumes the conversation or starts it again. Every step record carries it (its trace folder)."""
+    on_stuck: StuckAdvisor | None = None
+    """The repeat guard's advisor (the supervisor, in a story run): its advice goes after REPEATED, CYCLED."""
 
 
 @dataclass

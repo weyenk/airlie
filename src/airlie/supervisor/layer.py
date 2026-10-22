@@ -25,8 +25,6 @@ from airlie.teams.worktree import diff_between
 _DIFF_CAP = 20_000
 _STUCK_MESSAGES = 8
 _STUCK_MESSAGE_CAP = 800
-_STUCK_ROLE = "unknown"
-"""The repeat guard's hook is given the subtask, not the role, so its rows say so rather than guess."""
 
 
 def _trigger(value: str) -> Trigger:
@@ -114,10 +112,10 @@ class LayerSupervisor:
 
     # ---- the repeat guard (StuckAdvisor) -------------------------------------------------------------------
 
-    async def stuck(self, subtask: str, told: str, messages: Sequence[Message]) -> str | None:
+    async def stuck(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
         """The repeat guard: Muse reads the team's own recent messages, which is where the loop shows."""
         shown = "\n".join(f"{m.role}: {m.content[:_STUCK_MESSAGE_CAP]}" for m in messages[-_STUCK_MESSAGES:])
-        return await self.advise("repeat_guard", subtask, _STUCK_ROLE, told, evidence=shown)
+        return await self.advise("repeat_guard", subtask, role, told, evidence=shown)
 
     def stuck_settled(self, subtask: str, helped: bool) -> None:
         self.settle("repeat_guard", "helped" if helped else "not_helped", subtask=subtask)

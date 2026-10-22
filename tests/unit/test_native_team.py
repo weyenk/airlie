@@ -11,9 +11,12 @@ import pytest
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.scheduler import SlotScheduler
+from airlie.supervisor.advice import SUPERVISOR
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext
-from airlie.teams.native_team import is_test_path
+from airlie.teams.native_team import REPEAT_WRITE_ONLY, REPEATED, is_test_path
+from airlie.teams.protocol import StuckAdvisor
 from airlie.tools import ToolContext, ToolRegistry
+from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 
 
 class Recorder(StepObserver):
@@ -803,6 +806,75 @@ async def test_a_writer_with_nudge_stuck_that_repeats_again_loses_the_tool_then_
     assert requests_saying(engine, "same call 3 times in a row")[0] == 4
     assert requests_saying(engine, "same call again after being told (read_file)")[0] == 7
     assert [s.o_t == REFUSED for s in rec.steps] == [False] * 6 + [True] * 3
+
+
+async def run_repeating_writer(tmp_path: Path, advisor: StuckAdvisor | None) -> tuple[Any, FakeEngine]:
+    """The writer of the test above (told, its tool switched off, stopped), with `advisor` as its on_stuck."""
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 12})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    ctx.on_stuck = advisor
+    return await team.run(ctx, Recorder()), engine
+
+
+def user_said(engine: FakeEngine) -> list[str]:
+    """Every user message of the last request, in order: the goal and each nudge."""
+    return [str(m.content) for m in engine.requests[-1].messages if m.role == "user"]
+
+
+async def test_the_repeat_nudge_carries_the_advisors_section_once(tmp_path: Path) -> None:
+    adv = RecordingAdvisor("Stop reading a; write the test.")
+    result, engine = await run_repeating_writer(tmp_path, adv)
+    assert result.stop_reason == "repeated_action" and result.steps == 9  # the guard itself is unchanged
+    fixed = REPEATED.format(n=3, tool="read_file")
+    said = user_said(engine)
+    [nudge] = [m for m in said if m.startswith(fixed)]
+    assert nudge == f"{fixed}\n\n{SUPERVISOR}\nStop reading a; write the test."
+    assert REPEAT_WRITE_ONLY.format(tool="read_file") in said  # the hold is sent as it is, no advice
+    assert sum(SUPERVISOR in m for m in said) == 1
+    # asked once, with the subtask, the role, the fixed text and the conversation so far (system, goal, 3x2)
+    assert adv.stuck_calls == [("team-1", "coder", fixed, 8)]
+    # it repeated again (REPEAT_WRITE_ONLY): settled not helped then, and not again when the run stopped
+    assert adv.stuck_settles == [("team-1", False)]
+
+
+async def test_a_role_that_goes_on_after_the_advised_nudge_settles_it_with_its_result(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same, same, same, *reads(1), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    adv = RecordingAdvisor("Read something else.")
+    ctx.on_stuck = adv
+    result = await team.run(ctx, Recorder())
+    assert result.ok and adv.stuck_settles == [("team-1", True)]
+
+
+async def test_an_advisor_with_nothing_to_say_leaves_the_fixed_nudge(tmp_path: Path) -> None:
+    adv = RecordingAdvisor(None)
+    _, engine = await run_repeating_writer(tmp_path, adv)
+    assert REPEATED.format(n=3, tool="read_file") in user_said(engine)
+    assert len(adv.stuck_calls) == 1
+
+
+async def test_an_advisor_that_raises_leaves_the_fixed_nudge(tmp_path: Path) -> None:
+    result, engine = await run_repeating_writer(tmp_path, RaisingAdvisor())
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    said = user_said(engine)
+    assert REPEATED.format(n=3, tool="read_file") in said and not any(SUPERVISOR in m for m in said)
+
+
+async def test_an_advisor_that_cannot_record_the_outcome_leaves_the_run_as_it_was(tmp_path: Path) -> None:
+    result, engine = await run_repeating_writer(tmp_path, SettleRaisingAdvisor("Write the test."))
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    assert sum(SUPERVISOR in m for m in user_said(engine)) == 1
+
+
+async def test_a_run_that_never_repeats_never_asks_or_settles(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [*reads(2), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    adv = RecordingAdvisor("unused")
+    ctx.on_stuck = adv
+    assert (await team.run(ctx, Recorder())).ok
+    assert adv.stuck_calls == [] and adv.stuck_settles == []
 
 
 async def test_a_writer_whose_looping_tool_is_switched_off_writes_and_gets_it_back(tmp_path: Path) -> None:

@@ -16,9 +16,11 @@ import yaml
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.router import ChiefRouter, RouteDecision
+from airlie.supervisor.advice import SUPERVISOR
 from airlie.topology.protocol import build_topology
-from airlie.topology.studio import StudioOrchestrator, check_plan
+from airlie.topology.studio import GATE_FAILED, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
+from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
@@ -1001,6 +1003,79 @@ async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_
     told = [r.messages[-1].content for r in engine.requests if r.role == "coder"]
     assert sum("the whole suite fails with your change" in t and "1 failed" in t for t in told) == 1
     assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
+
+
+async def gate_follow_up_with(tmp_path: Path, advisor: Any) -> tuple[Any, list[str], StudioOrchestrator]:
+    """The run of the test above (the gate fails, the coder is sent its output, the gate passes) with
+    `advisor` as the orchestrator's; what the coder was told at each request."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    orch.advisor = advisor
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    told = [str(r.messages[-1].content) for r in engine.requests if r.role == "coder"]
+    return report, told, orch
+
+
+async def test_the_gate_follow_up_carries_the_advisors_section_and_its_outcome(tmp_path: Path) -> None:
+    adv = RecordingAdvisor("Fix rounding in mul.")
+    report, told, _ = await gate_follow_up_with(tmp_path, adv)
+    assert report.tests == {"studio": True}
+    [follow_up] = [t for t in told if t.startswith(GATE_FAILED)]
+    assert follow_up.endswith(f"```\n\n{SUPERVISOR}\nFix rounding in mul.") and "1 failed" in follow_up
+    [(trigger, subtask, role, text, kinds, evidence)] = adv.advised
+    assert (trigger, subtask, role, kinds) == ("gate_retry", "build", "coder", ("gate_fails",))
+    assert (
+        text == follow_up.split(f"\n\n{SUPERVISOR}")[0] and "1 failed" in evidence
+    )  # the fixed text, the tail
+    assert adv.settled == [("gate_retry", "helped", "build")]
+
+
+async def test_a_gate_follow_up_that_still_fails_is_settled_not_helped(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, DONE, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    adv = RecordingAdvisor(None)
+    orch.advisor = adv
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    assert report.tests == {"studio": False}
+    assert adv.settled == [("gate_retry", "not_helped", "build")]
+
+
+async def test_an_advisor_that_raises_leaves_the_gate_follow_up_as_it_was(tmp_path: Path) -> None:
+    report, told, _ = await gate_follow_up_with(tmp_path, RaisingAdvisor())
+    assert report.tests == {"studio": True}
+    [follow_up] = [t for t in told if t.startswith(GATE_FAILED)]
+    assert SUPERVISOR not in follow_up and follow_up.endswith("```")
+
+
+async def test_an_advisor_that_cannot_record_the_gate_outcome_leaves_the_run_alone(
+    tmp_path: Path,
+) -> None:
+    report, told, _ = await gate_follow_up_with(tmp_path, SettleRaisingAdvisor("Fix it."))
+    assert report.tests == {"studio": True} and sum(SUPERVISOR in t for t in told) == 1
+
+
+async def test_the_advisor_is_the_teams_repeat_guard_too(tmp_path: Path) -> None:
+    adv = RecordingAdvisor(None)
+    seen: list[Any] = []
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    orch.advisor = adv
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx.on_stuck)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
+    await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False)
+    assert seen and all(s is adv for s in seen)
 
 
 async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_whole_command(
