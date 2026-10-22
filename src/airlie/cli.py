@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Coroutine
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -15,6 +15,9 @@ from rich.table import Table
 from airlie import __version__
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 from airlie.story.state import StoryState
+
+if TYPE_CHECKING:
+    from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -1167,7 +1170,7 @@ def story_check(
     raise typer.Exit(1)
 
 
-def _supervisor_ledger(config: Path | None):  # type: ignore[no-untyped-def]
+def _supervisor_ledger(config: Path | None) -> Ledger | None:
     """The ledger, or None when no intervention has been recorded yet (reading never creates the file)."""
     from airlie.supervisor.ledger import Ledger
 
@@ -1235,7 +1238,7 @@ def supervisor_verdict(
     config: ConfigOpt = None,
 ) -> None:
     """Record whether Muse's advice was right; the latest verdict on an intervention wins."""
-    from airlie.supervisor.ledger import Ledger, LedgerError
+    from airlie.supervisor.ledger import Ledger, LedgerError, Verdict
 
     if verdict not in ("right", "wrong"):
         err.print("[red]the verdict is right or wrong[/red]")
@@ -1246,7 +1249,7 @@ def supervisor_verdict(
         raise typer.Exit(1)
     ledger = Ledger(path)
     try:
-        ledger.verdict(intervention_id, verdict, note)  # type: ignore[arg-type]
+        ledger.verdict(intervention_id, cast("Verdict", verdict), note)
     except LedgerError as e:
         err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None

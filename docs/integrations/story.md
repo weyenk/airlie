@@ -723,15 +723,17 @@ board is in use on its first line.
 ## The supervisor (trial)
 
 When a layer gets into trouble, Muse (the reviewer model, as the `supervisor` role) reads the trace and says
-what it sees. It is advisory only: nothing it says adds an attempt, reroutes a retry, skips one, or clears a
-finding. It never edits code or tests; its tools are `read_file`, `list_dir`, `grep` and `run_test`. Each
-message airlie sends today still goes out whole, with Muse's section added after the findings (before the rule
-paragraph for the reviewer's feedback). It speaks at six trouble points: before the coder starts when the
-tests already pass (`precode_retry`), at the static-check retry (`static_retry`), at the gate retry
-(`gate_retry`), when a test is amended (`amend`), when the repeat guard fires (`repeat_guard`), and when a
-layer blocks (`block`). A block's note on the issue may carry a `Supervisor:` diagnosis. If Muse errors, times
-out, answers in a form that cannot be read, or has used its six turns for the layer (`per_layer`), the text is
-today's and a `supervisor_fallback` event is emitted; the run never stops because of it.
+what it sees. It runs in story runs only: `task run` and `task studio` outside a story get no supervisor. It
+is advisory only: nothing it says adds an attempt, reroutes a retry, skips one, or clears a finding. It never
+edits code or tests; its tools are `read_file`, `list_dir`, `grep` and, when the gate runs pytest, `run_test`.
+The rules are always kept whole: in the retry feedback to the tests' author, Muse's section goes after the
+findings and before the rules; everywhere else it goes after the unchanged text. It speaks at six trouble
+points: when the pre-code check of the tests finds a problem, before the coder starts (`precode_retry`), at
+the static-check retry (`static_retry`), at the gate retry (`gate_retry`), when a test is amended (`amend`),
+when the repeat guard fires (`repeat_guard`), and when a layer blocks (`block`). A block's note on the issue
+may carry a `Supervisor:` diagnosis. If Muse errors, times out, answers in a form that cannot be read, or has
+used its six consultations for the layer (`per_layer`, not the role's `max_steps`), the text is today's and a
+`supervisor_fallback` event is emitted; the run never stops because of it.
 
 The ledger is `observability.state_dir/supervisor.sqlite` (`~/.local/state/airlie/` by default), beside the
 board and separate from it. It is append-only (SQL triggers refuse an update or a delete): every intervention,
