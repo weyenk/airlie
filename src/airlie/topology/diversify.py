@@ -55,6 +55,37 @@ async def hypotheses(
     return parse_hypotheses(res.text, width)
 
 
+def branch_nudge(
+    label: str,
+    width: int,
+    hypothesis: str | None,
+    test_tail: str,
+    repeated: tuple[str, str, str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """The nudge a fork branch starts with, and the hub ids of the steering sentences in it, in the order they
+    sit in it: the caller emits a `steer` event for each. The hub's branch sentences surround the framing kept
+    here (the stalled call's error cut to its last 600 characters, the last test output to 1500, and the
+    hypothesis). The ids are collected as the sentences are rendered, so they are exactly the ones sent."""
+    ids: list[str] = []
+
+    def said(id: str, **fields: object) -> str:
+        ids.append(id)
+        return text(id, **fields)
+
+    lines = [said("branch-start", label=label, width=width)]
+    if repeated:
+        name, args, out = repeated
+        lines.append(said("branch-stalled", name=name, args=args, out=out[-600:]))
+    if test_tail:
+        lines.append(f"Last test output:\n```\n{test_tail[-1500:]}\n```")
+    if hypothesis:
+        lines.append(f"Pursue this hypothesis: {hypothesis}")
+    else:
+        lines.append(said("branch-different"))
+    lines.append(said("branch-finish"))
+    return "\n\n".join(lines), tuple(ids)
+
+
 def nudge_text(
     label: str,
     width: int,
@@ -62,20 +93,8 @@ def nudge_text(
     test_tail: str,
     repeated: tuple[str, str, str] | None = None,
 ) -> str:
-    """The nudge a fork branch starts with: the hub's branch sentences around the framing kept here (the
-    stalled call's error cut to its last 600 characters, the last test output to 1500, and the hypothesis)."""
-    lines = [text("branch-start", label=label, width=width)]
-    if repeated:
-        name, args, out = repeated
-        lines.append(text("branch-stalled", name=name, args=args, out=out[-600:]))
-    if test_tail:
-        lines.append(f"Last test output:\n```\n{test_tail[-1500:]}\n```")
-    if hypothesis:
-        lines.append(f"Pursue this hypothesis: {hypothesis}")
-    else:
-        lines.append(text("branch-different"))
-    lines.append(text("branch-finish"))
-    return "\n\n".join(lines)
+    """The text of `branch_nudge`."""
+    return branch_nudge(label, width, hypothesis, test_tail, repeated)[0]
 
 
 def role_at_temperature(role: RoleSpec, t: float) -> RoleSpec:

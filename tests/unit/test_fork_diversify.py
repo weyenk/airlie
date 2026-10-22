@@ -8,6 +8,7 @@ from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply
 from airlie.prompts import text
 from airlie.topology.diversify import (
+    branch_nudge,
     hypotheses,
     nudge_text,
     parse_failing,
@@ -76,6 +77,21 @@ def test_nudge_text_is_the_hubs_branch_sentences_around_the_framing_kept_in_pyth
     assert nudge_text("b", 3, None, "") == "\n\n".join(
         [text("branch-start", label="b", width=3), text("branch-different"), text("branch-finish")]
     )
+
+
+def test_branch_nudge_reports_the_hub_ids_it_sent_in_the_order_they_sit_in_its_text() -> None:
+    repeated = ("read_file", "{}", "error")
+    full, ids = branch_nudge("b", 3, "H", "T", repeated)
+    assert ids == ("branch-start", "branch-stalled", "branch-finish")  # the hypothesis line is framing
+    assert full == nudge_text("b", 3, "H", "T", repeated)
+    bare, ids = branch_nudge("b", 3, None, "")
+    assert ids == ("branch-start", "branch-different", "branch-finish") and bare == nudge_text(
+        "b", 3, None, ""
+    )
+    _, ids = branch_nudge("b", 3, None, "T", repeated)
+    assert ids == ("branch-start", "branch-stalled", "branch-different", "branch-finish")
+    _, ids = branch_nudge("b", 3, "H", "")
+    assert ids == ("branch-start", "branch-finish")
 
 
 def test_nudge_text_keeps_the_end_of_a_long_error_and_a_long_test_output() -> None:

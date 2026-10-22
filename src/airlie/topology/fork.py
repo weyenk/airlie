@@ -25,8 +25,8 @@ from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext, Team
 from airlie.teams.worktree import add_worktree, commit_wip, diff_last_commit
 from airlie.tools import ToolContext, ToolRegistry
 from airlie.topology.diversify import (
+    branch_nudge,
     hypotheses,
-    nudge_text,
     parse_failing,
     role_at_temperature,
     trim_repeated_tail,
@@ -168,7 +168,11 @@ class ForkOrchestrator:
             if repeated is not None:  # children must not inherit the stuck loop itself
                 parent = replace(res, state=trim_repeated_tail(res.state, REPEAT_LIMIT))
             for k in kids:
-                k.nudge = nudge_text(k.id, f.width, k.hypothesis, res.last_test_output, repeated)
+                k.nudge, steering = branch_nudge(k.id, f.width, k.hypothesis, res.last_test_output, repeated)
+                # a `steer` per hub text in the nudge; team_id names the branch, as it does in the events
+                # the team loop emits for the same branch
+                for hub_id in steering:
+                    self.sink.emit("steer", id=hub_id, team_id=k.id, role=self.cfg.teams.role)
             self.sink.emit(
                 "fork_point",
                 round=rounds,
