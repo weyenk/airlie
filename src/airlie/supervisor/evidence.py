@@ -91,7 +91,7 @@ def trace_tail(
 
 
 def layer_events(events: Path, layer: str, chars: int = 6_000) -> str:
-    """The `events.jsonl` lines that belong to `layer`, one compact JSON per line."""
+    """The `events.jsonl` lines that belong to `layer`, one compact JSON per line, without `steer` events."""
     try:
         raw = events.read_text().splitlines()
     except OSError:
@@ -102,7 +102,8 @@ def layer_events(events: Path, layer: str, chars: int = 6_000) -> str:
             ev = json.loads(line)
         except ValueError:
             continue
-        if isinstance(ev, dict) and ev.get("layer") == layer:
+        # a steer event counts a hub text the pipeline sent: not evidence, and new since Muse's prompt was set
+        if isinstance(ev, dict) and ev.get("layer") == layer and ev.get("kind") != "steer":
             kept.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
     return _tail("\n".join(kept), chars)
 
