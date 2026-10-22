@@ -126,3 +126,35 @@ def test_try_with_no_finding_asks_no_one(tmp_path: Path, monkeypatch) -> None:  
     res = runner.invoke(cli.app, ["supervisor", "try", *args])
     assert res.exit_code == 0, res.output
     assert "no findings" in res.stdout and engine.requests == []
+
+
+def test_try_leaves_the_worktree_as_it_was(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The check and its ruff fixer run in a throwaway tree at the worktree's HEAD: the person's checkout is
+    byte for byte what it was, with nothing to commit, and no tree is left beside it."""
+    import json
+
+    from airlie.engine.fake import FakeEngine, FakeReply
+    from tests.unit.git_helpers import git
+    from tests.unit.test_supervisor_triage import GOOD
+
+    root, base = calc_repo(tmp_path, "import os\n\n\n" + NO_IMPORT)  # os unused: the fixer removes it
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}
+    engine = FakeEngine({"supervisor": [FakeReply(text=json.dumps(GOOD))]})
+    monkeypatch.setattr(cli, "_http_engine", lambda cfg, name, model_override=None: engine)
+    args = ["--worktree", str(root), "--base", base, "--run", "NONE", "--config", str(try_cfg(tmp_path))]
+    res = runner.invoke(cli.app, ["supervisor", "try", *args])
+    assert res.exit_code == 0, res.output
+    assert "F821" in res.stdout and "F401" not in res.stdout  # the fixer ran, in the throwaway tree
+    assert "no trace" in res.stderr  # --run named a run with no trace folder
+    after = {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}
+    assert after == before
+    assert git(root, "status", "--porcelain") == ""
+    assert git(root, "worktree", "list").count("\n") == 0  # only the checkout itself
+    assert git(root, "for-each-ref", "refs/heads").count("\n") == 0
+
+
+def test_try_refuses_a_brief_file_that_is_not_there(tmp_path: Path) -> None:
+    root, base = calc_repo(tmp_path, NO_IMPORT)
+    args = ["--worktree", str(root), "--base", base, "--brief-file", str(tmp_path / "nope.md")]
+    res = runner.invoke(cli.app, ["supervisor", "try", *args, "--config", str(try_cfg(tmp_path))])
+    assert res.exit_code == 2 and "nope.md" in res.output  # typer refuses it, no traceback

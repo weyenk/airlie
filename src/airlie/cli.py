@@ -1261,7 +1261,12 @@ def supervisor_verdict(
 @supervisor_app.command("try")
 def supervisor_try(
     worktree: Annotated[
-        Path, typer.Option("--worktree", help="a checkout whose HEAD holds the tester's tests over --base")
+        Path,
+        typer.Option(
+            "--worktree",
+            help="a checkout whose HEAD holds the tester's tests over --base: only HEAD's commits are "
+            "checked, so uncommitted tests are ignored",
+        ),
     ],
     base: Annotated[
         str, typer.Option("--base", help="the layer's base commit: the gate is read from its AGENTS.md")
@@ -1281,17 +1286,26 @@ def supervisor_try(
         ),
     ] = None,
     brief_file: Annotated[
-        Path | None, typer.Option("--brief-file", help="the layer's brief, for Muse to read (default: none)")
+        Path | None,
+        typer.Option(
+            "--brief-file",
+            exists=True,
+            dir_okay=False,
+            help="the layer's brief, for Muse to read (default: none)",
+        ),
     ] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Muse's triage of a worktree, as a story's first pre-code retry asks for it, against the configured
     engine: the pre-code check (the gate's ruff fixers and checks, then pytest's), its findings, Muse's
-    answer as JSON, and what it cost. A try is not an intervention: it writes no ledger row. Like a story,
-    the fixers edit the worktree's changed files (left uncommitted)."""
+    answer as JSON, and what it cost. A try is not an intervention: it writes no ledger row. It changes
+    nothing either: the check, its fixers and Muse work in a throwaway detached tree at the worktree's HEAD,
+    where the fixers' edits are committed as a story commits them, and which is removed after."""
     import asyncio
     import dataclasses
     import json
+    import shutil
+    import tempfile
 
     from airlie.story.gate import read_gate
     from airlie.story.layer_checks import Finding, checks_for, feedback, findings_text
@@ -1300,7 +1314,7 @@ def supervisor_try(
     from airlie.supervisor.evidence import TriageInput, trace_tail
     from airlie.supervisor.layer import DIFF_CAP
     from airlie.supervisor.triage import Triaged, TriageFailed, triage_for
-    from airlie.teams.worktree import diff_between
+    from airlie.teams.worktree import add_worktree, commit_wip, diff_between, remove_worktree
 
     cfg = _story_cfg(config)
     wt = worktree.expanduser().resolve()
@@ -1318,16 +1332,19 @@ def supervisor_try(
     spec, s = cfg.story.supervisor, cfg.story
     role = (s.tester_role if subtask == "tests" else None) or s.build_role
     trace_dir = cfg.observability.state_dir.expanduser() / "runs" / (run or "") / "trace"
+    if run and not (trace_dir / subtask).is_dir():
+        err.print(f"no trace for {run}/{subtask} in {trace_dir}: Muse reads no steps", markup=False)
 
-    async def check() -> list[Finding]:
-        """The pipeline's pre-code check, in its order."""
+    async def check(tree: Path) -> list[Finding]:
+        """The pipeline's pre-code check, in its order; the fixers' edits committed as it commits them."""
         found: list[Finding] = []
         if lint is not None:
-            await lint.fix(wt, base)
-            found = await lint.check(wt, base)
-        return found + await checks.run(wt, base)
+            if await lint.fix(tree, base):
+                commit_wip(tree, "supervisor try: lint fixes")
+            found = await lint.check(tree, base)
+        return found + await checks.run(tree, base)
 
-    async def ask(found: list[Finding]) -> Triaged:
+    async def ask(tree: Path, found: list[Finding]) -> Triaged:
         inp = TriageInput(
             trigger="precode_retry",
             role=role,
@@ -1337,31 +1354,38 @@ def supervisor_try(
             kinds=tuple(f.kind for f in found),
             brief=brief_file.read_text(encoding="utf-8") if brief_file is not None else "",
             trace=trace_tail(trace_dir, subtask, spec.trace_steps, round_=round_) if run else "",
-            diff=diff_between(wt, base, DIFF_CAP),
+            diff=diff_between(tree, base, DIFF_CAP),
             events="",
             earlier=(),
             recall=(),
         )
         engine = _http_engine(cfg, cfg.engine_for_role(spec.role))
         try:
-            return await triage_for(cfg, engine, checks)(inp, wt)
+            return await triage_for(cfg, engine, checks)(inp, tree)
         finally:
             await engine.stop()
 
     def show(text: str) -> None:
         console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
-    found = asyncio.run(check())
-    if not found:
-        show("no findings: the pre-code check passes, so there is nothing for Muse to triage")
-        return
-    show("findings")
-    show(findings_text(found))
+    scratch = Path(tempfile.mkdtemp(prefix="airlie-try-"))
+    tree = scratch / "tree"
     try:
-        triaged = asyncio.run(ask(found))
-    except TriageFailed as e:
-        err.print(f"[red]Muse gave no answer: {escape(str(e))}[/red]", emoji=False)
-        raise typer.Exit(1) from None
+        add_worktree(wt, tree, branch=None, start_point="HEAD")  # detached: no branch is left behind
+        found = asyncio.run(check(tree))
+        if not found:
+            show("no findings: the pre-code check passes, so there is nothing for Muse to triage")
+            return
+        show("findings")
+        show(findings_text(found))
+        try:
+            triaged = asyncio.run(ask(tree, found))
+        except TriageFailed as e:
+            err.print(f"[red]Muse gave no answer: {escape(str(e))}[/red]", emoji=False)
+            raise typer.Exit(1) from None
+    finally:
+        remove_worktree(wt, tree)
+        shutil.rmtree(scratch, ignore_errors=True)
     show("answer")
     show(json.dumps(dataclasses.asdict(triaged.answer), indent=2, ensure_ascii=False))
     show(f"seconds {triaged.seconds:.1f}  tokens {triaged.tokens}")
