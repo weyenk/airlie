@@ -7,8 +7,8 @@ import json
 import pytest
 
 from airlie.engine.types import ToolSchema
+from airlie.prompts import text
 from airlie.teams.call_repair import repair_call
-from airlie.teams.native_team import MALFORMED
 from airlie.tools.fs import ReadFile, WriteFile
 from airlie.tools.shell import Git
 
@@ -95,8 +95,7 @@ def test_a_block_with_no_end_is_no_call() -> None:
 
 
 def test_the_example_in_the_correction_message_is_a_call() -> None:
-    example = MALFORMED[
-        MALFORMED.index("<tool_call>") : MALFORMED.index("</tool_call>") + len("</tool_call>")
-    ]
+    told = text("malformed-call")
+    example = told[told.index("<tool_call>") : told.index("</tool_call>") + len("</tool_call>")]
     r = repair_call(example, TOOLS)
     assert r.call is not None and r.call.name == "read_file"

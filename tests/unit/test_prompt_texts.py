@@ -16,6 +16,7 @@ from functools import partial
 from itertools import product
 from pathlib import Path
 
+from airlie.prompts import text
 from airlie.story.board import text_card
 from airlie.story.briefs import (
     CONTRACT,
@@ -42,28 +43,7 @@ from airlie.story.layer_checks import (
 )
 from airlie.story.model import Layer
 from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE
-from airlie.teams.native_team import (
-    ACT_FIRST,
-    CARRIED,
-    CHANGE_NOW,
-    CODE_NOW,
-    CYCLED,
-    FRESH_RUN,
-    LAST_STEP,
-    LAST_TURN_RETRY,
-    MALFORMED,
-    NO_TOOLS,
-    ONE_STEP_LEFT,
-    READ_LEFT,
-    READ_REFUSED,
-    REPEAT_WRITE_ONLY,
-    REPEATED,
-    STILL_RED,
-    TESTS_NOW,
-    WRITE_NOW,
-    WRITE_ONLY,
-    _goal_message,
-)
+from airlie.teams.native_team import _goal_message
 from airlie.tools.loop import NO_MORE_TOOLS
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio import DONE_CHECK, FRESH_CONTINUATION, GATE_FAILED
@@ -75,13 +55,6 @@ GOLDEN = Path(__file__).parent / "data" / "prompt_texts.json"
 N, TOTAL, K, WHAT, TOOL, P, LABEL, WIDTH = 7, 40, 3, "no test", "read_file", 2, "b", 3
 HINT = "/tmp/wt"
 TAIL, MAX_PROMPT, MAX_CONTEXT = "…sample tail…", 49200, 65536
-
-
-def _context_pressure() -> str:
-    """native_team's run builds this inline, in an f-string, once a step takes the prompt to 75% of
-    max_context."""
-    max_prompt, max_context = MAX_PROMPT, MAX_CONTEXT
-    return f"Your context is at {max_prompt} of {max_context} tokens. Stop reading: write from what you have."
 
 
 # serve/app.py builds this inline, in the closure that handles a chat request.
@@ -136,26 +109,26 @@ def _layer_plan(layers: tuple[Layer, ...], i: int, *, tester: bool, **kwargs: st
 
 CASES: dict[str, Callable[[], str]] = {
     # --- teams/native_team.py: steering the loop sends
-    "malformed-call": lambda: MALFORMED,
-    "no-tools": lambda: NO_TOOLS,
-    "last-step": lambda: LAST_STEP.format(n=N),
-    "write-now": lambda: WRITE_NOW.format(n=N, total=TOTAL),
-    "write-only": lambda: WRITE_ONLY.format(what=WHAT, n=N, k=K),
-    "tests-now": lambda: TESTS_NOW.format(n=N, total=TOTAL),
-    "code-now": lambda: CODE_NOW.format(n=N, total=TOTAL),
-    "change-now": lambda: CHANGE_NOW.format(n=N, total=TOTAL),
-    "read-refused": lambda: READ_REFUSED,
-    "read-left": lambda: READ_LEFT.format(k=K),
-    "repeated": lambda: REPEATED.format(n=N, tool=TOOL),
-    "cycled": lambda: CYCLED.format(p=P, n=N, tool=TOOL),
-    "repeat-write-only": lambda: REPEAT_WRITE_ONLY.format(tool=TOOL),
-    "act-first": lambda: ACT_FIRST,
-    "still-red": lambda: STILL_RED,
-    "last-turn-retry": lambda: LAST_TURN_RETRY,
-    "one-step-left": lambda: ONE_STEP_LEFT,
-    "fresh-run": lambda: FRESH_RUN.format(n=N),
-    "reasoning-carried": lambda: CARRIED.format(tail=TAIL),
-    "context-pressure": _context_pressure,
+    "malformed-call": lambda: text("malformed-call"),
+    "no-tools": lambda: text("no-tools"),
+    "last-step": lambda: text("last-step", n=N),
+    "write-now": lambda: text("write-now", n=N, total=TOTAL),
+    "write-only": lambda: text("write-only", what=WHAT, n=N, k=K),
+    "tests-now": lambda: text("tests-now", n=N, total=TOTAL),
+    "code-now": lambda: text("code-now", n=N, total=TOTAL),
+    "change-now": lambda: text("change-now", n=N, total=TOTAL),
+    "read-refused": lambda: text("read-refused"),
+    "read-left": lambda: "\n\n" + text("read-left", k=K),  # the loop puts it after a blank line
+    "repeated": lambda: text("repeated", n=N, tool=TOOL),
+    "cycled": lambda: text("cycled", p=P, n=N, tool=TOOL),
+    "repeat-write-only": lambda: text("repeat-write-only", tool=TOOL),
+    "act-first": lambda: text("act-first"),
+    "still-red": lambda: text("still-red"),
+    "last-turn-retry": lambda: text("last-turn-retry"),
+    "one-step-left": lambda: text("one-step-left"),
+    "fresh-run": lambda: text("fresh-run", n=N),
+    "reasoning-carried": lambda: text("reasoning-carried", tail=TAIL),
+    "context-pressure": lambda: text("context-pressure", max_prompt=MAX_PROMPT, max_context=MAX_CONTEXT),
     # --- tools/loop.py, topology/studio.py, serve/app.py
     "no-more-tools": lambda: NO_MORE_TOOLS,
     "fresh-continuation": lambda: FRESH_CONTINUATION,

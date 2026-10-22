@@ -44,7 +44,7 @@ def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> s
 
 
 class StuckAdvisor(Protocol):
-    """A second reader for the repeat guard: when a role is told it repeats (REPEATED, CYCLED), it may add a
+    """A second reader for the repeat guard: when a role is told it repeats (repeated, cycled), it may add a
     diagnosis to that message, and it hears whether the role got going again. The supervisor implements it;
     outside a story run there is none."""
 
@@ -125,7 +125,7 @@ class TeamContext:
     """Which run of this team this is: 0 for the first, then one more for each fix round or follow-up, whether
     it resumes the conversation or starts it again. Every step record carries it (its trace folder)."""
     on_stuck: StuckAdvisor | None = None
-    """The repeat guard's advisor (the supervisor, in a story run): its advice goes after REPEATED, CYCLED."""
+    """The repeat guard's advisor (the supervisor, in a story run): its advice goes after repeated, cycled."""
 
 
 @dataclass

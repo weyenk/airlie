@@ -258,6 +258,7 @@ def test_the_hub_loads_from_the_installed_package(monkeypatch: pytest.MonkeyPatc
     assert seen == [root]
     assert isinstance(loaded, Mapping)
     assert dict(loaded) == dict(load())
+    assert "last-step" in loaded  # a file the package ships, not only the folders
 
 
 def test_load_is_cached_and_read_only() -> None:
