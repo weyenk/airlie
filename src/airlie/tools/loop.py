@@ -11,16 +11,12 @@ from dataclasses import replace
 
 from airlie.engine.protocol import Engine
 from airlie.engine.types import GenRequest, GenResult, Message
+from airlie.prompts import text
 from airlie.tools.jsonargs import history_arguments
 from airlie.tools.registry import ToolRegistry
 
 DEFAULT_STEPS = 4
 """Tool calls a role may make before its answer."""
-
-NO_MORE_TOOLS = (
-    "You have used all of your tool calls. Answer now, from what you found: no more tools, and say plainly "
-    "what you could not find out."
-)
 
 
 async def generate_with_tools(
@@ -43,5 +39,7 @@ async def generate_with_tools(
         replay = replace(call, arguments=history_arguments(call.arguments))
         messages.append(Message(role="assistant", content=res.text, tool_calls=(replay,)))
         messages.append(Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name))
-    messages.append(Message(role="user", content=NO_MORE_TOOLS))
+    # this loop has no event stream (a role's single call is not a team run), so unlike the team loop's
+    # nudges, this steering text emits no `steer` event
+    messages.append(Message(role="user", content=text("no-more-tools")))
     return await engine.generate(replace(req, messages=messages, tools=None))

@@ -27,6 +27,7 @@ from airlie.board.api import board_router
 from airlie.config import AirlieConfig
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
@@ -321,10 +322,8 @@ def create_app(
         msgs = list(body.get("messages") or [])
         if prompt is not None:
             if msgs and msgs[0].get("role") == "system":  # a client with its own harness (OpenCode, VS Code)
-                bridge = (
-                    "\n\nYou are running inside a client that provides its own instructions and tools below; "
-                    "use the tools offered in this conversation, not the tool names mentioned above."
-                )
+                # the rule is one sentence; the blank line that sets it off from the role prompt is ours
+                bridge = "\n\n" + hub_text("client-bridge")
                 msgs = [{"role": "system", "content": prompt.rstrip() + bridge}, *msgs]
             else:
                 msgs = [{"role": "system", "content": prompt}, *msgs]

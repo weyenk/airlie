@@ -9,6 +9,7 @@ from typing import Any
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message
+from airlie.prompts import text
 from airlie.skills import prompt_text
 
 _NUMBERED = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
@@ -61,23 +62,19 @@ def nudge_text(
     test_tail: str,
     repeated: tuple[str, str, str] | None = None,
 ) -> str:
-    lines = [
-        f"You are now branch {label} of {width}, continuing from the conversation above in your own copy "
-        "of the repository. The previous approach did not make the tests pass; do not repeat it.",
-    ]
+    """The nudge a fork branch starts with: the hub's branch sentences around the framing kept here (the
+    stalled call's error cut to its last 600 characters, the last test output to 1500, and the hypothesis)."""
+    lines = [text("branch-start", label=label, width=width)]
     if repeated:
         name, args, out = repeated
-        lines.append(
-            f"The branch stalled by calling `{name}` with arguments `{args}` repeatedly; it failed with:\n"
-            f"```\n{out[-600:]}\n```\nDo not call it that way again; supply the required arguments."
-        )
+        lines.append(text("branch-stalled", name=name, args=args, out=out[-600:]))
     if test_tail:
         lines.append(f"Last test output:\n```\n{test_tail[-1500:]}\n```")
     if hypothesis:
         lines.append(f"Pursue this hypothesis: {hypothesis}")
     else:
-        lines.append("Take a different approach from the one you tried.")
-    lines.append("Make the change, run the tests, and stop with a short summary when they pass.")
+        lines.append(text("branch-different"))
+    lines.append(text("branch-finish"))
     return "\n\n".join(lines)
 
 

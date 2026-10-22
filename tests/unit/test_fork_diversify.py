@@ -6,6 +6,7 @@ from pathlib import Path
 
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply
+from airlie.prompts import text
 from airlie.topology.diversify import (
     hypotheses,
     nudge_text,
@@ -56,6 +57,34 @@ def test_nudge_text_names_branch_hypothesis_and_failure() -> None:
     assert "the CLI parses qty as str" in n and "FAILED test_x" in n and "do not repeat" in n.lower()
     m = nudge_text("r1-1", 2, None, "")
     assert "different approach" in m.lower()
+
+
+def test_nudge_text_is_the_hubs_branch_sentences_around_the_framing_kept_in_python() -> None:
+    """The fixed sentences are steering files (branch-start, branch-stalled, branch-different, branch-finish);
+    the last-test-output and hypothesis lines, with their fences, are framing, and sit between them."""
+    repeated = ("read_file", '{"path": ""}', "error: path is required")
+    full = nudge_text("b", 3, "the parser drops the last row", "FAILED x", repeated)
+    assert full == "\n\n".join(
+        [
+            text("branch-start", label="b", width=3),
+            text("branch-stalled", name="read_file", args='{"path": ""}', out="error: path is required"),
+            "Last test output:\n```\nFAILED x\n```",
+            "Pursue this hypothesis: the parser drops the last row",
+            text("branch-finish"),
+        ]
+    )
+    assert nudge_text("b", 3, None, "") == "\n\n".join(
+        [text("branch-start", label="b", width=3), text("branch-different"), text("branch-finish")]
+    )
+
+
+def test_nudge_text_keeps_the_end_of_a_long_error_and_a_long_test_output() -> None:
+    err = "e" * 700 + "END-OF-ERROR"
+    tail = "t" * 2000 + "END-OF-TESTS"
+    n = nudge_text("b", 2, None, tail, ("read_file", "{}", err))
+    assert text("branch-stalled", name="read_file", args="{}", out=err[-600:]) in n
+    assert "e" * 700 not in n and "END-OF-ERROR" in n
+    assert f"Last test output:\n```\n{tail[-1500:]}\n```" in n and "t" * 1600 not in n
 
 
 def test_role_at_temperature_copies(tmp_path: Path) -> None:

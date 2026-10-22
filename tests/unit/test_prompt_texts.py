@@ -44,9 +44,7 @@ from airlie.story.layer_checks import (
 from airlie.story.model import Layer
 from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE
 from airlie.teams.native_team import _goal_message
-from airlie.tools.loop import NO_MORE_TOOLS
 from airlie.topology.diversify import nudge_text
-from airlie.topology.studio import DONE_CHECK, FRESH_CONTINUATION, GATE_FAILED
 from airlie.topology.studio_plan import Plan
 from tests.unit.test_story_briefs import CARD, LAYERS, STORY
 
@@ -56,12 +54,6 @@ N, TOTAL, K, WHAT, TOOL, P, LABEL, WIDTH = 7, 40, 3, "no test", "read_file", 2, 
 HINT = "/tmp/wt"
 TAIL, MAX_PROMPT, MAX_CONTEXT = "…sample tail…", 49200, 65536
 
-
-# serve/app.py builds this inline, in the closure that handles a chat request.
-CLIENT_BRIDGE = (
-    "\n\nYou are running inside a client that provides its own instructions and tools below; "
-    "use the tools offered in this conversation, not the tool names mentioned above."
-)
 
 DESCRIBED = replace(
     CARD, description="Users want avatars.\nPNG only.", comments=("PNG only", "Max 1 MB per file")
@@ -130,11 +122,12 @@ CASES: dict[str, Callable[[], str]] = {
     "reasoning-carried": lambda: text("reasoning-carried", tail=TAIL),
     "context-pressure": lambda: text("context-pressure", max_prompt=MAX_PROMPT, max_context=MAX_CONTEXT),
     # --- tools/loop.py, topology/studio.py, serve/app.py
-    "no-more-tools": lambda: NO_MORE_TOOLS,
-    "fresh-continuation": lambda: FRESH_CONTINUATION,
-    "done-check": lambda: DONE_CHECK,
-    "gate-failed": lambda: GATE_FAILED,
-    "client-bridge": lambda: CLIENT_BRIDGE,
+    "no-more-tools": lambda: text("no-more-tools"),
+    "fresh-continuation": lambda: text("fresh-continuation"),
+    "done-check": lambda: text("done-check"),
+    "gate-failed": lambda: text("gate-failed"),
+    # serve/app.py puts a blank line before the rule; test_serve.py pins that, this case only restates it
+    "client-bridge": lambda: "\n\n" + text("client-bridge"),
     # --- story/briefs.py, story/rounds.py, story/layer_checks.py
     "test-rules": lambda: TEST_RULES,
     "pre-code-check": lambda: PRE_CODE_CHECK,

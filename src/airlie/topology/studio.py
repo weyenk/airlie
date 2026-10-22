@@ -17,6 +17,7 @@ from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, image_part
 from airlie.obs import EventSink, RunDir
 from airlie.orchestrator import LoggingObserver
+from airlie.prompts import text as hub_text
 from airlie.repo_map import build_repo_map
 from airlie.report import RunReport
 from airlie.router import RouteDecision, Router, RoutingLog, build_router
@@ -57,27 +58,6 @@ from airlie.topology.studio_plan import (
 
 WRITE_TOOLS = {"write_file", "edit_file", "shell", "git"}
 SKILL_QUESTION = "Which guideline should this specialist follow as the primary lens?"
-FRESH_CONTINUATION = (
-    "You have already worked on this subtask: your changes are in this worktree (see them with git diff, or "
-    "read the files). Your earlier conversation is not repeated here. Pick up from the worktree as it is and "
-    "deal with the following."
-)
-"""What a subtask sent back on a long conversation is told instead of seeing that conversation again."""
-DONE_CHECK = (
-    "Before review: check your change against the brief's acceptance criteria and its exact wording. For "
-    "each criterion, quote the lines of the diff below that make it true, or say 'not met'. Where the brief "
-    "names "
-    "a value, a message, a field, or which value to compare, check the diff uses exactly that. Anything not "
-    "met or not exact: fix it now, run run_tests, then stop. If everything is met, reply with the checklist "
-    "and stop."
-)
-"""The done-check: a coder that stopped 'done' reads its own diff against the criteria before the reviewer
-does (AIR-31 layer 02, 2026-10-19: the reviewer's blocking finding was a value the brief had named)."""
-GATE_FAILED = (
-    "Your tests pass, but the whole suite fails with your change: the output is below. Fix the code so the "
-    "whole suite passes; the acceptance tests stay as they are. Run run_tests, then stop."
-)
-"""What the subtask named by execute_task's `gate_follow_up` is told when the final gate fails."""
 CHARS_PER_TOKEN = 4
 """A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
 
@@ -393,6 +373,14 @@ class StudioOrchestrator:
             chosen += [k for k in skills if second and k.name == second[0][0] and k not in chosen]
         return d.chosen, "\n\n".join(f"## Guideline: {k.name}\n{k.text}" for k in chosen)
 
+    def _steer(self, id: str, run: SubtaskRun, /) -> str:
+        """The hub's steering text `id`, and a `steer` event saying studio sent it: its id, the role and the
+        subtask it goes to (spec 2026-10-22-prompt-hub, "Steering events"). The roles' team loop emits `steer`
+        too, for its own nudges, on this stream; those carry a team_id and a step instead of a subtask."""
+        said = hub_text(id)
+        self.sink.emit("steer", id=id, role=run.role, subtask=run.subtask.id)
+        return said
+
     def _continuation(
         self, run: SubtaskRun, parent: TeamResult | None, nudge: str | None
     ) -> tuple[dict[str, Any] | None, str, str | None]:
@@ -407,7 +395,7 @@ class StudioOrchestrator:
         if size <= self.cfg.teams.fresh_continuation_tokens:
             return state, goal, nudge
         self.sink.emit("fresh_continuation", subtask=run.subtask.id, role=run.role, estimated_tokens=size)
-        return None, f"{goal}\n\n{FRESH_CONTINUATION}\n\n{nudge}", None
+        return None, f"{goal}\n\n{self._steer('fresh-continuation', run)}\n\n{nudge}", None
 
     def _context(
         self,
@@ -492,8 +480,8 @@ class StudioOrchestrator:
     async def _done_check(
         self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
     ) -> None:
-        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with DONE_CHECK:
-        a miss it finds is fixed in a short continuation before the reviewer charges a round for it."""
+        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with the
+        done-check: a miss it finds is fixed in a short continuation before the reviewer charges a round."""
         res = run.result
         assert res is not None and self.worktree is not None
         s = self.cfg.studio
@@ -508,7 +496,7 @@ class StudioOrchestrator:
         diff = diff_between(self.worktree, before, s.review.diff_chars)
         if not diff.strip():  # nothing changed: the review says so
             return
-        nudge = f"{DONE_CHECK}\n\n## Your diff\n```diff\n{diff}\n```"
+        nudge = f"{self._steer('done-check', run)}\n\n## Your diff\n```diff\n{diff}\n```"
         ctx = self._context(
             run, role, test_cmd, preamble=preamble, parent=res, nudge=nudge, attempt=self._next_attempt(run)
         )
@@ -760,7 +748,7 @@ class StudioOrchestrator:
         files the run changed: the whole gate is the final one. `checkpoints` maps a subtask's id to a check
         that runs once it is done, before the subtasks after it (it may `follow_up` it, or `lock` its files);
         one that returns False stops the plan there, and the tests count as failed. `gate_follow_up` names the
-        subtask sent the output of a failing final gate once (GATE_FAILED), before the gate runs again.
+        subtask sent the output of a failing final gate once (gate-failed), before the gate runs again.
         `amend_tests` runs first when that gate fails and that subtask finished: it may send the locked tests'
         author back to mend its own tests (and `lock` them again), and returns whether it changed them; when
         it did, the gate runs again before the follow-up.
@@ -850,7 +838,7 @@ class StudioOrchestrator:
     async def _gate(self, test_cmd: str | None, follow_up: str | None) -> bool | None:
         """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, the
         locked tests may be mended first (`amend_tests`, then the gate again), and if it still fails that
-        subtask is sent its output once (GATE_FAILED) and the gate runs again."""
+        subtask is sent its output once (gate-failed) and the gate runs again."""
         passed, output = await self._tests_pass(test_cmd)
         run = self.runs.get(follow_up) if follow_up is not None else None
         # only a subtask that finished is sent back: one cut off or broken has its own stop to report
@@ -864,14 +852,14 @@ class StudioOrchestrator:
                 return passed
         self.sink.emit("gate_failed", follow_up=follow_up)
         tail = output[-self.cfg.tools.output_cap_chars :]
-        text = f"{GATE_FAILED}\n\n```\n{tail}\n```"
+        text = f"{self._steer('gate-failed', run)}\n\n```\n{tail}\n```"
         if self.advisor is not None:
             try:
                 # `text` carries the gate's tail already: it is not sent a second time as evidence
                 advice = await self.advisor.advise(
                     "gate_retry", follow_up, run.role, text, kinds=("gate_fails",)
                 )
-            except Exception:  # noqa: BLE001 - an advisor that fails leaves GATE_FAILED as it is, never a stop
+            except Exception:  # noqa: BLE001 - an advisor that fails leaves gate-failed as it is, never a stop
                 advice = None
             text = with_advice(text, advice)
         await self.follow_up(follow_up, text)

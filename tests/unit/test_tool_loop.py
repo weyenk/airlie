@@ -11,7 +11,8 @@ import pytest
 from airlie.config import RoleSpec, Sampling, load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.engine.types import GenRequest, Message
-from airlie.tools.loop import NO_MORE_TOOLS, generate_with_tools
+from airlie.prompts import text
+from airlie.tools.loop import generate_with_tools
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.registry import ToolRegistry
 from airlie.topology.review import Reviewer
@@ -102,9 +103,8 @@ async def test_after_its_calls_are_used_it_is_asked_for_the_answer_with_no_tools
     res = await generate_with_tools(engine, request(), registry(tool, tmp_path), max_steps=2)
     assert res.text == "best I found" and tool.asked == ["a", "b"]
     last = engine.requests[-1]
-    assert (
-        last.tools is None and last.messages[-1].role == "user" and last.messages[-1].content == NO_MORE_TOOLS
-    )
+    assert last.tools is None and last.messages[-1].role == "user"
+    assert last.messages[-1].content == text("no-more-tools")
     assert len(engine.requests) == 3
 
 

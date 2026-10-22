@@ -1,0 +1,12 @@
+---
+kind: steering
+roles: [any]
+when: A subtask sent back with a nudge (a fix round, a follow-up) has a stored conversation over teams.fresh_continuation_tokens, so it starts a new one; this goes between its brief and the nudge.
+why: |
+  What a subtask sent back on a long conversation is told instead of seeing that conversation again.
+
+  Added with the fresh start (86d9a06, 2026-10-17; HDS-5 layer 01: the fix round and the red-check
+  follow-up resent the coder's whole conversation, 58k then 72k tokens, and both replies were cut off at
+  max_tokens before the coder acted).
+---
+You have already worked on this subtask: your changes are in this worktree (see them with git diff, or read the files). Your earlier conversation is not repeated here. Pick up from the worktree as it is and deal with the following.
