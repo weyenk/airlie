@@ -91,3 +91,17 @@ def test_a_big_non_python_file_gets_its_head(tmp_path: Path) -> None:
 def test_guide_budget_is_a_share_of_the_smallest_readers_context() -> None:
     cfg = load_config(Path(__file__).resolve().parents[2] / "airlie.yaml")
     assert guide_budget(cfg, ["tester", "coder"]) == 39321
+
+
+def test_a_large_agents_md_never_pushes_the_guide_over_budget(tmp_path: Path) -> None:
+    repo, sha = repo_with(tmp_path, {"AGENTS.md": "g" * 7000})
+    for budget in (0, 100, 4000, 6020):
+        assert len(repo_guide(repo, sha, "", budget_chars=budget)) <= budget
+
+
+def test_a_small_file_after_a_big_one_still_goes_in_whole(tmp_path: Path) -> None:
+    big = "def f(): pass\n" + "x = 1\n" * 4000
+    repo, sha = repo_with(tmp_path, {"src/big.py": big, "src/small.py": "a = 1\nb = 2\n"})
+    guide = repo_guide(repo, sha, "src/big.py src/small.py", budget_chars=12_000)
+    assert "### src/big.py (outline:" in guide
+    assert "### src/small.py (whole, 2 lines)" in guide and "b = 2" in guide

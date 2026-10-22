@@ -64,21 +64,24 @@ def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
     parts: list[str] = []
     guide = _blob(repo, commit, "AGENTS.md")
     if guide is not None:
-        parts.append("### AGENTS.md\n" + _clip(guide, min(GUIDE_CHARS, max(budget_chars - 16, 0))))
+        head, tail = "### AGENTS.md\n", "\n[clipped]"
+        limit = min(GUIDE_CHARS, budget_chars - len(head) - len(tail))
+        if limit > 0:  # when even a clipped AGENTS.md cannot fit, it is dropped, never over budget
+            parts.append(head + _clip(guide, limit))
     files = [(p, b) for p in named_paths(text) if (b := _blob(repo, commit, p)) is not None]
     lines = [f"- {p} ({len(b.splitlines())} lines)" for p, b in files]
-    fits_whole = fits_outline = True  # monotonic: a file that falls to a smaller form takes the rest with it
+    fits_outline = (
+        True  # once even an outline does not fit, the rest are listed; a whole form is tried for every file
+    )
     shown = 0
     for k, (path, body) in enumerate(files):
         n = len(body.splitlines())
         rest = lines[k + 1 :]
-        if fits_whole:
-            whole = f"### {path} (whole, {n} lines)\n```\n{body}\n```"
-            if len(_assemble([*parts, whole], rest)) <= budget_chars:
-                parts.append(whole)
-                shown = k + 1
-                continue
-            fits_whole = False
+        whole = f"### {path} (whole, {n} lines)\n```\n{body}\n```"
+        if len(_assemble([*parts, whole], rest)) <= budget_chars:
+            parts.append(whole)
+            shown = k + 1
+            continue
         if fits_outline:
             heading = f"### {path} (outline: read a span with read_file offset and limit)"
             card = f"{heading}\n```\n{outline(path, body, head_chars=FILE_HEAD_CHARS)}\n```"
