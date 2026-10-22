@@ -1,7 +1,7 @@
-// Chat with the chief: the thread (kept in sessionStorage), a streamed reply, the status strip, the composer
-// with the repository picker and the + that opens Start new work.
+// Chat: the thread (kept in sessionStorage), a streamed prose reply, the status strip, the composer with the
+// repository picker, the + that opens Start new work, and the / menu of chat skills (/story first).
 import { request, stream } from "../api.js";
-import { jobCard, planCard, startRun } from "../cards.js";
+import { jobCard, storyCard } from "../cards.js";
 import { append, chip, clear, h, icon } from "../dom.js";
 import { markdown } from "../md.js";
 
@@ -10,10 +10,10 @@ export const title = "Chat";
 const THREAD = "airlie.chat";
 const DRAFT = "airlie.chat.draft";
 const REPO = "airlie.repo";
-const HISTORY = 20; // turns sent back to the chief
+const HISTORY = 20; // turns sent back to the model
 
 const WELCOME =
-  "Hi, I'm airlie's chief. Ask me what's going on, or describe new work: I'll plan it, and nothing is built until you approve the plan.";
+  "Hi, I'm airlie's assistant. Ask me how airlie works or what's going on. I can't build anything from here: type / for commands such as /story, or use Start new work.";
 const QUICK = ["What can you do?", "What's running right now?", "Start new work"];
 
 // ---- storage ----
@@ -40,39 +40,6 @@ export function rememberedRepo() {
   }
 }
 
-// ---- the chief's JSON ----
-/** The chief answers with one JSON object. Parsed when whole; while it streams, the `answer` string is
- * pulled out of the partial text so the person sees it grow. */
-export function unwrap(text) {
-  const t = String(text ?? "").trim();
-  const start = t.indexOf("{");
-  if (start < 0) return { kind: "text", text: t, partial: false };
-  try {
-    const obj = JSON.parse(t.slice(start, t.lastIndexOf("}") + 1));
-    if (obj && typeof obj === "object") {
-      if (obj.type === "plan" && Array.isArray(obj.subtasks)) return { kind: "plan", plan: obj, partial: false };
-      const answer = obj.answer ?? obj.synthesis ?? null;
-      if (typeof answer === "string") return { kind: "text", text: answer, open: obj.open_questions, partial: false };
-      return { kind: "text", text: JSON.stringify(obj, null, 2), partial: false };
-    }
-  } catch {
-    /* not whole yet, or not JSON */
-  }
-  const m = t.match(/"answer"\s*:\s*"/);
-  if (!m) return { kind: "text", text: /^\{\s*"type"\s*:\s*"plan"/.test(t) ? "" : t, partial: true };
-  let s = t.slice(m.index + m[0].length);
-  for (let n = 0; n < 6 && s.length; n += 1) {
-    try {
-      return { kind: "text", text: JSON.parse(`"${s}"`), partial: true };
-    } catch {
-      s = s.replace(/\\?.$/, ""); // a trailing partial escape, or the closing quote and what follows
-      const end = s.lastIndexOf('"');
-      if (n === 0 && end >= 0 && /"\s*[,}]?\s*$/.test(t)) s = s.slice(0, end);
-    }
-  }
-  return { kind: "text", text: "", partial: true };
-}
-
 // ---- screen ----
 export function render(root, _params, ctx) {
   const thread = load(THREAD, []);
@@ -80,12 +47,12 @@ export function render(root, _params, ctx) {
   let timer = null;
 
   const strip = h("div", { class: "row strip" });
-  const list = h("div", { class: "thread", "aria-label": "Conversation with the chief" });
+  const list = h("div", { class: "thread", "aria-label": "Conversation" });
   const scroller = h("div", { class: "thread-scroll" }, list);
   const input = h("textarea", {
     id: "msg",
     rows: 1,
-    placeholder: "Ask airlie, or describe new work…",
+    placeholder: "Ask airlie, or type / for commands…",
     "aria-label": "Message",
     value: load(DRAFT, ""),
   });
@@ -99,9 +66,11 @@ export function render(root, _params, ctx) {
       /* this page only */
     }
   });
+  const menu = h("div", { class: "slash-menu", role: "listbox", "aria-label": "Commands", hidden: true });
   const composer = h(
     "form",
-    { class: "composer", "aria-label": "Message the chief", onsubmit: onSend },
+    { class: "composer", "aria-label": "Message airlie", onsubmit: onSend },
+    menu,
     h("div", { class: "composer-row" }, plus, input, send),
     h("div", { class: "row small muted composer-meta" }, h("span", null, "repository"), repoPick, h("a", { href: "#/start" }, "Start new work")),
   );
@@ -117,39 +86,31 @@ export function render(root, _params, ctx) {
 
   function fill(body, item) {
     clear(body);
-    const u = item.reply ?? unwrap(item.text);
-    if (u.kind === "plan") {
+    if (item.started) {
+      body.append(jobCard(item.started));
+    } else if (item.action === "story" && !item.streaming && item.text && !item.error && !item.cut) {
       body.append(
-        planCard(u.plan, {
-          approved: item.approved,
-          onApprove: async (plan) => {
-            const repo = repoPick.value || rememberedRepo();
-            if (!repo) throw new Error("Pick a repository first (under the message box).");
-            const goal = item.goal || lastUserText(item) || "the plan above";
-            const out = await startRun({ goal, repo, plan });
-            item.approved = true;
-            push({ role: "card", job_id: out.job_id, kind: out.kind, label: `${shortRepo(repo)} · studio run` });
-            save(THREAD, thread);
+        storyCard(item.storyText ?? item.text, {
+          repo: () => repoPick.value || rememberedRepo(),
+          onEdit: (t) => {
+            item.storyText = t;
+            save(THREAD, withoutEls(thread));
           },
-          onChange: () => {
-            input.value = "Change the plan: ";
-            input.focus();
+          onStart: async ({ text, repo }) => {
+            const out = await request("/v1/airlie/stories", { method: "POST", body: { text, repo } });
+            item.started = { job_id: out.job_id, kind: out.kind, label: `${shortRepo(repo)} · story` };
+            save(THREAD, withoutEls(thread));
+            fill(body, item);
           },
         }),
       );
-    } else {
-      if (u.text) body.append(markdown(u.text));
-      else if (item.streaming) body.append(h("span", { class: "muted" }, item.thinking ? "Thinking…" : "Writing…"));
-      if (u.open?.length) body.append(h("ul", { class: "small muted" }, u.open.map((q) => h("li", null, q))));
+    } else if (item.text) {
+      body.append(markdown(item.text));
+    } else if (item.streaming) {
+      body.append(h("span", { class: "muted" }, item.thinking ? "Thinking…" : "Writing…"));
     }
     if (item.cut) body.append(h("div", { class: "error" }, "airlie stopped answering"));
     if (item.error) body.append(h("div", { class: "error" }, item.error));
-  }
-
-  function lastUserText(item) {
-    const i = thread.indexOf(item);
-    for (let j = i - 1; j >= 0; j -= 1) if (thread[j].role === "user") return thread[j].text;
-    return "";
   }
 
   function renderItem(item) {
@@ -207,17 +168,24 @@ export function render(root, _params, ctx) {
     ev.preventDefault();
     const text = input.value.trim();
     if (!text || busy) return;
+    const skill = skillOf(text);
+    const sent = skill ? skill.rest : text;
+    if (!sent) {
+      input.focus(); // "/story" alone: say what for
+      return;
+    }
     input.value = "";
     save(DRAFT, "");
+    closeMenu();
     autosize();
-    const mine = { role: "user", text };
+    const mine = { role: "user", text, sent };
     push(mine);
-    const reply = { role: "chief", text: "", streaming: true, thinking: false, goal: text };
+    const reply = { role: "chat", text: "", streaming: true, thinking: false, action: skill?.action || "" };
     push(reply);
     const messages = thread
-      .filter((m) => m.role === "user" || (m.role === "chief" && m.text))
+      .filter((m) => m.role === "user" || (m.role === "chat" && m.text))
       .slice(-HISTORY)
-      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
+      .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.sent ?? m.text }));
     busy = new AbortController();
     send.disabled = true;
     let lastPaint = 0;
@@ -231,7 +199,7 @@ export function render(root, _params, ctx) {
     try {
       await stream(
         "/v1/chat/completions",
-        { model: "chief", messages, stream: true },
+        { model: "chat", messages, stream: true, ...(skill ? { skill: skill.name } : {}) },
         (delta) => {
           reply.text += delta;
           repaint(false);
@@ -258,7 +226,6 @@ export function render(root, _params, ctx) {
       else if (e?.name !== "AbortError") reply.error = `Can't reach airlie: ${e.message}`;
     } finally {
       reply.streaming = false;
-      reply.reply = reply.text ? unwrap(reply.text) : null;
       if (reply.el) fill(reply.el, reply);
       save(THREAD, withoutEls(thread));
       busy = null;
@@ -272,6 +239,62 @@ export function render(root, _params, ctx) {
     return items.map(({ el, ...rest }) => rest);
   }
 
+  // -- the / menu --
+  let skills = [];
+  let shown = [];
+  let active = 0;
+
+  /** "/name rest" for a known skill; null when the text is not a skill command. */
+  function skillOf(text) {
+    const m = text.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+    const found = m && skills.find((s) => s.name === m[1]);
+    return found ? { name: found.name, action: found.action, rest: (m[2] ?? "").trim() } : null;
+  }
+
+  function closeMenu() {
+    shown = [];
+    menu.hidden = true;
+  }
+
+  function paintMenu() {
+    append(
+      clear(menu),
+      shown.map((s, i) =>
+        h(
+          "button",
+          { type: "button", role: "option", class: "slash-item", "aria-selected": i === active ? "true" : "false", onclick: () => choose(s) },
+          h("strong", null, `/${s.name}`),
+          h("span", { class: "small muted" }, s.summary),
+        ),
+      ),
+    );
+    menu.hidden = !shown.length;
+  }
+
+  function updateMenu() {
+    const m = input.value.match(/^\/(\S*)$/); // only while the first word is being typed
+    shown = m ? skills.filter((s) => s.name.startsWith(m[1].toLowerCase())) : [];
+    active = Math.min(active, Math.max(shown.length - 1, 0));
+    paintMenu();
+  }
+
+  function choose(s) {
+    input.value = `/${s.name} `;
+    closeMenu();
+    input.focus();
+    save(DRAFT, input.value);
+    autosize();
+  }
+
+  async function loadSkills() {
+    try {
+      ({ skills } = await request("/v1/airlie/chat/skills"));
+    } catch {
+      skills = []; // no menu; "/x" is then sent as it was typed
+    }
+    updateMenu();
+  }
+
   // -- composer behaviour --
   function autosize() {
     input.style.height = "auto";
@@ -280,8 +303,27 @@ export function render(root, _params, ctx) {
   input.addEventListener("input", () => {
     save(DRAFT, input.value);
     autosize();
+    updateMenu();
   });
   input.addEventListener("keydown", (ev) => {
+    if (shown.length) {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        active = (active + (ev.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length;
+        paintMenu();
+        return;
+      }
+      if (ev.key === "Enter" || ev.key === "Tab") {
+        ev.preventDefault();
+        choose(shown[active]);
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeMenu();
+        return;
+      }
+    }
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
       onSend(ev);
@@ -322,6 +364,7 @@ export function render(root, _params, ctx) {
   autosize();
   refreshStrip();
   loadRepos();
+  loadSkills();
   timer = setInterval(refreshStrip, 15000);
   if (matchMedia("(min-width: 768px)").matches) input.focus();
 

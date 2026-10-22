@@ -30,7 +30,7 @@ from airlie.metrics import summary as metrics_summary
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
-from airlie.skills import prompt_text
+from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
 from airlie.teams.worktree import rev_parse
@@ -242,6 +242,10 @@ def create_app(
 
     app.include_router(auth_router(store, resolver, cfg.auth, now=now))
 
+    chat_skills: dict[str, Skill] = {}
+    if "chat" in cfg.roles and cfg.roles["chat"].skills is not None:  # a bad skill file stops the server here
+        chat_skills = {s.name: s for s in load_chat_skills(cfg.roles["chat"].skills)}
+
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
         if name in cfg.roles:
@@ -282,10 +286,38 @@ def create_app(
             "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
         }
 
+    def chat_prompt(prompt: str, skill: Any) -> str:
+        """The chat role's prompt with the list of skills it can suggest, and the one run for this request."""
+        if chat_skills:
+            listing = "\n".join(f"- /{s.name}: {s.summary}" for s in chat_skills.values())
+            prompt = f"{prompt.rstrip()}\n\n## Slash commands\n\n{listing}\n"
+        if skill is None:
+            return prompt
+        found = chat_skills.get(str(skill))
+        if found is None:
+            known = ", ".join(chat_skills) or "none"
+            raise HTTPException(404, f"unknown skill '{skill}'; skills: {known}")
+        return f"{prompt.rstrip()}\n\n## Skill: /{found.name}\n\n{found.text.strip()}\n"
+
+    @app.get("/v1/airlie/chat/skills")
+    async def chat_skill_list() -> dict[str, Any]:
+        return {
+            "skills": [
+                {"name": s.name, "summary": s.summary, "action": s.action} for s in chat_skills.values()
+            ]
+        }
+
     @app.post("/v1/chat/completions")
     async def chat(body: dict[str, Any]) -> Any:
         name = str(body.get("model", ""))
+        skill = body.get("skill")  # the Chat screen's slash command: ours, never the engine's
+        if skill is not None:
+            body = {k: v for k, v in body.items() if k != "skill"}
         base, served, headers, prompt = upstream(name)
+        if name == "chat":
+            prompt = chat_prompt(prompt or "", skill)
+        elif skill is not None:
+            raise HTTPException(400, "skills are for the chat role")
         msgs = list(body.get("messages") or [])
         if prompt is not None:
             if msgs and msgs[0].get("role") == "system":  # a client with its own harness (OpenCode, VS Code)

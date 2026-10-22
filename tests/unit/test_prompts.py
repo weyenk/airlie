@@ -34,3 +34,9 @@ def test_studio_profiles_load_and_route_the_eight_roles() -> None:
     assert set(routable_roles(cfg, exclude={cfg.studio.chief_role, cfg.studio.review.role})) == NINE
     assert cfg.roles["coder"].model == "generalist"  # no Qwen3-Coder; the coder does not think (2026-10-18)
     assert "base" not in cfg.models and "qa" not in cfg.roles
+
+
+def test_the_chat_prompt_is_not_routable_and_says_replies_are_prose_never_json() -> None:
+    meta, body = split_frontmatter((ROOT / "prompts/roles/chat.md").read_text())
+    assert meta.get("summary") and meta.get("routable") == "false"
+    assert "prose" in body and "Never reply with JSON" in body

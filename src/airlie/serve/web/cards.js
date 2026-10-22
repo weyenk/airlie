@@ -59,6 +59,35 @@ export function jobCard(job) {
   );
 }
 
+/** A story request the person can edit, and Start story. `repo()` is the repository chosen at the composer;
+ * `onStart({text, repo})` posts the story and resolves to the job it started. Nothing starts without the click. */
+export function storyCard(text, { repo, onStart, onEdit } = {}) {
+  const body = h("textarea", { class: "story-text", rows: 6, "aria-label": "Story request", value: text });
+  const error = h("span", { class: "error", role: "alert" });
+  const start = h("button", { type: "button", class: "btn primary" }, "Start story");
+  body.addEventListener("input", () => onEdit?.(body.value));
+  start.addEventListener("click", async () => {
+    error.textContent = "";
+    const chosen = repo?.() || "";
+    if (!chosen) {
+      error.textContent = "Pick a repository first (under the message box).";
+      return;
+    }
+    if (!body.value.trim()) {
+      error.textContent = "The story request is empty.";
+      return;
+    }
+    start.disabled = true;
+    try {
+      await onStart?.({ text: body.value.trim(), repo: chosen });
+    } catch (e) {
+      error.textContent = e?.name === "AuthError" ? "Sign in again, then start the story." : e.message;
+      start.disabled = false;
+    }
+  });
+  return h("div", { class: "story-card stack" }, h("span", { class: "small muted" }, "A story request, ready to edit:"), body, h("div", { class: "row" }, start), error);
+}
+
 /** Start a studio run from an approved plan. */
 export function startRun({ goal, repo, plan, test_cmd }) {
   const body = { goal, repo, plan };
