@@ -628,6 +628,49 @@ label.block {
   flex: 1 1 0;
   border-radius: 12px;
 }
+.story-card {
+  gap: 8px;
+  min-width: 0;
+}
+.story-text {
+  width: 100%;
+  min-height: 120px;
+  border-radius: 12px;
+  border: 1px solid var(--field-line);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.slash-menu {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.slash-menu[hidden] {
+  display: none;
+}
+.slash-item {
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  cursor: pointer;
+}
+.slash-item[aria-selected="true"],
+.slash-item:hover {
+  background: var(--line);
+}
 .job-card {
   margin-left: 36px;
   align-self: flex-start;

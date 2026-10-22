@@ -159,7 +159,8 @@ def specialists(cfg: AirlieConfig) -> dict[str, str]:
 def check_plan(cfg: AirlieConfig, plan: Plan) -> None:
     """Raise PlanError when a plan from outside the chief (a person's edit, the pipeline) cannot run: no
     subtasks, more than studio.max_subtasks, a role that is not a specialist, a missing dependency, a
-    duplicate id or a cycle. Every role is checked, pinned or not: a chief-made plan never comes here."""
+    duplicate id or a cycle. Every role is checked, pinned or not. A plan the chief made inside a studio run
+    never comes here (its roles are routed); one drafted for a job, and a person's edit of it, do."""
     if not plan.subtasks:
         raise PlanError("the plan has no subtasks")
     limit = cfg.studio.max_subtasks

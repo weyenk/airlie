@@ -8,6 +8,7 @@ index.md that lists them in order with what each one checked and whether it held
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 import threading
@@ -27,6 +28,8 @@ from airlie.board.store import BoardStore
 from airlie.config import AirlieConfig, load_config
 from airlie.serve.app import create_app
 
+CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
+"""The chat skills airlie ships: the / menu is tested on the real /story."""
 KEY = "e2e-admin-key"
 """The admin key the test server is started with: made up here, for this server only."""
 CARDS = (
@@ -45,10 +48,31 @@ OUTLINE = "3px solid #d9546e"
 """How the element a check is about is marked in its screenshot."""
 
 
+@dataclass
+class Upstream:
+    """The engine behind the test server: answers every chat completion with `reply`, as a stream or whole,
+    and keeps the bodies it was sent."""
+
+    reply: str = "ok"
+    requests: list[dict[str, Any]] = field(default_factory=list)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        self.requests.append(body)
+        if body.get("stream"):
+            frames = [{"choices": [{"index": 0, "delta": {"content": self.reply}, "finish_reason": None}]}]
+            frames.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+            sse = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
+            return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+        message = {"role": "assistant", "content": self.reply}
+        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": "stop"}]})
+
+
 @dataclass(frozen=True)
 class Server:
     url: str
     state: Path
+    upstream: Upstream
 
 
 def _config(root: Path) -> AirlieConfig:
@@ -57,19 +81,19 @@ def _config(root: Path) -> AirlieConfig:
     roles = ("coder", "summarizer", "judge", "aggregator")
     for r in roles:
         (root / f"{r}.md").write_text("x")
+    (root / "chat.md").write_text("---\nroutable: false\n---\nYou are the chat role.\n")
     data = {
         "version": 1,
         "engines": {"main": {"kind": "openai_http", "base_url": "http://engine.test/v1", "models": ["base"]}},
         "models": {"base": {"repo": "org/m", "revision": "r"}},
-        "roles": {r: {"prompt": f"{r}.md", "model": "base"} for r in roles},
+        "roles": {
+            **{r: {"prompt": f"{r}.md", "model": "base"} for r in roles},
+            "chat": {"prompt": "chat.md", "model": "base", "skills": str(CHAT_SKILLS)},
+        },
         "observability": {"state_dir": str(root / "state")},
     }
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(root / "airlie.yaml")
-
-
-def _no_engine(request: httpx.Request) -> httpx.Response:
-    return httpx.Response(503, json={"error": "no engine in the e2e tests"})
 
 
 def _free_port() -> int:
@@ -106,7 +130,8 @@ def _serve(root: Path) -> Iterator[Server]:
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)
     _seed(state)
-    app = create_app(config, transport=httpx.MockTransport(_no_engine), api_key=KEY)
+    upstream = Upstream()
+    app = create_app(config, transport=httpx.MockTransport(upstream), api_key=KEY)
     port = _free_port()
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
@@ -116,7 +141,7 @@ def _serve(root: Path) -> Iterator[Server]:
         if time.monotonic() > deadline or not thread.is_alive():
             raise RuntimeError("the test server did not start")
         time.sleep(0.05)
-    yield Server(f"http://127.0.0.1:{port}", state)
+    yield Server(f"http://127.0.0.1:{port}", state, upstream)
     srv.should_exit = True
     thread.join(timeout=10)
 
