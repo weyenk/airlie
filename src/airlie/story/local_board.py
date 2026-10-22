@@ -16,8 +16,13 @@ STATUS_OF: dict[Column, str] = {
 
 
 class LocalBoard:
-    def __init__(self, store: BoardStore) -> None:
+    def __init__(self, store: BoardStore, role_names: set[str] | None = None) -> None:
         self.store = store
+        self.role_names = frozenset(role_names or ())
+
+    def _is_note(self, author: str, text: str) -> bool:
+        """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
+        return author in self.role_names or author == "airlie" or text.startswith(NOTE_PREFIX)
 
     def _item(self, ref: str) -> Item:
         key = ref.strip()
@@ -28,8 +33,7 @@ class LocalBoard:
         except KeyError:
             raise BoardError(f"no item {key} on the board") from None
 
-    @staticmethod
-    def _card(item: Item) -> Card:
+    def _card(self, item: Item) -> Card:
         return Card(
             key=item.key,
             id=item.key,
@@ -37,7 +41,7 @@ class LocalBoard:
             title=item.title,
             description=item.description,
             url=None,
-            comments=tuple(c.text for c in item.comments if not c.text.startswith(NOTE_PREFIX)),
+            comments=tuple(c.text for c in item.comments if not self._is_note(c.author, c.text)),
             labels=item.labels,
         )
 

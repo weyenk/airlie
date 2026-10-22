@@ -159,3 +159,22 @@ async def test_status_of_names_the_column_a_card_is_in_now(tmp_path: Path) -> No
     assert b.status_of(card) == "todo"
     s.move("AIR-3", "approved")
     assert b.status_of(card) == "approved"
+
+
+async def test_the_card_omits_airlies_and_roles_notes_but_keeps_noahs(tmp_path: Path) -> None:
+    """AC3: the card the pipeline reads drops airlie's and the configured roles' notes (by author, or by the
+    **airlie** · prefix) and keeps a person's. The role note is seeded directly with no prefix, so only the
+    author branch can drop it (note() would keep the prefix and hide that branch); noah's is present in the
+    same card, so the omission and the inclusion are proven together."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    init = s.create(level="initiative", title="i", description="init")
+    epic = s.create(level="epic", title="e", parent=init.key, labels=["repo:weyenk/airlie"])
+    s.create(level="story", title="first", description="one", parent=epic.key, labels=["repo:weyenk/airlie"])
+    b = LocalBoard(s, role_names={"architect", "coder"})
+    s.comment("AIR-3", "airlie", NOTE_PREFIX + "picked this up")  # airlie's note: prefix and author
+    s.comment("AIR-3", "architect", "the design is settled")  # a configured role, no prefix: author branch
+    s.comment("AIR-3", "noah", "please keep it small")  # a person, no prefix: stays
+    card = await b.card("AIR-3")
+    assert card.comments == ("please keep it small",)
+    assert "the design is settled" not in card.comments  # the role's note is out of the next brief
+    assert (NOTE_PREFIX + "picked this up") not in card.comments  # airlie's note is out of the next brief

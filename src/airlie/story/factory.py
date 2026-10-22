@@ -154,7 +154,7 @@ def make_board(cfg: AirlieConfig) -> Board:
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
     if cfg.story.board == "local":
-        return LocalBoard(BoardStore(_board_path(cfg), prefix=cfg.board.prefix))
+        return LocalBoard(BoardStore(_board_path(cfg), prefix=cfg.board.prefix), role_names=set(cfg.roles))
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))
 
