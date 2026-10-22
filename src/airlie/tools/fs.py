@@ -105,6 +105,10 @@ def _read_section(ctx: ToolContext, path: str, room: int) -> str:
     return f"{header}\n{_cap_lines(numbered, 1, len(lines), body_room)}"
 
 
+READ_EXAMPLE = 'A correct call looks like: read_file(path="src/app.py")'
+"""Shown when read_file gets neither argument: HDS-5's model sent it empty until it saw a worked call."""
+
+
 class ReadFile:
     name = "read_file"
     description = (
@@ -127,8 +131,10 @@ class ReadFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         has_path, has_paths = args.get("path") is not None, args.get("paths") is not None
         if has_path == has_paths:
+            # with `required` empty the registry's missing-argument error, and its worked call, never fires
+            example = "" if has_path else f" {READ_EXAMPLE}"
             return ToolResult(
-                False, "error: read_file needs exactly one of path (one file) or paths (several)"
+                False, f"error: read_file needs exactly one of path (one file) or paths (several).{example}"
             )
         if has_paths:
             return self._run_paths(args, ctx)

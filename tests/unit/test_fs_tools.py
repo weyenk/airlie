@@ -578,3 +578,19 @@ async def test_read_file_paths_accepts_a_json_string_and_refuses_more_than_five(
     assert not r.ok and "at most 5" in r.output
     r = await ReadFile().run({"paths": "a.py"}, c)
     assert not r.ok and "list of paths" in r.output
+
+
+async def test_read_file_with_no_arguments_shows_a_correct_call(tmp_path: Path) -> None:
+    """HDS-5: a model that sends read_file {} is shown a worked call, as the registry's missing-argument
+    error showed it before `path` stopped being required."""
+    r = await ReadFile().run({}, ctx(tmp_path))
+    assert not r.ok and 'A correct call looks like: read_file(path="src/app.py")' in r.output
+
+
+async def test_read_file_paths_outside_the_worktree_is_refused_in_its_own_section(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": ["../x", "a.py"]}, c)
+    assert r.ok
+    assert "=== ../x ===\nerror:" in r.output and "escapes the worktree" in r.output
+    assert "=== a.py (1 lines) ===\n1: alpha" in r.output
