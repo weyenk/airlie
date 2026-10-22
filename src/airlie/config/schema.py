@@ -421,6 +421,20 @@ class GitHubAppSpec(Strict):
     )
 
 
+class SupervisorSpec(Strict):
+    """Layer 1 of the supervisor (spec 2026-10-22): an advisory second reader that triages a stuck role.
+    Off in the schema so other configs and tests are unchanged; airlie.yaml turns it on for the trial."""
+
+    enabled: bool = False
+    role: str = Field(
+        default="supervisor", description="the role that triages; it runs on the reviewer model"
+    )
+    per_layer: int = Field(default=6, ge=1, description="the most triages a layer gets before today's text")
+    timeout_s: float = Field(default=300.0, gt=0, description="one triage's wall-clock cap")
+    trace_steps: int = Field(default=6, ge=1, description="the role's recent steps shown to the supervisor")
+    recall: int = Field(default=3, ge=0, description="past ledger fixes shown to the supervisor")
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -469,6 +483,7 @@ class StorySpec(Strict):
         "contract: checked to fail before any code is written, then read-only to the coder (airlie.yaml "
         "seats 'tester'); null: the coder writes its own tests, one subtask per layer",
     )
+    supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
@@ -638,6 +653,9 @@ class AirlieConfig(Strict):
         ):
             if role not in self.roles:
                 problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")
+        sup = self.story.supervisor
+        if sup.enabled and sup.role not in self.roles:
+            problems.append(f"story.supervisor.role '{sup.role}' is not a role ({sorted(self.roles)})")
         if self.topology.kind == "studio":
             need = [("studio.chief_role", self.studio.chief_role)]
             if self.studio.review.enabled:

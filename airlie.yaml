@@ -154,6 +154,7 @@ roles:
   research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   security:     { prompt: prompts/roles/security.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
   reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 16384, thinking: false, chat_template_kwargs: { reasoning_strength: low }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }  # low: at medium a review ran its whole 16384 tokens still thinking (AIR-7 layer 02 round 1, 2026-10-18)
+  supervisor:   { prompt: prompts/roles/supervisor.md, model: reviewer, tools: [read_file, list_dir, grep], max_steps: 6, max_context: 131072, max_tokens: 8192, thinking: false, chat_template_kwargs: { reasoning_strength: low }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }   # layer 1 of the supervisor (spec 2026-10-22): advisory triage on the reviewer model; run_test is added by the triage, not listed
   aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
     prompt: prompts/roles/aggregator.md
     model: generalist
@@ -279,6 +280,7 @@ story:
   trunk: main                      # the stack's base branch
   tester_role: tester              # lever 2 (2026-10-19): a thinking role writes every layer's tests, checked red before the coder builds; null: the coder writes its own
   max_layers: 5
+  supervisor: { enabled: true, per_layer: 6, timeout_s: 300 }   # the trial (spec 2026-10-22); false = today's behaviour exactly
   jira:
     statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }
   github_app:                      # publish as a GitHub App's bot, never with your own gh login or SSH key
