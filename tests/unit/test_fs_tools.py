@@ -518,3 +518,63 @@ def test_asking_git_whether_a_file_is_at_the_base_prints_nothing(
     assert _at_base(c.worktree, c.worktree / "new.py", "HEAD") is False
     assert _at_base(c.worktree, c.worktree / "kept.py", "no-such-ref") is True  # no such commit
     assert capfd.readouterr() == ("", "")
+
+
+# ---- read_file with several paths ----
+
+
+async def test_read_file_paths_shows_each_file_with_its_header(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\nbeta\n")
+    put(c, "b.py", "gamma\n")
+    r = await ReadFile().run({"paths": ["a.py", "b.py"]}, c)
+    assert r.ok
+    assert "=== a.py (2 lines) ===\n1: alpha\n2: beta" in r.output
+    assert "=== b.py (1 lines) ===\n1: gamma" in r.output
+
+
+async def test_read_file_paths_stay_under_the_output_cap(tmp_path: Path) -> None:
+    c = ctx(tmp_path, cap=20_000)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        put(c, name, "\n".join("x" * 99 for _ in range(150)))  # about 15k chars
+    r = await ReadFile().run({"paths": ["a.txt", "b.txt", "c.txt"]}, c)
+    assert r.ok
+    assert len(r.output) <= 20_000 + 400  # the cap plus the notices
+    assert "read on with offset=" in r.output
+    assert "c.txt: not shown, over the output cap; read it with path" in r.output
+
+
+async def test_read_file_paths_missing_one_still_shows_the_others(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": ["nope.py", "a.py"]}, c)
+    assert r.ok
+    assert "=== nope.py ===\nerror:" in r.output
+    assert "1: alpha" in r.output
+
+
+async def test_read_file_paths_with_offset_is_refused(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    for extra in ({"offset": 2}, {"limit": 1}):
+        r = await ReadFile().run({"paths": ["a.py"], **extra}, c)
+        assert not r.ok and r.output == "error: offset and limit read one file: use path"
+
+
+async def test_read_file_needs_path_or_paths(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    for args in ({}, {"path": "a.py", "paths": ["a.py"]}):
+        r = await ReadFile().run(args, c)
+        assert not r.ok and "path" in r.output and "paths" in r.output and "one of" in r.output
+
+
+async def test_read_file_paths_accepts_a_json_string_and_refuses_more_than_five(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": '["a.py"]'}, c)
+    assert r.ok and "1: alpha" in r.output
+    r = await ReadFile().run({"paths": ["a.py"] * 6}, c)
+    assert not r.ok and "at most 5" in r.output
+    r = await ReadFile().run({"paths": "a.py"}, c)
+    assert not r.ok and "list of paths" in r.output
