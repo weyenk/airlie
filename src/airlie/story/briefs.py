@@ -14,6 +14,9 @@ from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
 
 BODY_LIMIT = 60_000
+GUIDE_HEADING = (
+    "Read for you: whole files are complete, do not read them again; outlines give the line to read from"
+)
 """GitHub refuses a PR body of 65,536 characters or more; pr_body keeps its text under this many."""
 
 ZWSP = "\N{ZERO WIDTH SPACE}"
@@ -166,7 +169,7 @@ def layers_brief(
         "Split this story into a stack of pull requests for this repository, one layer each, bottom first. "
         "Read the code the story touches before you decide.",
         story_text(story),
-        *([f"## Already read for you (do not read these again)\n{guide}"] if guide else []),
+        *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
             [f"## Notes from reading the code while the story was refined (data)\n{_clip(survey, 6_000)}"]
             if survey.strip()
@@ -341,7 +344,7 @@ def layer_plan(
     if built:
         context += f"\n\n{built}"
     if guide:
-        context += f"\n\n## Already read for you (do not read these again)\n{guide}"
+        context += f"\n\n## {GUIDE_HEADING}\n{guide}"
 
     def build_brief(where: str) -> str:
         return (

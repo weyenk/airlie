@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from airlie.story.context import FILE_CHARS, GUIDE_CHARS, MAX_FILES, named_paths, repo_guide
+from airlie.config import load_config
+from airlie.story.context import FILE_HEAD_CHARS, guide_budget, named_paths, repo_guide
 from tests.unit.git_helpers import git
 
 
@@ -29,26 +30,64 @@ def test_paths_in_prose_are_found_once_in_order() -> None:
 
 def test_the_guide_is_agents_md_and_the_files_the_story_names_that_exist(tmp_path: Path) -> None:
     repo, sha = repo_with(tmp_path, {"AGENTS.md": "# rules\nrun the gate\n", "src/m.py": "x = 1\n"})
-    guide = repo_guide(repo, sha, "Change src/m.py and src/missing.py")
-    assert "### AGENTS.md\n# rules" in guide and "### src/m.py\n```\nx = 1" in guide
+    guide = repo_guide(repo, sha, "Change src/m.py and src/missing.py", budget_chars=10_000)
+    assert "### AGENTS.md\n# rules" in guide and "### src/m.py (whole, 1 lines)\n```\nx = 1" in guide
     assert "missing.py" not in guide
 
 
 def test_a_repository_without_agents_md_or_named_files_gets_an_empty_guide(tmp_path: Path) -> None:
     repo, sha = repo_with(tmp_path, {"a.txt": "x"})
-    assert repo_guide(repo, sha, "nothing named here") == ""
+    assert repo_guide(repo, sha, "nothing named here", budget_chars=10_000) == ""
 
 
 def test_the_guide_reads_the_commit_not_the_worktree(tmp_path: Path) -> None:
     repo, sha = repo_with(tmp_path, {"AGENTS.md": "committed\n"})
     (repo / "AGENTS.md").write_text("edited since\n")
-    assert "committed" in repo_guide(repo, sha, "") and "edited since" not in repo_guide(repo, sha, "")
+    assert "committed" in repo_guide(repo, sha, "", budget_chars=10_000) and "edited since" not in repo_guide(
+        repo, sha, "", budget_chars=10_000
+    )
 
 
-def test_the_guide_is_clipped_and_names_at_most_a_few_files(tmp_path: Path) -> None:
-    files = {"AGENTS.md": "g" * (GUIDE_CHARS + 500)}
-    files.update({f"src/f{i}.py": "z" * (FILE_CHARS + 500) for i in range(MAX_FILES + 2)})
-    repo, sha = repo_with(tmp_path, files)
-    guide = repo_guide(repo, sha, " ".join(f"src/f{i}.py" for i in range(MAX_FILES + 2)))
-    assert guide.count("[clipped]") == MAX_FILES + 1 and guide.count("### src/") == MAX_FILES
-    assert "f5.py" not in guide
+def test_a_file_that_fits_goes_in_whole(tmp_path: Path) -> None:
+    body = "".join(f"line{i} = {i}\n" for i in range(50))
+    repo, sha = repo_with(tmp_path, {"src/m.py": body})
+    guide = repo_guide(repo, sha, "Change src/m.py", budget_chars=10_000)
+    assert "### src/m.py (whole, 50 lines)" in guide and "line49 = 49" in guide
+
+
+def test_a_file_over_the_budget_goes_in_as_an_outline(tmp_path: Path) -> None:
+    lines = ["x = 1"] * 3000
+    lines[9] = "def first(): pass"
+    lines[2899] = "def last(): pass"
+    repo, sha = repo_with(tmp_path, {"src/big.py": "\n".join(lines) + "\n"})
+    guide = repo_guide(repo, sha, "Change src/big.py", budget_chars=5_000)
+    assert "### src/big.py (outline:" in guide and "2900: def" in guide
+
+
+def test_the_guide_never_exceeds_its_budget(tmp_path: Path) -> None:
+    def big(n: int) -> str:  # 40k chars, 250 defs: an outline of about 5k
+        defs = "".join(f"def f{n}_{k}(): pass\n" for k in range(250))
+        return defs + "# padding padding padding padding\n" * 1000
+
+    files = {f"src/f{i}.py": big(i) for i in range(7)}
+    repo, sha = repo_with(tmp_path, {"AGENTS.md": "rules\n", **files})
+    text = " ".join(f"src/f{i}.py" for i in range(7))
+    for budget in (20_000, 500, 100, 60):
+        assert len(repo_guide(repo, sha, text, budget_chars=budget)) <= budget
+    guide = repo_guide(repo, sha, text, budget_chars=20_000)
+    assert "### Also named (not shown)" in guide and "- src/f6.py (1250 lines)" in guide
+
+
+def test_a_big_non_python_file_gets_its_head(tmp_path: Path) -> None:
+    body = "".join(f"word{i} " * 9 + "\n" for i in range(1500))
+    assert len(body) > 100_000 * 0.9
+    repo, sha = repo_with(tmp_path, {"docs/x.md": body})
+    guide = repo_guide(repo, sha, "Read docs/x.md", budget_chars=8_000)
+    assert "### docs/x.md (outline:" in guide
+    fenced = guide.split("```\n")[1]
+    assert 0 < len(fenced) <= FILE_HEAD_CHARS + len("docs/x.md: 1500 lines\n") + 5
+
+
+def test_guide_budget_is_a_share_of_the_smallest_readers_context() -> None:
+    cfg = load_config(Path(__file__).resolve().parents[2] / "airlie.yaml")
+    assert guide_budget(cfg, ["tester", "coder"]) == 39321

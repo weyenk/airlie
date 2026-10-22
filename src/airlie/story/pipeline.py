@@ -33,7 +33,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.context import repo_guide
+from airlie.story.context import guide_budget, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import (
     Finding,
@@ -554,7 +554,12 @@ class StoryPipeline:
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
-        guide = repo_guide(self.repo, (st.base or {}).get("sha", "HEAD"), story_text(story))
+        guide = repo_guide(
+            self.repo,
+            (st.base or {}).get("sha", "HEAD"),
+            story_text(story),
+            budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
+        )
 
         def parse(text: str) -> tuple[Layer, ...]:
             return parse_layers(extract_json_block(text), story, self.s.max_layers)
@@ -715,7 +720,14 @@ class StoryPipeline:
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
             findings: list[Finding] = []
-            guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
+            guide = repo_guide(  # read for the tester and the coder
+                self.repo,
+                base_sha,
+                f"{layer.scope}\n{layer.brief}",
+                budget_chars=guide_budget(
+                    self.cfg, [r for r in (self.s.tester_role, self.s.build_role) if r]
+                ),
+            )
             # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
             built = (
                 built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))

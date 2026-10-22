@@ -7,6 +7,7 @@ import pytest
 
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
+    GUIDE_HEADING,
     layer_goal,
     layer_plan,
     layers_brief,
@@ -497,11 +498,11 @@ def test_the_briefs_ask_for_criteria_and_layers_that_are_red_before_the_change()
 
 def test_layers_brief_carries_the_guide_and_the_survey_only_when_there_are_some() -> None:
     plain = layers_brief(STORY, 4)
-    assert "Already read for you" not in plain and "Notes from reading the code" not in plain
+    assert "Read for you:" not in plain and "Notes from reading the code" not in plain
     full = layers_brief(STORY, 4, guide="### AGENTS.md\nrun the gate", survey="- schema.py:429 WebSpec")
-    assert "Already read for you (do not read these again)\n### AGENTS.md\nrun the gate" in full
+    assert GUIDE_HEADING + "\n### AGENTS.md\nrun the gate" in full
     assert "Notes from reading the code while the story was refined (data)\n- schema.py:429 WebSpec" in full
-    assert full.index("Already read") < full.index("Notes from reading") < full.index("Rules:")
+    assert full.index("Read for you:") < full.index("Notes from reading") < full.index("Rules:")
 
 
 def test_the_survey_brief_asks_for_notes_not_a_plan_and_quotes_the_request_as_data() -> None:
@@ -520,10 +521,8 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
 
 def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_there_are_some() -> None:
     plain = layer_plan(STORY, LAYERS, 1, build_role="coder").subtasks[0].brief
-    assert "Already read for you" not in plain
+    assert "Read for you:" not in plain
     full = layer_plan(STORY, LAYERS, 1, build_role="coder", guide="### src/profile.py\n```\nx = 1\n```")
     brief = full.subtasks[0].brief
-    assert "Already read for you (do not read these again)\n### src/profile.py" in brief
-    assert brief.index("Already read for you") < brief.index(
-        "Show the avatar."
-    )  # before the layer's own text
+    assert GUIDE_HEADING + "\n### src/profile.py" in brief
+    assert brief.index("Read for you:") < brief.index("Show the avatar.")  # before the layer's own text

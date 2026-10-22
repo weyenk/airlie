@@ -4,13 +4,19 @@ not on finding the README: the repository's AGENTS.md and the files the story na
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
+from airlie.config import AirlieConfig
+from airlie.outline import outline
 from airlie.teams.worktree import find_file, read_blob
 
 GUIDE_CHARS = 6_000
-FILE_CHARS = 5_000
-MAX_FILES = 5
+GUIDE_SHARE = 0.2
+"""The share of a role's context the files read for it may take."""
+CHARS_PER_TOKEN = 3
+FILE_HEAD_CHARS = 2_000
+"""How much of a big non-Python file the outline form keeps."""
 _PATH = re.compile(
     r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh))\b"
 )
@@ -32,23 +38,60 @@ def _blob(repo: Path, commit: str, path: str) -> str | None:
     return read_blob(repo, sha) if kind == "blob" else None
 
 
-def repo_guide(repo: Path, commit: str, text: str) -> str:
-    """AGENTS.md (if the commit has one) and up to MAX_FILES of the files `text` names that it has, each
-    clipped: markdown ready to put in a brief; "" when there is nothing."""
+def guide_budget(cfg: AirlieConfig, roles: Sequence[str]) -> int:
+    """Characters of "read for you" the smallest context among `roles` can carry (a share of it)."""
+    return int(min(cfg.roles[r].max_context for r in roles) * GUIDE_SHARE * CHARS_PER_TOKEN)
+
+
+_ALSO = "### Also named (not shown)"
+
+
+def _assemble(parts: list[str], listed: list[str]) -> str:
+    sections = list(parts)
+    if listed:
+        sections.append(_ALSO + "\n" + "\n".join(listed))
+    return "\n\n".join(sections)
+
+
+def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
+    """AGENTS.md (if the commit has one) and the files `text` names that it has, in order of mention, within
+    `budget_chars` for the whole string: each file whole if it fits, else as an outline with line numbers,
+    else just listed with its line count. Once even an outline does not fit, the rest are listed.
+    Markdown ready to put in a brief; "" when there is nothing.
+
+    2026-10-22: 3 in 4 named files were longer than the old 5000-char clip, and roles read them again from
+    line 1 (about 45% of the tester's reads before its first write)."""
     parts: list[str] = []
     guide = _blob(repo, commit, "AGENTS.md")
     if guide is not None:
-        parts.append("### AGENTS.md\n" + _clip(guide, GUIDE_CHARS))
+        parts.append("### AGENTS.md\n" + _clip(guide, min(GUIDE_CHARS, max(budget_chars - 16, 0))))
+    files = [(p, b) for p in named_paths(text) if (b := _blob(repo, commit, p)) is not None]
+    lines = [f"- {p} ({len(b.splitlines())} lines)" for p, b in files]
+    fits_whole = fits_outline = True  # monotonic: a file that falls to a smaller form takes the rest with it
     shown = 0
-    for path in named_paths(text):
-        if shown == MAX_FILES:
-            break
-        body = _blob(repo, commit, path)
-        if body is None:
-            continue
-        parts.append(f"### {path}\n```\n{_clip(body, FILE_CHARS)}\n```")
-        shown += 1
-    return "\n\n".join(parts)
+    for k, (path, body) in enumerate(files):
+        n = len(body.splitlines())
+        rest = lines[k + 1 :]
+        if fits_whole:
+            whole = f"### {path} (whole, {n} lines)\n```\n{body}\n```"
+            if len(_assemble([*parts, whole], rest)) <= budget_chars:
+                parts.append(whole)
+                shown = k + 1
+                continue
+            fits_whole = False
+        if fits_outline:
+            heading = f"### {path} (outline: read a span with read_file offset and limit)"
+            card = f"{heading}\n```\n{outline(path, body, head_chars=FILE_HEAD_CHARS)}\n```"
+            if len(_assemble([*parts, card], rest)) <= budget_chars:
+                parts.append(card)
+                shown = k + 1
+                continue
+            fits_outline = False
+        break
+    listed = lines[shown:]
+    while listed and len(_assemble(parts, listed)) > budget_chars:
+        listed.pop()  # never over budget: a listed line that does not fit is dropped
+    return _assemble(parts, listed)
 
 
 def _clip(text: str, limit: int) -> str:
