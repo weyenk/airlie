@@ -153,6 +153,13 @@ class RoleSpec(Strict):
         "writes the answer from what the role has read (the architect's took 14-20 minutes thinking); a "
         "tool call on that turn gets one retry, which thinks either way",
     )
+    carried_reasoning_chars: int = Field(
+        default=1500,
+        ge=0,
+        description="a thinking turn cut at thinking_budget whose action was a read gets the last this many "
+        "characters of its reasoning back after the tool result, to continue from rather than start over "
+        "(AIR-30); one such message at a time, replaced by the next; 0 = off",
+    )
     nudge_stuck: bool = Field(
         default=False,
         description="the first time the role repeats the same action it is told to do something different "

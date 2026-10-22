@@ -15,6 +15,7 @@ from dataclasses import asdict, replace
 from pathlib import PurePosixPath
 from typing import Any
 
+from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import (
     ContentPart,
@@ -255,6 +256,32 @@ ONE_STEP_LEFT = (
     "have found. Stop exploring and write the deliverable."
 )
 """What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
+
+CARRIED = (
+    "Your reasoning on the last turn, cut at the budget:\n{tail}\n\nDo not start over: continue from here "
+    "and decide."
+)
+"""What follows the observation of a read whose turn's thinking ran to thinking_budget (AIR-30). The engine
+keeps reasoning only in the step trace, and vllm-mlx's MLLM path rewrites the Qwen template so past assistant
+turns never render theirs, so the next turn began the same argument from zero, was cut again, and read one
+more file (AIR-28's coder, 2026-10-18: 10 of 21 steps re-derived the same three contradictions in its brief).
+The tail goes back as plain text; one such message at a time, the last one dropped when the next is added."""
+_CARRIED_HEAD = CARRIED.split("{tail}")[0]
+
+
+def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall) -> str:
+    """The tail of a turn's reasoning to carry to the next: the turn thought, its completion reached the
+    role's thinking_budget (vllm-mlx closes the think block there), and its action was a read rather than a
+    write or run_tests; at most carried_reasoning_chars characters. "" for none."""
+    budget, cap = role.thinking_budget, role.carried_reasoning_chars
+    reasoning = res.reasoning.strip()
+    if not (thinking and budget and cap and reasoning) or call.name in WRITE_TOOLS_ONLY:
+        return ""
+    return reasoning[-cap:] if res.completion_tokens >= budget else ""
+
+
+def _is_carried(m: Message) -> bool:
+    return m.role == "user" and isinstance(m.content, str) and m.content.startswith(_CARRIED_HEAD)
 
 
 FRESH_RUN = "This is a new run: you have {n} steps and every tool again."
@@ -586,6 +613,18 @@ class NativeTeam:
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
+                tail = _carried_tail(ctx.role, bool(req.thinking), res, call)
+                if tail:  # after the observation, before any nudge; replaces the one carried before it
+                    messages[:] = [m for m in messages if not _is_carried(m)]
+                    messages.append(Message(role="user", content=CARRIED.format(tail=tail)))
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "reasoning_carried",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            chars=len(tail),
+                        )
                 step_record = StepRecord(
                     team_id=ctx.team_id,
                     step_num=steps,

@@ -975,3 +975,25 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
     }
     with pytest.raises(ConfigError, match="write_schedule"):
         load_config(write(tmp_path, bad))
+
+
+def test_a_role_carries_1500_chars_of_cut_reasoning_unless_told_otherwise(tmp_path: Path) -> None:
+    """AIR-30: on by default, so every thinking role (architect, tester, chief, research) carries a cut
+    deliberation to its next turn; it does nothing for a role that does not think."""
+    assert load_config(write(tmp_path, MINIMAL)).roles["coder"].carried_reasoning_chars == 1500
+    cfg = load_config(write(tmp_path, with_coder(carried_reasoning_chars=0)))
+    assert cfg.roles["coder"].carried_reasoning_chars == 0
+
+
+def test_a_negative_carried_reasoning_chars_is_a_config_error_at_load(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as e:
+        load_config(write(tmp_path, with_coder(carried_reasoning_chars=-1)))
+    assert str(e.value) == (
+        "config invalid:\n  roles.coder.carried_reasoning_chars: Input should be greater than or equal to 0"
+    )
+
+
+def test_every_thinking_role_in_airlie_yaml_carries_cut_reasoning() -> None:
+    cfg = load_config(Path(__file__).parents[2] / "airlie.yaml")
+    thinking = {n: r.carried_reasoning_chars for n, r in cfg.roles.items() if r.thinking}
+    assert {"architect", "tester"} <= thinking.keys() and all(thinking.values())
