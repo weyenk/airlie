@@ -158,3 +158,24 @@ def test_focus_is_part_of_the_cache_key(tmp_path: Path) -> None:
         repo, test_cmd=None, max_chars=3000, depth=3, cache_dir=cache, focus=["src/pkg/a.py"]
     )
     assert cached is False and "## In scope" in focused and "## In scope" not in plain
+
+
+def test_a_directory_too_large_to_expand_is_expanded_one_level(tmp_path: Path) -> None:
+    files = {f"big/sub{i % 30}/f{i}.py": "def f() -> None: ...\n" for i in range(300)}
+    files["big/top.py"] = "def top() -> None: ...\n"
+    files["README.md"] = "x\n"
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd=None, max_chars=3000, depth=3, cache_dir=None
+    )
+    assert any(line.startswith("big/sub0/ (") for line in _lines(text))
+    assert any(line.startswith("big/top.py (") for line in _lines(text))
+    assert text.endswith("[map truncated]")
+
+
+def test_code_directories_with_more_code_come_first(tmp_path: Path) -> None:
+    files = {f"src/pkg/m{i}.py": "x = 1\n" for i in range(10)}
+    files.update({f"scripts/s{i}.py": "x = 1\n" for i in range(5)})
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd=None, max_chars=6000, depth=3, cache_dir=None
+    )
+    assert text.index("src/pkg/m0.py") < text.index("scripts/s0.py")

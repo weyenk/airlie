@@ -84,6 +84,10 @@ def _rank(top: str, files: list[Path], focus: set[Path]) -> int:
     return 3 if top == "" else 4
 
 
+def _code_count(files: list[Path]) -> int:
+    return sum(f.suffix in CODE_SUFFIXES for f in files)
+
+
 def _file_line(repo: Path, rel: Path, size: int) -> str:
     entry = f"{rel} ({_size(size)})"
     if rel.suffix == ".py":
@@ -128,14 +132,45 @@ def _render(
         groups.setdefault(rel.parts[0] if len(rel.parts) > 1 else "", []).append(rel)
     lines += [f"{top}/ ({len(group)} files)" for top, group in sorted(groups.items()) if top]
     used = len("\n".join(lines))
-    order = sorted(groups.items(), key=lambda g: (_rank(g[0], g[1], set(in_scope)), g[0]))
-    for _, group in order:
+    scope = set(in_scope)
+    order = sorted(groups.items(), key=lambda g: (_rank(g[0], g[1], scope), -_code_count(g[1]), g[0]))
+    for top, group in order:
         block = _dir_block(repo, group, sizes, depth)
-        used += 1 + len("\n".join(block))
-        if used > max_chars:
-            return "\n".join(lines), True
-        lines += block
+        if used + 1 + len("\n".join(block)) <= max_chars:
+            used += 1 + len("\n".join(block))
+            lines += block
+            continue
+        if top:  # too large whole: its direct files and subdirectories, as many as fit
+            lines += _one_level(repo, top, group, sizes, scope, room=max_chars - used)
+        return "\n".join(lines), True
     return "\n".join(lines), False
+
+
+def _one_level(
+    repo: Path, top: str, files: list[Path], sizes: dict[Path, int], focus: set[Path], *, room: int
+) -> list[str]:
+    """A directory too large to expand whole: its direct files, then each subdirectory as a count line, in
+    the order of `_rank` (focus, code, tests, name), while they fit in `room` characters."""
+    base = Path(top)  # a directory that only holds one subdirectory (`src/pkg/`) is looked through
+    while True:
+        n = len(base.parts) + 1
+        direct = [f for f in files if len(f.parts) == n]
+        subs: dict[str, list[Path]] = {}
+        for f in files:
+            if len(f.parts) > n:
+                subs.setdefault(f.parts[n - 1], []).append(f)
+        if direct or len(subs) != 1:
+            break
+        base = base / next(iter(subs))
+    wanted = [_file_line(repo, f, sizes[f]) for f in direct]
+    ranked = sorted(subs.items(), key=lambda g: (_rank(g[0], g[1], focus), -_code_count(g[1]), g[0]))
+    wanted += [f"{base}/{sub}/ ({len(group)} files)" for sub, group in ranked]
+    kept: list[str] = []
+    for line in wanted:
+        if len(line) + 1 <= room:  # a line too long for what is left is passed over
+            room -= len(line) + 1
+            kept.append(line)
+    return kept
 
 
 def build_repo_map(
