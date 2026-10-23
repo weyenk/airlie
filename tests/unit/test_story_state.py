@@ -377,3 +377,40 @@ def test_a_state_saved_with_the_retired_mutation_gate_keys_still_opens(tmp_path:
     assert again.stage == "intake"
     again.save()
     assert not set(retired) & set(json.loads((tmp_path / card.key / "state.json").read_text()))
+
+
+def test_a_story_keeps_the_person_comments_it_has_answered_and_a_state_file_from_before_it_loads_empty(
+    tmp_path: Path,
+) -> None:
+    """The per-story last-handled marker: the comment ids/times already answered, persisted so a comment is
+    relayed exactly once across ticks. A state.json written before the marker existed still loads (empty)."""
+    card = text_card("Let users upload an avatar")
+    where = tmp_path / card.key
+    st = StoryState.open(where, card, tmp_path / "repo")
+    assert st.handled_comments == []  # a fresh story has answered nothing yet
+    st.handled_comments = ["1", "2"]  # the ids of the person comments it has answered
+    st.save()
+    again = StoryState.open(where, card, tmp_path / "repo")
+    assert again.handled_comments == ["1", "2"]  # it survives a restart, so the next tick skips them
+    old = json.loads((where / "state.json").read_text())
+    del old["handled_comments"]  # a state file as an earlier airlie wrote it, before the marker existed
+    (where / "state.json").write_text(json.dumps(old))
+    assert StoryState.open(where, card, tmp_path / "repo").handled_comments == []
+
+
+def test_the_last_handled_marker_is_a_list_of_the_comment_ids_or_times_already_answered(
+    tmp_path: Path,
+) -> None:
+    """The marker is keyed by the comment's id/time (a string), so a comment is answered exactly once across
+    ticks: the relay appends each handled comment and saves, and a later tick sees it already there."""
+    card = text_card("Let users upload an avatar")
+    where = tmp_path / card.key
+    st = StoryState.open(where, card, tmp_path / "repo")
+    assert st.handled_comments == []
+    st.handled_comments.append("1")  # the first comment, by its id
+    st.save()
+    assert json.loads((where / "state.json").read_text())["handled_comments"] == ["1"]
+    st.handled_comments.append("2")  # a second comment, answered on a later tick
+    st.save()
+    again = StoryState.open(where, card, tmp_path / "repo")
+    assert again.handled_comments == ["1", "2"]  # both are remembered, so neither is relayed again
