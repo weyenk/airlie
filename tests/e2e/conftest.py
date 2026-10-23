@@ -282,6 +282,69 @@ def _seed_story(state: Path) -> None:
     )
 
 
+TOPO_DONE = "20261023-100000-done"
+"""A finished studio run with its hand-offs: the coder fixed, reviewed twice, the docs subtask, synthesis."""
+TOPO_LIVE = "20261023-110000-live"
+"""A studio run still going: the coder on its second step, the docs subtask waiting. A test appends to it."""
+
+
+def _topology_events(run: str, *, done: bool) -> list[dict[str, Any]]:
+    def e(kind: str, ts: float, **f: Any) -> dict[str, Any]:
+        return {"ts": ts, "run_id": run, "kind": kind, **f}
+
+    def step(team: str, n: int, ts: float, tool: str) -> dict[str, Any]:
+        return e(
+            "step",
+            ts,
+            team_id=team,
+            step=n,
+            tool=tool,
+            ok=True,
+            prompt_tokens=1200,
+            completion_tokens=150,
+            model="base",
+            role="coder" if team == "fix" else "docs",
+        )
+
+    def hand(src: str, dst: str, what: str, text: str, ts: float) -> dict[str, Any]:
+        return e("handoff", ts, src=src, dst=dst, what=what, text=text)
+
+    rows = [
+        e("run_start", 1792750000.0, goal="Fix the build", k=1, repo="/r/airlie", orchestrator="studio"),
+        e("plan", 1792750001.0, subtasks=["fix", "note"], roles=["coder", "docs"]),
+        hand("chief", "fix", "brief", "make the check pass", 1792750002.0),
+        e("subtask_start", 1792750002.0, subtask="fix", role="coder", skill="python", writes=True),
+        step("fix", 1, 1792750003.0, "read_file"),
+        step("fix", 2, 1792750004.0, "write_file"),
+    ]
+    if not done:
+        return rows
+    return rows + [
+        hand("fix", "reviewer", "diff", "1 file changed: PASS", 1792750005.0),
+        e("review", 1792750006.0, subtask="fix", verdict="approve", findings=0, blocking=0, round=0),
+        hand("reviewer", "fix", "findings", "approve: no findings", 1792750006.0),
+        e("subtask_done", 1792750007.0, subtask="fix", role="coder", ok=True, stop_reason="done", steps=2),
+        hand("fix", "chief", "result", "wrote PASS; the check passes", 1792750007.0),
+        hand("chief", "note", "brief", "describe the repo", 1792750008.0),
+        e("subtask_start", 1792750008.0, subtask="note", role="docs", writes=False),
+        step("note", 1, 1792750009.0, "read_file"),
+        e("subtask_done", 1792750010.0, subtask="note", role="docs", ok=True, stop_reason="done", steps=1),
+        hand("note", "chief", "result", "the repo holds a check", 1792750010.0),
+        e("synthesis", 1792750011.0, chars=8, open_questions=[]),
+        hand("chief", "synthesis", "answer", "all done", 1792750011.0),
+        e("run_done", 1792750012.0, ok=True, wall_ms=12000.0, subtasks=2, tests=True),
+    ]
+
+
+def _seed_topology(state: Path) -> None:
+    for run, done in ((TOPO_DONE, True), (TOPO_LIVE, False)):
+        d = state / "runs" / run
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "events.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in _topology_events(run, done=done))
+        )
+
+
 @pytest.fixture(scope="session")
 def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     """The server the read-only checks share: nothing may change its board."""
@@ -300,6 +363,7 @@ def _serve(root: Path) -> Iterator[Server]:
     state.mkdir(parents=True, exist_ok=True)
     _seed(state)
     _seed_story(state)
+    _seed_topology(state)
     upstream = Upstream()
     app = create_app(config, transport=httpx.MockTransport(upstream), api_key=KEY)
     port = _free_port()

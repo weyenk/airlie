@@ -1010,6 +1010,118 @@ a.jobrow:hover strong {
 .lg-wait {
   border: 1px dashed var(--ink2);
 }
+/* ---- topology: a run's agents as a live tree ---- */
+.topo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.topo-side {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.topo-main {
+  flex: 999 1 640px;
+  min-width: 0;
+}
+.topo-diagram {
+  min-height: 160px;
+}
+.topo-svg {
+  display: block;
+  overflow: visible;
+}
+.topo-seg {
+  fill: none;
+  stroke: var(--seg);
+  stroke-width: 2;
+}
+.topo-seg.on {
+  stroke: var(--seg-on);
+  stroke-width: 3.5;
+}
+.topo-node {
+  cursor: pointer;
+  outline: none;
+}
+.topo-node circle {
+  stroke: var(--node-edge);
+  stroke-width: 1;
+}
+.topo-node text {
+  fill: #0a1a2b;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+.topo-label {
+  font-weight: 600;
+}
+.topo-node.active circle {
+  stroke: #f4c6cf;
+  stroke-width: 5;
+  filter: drop-shadow(0 0 10px rgba(244, 198, 207, 0.6));
+}
+.topo-node.idle circle {
+  stroke-dasharray: 6 4;
+  stroke-width: 2;
+}
+.topo-node.waiting {
+  opacity: 0.55;
+}
+.topo-node.waiting circle {
+  stroke-dasharray: 4 4;
+}
+.topo-node.failed circle {
+  stroke: #e0b34e;
+  stroke-width: 4;
+}
+.topo-node.won circle {
+  stroke: #9ccb84;
+  stroke-width: 4;
+}
+.topo-node[aria-pressed="true"] circle,
+.topo-node:focus-visible circle {
+  stroke: var(--accent);
+  stroke-width: 4;
+}
+.topo-handoffs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.topo-handoffs li {
+  border-left: 3px solid var(--seg);
+  padding: 2px 0 2px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.topo-handoffs li > .row {
+  width: 100%;
+}
+.topo-handoffs li.on {
+  border-left-color: var(--seg-on);
+}
+.topo-text {
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.lg-line {
+  width: 28px;
+  height: 3px;
+  background: var(--seg-on);
+  display: inline-block;
+}
+.lg-stuck {
+  background: #e28f8f;
+}
 .facts {
   margin: 0;
   display: grid;

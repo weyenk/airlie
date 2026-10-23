@@ -20,7 +20,7 @@ from airlie.router import ChiefRouter, RouteDecision
 from airlie.supervisor.advice import SUPERVISOR
 from airlie.teams.worktree import commit_wip, head_sha, own_changes
 from airlie.topology.protocol import build_topology
-from airlie.topology.studio import StudioOrchestrator, check_plan
+from airlie.topology.studio import HANDOFF_CHARS, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
 from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
@@ -490,6 +490,68 @@ async def test_delegate_may_depend_on_a_finished_subtask_and_reviews_are_traced(
     assert [t.team_id for t in report.teams] == ["fix", "note", "more"] and report.final_answer == "all done"
     traced = list((report.run_dir.path / "trace" / "fix").glob("review-*.json"))
     assert len(traced) == 1 and json.loads(traced[0].read_text())["verdict"] == "approve"
+
+
+async def test_every_hand_off_is_logged_with_what_was_handed_over(tmp_path: Path) -> None:
+    """The topology page draws an edge per hand-off: the chief's brief to each specialist, a writer's diff to
+    the reviewer and its findings back, a finished subtask's result to the chief and to a subtask that
+    depends on it, and the chief's answer. Each says what went across, cut to fit the page."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "chief": [PLAN, SYNTH],
+            "coder": [
+                WRITE_PASS,
+                RUN,
+                FakeReply(text="wrote PASS"),
+                WRITE_PASS,
+                FakeReply(text="fixed PASS"),
+            ],
+            "docs": [FakeReply(text="the repo holds a check")],
+            "reviewer": [CHANGES, APPROVE],
+        }
+    )
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "fix the build", repo=repo, test_cmd="./check.sh"
+    )
+    ev = events(report)
+    hands = [(e["src"], e["dst"], e["what"], e["text"]) for e in ev if e["kind"] == "handoff"]
+    assert hands == [
+        ("chief", "fix", "brief", "make the check pass"),
+        ("fix", "reviewer", "diff", "1 file changed: PASS"),
+        ("reviewer", "fix", "findings", "request_changes: PASS:1 wrong content"),
+        ("fix", "reviewer", "diff", "1 file changed: PASS"),
+        ("reviewer", "fix", "findings", "approve: no findings"),
+        ("fix", "chief", "result", "fixed PASS"),
+        ("chief", "note", "brief", "describe the repo"),
+        ("fix", "note", "result", "fixed PASS"),
+        ("note", "chief", "result", "the repo holds a check"),
+        ("chief", "synthesis", "answer", "all done"),
+    ]
+    kinds = [e["kind"] for e in ev]
+    # each brief goes out just before its subtask starts, each result just after it is done
+    assert kinds.index("handoff") == kinds.index("subtask_start") - 1
+    to_reviewer = [e for e in ev if e["kind"] == "handoff" and e["dst"] == "reviewer"]
+    assert {e["role"] for e in to_reviewer} == {"reviewer"}
+
+
+async def test_a_long_hand_off_is_cut_in_the_log(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    long_brief = FakeReply(
+        text=json.dumps(
+            {
+                "type": "plan",
+                "assumptions": [],
+                "subtasks": [{"id": "note", "role": "docs", "brief": "x" * 5000}],
+            }
+        )
+    )
+    engine = FakeEngine({"chief": [long_brief, SYNTH], "docs": [DONE]})
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "fix the build", repo=repo, test_cmd="./check.sh"
+    )
+    brief = [e for e in events(report) if e["kind"] == "handoff"][0]
+    assert brief["what"] == "brief" and len(brief["text"]) == HANDOFF_CHARS
 
 
 # ---- fix pass after the whole-branch review ----
