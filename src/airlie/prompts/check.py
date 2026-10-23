@@ -8,7 +8,10 @@ reaches only its own role. Within one role, rules (role prompts included) are co
 with steering, never steering with a rule: steering exists to override a standing rule ("reading is switched
 off" against a prompt that says to read first). Two sources conflict on a subject when their stances differ
 and neither yields to the other. The check is deterministic text-matching on the hand-written tags and reads
-no config: `tests/unit/test_prompt_contradictions.py` runs it on the repository in the gate.
+no config: `tests/unit/test_prompt_contradictions.py` runs it on the repository in the gate, where a conflict
+accepted as it stands is an entry in that test's allowlist (role, subject, both sources, a reason), not a
+`yields_to`. `yields_to` records only runtime precedence, and `idle_yields()` finds an entry that decides
+nothing.
 
 Role prompts keep the flat `skills.library.split_frontmatter` (one `key: value` per line, `summary:`
 unchanged), so their tags are flat too: a `governs.<subject>: <value>` line per subject and `yields_to: a, b`.
@@ -86,23 +89,49 @@ def _sources(texts: Iterable[PromptText], role_prompts: Mapping[str, Path]) -> l
     return found
 
 
+def _roles(sources: Iterable[_Source]) -> list[str]:
+    return sorted({r for s in sources for r in s.roles} - {_ANY})
+
+
+def _disagreements(role: str, a: _Source, b: _Source) -> list[Conflict]:
+    """Where `a` and `b` give `role` different stances, ignoring `yields_to`: none when they are of two kinds
+    or one of them does not reach the role."""
+    if a.kind != b.kind or not (reaches(a.roles, role) and reaches(b.roles, role)):
+        return []
+    return [
+        Conflict(role, subject, a.name, a.governs[subject], b.name, b.governs[subject])
+        for subject in sorted(a.governs.keys() & b.governs.keys())
+        if a.governs[subject] != b.governs[subject]
+    ]
+
+
 def conflicts(texts: Iterable[PromptText], role_prompts: Mapping[str, Path]) -> list[Conflict]:
     """Every conflicting pair, once per role, sorted by (role, subject, a, b). `role_prompts` maps a role name
     to its prompt file. The roles are those a role prompt or a text's `roles` names; `any` reaches all."""
     sources = sorted(_sources(texts, role_prompts), key=lambda s: s.name)
     found: list[Conflict] = []
-    for role in sorted({r for s in sources for r in s.roles} - {_ANY}):
-        reaching = [s for s in sources if reaches(s.roles, role)]
-        for kind in _KINDS:
-            for a, b in combinations([s for s in reaching if s.kind == kind], 2):
-                if a.name in b.yields_to or b.name in a.yields_to:
-                    continue
-                for subject in sorted(a.governs.keys() & b.governs.keys()):
-                    if a.governs[subject] != b.governs[subject]:
-                        found.append(
-                            Conflict(role, subject, a.name, a.governs[subject], b.name, b.governs[subject])
-                        )
+    for role in _roles(sources):
+        for a, b in combinations(sources, 2):
+            if a.name not in b.yields_to and b.name not in a.yields_to:
+                found += _disagreements(role, a, b)
     return sorted(found, key=lambda c: (c.role, c.subject, c.a, c.b))
+
+
+def idle_yields(texts: Iterable[PromptText], role_prompts: Mapping[str, Path]) -> list[tuple[str, str]]:
+    """Each (source, yielded-to) pair, sorted, where the `yields_to` entry settles no disagreement: the two
+    never give one role different stances of one kind, or no source has that name. `yields_to` skips the
+    whole pair, so an idle entry would pass any subject a later tag adds to either side; it is for precedence
+    that decides a live disagreement, not for texts that never meet."""
+    sources = _sources(texts, role_prompts)
+    by_name = {s.name: s for s in sources}
+    roles = _roles(sources)
+    idle: list[tuple[str, str]] = []
+    for source in sources:
+        for name in source.yields_to:
+            other = by_name.get(name)
+            if other is None or not any(_disagreements(role, source, other) for role in roles):
+                idle.append((source.name, name))
+    return sorted(idle)
 
 
 def subjects(texts: Iterable[PromptText], role_prompts: Mapping[str, Path]) -> dict[str, list[str]]:

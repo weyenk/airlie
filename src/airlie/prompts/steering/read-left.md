@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester, coder]
 fields: [k]
 when: A read is served under the hold while reading is switched off; it is appended to that read's observation, after a blank line.
 governs:

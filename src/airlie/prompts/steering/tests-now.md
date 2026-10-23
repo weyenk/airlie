@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 fields: [n, total]
 when: A role with a write schedule reaches its tests deadline without a test write; said once.
 governs:

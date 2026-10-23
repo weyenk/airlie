@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from airlie.prompts import Kind, PromptError, PromptText
-from airlie.prompts.check import Conflict, conflicts, role_tags, subjects
+from airlie.prompts.check import Conflict, conflicts, idle_yields, role_tags, subjects
 from airlie.skills.library import split_frontmatter
 
 
@@ -85,6 +85,36 @@ def test_yielding_to_a_third_text_settles_nothing(tmp_path: Path) -> None:
     coder = _role_prompt(tmp_path, "coder", "governs.tests.location: named-file")
     rule = _text("x", {"tests.location": "new-file"}, yields_to=("y",))
     assert len(conflicts([rule], {"coder": coder})) == 1
+
+
+def test_a_yields_to_that_settles_a_disagreement_is_not_idle(tmp_path: Path) -> None:
+    coder = _role_prompt(tmp_path, "coder", "governs.tests.location: new-file", "yields_to: x")
+    rule = _text("x", {"tests.location": "named-file"})
+    assert idle_yields([rule], {"coder": coder}) == []
+
+
+def test_yields_to_texts_that_never_meet_is_idle() -> None:
+    a = _text("a", {"reading": "named-only"}, kind="steering", roles=("architect",), yields_to=("b",))
+    b = _text("b", {"reading": "stop"}, kind="steering", roles=("coder",))
+    assert idle_yields([a, b], {}) == [("a", "b")]
+
+
+def test_yields_to_a_text_that_agrees_is_idle() -> None:
+    a = _text("a", {"reading": "stop"}, yields_to=("b",))
+    b = _text("b", {"reading": "stop", "writing": "now"})
+    assert idle_yields([a, b], {}) == [("a", "b")]
+
+
+def test_yields_to_across_kinds_is_idle() -> None:
+    """Steering is never compared with a rule, so a steering text yielding to a rule settles nothing."""
+    a = _text("a", {"reading": "stop"}, kind="steering", yields_to=("b",))
+    b = _text("b", {"reading": "first"})
+    assert idle_yields([a, b], {}) == [("a", "b")]
+
+
+def test_yields_to_an_unknown_source_is_idle(tmp_path: Path) -> None:
+    coder = _role_prompt(tmp_path, "coder", "governs.reading: first", "yields_to: nowhere")
+    assert idle_yields([], {"coder": coder}) == [("role:coder", "nowhere")]
 
 
 def test_steering_never_conflicts_with_a_rule() -> None:

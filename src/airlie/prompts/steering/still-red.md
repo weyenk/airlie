@@ -1,10 +1,9 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 when: A role with green_before_done and run_tests answers while its last run_tests run failed; said once.
 governs:
   done.when: tests-pass
-yields_to: [checks-fix-before-code]
 why: |
   What a role (green_before_done) is told, once, when it answers with its last run_tests run failed.
 ---

@@ -9,7 +9,7 @@ governs.tests.match: new-phrase
 governs.brief.wording: exact
 governs.done.when: tests-pass
 governs.answer.form: summary
-yields_to: brief-layer-plan-tests-where, brief-layer-plan-tests-first, brief-layer-plan-edit-file
+yields_to: brief-layer-plan-tests-where
 ---
 # coder
 

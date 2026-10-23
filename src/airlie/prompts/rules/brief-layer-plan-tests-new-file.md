@@ -3,7 +3,6 @@ kind: rule
 roles: [tester, coder]
 governs:
   tests.location: new-file
-yields_to: [brief-layer-plan-tests-where]
 why: |
   Where the coder puts the layer's tests: the file(s) the layer names, else a new file for the feature
   (AIR-28, 2026-10-18: a brief naming one file and the rule asking for a NEW one held the coder in a

@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 fields: [n, total]
 when: A role with a write schedule, in a continuation (a fix round, a follow-up), reaches its one deadline without a write of any kind this round; said once.
 governs:

@@ -1,6 +1,6 @@
 ---
 kind: rule
-roles: [any]
+roles: [architect, coder, design, docs, product, research, security, tester, ux]
 governs:
   tools: none
   deliverable.files: fenced

@@ -1,11 +1,10 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 when: The final test gate fails after the subtask named by gate_follow_up finished; the gate's output follows it, once, before the gate runs again.
 governs:
   gate-failure.fix: code
   tests.acceptance: unchanged
-yields_to: [amend]
 why: |
   What the subtask named by execute_task's `gate_follow_up` is told when the final gate fails.
 ---

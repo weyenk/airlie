@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 fields: [label, width]
 when: A fork point starts a branch; its nudge opens with this, naming the branch and how many branches there are.
 governs:
