@@ -244,7 +244,9 @@ def _status_text(job_id: str, r: dict[str, Any]) -> str:
     result = r.get("result")
     blocked = result.get("blocked") if r.get("state") == "done" and isinstance(result, dict) else None
     state = f"stopped: {_one_line(str(blocked))}" if blocked else str(r.get("state"))
-    out = [f"{job_id}: {state}", *(_event_line(e) for e in r.get("events") or [])]
+    # a steer event counts a nudge the pipeline sent: not progress, and this text is read by a model
+    events = [e for e in r.get("events") or [] if e.get("kind") != "steer"]
+    out = [f"{job_id}: {state}", *(_event_line(e) for e in events)]
     if isinstance(result, dict) and r.get("kind") == "plan":
         out += ["", _plan_outcome(result)]
     elif result is not None:

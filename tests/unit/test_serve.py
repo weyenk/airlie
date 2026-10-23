@@ -15,6 +15,7 @@ import yaml
 from airlie.config import load_config
 from airlie.obs import RunDir
 from airlie.orchestrator import RunReport
+from airlie.prompts import text
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
 from tests.unit.serve_helpers import TestClient
@@ -424,8 +425,11 @@ def test_role_prompt_precedes_a_client_system_prompt(tmp_path: Path) -> None:
         assert c.post("/v1/chat/completions", json=body).status_code == 200
     sent = json.loads(up.requests[-1].content)["messages"]
     assert [m["role"] for m in sent] == ["system", "system", "user"]
-    assert sent[0]["content"].startswith("# coder") and "use the tools offered" in sent[0]["content"]
     assert sent[1]["content"].startswith("You are OpenCode")
+    # the role prompt, a blank line, the client-bridge rule: the rule's file is one sentence with no blank
+    # lines around it, so the separator is the server's
+    assert not text("client-bridge").startswith("\n")
+    assert sent[0]["content"] == "# coder\nUse write_file.\n\n" + text("client-bridge")
 
 
 class IdlessToolStream:

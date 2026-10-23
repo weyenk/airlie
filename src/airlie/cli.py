@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -53,6 +53,12 @@ supervisor_app = typer.Typer(
     "(docs/integrations/story.md).",
 )
 app.add_typer(supervisor_app, name="supervisor")
+prompts_app = typer.Typer(
+    no_args_is_help=True,
+    help="The prompt hub: the rules and steering airlie sends to models, as files "
+    "(docs/superpowers/specs/2026-10-22-prompt-hub-design.md).",
+)
+app.add_typer(prompts_app, name="prompts")
 board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
@@ -1393,6 +1399,61 @@ def supervisor_try(
     show("answer")
     show(json.dumps(dataclasses.asdict(triaged.answer), indent=2, ensure_ascii=False))
     show(f"seconds {triaged.seconds:.1f}  tokens {triaged.tokens}")
+
+
+@prompts_app.command("audit")
+def prompts_audit(
+    role: Annotated[
+        list[str] | None,
+        typer.Option("--role", help="a role to read; repeat for several (default: every role)"),
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Advisory: the reviewer model (Muse) reads each role's full instructions, its role prompt and every
+    rule and steering text that reaches it, and lists the ones that contradict, steering against rules
+    included. Writes prompts-audit-<UTC time>.md under the state directory's runs/, then prints its path and
+    each role's first line. It needs the engine, it is not deterministic, and it fails nothing: the exit code
+    is 0 unless the engine is unreachable (the deterministic check is the gate)."""
+    import asyncio
+
+    from airlie.prompts.audit import SEAT, audit
+
+    cfg = _load(config)
+    if SEAT not in cfg.roles:
+        err.print(f"[red]the audit is read by the {SEAT} role, which airlie.yaml does not define[/red]")
+        raise typer.Exit(1)
+    unknown = sorted(set(role or ()) - set(cfg.roles))
+    if unknown:
+        err.print(f"[red]unknown role {', '.join(map(escape, unknown))}; roles: {', '.join(cfg.roles)}[/red]")
+        raise typer.Exit(2)
+    engine = _http_engine(cfg, cfg.engine_for_model(cfg.roles[SEAT].model))
+    firsts: list[tuple[str, str]] = []
+
+    def first_line(name: str, reply: str) -> None:
+        firsts.append((name, reply.splitlines()[0]))
+
+    async def read() -> str | None:
+        try:
+            health = await engine.health()
+            if not health.ok:
+                err.print(
+                    f"[red]the engine is unreachable: {escape(health.detail)}; start it with task up[/red]",
+                    emoji=False,
+                )
+                return None
+            return await audit(cfg, engine, role, first_line)
+        finally:
+            await engine.stop()
+
+    report = asyncio.run(read())
+    if report is None:
+        raise typer.Exit(1)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    path = cfg.observability.state_dir.expanduser() / "runs" / f"prompts-audit-{stamp}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report + "\n", encoding="utf-8")
+    for line in [str(path), *(f"{name}: {first}" for name, first in firsts)]:
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 @board_app.command("export")

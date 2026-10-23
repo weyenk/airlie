@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from airlie.config import ControllerSpec, SummarizerSpec, load_config
+from airlie.config import AirlieConfig, ControllerSpec, SummarizerSpec, load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.lts import SharedMemoryBank
 from airlie.lts.controller import build_controller
@@ -138,8 +138,7 @@ async def test_orchestrator_wires_lts(tmp_path: Path) -> None:
     assert all(a["episode_reward"] is not None for a in adm)
 
 
-async def test_run_step_blueprint(tmp_path: Path) -> None:
-    """Spec 04 §3: run_step injects keys, generates, evaluates admission; execute_task-free entry point."""
+def blueprint_cfg(tmp_path: Path) -> AirlieConfig:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     for r in ("coder", "summarizer", "judge", "aggregator"):
@@ -155,7 +154,12 @@ async def test_run_step_blueprint(tmp_path: Path) -> None:
         "observability": {"state_dir": str(tmp_path / "state")},
     }
     (cfg_dir / "airlie.yaml").write_text(yaml.safe_dump(data))
-    cfg = load_config(cfg_dir / "airlie.yaml")
+    return load_config(cfg_dir / "airlie.yaml")
+
+
+async def test_run_step_blueprint(tmp_path: Path) -> None:
+    """Spec 04 §3: run_step injects keys, generates, evaluates admission; execute_task-free entry point."""
+    cfg = blueprint_cfg(tmp_path)
     engine = FakeEngine(
         {"coder": [FakeReply(text="Parsed the CSV into a DataFrame"), FakeReply(text="second")]}
     )
@@ -166,6 +170,17 @@ async def test_run_step_blueprint(tmp_path: Path) -> None:
     assert orch.evaluate_lts_admission("q", "summary", "output") is True
     await orch.run_step("team-2", "next", [])
     assert any("[Shared Memory Keys Available]" in m.content for m in engine.requests[1].messages)
+
+
+async def test_single_system_message_has_no_front_matter(tmp_path: Path) -> None:
+    """run_step sends the role prompt body without its front matter, as studio and review do."""
+    cfg = blueprint_cfg(tmp_path)
+    cfg.roles["coder"].prompt.write_text("---\nsummary: s\n---\n# coder\nbody\n")
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    orch = ParallelAgentTeamOrchestrator(cfg, engine, run_id="r4")
+    await orch.run_step("team-1", "parse the csv", [])
+    system = engine.requests[0].messages[0]
+    assert system.role == "system" and system.content == "# coder\nbody\n"
 
 
 # ---- background admission + relevance injection ----

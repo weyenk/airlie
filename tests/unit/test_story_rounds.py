@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
+from airlie.prompts import text as hub_text
 from airlie.story.model import Layer, StoryError
-from airlie.story.rounds import FIX_NUDGE, ROUND_NUDGE, UNFINISHED_NUDGE, plan_in_rounds, same_layers
+from airlie.story.rounds import plan_in_rounds, same_layers
 
 
 def layer(slug: str, scope: str = "a.py", ac: tuple[str, ...] = ("AC1",), title: str = "T") -> Layer:
@@ -58,8 +59,9 @@ async def run(script: Script, rounds: int = 4) -> str:
 async def test_a_round_that_changes_nothing_ends_the_rounds_on_the_plan_it_repeated() -> None:
     s = Script("a,b", "a,b,c", "a,b,c")
     assert await run(s) == "a,b,c"
-    assert s.nudges == [ROUND_NUDGE, ROUND_NUDGE]  # round 4 was never asked
-    assert [k for k, _ in s.events] == ["plan_round", "plan_round", "plan_round", "plan_done"]
+    assert s.nudges == [hub_text("plan-round"), hub_text("plan-round")]  # round 4 was never asked
+    kinds = [k for k, _ in s.events]
+    assert kinds == ["plan_round", "steer", "plan_round", "steer", "plan_round", "plan_done"]
     assert s.events[-1][1] == {"reason": "converged", "rounds": 3}
     assert s.events[0][1] == {"round": 1, "layers": ["a", "b"]}
 
@@ -86,14 +88,14 @@ async def test_an_unusable_later_plan_ends_the_rounds_on_the_plan_before_it() ->
     s = Script("a,b", "garbage")
     assert await run(s) == "a,b"
     kinds = [k for k, _ in s.events]
-    assert kinds == ["plan_round", "plan_round_unusable", "plan_done"]
+    assert kinds == ["plan_round", "steer", "plan_round_unusable", "plan_done"]
     assert s.events[-1][1] == {"reason": "malformed", "rounds": 1}
 
 
 async def test_an_unusable_first_plan_goes_back_with_its_reason_in_the_same_conversation() -> None:
     s = Script("garbage", "a,b", "a,b")
     assert await run(s) == "a,b"
-    assert s.nudges[0] == FIX_NUDGE.format(error="no JSON") and s.nudges[1] == ROUND_NUDGE
+    assert s.nudges[0] == hub_text("plan-fix", error="no JSON") and s.nudges[1] == hub_text("plan-round")
     assert [k for k, _ in s.events][0] == "plan_fix" and s.events[0][1]["attempt"] == 1
 
 
@@ -101,7 +103,7 @@ async def test_a_first_plan_that_stays_unusable_is_the_callers_story_error_after
     s = Script("garbage", "garbage", "garbage")
     with pytest.raises(StoryError, match="no JSON"):
         await run(s)
-    assert len(s.nudges) == 2 and [k for k, _ in s.events] == ["plan_fix", "plan_fix"]
+    assert len(s.nudges) == 2 and [k for k, _ in s.events] == ["plan_fix", "steer", "plan_fix", "steer"]
 
 
 async def test_a_plan_that_says_another_round_is_not_worth_it_ends_the_rounds_at_once() -> None:
@@ -164,7 +166,7 @@ class Unfinished(Script):
 async def test_a_first_round_with_no_answer_is_asked_for_its_plan_in_the_same_conversation() -> None:
     s = Unfinished("unfinished", "a,b|stop")
     assert await run(s) == "a,b|stop"
-    assert s.nudges == [UNFINISHED_NUDGE]
+    assert s.nudges == [hub_text("plan-unfinished")]
     fix = [f for k, f in s.events if k == "plan_fix"]
     assert fix == [{"attempt": 1, "error": "the architect did not finish (max_steps)"}]
 
@@ -173,13 +175,13 @@ async def test_a_first_round_that_never_answers_is_a_story_error_after_its_fixes
     s = Unfinished("unfinished", "unfinished", "unfinished")
     with pytest.raises(StoryError, match="did not finish"):
         await run(s)
-    assert s.nudges == [UNFINISHED_NUDGE, UNFINISHED_NUDGE]
+    assert s.nudges == [hub_text("plan-unfinished"), hub_text("plan-unfinished")]
 
 
 async def test_an_unfinished_and_an_unusable_first_round_share_the_fixes() -> None:
     s = Unfinished("unfinished", "garbage", "a|stop")
     assert await run(s) == "a|stop"
-    assert s.nudges == [UNFINISHED_NUDGE, FIX_NUDGE.format(error="no JSON")]
+    assert s.nudges == [hub_text("plan-unfinished"), hub_text("plan-fix", error="no JSON")]
 
 
 async def test_a_later_round_with_no_answer_ends_the_rounds_on_the_plan_before_it() -> None:
@@ -188,6 +190,50 @@ async def test_a_later_round_with_no_answer_ends_the_rounds_on_the_plan_before_i
     unusable = {"round": 2, "error": "the architect did not finish (max_steps)"}
     assert ("plan_round_unusable", unusable) in s.events
     assert s.events[-1][1] == {"reason": "malformed", "rounds": 1}
+
+
+def steers(s: Script) -> list[dict[str, Any]]:
+    return [f for k, f in s.events if k == "steer"]
+
+
+async def test_a_plan_fix_emits_a_steer_event() -> None:
+    """Each nudge the rounds send is a hub steering text and a `steer` event with its id, the role and the
+    round it goes back into (spec 2026-10-22-prompt-hub, "Steering events")."""
+    s = Script("garbage", "a,b", "a,b")
+    await run(s)
+    assert s.nudges[0] == hub_text("plan-fix", error="no JSON")
+    assert [k for k, _ in s.events][:3] == ["plan_fix", "steer", "plan_round"]
+    assert s.events[1][1] == {"id": "plan-fix", "role": "architect", "round": 1}
+
+
+async def test_each_later_round_is_a_plan_round_steer_event_with_its_round() -> None:
+    s = Script("a", "a,b", "a,b,c")
+    await run(s, rounds=3)
+    assert steers(s) == [
+        {"id": "plan-round", "role": "architect", "round": 2},
+        {"id": "plan-round", "role": "architect", "round": 3},
+    ]
+
+
+async def test_a_first_round_with_no_answer_is_a_plan_unfinished_steer_event() -> None:
+    s = Unfinished("unfinished", "garbage", "a|stop")
+    await run(s)
+    assert steers(s) == [
+        {"id": "plan-unfinished", "role": "architect", "round": 1},
+        {"id": "plan-fix", "role": "architect", "round": 1},
+    ]
+
+
+async def test_one_round_that_ends_on_its_own_verdict_sends_no_steering() -> None:
+    s = Script("a,b|stop")
+    await run(s)
+    assert steers(s) == []
+
+
+async def test_the_steer_events_name_the_role_that_plans() -> None:
+    s = Script("a", "a")
+    await plan_in_rounds(s.first, s.again, parse, same_layers, rounds=2, emit=s.emit, role="planner")
+    assert steers(s) == [{"id": "plan-round", "role": "planner", "round": 2}]
 
 
 def test_two_plans_are_the_same_when_they_have_the_same_layers_owning_the_same_criteria() -> None:

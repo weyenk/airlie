@@ -6,7 +6,13 @@ refused without running (`assertion_free_test`), as is a test module that does n
 only, behind `checks_for`: any other gate gets none, and the pipeline logs that they did not run.
 
 The test files are model output, read as data: parsed with `ast`, never imported here. The tests themselves
-run as the gate runs them (tools.shell.run_cmd: the agent environment, killed on a timeout)."""
+run as the gate runs them (tools.shell.run_cmd: the agent environment, killed on a timeout).
+
+What the tests' author is told on a retry, and the tester on a mend, is steering in the prompt hub
+(`checks-found`, `checks-fix-before-code`, `checks-fix-with-code`, `loose-match`, `amend`); `feedback_said`
+and `amend_feedback_said` return the ids with the text, and the pipeline, which sends it, emits a `steer`
+event per id. The labels of the findings (PASSES_BEFORE_CODE and the others) stay here, beside the checks
+that find them."""
 
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from airlie.prompts import text as hub_text
 from airlie.supervisor.advice import with_advice
 from airlie.teams.worktree import add_worktree, changed_files, find_file, read_blob, remove_worktree
 from airlie.tools.protocol import ToolContext
@@ -336,44 +343,45 @@ def checks_for(
     return PytestChecks(step, timeout_s=timeout_s, confinement=confinement) if step else None
 
 
-LOOSE_MATCH = (
-    "  its `match=` pattern is probably satisfied by an error that exists without the layer's code (an "
-    "unknown name is refused with a message that lists every valid name). Match a phrase only the new "
-    "message contains, as the brief gives it."
-)
-"""Said under a test that passes before the code and matches an error's text: the usual cause."""
+class _Said:
+    """Hub steering texts rendered for one message, with their ids recorded in the order they are rendered,
+    so the ids are exactly the texts the message holds."""
+
+    def __init__(self) -> None:
+        self.ids: list[str] = []
+
+    def __call__(self, id: str, /) -> str:
+        self.ids.append(id)
+        return hub_text(id)
 
 
-def feedback(findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None) -> str:
-    """What the tests' author is told on its retry: each finding and why, and what to do. `before_code` is
-    the tester's (the code is not written yet); else the coder's, which wrote tests and code together.
-    `advice` is the supervisor's: its section goes after the findings and before the rules, so the rules are
-    the last thing the role reads, whole, whatever the advice says. With none, the text is today's."""
-    listed: list[str] = []
+def feedback_said(
+    findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None
+) -> tuple[str, tuple[str, ...]]:
+    """What the tests' author is told on its retry, and the hub ids of the steering in it, in order: the
+    caller that sends it emits a `steer` event for each. Each finding and why, a `loose-match` hint under a
+    test that passes before the code and has a `match=` pattern, an existing test the layer changed as it was
+    on the base, then what to do. `before_code` is the tester's (`checks-fix-before-code`: the code is not
+    written yet); else the coder's, which wrote tests and code together (`checks-fix-with-code`). `advice`
+    is the supervisor's: its section goes after the findings and before the rules, so the rules are the last
+    thing the role reads, whole, whatever the advice says. With none, the text is today's."""
+    said = _Said()
+    listed: list[str] = [said("checks-found")]
     for f in findings:
         listed.append(f"- {f.test}: {f.why}")
         if f.kind == "passes_before_code" and "match=" in f.source:
-            listed.append(LOOSE_MATCH)
+            listed.append("  " + said("loose-match"))
         if f.kind == "existing_test_changed":
             listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
-    if before_code:
-        what = (
-            "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
-            "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
-            "message, no change) passes now, where nothing happens either: put that check in the same test "
-            "that triggers the behaviour, before the trigger, or drop it. Every test that was there before "
-            "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
-            "run_tests and check that your new tests are the only red, then stop."
-        )
-    else:
-        what = (
-            "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
-            "Run run_tests until your tests pass, then stop."
-        )
-    found = "\n".join(["airlie checked the tests, and these need fixing:", *listed])
-    if not advice:
-        return f"{found}\n{what}"
-    return f"{with_advice(found, advice)}\n\n{what}"
+    found = "\n".join(listed)
+    what = said("checks-fix-before-code" if before_code else "checks-fix-with-code")
+    told = f"{found}\n{what}" if not advice else f"{with_advice(found, advice)}\n\n{what}"
+    return told, tuple(said.ids)
+
+
+def feedback(findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None) -> str:
+    """The text of `feedback_said`, for a reader that does not send it (the supervisor's `told`)."""
+    return feedback_said(findings, before_code=before_code, advice=advice)[0]
 
 
 _EVIDENCE_SOURCE_CHARS = 1_500
@@ -395,27 +403,24 @@ def findings_text(found: Sequence[Finding]) -> str:
     return "\n\n".join(blocks)
 
 
-AMEND = (
-    "The coder has built the layer, and the whole gate now fails only in your tests, which the coder cannot "
-    "change. Check each failing test against the brief. If it is wrong in itself (how it sets up, unpacks or "
-    "reads its data, a name or a signature the brief does not fix), fix that mistake in the test and nothing "
-    "else: keep every check of what the layer must do, change no file but your tests, and do not touch the "
-    "code. airlie checks again that each of your tests still fails without the layer's code, and undoes a "
-    "change that does not. If your tests are right and the code is wrong, change nothing and say why. Run "
-    "run_tests, then stop."
-)
-"""What the tester is told when the gate fails only in its locked tests (AIR-9 layer 02, 2026-10-21: one of
-them unpacked one comment from a card that had two, and only the tester could change it)."""
 _ACCOUNT_CHARS = 3_000
 """How much of the coder's closing text the tester is shown."""
 
 
-def amend_feedback(failing: Sequence[str], account: str, review: Sequence[str] = ()) -> str:
-    """What the tester is told (AMEND): the failing tests, what the coder said when it stopped, and the
-    reviewer's blocking findings, if any."""
+def amend_feedback_said(
+    failing: Sequence[str], account: str, review: Sequence[str] = ()
+) -> tuple[str, tuple[str, ...]]:
+    """What the tester is told (the hub's `amend`): the failing tests, what the coder said when it stopped,
+    and the reviewer's blocking findings, if any; and the hub ids in it, for the sender's `steer` events."""
+    said = _Said()
     lines = ["Failing:", *(f"- {t}" for t in failing)]
     if account.strip():
         lines += ["", "What the coder said when it stopped:", account.strip()[:_ACCOUNT_CHARS]]
     if review:
         lines += ["", "The reviewer's blocking findings:", *(f"- {r}" for r in review)]
-    return "\n".join([AMEND, "", *lines])
+    return "\n".join([said("amend"), "", *lines]), tuple(said.ids)
+
+
+def amend_feedback(failing: Sequence[str], account: str, review: Sequence[str] = ()) -> str:
+    """The text of `amend_feedback_said`."""
+    return amend_feedback_said(failing, account, review)[0]

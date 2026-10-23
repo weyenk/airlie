@@ -1,3 +1,6 @@
+---
+governs.answer.form: numbered-list
+---
 # hypothesizer
 
 You are given a goal, the last change a branch made, and the test output that still fails. Produce exactly the

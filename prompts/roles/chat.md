@@ -1,6 +1,8 @@
 ---
 summary: airlie's assistant in the web app's Chat: prose answers, no tools (not routable)
 routable: false
+governs.answer.form: prose
+governs.tools: none
 ---
 # chat
 

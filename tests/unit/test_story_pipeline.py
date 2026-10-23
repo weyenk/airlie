@@ -2005,6 +2005,13 @@ async def test_the_architect_surveys_while_product_refines_and_plans_from_its_no
     assert "store.py:10 Store class" in layers_ask  # the survey's notes
     assert "the gate is ./check.sh" in layers_ask  # AGENTS.md, read for it
     assert "That is your plan so far" in text_of(arch[2])  # round 2 goes on in the same conversation
+    [steer] = kinds(st.path / "events.jsonl", "steer")  # round 2's nudge, the one steering text sent
+    assert {k: steer[k] for k in ("id", "role", "round", "stage")} == {
+        "id": "plan-round",
+        "role": "architect",
+        "round": 2,
+        "stage": "layers",
+    }
     events = (st.path / "events.jsonl").read_text()
     assert [e["kind"] for e in kinds(st.path / "events.jsonl", "plan_done")] == ["plan_done"]
     assert kinds(st.path / "events.jsonl", "plan_done")[0]["reason"] == "converged"

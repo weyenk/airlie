@@ -1,5 +1,7 @@
 ---
 summary: User flows, usability, journey friction, microcopy, interaction patterns and layout choices
+governs.answer.form: critique
+governs.web.content: untrusted
 ---
 # ux
 

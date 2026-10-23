@@ -17,6 +17,7 @@ import yaml
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.orchestrator import ParallelAgentTeamOrchestrator
+from airlie.prompts import text
 from airlie.teams.protocol import TeamResult
 from airlie.topology.fork import ForkOrchestrator
 from airlie.topology.protocol import build_topology
@@ -230,6 +231,65 @@ async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_pat
     assert "read_file" in nudge and "requires: path" in nudge
     fp = next(e for e in events(report) if e["kind"] == "fork_point")
     assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "read_file"
+
+
+def branch_steers(report):  # type: ignore[no-untyped-def]
+    """The `steer` events that name a fork branch nudge's hub text (ids `branch-*`), as (id, team_id, role).
+    The roles' team loop emits `steer` on the same stream for its own nudges; those are not counted here."""
+    return [
+        (e["id"], e["team_id"], e["role"])
+        for e in events(report)
+        if e["kind"] == "steer" and e["id"].startswith("branch-")
+    ]
+
+
+async def test_a_branch_nudge_with_a_hypothesis_is_a_steer_event_per_hub_sentence(tmp_path: Path) -> None:
+    """Every steering text sent is a `steer` event (prompt hub spec): a branch with a hypothesis and no
+    repeated call is sent branch-start and branch-finish, the hypothesis line being framing, not steering."""
+    engine = FakeEngine(
+        {
+            "judge": [FakeReply(text="1. the note is the wrong file\n2. PASS is missing")],
+            "coder": [WRITE_NOTE, RUN, RUN, WRITE_PASS, RUN, RUN, FakeReply(text="fixed it"), RUN, RUN, RUN],
+        }
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path, diversify="hypotheses"), engine, run_id="f10")
+    report = await orch.execute_task(
+        "make check.sh pass", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh"
+    )
+    assert branch_steers(report) == [
+        ("branch-start", "r1-1", "coder"),
+        ("branch-finish", "r1-1", "coder"),
+        ("branch-start", "r1-2", "coder"),
+        ("branch-finish", "r1-2", "coder"),
+    ]
+    sent = [r.messages[-1].content for r in engine.requests if "You are now branch" in r.messages[-1].content]
+    [first] = [n for n in sent if n.startswith(text("branch-start", label="r1-1", width=2))]
+    assert "Pursue this hypothesis: the note is the wrong file" in first and first.endswith(
+        text("branch-finish")
+    )
+
+
+async def test_a_branch_nudge_naming_a_repeated_call_without_a_hypothesis_is_four_steer_events(
+    tmp_path: Path,
+) -> None:
+    """A fork from a repeated call, with branches told apart by temperature alone: each is sent branch-start,
+    branch-stalled, branch-different and branch-finish, in the order they sit in its nudge."""
+    bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
+    engine = FakeEngine(
+        {"coder": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
+    )
+    orch = ForkOrchestrator(cfg_for(tmp_path, max_rounds=1), engine, run_id="f11")
+    orch.cfg.tools.builtin = ["write_file", "read_file", "run_tests"]
+    report = await orch.execute_task("goal", repo=repo_with_marker_tests(tmp_path), test_cmd="./check.sh")
+    ids = ("branch-start", "branch-stalled", "branch-different", "branch-finish")
+    assert branch_steers(report) == [(i, b, "coder") for b in ("r1-1", "r1-2") for i in ids]
+    sent = [r.messages[-1].content for r in engine.requests if "You are now branch" in r.messages[-1].content]
+    rep = next(e for e in events(report) if e["kind"] == "fork_point")["repeated"]
+    stalled = text("branch-stalled", name=rep["name"], args=rep["arguments"], out=rep["output"])
+    for label in ("r1-1", "r1-2"):
+        [nudge] = [n for n in sent if n.startswith(text("branch-start", label=label, width=2))]
+        assert stalled in nudge and text("branch-different") in nudge
+        assert nudge.endswith(text("branch-finish"))
 
 
 async def test_a_child_that_quits_without_passing_is_forked_again_not_accepted(tmp_path: Path) -> None:

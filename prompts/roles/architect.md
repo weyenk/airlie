@@ -1,5 +1,14 @@
 ---
 summary: Plan multi-step changes: migrations, system design, ADRs, mapping large codebases
+governs.reading: first
+governs.answer.form: plan
+governs.plan.form: sections
+governs.repo.edit: read-only
+governs.layers.new-name: below-use
+governs.layers.size: small
+governs.tests.fail-first: required
+governs.layers.brief: no-diff
+yields_to: brief-survey-task, brief-layers-rounds
 ---
 # architect
 

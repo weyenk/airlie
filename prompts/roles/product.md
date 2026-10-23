@@ -1,5 +1,12 @@
 ---
 summary: Write user stories, acceptance criteria and PRDs; prioritise features, scope and MVP
+governs.reading: first
+governs.story.size: thin-slice
+governs.criteria.form: gwt-or-bullets
+governs.criteria.names: what-differs
+governs.criteria.refusal: new-phrase
+governs.answer.form: spec
+yields_to: brief-refine-criteria
 ---
 # product
 

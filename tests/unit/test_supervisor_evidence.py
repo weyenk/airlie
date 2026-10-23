@@ -103,6 +103,21 @@ def test_layer_events_keep_only_this_layers_lines(tmp_path: Path) -> None:
     assert '"b"' in layer_events(ev, "02") and '"a"' not in layer_events(ev, "02")
 
 
+def test_layer_events_leave_out_steer_events(tmp_path: Path) -> None:
+    """A `steer` event counts a hub text the pipeline sent (prompt hub, 2026-10-22); it is not evidence, and
+    Muse reads the layer's events as it read them before those events existed."""
+    ev = tmp_path / "events.jsonl"
+    ev.write_text(
+        '{"kind":"test_checks_retry","layer":"01","findings":1}\n'
+        '{"kind":"steer","id":"checks-found","role":"tester","layer":"01"}\n'
+        '{"kind":"locked_tests_fail","layer":"01","tests":["t::a"]}\n'
+    )
+    assert layer_events(ev, "01") == (
+        '{"kind":"test_checks_retry","layer":"01","findings":1}\n'
+        '{"kind":"locked_tests_fail","layer":"01","tests":["t::a"]}'
+    )
+
+
 def test_layer_events_are_cut_keeping_the_end(tmp_path: Path) -> None:
     ev = tmp_path / "events.jsonl"
     ev.write_text("".join(f'{{"kind":"k{n}","layer":"01"}}\n' for n in range(100)))
