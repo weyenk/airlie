@@ -1013,10 +1013,10 @@ LOCKED_BASE = "class FakeBoard:\n    def get(self):\n        return 1\n\n\ndef t
 LOCKED_TESTER = LOCKED_BASE + "\n\ndef test_new():\n    assert FakeBoard().get() == 1\n"
 
 
-def repo_with_a_test_file(tmp_path: Path) -> Path:
+def repo_with_a_test_file(tmp_path: Path, base: str = LOCKED_BASE) -> Path:
     repo = repo_with_marker_tests(tmp_path)
     (repo / "tests").mkdir()
-    (repo / "tests" / "test_p.py").write_text(LOCKED_BASE)
+    (repo / "tests" / "test_p.py").write_text(base)
     env = ["-c", "user.name=t", "-c", "user.email=t@t"]
     subprocess.run(["git", *env, "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", *env, "commit", "-q", "-m", "tests"], cwd=repo, check=True)
@@ -1093,6 +1093,79 @@ async def test_a_shell_change_to_a_fake_survives_the_gate_and_one_to_a_test_is_p
         assert now == edited and restored == []
     else:
         assert now == LOCKED_TESTER and restored == [["tests/test_p.py"]]
+
+
+AIR9_BASE = (
+    "class FakeBoard:\n    def comment(self, key, text):\n        self.said = (key, text)\n\n\n"
+    "def test_old():\n    assert 1\n"
+)
+AIR9_TESTER = AIR9_BASE + "\n\ndef test_new():\n    FakeBoard().comment('AIR-9', 'hi', role='coder')\n"
+
+
+async def test_the_coder_edits_a_fake_beside_the_testers_test_but_not_the_test(tmp_path: Path) -> None:
+    """AIR-9 layer 05 (2026-10-22) on the real tool path: the coder's edit_file adds a parameter to the fake
+    in the file the tester added `test_new` to, and is kept after the gate; its edit inside `test_new` is
+    refused and leaves the file as it was."""
+    repo = repo_with_a_test_file(tmp_path, AIR9_BASE)
+    write_tester = FakeReply(
+        tool_calls=[
+            ToolCall("n", "write_file", json.dumps({"path": "tests/test_p.py", "content": AIR9_TESTER}))
+        ]
+    )
+    fixed_fake = AIR9_TESTER.replace(
+        "def comment(self, key, text):", "def comment(self, key, text, role=None):"
+    )
+
+    def edit(call_id: str, old: str, new: str) -> FakeReply:
+        args = {"path": "tests/test_p.py", "old": old, "new": new}
+        return FakeReply(tool_calls=[ToolCall(call_id, "edit_file", json.dumps(args))])
+
+    fix_the_fake = edit(
+        "fix-fake", "def comment(self, key, text):", "def comment(self, key, text, role=None):"
+    )
+    weaken_the_test = edit("weaken-test", "FakeBoard().comment('AIR-9', 'hi', role='coder')", "pass")
+    engine = FakeEngine(
+        {
+            "qa": [write_tester, DONE],
+            "coder": [fix_the_fake, weaken_the_test, WRITE_PASS, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    tools = {"builtin": ["read_file", "write_file", "edit_file", "list_dir", "run_tests"]}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"tools": tools}), engine, router=ChiefRouter())
+    seen: dict[str, str] = {}
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    async def before_gate() -> bool:
+        assert orch.worktree is not None
+        seen["before_gate"] = (orch.worktree / "tests" / "test_p.py").read_text()
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=before_gate,
+    )
+    assert report.tests == {"studio": True}
+    results = {
+        m.tool_call_id: m.content
+        for r in engine.requests
+        if r.role == "coder"
+        for m in r.messages
+        if m.role == "tool"
+    }
+    assert not results["fix-fake"].startswith("error")
+    assert "touches test_new in tests/test_p.py" in results["weaken-test"]
+    assert seen["before_gate"] == fixed_fake  # the refused edit left the file as the fake's fix left it
+    assert orch.worktree is not None and (orch.worktree / "tests" / "test_p.py").read_text() == fixed_fake
+    assert [e["paths"] for e in events(report) if e["kind"] == "locked_restored"] == []
 
 
 async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_path: Path) -> None:
