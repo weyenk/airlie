@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -118,7 +119,10 @@ class Reviewer:
         *,
         diff_chars: int = 40000,
         files_chars: int = 20000,
+        on_steer: Callable[[str], None] | None = None,
     ) -> Review:
+        """The reviewer's verdict on a diff. `on_steer` is told each hub steering text the lookup loop sends
+        (`generate_with_tools`), for a caller that records `steer` events."""
         user = review_message(brief, diff, test_tail, files, diff_chars=diff_chars, files_chars=files_chars)
         req = GenRequest(
             role=self.role_name,
@@ -130,7 +134,9 @@ class Reviewer:
             max_tokens=self.role.max_tokens,
             thinking=self.role.thinking,
         )
-        res = await generate_with_tools(self.engine, req, self.tools, self.role.max_steps or DEFAULT_STEPS)
+        res = await generate_with_tools(
+            self.engine, req, self.tools, self.role.max_steps or DEFAULT_STEPS, on_steer=on_steer
+        )
         if res.finish_reason == "length" and not res.text.strip():  # no verdict because max_tokens ended it
             raise EngineError(cut_off_text(self.role_name, self.role, thinking=bool(res.reasoning.strip())))
         return parse_review(res.text)

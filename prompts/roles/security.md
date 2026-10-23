@@ -1,5 +1,8 @@
 ---
 summary: Threat model, secure review
+governs.reading: first
+governs.repo.edit: read-only
+governs.answer.form: findings
 ---
 # security
 

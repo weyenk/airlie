@@ -97,6 +97,47 @@ export async function request(path, { method = "GET", body, key, signal } = {}) 
   return r.json();
 }
 
+/** Upload one file as a Chat attachment: the raw bytes to `/v1/airlie/uploads?name=...`, with `onProgress(0..1)`
+ * as it goes (XHR: fetch reports no upload progress). Resolves with {id, name, kind, mime, size}; `signal`
+ * aborts it (an AbortError). */
+export function upload(file, { onProgress, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/v1/airlie/uploads?name=${encodeURIComponent(file.name || "file")}`);
+    xhr.withCredentials = true;
+    for (const [k, v] of Object.entries(headers(undefined, false))) xhr.setRequestHeader(k, v);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (ev) => ev.lengthComputable && onProgress?.(ev.loaded / ev.total);
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        const e = new AuthError();
+        onAuthError(e);
+        return reject(e);
+      }
+      let body = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        /* not JSON */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+      const d = body?.detail ?? body?.error;
+      reject(new ApiError(xhr.status, typeof d === "string" ? d : xhr.responseText || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "the upload did not reach airlie"));
+    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
+}
+
+/** An object URL for a stored attachment (a picture after a reload); the caller revokes it. */
+export async function uploadUrl(id) {
+  const r = await fetch(`/v1/airlie/uploads/${encodeURIComponent(id)}`, { headers: headers(), credentials: "same-origin" });
+  if (!r.ok) throw new ApiError(r.status, await detailOf(r));
+  return URL.createObjectURL(await r.blob());
+}
+
 /** The metrics tab's summary: {generation_tps, prefill_tps, stories, fix_rounds_per_layer, by}. */
 export async function metricsSummary({ from, to, slice }) {
   const q = new URLSearchParams();

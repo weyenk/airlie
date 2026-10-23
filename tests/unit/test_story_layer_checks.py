@@ -10,13 +10,16 @@ from pathlib import Path
 
 import pytest
 
+from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import (
-    LOOSE_MATCH,
     Finding,
     PytestChecks,
+    amend_feedback,
+    amend_feedback_said,
     changed_tests,
     checks_for,
     feedback,
+    feedback_said,
     findings_text,
     is_testers_test,
     pytest_runner,
@@ -411,7 +414,7 @@ def test_with_no_advice_feedback_is_exactly_todays_text(
     for f in found:
         listed.append(f"- {f.test}: {f.why}")
         if f.kind == "passes_before_code":
-            listed.append(LOOSE_MATCH)
+            listed.append("  " + hub_text("loose-match"))
     todays = "\n".join([TODAYS_HEADER, *listed, what])
     assert feedback(found, before_code=before_code, advice=advice) == todays
 
@@ -423,6 +426,38 @@ def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> N
         [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
     )
     assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text
+
+
+LOOSE = Finding(
+    "passes_before_code", "t::a", "it passes before the code", 'with pytest.raises(E, match="x"): ...'
+)
+NONE_IN_IT = Finding("assertion_free_test", "t::b", "it has no assert", "")
+
+
+@pytest.mark.parametrize("advice", [None, "Read the fixtures first."])
+def test_feedback_said_is_the_text_and_the_hub_ids_in_it_in_order(advice: str | None) -> None:
+    """The pipeline emits a `steer` event per id when it sends the text, so the ids are exactly the hub texts
+    in it, a loose `match=` hint once per finding that has one."""
+    tester = feedback_said([LOOSE, NONE_IN_IT, LOOSE], advice=advice)
+    assert tester == (
+        feedback([LOOSE, NONE_IN_IT, LOOSE], advice=advice),
+        ("checks-found", "loose-match", "loose-match", "checks-fix-before-code"),
+    )
+    coder = feedback_said([NONE_IN_IT], before_code=False, advice=advice)
+    assert coder == (
+        feedback([NONE_IN_IT], before_code=False, advice=advice),
+        ("checks-found", "checks-fix-with-code"),
+    )
+    assert tester[0].startswith(hub_text("checks-found") + "\n- t::a: ")
+    assert tester[0].endswith("\n" + hub_text("checks-fix-before-code"))
+    assert coder[0].endswith("\n" + hub_text("checks-fix-with-code"))
+
+
+def test_amend_feedback_said_is_the_text_and_the_amend_id() -> None:
+    failing = ["tests/test_a.py::test_x"]
+    said = amend_feedback_said(failing, "I built it.", ("the empty file passes",))
+    assert said == (amend_feedback(failing, "I built it.", ("the empty file passes",)), ("amend",))
+    assert said[0].startswith(hub_text("amend") + "\n\nFailing:\n- tests/test_a.py::test_x")
 
 
 async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:

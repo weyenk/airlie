@@ -11,7 +11,8 @@ import pytest
 from airlie.config import RoleSpec, Sampling, load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.engine.types import GenRequest, Message
-from airlie.tools.loop import NO_MORE_TOOLS, generate_with_tools
+from airlie.prompts import text
+from airlie.tools.loop import generate_with_tools
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.registry import ToolRegistry
 from airlie.topology.review import Reviewer
@@ -102,10 +103,27 @@ async def test_after_its_calls_are_used_it_is_asked_for_the_answer_with_no_tools
     res = await generate_with_tools(engine, request(), registry(tool, tmp_path), max_steps=2)
     assert res.text == "best I found" and tool.asked == ["a", "b"]
     last = engine.requests[-1]
-    assert (
-        last.tools is None and last.messages[-1].role == "user" and last.messages[-1].content == NO_MORE_TOOLS
-    )
+    assert last.tools is None and last.messages[-1].role == "user"
+    assert last.messages[-1].content == text("no-more-tools")
     assert len(engine.requests) == 3
+
+
+async def test_on_steer_hears_no_more_tools_when_the_calls_run_out(tmp_path: Path) -> None:
+    tool = Lookup()
+    steered: list[str] = []
+    engine = FakeEngine({"chief": [search("a", "1"), search("b", "2"), FakeReply(text="best I found")]})
+    await generate_with_tools(
+        engine, request(), registry(tool, tmp_path), max_steps=2, on_steer=steered.append
+    )
+    assert steered == ["no-more-tools"]
+
+
+async def test_on_steer_hears_nothing_when_the_role_answers_in_time(tmp_path: Path) -> None:
+    tool = Lookup()
+    steered: list[str] = []
+    engine = FakeEngine({"chief": [search("a"), FakeReply(text="the answer")]})
+    await generate_with_tools(engine, request(), registry(tool, tmp_path), on_steer=steered.append)
+    assert steered == []
 
 
 async def test_an_unknown_tool_is_an_observation_and_the_loop_goes_on(tmp_path: Path) -> None:
@@ -125,6 +143,18 @@ async def test_the_reviewer_may_look_something_up_and_its_verdict_is_still_the_j
         "brief", "diff", "tests", {}
     )
     assert review.verdict == "approve" and tool.asked == ["does flag --x exist"]
+
+
+async def test_the_reviewer_passes_on_steer_to_its_lookup_loop(tmp_path: Path) -> None:
+    tool = Lookup()
+    steered: list[str] = []
+    verdict = '{"verdict": "approve", "findings": []}'
+    engine = FakeEngine({"reviewer": [search("one"), FakeReply(text=verdict)]})
+    role = RoleSpec(prompt=ROOT / "prompts/roles/reviewer.md", model="reviewer", max_steps=1)
+    review = await Reviewer(engine, "reviewer", role, registry(tool, tmp_path)).review(
+        "brief", "diff", "tests", {}, on_steer=steered.append
+    )
+    assert review.verdict == "approve" and steered == ["no-more-tools"]
 
 
 async def test_a_reviewer_with_no_tools_makes_the_one_call_it_always_did() -> None:

@@ -145,6 +145,7 @@ roles:
   # A thinking role's max_tokens caps its thinking AND its answer, so config load refuses max_tokens <= thinking_budget
   # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
   chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
+  chat:         { prompt: prompts/roles/chat.md, skills: skills/chat, model: generalist, tools: [], vision: true, max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }   # the web app's Chat (AIR-36): prose, no tools (the passthrough runs none); skills/chat are its slash commands
   architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, last_turn_thinking: false, nudge_stuck: true, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
   tester:       { prompt: prompts/roles/tester.md, model: generalist, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], max_context: 65536, max_tokens: 16384, thinking: true, thinking_budget: 4096, last_turn_thinking: false, nudge_stuck: true, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }   # lever 2 (2026-10-19): writes a layer's acceptance tests before the coder; thinking on, since the test is the design
   product:      { prompt: prompts/roles/product.md, model: generalist, tools: [read_file, list_dir], max_tokens: 4096, thinking: false, max_steps: 8, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
@@ -174,6 +175,17 @@ mcp: {}                            # name: { command, args, env } — exposed to
 web:
   search: { kind: searxng, url: http://127.0.0.1:8888 }   # web_search backend; `task doctor` checks it
   fetch_timeout_s: 30
+
+# ---- Chat attachments (design 2026-10-22-chat-attachments) -------------------------------------------------------
+# Files the + in the web app's Chat attaches, under observability.state_dir/uploads. The chat role (vision: true)
+# gets a picture scaled to max_image_px, a video as frames airlie samples (video_fps a second, at most
+# video_max_frames, video_frame_px each: vllm-mlx 0.5.0's batched engine refuses video parts), a text file or a PDF
+# as its text cut at max_text_kb, anything else as a line saying what it is. 100 MB of video is what the Cloudflare
+# quick tunnel lets through; Tailscale has no such limit.
+chat:
+  attachments: { max_image_mb: 20, max_video_mb: 100, max_file_mb: 25, max_text_kb: 200, max_per_message: 10,
+                 keep_days: 30, max_image_px: 1536, video_fps: 1.0, video_max_frames: 32, video_frame_px: 448,
+                 history_images: 4, history_videos: 1 }
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:

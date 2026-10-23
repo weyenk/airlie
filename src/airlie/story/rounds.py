@@ -3,21 +3,19 @@
 The architect used all 20 of its steps reading code, at ever slower steps (the prompt grows to 40-60k
 tokens), and then wrote its plan. Reading rarely changes a plan after the first few files. So it plans early
 (round 1: a few steps, then the plan), each later round reads a few more steps and writes the plan again, and
-the pipeline compares the two: the same plan ends it. The step cap still holds (rounds x steps)."""
+the pipeline compares the two: the same plan ends it. The step cap still holds (rounds x steps).
+
+What the architect is told between rounds is steering in the prompt hub (`plan-round`, `plan-fix`,
+`plan-unfinished`, their `when` and `why` there); each one sent is a `steer` event. REFINE_FIELD, the plan's
+own verdict, is an output format and stays here beside its reader."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from airlie.prompts import text as hub_text
 from airlie.story.model import Layer, StoryError
-
-ROUND_NUDGE = (
-    "That is your plan so far. Read only what you named in its `refine.check`, for a few more steps; then "
-    "reply with the whole plan again in the same JSON, with `refine` filled in again. If nothing you read "
-    "changes it, reply with the same plan and `worth_another_round: false`."
-)
-"""What the architect is told to start each later round."""
 
 REFINE_FIELD = (
     'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
@@ -26,21 +24,6 @@ REFINE_FIELD = (
     "specific to check."
 )
 """What the layers brief adds when the architect plans in rounds: the plan carries its own verdict."""
-
-FIX_NUDGE = (
-    "Your plan could not be used: {error}. Reply with the whole plan again, fixed, in the same JSON. You do "
-    "not need to read anything more."
-)
-"""What the architect is told when its first plan is refused: sent back in the same conversation, which has
-already read the code, instead of asked again from the start."""
-
-UNFINISHED_NUDGE = (
-    "You ran out of steps before you wrote your plan. Write the whole plan now, in the JSON the brief asks "
-    "for, from what you have already read. Read more only if you cannot plan without it."
-)
-"""What the architect is told when its first round ended with no answer: sent back in the same conversation,
-which has read the code, instead of asked again from the start (AIR-30, 2026-10-19: two fresh starts each
-read five files and stopped with no plan)."""
 
 Emit = Callable[..., None]
 
@@ -61,25 +44,27 @@ async def plan_in_rounds[T](
     emit: Emit,
     fixes: int = 2,
     signal: Callable[[str], Any] | None = None,
+    role: str = "architect",
 ) -> str:
     """The text of the plan the rounds end on. `first()` runs round 1 and `again(nudge)` each later one, up
     to `rounds` in all; either raises StoryError for a round that ended with no answer. A round 1 with no
-    answer, or whose reply `parse` refuses, goes back in the same conversation (UNFINISHED_NUDGE or the
-    reason), up to `fixes` times in all (`plan_fix` events), and is then a StoryError (the caller asks again
-    from the start); a later round with no answer, or one it refuses, ends the rounds on the plan before
-    it. `signal(text)` reads the plan's
-    own verdict (its `refine` object): `worth_another_round: false` ends the rounds on that plan, at once
-    (a `plan_check` event says what it said). A round whose plan is `same` as the one before ends them on
-    it, whatever the verdict. Each round's plan and the reason the rounds ended are events."""
-    nudge: str | None = None
+    answer, or whose reply `parse` refuses, goes back in the same conversation (`plan-unfinished`, or
+    `plan-fix` with the reason), up to `fixes` times in all (`plan_fix` events), and is then a StoryError
+    (the caller asks again from the start); a later round with no answer, or one it refuses, ends the rounds
+    on the plan before it. `signal(text)` reads the plan's own verdict (its `refine` object):
+    `worth_another_round: false` ends the rounds on that plan, at once (a `plan_check` event says what it
+    said). A round whose plan is `same` as the one before ends them on it, whatever the verdict. Each round's
+    plan and the reason the rounds ended are events, and each nudge sent is a `steer` event naming `role`,
+    the planning role, and the round it goes into."""
+    nudge: tuple[str, dict[str, object]] | None = None
     for attempt in range(fixes + 1):
         try:
-            text = await (first() if nudge is None else again(nudge))
+            text = await (first() if nudge is None else again(_steer(emit, role, 1, *nudge)))
         except StoryError as e:
             if attempt == fixes:
                 raise
             emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
-            nudge = UNFINISHED_NUDGE
+            nudge = ("plan-unfinished", {})
             continue
         try:
             plan = parse(text)
@@ -88,13 +73,13 @@ async def plan_in_rounds[T](
             if attempt == fixes:
                 raise
             emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
-            nudge = FIX_NUDGE.format(error=e)
+            nudge = ("plan-fix", {"error": e})
     emit("plan_round", round=1, **_shape(plan))
     if _finished(signal, text, 1, emit):
         return _done(text, emit, "architect_done", 1)
     for n in range(2, rounds + 1):
         try:
-            later = await again(ROUND_NUDGE)
+            later = await again(_steer(emit, role, n, "plan-round", {}))
             nxt = parse(later)
         except StoryError as e:
             emit("plan_round_unusable", round=n, error=str(e)[:300])
@@ -107,6 +92,13 @@ async def plan_in_rounds[T](
         if finished:
             return _done(text, emit, "architect_done", n)
     return _done(text, emit, "cap", rounds)
+
+
+def _steer(emit: Emit, role: str, n: int, id: str, fields: dict[str, object]) -> str:
+    """The hub's steering text `id` with `fields` filled in, and a `steer` event saying it was sent: its id,
+    the role and the round `n` it goes into (spec 2026-10-22-prompt-hub, "Steering events")."""
+    emit("steer", id=id, role=role, round=n)
+    return hub_text(id, **fields)
 
 
 def _finished(signal: Callable[[str], Any] | None, text: str, n: int, emit: Emit) -> bool:

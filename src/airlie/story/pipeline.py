@@ -37,9 +37,10 @@ from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import (
     Finding,
-    amend_feedback,
+    amend_feedback_said,
     checks_for,
     feedback,
+    feedback_said,
     findings_text,
     is_testers_test,
     static_findings,
@@ -472,6 +473,7 @@ class StoryPipeline:
                 same,
                 rounds=rounds,
                 emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
+                role=role,
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
@@ -948,7 +950,9 @@ class StoryPipeline:
             if attempt < CHECK_ATTEMPTS:
                 st.emit("test_checks_retry", layer=nn, findings=len(found))
                 advice = await self._advise(sup, orch, "precode_retry", "tests", feedback(found), found)
-                await orch.follow_up("tests", feedback(found, advice=advice))
+                sent, ids = feedback_said(found, advice=advice)
+                self._steer(st, ids, self._role_of(orch, "tests"), nn)
+                await orch.follow_up("tests", sent)
         return found
 
     async def _amend_tests(
@@ -961,14 +965,14 @@ class StoryPipeline:
         sup: LayerSupervisor | None = None,
     ) -> bool:
         """When the final gate fails after the build and every test that fails is one the tester wrote (in a
-        locked file, or a locked definition), the tester is sent back once to mend its own tests (AMEND, with
-        what the coder and the reviewer said): the coder cannot change them (AIR-9 layer 02, 2026-10-21: a
-        test unpacked one comment from a card with two, the code was right, and the layer blocked). A test
-        that was there before the tester's (an old one failing on a fake) is the coder's. A mend is kept only
-        when it changed nothing but the locked files and every one of the tester's tests still holds before
-        the code: the pre-code check, run with the coder's files put back as they were when the tests were
-        locked. Kept, the files are locked again (what the mend changed joins the tester's definitions); else
-        they are put back. Returns whether a mend was kept."""
+        locked file, or a locked definition), the tester is sent back once to mend its own tests (the hub's
+        `amend`, with what the coder and the reviewer said): the coder cannot change them (AIR-9 layer 02,
+        2026-10-21: a test unpacked one comment from a card with two, the code was right, and the layer
+        blocked). A test that was there before the tester's (an old one failing on a fake) is the coder's. A
+        mend is kept only when it changed nothing but the locked files and every one of the tester's tests
+        still holds before the code: the pre-code check, run with the coder's files put back as they were when
+        the tests were locked. Kept, the files are locked again (what the mend changed joins the tester's
+        definitions); else they are put back. Returns whether a mend was kept."""
         confinement = self.cfg.tools.confinement()
         checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         locked = orch.locked
@@ -982,7 +986,7 @@ class StoryPipeline:
         account = build.result.final_text if build is not None and build.result is not None else ""
         review = [f"{f.file}: {f.claim}" for f in build.review.blocking] if build and build.review else []
         before = commit_wip(wt, f"studio: layer {nn} (before the tests' mend)")
-        told = amend_feedback(failing, account, review)
+        told, ids = amend_feedback_said(failing, account, review)
         advice = None
         if sup is not None:
             advice = await sup.advise(
@@ -993,6 +997,7 @@ class StoryPipeline:
                 kinds=("locked_tests_fail",),
                 evidence="\n".join(failing),
             )
+        self._steer(st, ids, self._role_of(orch, "tests"), nn)
         await orch.follow_up("tests", with_advice(told, advice))
         commit_wip(wt, f"studio: layer {nn} (the tests' mend)")
         lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
@@ -1063,7 +1068,9 @@ class StoryPipeline:
                 st.emit("test_checks_retry", layer=nn, findings=len(found))
                 told = feedback(found, before_code=False)
                 advice = await self._advise(sup, orch, "static_retry", "build", told, found)
-                await orch.follow_up("build", feedback(found, before_code=False, advice=advice))
+                sent, ids = feedback_said(found, before_code=False, advice=advice)
+                self._steer(st, ids, self._role_of(orch, "build"), nn)
+                await orch.follow_up("build", sent)
         return found
 
     async def _advise(
@@ -1087,6 +1094,14 @@ class StoryPipeline:
             kinds=[f.kind for f in found],
             evidence=findings_text(found),
         )
+
+    @staticmethod
+    def _steer(st: StoryState, ids: Sequence[str], role: str, nn: str) -> None:
+        """A `steer` event for each hub steering text in what the pipeline is about to send a layer's role:
+        its id, the role and the layer (spec 2026-10-22-prompt-hub, "Steering events"). Studio's and the
+        team loop's own sends are events on the studio run's stream; these are the story's."""
+        for id in ids:
+            st.emit("steer", id=id, role=role, layer=nn)
 
     def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
         """The subtask's role as it ran, or the configured one when it never ran."""

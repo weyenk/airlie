@@ -153,6 +153,13 @@ class RoleSpec(Strict):
         "writes the answer from what the role has read (the architect's took 14-20 minutes thinking); a "
         "tool call on that turn gets one retry, which thinks either way",
     )
+    carried_reasoning_chars: int = Field(
+        default=1500,
+        ge=0,
+        description="a thinking turn cut at thinking_budget whose action was a read gets the last this many "
+        "characters of its reasoning back after the tool result, to continue from rather than start over "
+        "(AIR-30); one such message at a time, replaced by the next; 0 = off",
+    )
     nudge_stuck: bool = Field(
         default=False,
         description="the first time the role repeats the same action it is told to do something different "
@@ -202,6 +209,38 @@ class WebSpec(Strict):
         default_factory=lambda: SearchBackendSpec(kind="searxng", url="http://127.0.0.1:8888")
     )
     fetch_timeout_s: float = 30.0
+
+
+class AttachmentsSpec(Strict):
+    """Files attached in the web app's Chat (design 2026-10-22-chat-attachments), kept under
+    observability.state_dir/uploads."""
+
+    max_image_mb: float = Field(default=20, gt=0, description="a picture (png, jpeg, webp, gif)")
+    max_video_mb: float = Field(
+        default=100, gt=0, description="a video (mp4, mov, webm); the Cloudflare quick tunnel refuses >100 MB"
+    )
+    max_file_mb: float = Field(default=25, gt=0, description="any other file: text, PDF, anything")
+    max_text_kb: int = Field(
+        default=200, ge=1, description="text of a file or PDF given to the model, then cut"
+    )
+    max_per_message: int = Field(default=10, ge=1)
+    keep_days: int = Field(default=30, ge=1, description="an upload older than this is deleted")
+    max_image_px: int = Field(
+        default=1536,
+        ge=64,
+        description="a picture is scaled to this long edge before it is sent; the file is kept",
+    )
+    video_fps: float = Field(default=1.0, gt=0, description="frames a second airlie samples from a video")
+    video_max_frames: int = Field(default=32, ge=1, description="a longer video's frames are spread over it")
+    video_frame_px: int = Field(default=448, ge=64, description="long edge of each sampled frame")
+    history_images: int = Field(
+        default=4, ge=0, description="pictures sent as pixels per request, newest first; older become a note"
+    )
+    history_videos: int = Field(default=1, ge=0, description="videos sent as video per request, newest first")
+
+
+class ChatSpec(Strict):
+    attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
 
 
 class ToolsSpec(Strict):
@@ -562,6 +601,7 @@ class AirlieConfig(Strict):
     story: StorySpec = Field(default_factory=StorySpec)
     board: BoardSpec = Field(default_factory=BoardSpec)
     web: WebSpec = Field(default_factory=WebSpec)
+    chat: ChatSpec = Field(default_factory=ChatSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----

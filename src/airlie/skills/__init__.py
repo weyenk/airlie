@@ -3,6 +3,7 @@
 from airlie.skills.knowledge import Hit, KnowledgeIndex
 from airlie.skills.library import (
     Skill,
+    load_chat_skills,
     load_skills,
     prompt_text,
     role_summary,
@@ -15,6 +16,7 @@ __all__ = [
     "Hit",
     "KnowledgeIndex",
     "Skill",
+    "load_chat_skills",
     "load_skills",
     "prompt_text",
     "role_summary",

@@ -1,3 +1,7 @@
+---
+governs.answer.form: one-branch
+governs.branches.merge: never
+---
 # aggregator
 
 You receive the final outputs of several independent engineering teams that worked in parallel on the same goal,

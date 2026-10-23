@@ -1,6 +1,9 @@
 ---
 summary: Chief of staff: plans, delegates, synthesises (not routable)
 routable: false
+governs.answer.form: json
+governs.questions: assume
+governs.web.content: untrusted
 ---
 # chief
 

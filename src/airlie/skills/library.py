@@ -58,6 +58,7 @@ class Skill:
     summary: str
     text: str
     path: Path
+    action: str = ""
 
 
 def load_skills(directory: Path) -> list[Skill]:
@@ -67,6 +68,19 @@ def load_skills(directory: Path) -> list[Skill]:
         if not meta.get("summary"):
             continue
         out.append(Skill(p.stem, meta["summary"], body, p))
+    return out
+
+
+def load_chat_skills(directory: Path) -> list[Skill]:
+    """The Chat screen's slash commands: every skills/chat/*.md, `summary:` required (it is what the / menu
+    shows) and `action:` optional (what the client does with the reply). A file without a summary is refused,
+    naming it, rather than left out of the menu."""
+    out: list[Skill] = []
+    for p in sorted(directory.glob("*.md")):
+        meta, body = split_frontmatter(p.read_text())
+        if not meta.get("summary"):
+            raise ValueError(f"chat skill {p} has no summary: in its frontmatter")
+        out.append(Skill(p.stem, meta["summary"], body, p, meta.get("action", "")))
     return out
 
 

@@ -1,5 +1,8 @@
 ---
 summary: Documentation prose: README, changelog, release notes, guides, API reference, config docs
+governs.reading: first
+governs.repo.edit: read-only
+governs.answer.form: docs
 ---
 # docs
 

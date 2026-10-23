@@ -1,5 +1,7 @@
 ---
 summary: UI and visual critique
+governs.answer.form: critique
+governs.web.content: untrusted
 ---
 # design
 
