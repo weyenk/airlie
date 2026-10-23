@@ -248,6 +248,25 @@ class BoardStore:
                 raise
             return self._get(key)
 
+    def edit_comment(self, key: str, comment_id: int, text: str) -> Item:
+        """The comment `comment_id` of the item `key` rewritten to `text`; KeyError for an unknown item or
+        a comment id that is not one of its comments."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._get(key)
+                cur = self._db.execute(
+                    "UPDATE comments SET text = ? WHERE item_key = ? AND id = ?", (text, key, comment_id)
+                )
+                if cur.rowcount == 0:
+                    raise KeyError(comment_id)
+                self._db.execute("UPDATE items SET updated_at = ? WHERE key = ?", (time.time(), key))
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            return self._get(key)
+
     # ---- inside the lock -----------------------------------------------------------------------------------
 
     def _check_parent(self, level: Level, parent: str | None) -> None:
@@ -272,7 +291,7 @@ class BoardStore:
 
     def _item(self, row: sqlite3.Row) -> Item:
         comments = self._db.execute(
-            "SELECT author, text, at FROM comments WHERE item_key = ? ORDER BY id", (row["key"],)
+            "SELECT id, author, text, at FROM comments WHERE item_key = ? ORDER BY id", (row["key"],)
         ).fetchall()
         return Item(
             key=row["key"],
@@ -282,7 +301,7 @@ class BoardStore:
             status=cast(Status, row["status"]),
             parent=row["parent"],
             labels=tuple(json.loads(row["labels_json"])),
-            comments=tuple(Comment(c["author"], c["text"], c["at"]) for c in comments),
+            comments=tuple(Comment(c["id"], c["author"], c["text"], c["at"]) for c in comments),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             created_by=row["created_by"],
