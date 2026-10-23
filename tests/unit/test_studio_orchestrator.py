@@ -1008,6 +1008,92 @@ async def test_locked_files_are_refused_to_other_roles_and_put_back_before_the_g
     assert [e["paths"] for e in log if e["kind"] == "locked_restored"] == [["note.txt"]]
 
 
+LOCKED_BASE = "class FakeBoard:\n    def get(self):\n        return 1\n\n\ndef test_old():\n    assert 1\n"
+LOCKED_TESTER = LOCKED_BASE + "\n\ndef test_new():\n    assert FakeBoard().get() == 1\n"
+
+
+def repo_with_a_test_file(tmp_path: Path) -> Path:
+    repo = repo_with_marker_tests(tmp_path)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_p.py").write_text(LOCKED_BASE)
+    env = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", *env, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "commit", "-q", "-m", "tests"], cwd=repo, check=True)
+    return repo
+
+
+WRITE_TESTER = FakeReply(
+    tool_calls=[
+        ToolCall("n", "write_file", json.dumps({"path": "tests/test_p.py", "content": LOCKED_TESTER}))
+    ]
+)
+
+
+async def test_lock_records_the_testers_definitions(tmp_path: Path) -> None:
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+    )
+    assert report.tests == {"studio": True}
+    assert [e["tests"] for e in events(report) if e["kind"] == "locked"] == [
+        {"tests/test_p.py": ["test_new"]}
+    ]
+    assert orch.locked == frozenset({"tests/test_p.py"}) and orch.locked_whole == frozenset()
+
+
+@pytest.mark.parametrize("changed", ["FakeBoard", "test_new"])
+async def test_a_shell_change_to_a_fake_survives_the_gate_and_one_to_a_test_is_put_back(
+    tmp_path: Path, changed: str
+) -> None:
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    edited = LOCKED_TESTER.replace("return 1", "return 2" if changed == "FakeBoard" else "return 1").replace(
+        "assert FakeBoard().get() == 1",
+        "assert True" if changed == "test_new" else "assert FakeBoard().get() == 1",
+    )
+
+    async def a_shell_edits_it() -> bool:
+        assert orch.worktree is not None
+        (orch.worktree / "tests" / "test_p.py").write_text(edited)
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=a_shell_edits_it,
+    )
+    assert report.tests == {"studio": True}
+    assert orch.worktree is not None
+    now = (orch.worktree / "tests" / "test_p.py").read_text()
+    restored = [e["paths"] for e in events(report) if e["kind"] == "locked_restored"]
+    if changed == "FakeBoard":
+        assert now == edited and restored == []
+    else:
+        assert now == LOCKED_TESTER and restored == [["tests/test_p.py"]]
+
+
 async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})

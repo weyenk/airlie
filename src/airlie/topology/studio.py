@@ -33,14 +33,17 @@ from airlie.teams.worktree import (
     diff_between,
     differs_from,
     dirty,
+    find_file,
     head_sha,
     put_back,
+    read_blob,
 )
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
 from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
 from airlie.tools.shell import run_cmd, run_steps
+from airlie.tools.test_lock import touched, written_by_tester
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
@@ -207,6 +210,8 @@ class StudioOrchestrator:
         self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
         self.gate_memo = GateMemo()  # the tree that last passed the final gate: asked again, it does not run
         self.locked: frozenset[str] = frozenset()  # files only `lock_owner` may write (`lock`)
+        self.locked_whole: frozenset[str] = frozenset()  # of those, the files locked whole
+        self.locked_tests: dict[str, frozenset[str]] = {}  # the rest: the definitions the tester wrote
         self.lock_owner = ""
         self.lock_commit = ""
         self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
@@ -301,7 +306,8 @@ class StudioOrchestrator:
             write_file_max_overwrite_lines=self.cfg.tools.write_file_max_overwrite_lines,
             run_dir=self.run_dir.path,
             role=role_name,
-            read_only=self.locked if role_name != self.lock_owner else frozenset(),
+            read_only=self.locked_whole if role_name != self.lock_owner else frozenset(),
+            locked_tests=self.locked_tests if role_name != self.lock_owner else {},
             **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
@@ -616,21 +622,63 @@ class StudioOrchestrator:
     def lock(self, paths: Sequence[str], owner: str) -> None:
         """From now on only role `owner` may write `paths` (from the worktree's root): the file tools refuse
         them to every other role, and the final gate puts them back as they are now, whatever a shell
-        did to them. The worktree is committed first: that commit is what they are put back to."""
+        did to them. The worktree is committed first: that commit is what they are put back to.
+
+        A Python file is locked by definition (AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder
+        from fixing the fakes in a file the tester had only added tests to): only the top-level functions
+        and classes the tester added or changed since the base are locked. Any other file, and a Python
+        file that does not parse, is locked whole."""
         assert self.worktree is not None
         self.lock_commit = commit_wip(self.worktree, f"studio: {owner} (locked)")
+        whole: set[str] = set()
+        tests: dict[str, frozenset[str]] = {}
+        for path in sorted(set(paths)):
+            names = None
+            if path.endswith(".py"):
+                text = self._text_at(self.lock_commit, path)
+                if text is not None:
+                    names = written_by_tester(self._text_at(self.base_sha, path), text)
+            if names is None:
+                whole.add(path)
+            else:
+                tests[path] = names
         self.locked, self.lock_owner = frozenset(paths), owner
-        self.sink.emit("locked", owner=owner, paths=sorted(self.locked))
+        self.locked_whole, self.locked_tests = frozenset(whole), tests
+        self.sink.emit(
+            "locked",
+            owner=owner,
+            paths=sorted(self.locked),
+            tests={p: sorted(n) for p, n in sorted(tests.items())},
+        )
+
+    def _text_at(self, commit: str, path: str) -> str | None:
+        """`path`'s text in `commit`; None when the commit has no such file."""
+        assert self.worktree is not None
+        if not commit:
+            return None
+        kind, sha = find_file(self.worktree, commit, path)
+        return read_blob(self.worktree, sha) if kind == "blob" else None
 
     def _restore_locked(self) -> None:
         """The locked files as `lock` found them: a change to one (a shell's, since the file tools refuse) is
-        undone before the gate, and an event names it."""
+        undone before the gate, and an event names it. A file locked by definition is put back whole only
+        when one of the tester's definitions changed or the file no longer parses; other edits stay."""
         if not self.locked or self.worktree is None:
             return
         changed = differs_from(self.worktree, self.lock_commit, sorted(self.locked))
-        if changed:
-            put_back(self.worktree, self.lock_commit, changed)
-            self.sink.emit("locked_restored", paths=changed)
+        back = [p for p in changed if p not in self.locked_tests]
+        for path in changed:
+            names = self.locked_tests.get(path)
+            if names is None:
+                continue
+            was = self._text_at(self.lock_commit, path) or ""
+            file = self.worktree / path
+            now = file.read_text(errors="replace") if file.is_file() else None
+            if now is None or touched(names, was, now) != []:
+                back.append(path)
+        if back:
+            put_back(self.worktree, self.lock_commit, back)
+            self.sink.emit("locked_restored", paths=back)
 
     async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
         for wave in schedule(plan, satisfied=frozenset(self.runs)):

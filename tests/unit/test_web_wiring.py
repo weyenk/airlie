@@ -67,6 +67,7 @@ def _orchestrator(tmp_path: Path, cfg) -> StudioOrchestrator:
     orch.test_steps = ()
     orch.scope_base = ""
     orch.locked, orch.lock_owner = frozenset(), ""
+    orch.locked_whole, orch.locked_tests = frozenset(), {}
     orch.run_dir = _RunDir(tmp_path / "run")
     return orch
 
