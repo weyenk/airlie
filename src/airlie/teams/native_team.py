@@ -307,6 +307,15 @@ class NativeTeam:
                 Message(role="system", content=system),
                 Message(role="user", content=goal_msg, parts=parts),
             ]
+        if ctx.on_prompt is not None:
+            sent = dump_messages(messages[-1:] if ctx.initial_state is not None else messages)
+            for m in sent:  # a picture is a data URL of the whole file: the trace says how many, not what
+                if m["parts"]:
+                    m["parts"] = [
+                        {**p, "url": f"<image, {len(p['url'])} chars>"} if p["type"] == "image_url" else p
+                        for p in m["parts"]
+                    ]
+            ctx.on_prompt(sent)
         last_test_output = ""
         forked = False
         prompt_tokens = completion_tokens = 0

@@ -126,6 +126,16 @@ A story's directory is `~/.local/state/airlie/stories/<issue key>/` (`text-<hash
 same text resumes the same story), with `state.json`, `events.jsonl` and the PR bodies; follow a running story with
 `tail -f` on its `events.jsonl`. A `--text` story needs no board: its notes go to `notes.md` there.
 
+**Watching a story in the web app.** The *Workflows* screen lists the stories; one opens as a pipeline, the stages
+left to right (intake, refine, survey, plan layers, a lane per layer of *tests → test checks → build*, publish,
+review). A job shows its status, attempts, why it retried, tokens, speed (generation, end to end and prefill, since
+the engine's generation time can read far too small), the opening prompt it was given, what it produced and its
+steps with their reasoning. The board's ticket panel shows the story's acceptance criteria and a link to the
+pipeline. The data is derived from `state.json`, `events.jsonl` and the runs they name:
+`GET /v1/airlie/stories/{key}/flow` and `GET /v1/airlie/stories/{key}/flow/{node}/{job}`. Each role's opening
+messages are kept in its run as `trace/<subtask>/prompt.json` (`round-N/` for a fix round); a run from before
+that says "opening prompt not recorded".
+
 Stories are built one at a time. `task story`, the tick and the stories `task serve` starts share a lock: while one
 is in flight, `task story` says so and exits, and the tick logs `busy`.
 

@@ -30,6 +30,7 @@ from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
@@ -534,6 +535,20 @@ def create_app(
     @app.get("/v1/airlie/stories")
     async def story_list() -> dict[str, Any]:
         return {"stories": stories(cfg.observability.state_dir)}
+
+    @app.get("/v1/airlie/stories/{key}/flow")
+    async def story_flow_get(key: str) -> dict[str, Any]:
+        try:
+            return story_flow(cfg.observability.state_dir.expanduser(), key)
+        except StoryNotFound as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/stories/{key}/flow/{node_id}/{job_id}")
+    async def story_job_get(key: str, node_id: str, job_id: str) -> dict[str, Any]:
+        try:
+            return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
+        except StoryNotFound as e:
+            raise HTTPException(404, str(e)) from None
 
     @app.get("/v1/airlie/repos")
     async def repo_list() -> dict[str, Any]:

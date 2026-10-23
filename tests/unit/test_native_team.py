@@ -1828,3 +1828,18 @@ def test_a_resumed_run_drops_hub_end_of_budget_messages() -> None:
     assert dropped
     assert [m.content for m in kept] == ["You are the coder.", "Goal:\nmake it pass", write_now]
     assert _without_stale_budget(kept) == (kept, False)
+
+
+async def test_the_opening_messages_are_told_to_on_prompt_without_the_picture_bytes(tmp_path: Path) -> None:
+    pic = tmp_path / "shot.png"
+    pic.write_bytes(b"\x89PNG" + b"0" * 5000)
+    engine = FakeEngine({"coder": [FakeReply(text="done")]})
+    team, ctx = make_team(tmp_path, engine)
+    told: list[list[dict[str, Any]]] = []
+    ctx.images = [pic]
+    ctx.on_prompt = told.append
+    await team.run(ctx, Recorder())
+    (opening,) = told
+    assert [m["role"] for m in opening] == ["system", "user"]
+    assert "make it pass" in opening[1]["content"]
+    assert "data:image" not in json.dumps(opening) and "<image," in json.dumps(opening)

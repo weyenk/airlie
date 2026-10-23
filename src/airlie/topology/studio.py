@@ -418,6 +418,13 @@ class StudioOrchestrator:
         # a first run may start on what the subtasks it depends on left there (a tester's tests): the write
         # nudges must count those files, not ask for them again (AIR-7, 2026-10-18; AIR-30, 2026-10-19)
         written = tuple(changed_in_tree(self.worktree, run.before)) if run.before else ()
+        folder = run.subtask.id if attempt == 0 else f"{run.subtask.id}/round-{attempt}"
+
+        def save_prompt(messages: list[dict[str, Any]]) -> None:
+            self.run_dir.write_trace(
+                f"{folder}/prompt.json", {"role": run.role, "attempt": attempt, "messages": messages}
+            )
+
         return TeamContext(
             team_id=run.subtask.id,
             goal=goal,
@@ -438,6 +445,7 @@ class StudioOrchestrator:
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,
             on_stuck=self.advisor,
+            on_prompt=save_prompt,
         )
 
     async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:

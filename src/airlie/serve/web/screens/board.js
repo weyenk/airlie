@@ -55,6 +55,53 @@ function when(epoch) {
   return epoch ? new Date(epoch * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
 }
 
+/** The story's flow when airlie has built (or started) it, else null: a card with no story has nothing to show. */
+async function storyFlow(key) {
+  try {
+    return await request(`/v1/airlie/stories/${encodeURIComponent(key)}/flow`);
+  } catch {
+    return null; // 404: no story yet; an auth error shows on the next call that matters
+  }
+}
+
+function acceptanceSection(flow) {
+  if (!flow.acceptance.length) return null;
+  return h(
+    "section",
+    { class: "stack", style: { gap: "8px" }, "aria-label": "Acceptance criteria" },
+    h("h3", { class: "h3" }, `Acceptance criteria (${flow.acceptance.length})`),
+    flow.acceptance.map((c) =>
+      h("div", { class: "criterion" }, h("span", { class: "mono small" }, c.id), h("span", null, h("em", null, "Given "), c.given, h("em", null, " when "), c.when, h("em", null, " then "), c.then)),
+    ),
+  );
+}
+
+const JOB_CHIP = { passed: "ok", failed: "err", running: "run", pending: "mute", skipped: "mute" };
+
+function workflowSection(flow) {
+  const base = `#/workflows/${encodeURIComponent(flow.key)}`;
+  const layers = flow.nodes.filter((n) => n.kind === "layer");
+  return h(
+    "section",
+    { class: "stack", style: { gap: "8px" }, "aria-label": "Workflow" },
+    h("div", { class: "row spread" }, h("h3", { class: "h3" }, "Workflow"), h("a", { href: base, class: "btn small" }, "Open pipeline")),
+    flow.blocked ? h("div", { class: "error small" }, flow.blocked) : null,
+    layers.length
+      ? layers.map((n) =>
+          h(
+            "a",
+            { href: `${base}/${n.id}/build`, class: "child" },
+            h("span", { class: "mono small muted" }, n.label),
+            " ",
+            n.title || "",
+            " ",
+            chip(JOB_CHIP[n.status] || "mute", n.attempts > 1 ? `${n.status} · ${n.attempts} attempts` : n.status),
+          ),
+        )
+      : h("div", { class: "muted small" }, `Planned stage: ${flow.stage}. No layers yet.`),
+  );
+}
+
 export function render(root, [key], ctx) {
   let level = ""; // the filter; "" is every level
   let items = [];
@@ -242,6 +289,8 @@ export function render(root, [key], ctx) {
       return;
     }
     if (gone) return;
+    const flow = item.level === "story" ? await storyFlow(k) : null;
+    if (gone) return;
     const err = h("span", { class: "error" });
     const patch = async (body) => {
       try {
@@ -288,6 +337,8 @@ export function render(root, [key], ctx) {
           h("button", { type: "submit", class: "btn small" }, "Save"),
         ),
       ),
+      flow ? acceptanceSection(flow) : null,
+      flow ? workflowSection(flow) : null,
       CHILD[item.level]
         ? h(
             "section",

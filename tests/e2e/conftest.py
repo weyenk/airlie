@@ -114,6 +114,174 @@ def _seed(state: Path) -> None:
         board.close()
 
 
+STORY_KEY = "AIR-4"
+"""The board card ("Board: panel width") with a story behind it: layer 01 built, layer 02 stopped."""
+
+
+def _seed_story(state: Path) -> None:
+    """What a story leaves in state/stories/<key>/ and the runs it names: enough for the workflow screen and
+    the ticket panel (acceptance criteria, layers, a retried check, the tester's recorded prompt)."""
+
+    def events(path: Path, rows: list[dict[str, Any]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def step(run: str, team: str, n: int) -> dict[str, Any]:
+        return {
+            "ts": 1.0,
+            "run_id": run,
+            "kind": "step",
+            "team_id": team,
+            "step": n,
+            "tool": "read_file",
+            "ok": True,
+            "prompt_tokens": 1000,
+            "completion_tokens": 100,
+            "prefill_ms": 500.0,
+            "gen_ms": 2000.0,
+            "role": "tester" if team == "tests" else "coder",
+            "model": "base",
+        }
+
+    story = state / "stories" / STORY_KEY
+    layers = [
+        {
+            "slug": "seam",
+            "title": "Resizable panel",
+            "scope": "board.js",
+            "brief": "drag handle",
+            "acceptance": ["AC1"],
+        },
+        {
+            "slug": "full",
+            "title": "Full screen toggle",
+            "scope": "board.js",
+            "brief": "toggle",
+            "acceptance": ["AC2"],
+        },
+    ]
+    criteria = [
+        {
+            "id": "AC1",
+            "given": "an open panel",
+            "when": "the handle is dragged",
+            "then": "the panel width follows",
+        },
+        {
+            "id": "AC2",
+            "given": "an open panel",
+            "when": "full screen is chosen",
+            "then": "the panel fills the window",
+        },
+    ]
+    (story).mkdir(parents=True)
+    (story / "state.json").write_text(
+        json.dumps(
+            {
+                "card": {"key": STORY_KEY, "title": "Board: panel width"},
+                "repo": "/r",
+                "stage": "layers",
+                "story": {"title": "Board: panel width", "summary": "s", "acceptance": criteria},
+                "layers": layers,
+                "built": {"01": {"branch": "b1", "sha": "abc", "run_id": "run-l1"}},
+                "blocked": "layer 02 (Full screen toggle): its tests still do not test its change",
+                "runs": ["run-l1", "run-l2"],
+            }
+        )
+    )
+    events(
+        story / "events.jsonl",
+        [
+            {"ts": 10.0, "kind": "stage", "stage": "intake"},
+            {"ts": 12.0, "kind": "run", "stage": "refine", "studio_run": "run-refine"},
+            {"ts": 40.0, "kind": "stage", "stage": "refine"},
+            {"ts": 41.0, "kind": "run", "stage": "layers", "studio_run": "run-layers"},
+            {"ts": 90.0, "kind": "stage", "stage": "layers"},
+            {"ts": 91.0, "kind": "layer_start", "layer": "01", "studio_run": "run-l1"},
+            {"ts": 150.0, "kind": "test_checks_passed", "layer": "01", "attempt": 1},
+            {"ts": 300.0, "kind": "layer_built", "layer": "01", "branch": "b1", "sha": "abc"},
+            {"ts": 301.0, "kind": "layer_start", "layer": "02", "studio_run": "run-l2"},
+            {"ts": 340.0, "kind": "no_new_test", "layer": "02", "attempt": 1, "why": "no new test"},
+            {"ts": 341.0, "kind": "test_checks_retry", "layer": "02", "findings": 1},
+            {"ts": 380.0, "kind": "no_new_test", "layer": "02", "attempt": 2, "why": "no new test"},
+            {"ts": 381.0, "kind": "blocked", "stage": "layers", "reason": "layer 02 stopped"},
+        ],
+    )
+    runs = state / "runs"
+    events(runs / "run-refine" / "events.jsonl", [step("run-refine", "refine", 1)])
+    events(runs / "run-layers" / "events.jsonl", [step("run-layers", "layers", 1)])
+    events(
+        runs / "run-l1" / "events.jsonl",
+        [
+            {"ts": 91.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
+            step("run-l1", "tests", 1),
+            {
+                "ts": 150.0,
+                "kind": "subtask_done",
+                "subtask": "tests",
+                "role": "tester",
+                "ok": True,
+                "stop_reason": "done",
+                "steps": 1,
+                "fix_rounds": 0,
+            },
+            {"ts": 151.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            step("run-l1", "build", 1),
+            {
+                "ts": 290.0,
+                "kind": "subtask_done",
+                "subtask": "build",
+                "role": "coder",
+                "ok": True,
+                "stop_reason": "done",
+                "steps": 1,
+                "fix_rounds": 0,
+            },
+        ],
+    )
+    events(
+        runs / "run-l2" / "events.jsonl",
+        [
+            {"ts": 301.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
+            {
+                "ts": 340.0,
+                "kind": "subtask_done",
+                "subtask": "tests",
+                "role": "tester",
+                "ok": True,
+                "stop_reason": "done",
+                "steps": 3,
+                "fix_rounds": 0,
+            },
+        ],
+    )
+    tests = runs / "run-l1" / "trace" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "prompt.json").write_text(
+        json.dumps(
+            {
+                "role": "tester",
+                "attempt": 0,
+                "messages": [
+                    {"role": "system", "content": "You are the tester."},
+                    {"role": "user", "content": "Goal: write the failing tests for the drag handle"},
+                ],
+            }
+        )
+    )
+    (tests / "step-001.json").write_text(
+        json.dumps(
+            {
+                "u_t": {"name": "read_file", "arguments": "{}"},
+                "o_t": "1: x",
+                "ok": True,
+                "assistant_text": "",
+                "reasoning": "start from the existing board tests",
+            }
+        )
+    )
+
+
 @pytest.fixture(scope="session")
 def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     """The server the read-only checks share: nothing may change its board."""
@@ -131,6 +299,7 @@ def _serve(root: Path) -> Iterator[Server]:
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)
     _seed(state)
+    _seed_story(state)
     upstream = Upstream()
     app = create_app(config, transport=httpx.MockTransport(upstream), api_key=KEY)
     port = _free_port()
