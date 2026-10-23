@@ -772,12 +772,12 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
     # the hold still serves READS_UNDER_HOLD reads (steps 9-11), each saying how many are left; the fourth
     # (step 12) is refused: the reads of f0.. find no file (ok=False either way); the refusal is the
     # observation
-    assert [s.o_t.endswith("(2 read(s) left while reading is switched off; then write)") for s in rec.steps][
-        8
-    ]
-    assert [s.o_t.endswith("(0 read(s) left while reading is switched off; then write)") for s in rec.steps][
-        10
-    ]
+    assert [
+        s.o_t.endswith("\n\n(2 read(s) left while reading is switched off; then write)") for s in rec.steps
+    ][8]
+    assert [
+        s.o_t.endswith("\n\n(0 read(s) left while reading is switched off; then write)") for s in rec.steps
+    ][10]
     assert [
         s.o_t == "reading is switched off: use write_file, edit_file or run_tests" for s in rec.steps
     ] == [False] * 11 + [True]
