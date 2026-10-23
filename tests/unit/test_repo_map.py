@@ -93,3 +93,152 @@ def test_a_tracked_path_the_checkout_cannot_stat_or_read_does_not_stop_the_map(t
     assert cached is False and "config.cfg" not in text and "gone.py" not in text  # nothing to stat: left out
     assert "pkg/report.py" in text and "def total_cost(" in text and ".gitignore" in text  # the rest is there
     assert "pkg/locked.py (" in text and "hidden" not in text  # listed; its signatures could not be read
+
+
+def _focus_repo(tmp_path: Path) -> Path:
+    return git_repo(
+        tmp_path,
+        {
+            "src/pkg/a.py": "def alpha() -> int:\n    return 1\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "README.md": "hi\n",
+            **{f"docs/page{i:03}.md": "x" * 2000 for i in range(200)},
+        },
+    )
+
+
+def _lines(text: str) -> list[str]:
+    return text.splitlines()
+
+
+def test_code_and_tests_come_before_docs_that_outweigh_the_budget(tmp_path: Path) -> None:
+    text, _ = build_repo_map(_focus_repo(tmp_path), test_cmd=None, max_chars=3000, depth=3, cache_dir=None)
+    assert "src/pkg/a.py" in text and "tests/test_a.py" in text
+    assert "docs/ (200 files)" in _lines(text)
+
+
+def test_the_map_has_no_in_scope_block(tmp_path: Path) -> None:
+    """The story guide hands the layer's files whole or as outlines in the same first message: the map only
+    ranks and expands the directories that hold them."""
+    text, _ = build_repo_map(
+        _focus_repo(tmp_path),
+        test_cmd="task test",
+        max_chars=3000,
+        depth=3,
+        cache_dir=None,
+        focus=["src/pkg/a.py"],
+    )
+    assert "## In scope" not in text
+    assert "src/pkg/a.py (" in text and "def alpha() -> int" in text
+
+
+def test_an_untracked_focus_path_is_left_out(tmp_path: Path) -> None:
+    text, _ = build_repo_map(
+        _focus_repo(tmp_path),
+        test_cmd=None,
+        max_chars=3000,
+        depth=3,
+        cache_dir=None,
+        focus=["src/pkg/new.py"],
+    )
+    assert "new.py" not in text and "## In scope" not in text
+    assert any(line.startswith("src/ (") for line in _lines(text))
+    assert any(line.startswith("tests/ (") for line in _lines(text))
+
+
+def test_every_top_level_directory_is_named_even_when_truncated(tmp_path: Path) -> None:
+    text, _ = build_repo_map(_focus_repo(tmp_path), test_cmd=None, max_chars=400, depth=3, cache_dir=None)
+    for d in ("docs", "src", "tests"):
+        assert any(line.startswith(f"{d}/ (") for line in _lines(text))
+    assert text.endswith("[map truncated]")
+
+
+def test_focus_is_part_of_the_cache_key(tmp_path: Path) -> None:
+    repo, cache = _focus_repo(tmp_path), tmp_path / "cache"
+    plain, _ = build_repo_map(repo, test_cmd=None, max_chars=3000, depth=3, cache_dir=cache)
+    focused, cached = build_repo_map(
+        repo, test_cmd=None, max_chars=3000, depth=3, cache_dir=cache, focus=["src/pkg/a.py"]
+    )
+    assert cached is False and "## In scope" not in focused and "## In scope" not in plain
+
+
+def test_a_directory_too_large_to_expand_is_expanded_one_level(tmp_path: Path) -> None:
+    files = {f"big/sub{i % 30}/f{i}.py": "def f() -> None: ...\n" for i in range(300)}
+    files["big/top.py"] = "def top() -> None: ...\n"
+    files["README.md"] = "x\n"
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd=None, max_chars=3000, depth=3, cache_dir=None
+    )
+    assert any(line.startswith("big/sub0/ (") for line in _lines(text))
+    assert any(line.startswith("big/top.py (") for line in _lines(text))
+    assert text.endswith("[map truncated]")
+
+
+def test_code_directories_with_more_code_come_first(tmp_path: Path) -> None:
+    files = {f"src/pkg/m{i}.py": "x = 1\n" for i in range(10)}
+    files.update({f"scripts/s{i}.py": "x = 1\n" for i in range(5)})
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd=None, max_chars=6000, depth=3, cache_dir=None
+    )
+    assert text.index("src/pkg/m0.py") < text.index("scripts/s0.py")
+
+
+def test_large_focus_files_never_push_out_the_top_level_directories(tmp_path: Path) -> None:
+    big = "".join(
+        f"def function_number_{i}(argument: int) -> int:\n    return argument\n\n" for i in range(80)
+    )
+    files = {f"src/pkg/big{i}.py": big for i in range(3)}
+    files |= {"tests/test_a.py": "def test_a():\n    pass\n", "docs/a.md": "x\n"}
+    focus = [f"src/pkg/big{i}.py" for i in range(3)]
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files), test_cmd="task test", max_chars=1500, depth=3, cache_dir=None, focus=focus
+    )
+    assert len(text) <= 1500 and text.endswith("[map truncated]")
+    for d in ("src", "tests", "docs"):
+        assert any(line.startswith(f"{d}/ (") for line in _lines(text))
+    assert "## In scope" not in text
+    assert "src/pkg/big0.py (" in text  # too long with its signatures: its name and size
+
+
+def _code(n: int) -> str:
+    return "".join(
+        f"def function_number_{i}(argument: int) -> int:\n    return argument\n\n" for i in range(n)
+    )
+
+
+def test_a_deep_focus_file_is_shown_when_its_directory_cannot_fit_whole(tmp_path: Path) -> None:
+    """The focus subdirectory is descended into before the root files of `src/pkg/` take the room."""
+    files = {f"src/pkg/m{i}.py": _code(6) for i in range(30)}
+    files |= {f"src/pkg/other{j}/x{i}.py": _code(2) for i in range(5) for j in range(5)}
+    files["src/pkg/sub/deep.py"] = "def deep() -> None: ...\n"
+    files["src/pkg/sub/near.py"] = "def near() -> None: ...\n"
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files),
+        test_cmd=None,
+        max_chars=2500,
+        depth=3,
+        cache_dir=None,
+        focus=["src/pkg/sub/deep.py"],
+    )
+    assert len(text) <= 2500 and text.endswith("[map truncated]")
+    assert any(line.startswith("src/pkg/sub/deep.py (") for line in _lines(text))
+    assert "def deep() -> None" in text
+    assert "## In scope" not in text
+
+
+def test_tests_are_expanded_when_room_remains_after_a_cut_src(tmp_path: Path) -> None:
+    """`src/` is too large whole but its expansion leaves room: the next directory is still expanded."""
+    files = {f"src/pkg/sub{j}/f{i}.py": _code(3) for i in range(10) for j in range(10)}
+    files["tests/test_x.py"] = "def test_x() -> None: ...\n"
+    text, _ = build_repo_map(
+        git_repo(tmp_path, files),
+        test_cmd=None,
+        max_chars=3000,
+        depth=4,
+        cache_dir=None,
+        focus=["src/pkg/sub0/f0.py"],
+    )
+    assert len(text) <= 3000 and text.endswith("[map truncated]")
+    assert any(line.startswith("src/pkg/sub0/f0.py (") for line in _lines(text))
+    assert any(line.startswith("src/pkg/sub9/ (") for line in _lines(text))
+    assert any(line.startswith("tests/test_x.py (") for line in _lines(text))

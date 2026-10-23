@@ -718,14 +718,25 @@ class NativeTeam:
                         messages.append(Message(role="user", content=said))
                 if reading_off and all(written[k] for k in escalated):
                     reading_off = False  # the write reading was switched off for has landed: it is back
-            elif can_write and not wrote and steps == write_by:
-                said = _steer(ctx, steps, "write-now", n=steps, total=ctx.max_steps)
+            elif can_write and not (changed if continuing else wrote) and steps == write_by:
+                if continuing:
+                    said = _steer(ctx, steps, "write-now-continuing", n=steps, total=ctx.max_steps)
+                else:
+                    said = _steer(ctx, steps, "write-now", n=steps, total=ctx.max_steps)
                 messages.append(Message(role="user", content=said))
-            elif can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
+            elif (
+                can_write
+                and not (changed if continuing else wrote)
+                and steps == write_by + WRITE_ONLY_AFTER
+                and steps < ctx.max_steps
+            ):
                 reading_off = True
                 reads_left = READS_UNDER_HOLD
-                said = _steer(ctx, steps, "write-only", what="nothing", n=steps, k=READS_UNDER_HOLD)
+                what = "nothing this round" if continuing else "nothing"
+                said = _steer(ctx, steps, "write-only", what=what, n=steps, k=READS_UNDER_HOLD)
                 messages.append(Message(role="user", content=said))
+            if schedule is None and reading_off and (changed if continuing else wrote):
+                reading_off = False  # the write the hold waited for has landed: reading is back
             if steps >= ctx.max_steps:
                 last_turn = True
                 said = _steer(ctx, steps, "last-step", n=ctx.max_steps)

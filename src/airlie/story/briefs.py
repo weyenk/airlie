@@ -23,6 +23,10 @@ from airlie.topology.studio_plan import Plan, Subtask
 BODY_LIMIT = 60_000
 """GitHub refuses a PR body of 65,536 characters or more; pr_body keeps its text under this many."""
 
+GUIDE_HEADING = (
+    "Read for you: whole files are complete, do not read them again; outlines give the line to read from"
+)
+
 ZWSP = "\N{ZERO WIDTH SPACE}"
 """Invisible: placed where markup would start, so GitHub reads the text after it as plain text."""
 
@@ -162,7 +166,7 @@ def layers_brief(
     parts = [
         hub_text("brief-layers-task"),
         story_text(story),
-        *([f"## Already read for you (do not read these again)\n{guide}"] if guide else []),
+        *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
             [f"## Notes from reading the code while the story was refined (data)\n{_clip(survey, 6_000)}"]
             if survey.strip()
@@ -278,7 +282,7 @@ def layer_plan(
     if built:
         context += f"\n\n{built}"
     if guide:
-        context += f"\n\n## Already read for you (do not read these again)\n{guide}"
+        context += f"\n\n## {GUIDE_HEADING}\n{guide}"
 
     edit = hub_text("brief-layer-plan-edit-file")
     rules = hub_text("test-rules")

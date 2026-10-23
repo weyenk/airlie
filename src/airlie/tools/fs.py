@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap, resolve, secret_like
+from airlie.tools.test_lock import touched
 
 SKIP_DIRS = {
     ".git",
@@ -40,6 +42,11 @@ def _line_arg(args: dict[str, Any], name: str) -> int | None:
     return max(1, value)
 
 
+def _line_arg_given(args: dict[str, Any]) -> bool:
+    """Whether offset or limit is given (not absent, not empty)."""
+    return any(args.get(n) not in (None, "") for n in ("offset", "limit"))
+
+
 def _cap_lines(numbered: list[str], first: int, total: int, limit: int) -> str:
     """The numbered lines joined, cut at `limit` chars on a line boundary, with a notice that says which lines
     are missing and the offset that reads on from there (AIR-7, 2026-10-18: the coder re-read one 27k-char
@@ -60,11 +67,56 @@ def _cap_lines(numbered: list[str], first: int, total: int, limit: int) -> str:
     return "\n".join(kept) + f"\n… [truncated: {tail}] [truncated {missing} chars]"
 
 
+READ_PATHS_MAX = 5
+"""How many files one read_file call takes: each tool call costs a role one step, and the whole result stays
+under the output cap of a single read, so batching never adds context per step."""
+
+
+def paths_arg(raw: Any) -> list[str]:
+    """The `paths` argument as a list of paths: a list, or (some models send it so) a string holding a JSON
+    list. Raises ValueError for anything else, and for more than READ_PATHS_MAX."""
+    value = raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None  # pragma: no mutate  (any value that is not a list is refused the same)
+    if not isinstance(value, list) or not value:
+        raise ValueError('paths must be a list of paths, e.g. ["a.py", "b.py"]')
+    if len(value) > READ_PATHS_MAX:
+        raise ValueError(
+            f"paths takes at most {READ_PATHS_MAX} files, not {len(value)}: read the rest in another call"
+        )
+    return [str(v) for v in value]
+
+
+def _read_section(ctx: ToolContext, path: str, room: int) -> str:
+    """One file of a multi-file read under its `=== path (n lines) ===` header, cut to `room` chars with the
+    same notice `_cap_lines` gives a single read. A file with no room for even its first line is listed, not
+    shown, so the model reads it alone. A file that cannot be read shows its error under the header."""
+    try:
+        lines = resolve(ctx, path).read_text(errors="replace").splitlines()
+    except Exception as e:  # noqa: BLE001
+        return f"=== {path} ===\nerror: {e}"
+    header = f"=== {path} ({len(lines)} lines) ==="
+    numbered = [f"{i + 1}: {ln}" for i, ln in enumerate(lines)]
+    body_room = room - len(header) - 1
+    if numbered and body_room < len(numbered[0]):
+        return f"{path}: not shown, over the output cap; read it with path"
+    return f"{header}\n{_cap_lines(numbered, 1, len(lines), body_room)}"
+
+
+READ_EXAMPLE = 'A correct call looks like: read_file(path="src/app.py")'
+"""Shown when read_file gets neither argument: HDS-5's model sent it empty until it saw a worked call."""
+
+
 class ReadFile:
     name = "read_file"
     description = (
         "Read a text file from the repository. Returns its contents with line numbers. A long file is cut at "
-        "the output cap: read on with offset (the first line to show, 1-based) and limit (how many lines)."
+        "the output cap: read on with offset (the first line to show, 1-based) and limit (how many lines). "
+        f"Several small files at once: paths (up to {READ_PATHS_MAX}), each shown in full up to the output "
+        "cap."
     )
     parameters = {
         "type": "object",
@@ -72,11 +124,21 @@ class ReadFile:
             "path": {"type": "string"},
             "offset": {"type": "integer", "description": "first line to show, 1-based (default 1)"},
             "limit": {"type": "integer", "description": "how many lines to show (default: to the end)"},
+            "paths": {"type": "array", "items": {"type": "string"}, "maxItems": READ_PATHS_MAX},
         },
-        "required": ["path"],
+        "required": [],
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        has_path, has_paths = args.get("path") is not None, args.get("paths") is not None
+        if has_path == has_paths:
+            # with `required` empty the registry's missing-argument error, and its worked call, never fires
+            example = "" if has_path else f" {READ_EXAMPLE}"
+            return ToolResult(
+                False, f"error: read_file needs exactly one of path (one file) or paths (several).{example}"
+            )
+        if has_paths:
+            return self._run_paths(args, ctx)
         try:
             p = resolve(ctx, str(args["path"]))
             text = p.read_text(errors="replace")
@@ -90,6 +152,23 @@ class ReadFile:
         chosen = lines[offset - 1 : offset - 1 + limit] if limit else lines[offset - 1 :]
         numbered = [f"{offset + i}: {ln}" for i, ln in enumerate(chosen)]
         return ToolResult(True, _cap_lines(numbered, offset, len(lines), ctx.output_cap_chars))
+
+    def _run_paths(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        """Several files, each under its header, the whole under the output cap: a file takes what room is
+        left, so the first files are shown whole and the last are cut or listed as not shown."""
+        if _line_arg_given(args):
+            return ToolResult(False, "error: offset and limit read one file: use path")
+        try:
+            paths = paths_arg(args["paths"])
+        except ValueError as e:
+            return _err(e)
+        sections: list[str] = []
+        room = ctx.output_cap_chars
+        for path in paths:
+            section = _read_section(ctx, path, room)
+            sections.append(section)
+            room -= len(section) + 1
+        return ToolResult(True, "\n".join(sections))
 
 
 HEAD = "HEAD"
@@ -132,6 +211,31 @@ def _locked(ctx: ToolContext, p: Path) -> bool:
     return p.resolve().relative_to(ctx.worktree.resolve()).as_posix() in ctx.read_only
 
 
+LOCKED_TESTS = (
+    "error: this change touches {names} in {path}: tests written before you for this layer, your contract, "
+    "and you cannot change them. Make them pass with the code. What else is in the file was there before "
+    "them (fakes, helpers, imports): you may change that."
+)
+UNPARSEABLE = (
+    "error: {path} would not parse after this change, so airlie cannot tell that the tests written before "
+    "you are untouched. Change it in steps that each leave it whole."
+)
+
+
+def _refused_by_definition(ctx: ToolContext, p: Path, shown: str, before: str, after: str) -> str | None:
+    """The error that refuses changing `before` to `after` in `p` when that touches the tester's definitions
+    in it (`ctx.locked_tests`; AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder from fixing the
+    fakes beside the tests); None when `p` holds none of them or the change leaves them be. `p` comes from
+    `resolve`, in the worktree."""
+    names = ctx.locked_tests.get(p.resolve().relative_to(ctx.worktree.resolve()).as_posix())
+    if not names:
+        return None
+    hit = touched(names, before, after)
+    if hit is None:
+        return UNPARSEABLE.format(path=shown)
+    return LOCKED_TESTS.format(path=shown, names=", ".join(hit)) if hit else None
+
+
 class WriteFile:
     name = "write_file"
     description = (
@@ -151,6 +255,12 @@ class WriteFile:
             p = resolve(ctx, str(args["path"]))
             if _locked(ctx, p):
                 return ToolResult(False, LOCKED.format(path=args["path"]))
+            if p.is_file() and (
+                refused := _refused_by_definition(
+                    ctx, p, str(args["path"]), p.read_text(errors="replace"), str(args["content"])
+                )
+            ):
+                return ToolResult(False, refused)
             if (
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
@@ -257,7 +367,10 @@ class EditFile:
             span = _loose_span(text, old)
             if span is None:
                 return ToolResult(False, _not_found(str(args["path"]), old, text))
-            p.write_text(text[: span[0]] + new + text[span[1] :])
+            edited = text[: span[0]] + new + text[span[1] :]
+            if refused := _refused_by_definition(ctx, p, str(args["path"]), text, edited):
+                return ToolResult(False, refused)
+            p.write_text(edited)
             return ToolResult(
                 True,
                 f"edited {args['path']} (`old` matched with its blank lines and trailing spaces ignored; "
@@ -265,7 +378,10 @@ class EditFile:
             )
         if n > 1:
             return ToolResult(False, f"error: `old` text occurs {n} times in {args['path']}; make it unique")
-        p.write_text(text.replace(old, new, 1))  # pragma: no mutate  (n == 1 here, so the count is moot)
+        edited = text.replace(old, new, 1)  # pragma: no mutate  (n == 1 here, so the count is moot)
+        if refused := _refused_by_definition(ctx, p, str(args["path"]), text, edited):
+            return ToolResult(False, refused)
+        p.write_text(edited)
         return ToolResult(True, f"edited {args['path']}")
 
 

@@ -33,7 +33,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.context import repo_guide
+from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import (
     Finding,
@@ -42,7 +42,7 @@ from airlie.story.layer_checks import (
     feedback,
     feedback_said,
     findings_text,
-    in_files,
+    is_testers_test,
     static_findings,
 )
 from airlie.story.model import (
@@ -558,7 +558,12 @@ class StoryPipeline:
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
-        guide = repo_guide(self.repo, (st.base or {}).get("sha", "HEAD"), story_text(story))
+        guide = repo_guide(
+            self.repo,
+            (st.base or {}).get("sha", "HEAD"),
+            story_text(story),
+            budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
+        )
 
         def parse(text: str) -> tuple[Layer, ...]:
             return parse_layers(extract_json_block(text), story, self.s.max_layers)
@@ -719,7 +724,14 @@ class StoryPipeline:
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
             findings: list[Finding] = []
-            guide = repo_guide(self.repo, base_sha, f"{layer.scope}\n{layer.brief}")  # read for the coder
+            guide = repo_guide(  # read for the tester and the coder
+                self.repo,
+                base_sha,
+                f"{layer.scope}\n{layer.brief}",
+                budget_chars=guide_budget(
+                    self.cfg, [r for r in (self.s.tester_role, self.s.build_role) if r]
+                ),
+            )
             # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
             built = (
                 built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
@@ -766,6 +778,7 @@ class StoryPipeline:
                 scope_tests=True,
                 checkpoints={"tests": before_code} if tester else None,
                 gate_follow_up="build",
+                map_focus=named_paths(layer.scope),
                 amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn, sup) if tester else None,
             )
             commit_wip(wt, f"studio: {branch} (final)")
@@ -953,20 +966,22 @@ class StoryPipeline:
         nn: str,
         sup: LayerSupervisor | None = None,
     ) -> bool:
-        """When the final gate fails after the build and every test that fails is one of the tester's locked
-        files, the tester is sent back once to mend its own tests (the hub's `amend`, with what the coder and
-        the reviewer said): the coder cannot change them (AIR-9 layer 02, 2026-10-21: a test unpacked one
-        comment from a card with two, the code was right, and the layer blocked). A mend is kept only when it
-        changed nothing but those files and every one of the tester's tests still holds before the code: the
-        pre-code check, run with the coder's files put back as they were when the tests were locked. Kept, the
-        files are locked again as they now are; else they are put back. Returns whether a mend was kept."""
+        """When the final gate fails after the build and every test that fails is one the tester wrote (in a
+        locked file, or a locked definition), the tester is sent back once to mend its own tests (the hub's
+        `amend`, with what the coder and the reviewer said): the coder cannot change them (AIR-9 layer 02,
+        2026-10-21: a test unpacked one comment from a card with two, the code was right, and the layer
+        blocked). A test that was there before the tester's (an old one failing on a fake) is the coder's. A
+        mend is kept only when it changed nothing but the locked files and every one of the tester's tests
+        still holds before the code: the pre-code check, run with the coder's files put back as they were when
+        the tests were locked. Kept, the files are locked again (what the mend changed joins the tester's
+        definitions); else they are put back. Returns whether a mend was kept."""
         confinement = self.cfg.tools.confinement()
         checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         locked = orch.locked
         if checks is None or not locked or "tests" not in orch.runs:
             return False
         failing = await checks.failing(wt)
-        if not failing or not all(in_files(t, locked) for t in failing):
+        if not failing or not all(is_testers_test(t, orch.locked_whole, orch.locked_tests) for t in failing):
             return False  # the suite did not run, it passes, or something besides the tests is red
         st.emit("locked_tests_fail", layer=nn, tests=failing)
         build = orch.runs.get("build")
@@ -1014,7 +1029,7 @@ class StoryPipeline:
             commit_wip(wt, f"studio: layer {nn} (the tests' mend undone)")
             self._settle_amend(sup, "not_helped")
             return False
-        orch.lock(sorted(locked), orch.lock_owner)
+        orch.lock(sorted(locked), orch.lock_owner, since=before)
         st.emit("tests_mended", layer=nn, files=changed)
         self._settle_amend(sup, "helped")
         return True

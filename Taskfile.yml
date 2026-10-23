@@ -115,6 +115,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie supervisor try {{.CLI_ARGS}}'
 
+  story:steps:
+    desc: "Steps each story role spent before its first write: reads, pages, repeats, brief-file re-reads (task story:steps -- AIR-9 AIR-31)"
+    cmds:
+      - '{{.RUN}} airlie story steps {{.CLI_ARGS}}'
+
   prompts:audit:
     desc: "Advisory: Muse reads each role's full instructions (role prompt, rules, steering) and lists the ones that contradict; writes a report under the state dir's runs/ (task prompts:audit -- [--role NAME]...)"
     cmds:

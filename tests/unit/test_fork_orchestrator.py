@@ -209,7 +209,7 @@ def test_build_topology_selects_by_kind(tmp_path: Path) -> None:
 async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_path: Path) -> None:
     """Live finding 2026-10-13: children inherited the trunk's three identical failing calls and repeated
     them."""
-    bad = FakeReply(tool_calls=[ToolCall("x", "read_file", "{}")])
+    bad = FakeReply(tool_calls=[ToolCall("x", "write_file", "{}")])
     engine = FakeEngine(
         {"coder": [WRITE_NOTE, bad, bad, bad, WRITE_PASS, RUN, FakeReply(text="ok now"), RUN, RUN]}
     )
@@ -226,11 +226,11 @@ async def test_repeated_action_fork_trims_the_repeated_tail_and_names_it(tmp_pat
         "assistant",
         "tool",
         "user",
-    ]  # note step kept, 3 read_file pairs dropped
+    ]  # note step kept, 3 write_file pairs dropped
     nudge = child_first.messages[-1].content
-    assert "read_file" in nudge and "requires: path" in nudge
+    assert "write_file" in nudge and "requires: path" in nudge
     fp = next(e for e in events(report) if e["kind"] == "fork_point")
-    assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "read_file"
+    assert fp["reason"] == "repeated_action" and fp["repeated"]["name"] == "write_file"
 
 
 def branch_steers(report):  # type: ignore[no-untyped-def]

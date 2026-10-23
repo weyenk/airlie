@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from airlie.tools.fs import LOCKED, EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.fs import LOCKED, LOCKED_TESTS, UNPARSEABLE, EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
@@ -422,6 +422,87 @@ async def test_write_file_and_edit_file_refuse_a_locked_file_and_say_why(tmp_pat
     assert (await WriteFile().run({"path": "tests/test_more.py", "content": "x = 1\n"}, c)).ok
 
 
+BOARD_FILE = (
+    "import os\n\n\n"
+    "class FakeBoard:\n"
+    "    def comment(self, key, text):\n"
+    "        return None\n\n\n"
+    "def test_new():\n"
+    "    assert FakeBoard().comment('A', 'b') is None\n"
+)
+
+
+def board_ctx(tmp_path: Path) -> ToolContext:
+    c = replace(ctx(tmp_path), locked_tests={"tests/test_p.py": frozenset({"test_new"})})
+    put(c, "tests/test_p.py", BOARD_FILE)
+    return c
+
+
+async def test_the_coder_may_change_a_fake_in_a_file_the_tester_added_tests_to(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "def comment(self, key, text):",
+            "new": "def comment(self, key, text, role=None):",
+        },
+        c,
+    )
+    assert r.ok, r.output
+    assert "role=None" in (c.worktree / "tests/test_p.py").read_text()
+    # the same through a loose match (blank lines ignored in `old`)
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "import os\nclass FakeBoard:",
+            "new": "import os\n\n\nclass FakeBoard:",
+        },
+        c,
+    )
+    assert r.ok, r.output
+
+
+async def test_an_edit_that_touches_the_testers_test_is_refused_and_names_it(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run({"path": "tests/test_p.py", "old": "'b') is None", "new": "'b') is not None"}, c)
+    assert r.ok is False
+    assert r.output == LOCKED_TESTS.format(path="tests/test_p.py", names="test_new")
+    assert "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    # a loose match that lands inside the test is refused too
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "def test_new():\n\n    assert FakeBoard().comment('A', 'b') is None",
+            "new": "def test_new():\n    assert FakeBoard().comment('A', 'b') is not None",
+        },
+        c,
+    )
+    assert r.ok is False and "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+
+
+async def test_write_file_that_drops_the_testers_test_is_refused(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await WriteFile().run({"path": "tests/test_p.py", "content": "import os\n"}, c)
+    assert r.ok is False and "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    kept = BOARD_FILE.replace("return None", "return 1")
+    assert (await WriteFile().run({"path": "tests/test_p.py", "content": kept}, c)).ok
+    # a file that is not in locked_tests, and a new file, write as before
+    assert (await WriteFile().run({"path": "tests/test_q.py", "content": "x = 1\n"}, c)).ok
+
+
+async def test_an_edit_that_leaves_the_file_unparseable_is_refused(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run({"path": "tests/test_p.py", "old": "return None", "new": "return ("}, c)
+    assert r.ok is False and r.output == UNPARSEABLE.format(path="tests/test_p.py")
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    r = await WriteFile().run({"path": "tests/test_p.py", "content": "def test_new(:\n"}, c)
+    assert r.ok is False and r.output == UNPARSEABLE.format(path="tests/test_p.py")
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+
+
 # ---- the helpers, to the character (PR 105's mutation gate: fs.py had 65 surviving mutants) ----
 
 
@@ -518,3 +599,214 @@ def test_asking_git_whether_a_file_is_at_the_base_prints_nothing(
     assert _at_base(c.worktree, c.worktree / "new.py", "HEAD") is False
     assert _at_base(c.worktree, c.worktree / "kept.py", "no-such-ref") is True  # no such commit
     assert capfd.readouterr() == ("", "")
+
+
+# ---- read_file with several paths ----
+
+
+async def test_read_file_paths_shows_each_file_with_its_header(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\nbeta\n")
+    put(c, "b.py", "gamma\n")
+    r = await ReadFile().run({"paths": ["a.py", "b.py"]}, c)
+    assert r.ok
+    assert "=== a.py (2 lines) ===\n1: alpha\n2: beta" in r.output
+    assert "=== b.py (1 lines) ===\n1: gamma" in r.output
+
+
+async def test_read_file_paths_stay_under_the_output_cap(tmp_path: Path) -> None:
+    c = ctx(tmp_path, cap=20_000)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        put(c, name, "\n".join("x" * 99 for _ in range(150)))  # about 15k chars
+    r = await ReadFile().run({"paths": ["a.txt", "b.txt", "c.txt"]}, c)
+    assert r.ok
+    assert len(r.output) <= 20_000 + 400  # the cap plus the notices
+    assert "read on with offset=" in r.output
+    assert "c.txt: not shown, over the output cap; read it with path" in r.output
+
+
+async def test_read_file_paths_missing_one_still_shows_the_others(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": ["nope.py", "a.py"]}, c)
+    assert r.ok
+    assert "=== nope.py ===\nerror:" in r.output
+    assert "1: alpha" in r.output
+
+
+async def test_read_file_paths_with_offset_is_refused(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    for extra in ({"offset": 2}, {"limit": 1}):
+        r = await ReadFile().run({"paths": ["a.py"], **extra}, c)
+        assert not r.ok and r.output == "error: offset and limit read one file: use path"
+
+
+async def test_read_file_needs_path_or_paths(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    for args in ({}, {"path": "a.py", "paths": ["a.py"]}):
+        r = await ReadFile().run(args, c)
+        assert not r.ok and "path" in r.output and "paths" in r.output and "one of" in r.output
+
+
+async def test_read_file_paths_accepts_a_json_string_and_refuses_more_than_five(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": '["a.py"]'}, c)
+    assert r.ok and "1: alpha" in r.output
+    r = await ReadFile().run({"paths": ["a.py"] * 6}, c)
+    assert not r.ok and "at most 5" in r.output
+    r = await ReadFile().run({"paths": "a.py"}, c)
+    assert not r.ok and "list of paths" in r.output
+
+
+async def test_read_file_with_no_arguments_shows_a_correct_call(tmp_path: Path) -> None:
+    """HDS-5: a model that sends read_file {} is shown a worked call, as the registry's missing-argument
+    error showed it before `path` stopped being required."""
+    r = await ReadFile().run({}, ctx(tmp_path))
+    assert not r.ok and 'A correct call looks like: read_file(path="src/app.py")' in r.output
+
+
+async def test_read_file_paths_outside_the_worktree_is_refused_in_its_own_section(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": ["../x", "a.py"]}, c)
+    assert r.ok
+    assert "=== ../x ===\nerror:" in r.output and "escapes the worktree" in r.output
+    assert "=== a.py (1 lines) ===\n1: alpha" in r.output
+
+
+def test_a_context_with_locked_tests_stays_hashable_and_compares_as_before(tmp_path: Path) -> None:
+    plain = ToolContext(worktree=tmp_path)
+    locked = replace(plain, locked_tests={"tests/test_p.py": frozenset({"test_new"})})
+    assert hash(locked) == hash(plain)
+    assert locked == plain
+
+
+# ---- read_file with several paths, to the character (PR 137's mutation gate) ----
+
+ONE_LINE_HEAD = "=== a.txt (1 lines) ==="
+
+
+async def test_read_file_paths_shows_a_file_that_exactly_fills_the_cap_whole(tmp_path: Path) -> None:
+    """The header and its newline come out of the room; a first line taking all that is left is shown."""
+    c = ctx(tmp_path, cap=200)
+    line = "1: " + "x" * (200 - len(ONE_LINE_HEAD) - 1 - len("1: "))
+    put(c, "a.txt", line[3:] + "\n")
+    r = await ReadFile().run({"paths": ["a.txt"]}, c)
+    assert (r.ok, r.output) == (True, f"{ONE_LINE_HEAD}\n{line}")
+    assert len(r.output) == 200
+
+
+async def test_read_file_paths_cuts_a_file_one_char_over_the_cap_and_says_where_to_read_on(
+    tmp_path: Path,
+) -> None:
+    c = ctx(tmp_path, cap=200)
+    head = "=== a.txt (2 lines) ==="
+    body_room = 200 - len(head) - 1
+    first = "1: " + "x" * 10
+    second = "2: " + "y" * (body_room + 1 - len(first) - 1 - len("2: "))  # the two lines: one char too many
+    put(c, "a.txt", f"{first[3:]}\n{second[3:]}\n")
+    r = await ReadFile().run({"paths": ["a.txt"]}, c)
+    assert (r.ok, r.output) == (
+        True,
+        f"{head}\n{first}\n… [truncated: lines 2-2 not shown; read on with offset=2] [truncated "
+        f"{len(second) + 1} chars]",
+    )
+
+
+async def test_read_file_paths_gives_the_next_file_what_room_the_first_left(tmp_path: Path) -> None:
+    """Each section and the newline after it come out of the room: the second file gets exactly the rest."""
+    c = ctx(tmp_path, cap=200)
+    put(c, "a.txt", "alpha\n")
+    first = f"{ONE_LINE_HEAD}\n1: alpha"
+    head_b = "=== b.txt (1 lines) ==="
+    fits = 200 - len(first) - 1 - len(head_b) - 1 - len("1: ")
+    put(c, "b.txt", "x" * fits + "\n")
+    r = await ReadFile().run({"paths": ["a.txt", "b.txt"]}, c)
+    assert (r.ok, r.output) == (True, f"{first}\n{head_b}\n1: {'x' * fits}")
+    assert len(r.output) == 200
+    put(c, "b.txt", "x" * (fits + 1) + "\n")  # one char more: listed, not shown
+    r = await ReadFile().run({"paths": ["a.txt", "b.txt"]}, c)
+    assert (r.ok, r.output) == (True, f"{first}\nb.txt: not shown, over the output cap; read it with path")
+
+
+async def test_read_file_paths_replaces_undecodable_bytes(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "bin.txt", b"a\xffb\n")
+    r = await ReadFile().run({"paths": ["bin.txt"]}, c)
+    assert (r.ok, r.output) == (True, "=== bin.txt (1 lines) ===\n1: a�b")
+
+
+async def test_read_file_paths_takes_empty_offset_and_limit_as_not_given(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    r = await ReadFile().run({"paths": ["a.py"], "offset": "", "limit": ""}, c)
+    assert (r.ok, r.output) == (True, "=== a.py (1 lines) ===\n1: alpha")
+    r = await ReadFile().run({"paths": ["a.py"], "offset": 2}, c)
+    assert r.ok is False
+
+
+async def test_read_file_paths_must_be_a_non_empty_list_of_at_most_five(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    for name in "abcde":
+        put(c, f"{name}.py", f"{name}\n")
+    refusal = 'error: paths must be a list of paths, e.g. ["a.py", "b.py"]'
+    for paths in ([], "[]", '"a.py"', "a.py", '{"a.py": 1}'):
+        r = await ReadFile().run({"paths": paths}, c)
+        assert (r.ok, r.output) == (False, refusal), paths
+    r = await ReadFile().run({"paths": [f"{name}.py" for name in "abcde"]}, c)  # five is allowed
+    assert r.ok and r.output.count("===\n") == 5 and "=== e.py (1 lines) ===\n1: e" in r.output
+
+
+async def test_read_file_needs_one_of_path_or_paths_and_says_so_exactly(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    needs = "error: read_file needs exactly one of path (one file) or paths (several)."
+    r = await ReadFile().run({"path": "a.py", "paths": ["a.py"]}, c)  # both: no worked call, it had one
+    assert (r.ok, r.output) == (False, needs)
+    r = await ReadFile().run({}, c)
+    assert (r.ok, r.output) == (False, f'{needs} A correct call looks like: read_file(path="src/app.py")')
+    r = await ReadFile().run({"paths": ["a.py"], "limit": 1}, c)
+    assert (r.ok, r.output) == (False, "error: offset and limit read one file: use path")
+
+
+async def test_read_file_paths_joins_the_sections_with_one_newline(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    put(c, "a.py", "alpha\n")
+    put(c, "b.py", "beta\n")
+    r = await ReadFile().run({"paths": ["a.py", "b.py"]}, c)
+    assert (r.ok, r.output) == (True, "=== a.py (1 lines) ===\n1: alpha\n=== b.py (1 lines) ===\n1: beta")
+
+
+# ---- the definition lock and write_file's reads, to the character (PR 137's mutation gate) ----
+
+
+async def test_write_file_overwrites_a_short_file_with_undecodable_bytes(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    p = put(c, "bin.txt", b"a\xffb\n")
+    r = await WriteFile().run({"path": "bin.txt", "content": "ab\n"}, c)
+    assert (r.ok, r.output) == (True, "wrote bin.txt (3 chars)")
+    assert p.read_text() == "ab\n"
+
+
+async def test_a_refused_change_names_every_test_it_touches(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), locked_tests={"tests/test_p.py": frozenset({"test_a", "test_b"})})
+    put(c, "tests/test_p.py", "def test_a():\n    assert 1\n\n\ndef test_b():\n    assert 1\n")
+    r = await WriteFile().run({"path": "tests/test_p.py", "content": "x = 1\n"}, c)
+    assert (r.ok, r.output) == (False, LOCKED_TESTS.format(path="tests/test_p.py", names="test_a, test_b"))
+
+
+async def test_a_loose_edit_that_touches_the_testers_test_names_the_file(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "def test_new():\n\n    assert FakeBoard().comment('A', 'b') is None",
+            "new": "def test_new():\n    assert FakeBoard().comment('A', 'b') is not None",
+        },
+        c,
+    )
+    assert (r.ok, r.output) == (False, LOCKED_TESTS.format(path="tests/test_p.py", names="test_new"))
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE

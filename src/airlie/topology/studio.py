@@ -34,14 +34,18 @@ from airlie.teams.worktree import (
     diff_between,
     differs_from,
     dirty,
+    find_file,
     head_sha,
+    own_changes,
     put_back,
+    read_blob,
 )
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
 from airlie.tools.scope import GateMemo, autofix_steps, tree_fingerprint
 from airlie.tools.shell import run_cmd, run_steps
+from airlie.tools.test_lock import touched, written_by_tester
 from airlie.tools.web import SearXNGProvider, UrllibClient, WebFetch, WebSearch
 from airlie.topology.review import Review, Reviewer, nudge_from_review
 from airlie.topology.studio_plan import (
@@ -188,6 +192,8 @@ class StudioOrchestrator:
         self.scope_base = ""  # a commit: run_tests then runs the gate's pytest on the tests changed since it
         self.gate_memo = GateMemo()  # the tree that last passed the final gate: asked again, it does not run
         self.locked: frozenset[str] = frozenset()  # files only `lock_owner` may write (`lock`)
+        self.locked_whole: frozenset[str] = frozenset()  # of those, the files locked whole
+        self.locked_tests: dict[str, frozenset[str]] = {}  # the rest: the definitions the tester wrote
         self.lock_owner = ""
         self.lock_commit = ""
         self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
@@ -286,7 +292,8 @@ class StudioOrchestrator:
             write_file_max_overwrite_lines=self.cfg.tools.write_file_max_overwrite_lines,
             run_dir=self.run_dir.path,
             role=role_name,
-            read_only=self.locked if role_name != self.lock_owner else frozenset(),
+            read_only=self.locked_whole if role_name != self.lock_owner else frozenset(),
+            locked_tests=self.locked_tests if role_name != self.lock_owner else {},
             **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
@@ -399,7 +406,11 @@ class StudioOrchestrator:
         if size <= self.cfg.teams.fresh_continuation_tokens:
             return state, goal, nudge
         self.sink.emit("fresh_continuation", subtask=run.subtask.id, role=run.role, estimated_tokens=size)
-        return None, f"{goal}\n\n{self._steer('fresh-continuation', run)}\n\n{nudge}", None
+        said = self._steer("fresh-continuation", run)
+        # the role's own diff, so it does not spend its steps reading back what it wrote (AIR-9 layer 05,
+        # 2026-10-23: a tester's retry read its files for all 20 steps and never wrote)
+        diff = own_changes(self.worktree, run.before) if self.worktree and run.before else ""
+        return None, "\n\n".join(p for p in (goal, said, diff, nudge) if p), None
 
     def _context(
         self,
@@ -607,24 +618,76 @@ class StudioOrchestrator:
             fix_rounds=run.fix_rounds,
         )
 
-    def lock(self, paths: Sequence[str], owner: str) -> None:
+    def lock(self, paths: Sequence[str], owner: str, *, since: str | None = None) -> None:
         """From now on only role `owner` may write `paths` (from the worktree's root): the file tools refuse
         them to every other role, and the final gate puts them back as they are now, whatever a shell
-        did to them. The worktree is committed first: that commit is what they are put back to."""
+        did to them. The worktree is committed first: that commit is what they are put back to.
+
+        A Python file is locked by definition (AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder
+        from fixing the fakes in a file the tester had only added tests to): only the top-level functions
+        and classes the tester added or changed since the base are locked. Any other file, and a Python
+        file that does not parse, is locked whole.
+
+        With `since` (a commit: the tests' mend locks again from the one before it), a file already locked by
+        definition keeps the names it had that are still defined, and adds what changed since `since`: the
+        mend's own work, not the coder's changes to fakes before it. A file locked whole stays whole unless it
+        now splits as a fresh lock would."""
         assert self.worktree is not None
+        previous = self.locked_tests
         self.lock_commit = commit_wip(self.worktree, f"studio: {owner} (locked)")
+        whole: set[str] = set()
+        tests: dict[str, frozenset[str]] = {}
+        for path in sorted(set(paths)):
+            names = None
+            if path.endswith(".py"):
+                text = self._text_at(self.lock_commit, path)
+                if text is not None:
+                    names = written_by_tester(self._text_at(self.base_sha, path), text)
+                    if since is not None and names is not None and path in previous:
+                        mended = written_by_tester(self._text_at(since, path), text)
+                        defined = written_by_tester(None, text) or frozenset()
+                        names = (previous[path] & defined) | (mended or frozenset())
+            if names is None:
+                whole.add(path)
+            else:
+                tests[path] = names
         self.locked, self.lock_owner = frozenset(paths), owner
-        self.sink.emit("locked", owner=owner, paths=sorted(self.locked))
+        self.locked_whole, self.locked_tests = frozenset(whole), tests
+        self.sink.emit(
+            "locked",
+            owner=owner,
+            paths=sorted(self.locked),
+            tests={p: sorted(n) for p, n in sorted(tests.items())},
+        )
+
+    def _text_at(self, commit: str, path: str) -> str | None:
+        """`path`'s text in `commit`; None when the commit has no such file."""
+        assert self.worktree is not None
+        if not commit:
+            return None
+        kind, sha = find_file(self.worktree, commit, path)
+        return read_blob(self.worktree, sha) if kind == "blob" else None
 
     def _restore_locked(self) -> None:
         """The locked files as `lock` found them: a change to one (a shell's, since the file tools refuse) is
-        undone before the gate, and an event names it."""
+        undone before the gate, and an event names it. A file locked by definition is put back whole only
+        when one of the tester's definitions changed or the file no longer parses; other edits stay."""
         if not self.locked or self.worktree is None:
             return
         changed = differs_from(self.worktree, self.lock_commit, sorted(self.locked))
-        if changed:
-            put_back(self.worktree, self.lock_commit, changed)
-            self.sink.emit("locked_restored", paths=changed)
+        back = [p for p in changed if p not in self.locked_tests]
+        for path in changed:
+            names = self.locked_tests.get(path)
+            if names is None:
+                continue
+            was = self._text_at(self.lock_commit, path) or ""
+            file = self.worktree / path
+            now = file.read_text(errors="replace") if file.is_file() else None
+            if now is None or touched(names, was, now) != []:
+                back.append(path)
+        if back:
+            put_back(self.worktree, self.lock_commit, back)
+            self.sink.emit("locked_restored", paths=back)
 
     async def _run_plan(self, plan: Plan, test_cmd: str | None) -> None:
         for wave in schedule(plan, satisfied=frozenset(self.runs)):
@@ -648,7 +711,7 @@ class StudioOrchestrator:
         """Raise PlanError when a plan from outside the chief cannot run (see the module's `check_plan`)."""
         check_plan(self.cfg, plan)
 
-    def _prepare(self, repo: Path, test_cmd: str | None) -> None:
+    def _prepare(self, repo: Path, test_cmd: str | None, focus: Sequence[str] = ()) -> None:
         if not self.cfg.repo_map.enabled:
             return
         text, cached = build_repo_map(
@@ -657,6 +720,7 @@ class StudioOrchestrator:
             max_chars=self.cfg.repo_map.max_chars,
             depth=self.cfg.repo_map.depth,
             cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
+            focus=focus,
         )
         self.preamble = text
         self.sink.emit("repo_map", chars=len(text), cached=cached)
@@ -737,6 +801,7 @@ class StudioOrchestrator:
         scope_tests: bool = False,
         checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None = None,
         gate_follow_up: str | None = None,
+        map_focus: Sequence[str] = (),
         amend_tests: Callable[[], Awaitable[bool]] | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
@@ -780,7 +845,7 @@ class StudioOrchestrator:
         self.gate_memo = GateMemo()
         self.checkpoints, self.halted = dict(checkpoints or {}), False
         self.amend_tests = amend_tests
-        self._prepare(self.worktree, test_cmd)
+        self._prepare(self.worktree, test_cmd, map_focus)
         chosen: Plan | None = given
         final = ""
         if given is not None:

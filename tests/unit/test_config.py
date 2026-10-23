@@ -977,6 +977,11 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
         load_config(write(tmp_path, bad))
 
 
+def test_the_tester_has_twenty_steps() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    assert cfg.roles["tester"].max_steps == 20
+
+
 def test_a_role_carries_1500_chars_of_cut_reasoning_unless_told_otherwise(tmp_path: Path) -> None:
     """AIR-30: on by default, so every thinking role (architect, tester, chief, research) carries a cut
     deliberation to its next turn; it does nothing for a role that does not think."""

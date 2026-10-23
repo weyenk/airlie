@@ -7,6 +7,7 @@ import pytest
 
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
+    GUIDE_HEADING,
     layer_goal,
     layer_plan,
     layers_brief,
@@ -78,7 +79,8 @@ def test_with_a_tester_role_a_layer_with_criteria_is_the_tests_then_the_build_ag
     assert "Show the avatar." in tests.brief and "AC2" in tests.brief and "AC1" not in tests.brief
     assert "Do not write the feature" in tests.brief and "the only red" in tests.brief
     assert "NOT happen" in tests.brief and "Every test asserts" in tests.brief
-    assert "They are the contract" in build.brief and "cannot change their files" in build.brief
+    assert "They are the contract" in build.brief and "you cannot change them" in build.brief
+    assert "What else is in their files was there before them" in build.brief
     assert "Write the tests first" not in build.brief and "AC2" in build.brief
     assert "once they pass, you are done" in build.brief and "whole suite after review" in build.brief
     assert len(schedule(plan)) == 2
@@ -497,11 +499,11 @@ def test_the_briefs_ask_for_criteria_and_layers_that_are_red_before_the_change()
 
 def test_layers_brief_carries_the_guide_and_the_survey_only_when_there_are_some() -> None:
     plain = layers_brief(STORY, 4)
-    assert "Already read for you" not in plain and "Notes from reading the code" not in plain
+    assert "Read for you:" not in plain and "Notes from reading the code" not in plain
     full = layers_brief(STORY, 4, guide="### AGENTS.md\nrun the gate", survey="- schema.py:429 WebSpec")
-    assert "Already read for you (do not read these again)\n### AGENTS.md\nrun the gate" in full
+    assert GUIDE_HEADING + "\n### AGENTS.md\nrun the gate" in full
     assert "Notes from reading the code while the story was refined (data)\n- schema.py:429 WebSpec" in full
-    assert full.index("Already read") < full.index("Notes from reading") < full.index("Rules:")
+    assert full.index("Read for you:") < full.index("Notes from reading") < full.index("Rules:")
 
 
 def test_the_survey_brief_asks_for_notes_not_a_plan_and_quotes_the_request_as_data() -> None:
@@ -520,10 +522,8 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
 
 def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_there_are_some() -> None:
     plain = layer_plan(STORY, LAYERS, 1, build_role="coder").subtasks[0].brief
-    assert "Already read for you" not in plain
+    assert "Read for you:" not in plain
     full = layer_plan(STORY, LAYERS, 1, build_role="coder", guide="### src/profile.py\n```\nx = 1\n```")
     brief = full.subtasks[0].brief
-    assert "Already read for you (do not read these again)\n### src/profile.py" in brief
-    assert brief.index("Already read for you") < brief.index(
-        "Show the avatar."
-    )  # before the layer's own text
+    assert GUIDE_HEADING + "\n### src/profile.py" in brief
+    assert brief.index("Read for you:") < brief.index("Show the avatar.")  # before the layer's own text

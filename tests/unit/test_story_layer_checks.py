@@ -21,6 +21,7 @@ from airlie.story.layer_checks import (
     feedback,
     feedback_said,
     findings_text,
+    is_testers_test,
     pytest_runner,
     static_findings,
 )
@@ -383,9 +384,10 @@ TODAYS_TESTER = (
     "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
     "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
     "message, no change) passes now, where nothing happens either: put that check in the same test "
-    "that triggers the behaviour, before the trigger, or drop it. Every test that was there before "
-    "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
-    "run_tests and check that your new tests are the only red, then stop."
+    "that triggers the behaviour, before the trigger, or drop it. A test of something the brief keeps as "
+    "it is passes now and always will: delete it. Every test that was there before "
+    "must still pass. Keep a test for each acceptance criterion that changes something. "
+    "Do not write the feature. Run run_tests and check that your new tests are the only red, then stop."
 )
 TODAYS_CODER = (
     "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
@@ -413,6 +415,7 @@ def test_with_no_advice_feedback_is_exactly_todays_text(
     for f in found:
         listed.append(f"- {f.test}: {f.why}")
         if f.kind == "passes_before_code":
+            listed.append("  " + hub_text("passes-before-code-choice"))
             listed.append("  " + hub_text("loose-match"))
     todays = "\n".join([TODAYS_HEADER, *listed, what])
     assert feedback(found, before_code=before_code, advice=advice) == todays
@@ -425,6 +428,16 @@ def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> N
         [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
     )
     assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text
+
+
+def test_a_test_that_passes_before_code_is_told_it_may_be_deleted() -> None:
+    """AIR-9 layer 05: the brief kept some notes role-less, the tester tested that, it passed before the code
+    and the layer blocked; the retry may delete such a test."""
+    text = feedback(
+        [Finding("passes_before_code", "tests/test_p.py::test_keeps", "it passes before the code", "...")]
+    )
+    assert "test_keeps" in text
+    assert "delete it (edit_file with the whole test as old and nothing as new)" in text
 
 
 LOOSE = Finding(
@@ -440,7 +453,14 @@ def test_feedback_said_is_the_text_and_the_hub_ids_in_it_in_order(advice: str | 
     tester = feedback_said([LOOSE, NONE_IN_IT, LOOSE], advice=advice)
     assert tester == (
         feedback([LOOSE, NONE_IN_IT, LOOSE], advice=advice),
-        ("checks-found", "loose-match", "loose-match", "checks-fix-before-code"),
+        (
+            "checks-found",
+            "passes-before-code-choice",
+            "loose-match",
+            "passes-before-code-choice",
+            "loose-match",
+            "checks-fix-before-code",
+        ),
     )
     coder = feedback_said([NONE_IN_IT], before_code=False, advice=advice)
     assert coder == (
@@ -466,3 +486,13 @@ async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
     )
     out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
     assert "NameError" in out and "test_good" not in out
+
+
+def test_is_testers_test() -> None:
+    by = {"tests/test_p.py": {"test_new", "TestX"}}
+    assert is_testers_test("tests/test_w.py::test_a", {"tests/test_w.py"}, by)
+    assert is_testers_test("tests/test_p.py::test_new", set(), by)
+    assert not is_testers_test("tests/test_p.py::test_old", set(), by)
+    assert is_testers_test("tests/test_p.py::TestX::test_a[1]", set(), by)
+    assert is_testers_test("tests/test_p.py::test_new[a-b]", set(), by)
+    assert not is_testers_test("tests/test_p.py", set(), by)

@@ -18,6 +18,7 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text  # not `text`: several tests have a local of that name
 from airlie.router import ChiefRouter, RouteDecision
 from airlie.supervisor.advice import SUPERVISOR
+from airlie.teams.worktree import commit_wip, head_sha, own_changes
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
@@ -899,6 +900,22 @@ async def test_the_repo_map_is_of_the_worktree_the_roles_build_on_not_of_the_per
     assert "feature_only.py" in chief.requests[0].messages[1].content
 
 
+async def test_the_story_build_maps_the_layers_files(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "m.py").write_text("def made() -> None: ...\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "m")
+    cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
+    build = Plan((), (Subtask("build", "write it", "docs"),))
+    engine = FakeEngine({"docs": [DONE]})
+    await StudioOrchestrator(cfg, engine, router=ChiefRouter()).execute_task(
+        "g", repo=repo, plan=build, detach=True, synthesise=False, map_focus=["src/m.py"]
+    )
+    first = next(r for r in engine.requests if r.role == "docs").messages[1].content
+    assert "src/m.py (" in first and "def made() -> None" in first and "## In scope" not in first
+
+
 # ---- the test gate ----
 
 
@@ -1028,6 +1045,165 @@ async def test_locked_files_are_refused_to_other_roles_and_put_back_before_the_g
     log = events(report)
     assert [e["paths"] for e in log if e["kind"] == "locked"] == [["note.txt"]]
     assert [e["paths"] for e in log if e["kind"] == "locked_restored"] == [["note.txt"]]
+
+
+LOCKED_BASE = "class FakeBoard:\n    def get(self):\n        return 1\n\n\ndef test_old():\n    assert 1\n"
+LOCKED_TESTER = LOCKED_BASE + "\n\ndef test_new():\n    assert FakeBoard().get() == 1\n"
+
+
+def repo_with_a_test_file(tmp_path: Path, base: str = LOCKED_BASE) -> Path:
+    repo = repo_with_marker_tests(tmp_path)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_p.py").write_text(base)
+    env = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", *env, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "commit", "-q", "-m", "tests"], cwd=repo, check=True)
+    return repo
+
+
+WRITE_TESTER = FakeReply(
+    tool_calls=[
+        ToolCall("n", "write_file", json.dumps({"path": "tests/test_p.py", "content": LOCKED_TESTER}))
+    ]
+)
+
+
+async def test_lock_records_the_testers_definitions(tmp_path: Path) -> None:
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+    )
+    assert report.tests == {"studio": True}
+    assert [e["tests"] for e in events(report) if e["kind"] == "locked"] == [
+        {"tests/test_p.py": ["test_new"]}
+    ]
+    assert orch.locked == frozenset({"tests/test_p.py"}) and orch.locked_whole == frozenset()
+
+
+@pytest.mark.parametrize("changed", ["FakeBoard", "test_new"])
+async def test_a_shell_change_to_a_fake_survives_the_gate_and_one_to_a_test_is_put_back(
+    tmp_path: Path, changed: str
+) -> None:
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    edited = LOCKED_TESTER.replace("return 1", "return 2" if changed == "FakeBoard" else "return 1").replace(
+        "assert FakeBoard().get() == 1",
+        "assert True" if changed == "test_new" else "assert FakeBoard().get() == 1",
+    )
+
+    async def a_shell_edits_it() -> bool:
+        assert orch.worktree is not None
+        (orch.worktree / "tests" / "test_p.py").write_text(edited)
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=a_shell_edits_it,
+    )
+    assert report.tests == {"studio": True}
+    assert orch.worktree is not None
+    now = (orch.worktree / "tests" / "test_p.py").read_text()
+    restored = [e["paths"] for e in events(report) if e["kind"] == "locked_restored"]
+    if changed == "FakeBoard":
+        assert now == edited and restored == []
+    else:
+        assert now == LOCKED_TESTER and restored == [["tests/test_p.py"]]
+
+
+AIR9_BASE = (
+    "class FakeBoard:\n    def comment(self, key, text):\n        self.said = (key, text)\n\n\n"
+    "def test_old():\n    assert 1\n"
+)
+AIR9_TESTER = AIR9_BASE + "\n\ndef test_new():\n    FakeBoard().comment('AIR-9', 'hi', role='coder')\n"
+
+
+async def test_the_coder_edits_a_fake_beside_the_testers_test_but_not_the_test(tmp_path: Path) -> None:
+    """AIR-9 layer 05 (2026-10-22) on the real tool path: the coder's edit_file adds a parameter to the fake
+    in the file the tester added `test_new` to, and is kept after the gate; its edit inside `test_new` is
+    refused and leaves the file as it was."""
+    repo = repo_with_a_test_file(tmp_path, AIR9_BASE)
+    write_tester = FakeReply(
+        tool_calls=[
+            ToolCall("n", "write_file", json.dumps({"path": "tests/test_p.py", "content": AIR9_TESTER}))
+        ]
+    )
+    fixed_fake = AIR9_TESTER.replace(
+        "def comment(self, key, text):", "def comment(self, key, text, role=None):"
+    )
+
+    def edit(call_id: str, old: str, new: str) -> FakeReply:
+        args = {"path": "tests/test_p.py", "old": old, "new": new}
+        return FakeReply(tool_calls=[ToolCall(call_id, "edit_file", json.dumps(args))])
+
+    fix_the_fake = edit(
+        "fix-fake", "def comment(self, key, text):", "def comment(self, key, text, role=None):"
+    )
+    weaken_the_test = edit("weaken-test", "FakeBoard().comment('AIR-9', 'hi', role='coder')", "pass")
+    engine = FakeEngine(
+        {
+            "qa": [write_tester, DONE],
+            "coder": [fix_the_fake, weaken_the_test, WRITE_PASS, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    tools = {"builtin": ["read_file", "write_file", "edit_file", "list_dir", "run_tests"]}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"tools": tools}), engine, router=ChiefRouter())
+    seen: dict[str, str] = {}
+
+    async def lock() -> bool:
+        orch.lock(["tests/test_p.py"], orch.runs["tests"].role)
+        return True
+
+    async def before_gate() -> bool:
+        assert orch.worktree is not None
+        seen["before_gate"] = (orch.worktree / "tests" / "test_p.py").read_text()
+        return True
+
+    report = await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=before_gate,
+    )
+    assert report.tests == {"studio": True}
+    results = {
+        m.tool_call_id: m.content
+        for r in engine.requests
+        if r.role == "coder"
+        for m in r.messages
+        if m.role == "tool"
+    }
+    assert not results["fix-fake"].startswith("error")
+    assert "touches test_new in tests/test_p.py" in results["weaken-test"]
+    assert seen["before_gate"] == fixed_fake  # the refused edit left the file as the fake's fix left it
+    assert orch.worktree is not None and (orch.worktree / "tests" / "test_p.py").read_text() == fixed_fake
+    assert [e["paths"] for e in events(report) if e["kind"] == "locked_restored"] == []
 
 
 async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_path: Path) -> None:
@@ -1205,6 +1381,59 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     assert ev["repaired"] is False
 
 
+MENDS = {
+    "changes a test": ("assert FakeBoard().get() == 1", "assert True", {"test_new"}),
+    "adds a test": (
+        "assert FakeBoard().get() == 1",
+        "assert FakeBoard().get() == 2\n\n\ndef test_extra():\n    assert 1",
+        {"test_new", "test_extra"},
+    ),
+    "renames a test": ("def test_new():", "def test_renamed():", {"test_renamed"}),
+}
+
+
+@pytest.mark.parametrize("mend", MENDS)
+async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_definitions(
+    tmp_path: Path, mend: str
+) -> None:
+    old, new, expected = MENDS[mend]
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    path = "tests/test_p.py"
+
+    async def lock() -> bool:
+        orch.lock([path], orch.runs["tests"].role)
+        return True
+
+    seen: dict[str, dict[str, frozenset[str]]] = {}
+
+    async def coder_changes_the_fake_then_a_mend() -> bool:
+        assert orch.worktree is not None
+        file = orch.worktree / path
+        assert orch.locked_tests == {path: frozenset({"test_new"})}
+        file.write_text(file.read_text().replace("return 1\n", "return 2\n", 1))  # a syntax change
+        before = commit_wip(orch.worktree, "coder's change to the fake")
+        file.write_text(file.read_text().replace(old, new, 1))
+        orch.lock([path], orch.lock_owner, since=before)
+        seen["since"] = dict(orch.locked_tests)
+        orch.lock([path], orch.lock_owner)  # a fresh lock would call the coder's fake the tester's
+        seen["fresh"] = dict(orch.locked_tests)
+        return True
+
+    await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=coder_changes_the_fake_then_a_mend,
+    )
+    assert seen["since"] == {path: frozenset(expected)}
+    assert "FakeBoard" in seen["fresh"][path]
+
+
 async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(tmp_path: Path) -> None:
     """The single-call loop (tools/loop.py) reports no-more-tools to studio, which records it as an event."""
     from airlie.tools.protocol import ToolContext
@@ -1242,3 +1471,72 @@ async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(t
         {"id": "no-more-tools", "role": "chief"},
         {"id": "no-more-tools", "role": "reviewer", "subtask": "fix"},
     ]
+
+
+WRITE_TEST_X = FakeReply(
+    tool_calls=[
+        ToolCall(
+            "x",
+            "write_file",
+            json.dumps({"path": "tests/test_x.py", "content": "def test_x():\n    assert 1\n"}),
+        )
+    ]
+)
+
+
+async def fresh_follow_up(tmp_path: Path, threshold: int) -> list[str]:
+    """A coder writes tests/test_x.py, then is sent back through `follow_up` with fresh_continuation_tokens
+    at `threshold`; the user messages of the follow-up's request."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_TEST_X, DONE, DONE], "reviewer": [APPROVE]})
+    teams = {"orchestrator": "native", "max_steps": 6, "fresh_continuation_tokens": threshold}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"teams": teams}), engine, router=ChiefRouter())
+
+    first: list[int] = []
+
+    async def before_gate() -> bool:
+        first.append(len(engine.requests))  # the follow-up's own first request comes next
+        await orch.follow_up("build", "write what is missing")
+        return False
+
+    await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, before_gate=before_gate
+    )
+    request = engine.requests[first[0]]
+    return [str(m.content) for m in request.messages if m.role == "user"]
+
+
+async def test_a_fresh_continuation_hands_the_role_its_own_diff(tmp_path: Path) -> None:
+    """AIR-9 layer 05, 2026-10-23: a tester sent back on a long conversation spent all 20 steps re-reading
+    the files it had written. A fresh start now carries the diff it made."""
+    users = await fresh_follow_up(tmp_path, 1)
+    assert len(users) == 1
+    goal = users[0]
+    assert "```diff\n" in goal and "+def test_x" in goal
+    assert hub_text("fresh-continuation") in goal
+    assert goal.index("```diff") < goal.index("write what is missing")  # the nudge follows the diff
+
+
+async def test_a_short_conversation_continues_without_a_diff(tmp_path: Path) -> None:
+    users = await fresh_follow_up(tmp_path, 10**9)
+    assert users[-1] == "write what is missing"
+    assert not any("```diff" in u for u in users)
+
+
+def test_a_diff_over_the_limit_is_listed_by_file(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    since = head_sha(repo)
+    (repo / "tests").mkdir()
+    body = "".join(f"def test_{i}():\n    assert {i}\n" for i in range(30))
+    (repo / "tests" / "test_x.py").write_text(body)
+    (repo / "README.md").write_text("")  # one line removed
+    out = own_changes(repo, since, limit=100)
+    assert out.startswith("Too long to show; the files you changed:")
+    assert "tests/test_x.py (+60 \u22120)" in out and "README.md (+0 \u22121)" in out
+    assert "@@" not in out
+    whole = own_changes(repo, since)
+    assert whole.startswith("```diff\n") and whole.endswith("\n```") and "+def test_29" in whole
+    assert own_changes(repo, head_sha(repo), limit=100).count("README") == 1  # untracked still shown
+    (repo / "tests" / "test_x.py").unlink()
+    (repo / "README.md").write_text("hi\n")
+    assert own_changes(repo, since) == ""
