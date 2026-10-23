@@ -522,8 +522,10 @@ class StoryPipeline:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
         st.story = story.to_dict()
         st.finish("refine")
-        # after the finish, so a note that cannot be posted never has the model asked again
-        await self.board.comment(card, note(_story_note(story)))
+        # after the finish, so a note that cannot be posted never has the model asked again.
+        # Each note is posted as the role that wrote it (the prefix keeps it recognisable as airlie's):
+        # story → product, layers → architect, layer built → build_role, the PR stack in _finish → review.
+        await self.board.comment(card, note(_story_note(story)), role=self.s.product_role)
         return story
 
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
@@ -564,7 +566,7 @@ class StoryPipeline:
         )
         st.layers = [x.to_dict() for x in layers]
         st.finish("layers")
-        await self.board.comment(card, note(_layers_note(layers)))
+        await self.board.comment(card, note(_layers_note(layers)), role=self.s.architect_role)
         return layers
 
     async def _trunk_ref(self, st: StoryState) -> str:
@@ -711,7 +713,7 @@ class StoryPipeline:
         st.save()
         st.emit("layer_built", layer=nn, branch=branch, sha=sha)
         built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
-        await self.board.comment(card, note(built))
+        await self.board.comment(card, note(built), role=self.s.build_role)
 
     async def _check_tests(
         self, st: StoryState, orch: StudioOrchestrator, wt: Path, base_sha: str, nn: str
@@ -889,7 +891,8 @@ class StoryPipeline:
             f"stacked draft PRs, bottom layer first:\n{links}\n"
             "Review and merge bottom-up; only a human merges."
         )
-        await self.board.comment(card, note(text))
+        # the PR stack is the reviewer's to read: posted as the studio's review role (story.review.role)
+        await self.board.comment(card, note(text), role=self.cfg.studio.review.role)
         await self.board.move(card, "review")
         st.finish("review")
 
