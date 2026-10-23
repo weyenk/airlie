@@ -165,9 +165,14 @@ async def test_the_testers_retry_is_a_steer_event_per_hub_text_it_holds(tmp_path
     """Spec 2026-10-22-prompt-hub, "Steering events": what the pipeline sends a role is counted by hub id."""
     st, engine = await run(tmp_path, [FEATURE, DONE], tester=[VACUOUS, LISTED, RED, LISTED])
     assert st.blocked is None and "01" in st.built
-    assert steers(st) == [("checks-found", "tester", "01"), ("checks-fix-before-code", "tester", "01")]
+    assert steers(st) == [
+        ("checks-found", "tester", "01"),
+        ("passes-before-code-choice", "tester", "01"),
+        ("checks-fix-before-code", "tester", "01"),
+    ]
     [retry] = [p for p in prompts(engine, "tester") if "tests/test_calc.py::test_add_again" in p]
     assert hub_text("checks-found") in retry and hub_text("checks-fix-before-code") in retry
+    assert hub_text("passes-before-code-choice") in retry
 
 
 async def test_an_existing_test_already_red_on_the_base_does_not_send_the_tester_back(tmp_path: Path) -> None:

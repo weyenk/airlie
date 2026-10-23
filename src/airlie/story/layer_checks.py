@@ -9,7 +9,8 @@ The test files are model output, read as data: parsed with `ast`, never imported
 run as the gate runs them (tools.shell.run_cmd: the agent environment, killed on a timeout).
 
 What the tests' author is told on a retry, and the tester on a mend, is steering in the prompt hub
-(`checks-found`, `checks-fix-before-code`, `checks-fix-with-code`, `loose-match`, `amend`); `feedback_said`
+(`checks-found`, `checks-fix-before-code`, `checks-fix-with-code`, `passes-before-code-choice`,
+`loose-match`, `amend`); `feedback_said`
 and `amend_feedback_said` return the ids with the text, and the pipeline, which sends it, emits a `steer`
 event per id. The labels of the findings (PASSES_BEFORE_CODE and the others) stay here, beside the checks
 that find them."""
@@ -372,18 +373,21 @@ def feedback_said(
     findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None
 ) -> tuple[str, tuple[str, ...]]:
     """What the tests' author is told on its retry, and the hub ids of the steering in it, in order: the
-    caller that sends it emits a `steer` event for each. Each finding and why, a `loose-match` hint under a
-    test that passes before the code and has a `match=` pattern, an existing test the layer changed as it was
-    on the base, then what to do. `before_code` is the tester's (`checks-fix-before-code`: the code is not
-    written yet); else the coder's, which wrote tests and code together (`checks-fix-with-code`). `advice`
+    caller that sends it emits a `steer` event for each. Each finding and why, a
+    `passes-before-code-choice` line under a test that passes before the code (delete it or make it fail), a
+    `loose-match` hint under such a test that has a `match=` pattern, an existing test the layer changed as
+    it was on the base, then what to do. `before_code` is the tester's (`checks-fix-before-code`: the code is
+    not written yet); else the coder's, which wrote tests and code together (`checks-fix-with-code`). `advice`
     is the supervisor's: its section goes after the findings and before the rules, so the rules are the last
     thing the role reads, whole, whatever the advice says. With none, the text is today's."""
     said = _Said()
     listed: list[str] = [said("checks-found")]
     for f in findings:
         listed.append(f"- {f.test}: {f.why}")
-        if f.kind == "passes_before_code" and "match=" in f.source:
-            listed.append("  " + said("loose-match"))
+        if f.kind == "passes_before_code":
+            listed.append("  " + said("passes-before-code-choice"))
+            if "match=" in f.source:
+                listed.append("  " + said("loose-match"))
         if f.kind == "existing_test_changed":
             listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
     found = "\n".join(listed)

@@ -6,6 +6,7 @@ governs:
   tests.findings: fix
   tests.fail-first: required
   tests.negative: inside-trigger
+  tests.unchanged: none
   tests.old: still-pass
   tests.criteria: each
   feature.code: never
@@ -16,4 +17,4 @@ why: |
   checks nothing happens came with b7c2b75 (2026-10-19, AIR-31 layer 02: a test that a feature is a no-op
   below its threshold passed on the base whatever the tester did, and "make it fail" gave no way out).
 ---
-Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, and pass once the brief is built. A test that only checks that nothing happens (no event, no message, no change) passes now, where nothing happens either: put that check in the same test that triggers the behaviour, before the trigger, or drop it. Every test that was there before must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run run_tests and check that your new tests are the only red, then stop.
+Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, and pass once the brief is built. A test that only checks that nothing happens (no event, no message, no change) passes now, where nothing happens either: put that check in the same test that triggers the behaviour, before the trigger, or drop it. A test of something the brief keeps as it is passes now and always will: delete it. Every test that was there before must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run run_tests and check that your new tests are the only red, then stop.
