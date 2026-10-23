@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from airlie.tools.fs import LOCKED, EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.fs import LOCKED, LOCKED_TESTS, UNPARSEABLE, EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
@@ -420,6 +420,87 @@ async def test_write_file_and_edit_file_refuse_a_locked_file_and_say_why(tmp_pat
     assert (c.worktree / "tests/test_calc.py").read_text().endswith("== 6\n")
     # a file beside it is the coder's own
     assert (await WriteFile().run({"path": "tests/test_more.py", "content": "x = 1\n"}, c)).ok
+
+
+BOARD_FILE = (
+    "import os\n\n\n"
+    "class FakeBoard:\n"
+    "    def comment(self, key, text):\n"
+    "        return None\n\n\n"
+    "def test_new():\n"
+    "    assert FakeBoard().comment('A', 'b') is None\n"
+)
+
+
+def board_ctx(tmp_path: Path) -> ToolContext:
+    c = replace(ctx(tmp_path), locked_tests={"tests/test_p.py": frozenset({"test_new"})})
+    put(c, "tests/test_p.py", BOARD_FILE)
+    return c
+
+
+async def test_the_coder_may_change_a_fake_in_a_file_the_tester_added_tests_to(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "def comment(self, key, text):",
+            "new": "def comment(self, key, text, role=None):",
+        },
+        c,
+    )
+    assert r.ok, r.output
+    assert "role=None" in (c.worktree / "tests/test_p.py").read_text()
+    # the same through a loose match (blank lines ignored in `old`)
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "import os\nclass FakeBoard:",
+            "new": "import os\n\n\nclass FakeBoard:",
+        },
+        c,
+    )
+    assert r.ok, r.output
+
+
+async def test_an_edit_that_touches_the_testers_test_is_refused_and_names_it(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run({"path": "tests/test_p.py", "old": "'b') is None", "new": "'b') is not None"}, c)
+    assert r.ok is False
+    assert r.output == LOCKED_TESTS.format(path="tests/test_p.py", names="test_new")
+    assert "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    # a loose match that lands inside the test is refused too
+    r = await EditFile().run(
+        {
+            "path": "tests/test_p.py",
+            "old": "def test_new():\n\n    assert FakeBoard().comment('A', 'b') is None",
+            "new": "def test_new():\n    assert FakeBoard().comment('A', 'b') is not None",
+        },
+        c,
+    )
+    assert r.ok is False and "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+
+
+async def test_write_file_that_drops_the_testers_test_is_refused(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await WriteFile().run({"path": "tests/test_p.py", "content": "import os\n"}, c)
+    assert r.ok is False and "test_new" in r.output
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    kept = BOARD_FILE.replace("return None", "return 1")
+    assert (await WriteFile().run({"path": "tests/test_p.py", "content": kept}, c)).ok
+    # a file that is not in locked_tests, and a new file, write as before
+    assert (await WriteFile().run({"path": "tests/test_q.py", "content": "x = 1\n"}, c)).ok
+
+
+async def test_an_edit_that_leaves_the_file_unparseable_is_refused(tmp_path: Path) -> None:
+    c = board_ctx(tmp_path)
+    r = await EditFile().run({"path": "tests/test_p.py", "old": "return None", "new": "return ("}, c)
+    assert r.ok is False and r.output == UNPARSEABLE.format(path="tests/test_p.py")
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+    r = await WriteFile().run({"path": "tests/test_p.py", "content": "def test_new(:\n"}, c)
+    assert r.ok is False and r.output == UNPARSEABLE.format(path="tests/test_p.py")
+    assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
 
 
 # ---- the helpers, to the character (PR 105's mutation gate: fs.py had 65 surviving mutants) ----

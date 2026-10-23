@@ -11,6 +11,7 @@ from typing import Any
 
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap, resolve, secret_like
+from airlie.tools.test_lock import touched
 
 SKIP_DIRS = {
     ".git",
@@ -210,6 +211,31 @@ def _locked(ctx: ToolContext, p: Path) -> bool:
     return p.resolve().relative_to(ctx.worktree.resolve()).as_posix() in ctx.read_only
 
 
+LOCKED_TESTS = (
+    "error: this change touches {names} in {path}: tests written before you for this layer, your contract, "
+    "and you cannot change them. Make them pass with the code. What else is in the file was there before "
+    "them (fakes, helpers, imports): you may change that."
+)
+UNPARSEABLE = (
+    "error: {path} would not parse after this change, so airlie cannot tell that the tests written before "
+    "you are untouched. Change it in steps that each leave it whole."
+)
+
+
+def _refused_by_definition(ctx: ToolContext, p: Path, shown: str, before: str, after: str) -> str | None:
+    """The error that refuses changing `before` to `after` in `p` when that touches the tester's definitions
+    in it (`ctx.locked_tests`; AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder from fixing the
+    fakes beside the tests); None when `p` holds none of them or the change leaves them be. `p` comes from
+    `resolve`, in the worktree."""
+    names = ctx.locked_tests.get(p.resolve().relative_to(ctx.worktree.resolve()).as_posix())
+    if not names:
+        return None
+    hit = touched(names, before, after)
+    if hit is None:
+        return UNPARSEABLE.format(path=shown)
+    return LOCKED_TESTS.format(path=shown, names=", ".join(hit)) if hit else None
+
+
 class WriteFile:
     name = "write_file"
     description = (
@@ -229,6 +255,12 @@ class WriteFile:
             p = resolve(ctx, str(args["path"]))
             if _locked(ctx, p):
                 return ToolResult(False, LOCKED.format(path=args["path"]))
+            if p.is_file() and (
+                refused := _refused_by_definition(
+                    ctx, p, str(args["path"]), p.read_text(errors="replace"), str(args["content"])
+                )
+            ):
+                return ToolResult(False, refused)
             if (
                 p.is_file()
                 and (n := len(p.read_text(errors="replace").splitlines()))
@@ -335,7 +367,10 @@ class EditFile:
             span = _loose_span(text, old)
             if span is None:
                 return ToolResult(False, _not_found(str(args["path"]), old, text))
-            p.write_text(text[: span[0]] + new + text[span[1] :])
+            edited = text[: span[0]] + new + text[span[1] :]
+            if refused := _refused_by_definition(ctx, p, str(args["path"]), text, edited):
+                return ToolResult(False, refused)
+            p.write_text(edited)
             return ToolResult(
                 True,
                 f"edited {args['path']} (`old` matched with its blank lines and trailing spaces ignored; "
@@ -343,7 +378,10 @@ class EditFile:
             )
         if n > 1:
             return ToolResult(False, f"error: `old` text occurs {n} times in {args['path']}; make it unique")
-        p.write_text(text.replace(old, new, 1))  # pragma: no mutate  (n == 1 here, so the count is moot)
+        edited = text.replace(old, new, 1)  # pragma: no mutate  (n == 1 here, so the count is moot)
+        if refused := _refused_by_definition(ctx, p, str(args["path"]), text, edited):
+            return ToolResult(False, refused)
+        p.write_text(edited)
         return ToolResult(True, f"edited {args['path']}")
 
 
