@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from airlie.tools.test_lock import touched, written_by_tester
 
 BASE = """\
@@ -91,3 +93,31 @@ def test_touched_names_a_changed_or_removed_definition() -> None:
     deleted = BASE
     assert touched(names, before, deleted) == ["test_new"]
     assert touched(names, before, "def broken(:\n") is None
+
+
+LOCKED = BASE + "\n\ndef test_new() -> None:\n    pass\n"
+
+
+@pytest.mark.parametrize(
+    ("statement", "reported"),
+    [
+        ("pytestmark = pytest.mark.skip", ["pytestmark"]),
+        ("test_new = None", ["test_new"]),
+        ("del test_new", ["test_new"]),
+        ("test_new.__test__ = False", ["test_new"]),
+        ("if True:\n\n    def test_new() -> None:\n        pass", ["test_new"]),
+        ("globals()['test_new'] = lambda: None", ["test_new"]),
+    ],
+)
+def test_a_module_statement_that_switches_off_a_locked_test_touches_it(
+    statement: str, reported: list[str]
+) -> None:
+    assert touched({"test_new"}, LOCKED, LOCKED + "\n\n" + statement + "\n") == reported
+
+
+def test_a_module_statement_that_names_no_locked_test_touches_nothing() -> None:
+    before = LOCKED.replace("import pytest\n", "import pytest\n\nFAKE_LIMIT = 3\n")
+    after = before.replace("FAKE_LIMIT = 3", "FAKE_LIMIT = 4").replace(
+        "import pytest\n", "import os\n\nimport pytest\n"
+    )
+    assert touched({"test_new"}, before, after) == []
