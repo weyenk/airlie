@@ -124,6 +124,45 @@ def changed_in_tree(worktree: Path, base_sha: str) -> list[str]:
     return list(seen)
 
 
+FRESH_DIFF_CHARS = 12_000  # about 3k tokens: what a fresh start may carry of the role's own diff
+
+
+def own_changes(worktree: Path, since: str, limit: int = FRESH_DIFF_CHARS) -> str:
+    """What the worktree holds now that `since` did not, as one fenced diff block (untracked files shown as
+    new files; the index is left alone). Over `limit` characters it is one line per file, `path (+added
+    -removed)`, instead. "" when nothing changed. AIR-9 layer 05, 2026-10-23: a role started fresh with only
+    "your changes are in the worktree" spent its 20 steps re-reading them; this hands it the diff."""
+    tracked = _git(worktree, "diff", "--no-color", since, check=False).stdout
+    new = [
+        f
+        for f in _git(worktree, "ls-files", "--others", "--exclude-standard", check=False).stdout.splitlines()
+        if f
+    ]
+    parts = [tracked] if tracked else []
+    for f in new:
+        # --no-index exits 1 when the files differ, which they do
+        parts.append(
+            _git(worktree, "diff", "--no-color", "--no-index", "--", "/dev/null", f, check=False).stdout
+        )
+    diff = "".join(parts).rstrip("\n")
+    if not diff:
+        return ""
+    if len(diff) <= limit:
+        return f"```diff\n{diff}\n```"
+    counts: dict[str, tuple[int, int]] = {}
+    for line in _git(worktree, "diff", "--numstat", since, check=False).stdout.splitlines():
+        added, removed, path = line.split("\t", 2)  # "-" for a binary file
+        counts[path] = (int(added) if added.isdigit() else 0, int(removed) if removed.isdigit() else 0)
+    for f in new:
+        try:
+            lines = len((worktree / f).read_bytes().splitlines())
+        except OSError:
+            lines = 0
+        counts[f] = (lines, 0)
+    listing = "\n".join(f"{path} (+{a} \u2212{r})" for path, (a, r) in counts.items())
+    return f"Too long to show; the files you changed:\n{listing}"
+
+
 def changed_files(worktree: Path, base_sha: str) -> list[str]:
     out = _git(worktree, "diff", "--name-only", base_sha, "HEAD", check=False).stdout
     return [line for line in out.splitlines() if line]

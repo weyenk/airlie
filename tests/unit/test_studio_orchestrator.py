@@ -18,7 +18,7 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text  # not `text`: several tests have a local of that name
 from airlie.router import ChiefRouter, RouteDecision
 from airlie.supervisor.advice import SUPERVISOR
-from airlie.teams.worktree import commit_wip
+from airlie.teams.worktree import commit_wip, head_sha, own_changes
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
@@ -1471,3 +1471,72 @@ async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(t
         {"id": "no-more-tools", "role": "chief"},
         {"id": "no-more-tools", "role": "reviewer", "subtask": "fix"},
     ]
+
+
+WRITE_TEST_X = FakeReply(
+    tool_calls=[
+        ToolCall(
+            "x",
+            "write_file",
+            json.dumps({"path": "tests/test_x.py", "content": "def test_x():\n    assert 1\n"}),
+        )
+    ]
+)
+
+
+async def fresh_follow_up(tmp_path: Path, threshold: int) -> list[str]:
+    """A coder writes tests/test_x.py, then is sent back through `follow_up` with fresh_continuation_tokens
+    at `threshold`; the user messages of the follow-up's request."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_TEST_X, DONE, DONE], "reviewer": [APPROVE]})
+    teams = {"orchestrator": "native", "max_steps": 6, "fresh_continuation_tokens": threshold}
+    orch = StudioOrchestrator(cfg_for(tmp_path, extra={"teams": teams}), engine, router=ChiefRouter())
+
+    first: list[int] = []
+
+    async def before_gate() -> bool:
+        first.append(len(engine.requests))  # the follow-up's own first request comes next
+        await orch.follow_up("build", "write what is missing")
+        return False
+
+    await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, before_gate=before_gate
+    )
+    request = engine.requests[first[0]]
+    return [str(m.content) for m in request.messages if m.role == "user"]
+
+
+async def test_a_fresh_continuation_hands_the_role_its_own_diff(tmp_path: Path) -> None:
+    """AIR-9 layer 05, 2026-10-23: a tester sent back on a long conversation spent all 20 steps re-reading
+    the files it had written. A fresh start now carries the diff it made."""
+    users = await fresh_follow_up(tmp_path, 1)
+    assert len(users) == 1
+    goal = users[0]
+    assert "```diff\n" in goal and "+def test_x" in goal
+    assert hub_text("fresh-continuation") in goal
+    assert goal.index("```diff") < goal.index("write what is missing")  # the nudge follows the diff
+
+
+async def test_a_short_conversation_continues_without_a_diff(tmp_path: Path) -> None:
+    users = await fresh_follow_up(tmp_path, 10**9)
+    assert users[-1] == "write what is missing"
+    assert not any("```diff" in u for u in users)
+
+
+def test_a_diff_over_the_limit_is_listed_by_file(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    since = head_sha(repo)
+    (repo / "tests").mkdir()
+    body = "".join(f"def test_{i}():\n    assert {i}\n" for i in range(30))
+    (repo / "tests" / "test_x.py").write_text(body)
+    (repo / "README.md").write_text("")  # one line removed
+    out = own_changes(repo, since, limit=100)
+    assert out.startswith("Too long to show; the files you changed:")
+    assert "tests/test_x.py (+60 \u22120)" in out and "README.md (+0 \u22121)" in out
+    assert "@@" not in out
+    whole = own_changes(repo, since)
+    assert whole.startswith("```diff\n") and whole.endswith("\n```") and "+def test_29" in whole
+    assert own_changes(repo, head_sha(repo), limit=100).count("README") == 1  # untracked still shown
+    (repo / "tests" / "test_x.py").unlink()
+    (repo / "README.md").write_text("hi\n")
+    assert own_changes(repo, since) == ""

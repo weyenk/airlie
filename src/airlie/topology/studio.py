@@ -36,6 +36,7 @@ from airlie.teams.worktree import (
     dirty,
     find_file,
     head_sha,
+    own_changes,
     put_back,
     read_blob,
 )
@@ -405,7 +406,11 @@ class StudioOrchestrator:
         if size <= self.cfg.teams.fresh_continuation_tokens:
             return state, goal, nudge
         self.sink.emit("fresh_continuation", subtask=run.subtask.id, role=run.role, estimated_tokens=size)
-        return None, f"{goal}\n\n{self._steer('fresh-continuation', run)}\n\n{nudge}", None
+        said = self._steer("fresh-continuation", run)
+        # the role's own diff, so it does not spend its steps reading back what it wrote (AIR-9 layer 05,
+        # 2026-10-23: a tester's retry read its files for all 20 steps and never wrote)
+        diff = own_changes(self.worktree, run.before) if self.worktree and run.before else ""
+        return None, "\n\n".join(p for p in (goal, said, diff, nudge) if p), None
 
     def _context(
         self,
