@@ -961,6 +961,65 @@ async def test_a_role_that_has_written_is_not_told_to(tmp_path: Path) -> None:
     assert told_to_write(engine) == []
 
 
+def told_to_write_again(engine: FakeEngine) -> list[int]:
+    """The 1-based requests whose messages hold the write-now-continuing nudge."""
+    return [
+        i
+        for i, r in enumerate(engine.requests, 1)
+        if any(m.role == "user" and "changed nothing yet" in str(m.content) for m in r.messages)
+    ]
+
+
+async def test_a_continuation_that_only_reads_is_nudged_then_held(tmp_path: Path) -> None:
+    """AIR-9 layer 05, 2026-10-23: the tester's retry read for all 20 steps and never wrote."""
+    engine = FakeEngine({"coder": [*reads(19), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20)
+    ctx.already_written = ("tests/test_x.py",)
+    ctx.emit = events = Events()
+    rec = Recorder()
+    await team.run(ctx, rec)
+    assert told_to_write(engine) == []  # the first-run wording is not used
+    assert told_to_write_again(engine)[0] == 9  # after step 8 (20 * 2 // 5)
+    asked = [m for m in engine.requests[-1].messages if "changed nothing yet" in str(m.content)]
+    assert len(asked) == 1 and "8 of your 20 steps" in str(asked[0].content)
+    held = [
+        i
+        for i, r in enumerate(engine.requests, 1)
+        if any("reading is switched off" in str(m.content) for m in r.messages)
+    ]
+    assert held[0] == 13  # after step 12
+    assert "nothing this round" in str(
+        next(m.content for m in engine.requests[-1].messages if "reading is switched off" in str(m.content))
+    )
+    assert [e["id"] for e in events.records if e["kind"] == "steer"][:2] == [
+        "write-now-continuing",
+        "write-only",
+    ]
+    assert [e["step"] for e in events.records if e["kind"] == "read_refused"]  # reads run out under the hold
+
+
+async def test_a_continuation_that_writes_first_is_not_nudged(tmp_path: Path) -> None:
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
+    )
+    engine = FakeEngine({"coder": [*reads(2), write, *reads(15), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20)
+    ctx.already_written = ("tests/test_x.py",)
+    await team.run(ctx, Recorder())
+    assert told_to_write_again(engine) == [] and told_to_write(engine) == []
+    assert not any("reading is switched off" in str(m.content) for r in engine.requests for m in r.messages)
+
+
+async def test_a_continuation_without_write_tools_is_not_nudged(tmp_path: Path) -> None:
+    engine = FakeEngine({"architect": [*reads(10), FakeReply(text="Done.")]})
+    team, ctx = make_team(
+        tmp_path, engine, max_steps=20, role_name="architect", tool_names=("read_file", "list_dir")
+    )
+    ctx.already_written = ("tests/test_x.py",)
+    await team.run(ctx, Recorder())
+    assert told_to_write_again(engine) == []
+
+
 async def test_a_role_with_no_write_tool_is_not_told_to_write(tmp_path: Path) -> None:
     engine = FakeEngine({"architect": [*reads(8), FakeReply(text="Done.")]})
     team, ctx = make_team(
