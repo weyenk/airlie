@@ -352,3 +352,18 @@ async def test_an_outcome_the_ledger_cannot_write_is_a_fallback(tmp_path: Path) 
         ("supervisor_fallback", "precode_retry", "ledger: ProgrammingError", precode.id),
         ("supervisor_fallback", "amend", "ledger: ProgrammingError", amend.id),
     ]
+
+
+async def test_a_triage_that_runs_out_of_lookups_records_a_steer_event(tmp_path: Path) -> None:
+    """The lookup loop's no-more-tools goes to Muse; the layer's stream records it as a `steer` event."""
+    from airlie.engine.types import ToolCall
+
+    sup, _, events = layer_supervisor(tmp_path, answers=[GOOD])
+    read = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "README.md"}))])
+    sup.triage.engine = FakeEngine({"supervisor": [read, read, read, read, FakeReply(text=json.dumps(GOOD))]})
+    msg = await sup.advise(
+        "precode_retry", "tests", "tester", "TOLD", kinds=("passes_before_code",), evidence="F"
+    )
+    assert msg == GOOD["message"]
+    steer = [fields for kind, fields in events if kind == "steer"]
+    assert steer == [{"id": "no-more-tools", "role": "supervisor", "subtask": "tests", "layer": "02"}]

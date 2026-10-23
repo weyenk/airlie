@@ -1203,3 +1203,42 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
     assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "coder", 1, bad)
     assert ev["repaired"] is False
+
+
+async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(tmp_path: Path) -> None:
+    """The single-call loop (tools/loop.py) reports no-more-tools to studio, which records it as an event."""
+    from airlie.tools.protocol import ToolContext
+    from airlie.tools.registry import ToolRegistry
+    from tests.unit.test_tool_loop import Lookup, search
+
+    repo = repo_with_marker_tests(tmp_path)
+    looks = [search("q", str(i)) for i in range(4)]  # the loop's default of four calls, all used
+    engine = FakeEngine(
+        {
+            "chief": [*looks, PLAN, SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE],
+            "docs": [DONE],
+            "reviewer": [*looks, APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    def lookups(role_name: str) -> ToolRegistry | None:
+        return (
+            ToolRegistry([Lookup()], ToolContext(worktree=tmp_path))
+            if role_name in ("chief", "reviewer")
+            else None
+        )
+
+    orch._lookup_tools = lookups  # type: ignore[method-assign]
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    assert report.final_answer == "all done"
+    said = [
+        {k: v for k, v in e.items() if k not in ("kind", "ts", "run_id")}
+        for e in events(report)
+        if e["kind"] == "steer" and e["id"] == "no-more-tools"
+    ]
+    assert said == [
+        {"id": "no-more-tools", "role": "chief"},
+        {"id": "no-more-tools", "role": "reviewer", "subtask": "fix"},
+    ]
