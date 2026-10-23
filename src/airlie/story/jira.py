@@ -384,7 +384,8 @@ class JiraBoard:
             )
         await self._send("POST", f"{issue}/transitions", json={"transition": {"id": str(pick["id"])}})
 
-    async def comment(self, card: Card, text: str) -> None:
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
+        # Jira posts as the account, whatever the role is (Jira author semantics are out of scope).
         await self._send("POST", f"{_issue(card)}/comment", json={"body": adf_doc(text[:16000])})
 
     async def check(self) -> list[str]:

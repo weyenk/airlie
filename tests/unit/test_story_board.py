@@ -19,7 +19,16 @@ from airlie.config import JiraSpec
 from airlie.story import board as board_module
 from airlie.story import jira as airlie_jira
 from airlie.story import model
-from airlie.story.board import ISSUE_KEY, BoardError, Card, NullBoard, note, parse_card_ref, text_card
+from airlie.story.board import (
+    ISSUE_KEY,
+    NOTE_PREFIX,
+    BoardError,
+    Card,
+    NullBoard,
+    note,
+    parse_card_ref,
+    text_card,
+)
 from airlie.story.jira import (
     JiraBoard,
     adf_doc,
@@ -631,6 +640,23 @@ async def test_null_board_writes_notes_and_text_cards_are_stable(tmp_path: Path)
     assert "moved to building" in text and "layer 01/02 built" in text and "moved to intake" in text
     with pytest.raises(BoardError, match="--text"):
         await nb.card("AIR-7")
+
+
+def test_note_prepends_the_prefix_with_or_without_a_role() -> None:
+    """The seam helper: the prefix leads every note (role or not); a role, when given, names its author."""
+    assert note("picked this up") == NOTE_PREFIX + "picked this up"
+    assert note("the design is ready", role="architect") == NOTE_PREFIX + "the design is ready"
+
+
+async def test_the_null_board_ignores_a_role_and_keeps_its_note_lines(tmp_path: Path) -> None:
+    """NullBoard has no authors: a role changes nothing in notes.md, and the prefix still leads the line."""
+    card = text_card("avatars")
+    nb = NullBoard(tmp_path)
+    await nb.comment(card, note("layer 01/02 built"), role="architect")
+    written = (tmp_path / card.key / "notes.md").read_text()
+    [line] = written.splitlines()
+    assert line.startswith("- ") and line.endswith(NOTE_PREFIX + "layer 01/02 built")
+    assert "architect" not in written  # the role is ignored: notes.md keeps its '- <ts> <text>' line
 
 
 async def test_the_null_board_writes_its_notes_as_utf_8_whatever_the_locale(

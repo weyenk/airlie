@@ -21,8 +21,9 @@ _BROWSE = re.compile(rf"https?://[^/\s]+/browse/({_KEY})(?:[/?#]\S*)?", re.ASCII
 _SELECTED = re.compile(rf"https?://\S*[?&]selectedIssue=({_KEY})(?:[&#]\S*)?", re.ASCII)
 
 
-def note(text: str) -> str:
-    """A comment written by airlie; the prefix keeps airlie's notes out of the next story brief."""
+def note(text: str, role: str | None = None) -> str:
+    """A comment written by airlie (or, when `role` is given, by that studio role: the role becomes the
+    comment's author); the prefix keeps airlie's notes out of the next story brief."""
     return NOTE_PREFIX + text
 
 
@@ -70,7 +71,7 @@ class Board(Protocol):
 
     async def move(self, card: Card, column: Column) -> None: ...
 
-    async def comment(self, card: Card, text: str) -> None: ...
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None: ...
 
 
 class NullBoard:
@@ -91,8 +92,8 @@ class NullBoard:
     async def move(self, card: Card, column: Column) -> None:
         self._note(card, f"moved to {column}")
 
-    async def comment(self, card: Card, text: str) -> None:
-        self._note(card, text)
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
+        self._note(card, text)  # notes.md has no authors: the role is ignored
 
     def _note(self, card: Card, text: str) -> None:
         if not (ISSUE_KEY.fullmatch(card.key) or _TEXT_KEY.fullmatch(card.key)):  # it names a directory
