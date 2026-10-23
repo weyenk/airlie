@@ -998,6 +998,20 @@ async def test_a_continuation_that_only_reads_is_nudged_then_held(tmp_path: Path
     assert [e["step"] for e in events.records if e["kind"] == "read_refused"]  # reads run out under the hold
 
 
+async def test_a_continuation_held_to_write_reads_again_once_its_write_lands(tmp_path: Path) -> None:
+    """Two findings: the hold ends with the first fix, so the second can be read for."""
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
+    )
+    engine = FakeEngine({"coder": [*reads(15), write, *reads(2), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20)
+    ctx.already_written = ("tests/test_x.py",)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert any("reading is switched off" in str(m.content) for m in engine.requests[13].messages)
+    assert not [e for e in events.records if e["kind"] == "read_refused"]  # reads after the write are served
+
+
 async def test_a_continuation_that_writes_first_is_not_nudged(tmp_path: Path) -> None:
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]

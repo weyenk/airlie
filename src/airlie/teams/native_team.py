@@ -735,6 +735,8 @@ class NativeTeam:
                 what = "nothing this round" if continuing else "nothing"
                 said = _steer(ctx, steps, "write-only", what=what, n=steps, k=READS_UNDER_HOLD)
                 messages.append(Message(role="user", content=said))
+            if schedule is None and reading_off and (changed if continuing else wrote):
+                reading_off = False  # the write the hold waited for has landed: reading is back
             if steps >= ctx.max_steps:
                 last_turn = True
                 said = _steer(ctx, steps, "last-step", n=ctx.max_steps)

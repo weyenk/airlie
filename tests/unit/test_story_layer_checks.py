@@ -386,8 +386,8 @@ TODAYS_TESTER = (
     "message, no change) passes now, where nothing happens either: put that check in the same test "
     "that triggers the behaviour, before the trigger, or drop it. A test of something the brief keeps as "
     "it is passes now and always will: delete it. Every test that was there before "
-    "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
-    "run_tests and check that your new tests are the only red, then stop."
+    "must still pass. Keep a test for each acceptance criterion that changes something. "
+    "Do not write the feature. Run run_tests and check that your new tests are the only red, then stop."
 )
 TODAYS_CODER = (
     "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
