@@ -1268,9 +1268,22 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     assert ev["repaired"] is False
 
 
+MENDS = {
+    "changes a test": ("assert FakeBoard().get() == 1", "assert True", {"test_new"}),
+    "adds a test": (
+        "assert FakeBoard().get() == 1",
+        "assert FakeBoard().get() == 2\n\n\ndef test_extra():\n    assert 1",
+        {"test_new", "test_extra"},
+    ),
+    "renames a test": ("def test_new():", "def test_renamed():", {"test_renamed"}),
+}
+
+
+@pytest.mark.parametrize("mend", MENDS)
 async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_definitions(
-    tmp_path: Path,
+    tmp_path: Path, mend: str
 ) -> None:
+    old, new, expected = MENDS[mend]
     repo = repo_with_a_test_file(tmp_path)
     engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
@@ -1280,17 +1293,19 @@ async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_de
         orch.lock([path], orch.runs["tests"].role)
         return True
 
-    relocked: list[dict[str, frozenset[str]]] = []
+    seen: dict[str, dict[str, frozenset[str]]] = {}
 
-    async def coder_edits_the_fake_then_a_mend_changes_the_test() -> bool:
+    async def coder_changes_the_fake_then_a_mend() -> bool:
         assert orch.worktree is not None
         file = orch.worktree / path
         assert orch.locked_tests == {path: frozenset({"test_new"})}
-        file.write_text(file.read_text().replace("return 1\n", "return 1  # coder's fix\n", 1))
+        file.write_text(file.read_text().replace("return 1\n", "return 2\n", 1))  # a syntax change
         before = commit_wip(orch.worktree, "coder's change to the fake")
-        file.write_text(file.read_text().replace("assert FakeBoard().get() == 1", "assert True"))
+        file.write_text(file.read_text().replace(old, new, 1))
         orch.lock([path], orch.lock_owner, since=before)
-        relocked.append(dict(orch.locked_tests))
+        seen["since"] = dict(orch.locked_tests)
+        orch.lock([path], orch.lock_owner)  # a fresh lock would call the coder's fake the tester's
+        seen["fresh"] = dict(orch.locked_tests)
         return True
 
     await orch.execute_task(
@@ -1300,6 +1315,7 @@ async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_de
         plan=TESTS_THEN_BUILD,
         synthesise=False,
         checkpoints={"tests": lock},
-        before_gate=coder_edits_the_fake_then_a_mend_changes_the_test,
+        before_gate=coder_changes_the_fake_then_a_mend,
     )
-    assert relocked == [{path: frozenset({"test_new"})}]
+    assert seen["since"] == {path: frozenset(expected)}
+    assert "FakeBoard" in seen["fresh"][path]
