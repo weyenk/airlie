@@ -30,7 +30,7 @@ class ToolContext:
     read_only: frozenset[str] = frozenset()
     """Paths (from the worktree's root) write_file and edit_file refuse: a story layer's acceptance tests, the
     tester's, are the coder's contract (studio.lock)."""
-    locked_tests: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    locked_tests: Mapping[str, frozenset[str]] = field(default_factory=dict, hash=False, compare=False)
     """Paths (from the worktree's root) mapped to the tester's definitions in them: write_file and edit_file
     refuse only a change that touches one of those names, so the coder may still fix a fake in the same file
     (AIR-9 layer 05, 2026-10-22; studio.lock). `read_only` locks whole files."""

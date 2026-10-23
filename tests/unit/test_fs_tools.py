@@ -675,3 +675,10 @@ async def test_read_file_paths_outside_the_worktree_is_refused_in_its_own_sectio
     assert r.ok
     assert "=== ../x ===\nerror:" in r.output and "escapes the worktree" in r.output
     assert "=== a.py (1 lines) ===\n1: alpha" in r.output
+
+
+def test_a_context_with_locked_tests_stays_hashable_and_compares_as_before(tmp_path: Path) -> None:
+    plain = ToolContext(worktree=tmp_path)
+    locked = replace(plain, locked_tests={"tests/test_p.py": frozenset({"test_new"})})
+    assert hash(locked) == hash(plain)
+    assert locked == plain
