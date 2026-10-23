@@ -9,8 +9,6 @@ yields_to:
   - code-now
   - context-pressure
   - one-step-left
-  - plan-fix
-  - plan-unfinished
   - read-left
   - read-refused
   - tests-now

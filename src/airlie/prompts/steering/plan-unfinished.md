@@ -6,6 +6,8 @@ governs:
   plan.form: json
   reading: stop
   answer.when: now
+yields_to:
+  - plan-round
 why: |
   What the architect is told when its first round ended with no answer: sent back in the same conversation,
   which has read the code, instead of asked again from the start (AIR-30, 2026-10-19: two fresh starts each
