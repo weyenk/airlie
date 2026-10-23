@@ -9,6 +9,8 @@ from typing import Any
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message
+from airlie.prompts import text
+from airlie.skills import prompt_text
 
 _NUMBERED = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
 _FAILED = re.compile(r"(\d+) failed")
@@ -37,7 +39,7 @@ async def hypotheses(
     req = GenRequest(
         role=role_name,
         messages=[
-            Message(role="system", content=role.prompt.read_text()),
+            Message(role="system", content=prompt_text(role.prompt)),
             Message(role="user", content=prompt),
         ],
         sampling=role.sampling,
@@ -53,6 +55,37 @@ async def hypotheses(
     return parse_hypotheses(res.text, width)
 
 
+def branch_nudge(
+    label: str,
+    width: int,
+    hypothesis: str | None,
+    test_tail: str,
+    repeated: tuple[str, str, str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """The nudge a fork branch starts with, and the hub ids of the steering sentences in it, in the order they
+    sit in it: the caller emits a `steer` event for each. The hub's branch sentences surround the framing kept
+    here (the stalled call's error cut to its last 600 characters, the last test output to 1500, and the
+    hypothesis). The ids are collected as the sentences are rendered, so they are exactly the ones sent."""
+    ids: list[str] = []
+
+    def said(id: str, **fields: object) -> str:
+        ids.append(id)
+        return text(id, **fields)
+
+    lines = [said("branch-start", label=label, width=width)]
+    if repeated:
+        name, args, out = repeated
+        lines.append(said("branch-stalled", name=name, args=args, out=out[-600:]))
+    if test_tail:
+        lines.append(f"Last test output:\n```\n{test_tail[-1500:]}\n```")
+    if hypothesis:
+        lines.append(f"Pursue this hypothesis: {hypothesis}")
+    else:
+        lines.append(said("branch-different"))
+    lines.append(said("branch-finish"))
+    return "\n\n".join(lines), tuple(ids)
+
+
 def nudge_text(
     label: str,
     width: int,
@@ -60,24 +93,8 @@ def nudge_text(
     test_tail: str,
     repeated: tuple[str, str, str] | None = None,
 ) -> str:
-    lines = [
-        f"You are now branch {label} of {width}, continuing from the conversation above in your own copy "
-        "of the repository. The previous approach did not make the tests pass; do not repeat it.",
-    ]
-    if repeated:
-        name, args, out = repeated
-        lines.append(
-            f"The branch stalled by calling `{name}` with arguments `{args}` repeatedly; it failed with:\n"
-            f"```\n{out[-600:]}\n```\nDo not call it that way again; supply the required arguments."
-        )
-    if test_tail:
-        lines.append(f"Last test output:\n```\n{test_tail[-1500:]}\n```")
-    if hypothesis:
-        lines.append(f"Pursue this hypothesis: {hypothesis}")
-    else:
-        lines.append("Take a different approach from the one you tried.")
-    lines.append("Make the change, run the tests, and stop with a short summary when they pass.")
-    return "\n\n".join(lines)
+    """The text of `branch_nudge`."""
+    return branch_nudge(label, width, hypothesis, test_tail, repeated)[0]
 
 
 def role_at_temperature(role: RoleSpec, t: float) -> RoleSpec:

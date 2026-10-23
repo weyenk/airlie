@@ -90,6 +90,41 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 
+  story:restack:
+    desc: "Move a stopped story onto the trunk as it is now: its built layers replayed and gated there, then the next task story builds on today's trunk (task story:restack -- ISSUE)"
+    cmds:
+      - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
+
+  supervisor:log:
+    desc: "The newest supervisor interventions: id, time, story/layer, trigger, category, outcome (task supervisor:log -- --limit 50)"
+    cmds:
+      - '{{.RUN}} airlie supervisor log {{.CLI_ARGS}}'
+
+  supervisor:stats:
+    desc: "How often a retry helped with Muse's answer and with today's text alone (its fallbacks), by trigger; the blocks apart, and those it named a fix for"
+    cmds:
+      - '{{.RUN}} airlie supervisor stats {{.CLI_ARGS}}'
+
+  supervisor:verdict:
+    desc: "Record whether an intervention was right or wrong (task supervisor:verdict -- ID right|wrong [NOTE])"
+    cmds:
+      - '{{.RUN}} airlie supervisor verdict {{.CLI_ARGS}}'
+
+  supervisor:try:
+    desc: "Muse's triage of a worktree as the first pre-code retry asks for it, with no ledger row (task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID] [--round 0] [--subtask tests] [--brief-file F])"
+    cmds:
+      - '{{.RUN}} airlie supervisor try {{.CLI_ARGS}}'
+
+  prompts:audit:
+    desc: "Advisory: Muse reads each role's full instructions (role prompt, rules, steering) and lists the ones that contradict; writes a report under the state dir's runs/ (task prompts:audit -- [--role NAME]...)"
+    cmds:
+      - '{{.RUN}} airlie prompts audit {{.CLI_ARGS}}'
+
+  prompts:subjects:
+    desc: "Every governs subject in use, with the hub texts and role prompts that tag it, so a near-duplicate subject shows (no engine needed)"
+    cmds:
+      - '{{.RUN}} airlie prompts subjects {{.CLI_ARGS}}'
+
   story:check:
     desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
     cmds:

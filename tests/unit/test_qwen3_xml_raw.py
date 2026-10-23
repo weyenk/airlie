@@ -565,8 +565,8 @@ async def test_vllm_mlx_non_stream_parses_with_it(server: Any) -> None:
 
 
 def test_the_example_call_in_the_correction_message_parses() -> None:
-    from airlie.teams.native_team import MALFORMED
+    from airlie.prompts import text
 
-    out = Qwen3XmlRawToolParser().extract_tool_calls(MALFORMED, REQ)
+    out = Qwen3XmlRawToolParser().extract_tool_calls(text("malformed-call"), REQ)
     assert out.tools_called and [c["name"] for c in out.tool_calls] == ["read_file"]
     assert json.loads(out.tool_calls[0]["arguments"]) == {"path": "README.md"}

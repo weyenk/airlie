@@ -1,11 +1,16 @@
 """NativeTeam: a ReAct loop over the Engine seam. Reference implementation and fallback for the AutoGen team.
 
 Each turn resends the whole conversation (the engine's prefix cache makes that cheap); the tool call is the
-action u_t, its output the observation o_t. Entering a tool call releases the generation slot (spec 04 §2)."""
+action u_t, its output the observation o_t. Entering a tool call releases the generation slot (spec 04 §2).
+
+Every nudge the loop sends is a steering file in the prompt hub (`airlie/prompts/steering/<id>.md`, its `when`
+and `why` there), sent through `_steer`, which makes each one a `steer` event; the goal's closing sentences
+are the rules `goal-tools` and `goal-no-tools`."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import re
@@ -14,6 +19,7 @@ from dataclasses import asdict, replace
 from pathlib import PurePosixPath
 from typing import Any
 
+from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import (
     ContentPart,
@@ -24,9 +30,19 @@ from airlie.engine.types import (
     ToolCall,
     image_part,
 )
+from airlie.prompts import entry, text
 from airlie.skills import prompt_text
+from airlie.supervisor.advice import with_advice
 from airlie.teams.call_repair import Repair, repair_call
-from airlie.teams.protocol import StepObserver, StepRecord, StopReason, TeamContext, TeamResult, cut_off_text
+from airlie.teams.protocol import (
+    StepObserver,
+    StepRecord,
+    StopReason,
+    StuckAdvisor,
+    TeamContext,
+    TeamResult,
+    cut_off_text,
+)
 from airlie.tools.jsonargs import history_arguments
 from airlie.tools.protocol import ToolResult
 
@@ -36,18 +52,10 @@ def _goal_message(
 ) -> str:
     who = f"You are {team_id}. " if team_id else ""
     head = f"{preamble.rstrip()}\n\n" if preamble else ""
-    if not tools:  # told to use tools it does not have, a model invents them (2026-10-16: Read, list_files)
-        return (
-            f"{head}Goal:\n{goal}\n\n{who}"
-            "You have no tools in this task: answer directly, in your reply, with the complete deliverable. "
-            "When it is files (HTML, Markdown, code), give each one in full in a fenced block headed by its "
-            "path."
-        )
-    return (
-        f"{head}Goal:\n{goal}\n\n{who}"
-        f"You are working inside a git checkout of the repository ({worktree_hint}). "
-        "Use the tools to inspect and change it, run the tests, and stop with a short summary when they pass."
-    )
+    # the rules goal-tools and goal-no-tools: told to use tools it does not have, a model invents them
+    # (2026-10-16: Read, list_files)
+    rule = text("goal-tools", worktree_hint=worktree_hint) if tools else text("goal-no-tools")
+    return f"{head}Goal:\n{goal}\n\n{who}{rule}"
 
 
 def dump_messages(messages: list[Message]) -> list[dict[str, Any]]:
@@ -86,77 +94,20 @@ def load_messages(dumped: list[dict[str, Any]]) -> list[Message]:
 UNPARSED_CALL = re.compile(r"<tool_call>|<function=")
 """A tool call the server left in the text: the model wrote one the parser could not read (HDS-5, 2026-10-16:
 `<function=read_file>` with a `<file>` tag). It is not an answer, however the reply reads."""
-MALFORMED = (
-    "Your last reply had a tool call written as text, and it could not be run. Call the tool again in the "
-    "proper tool-call format, or, if you are finished, give your answer with no tool-call markup. A call in "
-    "the proper format looks like this, one <parameter=NAME> per argument: "
-    "<tool_call><function=read_file><parameter=path>README.md</parameter></function></tool_call>"
-)
-"""What a role is told after one such reply; a second in a row ends the run (malformed_call). Only a reply
-holding `<tool_call>` or `<function=` gets it, so the example is in the format the chat template teaches."""
 MALFORMED_TEXT_CAP = 4000
 """Characters of a malformed reply kept in its `malformed_call` event."""
-
-NO_TOOLS = (
-    "You have no tools in this task, so nothing you call can run. Answer directly, in your reply, with the "
-    "complete deliverable."
-)
-"""What a role without tools is told after one reply that calls a tool anyway; a second in a row ends the run
-(no_tools)."""
-
-LAST_STEP = (
-    "You have used all {n} of your steps: no more tools. Give your final answer now, complete, from what "
-    "you have already found."
-)
-"""What a role is told on the turn after its last allowed step, which offers it no tools."""
-
-WRITE_NOW = (
-    "You have used {n} of your {total} steps and have written nothing. Stop reading: you have what you need. "
-    "Write the change now (a test file first, if the task asks for tests), then run run_tests."
-)
-"""What a role with write tools is told, once, when it is two-fifths through its steps without a write."""
-
-WRITE_ONLY = (
-    "You still have written {what} after {n} steps, so reading is switched off: {k} more reads, then only "
-    "write_file, edit_file and run_tests are available until you write. Make the change from what you have "
-    "read."
-)
-"""What a role is told, once, when the nudge did not make it write and its read tools are taken away;
-`what` is nothing, no test or no code."""
-
-TESTS_NOW = (
-    "You have used {n} of your {total} steps and have written no test. Stop reading: you have what you need. "
-    "Write the failing test now, then the code, then run run_tests."
-)
-"""What a role with a write schedule is told, once, at its tests deadline without a test write."""
-
-CODE_NOW = (
-    "You have used {n} of your {total} steps and have written no code. Stop reading: make the change now "
-    "from what you have read, then run run_tests."
-)
-"""What a role with a write schedule is told, once, at its code deadline without a code write."""
-
-CHANGE_NOW = (
-    "You have used {n} of your {total} steps in this round and changed nothing: what you were sent back for "
-    "is still there. Make the change now from what you have read, then run run_tests."
-)
-"""What a role with a write schedule is told, once, in a continuation (a fix round, a follow-up) at its one
-deadline without a write of any kind this round."""
 
 _TEST_DIRS = frozenset({"test", "tests"})
 _TEST_NAME = re.compile(r"^(test_.+|.+_test\..+|.+\.(test|spec)\..+|conftest\.py)$")
 
 WRITE_TOOLS_ONLY = frozenset({"write_file", "edit_file", "run_tests"})
 """The tools a role keeps once its reading is switched off."""
-READ_REFUSED = "reading is switched off: use write_file, edit_file or run_tests"
-"""The observation a read call gets while reading is switched off: the call does not run, the step counts."""
 READS_UNDER_HOLD = 3
 """Reads a role may still make after a missed write deadline switches its reading off, each answered with how
-many remain, before reads are refused: a role that needs one fact gets it, a role that reads forever still
-hits the wall (AIR-31 layer 02, 2026-10-19: two runs spent their last 25 steps on refused greps, never wrote).
-The hold a repeat earns (REPEAT_WRITE_ONLY) grants none: the role was repeating the read it would get."""
-READ_LEFT = "\n\n({k} read(s) left while reading is switched off; then write)"
-"""Appended to a read served under the hold."""
+many remain (read-left), before reads are refused (read-refused): a role that needs one fact gets it, a role
+that reads forever still hits the wall (AIR-31 layer 02, 2026-10-19: two runs spent their last 25 steps on
+refused greps, never wrote). The hold a repeat earns (repeat-write-only) grants none: the role was repeating
+the read it would get."""
 ENGINE_RETRIES = 1
 """How many times one step's generation is asked again after an EngineError, before the run stops. AIR-31
 layer 02 (2026-10-19): vllm-mlx sent one chunk and then nothing for its 600 s inactivity guard; the run ended
@@ -166,19 +117,6 @@ ENGINE_RETRY_S = 5.0
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
 
-REPEATED = (
-    "You have made the same call {n} times in a row with the same result ({tool}). Repeating it changes "
-    "nothing. Do something different: act on what you know, or give your answer."
-)
-"""What a role (nudge_stuck) is told, once, when it repeats an action instead of being stopped."""
-
-CYCLED = (
-    "You have made the same {p} calls over and over, {n} times in a row, with the same results ({tool}). "
-    "Going round them again changes nothing. Do something different: act on what you know, or give your "
-    "answer."
-)
-"""REPEATED for a cycle of calls rather than one call (AIR-9 layer 02, 2026-10-21: a follow-up read the
-same three files in turn for 16 steps, and a guard that looked for one call repeated never fired)."""
 MAX_CYCLE = 3
 """The longest cycle of calls the repeat guard looks for: a cycle of up to this many calls, gone round
 repeat_limit times with the same results, is a repeat as one call repeated is."""
@@ -211,51 +149,30 @@ def _loop(recent: list[tuple[str, ...]], limit: int) -> tuple[str, ...] | None:
     return None
 
 
-REPEAT_WRITE_ONLY = (
-    "You made the same call again after being told ({tool}). It is switched off: only write_file, edit_file "
-    "and run_tests are available until you write. Make the change now from what you know."
-)
-"""What a role with write tools (nudge_stuck) is told when it repeats again after REPEATED: the tool it loops
-on goes, not the run, until it writes. A third streak, of refusals, ends the run."""
-
-ACT_FIRST = (
-    "Your reply called no tool, and nothing has been changed: the task is a change to make, not a question "
-    "to answer. Make the change with the tools (write_file, edit_file), run run_tests, then stop with a few "
-    "sentences on what you changed."
-)
-"""What a role with write tools is told, once, when its reply is text (or empty) and no write of its own has
-landed yet (AIR-7 layer 02, 2026-10-18: a fix round answered the reviewer's findings in 2,186 tokens of prose
-and ended; layer 03: a fix round's one edit missed its anchor and the next reply was prose, taken as done;
-AIR-9 layer 02, 2026-10-21: a tester's retry read for six steps, then replied with nothing, taken as done)."""
-
-STILL_RED = (
-    "Your last run_tests run failed, so you are not done. Fix what it reports and run it again. If something "
-    "outside your task blocks it, say in your reply which test fails and why."
-)
-"""What a role (green_before_done) is told, once, when it answers with its last run_tests run failed."""
-
-LAST_TURN_RETRY = (
-    "No tools are available on this turn, so nothing you call can run. Write your answer now, complete, in "
-    "your reply, from what you have already read."
-)
-"""What a role is told once when it calls a tool on the turn that offers none (a second time ends the run)."""
-
-ONE_STEP_LEFT = (
-    "You have one step left. Use it only if you must; then give your final answer, complete, from what you "
-    "have found. Stop exploring and write the deliverable."
-)
-"""What a role is told after its second-to-last step, so it finishes while it still has a tool to spare."""
+_CARRIED_HEAD = entry("reasoning-carried").body.split("{tail}")[0]
+"""The fixed opening of the carried-reasoning message, by which the one carried before it is found."""
 
 
-FRESH_RUN = "This is a new run: you have {n} steps and every tool again."
-"""Added to the first message of a resumed conversation whose history held the last run's end-of-budget
-messages (AIR-7 layer 02 fix round, 2026-10-18: the coder read "You have used all 40 of your steps" in its
-history and answered the reviewer's findings with "I'm out of steps, but here is the complete fix")."""
+def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall) -> str:
+    """The tail of a turn's reasoning to carry to the next: the turn thought, its completion reached the
+    role's thinking_budget (vllm-mlx closes the think block there), and its action was a read rather than a
+    write or run_tests; at most carried_reasoning_chars characters. "" for none."""
+    budget, cap = role.thinking_budget, role.carried_reasoning_chars
+    reasoning = res.reasoning.strip()
+    if not (thinking and budget and cap and reasoning) or call.name in WRITE_TOOLS_ONLY:
+        return ""
+    return reasoning[-cap:] if res.completion_tokens >= budget else ""
+
+
+def _is_carried(m: Message) -> bool:
+    return m.role == "user" and isinstance(m.content, str) and m.content.startswith(_CARRIED_HEAD)
+
 
 _STALE_BUDGET = tuple(
     re.compile("^" + re.escape(t).replace(re.escape("{n}"), r"\d+") + "$", re.DOTALL)
-    for t in (LAST_STEP, ONE_STEP_LEFT, LAST_TURN_RETRY, NO_TOOLS)
+    for t in (entry(i).body for i in ("last-step", "one-step-left", "last-turn-retry", "no-tools"))
 )
+"""The end-of-budget messages, from the hub's text, as a resumed run finds them in the last run's history."""
 
 
 def _without_stale_budget(messages: list[Message]) -> tuple[list[Message], bool]:
@@ -293,8 +210,19 @@ def _written_path(call: ToolCall) -> str | None:
 def _offered(ctx: TeamContext) -> list[Any]:
     """The tool schemas a turn offers: all of them, every turn. The list is rendered at the top of the prompt,
     so a turn that offered fewer would be a prompt the engine's prefix cache has never seen (AIR-28: one such
-    turn re-prefilled 56,717 tokens). Write-only is enforced where a call runs (READ_REFUSED), not here."""
+    turn re-prefilled 56,717 tokens). Write-only is enforced where a call runs (read-refused), not here."""
     return list(ctx.tools.schemas())
+
+
+def _steer(ctx: TeamContext, step: int, id: str, /, **fields: object) -> str:
+    """The hub's steering text `id` with `fields` filled in, and a `steer` event saying it was sent: its id,
+    the team, the role and the step it was sent after (for a reply that took no step, the step that reply
+    was for, as in `malformed_call`; 0 before the first). Every steering text the loop sends goes through
+    here, so the events count how often each fires (spec 2026-10-22-prompt-hub, "Steering events")."""
+    said = text(id, **fields)
+    if ctx.emit is not None:
+        ctx.emit("steer", id=id, team_id=ctx.team_id, role=ctx.role_name, step=step)
+    return said
 
 
 def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None) -> None:
@@ -312,6 +240,25 @@ def _log_malformed(ctx: TeamContext, step: int, text: str, repair: Repair | None
         repaired=repair is not None and repair.call is not None,
         repair_note=repair.note if repair is not None else "last turn: no tools offered",
     )
+
+
+async def _advised(
+    advisor: StuckAdvisor, ctx: TeamContext, told: str, messages: list[Message]
+) -> tuple[str, bool]:
+    """`told` with the advisor's section after it, and whether the advisor was asked (so is owed an outcome).
+    An advisor that fails leaves the fixed text: the repeat guard never waits on it or stops for it."""
+    try:
+        advice = await advisor.stuck(ctx.team_id, ctx.role_name, told, list(messages))
+    except Exception:  # noqa: BLE001 - any advisor failure means the fixed nudge, never a stopped run
+        return told, False
+    return with_advice(told, advice), True
+
+
+def _settled_stuck(advisor: StuckAdvisor | None, team_id: str, helped: bool) -> None:
+    """Tell the advisor what came of its nudge; a failure there is its own, and does not touch the run."""
+    if advisor is not None:
+        with contextlib.suppress(Exception):
+            advisor.stuck_settled(team_id, helped)
 
 
 class NativeTeam:
@@ -349,8 +296,8 @@ class NativeTeam:
         if ctx.initial_state is not None:
             messages, stale = _without_stale_budget(load_messages(ctx.initial_state["messages"]))
             first = ctx.nudge or goal_msg
-            if stale:
-                first = f"{first}\n\n{FRESH_RUN.format(n=ctx.max_steps)}"
+            if stale:  # sent before any step: step 0
+                first = f"{first}\n\n{_steer(ctx, 0, 'fresh-run', n=ctx.max_steps)}"
             messages.append(Message(role="user", content=first))
         else:
             parts = None
@@ -378,9 +325,7 @@ class NativeTeam:
         write_by = max(4, ctx.max_steps * 2 // 5)  # the step by which a role that can write has started to
         reading_off = False  # the role never wrote after the nudge: it is offered write tools only
         reads_left = 0  # reads still served under that hold (READS_UNDER_HOLD when it starts)
-        looped = (
-            False  # a writer repeated after REPEATED: only write tools until it writes (REPEAT_WRITE_ONLY)
-        )
+        looped = False  # a writer repeated after the repeat nudge: only write tools till it writes
         context_warned = False  # whether we've already warned about context at 75% for this run
         # a write schedule (the coder): a test write by one deadline, a code write by a later one; each is
         # a nudge at the deadline, then write-only tools WRITE_ONLY_AFTER steps later, until that write lands
@@ -404,6 +349,7 @@ class NativeTeam:
         missed: set[str] = set()  # deadlines passed without their write
         escalated: set[str] = set()  # missed deadlines whose grace ran out too: reading is off for them
         repeat_warned = False  # the first repeated action has been said to the role
+        advised = False  # on_stuck was asked about that nudge, and has not yet heard what came of it
         red_warned = False  # the role has been told once that it answered with run_tests failing
         act_warned = False  # the role has been told once that its text-only reply changed nothing
         changed = False  # a write_file or edit_file of this run has landed (a failed one has not)
@@ -449,7 +395,7 @@ class NativeTeam:
                     break
                 corrected = True
                 messages.append(Message(role="assistant", content=res.text))
-                messages.append(Message(role="user", content=NO_TOOLS))
+                messages.append(Message(role="user", content=_steer(ctx, step_num, "no-tools")))
                 continue
             if not calls:
                 # a reply that max_tokens ended is not a finished answer, whatever text it holds
@@ -471,7 +417,7 @@ class NativeTeam:
                                 chars=len(res.text),
                             )
                         messages.append(Message(role="assistant", content=res.text))
-                        messages.append(Message(role="user", content=ACT_FIRST))
+                        messages.append(Message(role="user", content=_steer(ctx, step_num, "act-first")))
                         continue
                     if (
                         ctx.role.green_before_done
@@ -482,7 +428,7 @@ class NativeTeam:
                     ):
                         red_warned = True
                         messages.append(Message(role="assistant", content=res.text))
-                        messages.append(Message(role="user", content=STILL_RED))
+                        messages.append(Message(role="user", content=_steer(ctx, step_num, "still-red")))
                         continue
                     final_text = res.text
                     ok = True
@@ -497,7 +443,8 @@ class NativeTeam:
                     if not last_corrected:
                         last_corrected = True
                         messages.append(Message(role="assistant", content=res.text))
-                        messages.append(Message(role="user", content=LAST_TURN_RETRY))
+                        retry = _steer(ctx, step_num, "last-turn-retry")
+                        messages.append(Message(role="user", content=retry))
                         continue
                     final_text = f"stopped: reached max_steps={ctx.max_steps}"
                     stop = "max_steps"
@@ -509,7 +456,7 @@ class NativeTeam:
                 else:
                     corrected = True
                     messages.append(Message(role="assistant", content=res.text))
-                    messages.append(Message(role="user", content=MALFORMED))
+                    messages.append(Message(role="user", content=_steer(ctx, step_num, "malformed-call")))
                     continue
             corrected = False
             if last_turn:  # it called a tool it was not offered: told once, then there is no answer
@@ -524,7 +471,8 @@ class NativeTeam:
                 if not last_corrected:
                     last_corrected = True
                     messages.append(Message(role="assistant", content=res.text))
-                    messages.append(Message(role="user", content=LAST_TURN_RETRY))
+                    retry = _steer(ctx, step_num, "last-turn-retry")
+                    messages.append(Message(role="user", content=retry))
                     continue
                 final_text = f"stopped: reached max_steps={ctx.max_steps}"
                 stop = "max_steps"
@@ -535,7 +483,7 @@ class NativeTeam:
                 steps += 1
                 held = (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY
                 if held and (looped or reads_left == 0):
-                    result = ToolResult(ok=False, output=READ_REFUSED)
+                    result = ToolResult(ok=False, output=_steer(ctx, steps, "read-refused"))
                     tool_ms = 0.0
                     if ctx.emit is not None:
                         ctx.emit(
@@ -552,10 +500,24 @@ class NativeTeam:
                         tool_ms = (time.monotonic() - t1) * 1000.0
                     if held:  # one of the few reads the hold still serves, and it says how many are left
                         reads_left -= 1
-                        result = replace(result, output=result.output + READ_LEFT.format(k=reads_left))
+                        left = _steer(ctx, steps, "read-left", k=reads_left)
+                        result = replace(result, output=f"{result.output}\n\n{left}")
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
+                tail = _carried_tail(ctx.role, bool(req.thinking), res, call)
+                if tail:  # after the observation, before any nudge; replaces the one carried before it
+                    messages[:] = [m for m in messages if not _is_carried(m)]
+                    carried = _steer(ctx, steps, "reasoning-carried", tail=tail)
+                    messages.append(Message(role="user", content=carried))
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "reasoning_carried",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            chars=len(tail),
+                        )
                 step_record = StepRecord(
                     team_id=ctx.team_id,
                     step_num=steps,
@@ -584,14 +546,15 @@ class NativeTeam:
                     if max_prompt >= context_threshold:
                         # Only warn once per run
                         context_warned = True
-                        # Add the context nudge message
-                        messages.append(
-                            Message(
-                                role="user",
-                                content=f"Your context is at {max_prompt} of {ctx.role.max_context} tokens. "
-                                "Stop reading: write from what you have.",
-                            )
+                        # Add the context nudge message (steering context-pressure)
+                        pressure = _steer(
+                            ctx,
+                            steps,
+                            "context-pressure",
+                            max_prompt=max_prompt,
+                            max_context=ctx.role.max_context,
                         )
+                        messages.append(Message(role="user", content=pressure))
                         # Emit context event
                         if ctx.emit is not None:
                             ctx.emit(
@@ -681,11 +644,13 @@ class NativeTeam:
                 tool = ", ".join(dict.fromkeys(cycle))
                 if ctx.role.nudge_stuck and not repeat_warned:  # said once
                     repeat_warned = True
-                    told = (
-                        REPEATED.format(n=ctx.repeat_limit, tool=tool)
+                    told = (  # the event names the hub text; the advice below may add to it
+                        _steer(ctx, steps, "repeated", n=ctx.repeat_limit, tool=tool)
                         if len(cycle) == 1
-                        else CYCLED.format(p=len(cycle), n=ctx.repeat_limit, tool=tool)
+                        else _steer(ctx, steps, "cycled", p=len(cycle), n=ctx.repeat_limit, tool=tool)
                     )
+                    if ctx.on_stuck is not None:
+                        told, advised = await _advised(ctx.on_stuck, ctx, told, messages)
                     messages.append(Message(role="user", content=told))
                     recent = []
                 elif (
@@ -698,8 +663,12 @@ class NativeTeam:
                     # change it owes is still possible (AIR-7 layer 02 attempts 4-6, 2026-10-18: every fix
                     # round ended here, probing, with its change unmade); a streak of refusals ends the run
                     looped = True
-                    messages.append(Message(role="user", content=REPEAT_WRITE_ONLY.format(tool=tool)))
+                    held_off = _steer(ctx, steps, "repeat-write-only", tool=tool)
+                    messages.append(Message(role="user", content=held_off))
                     recent = []
+                    if advised:  # told, and repeating still: the advice did not help
+                        _settled_stuck(ctx.on_stuck, ctx.team_id, False)
+                        advised = False
                 else:
                     final_text = f"stopped: repeated the same action {ctx.repeat_limit} times ({tool})"
                     stop = "repeated_action"
@@ -724,10 +693,11 @@ class NativeTeam:
                             )
                         if not written[kind]:
                             missed.add(kind)
-                            said = CHANGE_NOW if continuing else TESTS_NOW if kind == "tests" else CODE_NOW
-                            messages.append(
-                                Message(role="user", content=said.format(n=steps, total=ctx.max_steps))
+                            due = (
+                                "change-now" if continuing else "tests-now" if kind == "tests" else "code-now"
                             )
+                            said = _steer(ctx, steps, due, n=steps, total=ctx.max_steps)
+                            messages.append(Message(role="user", content=said))
                     if (
                         kind in missed
                         and not written[kind]
@@ -744,30 +714,27 @@ class NativeTeam:
                             if kind == "tests"
                             else "no code"
                         )
-                        messages.append(
-                            Message(
-                                role="user",
-                                content=WRITE_ONLY.format(what=what, n=steps, k=READS_UNDER_HOLD),
-                            )
-                        )
+                        said = _steer(ctx, steps, "write-only", what=what, n=steps, k=READS_UNDER_HOLD)
+                        messages.append(Message(role="user", content=said))
                 if reading_off and all(written[k] for k in escalated):
                     reading_off = False  # the write reading was switched off for has landed: it is back
             elif can_write and not wrote and steps == write_by:
-                messages.append(Message(role="user", content=WRITE_NOW.format(n=steps, total=ctx.max_steps)))
+                said = _steer(ctx, steps, "write-now", n=steps, total=ctx.max_steps)
+                messages.append(Message(role="user", content=said))
             elif can_write and not wrote and steps == write_by + WRITE_ONLY_AFTER and steps < ctx.max_steps:
                 reading_off = True
                 reads_left = READS_UNDER_HOLD
-                messages.append(
-                    Message(
-                        role="user", content=WRITE_ONLY.format(what="nothing", n=steps, k=READS_UNDER_HOLD)
-                    )
-                )
+                said = _steer(ctx, steps, "write-only", what="nothing", n=steps, k=READS_UNDER_HOLD)
+                messages.append(Message(role="user", content=said))
             if steps >= ctx.max_steps:
                 last_turn = True
-                messages.append(Message(role="user", content=LAST_STEP.format(n=ctx.max_steps)))
+                said = _steer(ctx, steps, "last-step", n=ctx.max_steps)
+                messages.append(Message(role="user", content=said))
                 continue
             if steps == ctx.max_steps - 1:
-                messages.append(Message(role="user", content=ONE_STEP_LEFT))
+                messages.append(Message(role="user", content=_steer(ctx, steps, "one-step-left")))
+        if advised:  # the advised nudge was not settled by a repeat after it: the run's result settles it
+            _settled_stuck(ctx.on_stuck, ctx.team_id, ok)
         return TeamResult(
             team_id=ctx.team_id,
             ok=ok,

@@ -5,24 +5,27 @@ chief synthesises."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import ContentPart, EngineError, GenRequest, Message, image_part
 from airlie.obs import EventSink, RunDir
 from airlie.orchestrator import LoggingObserver
+from airlie.prompts import text as hub_text
 from airlie.repo_map import build_repo_map
 from airlie.report import RunReport
 from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
+from airlie.supervisor.advice import with_advice
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
-from airlie.teams.protocol import cut_off_text
+from airlie.teams.protocol import StuckAdvisor, cut_off_text
 from airlie.teams.worktree import (
     add_worktree,
     changed_files,
@@ -55,27 +58,6 @@ from airlie.topology.studio_plan import (
 
 WRITE_TOOLS = {"write_file", "edit_file", "shell", "git"}
 SKILL_QUESTION = "Which guideline should this specialist follow as the primary lens?"
-FRESH_CONTINUATION = (
-    "You have already worked on this subtask: your changes are in this worktree (see them with git diff, or "
-    "read the files). Your earlier conversation is not repeated here. Pick up from the worktree as it is and "
-    "deal with the following."
-)
-"""What a subtask sent back on a long conversation is told instead of seeing that conversation again."""
-DONE_CHECK = (
-    "Before review: check your change against the brief's acceptance criteria and its exact wording. For "
-    "each criterion, quote the lines of the diff below that make it true, or say 'not met'. Where the brief "
-    "names "
-    "a value, a message, a field, or which value to compare, check the diff uses exactly that. Anything not "
-    "met or not exact: fix it now, run run_tests, then stop. If everything is met, reply with the checklist "
-    "and stop."
-)
-"""The done-check: a coder that stopped 'done' reads its own diff against the criteria before the reviewer
-does (AIR-31 layer 02, 2026-10-19: the reviewer's blocking finding was a value the brief had named)."""
-GATE_FAILED = (
-    "Your tests pass, but the whole suite fails with your change: the output is below. Fix the code so the "
-    "whole suite passes; the acceptance tests stay as they are. Run run_tests, then stop."
-)
-"""What the subtask named by execute_task's `gate_follow_up` is told when the final gate fails."""
 CHARS_PER_TOKEN = 4
 """A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
 
@@ -87,6 +69,29 @@ def _estimated_tokens(state: dict[str, Any]) -> int:
         for m in state.get("messages", [])
     )
     return chars // CHARS_PER_TOKEN
+
+
+class Advisor(StuckAdvisor, Protocol):
+    """A second reader for the studio's retries (the supervisor, in a story run): it may add a diagnosis to
+    what a role is sent back with, and hears what came of it. As the team's repeat guard it is a StuckAdvisor
+    too."""
+
+    async def advise(
+        self,
+        trigger: str,
+        subtask: str,
+        role: str,
+        told: str,
+        *,
+        kinds: Sequence[str] = (),
+        evidence: str = "",
+    ) -> str | None:
+        """The advice to add to `told`; None for none."""
+        ...
+
+    def settle(self, trigger: str, outcome: str, detail: str = "", *, subtask: str | None = None) -> None:
+        """What came of the latest advice for `trigger` (and `subtask`)."""
+        ...
 
 
 @dataclass
@@ -134,7 +139,8 @@ def specialists(cfg: AirlieConfig) -> dict[str, str]:
 def check_plan(cfg: AirlieConfig, plan: Plan) -> None:
     """Raise PlanError when a plan from outside the chief (a person's edit, the pipeline) cannot run: no
     subtasks, more than studio.max_subtasks, a role that is not a specialist, a missing dependency, a
-    duplicate id or a cycle. Every role is checked, pinned or not: a chief-made plan never comes here."""
+    duplicate id or a cycle. Every role is checked, pinned or not. A plan the chief made inside a studio run
+    never comes here (its roles are routed); one drafted for a job, and a person's edit of it, do."""
     if not plan.subtasks:
         raise PlanError("the plan has no subtasks")
     limit = cfg.studio.max_subtasks
@@ -189,6 +195,7 @@ class StudioOrchestrator:
         self.amend_tests: Callable[[], Awaitable[bool]] | None = None  # execute_task's `amend_tests`
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
+        self.advisor: Advisor | None = None  # the supervisor, in a story run: the gate retry and repeat guard
 
     # ---- chief ----
     async def _chief(self, user: str, *, with_images: bool) -> str:
@@ -208,7 +215,11 @@ class StudioOrchestrator:
             thinking=role.thinking,
         )
         res = await generate_with_tools(
-            self.engine, req, self._lookup_tools(role_name), role.max_steps or DEFAULT_STEPS
+            self.engine,
+            req,
+            self._lookup_tools(role_name),
+            role.max_steps or DEFAULT_STEPS,
+            on_steer=lambda id: self.sink.emit("steer", id=id, role=role_name),
         )
         if res.finish_reason == "length":
             # max_tokens ended it. With nothing to read (all thinking), or a plan, answer or synthesis cut off
@@ -366,6 +377,14 @@ class StudioOrchestrator:
             chosen += [k for k in skills if second and k.name == second[0][0] and k not in chosen]
         return d.chosen, "\n\n".join(f"## Guideline: {k.name}\n{k.text}" for k in chosen)
 
+    def _steer(self, id: str, run: SubtaskRun, /) -> str:
+        """The hub's steering text `id`, and a `steer` event saying studio sent it: its id, the role and the
+        subtask it goes to (spec 2026-10-22-prompt-hub, "Steering events"). The roles' team loop emits `steer`
+        too, for its own nudges, on this stream; those carry a team_id and a step instead of a subtask."""
+        said = hub_text(id)
+        self.sink.emit("steer", id=id, role=run.role, subtask=run.subtask.id)
+        return said
+
     def _continuation(
         self, run: SubtaskRun, parent: TeamResult | None, nudge: str | None
     ) -> tuple[dict[str, Any] | None, str, str | None]:
@@ -380,7 +399,7 @@ class StudioOrchestrator:
         if size <= self.cfg.teams.fresh_continuation_tokens:
             return state, goal, nudge
         self.sink.emit("fresh_continuation", subtask=run.subtask.id, role=run.role, estimated_tokens=size)
-        return None, f"{goal}\n\n{FRESH_CONTINUATION}\n\n{nudge}", None
+        return None, f"{goal}\n\n{self._steer('fresh-continuation', run)}\n\n{nudge}", None
 
     def _context(
         self,
@@ -418,6 +437,7 @@ class StudioOrchestrator:
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,
+            on_stuck=self.advisor,
         )
 
     async def _run_subtask(self, run: SubtaskRun, test_cmd: str | None) -> None:
@@ -464,8 +484,8 @@ class StudioOrchestrator:
     async def _done_check(
         self, run: SubtaskRun, role: RoleSpec, test_cmd: str | None, preamble: str, before: str
     ) -> None:
-        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with DONE_CHECK:
-        a miss it finds is fixed in a short continuation before the reviewer charges a round for it."""
+        """A coder that stopped 'done' on a brief with acceptance criteria is sent its diff with the
+        done-check: a miss it finds is fixed in a short continuation before the reviewer charges a round."""
         res = run.result
         assert res is not None and self.worktree is not None
         s = self.cfg.studio
@@ -480,7 +500,7 @@ class StudioOrchestrator:
         diff = diff_between(self.worktree, before, s.review.diff_chars)
         if not diff.strip():  # nothing changed: the review says so
             return
-        nudge = f"{DONE_CHECK}\n\n## Your diff\n```diff\n{diff}\n```"
+        nudge = f"{self._steer('done-check', run)}\n\n## Your diff\n```diff\n{diff}\n```"
         ctx = self._context(
             run, role, test_cmd, preamble=preamble, parent=res, nudge=nudge, attempt=self._next_attempt(run)
         )
@@ -519,6 +539,7 @@ class StudioOrchestrator:
                     files,
                     diff_chars=rv.diff_chars,
                     files_chars=rv.files_chars,
+                    on_steer=lambda id: self.sink.emit("steer", id=id, role=rv.role, subtask=run.subtask.id),
                 )
             except EngineError as e:
                 review = Review("error", (), f"engine error: {e}")
@@ -732,7 +753,7 @@ class StudioOrchestrator:
         files the run changed: the whole gate is the final one. `checkpoints` maps a subtask's id to a check
         that runs once it is done, before the subtasks after it (it may `follow_up` it, or `lock` its files);
         one that returns False stops the plan there, and the tests count as failed. `gate_follow_up` names the
-        subtask sent the output of a failing final gate once (GATE_FAILED), before the gate runs again.
+        subtask sent the output of a failing final gate once (gate-failed), before the gate runs again.
         `amend_tests` runs first when that gate fails and that subtask finished: it may send the locked tests'
         author back to mend its own tests (and `lock` them again), and returns whether it changed them; when
         it did, the gate runs again before the follow-up.
@@ -822,7 +843,7 @@ class StudioOrchestrator:
     async def _gate(self, test_cmd: str | None, follow_up: str | None) -> bool | None:
         """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, the
         locked tests may be mended first (`amend_tests`, then the gate again), and if it still fails that
-        subtask is sent its output once (GATE_FAILED) and the gate runs again."""
+        subtask is sent its output once (gate-failed) and the gate runs again."""
         passed, output = await self._tests_pass(test_cmd)
         run = self.runs.get(follow_up) if follow_up is not None else None
         # only a subtask that finished is sent back: one cut off or broken has its own stop to report
@@ -836,8 +857,22 @@ class StudioOrchestrator:
                 return passed
         self.sink.emit("gate_failed", follow_up=follow_up)
         tail = output[-self.cfg.tools.output_cap_chars :]
-        await self.follow_up(follow_up, f"{GATE_FAILED}\n\n```\n{tail}\n```")
-        return (await self._tests_pass(test_cmd))[0]
+        text = f"{self._steer('gate-failed', run)}\n\n```\n{tail}\n```"
+        if self.advisor is not None:
+            try:
+                # `text` carries the gate's tail already: it is not sent a second time as evidence
+                advice = await self.advisor.advise(
+                    "gate_retry", follow_up, run.role, text, kinds=("gate_fails",)
+                )
+            except Exception:  # noqa: BLE001 - an advisor that fails leaves gate-failed as it is, never a stop
+                advice = None
+            text = with_advice(text, advice)
+        await self.follow_up(follow_up, text)
+        passed = (await self._tests_pass(test_cmd))[0]
+        if self.advisor is not None:
+            with contextlib.suppress(Exception):  # an outcome it cannot record does not touch the run
+                self.advisor.settle("gate_retry", "helped" if passed else "not_helped", subtask=follow_up)
+        return passed
 
     async def _tests_pass(self, test_cmd: str | None) -> tuple[bool | None, str]:
         """The test gate, and its output. The test command loads the code the roles wrote, so it runs as

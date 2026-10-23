@@ -15,10 +15,13 @@ import yaml
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.prompts import text as hub_text  # not `text`: several tests have a local of that name
 from airlie.router import ChiefRouter, RouteDecision
+from airlie.supervisor.advice import SUPERVISOR
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
+from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 
@@ -94,6 +97,16 @@ CHANGES = FakeReply(
 
 def events(report):  # type: ignore[no-untyped-def]
     return [json.loads(x) for x in report.run_dir.events_path.read_text().splitlines()]
+
+
+def steers(report):  # type: ignore[no-untyped-def]
+    """The `steer` events studio itself emits (id, role, subtask), in order, without their kind, time or
+    run id. The roles' team loop emits `steer` on the same stream, with a team_id and a step instead."""
+    return [
+        {k: v for k, v in e.items() if k not in ("kind", "ts", "run_id")}
+        for e in events(report)
+        if e["kind"] == "steer" and "subtask" in e
+    ]
 
 
 async def test_plan_route_run_review_synthesis(tmp_path: Path) -> None:
@@ -228,6 +241,30 @@ async def test_the_done_check_is_off_by_config_and_off_for_a_brief_without_crite
         orch = StudioOrchestrator(cfg_for(base, **studio), engine, router=ChiefRouter())
         report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
         assert "done_check" not in [e["kind"] for e in events(report)] and report.final_answer == "all done"
+        assert steers(report) == []  # a check that was not sent is not a steer
+
+
+async def test_studio_done_check_emits_a_steer_event(tmp_path: Path) -> None:
+    """The done-check is steering from the prompt hub: it is sent with the coder's diff after it, and the
+    run's events say it was sent, for which subtask and role, next to done_check."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "chief": [plan_with_criteria(), SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE, FakeReply(text="AC1 met: `+ok` in PASS")],
+            "docs": [DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    report = await StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter()).execute_task(
+        "fix the build", repo=repo, test_cmd="./check.sh"
+    )
+    assert steers(report) == [{"id": "done-check", "role": "coder", "subtask": "fix"}]
+    ev = events(report)
+    kinds = ["studio-steer" if e["kind"] == "steer" and "subtask" in e else e["kind"] for e in ev]
+    assert kinds.index("studio-steer") < kinds.index("done_check") < kinds.index("done_check_done")
+    nudge = [r for r in engine.requests if r.role == "coder"][3].messages[-1].content
+    assert nudge.startswith(f"{hub_text('done-check')}\n\n## Your diff\n```diff\n")
 
 
 async def test_request_changes_gives_one_fix_round_then_continues(tmp_path: Path) -> None:
@@ -294,6 +331,8 @@ async def test_a_fix_round_on_a_long_conversation_starts_fresh_with_the_findings
     assert "A reviewer found blocking problems" in goal and "PASS:1" in goal and "worktree" in goal
     fresh = [e for e in events(report) if e["kind"] == "fresh_continuation"]
     assert len(fresh) == 1 and fresh[0]["subtask"] == "fix"
+    assert steers(report) == [{"id": "fresh-continuation", "role": "coder", "subtask": "fix"}]
+    assert hub_text("fresh-continuation") in goal
     # a new conversation is still the second run of the team: its steps are traced apart from the first's
     # (AIR-7 layer 02 attempt 5, 2026-10-18: a fresh fix round wrote step-001.json over the build run's)
     assert [(c.attempt, c.initial_state) for c in seen if c.team_id == "fix"] == [(0, None), (1, None)]
@@ -318,6 +357,7 @@ async def test_a_fix_round_on_a_short_conversation_continues_it(tmp_path: Path) 
     fix_req = [r for r in engine.requests if r.role == "coder"][3]
     assert len(fix_req.messages) > 2  # the earlier turns are still there
     assert not [e for e in events(report) if e["kind"] == "fresh_continuation"]
+    assert steers(report) == []  # a continued conversation is not told it is a fresh one
 
 
 async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_review_that_says_why(
@@ -1001,6 +1041,80 @@ async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_
     told = [r.messages[-1].content for r in engine.requests if r.role == "coder"]
     assert sum("the whole suite fails with your change" in t and "1 failed" in t for t in told) == 1
     assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
+    assert steers(report) == [{"id": "gate-failed", "role": "coder", "subtask": "build"}]
+    assert sum(t.startswith(hub_text("gate-failed")) for t in told) == 1
+
+
+async def gate_follow_up_with(tmp_path: Path, advisor: Any) -> tuple[Any, list[str], StudioOrchestrator]:
+    """The run of the test above (the gate fails, the coder is sent its output, the gate passes) with
+    `advisor` as the orchestrator's; what the coder was told at each request."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, DONE, WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    orch.advisor = advisor
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    told = [str(r.messages[-1].content) for r in engine.requests if r.role == "coder"]
+    return report, told, orch
+
+
+async def test_the_gate_follow_up_carries_the_advisors_section_and_its_outcome(tmp_path: Path) -> None:
+    adv = RecordingAdvisor("Fix rounding in mul.")
+    report, told, _ = await gate_follow_up_with(tmp_path, adv)
+    assert report.tests == {"studio": True}
+    [follow_up] = [t for t in told if t.startswith(hub_text("gate-failed"))]
+    assert follow_up.endswith(f"```\n\n{SUPERVISOR}\nFix rounding in mul.") and "1 failed" in follow_up
+    [(trigger, subtask, role, text, kinds, evidence)] = adv.advised
+    assert (trigger, subtask, role, kinds) == ("gate_retry", "build", "coder", ("gate_fails",))
+    # the fixed text carries the gate's tail already: it is not sent to Muse a second time as evidence
+    assert text == follow_up.split(f"\n\n{SUPERVISOR}")[0] and "1 failed" in text and evidence == ""
+    assert adv.settled == [("gate_retry", "helped", "build")]
+
+
+async def test_a_gate_follow_up_that_still_fails_is_settled_not_helped(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [DONE, DONE, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    adv = RecordingAdvisor(None)
+    orch.advisor = adv
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    assert report.tests == {"studio": False}
+    assert adv.settled == [("gate_retry", "not_helped", "build")]
+
+
+async def test_an_advisor_that_raises_leaves_the_gate_follow_up_as_it_was(tmp_path: Path) -> None:
+    report, told, _ = await gate_follow_up_with(tmp_path, RaisingAdvisor())
+    assert report.tests == {"studio": True}
+    [follow_up] = [t for t in told if t.startswith(hub_text("gate-failed"))]
+    assert SUPERVISOR not in follow_up and follow_up.endswith("```")
+
+
+async def test_an_advisor_that_cannot_record_the_gate_outcome_leaves_the_run_alone(
+    tmp_path: Path,
+) -> None:
+    report, told, _ = await gate_follow_up_with(tmp_path, SettleRaisingAdvisor("Fix it."))
+    assert report.tests == {"studio": True} and sum(SUPERVISOR in t for t in told) == 1
+
+
+async def test_the_advisor_is_the_teams_repeat_guard_too(tmp_path: Path) -> None:
+    adv = RecordingAdvisor(None)
+    seen: list[Any] = []
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    orch.advisor = adv
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx.on_stuck)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
+    await orch.execute_task("g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False)
+    assert seen and all(s is adv for s in seen)
 
 
 async def test_run_tests_reports_each_gate_step_while_the_final_gate_runs_the_whole_command(
@@ -1089,3 +1203,42 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
     assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "coder", 1, bad)
     assert ev["repaired"] is False
+
+
+async def test_the_chief_and_the_reviewer_record_no_more_tools_as_steer_events(tmp_path: Path) -> None:
+    """The single-call loop (tools/loop.py) reports no-more-tools to studio, which records it as an event."""
+    from airlie.tools.protocol import ToolContext
+    from airlie.tools.registry import ToolRegistry
+    from tests.unit.test_tool_loop import Lookup, search
+
+    repo = repo_with_marker_tests(tmp_path)
+    looks = [search("q", str(i)) for i in range(4)]  # the loop's default of four calls, all used
+    engine = FakeEngine(
+        {
+            "chief": [*looks, PLAN, SYNTH],
+            "coder": [WRITE_PASS, RUN, DONE],
+            "docs": [DONE],
+            "reviewer": [*looks, APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+
+    def lookups(role_name: str) -> ToolRegistry | None:
+        return (
+            ToolRegistry([Lookup()], ToolContext(worktree=tmp_path))
+            if role_name in ("chief", "reviewer")
+            else None
+        )
+
+    orch._lookup_tools = lookups  # type: ignore[method-assign]
+    report = await orch.execute_task("fix the build", repo=repo, test_cmd="./check.sh")
+    assert report.final_answer == "all done"
+    said = [
+        {k: v for k, v in e.items() if k not in ("kind", "ts", "run_id")}
+        for e in events(report)
+        if e["kind"] == "steer" and e["id"] == "no-more-tools"
+    ]
+    assert said == [
+        {"id": "no-more-tools", "role": "chief"},
+        {"id": "no-more-tools", "role": "reviewer", "subtask": "fix"},
+    ]

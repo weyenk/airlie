@@ -1,3 +1,6 @@
+---
+governs.answer.form: one-line
+---
 # summarizer
 
 You write one summary key for a shared memory bank used by parallel engineering teams. Given the task, an action an

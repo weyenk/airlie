@@ -48,6 +48,11 @@ Run `task` to list them. The ones that exist today:
 | `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
 | `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a board item (a key like `AIR-7`; a Jira issue or its link with `story.board: jira`) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; an issue is built in the repository its `repo:<owner>/<name>` label names (its clone in `~/git`, `story.repos_root`), and every layer must pass the `## Test gate` of that repository's `AGENTS.md`; Jira comes from the `ATLASSIAN_*` variables in `~/.config/airlie/.env` (or a `.env` beside `airlie.yaml`), which airlie reads itself and never exports; with `story.github_app.app_id` set, a GitHub App's bot pushes, opens the PRs and authors the layer commits with a token scoped to the story's one repository, never your gh login or SSH key; the committed `airlie.yaml` publishes as this repository owner's app, so in a clone set `story.github_app.app_id: null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there (`docs/integrations/story.md`) |
 | `task story:tick` / `task story:check [-- ISSUE]` | one scheduler beat (what the launchd agent runs): build the top *To Do* issue unless a story is in flight / check roles, gh + gh-stack, which board is in use (with Jira: its credentials, project and statuses), and an issue's label, checkout, trunk and test gate |
+| `task story:restack -- ISSUE` | move a stopped story onto the trunk as it is now: its built layers replayed and gated there, its stopped layer's attempt removed, the next run builds on today's trunk |
+| `task supervisor:log` / `task supervisor:stats` / `task supervisor:verdict -- ID right\|wrong [NOTE]` | read the supervisor's ledger (Muse's advice at a story's trouble points, advisory only): the newest interventions / how often they helped, by trigger and category / your verdict on one (`docs/integrations/story.md`, *The supervisor (trial)*) |
+| `task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID]` | Muse's triage of a worktree as a story's first pre-code retry would ask for it, with no ledger row (`docs/integrations/story.md`) |
+| `task prompts:audit [-- --role NAME]...` | advisory: Muse reads each role's full instructions (its role prompt, then every rule and steering text that reaches it, in `src/airlie/prompts/`) and lists the ones that contradict, steering against rules included; writes `prompts-audit-<UTC time>.md` under the state directory's `runs/` and prints its path and each role's first line. Needs the engine, is not deterministic and fails nothing; the gate's check is `tests/unit/test_prompt_contradictions.py` |
+| `task prompts:subjects` | every `governs` subject in use, one per line, with the hub texts and role prompts that tag it, so a near-duplicate subject (`tests.location` against `test.location`) shows; no engine needed |
 | `task board:export [-- --out FILE]` / `task board:import-jira [-- --dry-run]` | write the local board (initiative → epic → story → subtask, `/v1/board`, the default source of stories) as JSON / import the Jira project onto it, each issue keeping its number under `board.prefix` (`HDS-5` → `AIR-5`) (`docs/integrations/story.md`, *Boards*) |
 | `task story:launchd:install` / `task story:launchd:uninstall` | load / remove the launchd agent that runs the story tick (`airlie story tick`) every 15 minutes |
 | `task opencode:install` | copy the OpenCode chief, its subagents, `/studio` and `/story` into `~/.config/opencode` and register `airlie mcp`, an MCP server (stdio) that gives OpenCode the tools `airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel` and `airlie_story` over `task serve`'s jobs API, in its `opencode.json` (merged into an entry you already have; after a backup when it changes the file; `docs/integrations/local-agents.md`) |
@@ -223,6 +228,59 @@ studio chief refuses one it cannot parse, and the reviewer one with no text.
 
 Swapping the team model is one line: point `roles.coder.model` (and `roles.aggregator.model`) at another catalog
 entry.
+
+## Prompts
+
+What a model is told lives in Markdown files, not in Python. A role's own prompt is `prompts/roles/<role>.md`,
+chosen by `roles.<role>.prompt` in `airlie.yaml`. Everything else is a hub file in the package, one text each, loaded
+by id (`from airlie.prompts import text`): `src/airlie/prompts/rules/` holds the standing instructions placed in a
+brief or goal message, and `src/airlie/prompts/steering/` the nudges sent partway through a run when something
+goes wrong. They ship with the code they are sent from, so there is no config key and no override directory.
+
+A hub file is YAML front matter, then the exact text sent as a format string (`{name}` is filled in, `{{` and `}}`
+write a literal brace). The id is the file name:
+
+| Key | Holds |
+| --- | --- |
+| `kind` | `rule` or `steering`, the folder it is in |
+| `roles` | the roles that can receive it under `airlie.yaml`'s tool lists and flags (`write-now` only a role that can write and has no `write_schedule`), or `any` |
+| `fields` | the `{placeholders}` the body uses; the loader checks they match exactly |
+| `when` | steering only: the condition that sends it, in a sentence |
+| `governs` | the subjects it instructs on, each with its stance (`tests.location: new-file`) |
+| `yields_to` | ids it gives way to at runtime when they disagree: precedence, not an accepted conflict |
+| `why` | the incident behind the wording: what went wrong, the run, the date |
+
+The contradiction check runs in `pytest` (`tests/unit/test_prompt_contradictions.py`): two rules, or two steering
+texts, that reach the same role with different stances on one subject fail the gate unless one `yields_to` the
+other or the conflict is in that test's `ACCEPTED` list. Steering outranks rules, so it is never compared with a
+rule; that is its job, as when "reading is switched off" overrides a role prompt that says to read first.
+`yields_to` is for runtime precedence only: a stage's brief over the role prompt's general default (the layer's
+named test file over `coder.md`'s new one), a later nudge over an earlier one. It skips the whole pair, and the
+gate fails on an entry that settles no live disagreement. A real conflict that stands for now goes in `ACCEPTED`
+instead, one entry per role and subject with both sources and a reason; that entry covers that subject alone, and
+the gate fails once it no longer matches a conflict. `task prompts:subjects` lists every subject with the texts that
+tag it, so a near-duplicate subject shows. `task prompts:audit` is the model's read of the same ground (above).
+The team loop, studio, fork and the story pipeline record each steering text they send as a `steer` event, with
+its `id`, the `role` and where it went (`team_id` and `step`, a `subtask`, or a story's `layer` or planning
+`round`), so those events show which nudges still fire. The single-call loop behind a role's one-shot calls
+(`tools/loop.py`) has no stream of its own: it tells its caller through `on_steer`, and the studio's chief and
+reviewer and the supervisor's triage record `no-more-tools` from it. `airlie supervisor try` has no stream, so
+there it goes unrecorded.
+
+Role prompts take part in the check as rules, through flat front-matter lines in `prompts/roles/<role>.md`: a
+`governs.<subject>: <value>` line per subject and `yields_to: a, b`. Other texts name a role prompt as
+`role:<name>`.
+
+To change a wording on purpose, edit the hub file, then regenerate the golden snapshot of what every text renders
+to: `AIRLIE_WRITE_PROMPT_TEXTS=1 uv run pytest tests/unit/test_prompt_texts.py`. That run fails on purpose after it
+writes `tests/unit/data/prompt_texts.json`; rerun without the flag and review the JSON diff, which is exactly what
+the models will now read differently.
+
+To add a nudge or a rule, add a file with a non-empty `governs` (the gate fails on one without). A nudge is sent
+through its module's `_steer` helper (the fork emits the event itself), so it is recorded as a `steer` event.
+`test_prompt_contradictions.py` then checks the new text against the others that reach the same role.
+
+Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
 
 ## Hardware
 

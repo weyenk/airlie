@@ -8,12 +8,19 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
+from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import (
     Finding,
     PytestChecks,
+    amend_feedback,
+    amend_feedback_said,
     changed_tests,
     checks_for,
     feedback,
+    feedback_said,
+    findings_text,
     pytest_runner,
     static_findings,
 )
@@ -226,7 +233,36 @@ async def test_a_changed_test_is_held_to_the_same_red(tmp_path: Path) -> None:
     assert await findings(root, base) == []  # strings are not summed as numbers yet: red
     commit(root, "weaker", {"tests/test_calc.py": OLD_TESTS.replace("== 3", "== 3 or True")})
     found = await findings(root, base)
-    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_calc.py::test_add")]
+    assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
+    assert found[0].before.endswith("assert add(1, 2) == 3") and "or True" in found[0].source
+
+
+SPLIT_BASE = (
+    "from calc import add\n\n\ndef test_add():\n    total = add(1, 2)\n    assert total == 3\n"
+    "    assert add(0, 0) == 0\n"
+)
+SPLIT = (
+    "from calc import add\n\n\ndef test_add():\n    total = add(1, 2)\n    assert total == 3\n\n\n"
+    "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n    assert add(0, 0) == 0\n"
+)
+"""A new test inserted inside an existing one, as an edit anchored mid-function does: the existing test's last
+line ends up under the new one (AIR-9 layer 05, 2026-10-22)."""
+
+
+async def test_an_existing_test_split_by_an_insert_is_named_with_its_base_version(tmp_path: Path) -> None:
+    """AIR-9 layer 05, 2026-10-22: the split test was reported as "passes before the layer's code is written",
+    so the tester (and the supervisor) took it for a new test to make red, and the retry never put it back."""
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": SPLIT_BASE})
+    commit(root, "tests", {"tests/test_calc.py": SPLIT})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
+    [split] = found
+    assert "add(0, 0)" in split.before and "add(0, 0)" not in split.source  # where it used to end
+    told = feedback(found)
+    assert "already there on the layer's base" in told and "assert add(0, 0) == 0" in told
+    assert "passes before the layer's code" not in told
+    shown = findings_text(found)
+    assert shown.index("on the base:") < shown.index("add(0, 0)") < shown.index("now:")
 
 
 async def test_a_layer_with_no_new_or_changed_tests_is_a_finding(tmp_path: Path) -> None:
@@ -342,6 +378,46 @@ def test_feedback_names_each_test_and_why() -> None:
     assert "Run run_tests until your tests pass" in coder and "Do not write the feature" not in coder
 
 
+TODAYS_HEADER = "airlie checked the tests, and these need fixing:"
+TODAYS_TESTER = (
+    "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
+    "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
+    "message, no change) passes now, where nothing happens either: put that check in the same test "
+    "that triggers the behaviour, before the trigger, or drop it. Every test that was there before "
+    "must still pass. Keep a test for each acceptance criterion. Do not write the feature. Run "
+    "run_tests and check that your new tests are the only red, then stop."
+)
+TODAYS_CODER = (
+    "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
+    "Run run_tests until your tests pass, then stop."
+)
+
+
+@pytest.mark.parametrize("before_code,what", [(True, TODAYS_TESTER), (False, TODAYS_CODER)])
+@pytest.mark.parametrize(
+    "found",
+    [
+        [],
+        [
+            Finding("passes_before_code", "t::a", "it passes before the code", 'raises(E, match="x")'),
+            Finding("assertion_free_test", "t::b", "it has no assert", ""),
+        ],
+    ],
+)
+@pytest.mark.parametrize("advice", [None, ""])
+def test_with_no_advice_feedback_is_exactly_todays_text(
+    before_code: bool, what: str, found: list[Finding], advice: str | None
+) -> None:
+    """The supervisor's off switch: no advice, and the role reads the text it read before the supervisor."""
+    listed: list[str] = []
+    for f in found:
+        listed.append(f"- {f.test}: {f.why}")
+        if f.kind == "passes_before_code":
+            listed.append("  " + hub_text("loose-match"))
+    todays = "\n".join([TODAYS_HEADER, *listed, what])
+    assert feedback(found, before_code=before_code, advice=advice) == todays
+
+
 def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> None:
     """AIR-31 layer 02: the brief asked for a test proving the feature is a no-op below its threshold. Such a
     test passes before the code whatever the tester does, so it is told the way out, not only "fail"."""
@@ -349,3 +425,44 @@ def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> N
         [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
     )
     assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text
+
+
+LOOSE = Finding(
+    "passes_before_code", "t::a", "it passes before the code", 'with pytest.raises(E, match="x"): ...'
+)
+NONE_IN_IT = Finding("assertion_free_test", "t::b", "it has no assert", "")
+
+
+@pytest.mark.parametrize("advice", [None, "Read the fixtures first."])
+def test_feedback_said_is_the_text_and_the_hub_ids_in_it_in_order(advice: str | None) -> None:
+    """The pipeline emits a `steer` event per id when it sends the text, so the ids are exactly the hub texts
+    in it, a loose `match=` hint once per finding that has one."""
+    tester = feedback_said([LOOSE, NONE_IN_IT, LOOSE], advice=advice)
+    assert tester == (
+        feedback([LOOSE, NONE_IN_IT, LOOSE], advice=advice),
+        ("checks-found", "loose-match", "loose-match", "checks-fix-before-code"),
+    )
+    coder = feedback_said([NONE_IN_IT], before_code=False, advice=advice)
+    assert coder == (
+        feedback([NONE_IN_IT], before_code=False, advice=advice),
+        ("checks-found", "checks-fix-with-code"),
+    )
+    assert tester[0].startswith(hub_text("checks-found") + "\n- t::a: ")
+    assert tester[0].endswith("\n" + hub_text("checks-fix-before-code"))
+    assert coder[0].endswith("\n" + hub_text("checks-fix-with-code"))
+
+
+def test_amend_feedback_said_is_the_text_and_the_amend_id() -> None:
+    failing = ["tests/test_a.py::test_x"]
+    said = amend_feedback_said(failing, "I built it.", ("the empty file passes",))
+    assert said == (amend_feedback(failing, "I built it.", ("the empty file passes",)), ("amend",))
+    assert said[0].startswith(hub_text("amend") + "\n\nFailing:\n- tests/test_a.py::test_x")
+
+
+async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
+    root, _ = repo(
+        tmp_path,
+        {"tests/test_a.py": "def test_good():\n    assert True\n\n\ndef test_bad():\n    assert missing\n"},
+    )
+    out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
+    assert "NameError" in out and "test_good" not in out

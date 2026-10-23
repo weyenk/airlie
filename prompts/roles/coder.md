@@ -1,5 +1,15 @@
 ---
 summary: Implement, fix or refactor code: features, bug fixes, CLI flags, per an approved plan
+governs.reading: first
+governs.tests.location: new-file
+governs.tests.order: code-first
+governs.file.rewrite: short-files
+governs.tests.fail-first: required
+governs.tests.match: new-phrase
+governs.brief.wording: exact
+governs.done.when: tests-pass
+governs.answer.form: summary
+yields_to: brief-layer-plan-tests-where
 ---
 # coder
 

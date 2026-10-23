@@ -2,6 +2,15 @@
 import { request } from "./api.js";
 import { chip, h } from "./dom.js";
 
+const REPO = "airlie.repo";
+export function rememberedRepo() {
+  try {
+    return localStorage.getItem(REPO) || "";
+  } catch {
+    return "";
+  }
+}
+
 /** The chief's plan ({assumptions, subtasks[{id, role, brief, depends_on}]}) as a card. `onApprove(plan)` is
  * called when the person approves; `onChange()` when they want to change it. Either may be omitted. */
 export function planCard(plan, { onApprove, onChange, approved = false } = {}) {
@@ -57,6 +66,50 @@ export function jobCard(job) {
     h("span", { class: "stack small", style: { gap: "2px" } }, h("strong", null, kind), h("span", { class: "mono muted" }, job.label || job.job_id)),
     chip("run", "Watch"),
   );
+}
+
+/** A story request the person can edit, the repository to build it in, and Start story. `repos()` lists the
+ * repositories (the last one used is selected); `onStart({text, repo})` posts the story and resolves to the job
+ * it started. Nothing starts without the click. */
+export function storyCard(text, { repos, onStart, onEdit } = {}) {
+  const list = repos?.() ?? [];
+  const remembered = rememberedRepo();
+  const pick = h(
+    "select",
+    { class: "repo-pick mono", "aria-label": "Repository" },
+    list.length ? list.map((r) => h("option", { value: r, selected: r === remembered || null }, r.split("/").filter(Boolean).pop() || r)) : h("option", { value: "" }, "no repositories"),
+  );
+  pick.addEventListener("change", () => {
+    try {
+      localStorage.setItem(REPO, pick.value);
+    } catch {
+      /* this page only */
+    }
+  });
+  const body = h("textarea", { class: "story-text", rows: 6, "aria-label": "Story request", value: text });
+  const error = h("span", { class: "error", role: "alert" });
+  const start = h("button", { type: "button", class: "btn primary" }, "Start story");
+  body.addEventListener("input", () => onEdit?.(body.value));
+  start.addEventListener("click", async () => {
+    error.textContent = "";
+    const chosen = pick.value;
+    if (!chosen) {
+      error.textContent = "Pick a repository first.";
+      return;
+    }
+    if (!body.value.trim()) {
+      error.textContent = "The story request is empty.";
+      return;
+    }
+    start.disabled = true;
+    try {
+      await onStart?.({ text: body.value.trim(), repo: chosen });
+    } catch (e) {
+      error.textContent = e?.name === "AuthError" ? "Sign in again, then start the story." : e.message;
+      start.disabled = false;
+    }
+  });
+  return h("div", { class: "story-card stack" }, h("span", { class: "small muted" }, "A story request, ready to edit:"), body, h("div", { class: "row" }, h("span", { class: "small muted" }, "in"), pick, start), error);
 }
 
 /** Start a studio run from an approved plan. */

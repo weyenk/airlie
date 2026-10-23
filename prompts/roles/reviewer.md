@@ -1,6 +1,9 @@
 ---
 summary: Adversarial review of a code change against its task, from a different model family (not routable)
 routable: false
+governs.answer.form: json
+governs.repo.edit: read-only
+governs.web.content: untrusted
 ---
 # reviewer
 

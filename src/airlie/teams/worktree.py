@@ -199,3 +199,25 @@ def remote_url(repo: Path, remote: str) -> str | None:
 def remove_worktree(repo: Path, path: Path) -> None:
     _git(repo, "worktree", "remove", "--force", str(path), check=False)
     _git(repo, "worktree", "prune", check=False)
+
+
+def cherry_pick(worktree: Path, commit: str) -> list[str] | None:
+    """`commit` replayed onto the worktree's HEAD, with its author as author and committer (a layer the bot
+    committed stays the bot's). None when it applied; else the paths that conflicted (or git's message), and
+    the pick is aborted, so the worktree is as it was."""
+    name, email = _git(worktree, "log", "-1", "--format=%an%n%ae", commit).stdout.splitlines()[:2]
+    who = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email}
+    who |= {"GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
+    picked = _git(worktree, "cherry-pick", "--allow-empty", commit, check=False, env=who)
+    if picked.returncode == 0:
+        return None
+    clashes = _git(worktree, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    _git(worktree, "cherry-pick", "--abort", check=False)
+    return clashes or [(picked.stderr.strip() or picked.stdout.strip())[-500:]]
+
+
+def move_branches(repo: Path, moves: Mapping[str, tuple[str, str]]) -> None:
+    """Each branch in `moves` from its old commit to its new one ({branch: (old, new)}), in one transaction:
+    all move or, when any is not at its old commit any more, none does (a CalledProcessError)."""
+    lines = [f"update refs/heads/{b} {new} {old}" for b, (old, new) in moves.items()]
+    _git(repo, "update-ref", "--stdin", stdin="start\n" + "\n".join(lines) + "\nprepare\ncommit\n")

@@ -6,6 +6,7 @@ client follows the job by long polls on `GET /v1/airlie/jobs/{id}?since=N&wait=S
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -15,22 +16,24 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from airlie.auth.api import PUBLIC_PATHS, auth_router
-from airlie.auth.principal import NotInvited, Resolver
+from airlie.auth.principal import NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
 from airlie.config import AirlieConfig
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
+from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
-from airlie.skills import prompt_text
+from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
+from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
 from airlie.teams.worktree import rev_parse
@@ -242,6 +245,51 @@ def create_app(
 
     app.include_router(auth_router(store, resolver, cfg.auth, now=now))
 
+    uploads = UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments, now=now)
+
+    def owner_of(request: Request) -> Principal | None:
+        return getattr(request.state, "principal", None)
+
+    def may_see(principal: Principal | None, upload: Upload) -> bool:
+        return principal is not None and (principal.role == "admin" or principal.user_id == upload.owner)
+
+    @app.post("/v1/airlie/uploads", status_code=201)
+    async def upload_file(
+        request: Request, name: str = Query(min_length=1, max_length=1024)
+    ) -> dict[str, Any]:
+        """A Chat attachment: the raw bytes as the body. The kind is read from them; a body past its kind's
+        limit is 413 and leaves nothing behind."""
+        principal = owner_of(request)
+        owner = principal.user_id if principal is not None else "nobody"
+        try:
+            saved = await uploads.save(name, request.stream(), owner)
+        except UploadTooLarge as e:
+            raise HTTPException(413, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return saved.public()
+
+    @app.get("/v1/airlie/uploads/{upload_id}")
+    async def get_upload(upload_id: str, request: Request) -> Response:
+        """An attachment's bytes, to the person who uploaded it (or an admin); anyone else gets the 404 an
+        unknown id gets. Only a picture or a video is shown inline: anything else downloads, so an uploaded
+        page never runs as this site."""
+        found = uploads.get(upload_id)
+        if found is None or not may_see(owner_of(request), found):
+            raise HTTPException(404, "no such upload")
+        inline = found.kind in MEDIA
+        return FileResponse(
+            uploads.path(found),
+            media_type=found.mime if inline else "application/octet-stream",
+            filename=found.name,
+            content_disposition_type="inline" if inline else "attachment",
+            headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"},
+        )
+
+    chat_skills: dict[str, Skill] = {}
+    if "chat" in cfg.roles and cfg.roles["chat"].skills is not None:  # a bad skill file stops the server here
+        chat_skills = {s.name: s for s in load_chat_skills(cfg.roles["chat"].skills)}
+
     def upstream(name: str) -> tuple[str, str, dict[str, str], str | None]:
         """(engine base url, served model name, headers, prompt-or-None) for a role or a raw catalog model."""
         if name in cfg.roles:
@@ -282,17 +330,76 @@ def create_app(
             "data": [{"id": r, "object": "model", "owned_by": "airlie"} for r in [*cfg.roles, *served]],
         }
 
+    def chat_prompt(prompt: str, skill: Any) -> str:
+        """The chat role's prompt with the list of skills it can suggest, and the one run for this request."""
+        if chat_skills:
+            listing = "\n".join(f"- /{s.name}: {s.summary}" for s in chat_skills.values())
+            prompt = f"{prompt.rstrip()}\n\n## Slash commands\n\n{listing}\n"
+        if skill is None:
+            return prompt
+        found = chat_skills.get(str(skill))
+        if found is None:
+            known = ", ".join(chat_skills) or "none"
+            raise HTTPException(404, f"unknown skill '{skill}'; skills: {known}")
+        return f"{prompt.rstrip()}\n\n## Skill: /{found.name}\n\n{found.text.strip()}\n"
+
+    @app.get("/v1/airlie/chat/attachments")
+    async def attachment_limits() -> dict[str, Any]:
+        """What the + may attach, so the composer refuses a too-large file before uploading it."""
+        a = cfg.chat.attachments
+        return {
+            "max_per_message": a.max_per_message,
+            "max_image_mb": a.max_image_mb,
+            "max_video_mb": a.max_video_mb,
+            "max_file_mb": a.max_file_mb,
+        }
+
+    @app.get("/v1/airlie/chat/skills")
+    async def chat_skill_list() -> dict[str, Any]:
+        return {
+            "skills": [
+                {"name": s.name, "summary": s.summary, "action": s.action} for s in chat_skills.values()
+            ]
+        }
+
+    async def attach(body: dict[str, Any], request: Request) -> dict[str, Any]:
+        """The chat body with every `airlie_upload` part turned into what the chat model can take."""
+        msgs = list(body.get("messages") or [])
+        limit = cfg.chat.attachments.max_per_message
+        for m in msgs:
+            parts = m.get("content") if isinstance(m, dict) else None
+            if isinstance(parts, list) and sum(p.get("type") == "airlie_upload" for p in parts) > limit:
+                raise HTTPException(400, f"a message may carry up to {limit} attachments")
+        principal = owner_of(request)
+        msgs = await asyncio.to_thread(  # decoding a picture or a video, or reading a PDF, blocks
+            resolve,
+            msgs,
+            uploads,
+            can_see=lambda u: may_see(principal, u),
+            vision=cfg.roles["chat"].vision,
+        )
+        return {**body, "messages": msgs}
+
     @app.post("/v1/chat/completions")
-    async def chat(body: dict[str, Any]) -> Any:
+    async def chat(body: dict[str, Any], request: Request) -> Any:
         name = str(body.get("model", ""))
+        skill = body.get("skill")  # the Chat screen's slash command: ours, never the engine's
+        if skill is not None:
+            body = {k: v for k, v in body.items() if k != "skill"}
         base, served, headers, prompt = upstream(name)
+        if name == "chat":
+            prompt = chat_prompt(prompt or "", skill)
+        elif skill is not None:
+            raise HTTPException(400, "skills are for the chat role")
+        if has_uploads(list(body.get("messages") or [])):
+            if name != "chat":
+                raise HTTPException(400, "attachments are for the chat role")
+            body = await attach(body, request)
         msgs = list(body.get("messages") or [])
         if prompt is not None:
             if msgs and msgs[0].get("role") == "system":  # a client with its own harness (OpenCode, VS Code)
-                bridge = (
-                    "\n\nYou are running inside a client that provides its own instructions and tools below; "
-                    "use the tools offered in this conversation, not the tool names mentioned above."
-                )
+                # the rule is one sentence; the blank line that sets it off from the role prompt is ours
+                bridge = "\n\n" + hub_text("client-bridge")
                 msgs = [{"role": "system", "content": prompt.rstrip() + bridge}, *msgs]
             else:
                 msgs = [{"role": "system", "content": prompt}, *msgs]

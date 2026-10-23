@@ -1,5 +1,7 @@
 ---
 summary: Compare libraries, tools or approaches; investigate APIs and feasibility; competitive analysis; summarise tradeoffs; technical spikes
+governs.answer.form: notes
+governs.web.content: untrusted
 ---
 # research
 

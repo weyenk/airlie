@@ -10,10 +10,20 @@ import pytest
 
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.engine.types import Message
+from airlie.prompts import entry, text
 from airlie.scheduler import SlotScheduler
+from airlie.supervisor.advice import SUPERVISOR
 from airlie.teams import NativeTeam, StepObserver, StepRecord, TeamContext
-from airlie.teams.native_team import is_test_path
+from airlie.teams.native_team import (
+    _without_stale_budget,
+    dump_messages,
+    is_test_path,
+    load_messages,
+)
+from airlie.teams.protocol import StuckAdvisor
 from airlie.tools import ToolContext, ToolRegistry
+from tests.unit.advisor_doubles import RaisingAdvisor, RecordingAdvisor, SettleRaisingAdvisor
 
 
 class Recorder(StepObserver):
@@ -762,12 +772,12 @@ async def test_a_role_that_still_has_not_written_four_steps_after_the_nudge_has_
     # the hold still serves READS_UNDER_HOLD reads (steps 9-11), each saying how many are left; the fourth
     # (step 12) is refused: the reads of f0.. find no file (ok=False either way); the refusal is the
     # observation
-    assert [s.o_t.endswith("(2 read(s) left while reading is switched off; then write)") for s in rec.steps][
-        8
-    ]
-    assert [s.o_t.endswith("(0 read(s) left while reading is switched off; then write)") for s in rec.steps][
-        10
-    ]
+    assert [
+        s.o_t.endswith("\n\n(2 read(s) left while reading is switched off; then write)") for s in rec.steps
+    ][8]
+    assert [
+        s.o_t.endswith("\n\n(0 read(s) left while reading is switched off; then write)") for s in rec.steps
+    ][10]
     assert [
         s.o_t == "reading is switched off: use write_file, edit_file or run_tests" for s in rec.steps
     ] == [False] * 11 + [True]
@@ -803,6 +813,75 @@ async def test_a_writer_with_nudge_stuck_that_repeats_again_loses_the_tool_then_
     assert requests_saying(engine, "same call 3 times in a row")[0] == 4
     assert requests_saying(engine, "same call again after being told (read_file)")[0] == 7
     assert [s.o_t == REFUSED for s in rec.steps] == [False] * 6 + [True] * 3
+
+
+async def run_repeating_writer(tmp_path: Path, advisor: StuckAdvisor | None) -> tuple[Any, FakeEngine]:
+    """The writer of the test above (told, its tool switched off, stopped), with `advisor` as its on_stuck."""
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 12})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    ctx.on_stuck = advisor
+    return await team.run(ctx, Recorder()), engine
+
+
+def user_said(engine: FakeEngine) -> list[str]:
+    """Every user message of the last request, in order: the goal and each nudge."""
+    return [str(m.content) for m in engine.requests[-1].messages if m.role == "user"]
+
+
+async def test_the_repeat_nudge_carries_the_advisors_section_once(tmp_path: Path) -> None:
+    adv = RecordingAdvisor("Stop reading a; write the test.")
+    result, engine = await run_repeating_writer(tmp_path, adv)
+    assert result.stop_reason == "repeated_action" and result.steps == 9  # the guard itself is unchanged
+    fixed = text("repeated", n=3, tool="read_file")
+    said = user_said(engine)
+    [nudge] = [m for m in said if m.startswith(fixed)]
+    assert nudge == f"{fixed}\n\n{SUPERVISOR}\nStop reading a; write the test."
+    assert text("repeat-write-only", tool="read_file") in said  # the hold is sent as it is, no advice
+    assert sum(SUPERVISOR in m for m in said) == 1
+    # asked once, with the subtask, the role, the fixed text and the conversation so far (system, goal, 3x2)
+    assert adv.stuck_calls == [("team-1", "coder", fixed, 8)]
+    # it repeated again (repeat-write-only): settled not helped then, and not again when the run stopped
+    assert adv.stuck_settles == [("team-1", False)]
+
+
+async def test_a_role_that_goes_on_after_the_advised_nudge_settles_it_with_its_result(tmp_path: Path) -> None:
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same, same, same, *reads(1), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    adv = RecordingAdvisor("Read something else.")
+    ctx.on_stuck = adv
+    result = await team.run(ctx, Recorder())
+    assert result.ok and adv.stuck_settles == [("team-1", True)]
+
+
+async def test_an_advisor_with_nothing_to_say_leaves_the_fixed_nudge(tmp_path: Path) -> None:
+    adv = RecordingAdvisor(None)
+    _, engine = await run_repeating_writer(tmp_path, adv)
+    assert text("repeated", n=3, tool="read_file") in user_said(engine)
+    assert len(adv.stuck_calls) == 1
+
+
+async def test_an_advisor_that_raises_leaves_the_fixed_nudge(tmp_path: Path) -> None:
+    result, engine = await run_repeating_writer(tmp_path, RaisingAdvisor())
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    said = user_said(engine)
+    assert text("repeated", n=3, tool="read_file") in said and not any(SUPERVISOR in m for m in said)
+
+
+async def test_an_advisor_that_cannot_record_the_outcome_leaves_the_run_as_it_was(tmp_path: Path) -> None:
+    result, engine = await run_repeating_writer(tmp_path, SettleRaisingAdvisor("Write the test."))
+    assert result.stop_reason == "repeated_action" and result.steps == 9
+    assert sum(SUPERVISOR in m for m in user_said(engine)) == 1
+
+
+async def test_a_run_that_never_repeats_never_asks_or_settles(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [*reads(2), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    adv = RecordingAdvisor("unused")
+    ctx.on_stuck = adv
+    assert (await team.run(ctx, Recorder())).ok
+    assert adv.stuck_calls == [] and adv.stuck_settles == []
 
 
 async def test_a_writer_whose_looping_tool_is_switched_off_writes_and_gets_it_back(tmp_path: Path) -> None:
@@ -1407,20 +1486,22 @@ async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages
     """AIR-7 layer 02 fix round, 2026-10-18: the resumed history still said "You have used all 40 of your
     steps: no more tools" and "No tools are available on this turn", so the coder answered the reviewer's
     findings with "I'm out of steps, but here is the complete fix" and a code block instead of acting."""
-    from airlie.engine.types import Message
-    from airlie.teams.native_team import LAST_STEP, LAST_TURN_RETRY, ONE_STEP_LEFT, dump_messages
-
+    one_step_left, last_step, last_turn_retry = (
+        text("one-step-left"),
+        text("last-step", n=40),
+        text("last-turn-retry"),
+    )
     history = [
         Message(role="system", content="You are the coder."),
         Message(role="user", content="Goal:\nmake it pass"),
         Message(role="assistant", content="", tool_calls=(ToolCall("c1", "run_tests", "{}"),)),
         Message(role="tool", content="FAILED", tool_call_id="c1", name="run_tests"),
-        Message(role="user", content=ONE_STEP_LEFT),
+        Message(role="user", content=one_step_left),
         Message(role="assistant", content="", tool_calls=(ToolCall("c2", "read_file", '{"path": "a"}'),)),
         Message(role="tool", content="1: x", tool_call_id="c2", name="read_file"),
-        Message(role="user", content=LAST_STEP.format(n=40)),
+        Message(role="user", content=last_step),
         Message(role="assistant", content="I would fix it like this…"),
-        Message(role="user", content=LAST_TURN_RETRY),
+        Message(role="user", content=last_turn_retry),
         Message(role="assistant", content="Final answer: the fix is …"),
     ]
     engine = FakeEngine({"coder": [write("w", "a.py"), FakeReply(text="done")]})
@@ -1431,7 +1512,7 @@ async def test_a_resumed_conversation_drops_the_last_runs_end_of_budget_messages
     assert res.ok and res.steps == 1
     sent = engine.requests[0].messages
     texts = [str(m.content) for m in sent if m.role == "user"]
-    assert ONE_STEP_LEFT not in texts and LAST_STEP.format(n=40) not in texts and LAST_TURN_RETRY not in texts
+    assert one_step_left not in texts and last_step not in texts and last_turn_retry not in texts
     assert sent[-1].role == "user" and sent[-1].content.startswith(ctx.nudge)
     assert "12 steps" in str(sent[-1].content) and "every tool" in str(
         sent[-1].content
@@ -1518,7 +1599,7 @@ async def test_going_round_the_same_three_reads_three_times_is_a_repeat(tmp_path
 
 
 async def test_a_writer_going_round_a_cycle_is_told_then_loses_its_reads(tmp_path: Path) -> None:
-    """The cycle earns what one repeated call does: told once (CYCLED), then reading is switched off until
+    """The cycle earns what one repeated call does: told once (cycled), then reading is switched off until
     it writes."""
     engine = FakeEngine({"coder": [*reads(2) * 6, FakeReply(text="done")]})
     team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
@@ -1538,3 +1619,212 @@ async def test_two_reads_in_turn_whose_results_change_are_not_a_repeat(tmp_path:
     ctx.tools.add(ScriptedShell(runs))
     result = await team.run(ctx, Recorder())
     assert result.stop_reason == "done" and result.steps == 6
+
+
+CUT = "Your reasoning on the last turn, cut at the budget:"
+GO_ON = "Do not start over: continue from here and decide."
+
+
+def thought(words: int, tag: str = "t") -> str:
+    """Reasoning of `words` words (the FakeEngine counts a reply's completion tokens in words)."""
+    return " ".join(f"{tag}{i}" for i in range(words))
+
+
+def cut_read(tag: str, path: str = "a", words: int = 8) -> FakeReply:
+    """A read whose thinking ran to an 8-token budget: reasoning only, so its completion tokens are the
+    budget."""
+    return FakeReply(
+        reasoning=thought(words, tag),
+        tool_calls=[ToolCall(f"c-{tag}", "read_file", json.dumps({"path": path}))],
+    )
+
+
+def carried(engine: FakeEngine, i: int) -> list[str]:
+    """The carried-reasoning messages in the i-th (1-based) request."""
+    said = [str(m.content) for m in engine.requests[i - 1].messages if m.role == "user"]
+    return [s for s in said if CUT in s]
+
+
+def thinking_team(tmp_path: Path, engine: FakeEngine, **role_fields: Any) -> tuple[NativeTeam, TeamContext]:
+    fields = {"thinking": True, "thinking_budget": 8, "max_tokens": 64, **role_fields}
+    return make_team(tmp_path, engine, **fields)
+
+
+async def test_a_read_after_thinking_cut_at_the_budget_gets_its_reasoning_back_next_turn(
+    tmp_path: Path,
+) -> None:
+    """AIR-30 (AIR-28's coder, 2026-10-18): a turn cut at the thinking budget read one more file, and the next
+    turn began the same argument from zero. Its reasoning comes back, after the tool result, to go on from."""
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 1) == []
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+    last = engine.requests[1].messages
+    assert [m.role for m in last[-2:]] == ["tool", "user"]  # right after the observation
+
+
+async def test_the_carried_reasoning_is_replaced_by_the_next_cut_not_stacked(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+    assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]
+
+
+async def test_a_turn_under_the_budget_leaves_the_last_carried_reasoning_where_it_is(tmp_path: Path) -> None:
+    under = FakeReply(reasoning=thought(3, "u"), tool_calls=[ToolCall("u", "read_file", '{"path": "u"}')])
+    engine = FakeEngine({"coder": [cut_read("a"), under, FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
+
+
+async def test_only_the_tail_of_the_reasoning_is_carried(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a", words=20), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, carried_reasoning_chars=10)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(20, 'a')[-10:]}\n\n{GO_ON}"]
+
+
+@pytest.mark.parametrize(
+    ("reply", "fields"),
+    [
+        (FakeReply(reasoning=thought(7), tool_calls=[ToolCall("c", "read_file", '{"path": "a"}')]), {}),
+        (
+            FakeReply(
+                reasoning=thought(8),
+                tool_calls=[ToolCall("c", "write_file", json.dumps({"path": "a.py", "content": "x=1\n"}))],
+            ),
+            {},
+        ),
+        (FakeReply(reasoning=thought(8), tool_calls=[ToolCall("c", "run_tests", "{}")]), {}),
+        (cut_read("a"), {"carried_reasoning_chars": 0}),
+        (cut_read("a"), {"thinking_budget": None}),
+        (FakeReply(text=thought(8), tool_calls=[ToolCall("c", "read_file", '{"path": "a"}')]), {}),
+    ],
+    ids=["under-budget", "a-write", "run-tests", "switched-off", "uncapped", "no-reasoning"],
+)
+async def test_nothing_is_carried_from_a_turn_that_was_not_a_read_cut_at_the_budget(
+    tmp_path: Path, reply: FakeReply, fields: dict[str, Any]
+) -> None:
+    engine = FakeEngine({"coder": [reply, FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, **fields)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == []
+
+
+async def test_a_role_without_thinking_never_gets_reasoning_carried(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine, thinking=False)
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == []
+
+
+async def test_carrying_reasoning_is_a_reasoning_carried_event(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    events: list[tuple[str, dict[str, Any]]] = []
+    ctx.emit = lambda kind, **f: events.append((kind, f))
+    await team.run(ctx, Recorder())
+    n = len(thought(8, "a"))
+    assert [f for k, f in events if k == "reasoning_carried"] == [
+        {"team_id": ctx.team_id, "role": ctx.role_name, "step": 1, "chars": n},
+        {"team_id": ctx.team_id, "role": ctx.role_name, "step": 2, "chars": n},
+    ]
+
+
+async def test_a_resumed_conversation_replaces_the_reasoning_its_last_run_carried(tmp_path: Path) -> None:
+    first = FakeEngine({"coder": [cut_read("a")]})
+    team, ctx = thinking_team(tmp_path, first, max_steps=1)
+    ctx.stop_when = lambda step: True
+    state = (await team.run(ctx, Recorder())).state
+    engine = FakeEngine({"coder": [cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    ctx.initial_state = state
+    await team.run(ctx, Recorder())
+    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]
+
+
+# ---- each steering text the loop sends comes from the prompt hub and is a steer event (2026-10-22) ----
+
+
+def steers(events: Events) -> list[dict[str, Any]]:
+    """The `steer` events, in order, without their kind."""
+    return [{k: v for k, v in e.items() if k != "kind"} for e in events.records if e["kind"] == "steer"]
+
+
+async def test_a_nudge_emits_a_steer_event_with_its_id(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [*reads(5), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)  # the write-now line: step 4 (10 * 2 // 5)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert steers(events) == [{"id": "write-now", "team_id": "team-1", "role": "coder", "step": 4}]
+    assert user_said(engine).count(text("write-now", n=4, total=10)) == 1
+
+
+async def test_an_advised_repeat_still_reports_the_hub_id(tmp_path: Path) -> None:
+    """on_stuck rewrites the repeat nudge; its event names the hub text it started from. The hold and its
+    refusals that follow are steering too, each an event at the step it was sent after."""
+    same = FakeReply(tool_calls=[ToolCall("c", "read_file", json.dumps({"path": "a"}))])
+    engine = FakeEngine({"coder": [same] * 12})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    ctx.on_stuck = RecordingAdvisor("Stop reading a; write the test.")
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    fixed = text("repeated", n=3, tool="read_file")
+    assert f"{fixed}\n\n{SUPERVISOR}\nStop reading a; write the test." in user_said(engine)
+    assert [(s["id"], s["step"]) for s in steers(events)] == [
+        ("repeated", 3),
+        ("repeat-write-only", 6),
+        ("read-refused", 7),
+        ("read-refused", 8),
+        ("write-now", 8),
+        ("read-refused", 9),
+    ]
+
+
+async def test_carried_reasoning_is_a_steer_event_as_well(tmp_path: Path) -> None:
+    """AIR-30's reasoning_carried event stays, with its chars; the carried text is steering, so it is a
+    steer event too."""
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="Done.")]})
+    team, ctx = thinking_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert steers(events) == [{"id": "reasoning-carried", "team_id": "team-1", "role": "coder", "step": 1}]
+    assert [e["chars"] for e in events.records if e["kind"] == "reasoning_carried"] == [len(thought(8, "a"))]
+    assert carried(engine, 2) == [text("reasoning-carried", tail=thought(8, "a"))]
+
+
+async def test_context_pressure_is_said_once_and_is_a_steer_event(tmp_path: Path) -> None:
+    """At 75% of the role's max_context the role is told once to stop reading (2026-10-19, 9d6cdff)."""
+    engine = FakeEngine({"coder": [*reads(2), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_context=200)
+    ctx.goal = " ".join(["word"] * 120)  # the first prompt: ~160 words, over 150 and under 200
+    ctx.emit = events = Events()
+    rec = Recorder()
+    result = await team.run(ctx, rec)
+    assert result.ok
+    said = text("context-pressure", max_prompt=rec.steps[0].prompt_tokens, max_context=200)
+    assert user_said(engine).count(said) == 1
+    assert steers(events) == [{"id": "context-pressure", "team_id": "team-1", "role": "coder", "step": 1}]
+    assert [e["kind"] for e in events.records].count("context") == 1
+
+
+def test_a_resumed_run_drops_hub_end_of_budget_messages() -> None:
+    """The end-of-budget messages are recognised from the hub's text (prompt hub review focus 3), so a
+    history saved with them still loses them on resume; other nudges in it stay."""
+    write_now = text("write-now", n=4, total=10)
+    history = [
+        Message(role="system", content="You are the coder."),
+        Message(role="user", content="Goal:\nmake it pass"),
+        Message(role="user", content=entry("one-step-left").body),
+        Message(role="user", content=write_now),
+        Message(role="user", content=text("last-step", n=40)),
+        Message(role="user", content=text("last-turn-retry")),
+        Message(role="user", content=text("no-tools")),
+    ]
+    kept, dropped = _without_stale_budget(load_messages(dump_messages(history)))
+    assert dropped
+    assert [m.content for m in kept] == ["You are the coder.", "Goal:\nmake it pass", write_now]
+    assert _without_stale_budget(kept) == (kept, False)
