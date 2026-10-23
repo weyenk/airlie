@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -15,7 +16,8 @@ import pytest
 from airlie.engine import ToolCall
 from airlie.tools import ToolContext, ToolRegistry, ToolResult, resolve
 from airlie.tools import confine as confine_mod
-from airlie.tools.shell import run_cmd
+from airlie.tools.sandbox import cap
+from airlie.tools.shell import run_cmd, run_steps
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 
 
@@ -172,6 +174,80 @@ async def test_run_tests_goes_on_after_a_command_that_times_out(tmp_path: Path) 
     assert not r.ok
     assert "[1/3] PASS: echo one" in r.output
     assert "[2/3] FAIL (timed out after 1s): sleep 10" in r.output and "[3/3] PASS: echo after" in r.output
+
+
+async def test_run_steps_starts_in_the_worktree_and_keeps_its_scratch_file_in_the_temp_dir_only_while_it_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    c = ctx(tmp_path)
+    r = await run_steps(["pwd", f"ls {scratch}"], c)
+    lines = r.output.splitlines()
+    assert lines[2] == str(c.worktree.resolve())  # the first step runs in the worktree
+    assert lines[4].startswith("airlie-run-tests-")  # the scratch file, named for what it is
+    assert list(scratch.iterdir()) == []  # and gone when the steps are done
+
+
+async def test_run_steps_takes_the_directory_a_step_leaves_from_the_file_it_writes_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step that exits early never reaches the pwd the gate records, so it can leave a directory of its own
+    in the file; an empty file (no pwd, no directory) leaves the next step where it was."""
+    scratch, elsewhere = tmp_path / "scratch", tmp_path / "elsewhere"
+    scratch.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    c = ctx(tmp_path)
+    steps = ["exit 0", "pwd", f'echo {elsewhere} > "$(ls -d {scratch}/airlie-run-tests-*)"; exit 0', "pwd"]
+    r = await run_steps(steps, c)
+    pwds = [x for x in r.output.splitlines() if x.startswith("/")]
+    assert pwds == [str(c.worktree.resolve()), str(elsewhere.resolve())]
+
+
+async def test_run_steps_reports_every_failure_with_its_output_trimmed_of_trailing_newlines_only(
+    tmp_path: Path,
+) -> None:
+    steps = ["printf '\\n\\nbodyX\\n\\n'; exit 1", "printf 'tail  \\n'; exit 2"]
+    r = await run_steps(steps, ctx(tmp_path, cap=5000))
+    assert r.output == "\n".join(
+        [
+            "0 of 2 gate commands pass; failed: [1/2], [2/2]",
+            f"[1/2] FAIL (exit 1): {steps[0]}",
+            "\n\nbodyX",
+            f"[2/2] FAIL (exit 2): {steps[1]}",
+            "tail  ",
+        ]
+    )
+
+
+def shown(r: ToolResult) -> int:
+    """How many q's of the commands' output a result carries (the lines made of nothing else)."""
+    return sum(len(x) for x in r.output.splitlines() if x and set(x) == {"q"})
+
+
+async def test_run_steps_shares_the_output_cap_among_the_failures(tmp_path: Path) -> None:
+    step = "python3 -c \"print('q' * 5000)\"; exit 1"
+    r = await run_steps([step], ctx(tmp_path, cap=500))
+    assert shown(r) == 500 and "[truncated 4500 chars]" in r.output  # one failure: all of the cap
+    r = await run_steps([step, step], ctx(tmp_path, cap=500))
+    assert shown(r) == 500  # two: 250 each
+
+
+async def test_run_steps_passes_report_only_the_last_line_cut_to_300_and_nothing_for_no_output(
+    tmp_path: Path,
+) -> None:
+    steps = ["true", "printf 'first\\nsecond\\n\\n'", "python3 -c \"print('y' * 400)\""]
+    r = await run_steps(steps, ctx(tmp_path))
+    assert r.output.splitlines() == [
+        "3 of 3 gate commands pass",
+        "[1/3] PASS: true",
+        f"[2/3] PASS: {steps[1]}",
+        "second",
+        f"[3/3] PASS: {steps[2]}",
+        *cap("y" * 400, 300).splitlines(),
+    ]
 
 
 async def test_git_status_and_diff(tmp_path: Path) -> None:

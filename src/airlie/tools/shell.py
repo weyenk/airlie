@@ -5,6 +5,8 @@ the agent environment (airlie.subproc: no credentials) and, on macOS, unable to 
 from __future__ import annotations
 
 import asyncio
+import itertools
+import os
 import shlex
 import shutil
 import tempfile
@@ -84,17 +86,23 @@ async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
     line, or FAIL with its output, the failing ones sharing ctx.output_cap_chars. Each runs in sh as the
     gate runs it (in a group of its own, so an inline # comment ends at its line) with ctx.shell_timeout_s,
     from the directory the one before left: a `cd` carries over, as it does in the gate."""
-    cwd = ctx.worktree
+    # None is the worktree until a step leaves somewhere else; _run reads "" the same way
+    cwd: Path | None = None  # pragma: no mutate
     ran: list[tuple[str, int | None, str]] = []
-    with tempfile.TemporaryDirectory(prefix="airlie-run-tests-") as tmp:
-        where = Path(tmp) / "cwd"
+    fd, name = tempfile.mkstemp(prefix="airlie-run-tests-")  # where each step says where it ended
+    os.close(fd)
+    where = Path(name)
+    try:
         for step in steps:
-            script = f"{{ {step}\n}}\nrc=$?\npwd > {shlex.quote(str(where))}\nexit $rc"
-            where.unlink(missing_ok=True)
+            script = f"{{ {step}\n}}\nrc=$?\npwd > {shlex.quote(name)}\nexit $rc"
+            where.write_text("")  # pragma: no mutate  (any text that is not a directory means the same)
             rc, text = await _run(script, ctx, shell=True, cwd=cwd)
             ran.append((step, rc, text))
-            if where.is_file() and Path(moved := where.read_text().strip()).is_dir():
+            moved = where.read_text().strip()
+            if moved and Path(moved).is_dir():
                 cwd = Path(moved)
+    finally:
+        where.unlink()
     failed = [i for i, (_, rc, _) in enumerate(ran, 1) if rc != 0]
     share = ctx.output_cap_chars // max(len(failed), 1)
     n = len(ran)
@@ -103,8 +111,8 @@ async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
         lines[0] += "; failed: " + ", ".join(f"[{i}/{n}]" for i in failed)
     for i, (step, rc, text) in enumerate(ran, 1):
         if rc == 0:
-            last = next((x for x in reversed(text.splitlines()) if x.strip()), "")
-            lines += [f"[{i}/{n}] PASS: {step}", *([cap(last, 300)] if last else [])]
+            last = (cap(x, 300) for x in reversed(text.splitlines()) if x.strip())
+            lines += [f"[{i}/{n}] PASS: {step}", *itertools.islice(last, 1)]
         elif rc is None:
             lines += [f"[{i}/{n}] FAIL ({text.removeprefix('error: ').removeprefix('command ')}): {step}"]
         else:

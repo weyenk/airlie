@@ -88,8 +88,9 @@ def _config(root: Path) -> AirlieConfig:
         "models": {"base": {"repo": "org/m", "revision": "r"}},
         "roles": {
             **{r: {"prompt": f"{r}.md", "model": "base"} for r in roles},
-            "chat": {"prompt": "chat.md", "model": "base", "skills": str(CHAT_SKILLS)},
+            "chat": {"prompt": "chat.md", "model": "base", "skills": str(CHAT_SKILLS), "vision": True},
         },
+        "chat": {"attachments": {"max_file_mb": 1}},  # small, so a too-large file is quick to make
         "observability": {"state_dir": str(root / "state")},
     }
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))
