@@ -18,6 +18,7 @@ from airlie.story.layer_checks import (
     checks_for,
     feedback,
     findings_text,
+    is_testers_test,
     pytest_runner,
     static_findings,
 )
@@ -431,3 +432,13 @@ async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
     )
     out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
     assert "NameError" in out and "test_good" not in out
+
+
+def test_is_testers_test() -> None:
+    by = {"tests/test_p.py": {"test_new", "TestX"}}
+    assert is_testers_test("tests/test_w.py::test_a", {"tests/test_w.py"}, by)
+    assert is_testers_test("tests/test_p.py::test_new", set(), by)
+    assert not is_testers_test("tests/test_p.py::test_old", set(), by)
+    assert is_testers_test("tests/test_p.py::TestX::test_a[1]", set(), by)
+    assert is_testers_test("tests/test_p.py::test_new[a-b]", set(), by)
+    assert not is_testers_test("tests/test_p.py", set(), by)

@@ -41,7 +41,7 @@ from airlie.story.layer_checks import (
     checks_for,
     feedback,
     findings_text,
-    in_files,
+    is_testers_test,
     static_findings,
 )
 from airlie.story.model import (
@@ -960,20 +960,22 @@ class StoryPipeline:
         nn: str,
         sup: LayerSupervisor | None = None,
     ) -> bool:
-        """When the final gate fails after the build and every test that fails is one of the tester's locked
-        files, the tester is sent back once to mend its own tests (AMEND, with what the coder and the reviewer
-        said): the coder cannot change them (AIR-9 layer 02, 2026-10-21: a test unpacked one comment from a
-        card with two, the code was right, and the layer blocked). A mend is kept only when it changed nothing
-        but those files and every one of the tester's tests still holds before the code: the pre-code check,
-        run with the coder's files put back as they were when the tests were locked. Kept, the files are
-        locked again as they now are; else they are put back. Returns whether a mend was kept."""
+        """When the final gate fails after the build and every test that fails is one the tester wrote (in a
+        locked file, or a locked definition), the tester is sent back once to mend its own tests (AMEND, with
+        what the coder and the reviewer said): the coder cannot change them (AIR-9 layer 02, 2026-10-21: a
+        test unpacked one comment from a card with two, the code was right, and the layer blocked). A test
+        that was there before the tester's (an old one failing on a fake) is the coder's. A mend is kept only
+        when it changed nothing but the locked files and every one of the tester's tests still holds before
+        the code: the pre-code check, run with the coder's files put back as they were when the tests were
+        locked. Kept, the files are locked again (what the mend changed joins the tester's definitions); else
+        they are put back. Returns whether a mend was kept."""
         confinement = self.cfg.tools.confinement()
         checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         locked = orch.locked
         if checks is None or not locked or "tests" not in orch.runs:
             return False
         failing = await checks.failing(wt)
-        if not failing or not all(in_files(t, locked) for t in failing):
+        if not failing or not all(is_testers_test(t, orch.locked_whole, orch.locked_tests) for t in failing):
             return False  # the suite did not run, it passes, or something besides the tests is red
         st.emit("locked_tests_fail", layer=nn, tests=failing)
         build = orch.runs.get("build")
@@ -1020,7 +1022,7 @@ class StoryPipeline:
             commit_wip(wt, f"studio: layer {nn} (the tests' mend undone)")
             self._settle_amend(sup, "not_helped")
             return False
-        orch.lock(sorted(locked), orch.lock_owner)
+        orch.lock(sorted(locked), orch.lock_owner, since=before)
         st.emit("tests_mended", layer=nn, files=changed)
         self._settle_amend(sup, "helped")
         return True

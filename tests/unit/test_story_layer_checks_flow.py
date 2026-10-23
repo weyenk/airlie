@@ -372,3 +372,22 @@ async def test_a_gate_failing_outside_the_testers_files_does_not_ask_the_tester(
     assert st.blocked is None and "01" in st.built
     assert kinds(st.path / "events.jsonl", "locked_tests_fail") == []
     assert [p for p in prompts(engine, "tester") if "fails only in your tests" in p] == []
+
+
+TEST_BASE_AND_MUL = (
+    "from calc import add, mul\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n"
+    "def test_mul():\n    assert mul(2, 3) == 6\n"
+)
+
+
+async def test_an_old_test_failing_in_a_locked_file_goes_to_the_coder_not_the_tester(
+    tmp_path: Path,
+) -> None:
+    """AIR-9: the tester adds test_mul to the file test_add was already in; the coder breaks add, so only
+    test_add fails. It was there before the tests: the gate's follow-up goes to the coder."""
+    tester = [write("tests/test_base.py", TEST_BASE_AND_MUL), LISTED]
+    st, engine = await run(tmp_path, [BROKEN, DONE, FIXED, DONE], tester=tester)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    assert kinds(st.path / "events.jsonl", "locked_tests_fail") == []
+    assert [p for p in prompts(engine, "tester") if "fails only in your tests" in p] == []
+    assert len([p for p in prompts(engine, "coder") if "the whole suite fails with your change" in p]) == 1

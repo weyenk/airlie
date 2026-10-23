@@ -79,7 +79,8 @@ def test_with_a_tester_role_a_layer_with_criteria_is_the_tests_then_the_build_ag
     assert "Show the avatar." in tests.brief and "AC2" in tests.brief and "AC1" not in tests.brief
     assert "Do not write the feature" in tests.brief and "the only red" in tests.brief
     assert "NOT happen" in tests.brief and "Every test asserts" in tests.brief
-    assert "They are the contract" in build.brief and "cannot change their files" in build.brief
+    assert "They are the contract" in build.brief and "you cannot change them" in build.brief
+    assert "What else is in their files was there before them" in build.brief
     assert "Write the tests first" not in build.brief and "AC2" in build.brief
     assert "once they pass, you are done" in build.brief and "whole suite after review" in build.brief
     assert len(schedule(plan)) == 2

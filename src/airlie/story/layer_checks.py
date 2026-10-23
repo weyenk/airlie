@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 import re
 import shlex
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -313,6 +313,19 @@ def in_files(test_id: str, paths: Collection[str]) -> bool:
     """Whether pytest's `test_id` (a node id, or a module's path) is a test in one of `paths` (from the
     repository's root)."""
     return any(_same(p, test_id.split("::")[0]) for p in paths)
+
+
+def is_testers_test(
+    test_id: str, whole: Collection[str], by_definition: Mapping[str, Collection[str]]
+) -> bool:
+    """Whether pytest's `test_id` is one the tester wrote: in a file locked whole, or under one of the
+    definitions (the function or class named first after `::`, any `[params]` removed) the tester wrote in a
+    file locked by definition."""
+    if in_files(test_id, whole):
+        return True
+    path, _, rest = test_id.partition("::")
+    name = _PARAMS.sub("", rest).split("::")[0]
+    return any(_same(p, path) and name in names for p, names in by_definition.items())
 
 
 def static_findings(worktree: Path, base: str) -> list[Finding]:

@@ -313,9 +313,11 @@ role writes them from the brief, and the coder makes them pass)."""
 CONTRACT = (
     "The tests for this layer were written before you (the result of 'tests' below lists them and what each "
     "asserts), and airlie has checked that each fails without the code. They are the contract, and you "
-    "cannot change their files: make them pass with the code. If one is wrong about a name or a signature "
-    "the brief fixes, say which and why when you stop. Add tests in a new file for anything else you change. "
-    "Your run_tests runs your tests; once they pass, you are done: airlie runs the whole suite after review."
+    "cannot change them: make them pass with the code. What else is in their files was there before them "
+    "(fakes, helpers, imports): change that where your change needs it, a signature a fake copies say. If a "
+    "test is wrong about a name or a signature the brief fixes, say which and why when you stop. Add tests "
+    "in a new file for anything else you change. Your run_tests runs your tests; once they pass, you are "
+    "done: airlie runs the whole suite after review."
 )
 
 
