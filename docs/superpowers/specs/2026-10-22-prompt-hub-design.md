@@ -1,6 +1,6 @@
 # The prompt hub: rules and steering in files, with a contradiction check
 
-Status: approved by Noah on 2026-10-22. Nothing here is built yet.
+Status: approved by Noah on 2026-10-22. Built in PR #129 (2026-10-23); the contradictions it accepts are listed there.
 
 ## Why
 
