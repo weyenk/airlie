@@ -6,7 +6,6 @@ when: A continuation (a retry or fix round) of a role with write tools and no wr
 governs:
   reading: stop
   writing: now
-  tests.order: first
 why: |
   What a role sent back to change something is told, once, when it is two-fifths through its steps without a write of its own. A continuation counted an earlier run's write as its own and was never nudged (AIR-9 layer 05, 2026-10-23: the tester's retry read for all 20 steps and never wrote).
 ---

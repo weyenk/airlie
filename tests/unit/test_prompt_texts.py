@@ -100,6 +100,7 @@ CASES: dict[str, Callable[[], str]] = {
     "no-tools": lambda: text("no-tools"),
     "last-step": lambda: text("last-step", n=N),
     "write-now": lambda: text("write-now", n=N, total=TOTAL),
+    "write-now-continuing": lambda: text("write-now-continuing", n=N, total=TOTAL),
     "write-only": lambda: text("write-only", what=WHAT, n=N, k=K),
     "tests-now": lambda: text("tests-now", n=N, total=TOTAL),
     "code-now": lambda: text("code-now", n=N, total=TOTAL),
