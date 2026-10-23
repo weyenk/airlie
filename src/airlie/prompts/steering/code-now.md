@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 fields: [n, total]
 when: A role with a write schedule reaches its code deadline without a code write; said once.
 governs:

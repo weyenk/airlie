@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [coder]
 fields: [name, args, out]
 when: The run being forked stopped for repeating one failing tool call; this names the call, its arguments and the end of its error, after branch-start.
 governs:

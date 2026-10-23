@@ -6,14 +6,8 @@ governs:
   plan.form: json
   reading: named-only
 yields_to:
-  - code-now
   - context-pressure
   - one-step-left
-  - read-left
-  - read-refused
-  - tests-now
-  - write-now
-  - write-only
 why: |
   What the architect is told to start each later round.
 

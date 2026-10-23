@@ -120,6 +120,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie prompts audit {{.CLI_ARGS}}'
 
+  prompts:subjects:
+    desc: "Every governs subject in use, with the hub texts and role prompts that tag it, so a near-duplicate subject shows (no engine needed)"
+    cmds:
+      - '{{.RUN}} airlie prompts subjects {{.CLI_ARGS}}'
+
   story:check:
     desc: "Check what task story needs: roles, gh + gh-stack, who publishes (your gh login or story.github_app's bot), the Jira project and its statuses; task story:check -- ISSUE also its repo: label, checkout, remote, trunk and test gate"
     cmds:

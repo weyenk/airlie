@@ -215,7 +215,11 @@ class StudioOrchestrator:
             thinking=role.thinking,
         )
         res = await generate_with_tools(
-            self.engine, req, self._lookup_tools(role_name), role.max_steps or DEFAULT_STEPS
+            self.engine,
+            req,
+            self._lookup_tools(role_name),
+            role.max_steps or DEFAULT_STEPS,
+            on_steer=lambda id: self.sink.emit("steer", id=id, role=role_name),
         )
         if res.finish_reason == "length":
             # max_tokens ended it. With nothing to read (all thinking), or a plan, answer or synthesis cut off
@@ -535,6 +539,7 @@ class StudioOrchestrator:
                     files,
                     diff_chars=rv.diff_chars,
                     files_chars=rv.files_chars,
+                    on_steer=lambda id: self.sink.emit("steer", id=id, role=rv.role, subtask=run.subtask.id),
                 )
             except EngineError as e:
                 review = Review("error", (), f"engine error: {e}")

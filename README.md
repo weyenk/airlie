@@ -52,6 +52,7 @@ Run `task` to list them. The ones that exist today:
 | `task supervisor:log` / `task supervisor:stats` / `task supervisor:verdict -- ID right\|wrong [NOTE]` | read the supervisor's ledger (Muse's advice at a story's trouble points, advisory only): the newest interventions / how often they helped, by trigger and category / your verdict on one (`docs/integrations/story.md`, *The supervisor (trial)*) |
 | `task supervisor:try -- --worktree PATH --base SHA [--run RUN_ID]` | Muse's triage of a worktree as a story's first pre-code retry would ask for it, with no ledger row (`docs/integrations/story.md`) |
 | `task prompts:audit [-- --role NAME]...` | advisory: Muse reads each role's full instructions (its role prompt, then every rule and steering text that reaches it, in `src/airlie/prompts/`) and lists the ones that contradict, steering against rules included; writes `prompts-audit-<UTC time>.md` under the state directory's `runs/` and prints its path and each role's first line. Needs the engine, is not deterministic and fails nothing; the gate's check is `tests/unit/test_prompt_contradictions.py` |
+| `task prompts:subjects` | every `governs` subject in use, one per line, with the hub texts and role prompts that tag it, so a near-duplicate subject (`tests.location` against `test.location`) shows; no engine needed |
 | `task board:export [-- --out FILE]` / `task board:import-jira [-- --dry-run]` | write the local board (initiative → epic → story → subtask, `/v1/board`, the default source of stories) as JSON / import the Jira project onto it, each issue keeping its number under `board.prefix` (`HDS-5` → `AIR-5`) (`docs/integrations/story.md`, *Boards*) |
 | `task story:launchd:install` / `task story:launchd:uninstall` | load / remove the launchd agent that runs the story tick (`airlie story tick`) every 15 minutes |
 | `task opencode:install` | copy the OpenCode chief, its subagents, `/studio` and `/story` into `~/.config/opencode` and register `airlie mcp`, an MCP server (stdio) that gives OpenCode the tools `airlie_plan`, `airlie_run`, `airlie_status`, `airlie_cancel` and `airlie_story` over `task serve`'s jobs API, in its `opencode.json` (merged into an entry you already have; after a backup when it changes the file; `docs/integrations/local-agents.md`) |
@@ -242,22 +243,29 @@ write a literal brace). The id is the file name:
 | Key | Holds |
 | --- | --- |
 | `kind` | `rule` or `steering`, the folder it is in |
-| `roles` | the roles that can receive it, or `any` |
+| `roles` | the roles that can receive it under `airlie.yaml`'s tool lists and flags (`write-now` only a role that can write and has no `write_schedule`), or `any` |
 | `fields` | the `{placeholders}` the body uses; the loader checks they match exactly |
 | `when` | steering only: the condition that sends it, in a sentence |
 | `governs` | the subjects it instructs on, each with its stance (`tests.location: new-file`) |
-| `yields_to` | ids it deliberately gives way to when they disagree |
+| `yields_to` | ids it gives way to at runtime when they disagree: precedence, not an accepted conflict |
 | `why` | the incident behind the wording: what went wrong, the run, the date |
 
 The contradiction check runs in `pytest` (`tests/unit/test_prompt_contradictions.py`): two rules, or two steering
 texts, that reach the same role with different stances on one subject fail the gate unless one `yields_to` the
-other. Steering outranks rules, so it is never compared with a rule; that is its job, as when "reading is switched
-off" overrides a role prompt that says to read first. `task prompts:audit` is the model's read of the same
-ground (above). The team loop, studio, fork and the story pipeline record each steering text they send as a
-`steer` event, with its `id`, the `role` and where it went (`team_id` and `step`, a `subtask`, or a story's
-`layer` or planning `round`), so those events show which nudges still fire. `no-more-tools` is the exception: the
-single-call loop behind a role's one-shot calls (`tools/loop.py`, used by the chief, the reviewer and the
-supervisor's triage) has no event stream, so its silence says nothing about whether it fired.
+other or the conflict is in that test's `ACCEPTED` list. Steering outranks rules, so it is never compared with a
+rule; that is its job, as when "reading is switched off" overrides a role prompt that says to read first.
+`yields_to` is for runtime precedence only: a stage's brief over the role prompt's general default (the layer's
+named test file over `coder.md`'s new one), a later nudge over an earlier one. It skips the whole pair, and the
+gate fails on an entry that settles no live disagreement. A real conflict that stands for now goes in `ACCEPTED`
+instead, one entry per role and subject with both sources and a reason; that entry covers that subject alone, and
+the gate fails once it no longer matches a conflict. `task prompts:subjects` lists every subject with the texts that
+tag it, so a near-duplicate subject shows. `task prompts:audit` is the model's read of the same ground (above).
+The team loop, studio, fork and the story pipeline record each steering text they send as a `steer` event, with
+its `id`, the `role` and where it went (`team_id` and `step`, a `subtask`, or a story's `layer` or planning
+`round`), so those events show which nudges still fire. The single-call loop behind a role's one-shot calls
+(`tools/loop.py`) has no stream of its own: it tells its caller through `on_steer`, and the studio's chief and
+reviewer and the supervisor's triage record `no-more-tools` from it. `airlie supervisor try` has no stream, so
+there it goes unrecorded.
 
 Role prompts take part in the check as rules, through flat front-matter lines in `prompts/roles/<role>.md`: a
 `governs.<subject>: <value>` line per subject and `yields_to: a, b`. Other texts name a role prompt as

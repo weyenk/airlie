@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester, coder]
 when: A read call is made while reading is switched off and no reads are left under the hold; it is the call's observation, and the call does not run.
 governs:
   reading: stop

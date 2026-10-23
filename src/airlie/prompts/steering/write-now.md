@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester]
 fields: [n, total]
 when: A role with write tools and no write schedule reaches two-fifths of its steps without a write; said once.
 governs:

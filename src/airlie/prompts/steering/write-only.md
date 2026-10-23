@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester, coder]
 fields: [what, n, k]
 when: A role told to write (write-now, or a missed write deadline) has still not written WRITE_ONLY_AFTER steps later, and its reading is switched off.
 governs:

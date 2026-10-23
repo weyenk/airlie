@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester, coder]
 fields: [tool]
 when: A role with write tools and nudge_stuck repeats again after being told (repeated or cycled); the tool it loops on is switched off until it writes.
 governs:

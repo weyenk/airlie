@@ -160,7 +160,13 @@ class LayerSupervisor:
             else:
                 self.triage_calls += 1
                 try:
-                    triaged = await self.triage(inp, self.worktree)
+                    triaged = await self.triage(
+                        inp,
+                        self.worktree,
+                        on_steer=lambda id: self._emit(
+                            "steer", id=id, role=self.triage.role_name, subtask=subtask, layer=self.layer
+                        ),
+                    )
                 except TriageFailed as e:
                     fallback, seconds, tokens = e.reason, e.seconds, e.tokens  # what the failed call cost
                 else:

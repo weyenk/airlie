@@ -113,9 +113,12 @@ class Triage:
         self.model = model or role.model
         """The model for the ledger: a seat (`reviewer`) can be pointed at other weights between rows."""
 
-    async def __call__(self, inp: TriageInput, worktree: Path) -> Triaged:
+    async def __call__(
+        self, inp: TriageInput, worktree: Path, *, on_steer: Callable[[str], None] | None = None
+    ) -> Triaged:
         # The request is built inside the guard too: a missing prompt file or a broken tools factory is a
-        # fallback like any other failure, never a stopped run.
+        # fallback like any other failure, never a stopped run. `on_steer` hears each hub steering text the
+        # lookup loop sends Muse, for a caller with an event stream (`airlie supervisor try` has none).
         loop = asyncio.get_running_loop()
         started = loop.time()
         engine = _Counted(self.engine)
@@ -138,7 +141,11 @@ class Triage:
             )
             res = await asyncio.wait_for(
                 generate_with_tools(
-                    cast(Engine, engine), req, self.tools(worktree), self.role.max_steps or DEFAULT_STEPS
+                    cast(Engine, engine),
+                    req,
+                    self.tools(worktree),
+                    self.role.max_steps or DEFAULT_STEPS,
+                    on_steer=on_steer,
                 ),
                 self.timeout_s,
             )

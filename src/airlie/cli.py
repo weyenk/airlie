@@ -1456,6 +1456,22 @@ def prompts_audit(
         console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@prompts_app.command("subjects")
+def prompts_subjects(config: ConfigOpt = None) -> None:
+    """Every `governs` subject in use, one per line, with the hub texts and role prompts that give a stance on
+    it, so a near-duplicate subject (tests.location against test.location) is plain to see. Role prompts are
+    those the config assigns; nothing needs the engine."""
+    from airlie.prompts import load
+    from airlie.prompts.check import subjects
+
+    cfg = _load(config)
+    found = subjects(load().values(), {name: role.prompt for name, role in cfg.roles.items()})
+    for subject, sources in found.items():
+        console.print(
+            f"{subject}: {', '.join(sources)}", markup=False, highlight=False, emoji=False, soft_wrap=True
+        )
+
+
 @board_app.command("export")
 def board_export(
     out: Annotated[

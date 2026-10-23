@@ -1,6 +1,6 @@
 ---
 kind: steering
-roles: [any]
+roles: [tester, coder]
 when: A role with write tools, in a run that must act, replies with text (or nothing) before any write of its own has landed; said once.
 governs:
   writing: now
