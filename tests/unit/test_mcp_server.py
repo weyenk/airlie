@@ -396,6 +396,28 @@ async def test_status_waits_40_seconds_by_default_and_never_past_the_45_a_call_h
     assert asked[-1] == pytest.approx(10 - 0.5 - 1.5, abs=0.1)  # the time left, less the margins
 
 
+async def test_status_leaves_out_steer_events_the_client_model_reads_the_rest(tmp_path: Path) -> None:
+    """A `steer` event counts a nudge the pipeline sent (prompt hub, 2026-10-22); it is not progress, and the
+    status text is read by a model, so it shows the events it showed before steer events existed."""
+    events = [
+        {"ts": 1, "kind": "layer_started", "layer": "01"},
+        {"ts": 2, "kind": "steer", "id": "checks-found", "role": "tester", "layer": "01"},
+        {"ts": 3, "kind": "locked_tests_fail", "layer": "01", "tests": ["t::a"]},
+    ]
+    job = {"job_id": "j", "kind": "story", "state": "running", "events": events, "next": 3}
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=job)
+
+    async with connected(httpx.MockTransport(serve), tmp_path) as client:
+        out = text(await client.call_tool("status", {"job_id": "j", "wait": 0}))
+    assert out.splitlines() == [
+        "j: running",
+        "- layer_started layer=01",
+        '- locked_tests_fail layer=01 tests=["t::a"]',
+    ]
+
+
 class Hung(httpx.AsyncBaseTransport):
     """A serve that never answers; with `starts`, a POST that starts a job is answered (job j1) first."""
 
