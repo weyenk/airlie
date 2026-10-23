@@ -1,0 +1,228 @@
+<title>Story Pipeline Mockup</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: the story card (acceptance criteria, Build link) and the pipeline page (stages left to right, one lane of jobs per layer, a detail panel for the selected job). Tokens are the web app's own (2026-10-17 mockups). */
+:root{--bg:#F6F5F1;--surface:#FFFFFF;--line:#E2E0D8;--line2:#EEECE5;--ink:#17191E;--ink2:#4B4F58;--accent:#0B5F7A;--accent-ink:#FFFFFF;
+--run-bg:#E6EDFD;--run:#1E3FA8;--ok-bg:#E2F2E9;--ok:#1E5C3E;--warn-bg:#FBF0D9;--warn:#7A4F00;--err-bg:#FBE6E3;--err:#8E2B22;--mute-bg:#EEF0F3;--mute:#4B4F58;--code:#F1F0EA;
+--sans:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;
+--run-bg:#16283F;--run:#B9D3F2;--ok-bg:#13281C;--ok:#A9DDB9;--warn-bg:#2E230D;--warn:#F0C978;--err-bg:#33171A;--err:#F2B2AA;--mute-bg:#1E2228;--mute:#B4B9C2;--code:#16191E;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#000000;--surface:#0E1013;--line:#2B2F36;--line2:#1F2228;--ink:#F2F4F7;--ink2:#B4B9C2;--accent:#8FB6E0;--accent-ink:#0A1A2B;
+--run-bg:#16283F;--run:#B9D3F2;--ok-bg:#13281C;--ok:#A9DDB9;--warn-bg:#2E230D;--warn:#F0C978;--err-bg:#33171A;--err:#F2B2AA;--mute-bg:#1E2228;--mute:#B4B9C2;--code:#16191E;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);margin:0;padding-block:20px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+main{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+.mono{font-family:var(--mono)}
+a{color:var(--accent)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{border:1px solid var(--line);background:var(--surface);color:var(--ink2);border-radius:999px;padding:5px 14px;font:500 13px var(--sans);cursor:pointer}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tab:focus-visible,.job:focus-visible,.back:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.note{color:var(--ink2);font-size:13px;margin:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+h1{font-size:20px;line-height:1.3;margin:0;text-wrap:balance}
+h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);margin:0 0 10px;font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.chip.run{background:var(--run-bg);color:var(--run)}.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.warn{background:var(--warn-bg);color:var(--warn)}.chip.err{background:var(--err-bg);color:var(--err)}.chip.mute{background:var(--mute-bg);color:var(--mute)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ac{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;padding:10px 0;border-top:1px solid var(--line2)}
+.ac:first-of-type{border-top:0}
+.ac b{font-family:var(--mono);font-weight:500;color:var(--accent)}
+.ac span{min-width:0}
+.ac em{font-style:normal;color:var(--ink2)}
+.btn{display:inline-block;background:var(--accent);color:var(--accent-ink);border-radius:8px;padding:6px 14px;font-weight:500;text-decoration:none}
+.layerlink{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line2)}
+.layerlink:first-of-type{border-top:0}
+.flow{overflow-x:auto;padding-bottom:6px}
+.stages{display:flex;gap:0;align-items:stretch;min-width:max-content}
+.stage{display:flex;flex-direction:column;gap:8px;justify-content:center}
+.conn{width:28px;display:flex;align-items:center;justify-content:center;color:var(--line);font-size:18px}
+.node-label{font-size:12px;color:var(--ink2);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.job{display:flex;flex-direction:column;gap:3px;text-align:left;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:132px;cursor:pointer;font:inherit}
+.job .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.job .name{font-weight:600}
+.job .sub{font-size:12px;color:var(--ink2);font-family:var(--mono)}
+.job.passed{border-color:var(--ok)}.job.failed{border-color:var(--err);background:var(--err-bg)}.job.pending,.job.skipped{border-style:dashed;color:var(--ink2)}.job.running{border-color:var(--run)}
+.job[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:1px}
+.lanes{display:flex;flex-direction:column;gap:10px}
+.lane{border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:var(--surface)}
+.lane.failed{border-color:var(--err)}
+.lane-head{display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:13px}
+.lane-jobs{display:flex;gap:0;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot.passed{background:var(--ok)}.dot.failed{background:var(--err)}.dot.pending,.dot.skipped{background:var(--line)}.dot.running{background:var(--run)}
+.detail{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+@media (max-width:760px){.detail{grid-template-columns:minmax(0,1fr)}}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin:12px 0}
+.stat{border:1px solid var(--line2);border-radius:8px;padding:8px 10px}
+.stat .v{font:500 16px var(--mono);font-variant-numeric:tabular-nums}
+.stat .k{font-size:12px;color:var(--ink2)}
+pre{background:var(--code);border-radius:8px;padding:10px 12px;margin:0;overflow-x:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
+.retry{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;padding:6px 0;border-top:1px solid var(--line2);font-size:13px}
+.retry code{font-family:var(--mono);font-size:12px;color:var(--err)}
+.step{display:grid;grid-template-columns:2.2em auto 1fr;gap:8px;font:12px/1.5 var(--mono);padding:3px 0;border-top:1px solid var(--line2)}
+.step:first-of-type{border-top:0}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
+.back{background:none;border:0;color:var(--accent);padding:0;font:inherit;cursor:pointer;text-align:left}
+[hidden]{display:none!important}
+</style>
+
+<main>
+  <div class="tabs" role="tablist" aria-label="Mockup screens">
+    <button class="tab" role="tab" id="t-card" aria-selected="true" data-screen="card">Story card</button>
+    <button class="tab" role="tab" id="t-flow" aria-selected="false" data-screen="flow">Story pipeline</button>
+  </div>
+  <p class="note">Mockup with data from the real story AIR-9 (five layers, layer 02 took seven attempts). The pipeline is clickable: pick any job to see its inputs, outputs and numbers.</p>
+
+  <!-- STORY CARD -->
+  <section id="card" class="stack" style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row"><span class="mono" style="color:var(--ink2)">AIR-9</span><span class="chip ok">In Review</span><span class="chip mute">repo: weyenk/airlie</span></div>
+        <a class="btn" href="#flow" data-go="flow">Open pipeline</a>
+      </div>
+      <h1 style="margin-top:8px">Give each studio agent its own kanban board identity, and let Noah address them</h1>
+      <p class="note" style="margin-top:6px">Description as written on the board stays here, unchanged.</p>
+    </div>
+
+    <div class="card">
+      <h2>Acceptance criteria</h2>
+      <div class="ac"><b>AC1</b><span><em>Given</em> a note posted by the product role <em>when</em> it reaches the board <em>then</em> its author reads as Product, not Airlie.</span></div>
+      <div class="ac"><b>AC2</b><span><em>Given</em> a comment from Noah that starts with <span class="mono">@architect</span> <em>when</em> the chief reads new comments <em>then</em> it answers once, as the architect.</span></div>
+      <div class="ac"><b>AC3</b><span><em>Given</em> a comment from a role <em>when</em> the next brief is built <em>then</em> that comment is left out of it.</span></div>
+      <div class="ac"><b>AC4</b><span><em>Given</em> a layer that covers an acceptance criterion <em>when</em> the story is planned <em>then</em> every criterion belongs to one layer.</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Jobs</h2>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Plan layers</b> <span class="note">architect, 2 attempts, 58 min</span></span><a href="#flow" data-go="flow" data-job="layers">Open</a></div>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Layer 01</b> Board seam <span class="note">AC1</span></span><a href="#flow" data-go="flow">Open</a></div>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Layer 02</b> Brief filter <span class="note">AC3 · 7 attempts</span></span><a href="#flow" data-go="flow" data-job="l2-checks">Open</a></div>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Layer 03</b> Address parser <span class="note">AC2</span></span><a href="#flow" data-go="flow">Open</a></div>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Layer 04</b> Chief relay</span><a href="#flow" data-go="flow">Open</a></div>
+      <div class="layerlink"><span class="dot passed"></span><span><b>Layer 05</b> Pipeline roles <span class="note">5 attempts</span></span><a href="#flow" data-go="flow">Open</a></div>
+    </div>
+  </section>
+
+  <!-- PIPELINE -->
+  <section id="flow" hidden style="display:flex;flex-direction:column;gap:16px">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row"><button class="back" data-go="card">&larr; AIR-9</button><span class="chip ok">published</span></div>
+        <span class="note mono">started Oct 21 06:38 · 11 h 24 m · 125 events</span>
+      </div>
+      <h1 style="margin-top:6px">Give each studio agent its own kanban board identity</h1>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0">Pipeline</h2>
+        <div class="legend"><span><i class="dot passed"></i> passed</span><span><i class="dot running"></i> running</span><span><i class="dot failed"></i> failed</span><span><i class="dot pending"></i> pending / skipped</span></div></div>
+      <div class="flow"><div class="stages" id="stages"></div></div>
+    </div>
+
+    <div class="card" id="detail"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var JOBS = {
+    intake:   {node:'Intake', name:'Intake', role:'airlie', status:'passed', attempts:1, dur:'1 s', sub:'1 s', stats:[['Attempts','1'],['Duration','1 s']], inNote:'Picks the card up, moves it to In Progress, posts the progress link.', input:'Card AIR-9 from the board', output:'Card moved to building'},
+    refine:   {node:'Refine', name:'Refine', role:'product', status:'passed', attempts:1, dur:'3 m 37 s', sub:'3 m 37 s', stats:[['Attempts','1'],['Duration','3 m 37 s'],['Steps','9'],['Prompt tokens','61.2k'],['Completion tokens','4.1k'],['Generation','55.9 tok/s'],['End to end','8.4 tok/s'],['Prefill','2.1k tok/s']], input:'You are product. Refine this request into a story.\n\nCard: AIR-9 "Give each studio agent its own kanban board identity…"\nDescription: …\n\nEnd your reply with one ```json block: {"type":"story", "title", "summary", "acceptance":[{"id","given","when","then"}], …}', output:'{"type":"story","title":"Give each studio role its own board author…","acceptance":[AC1, AC2, AC3, AC4]}'},
+    survey:   {node:'Survey', name:'Survey', role:'architect', status:'passed', attempts:1, dur:'', sub:'with refine', stats:[['Attempts','1'],['Prompt tokens','48.0k'],['Generation','11.5 tok/s']], input:'Read the code this request touches and take notes for the layer plan.', output:'7,447 characters of notes on board.py, story/pipeline.py, local_board.py'},
+    layers:   {node:'Plan layers', name:'Plan layers', role:'architect', status:'passed', attempts:2, dur:'58 m', sub:'2 attempts · 58 m', stats:[['Attempts','2'],['Duration','58 m 21 s'],['Rounds','2'],['Prompt tokens','212k'],['Generation','20.6 tok/s']], retries:[['plan_fix','no layer covers acceptance [\'AC4\']; give each criterion to the layer that makes it true'],['plan_round_unusable','round 3: layer 4 title must be one line of at most 80 characters']], input:'Story + repo guide (AGENTS.md, files named) + survey notes.\n"Plan at most 6 layers. End with one ```json block: {"layers":[{slug,title,scope,acceptance,brief}]}"', output:'5 layers: board-seam, brief-filter, address-parser, chief-relay, pipeline-roles'},
+    l1tests:  {node:'Layer 01 · Board seam', name:'Tests', role:'tester', status:'passed', attempts:1, dur:'23 m 33 s', sub:'tester · 23 m', stats:[['Attempts','1'],['Duration','23 m 33 s'],['Steps','22'],['Prompt tokens','196k'],['Completion tokens','9.8k'],['Generation','16.7 tok/s'],['End to end','7.9 tok/s'],['Prefill','1.9k tok/s']], input:'Layer brief: add a Board.comment(card, text, role=…) seam…\nAcceptance: AC1\n\nWrite the tests first. Do not write code.', output:'tests/unit/test_board_roles.py (4 tests, red before code)'},
+    l1checks: {node:'Layer 01 · Board seam', name:'Test checks', role:'airlie', status:'passed', attempts:1, dur:'', sub:'passed 1st', stats:[['Attempts','1']], input:'', output:'Tests fail for the right reason before any code exists'},
+    l1build:  {node:'Layer 01 · Board seam', name:'Build', role:'coder', status:'passed', attempts:1, dur:'2 m 10 s', sub:'coder · 2 m', stats:[['Attempts','1'],['Duration','2 m 10 s'],['Steps','7'],['Prompt tokens','68k'],['Generation','35.1 tok/s']], input:'Layer brief + locked tests + repo guide', output:'Squashed commit c1a0fd7 on AIR-9-…-01-board-seam'},
+    l2tests:  {node:'Layer 02 · Brief filter', name:'Tests', role:'tester', status:'passed', attempts:1, dur:'28 m 40 s', sub:'tester · 29 m', stats:[['Attempts','1'],['Duration','28 m 40 s'],['Steps','31'],['Generation','18.0 tok/s']], input:'Layer brief: drop role- and airlie-authored notes from the brief, keep Noah\'s…', output:'tests/unit/test_story_briefs.py'},
+    l2checks: {node:'Layer 02 · Brief filter', name:'Test checks', role:'airlie', status:'passed', attempts:7, dur:'', sub:'7 starts · 19 findings', stats:[['Story starts','7'],['Findings','19']], retries:[['lint_fails','attempt 1: the gate\'s lint step fails on the tester\'s files after airlie ran its fixes'],['test_checks_retry','1 finding(s), sent back to the tester'],['lint_fails','attempt 2: still fails'],['blocked','layer 02: tests do not hold before the code (resumed)'],['no_new_test','attempt 1: the layer has no new or changed test to build against'],['no_new_test','attempt 2: same']], input:'', output:'Passed on the 7th start. Each start is a resume after the story blocked here.'},
+    l2build:  {node:'Layer 02 · Brief filter', name:'Build', role:'coder', status:'passed', attempts:1, dur:'6 m 4 s', sub:'coder · 6 m', stats:[['Attempts','1'],['Duration','6 m 4 s'],['Steps','14'],['Generation','551 tok/s (suspect)'],['End to end','9.2 tok/s']], retries:[['write_deadline','no code written by step 6']], input:'Layer brief + locked tests', output:'Squashed commit on AIR-9-…-02-brief-filter'},
+    l3tests:  {node:'Layer 03 · Address parser', name:'Tests', role:'tester', status:'passed', attempts:1, dur:'23 m', sub:'tester · 23 m', stats:[['Attempts','1'],['Duration','23 m']], input:'…', output:'…'},
+    l3checks: {node:'Layer 03 · Address parser', name:'Test checks', role:'airlie', status:'passed', attempts:1, dur:'', sub:'passed 1st', stats:[['Attempts','1']], input:'', output:'Red before code'},
+    l3build:  {node:'Layer 03 · Address parser', name:'Build', role:'coder', status:'passed', attempts:1, dur:'47 s', sub:'coder · 47 s', stats:[['Attempts','1'],['Duration','47 s'],['Steps','3']], input:'…', output:'…'},
+    publish:  {node:'Publish', name:'Publish', role:'airlie', status:'passed', attempts:1, dur:'', sub:'5 draft PRs', stats:[['PRs','5']], input:'Five built layers, stacked', output:'PRs #131–#135 as drafts'},
+    review:   {node:'Review', name:'Review', role:'airlie', status:'passed', attempts:1, dur:'', sub:'In Review', stats:[['Board','In Review']], input:'', output:'Card moved to In Review. Only a person merges.'}
+  };
+  var SAMPLE_STEPS = [['1','read_file','src/airlie/story/board.py — 119 lines'],['2','read_file','tests/unit/test_story_briefs.py'],['3','write_file','tests/unit/test_story_briefs.py (+86)'],['4','run_tests','3 failed — as expected before code']];
+
+  var order = [
+    {t:'stage', id:'intake'}, {t:'stage', id:'refine', also:'survey'}, {t:'stage', id:'layers'},
+    {t:'lanes'}, {t:'stage', id:'publish'}, {t:'stage', id:'review'}
+  ];
+  var LANES = [
+    {title:'Layer 01 · Board seam', st:'passed', jobs:['l1tests','l1checks','l1build']},
+    {title:'Layer 02 · Brief filter', st:'passed', note:'7 attempts', jobs:['l2tests','l2checks','l2build']},
+    {title:'Layer 03 · Address parser', st:'passed', jobs:['l3tests','l3checks','l3build']},
+    {title:'Layer 04 · Chief relay', st:'passed', jobs:null},
+    {title:'Layer 05 · Pipeline roles', st:'passed', note:'5 attempts', jobs:null}
+  ];
+  var CHIP = {passed:'ok', failed:'err', running:'run', pending:'mute', skipped:'mute'};
+
+  function jobBtn(id) {
+    var j = JOBS[id];
+    var b = document.createElement('button');
+    b.className = 'job ' + j.status; b.type = 'button'; b.dataset.job = id; b.setAttribute('aria-pressed', 'false');
+    var retry = j.attempts > 1 ? '<span class="chip warn">' + j.attempts + 'x</span>' : '';
+    b.innerHTML = '<span class="top"><span class="name">' + j.name + '</span>' + retry + '</span><span class="sub">' + (j.sub || j.role) + '</span>';
+    b.addEventListener('click', function () { select(id); });
+    return b;
+  }
+  function conn() { var c = document.createElement('div'); c.className = 'conn'; c.textContent = '→'; c.setAttribute('aria-hidden', 'true'); return c; }
+
+  function build() {
+    var root = document.getElementById('stages'); root.textContent = '';
+    order.forEach(function (o, i) {
+      if (i) root.appendChild(conn());
+      var col = document.createElement('div'); col.className = 'stage';
+      if (o.t === 'stage') {
+        col.appendChild(jobBtn(o.id)); if (o.also) col.appendChild(jobBtn(o.also));
+      } else {
+        col.style.minWidth = '520px';
+        var lanes = document.createElement('div'); lanes.className = 'lanes';
+        LANES.forEach(function (l) {
+          var lane = document.createElement('div'); lane.className = 'lane ' + l.st;
+          lane.innerHTML = '<div class="lane-head"><span class="dot ' + l.st + '"></span><b>' + l.title + '</b>' + (l.note ? '<span class="chip warn">' + l.note + '</span>' : '') + '</div>';
+          var row = document.createElement('div'); row.className = 'lane-jobs';
+          if (l.jobs) { l.jobs.forEach(function (j, k) { if (k) row.appendChild(conn()); row.appendChild(jobBtn(j)); }); }
+          else { row.innerHTML = '<span class="note">Tests, checks and build. Same shape as above; click-through omitted in the mockup.</span>'; }
+          lane.appendChild(row); lanes.appendChild(lane);
+        });
+        col.appendChild(lanes);
+      }
+      root.appendChild(col);
+    });
+  }
+
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  function select(id) {
+    var j = JOBS[id]; if (!j) return;
+    document.querySelectorAll('.job').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.job === id ? 'true' : 'false'); });
+    var d = document.getElementById('detail');
+    var stats = j.stats.map(function (s) { return '<div class="stat"><div class="v">' + esc(s[1]) + '</div><div class="k">' + esc(s[0]) + '</div></div>'; }).join('');
+    var retries = (j.retries || []).map(function (r) { return '<div class="retry"><code>' + esc(r[0]) + '</code><span>' + esc(r[1]) + '</span></div>'; }).join('');
+    var steps = (j.role === 'tester' || j.role === 'coder' || j.role === 'product' || j.role === 'architect') ? SAMPLE_STEPS.map(function (s) { return '<div class="step"><span>' + s[0] + '</span><span>' + s[1] + '</span><span>' + esc(s[2]) + '</span></div>'; }).join('') : '';
+    d.innerHTML =
+      '<div class="row" style="justify-content:space-between"><div class="row"><h2 style="margin:0">' + esc(j.node) + ' / ' + esc(j.name) + '</h2><span class="chip ' + CHIP[j.status] + '">' + j.status + '</span><span class="chip mute">' + esc(j.role) + '</span></div>' +
+      '<span class="note">Run 20261022-111652-89b7 · <a href="#flow">trace</a></span></div>' +
+      '<div class="stats">' + stats + '</div>' +
+      (retries ? '<h2>Why it retried</h2><div style="margin-bottom:14px">' + retries + '</div>' : '') +
+      '<div class="detail"><div><h2>Input: what it was given</h2>' + (j.input ? '<pre>' + esc(j.input) + '</pre>' : '<p class="note">' + esc(j.inNote || 'airlie’s own check, no model.') + '</p>') + '</div>' +
+      '<div><h2>Output: what it produced</h2><pre>' + esc(j.output) + '</pre></div></div>' +
+      (steps ? '<h2 style="margin-top:14px">Steps (with reasoning on click)</h2><div>' + steps + '</div>' : '');
+  }
+
+  function show(name, job) {
+    ['card', 'flow'].forEach(function (s) {
+      var el = document.getElementById(s); el.hidden = s !== name;
+      document.getElementById('t-' + s).setAttribute('aria-selected', s === name ? 'true' : 'false');
+    });
+    if (name === 'flow' && job) select(job);
+  }
+  document.querySelectorAll('[data-screen]').forEach(function (t) { t.addEventListener('click', function () { show(t.dataset.screen); }); });
+  document.querySelectorAll('[data-go]').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.dataset.go, a.dataset.job); }); });
+
+  build(); select('l2checks'); show('card');
+})();
+</script>

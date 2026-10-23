@@ -179,7 +179,7 @@ export function render(root, [rawId], ctx) {
       h(
         "div",
         { class: "row spread", style: { alignItems: "flex-end" } },
-        h("div", { class: "stack", style: { gap: "4px", minWidth: 0, flex: "1 1 320px" } }, h("a", { href: "#/jobs", class: "small" }, "← All jobs"), heading, meta),
+        h("div", { class: "stack", style: { gap: "4px", minWidth: 0, flex: "1 1 320px" } }, h("a", { href: "#/workflows", class: "small" }, "← Workflows"), heading, meta),
         h("div", { class: "row" }, status, stop),
       ),
       h(

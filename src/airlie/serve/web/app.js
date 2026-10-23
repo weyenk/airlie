@@ -7,8 +7,10 @@ import * as signin from "./screens/signin.js";
 
 const ROUTES = [
   { re: /^#\/?$/, nav: "chat", load: () => import("./screens/chat.js") },
-  { re: /^#\/jobs\/?$/, nav: "jobs", load: () => import("./screens/jobs.js") },
-  { re: /^#\/jobs\/([^/]+)$/, nav: "jobs", load: () => import("./screens/job.js") },
+  { re: /^#\/workflows\/?$/, nav: "workflows", load: () => import("./screens/jobs.js") },
+  { re: /^#\/workflows\/([^/]+)(?:\/([^/]+)\/([^/]+))?$/, nav: "workflows", load: () => import("./screens/workflow.js") },
+  { re: /^#\/jobs\/?$/, nav: "workflows", load: async () => ({ title: "Workflows", render: (_root, _p, ctx) => ctx.go("#/workflows") }) },
+  { re: /^#\/jobs\/([^/]+)$/, nav: "workflows", load: () => import("./screens/job.js") },
   { re: /^#\/start$/, nav: "chat", load: () => import("./screens/start.js") },
   { re: /^#\/board(?:\/([^/]+))?$/, nav: "board", load: () => import("./screens/board.js") },
   { re: /^#\/topology$/, nav: "topology", load: () => import("./screens/soon.js") },
@@ -20,7 +22,7 @@ const ROUTES = [
 
 const NAV = [
   ["chat", "#/", "Chat"],
-  ["jobs", "#/jobs", "Jobs"],
+  ["workflows", "#/workflows", "Workflows"],
   ["board", "#/board", "Board"],
   ["topology", "#/topology", "Topology"],
   ["metrics", "#/metrics", "Metrics"],

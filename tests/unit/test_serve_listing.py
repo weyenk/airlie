@@ -165,3 +165,22 @@ def test_the_listing_routes_answer_with_the_key(tmp_path: Path) -> None:
         assert [r["id"] for r in runs] == ["20261017-010000-aaaa"] and runs[0]["goal"] == "g"
         assert c.get("/v1/airlie/stories", headers=auth).json()["stories"][0]["key"] == "HDS-1"
         assert c.get("/v1/airlie/repos", headers=auth).json() == {"repos": [str(tmp_path / "git" / "airlie")]}
+
+
+def test_the_flow_routes_serve_a_story_and_its_jobs_and_404_for_what_is_not_there(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    d = state / "stories" / "HDS-1"
+    d.mkdir(parents=True)
+    (d / "state.json").write_text(
+        json.dumps({"card": {"key": "HDS-1", "title": "T"}, "stage": "refine", "layers": None})
+    )
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as c:
+        auth = {"Authorization": "Bearer k"}
+        assert c.get("/v1/airlie/stories/HDS-1/flow").status_code == 401
+        flow = c.get("/v1/airlie/stories/HDS-1/flow", headers=auth).json()
+        assert flow["key"] == "HDS-1" and flow["nodes"][0]["id"] == "intake"
+        job = c.get("/v1/airlie/stories/HDS-1/flow/refine/refine", headers=auth).json()
+        assert job["job"]["id"] == "refine" and job["input"] is None
+        assert c.get("/v1/airlie/stories/NOPE-1/flow", headers=auth).status_code == 404
+        assert c.get("/v1/airlie/stories/HDS-1/flow/layer-09/build", headers=auth).status_code == 404

@@ -1214,3 +1214,179 @@ a.jobrow:hover strong {
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
   }
 }
+
+/* the workflow screen: a story's pipeline, one lane of jobs per layer, and the selected job */
+.wf-flow {
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.wf-stages {
+  display: flex;
+  align-items: center;
+  min-width: max-content;
+}
+.wf-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wf-conn {
+  width: 28px;
+  text-align: center;
+  color: var(--line);
+  font-size: 18px;
+}
+.wf-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wf-lane {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+.wf-lane.failed {
+  border-color: var(--err);
+}
+.wf-lane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.wf-lane-jobs {
+  display: flex;
+  align-items: center;
+}
+.wf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.wf-dot.passed {
+  background: var(--ok);
+}
+.wf-dot.failed {
+  background: var(--err);
+}
+.wf-dot.running {
+  background: var(--run);
+}
+.wf-job {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 132px;
+  padding: 8px 12px;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.wf-job.passed {
+  border-color: var(--ok);
+}
+.wf-job.failed {
+  border-color: var(--err);
+  background: var(--err-bg);
+}
+.wf-job.running {
+  border-color: var(--run);
+}
+.wf-job.pending,
+.wf-job.skipped {
+  border-style: dashed;
+  color: var(--ink2);
+}
+.wf-job[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wf-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.wf-name {
+  font-weight: 600;
+}
+.wf-sub {
+  font-size: 12px;
+  color: var(--ink2);
+}
+.wf-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+.wf-stat {
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.wf-retry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line2);
+  font-size: 13px;
+}
+.wf-retry code {
+  color: var(--err);
+  font-size: 12px;
+}
+.wf-io {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .wf-io {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.wf-pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 var(--mono, ui-monospace, monospace);
+  background: var(--bubble);
+  border-radius: 8px;
+}
+.wf-step {
+  border-top: 1px solid var(--line2);
+  padding: 4px 0;
+}
+.wf-step summary {
+  display: grid;
+  grid-template-columns: 4em auto minmax(0, 1fr) auto;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.criterion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line2);
+  font-size: 13px;
+}
+.criterion em {
+  font-style: normal;
+  color: var(--ink2);
+}

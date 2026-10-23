@@ -1,8 +1,8 @@
-// Jobs: what this airlie is running, what needs you, the stories, and recent results.
+// Workflows: the stories (each opens its pipeline), what this airlie is running, what needs you, and recent results.
 import { request } from "../api.js";
 import { ago, append, chip, clear, h } from "../dom.js";
 
-export const title = "Jobs";
+export const title = "Workflows";
 
 const STATE_CHIP = { running: ["run", "Running"], done: ["ok", "Done"], failed: ["err", "Failed"], cancelled: ["mute", "Stopped"] };
 
@@ -13,6 +13,10 @@ export function stateChip(state) {
 
 function jobLink(id) {
   return `#/jobs/${encodeURIComponent(id)}`;
+}
+
+function storyLink(key) {
+  return `#/workflows/${encodeURIComponent(key)}`;
 }
 
 function shortRepo(path) {
@@ -30,10 +34,10 @@ export function render(root) {
     h(
       "div",
       { class: "page" },
-      h("div", { class: "row spread" }, h("h1", { class: "h1" }, "Jobs"), h("a", { href: "#/start", class: "btn primary small" }, "Start new work")),
+      h("div", { class: "row spread" }, h("h1", { class: "h1" }, "Workflows"), h("a", { href: "#/start", class: "btn primary small" }, "Start new work")),
+      h("section", { class: "card pad stack" }, h("h2", { class: "h2" }, "Stories"), h("p", { class: "small muted", style: { margin: 0 } }, "Pick a story to see its pipeline."), storyRows),
       h("section", { class: "card pad stack" }, h("div", { class: "row spread" }, h("h2", { class: "h2" }, "Running"), summary), running),
       h("section", { class: "card pad stack" }, h("h2", { class: "h2" }, "Needs you"), needs),
-      h("section", { class: "card pad stack" }, h("h2", { class: "h2" }, "Stories"), storyRows),
       h("section", { class: "card pad stack" }, h("h2", { class: "h2" }, "Recent results"), recent),
     ),
   );
@@ -90,8 +94,8 @@ export function render(root) {
       ),
       blocked.map((s) =>
         h(
-          "div",
-          { class: "jobrow notice" },
+          "a",
+          { href: storyLink(s.key), class: "jobrow notice" },
           h("div", { class: "stack", style: { gap: "2px", minWidth: 0 } }, h("strong", null, h("span", { class: "mono" }, s.key), s.title ? ` · ${s.title}` : ""), h("span", { class: "small" }, s.blocked)),
           chip("warn", "Blocked"),
         ),
@@ -102,8 +106,8 @@ export function render(root) {
       stories.map((s) => {
         const job = jobs.find((j) => j.id === s.key);
         return h(
-          job ? "a" : "div",
-          { href: job ? jobLink(s.key) : null, class: "jobrow" },
+          "a",
+          { href: storyLink(s.key), class: "jobrow", dataset: { story: s.key } },
           h("div", { class: "stack", style: { gap: "2px", minWidth: 0 } }, h("strong", { class: "ellipsis" }, h("span", { class: "mono" }, s.key), s.title ? ` · ${s.title}` : ""), h("span", { class: "mono small muted" }, [s.stage ? `stage ${s.stage}` : "not started", shortRepo(s.repo)].filter(Boolean).join(" · "))),
           s.blocked ? chip("warn", "Blocked") : job ? stateChip(job.state) : chip("mute", s.stage || "new"),
         );

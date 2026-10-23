@@ -9,7 +9,7 @@ export function render(root, [name]) {
       "section",
       { class: "card pad stack" },
       h("h1", { class: "h1" }, label),
-      h("p", { class: "muted", style: { margin: 0 } }, `${label} is coming soon. For now, the chat and the Jobs screen show what airlie is doing.`),
+      h("p", { class: "muted", style: { margin: 0 } }, `${label} is coming soon. For now, the chat and the Workflows screen show what airlie is doing.`),
     ),
   );
 }
