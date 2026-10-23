@@ -257,8 +257,22 @@ ground (above). The team loop, studio, fork and the story pipeline record each s
 `steer` event, with its `id`, the `role` and where it went (`team_id` and `step`, a `subtask`, or a story's
 `layer` or planning `round`), so those events show which nudges still fire. `no-more-tools` is the exception: the
 single-call loop behind a role's one-shot calls (`tools/loop.py`, used by the chief, the reviewer and the
-supervisor's triage) has no event stream, so its silence says nothing about whether it fired. Design:
-`docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
+supervisor's triage) has no event stream, so its silence says nothing about whether it fired.
+
+Role prompts take part in the check as rules, through flat front-matter lines in `prompts/roles/<role>.md`: a
+`governs.<subject>: <value>` line per subject and `yields_to: a, b`. Other texts name a role prompt as
+`role:<name>`.
+
+To change a wording on purpose, edit the hub file, then regenerate the golden snapshot of what every text renders
+to: `AIRLIE_WRITE_PROMPT_TEXTS=1 uv run pytest tests/unit/test_prompt_texts.py`. That run fails on purpose after it
+writes `tests/unit/data/prompt_texts.json`; rerun without the flag and review the JSON diff, which is exactly what
+the models will now read differently.
+
+To add a nudge or a rule, add a file with a non-empty `governs` (the gate fails on one without). A nudge is sent
+through its module's `_steer` helper (the fork emits the event itself), so it is recorded as a `steer` event.
+`test_prompt_contradictions.py` then checks the new text against the others that reach the same role.
+
+Design: `docs/superpowers/specs/2026-10-22-prompt-hub-design.md`.
 
 ## Hardware
 
