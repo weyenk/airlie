@@ -80,7 +80,7 @@ def paths_arg(raw: Any) -> list[str]:
         try:
             value = json.loads(raw)
         except ValueError:
-            value = None
+            value = None  # pragma: no mutate  (any value that is not a list is refused the same)
     if not isinstance(value, list) or not value:
         raise ValueError('paths must be a list of paths, e.g. ["a.py", "b.py"]')
     if len(value) > READ_PATHS_MAX:
