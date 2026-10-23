@@ -17,6 +17,7 @@ from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.router import ChiefRouter, RouteDecision
 from airlie.supervisor.advice import SUPERVISOR
+from airlie.teams.worktree import commit_wip
 from airlie.topology.protocol import build_topology
 from airlie.topology.studio import GATE_FAILED, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, Subtask
@@ -1265,3 +1266,40 @@ async def test_a_malformed_tool_call_reaches_the_runs_events_with_its_text(tmp_p
     [ev] = [e for e in events(report) if e["kind"] == "malformed_call"]
     assert (ev["team_id"], ev["role"], ev["step"], ev["text"]) == ("fix", "coder", 1, bad)
     assert ev["repaired"] is False
+
+
+async def test_a_relock_after_a_mend_keeps_the_coders_fake_out_of_the_testers_definitions(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_a_test_file(tmp_path)
+    engine = FakeEngine({"qa": [WRITE_TESTER, DONE], "coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    path = "tests/test_p.py"
+
+    async def lock() -> bool:
+        orch.lock([path], orch.runs["tests"].role)
+        return True
+
+    relocked: list[dict[str, frozenset[str]]] = []
+
+    async def coder_edits_the_fake_then_a_mend_changes_the_test() -> bool:
+        assert orch.worktree is not None
+        file = orch.worktree / path
+        assert orch.locked_tests == {path: frozenset({"test_new"})}
+        file.write_text(file.read_text().replace("return 1\n", "return 1  # coder's fix\n", 1))
+        before = commit_wip(orch.worktree, "coder's change to the fake")
+        file.write_text(file.read_text().replace("assert FakeBoard().get() == 1", "assert True"))
+        orch.lock([path], orch.lock_owner, since=before)
+        relocked.append(dict(orch.locked_tests))
+        return True
+
+    await orch.execute_task(
+        "g",
+        repo=repo,
+        test_cmd="./check.sh",
+        plan=TESTS_THEN_BUILD,
+        synthesise=False,
+        checkpoints={"tests": lock},
+        before_gate=coder_edits_the_fake_then_a_mend_changes_the_test,
+    )
+    assert relocked == [{path: frozenset({"test_new"})}]

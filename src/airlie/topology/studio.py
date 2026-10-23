@@ -619,7 +619,7 @@ class StudioOrchestrator:
             fix_rounds=run.fix_rounds,
         )
 
-    def lock(self, paths: Sequence[str], owner: str) -> None:
+    def lock(self, paths: Sequence[str], owner: str, *, since: str | None = None) -> None:
         """From now on only role `owner` may write `paths` (from the worktree's root): the file tools refuse
         them to every other role, and the final gate puts them back as they are now, whatever a shell
         did to them. The worktree is committed first: that commit is what they are put back to.
@@ -627,8 +627,14 @@ class StudioOrchestrator:
         A Python file is locked by definition (AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder
         from fixing the fakes in a file the tester had only added tests to): only the top-level functions
         and classes the tester added or changed since the base are locked. Any other file, and a Python
-        file that does not parse, is locked whole."""
+        file that does not parse, is locked whole.
+
+        With `since` (a commit: the tests' mend locks again from the one before it), a file already locked by
+        definition keeps the names it had that are still defined, and adds what changed since `since`: the
+        mend's own work, not the coder's changes to fakes before it. A file locked whole stays whole unless it
+        now splits as a fresh lock would."""
         assert self.worktree is not None
+        previous = self.locked_tests
         self.lock_commit = commit_wip(self.worktree, f"studio: {owner} (locked)")
         whole: set[str] = set()
         tests: dict[str, frozenset[str]] = {}
@@ -638,6 +644,10 @@ class StudioOrchestrator:
                 text = self._text_at(self.lock_commit, path)
                 if text is not None:
                     names = written_by_tester(self._text_at(self.base_sha, path), text)
+                    if since is not None and names is not None and path in previous:
+                        mended = written_by_tester(self._text_at(since, path), text)
+                        defined = written_by_tester(None, text) or frozenset()
+                        names = (previous[path] & defined) | (mended or frozenset())
             if names is None:
                 whole.add(path)
             else:
