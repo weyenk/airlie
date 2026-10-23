@@ -319,7 +319,7 @@ class Intake:
 
     async def move(self, card: Card, column: Column) -> None: ...
 
-    async def comment(self, card: Card, text: str) -> None: ...
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None: ...
 
 
 class Engine:
@@ -634,7 +634,7 @@ class QueueBoard:
         if column not in self.off:
             self.column[card.key] = column
 
-    async def comment(self, card: Card, text: str) -> None:
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         if "comment" in self.refuse:
             raise BoardError(f"Jira POST issue/{card.key}/comment: {self.says}")
         self.notes[card.key].append(text)

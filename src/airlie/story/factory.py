@@ -273,6 +273,8 @@ async def _note_and_move(board: Board, card: Card, text: str, column: Column) ->
     board that fails must not make a tick fail twice); what happened is returned, for the line a tick logs."""
     told: list[str] = []
     try:
+        # airlie's own narration (a story that cannot be opened, or has finished): no role, so it posts as
+        # 'airlie' via the no-role path, as the pipeline's resume/picked-up/block/cancel notes do
         await board.comment(card, note(text))
         told.append("noted on the issue")
     except Exception as err:  # noqa: BLE001

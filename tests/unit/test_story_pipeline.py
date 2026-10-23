@@ -280,7 +280,7 @@ class RecordingBoard:
         self.moves.append(column)
         self.calls.append(("move", column))
 
-    async def comment(self, card: Card, text: str) -> None:
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         self.notes.append(text)
         self.calls.append(("comment", text))
 
@@ -298,10 +298,10 @@ class FlakyBoard(RecordingBoard):
             raise BoardError(self.message)
         await super().move(card, column)
 
-    async def comment(self, card: Card, text: str) -> None:
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         if self.refuses("comment", text):
             raise BoardError(self.message)
-        await super().comment(card, text)
+        await super().comment(card, text, role=role)
 
 
 class DownBoard(NullBoard):
@@ -310,7 +310,7 @@ class DownBoard(NullBoard):
     async def move(self, card: Card, column: Column) -> None:
         raise BoardError("jira is unreachable")
 
-    async def comment(self, card: Card, text: str) -> None:
+    async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         raise BoardError("jira is unreachable")
 
 
@@ -1286,10 +1286,10 @@ async def test_a_board_in_trouble_neither_holds_up_nor_changes_a_cancel(
     release = asyncio.Event()  # a slow board answers when this is set, which the cancel does not wait for
 
     class SlowBoard(RecordingBoard):
-        async def comment(self, card: Card, text: str) -> None:
+        async def comment(self, card: Card, text: str, role: str | None = None) -> None:
             if "stopped by a signal" in text:
                 await release.wait()
-            await super().comment(card, text)
+            await super().comment(card, text, role=role)
 
     board: RecordingBoard = {
         "slow": SlowBoard(),
@@ -1334,11 +1334,11 @@ async def test_a_cancel_while_a_stop_is_told_to_the_board_still_puts_the_issue_b
     telling = asyncio.Event()
 
     class HangsWhileTold(RecordingBoard):
-        async def comment(self, card: Card, text: str) -> None:
+        async def comment(self, card: Card, text: str, role: str | None = None) -> None:
             if hangs_on == "the note" and "stopped after" in text:
                 telling.set()
                 await asyncio.sleep(3600)
-            await super().comment(card, text)
+            await super().comment(card, text, role=role)
 
         async def move(self, card: Card, column: Column) -> None:
             if hangs_on == "the move" and column == "blocked":
