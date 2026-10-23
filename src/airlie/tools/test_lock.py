@@ -25,7 +25,7 @@ def _definitions(source: str) -> dict[str, str] | None:
     return {node.name: ast.dump(node) for node in tree.body if isinstance(node, Definition)}
 
 
-def tester_definitions(base: str | None, locked: str) -> frozenset[str] | None:
+def written_by_tester(base: str | None, locked: str) -> frozenset[str] | None:
     """Names in `locked` that are absent from `base` or differ there. None means lock the whole file.
 
     `base=None`, or a `base` that does not parse, means the file is new: every definition is the tester's."""
