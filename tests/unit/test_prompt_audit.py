@@ -165,3 +165,16 @@ def test_cli_audit_exits_1_when_the_engine_is_unreachable(tmp_path: Path, monkey
     _, res = _invoke(tmp_path, monkeypatch, engine)
     assert res.exit_code == 1 and "ConnectError: refused" in res.output
     assert engine.requests == [] and not (tmp_path / "state" / "runs").exists()
+
+
+def test_cli_subjects_prints_each_subject_with_its_sources(tmp_path: Path) -> None:
+    """`task prompts:subjects`: the check's `subjects()` for the config's role prompts, one line each."""
+    from airlie.prompts.check import subjects
+
+    cfg = cfg_for(tmp_path)
+    assert cfg.source_path is not None
+    result = runner.invoke(cli.app, ["prompts", "subjects", "--config", str(cfg.source_path)])
+    assert result.exit_code == 0, result.output
+    expected = subjects(load().values(), {name: role.prompt for name, role in cfg.roles.items()})
+    assert result.output.splitlines() == [f"{s}: {', '.join(sources)}" for s, sources in expected.items()]
+    assert "answer.when: " in result.output and "no-more-tools" in result.output
