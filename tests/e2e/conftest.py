@@ -20,13 +20,13 @@ from typing import Any
 
 import httpx
 import pytest
-import uvicorn
 import yaml
 from playwright.sync_api import BrowserContext, Locator, Page, expect
 
 from airlie.board.store import BoardStore
 from airlie.config import AirlieConfig, load_config
 from airlie.serve.app import create_app
+from airlie.serve.server import Server as AirlieServer
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
@@ -367,7 +367,9 @@ def _serve(root: Path) -> Iterator[Server]:
     upstream = Upstream()
     app = create_app(config, transport=httpx.MockTransport(upstream), api_key=KEY)
     port = _free_port()
-    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    # airlie's own Server, as `airlie serve` runs: shutdown ends the live feed first, so a page that holds
+    # /v1/events open does not make teardown wait for it
+    srv = AirlieServer(app, host="127.0.0.1", port=port, log_level="warning")
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
     deadline = time.monotonic() + 20
