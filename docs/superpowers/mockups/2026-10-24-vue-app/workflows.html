@@ -1,0 +1,208 @@
+<!doctype html>
+<html class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* shadcn-vue shapes, PrimeVue Aura colours (Tailwind palette): the approved look. */
+  .dark {
+    --background: #09090b; --foreground: #ffffff; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+    --border: #27272a; --input: #3f3f46; --primary: #34d399; --primary-fg: #18181b; --ring: #34d399;
+    --track: #3f3f46; --chip: #27272a; --chip-fg: #d4d4d8; --bar: #18181b; --row-hover: #1f1f23;
+    --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+    --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+    --violet-bg: rgba(139,92,246,.18); --violet-fg: #c4b5fd;
+    --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px -1px rgba(0,0,0,.1);
+  }
+  .light {
+    --background: #f8fafc; --foreground: #334155; --card: #ffffff; --muted: #f1f5f9; --muted-fg: #64748b;
+    --border: #e2e8f0; --input: #cbd5e1; --primary: #10b981; --primary-fg: #ffffff; --ring: #10b981;
+    --track: #e2e8f0; --chip: #f1f5f9; --chip-fg: #475569; --bar: #ffffff; --row-hover: #f8fafc;
+    --info-bg: #e0f2fe; --info-fg: #0369a1; --warn-bg: #ffedd5; --warn-fg: #c2410c;
+    --danger-bg: #fee2e2; --danger-fg: #b91c1c; --ok-bg: #dcfce7; --ok-fg: #15803d;
+    --violet-bg: #ede9fe; --violet-fg: #6d28d9;
+    --shadow: 0 1px 3px rgba(15,23,42,.08), 0 1px 2px -1px rgba(15,23,42,.06);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; background: var(--background); color: var(--foreground); font-size: 14px; }
+  svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .muted { color: var(--muted-fg); }
+  .grow { flex: 1; }
+
+  /* top bar */
+  .bar { display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bar); position: sticky; top: 0; z-index: 2; }
+  .brand { font-weight: 700; font-size: 16px; }
+  .tabs { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+  .tab { padding: 5px 12px; border-radius: 6px; font-size: 13px; color: var(--muted-fg); font-weight: 500; }
+  .tab.on { background: var(--card); color: var(--primary); font-weight: 600; box-shadow: var(--shadow); }
+  .badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok-fg); } .badge.info { background: var(--info-bg); color: var(--info-fg); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-fg); } .badge.danger { background: var(--danger-bg); color: var(--danger-fg); }
+  .badge.chip { background: var(--chip); color: var(--chip-fg); } .badge.violet { background: var(--violet-bg); color: var(--violet-fg); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--muted-fg); }
+  .avatar { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; background: var(--track); font-size: 12px; font-weight: 600; }
+
+  /* page */
+  .page { max-width: 1160px; margin: 0 auto; padding: 24px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 6px; background: var(--primary); color: var(--primary-fg); font-size: 13px; font-weight: 600; border: 0; }
+  .btn.ghost { background: transparent; color: var(--foreground); border: 1px solid var(--border); font-weight: 500; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .card-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .count { font-size: 12px; color: var(--muted-fg); background: var(--muted); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+
+  /* running */
+  .run { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .run:last-child { border-bottom: 0; }
+  .run:hover { background: var(--row-hover); }
+  .run .what { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .run .what > .mono, .run .what > .badge { flex: none; white-space: nowrap; }
+  .run .what .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run .go { color: var(--muted-fg); grid-row: span 2; }
+  .progress { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+  .progress.indet i { width: 35%; animation: slide 1.6s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+
+  /* stories */
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+  .search { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; color: var(--muted-fg); min-width: 240px; flex: 1; max-width: 340px; background: var(--background); }
+  .select { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; font-size: 13px; background: var(--background); white-space: nowrap; }
+  .select .k { color: var(--muted-fg); }
+  .seg { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+  .seg span { padding: 4px 10px; font-size: 13px; color: var(--muted-fg); border-radius: 6px; font-weight: 500; }
+  .seg span.on { background: var(--card); color: var(--foreground); box-shadow: var(--shadow); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted-fg); padding: 10px 18px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th .sorted { color: var(--foreground); }
+  td { padding: 11px 18px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: var(--row-hover); }
+  td.key { width: 90px; } td.stage { width: 150px; } td.repo { width: 170px; } td.when { width: 120px; white-space: nowrap; }
+  .why { font-size: 12px; color: var(--danger-fg); margin-top: 3px; }
+  .foot { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; font-size: 13px; }
+  .pages { display: flex; gap: 4px; align-items: center; }
+  .pages span { min-width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--muted-fg); }
+  .pages span.on { background: var(--muted); color: var(--foreground); font-weight: 600; }
+
+  /* phone only */
+  .tabbar, .phone-only { display: none; }
+  .list-row { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+  .list-row .top { display: flex; align-items: center; gap: 8px; }
+  .list-row .meta { font-size: 12px; color: var(--muted-fg); }
+
+  @media (max-width: 640px) {
+    .bar { padding: 0 16px; }
+    .bar .tabs, .bar .theme { display: none; }
+    .page { padding: 16px 12px 88px; gap: 14px; }
+    h1 { font-size: 20px; }
+    .desk-only { display: none !important; }
+    .phone-only { display: flex; }
+    .run { padding: 12px 16px; }
+    .tools { padding: 10px 12px; }
+    .search { min-width: 0; max-width: none; width: 100%; flex-basis: 100%; }
+    .foot { padding: 12px 16px; }
+    .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 64px; background: var(--bar); border-top: 1px solid var(--border); justify-content: space-around; align-items: center; padding-bottom: 6px; }
+    .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted-fg); font-weight: 500; text-decoration: none; }
+    .tabbar a.on { color: var(--primary); }
+    .tabbar svg { width: 20px; height: 20px; }
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="brand">airlie</span>
+    <div class="tabs"><span class="tab">Chat</span><span class="tab on">Workflows</span><span class="tab">Board</span><span class="tab">Metrics</span><span class="tab">Admin</span></div>
+    <span class="grow"></span>
+    <span class="badge ok"><span class="dot"></span>Live</span>
+    <span class="icon-btn theme" title="Light theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+    <span class="avatar">NK</span>
+  </div>
+
+  <div class="page">
+    <div class="head">
+      <h1>Workflows</h1>
+      <span class="btn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Start new work</span>
+    </div>
+
+    <section class="card">
+      <div class="card-head"><h2>Running</h2><span class="count">3</span></div>
+      <div class="run">
+        <div class="what"><span class="mono muted">AIR-17</span><span class="title">Board: open a ticket as a centered card modal with click-to-edit</span></div>
+        <span class="go"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span>
+        <div class="progress"><i style="width: 62%"></i></div>
+      </div>
+      <div class="run">
+        <div class="what"><span class="badge violet">studio run</span><span class="title">Fix the flaky upload test in chat attachments</span></div>
+        <span class="go"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span>
+        <div class="progress"><i style="width: 40%"></i></div>
+      </div>
+      <div class="run">
+        <div class="what"><span class="badge chip">single run</span><span class="title">Rename the repo map cache key to the tree hash</span></div>
+        <span class="go"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span>
+        <div class="progress indet"><i></i></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Stories</h2><span class="count">132</span></div>
+      <div class="tools">
+        <span class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search key or title</span>
+        <span class="select desk-only"><span class="k">Stage</span> All <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+        <span class="select desk-only"><span class="k">Repository</span> All <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+        <span class="seg desk-only"><span class="on">All</span><span>Blocked</span><span>Not blocked</span></span>
+        <span class="grow desk-only"></span>
+        <span class="select phone-only"><svg viewBox="0 0 24 24"><path d="M3 6h18M7 12h10M10 18h4"/></svg>Filters</span>
+        <span class="grow phone-only"></span>
+        <span class="select"><span class="k">Sort</span> Last activity <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+
+      <table class="desk-only">
+        <thead><tr><th>Key</th><th>Title</th><th>Stage</th><th>Repository</th><th><span class="sorted">Last activity ↓</span></th></tr></thead>
+        <tbody>
+          <tr><td class="key mono">AIR-17</td><td>Board: open a ticket as a centered card modal with click-to-edit</td><td class="stage"><span class="badge info">building</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">2 min ago</td></tr>
+          <tr><td class="key mono">AIR-30</td><td>Architect calls a tool on its tool-less last turn<div class="why">Blocked: layer 02 failed its gate twice</div></td><td class="stage"><span class="badge danger">blocked</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">48 min ago</td></tr>
+          <tr><td class="key mono">AIR-22</td><td>A failed layer keeps its worktree for inspection</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">3 h ago</td></tr>
+          <tr><td class="key mono">AIR-9</td><td>Context gathering for the coder: guide, map and read_file</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">yesterday</td></tr>
+          <tr><td class="key mono">AIR-31</td><td>Coder 8-bit publishes the stacked PRs on its own</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">5 days ago</td></tr>
+          <tr><td class="key mono">AIR-8</td><td>Live Topology page: a run's agents as a node tree</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">6 days ago</td></tr>
+          <tr><td class="key mono">HDS-7</td><td>Metrics and benchmarks page</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/openhand</td><td class="when muted">7 days ago</td></tr>
+          <tr><td class="key mono">AIR-7</td><td>Metrics tab: traceability, observability and performance</td><td class="stage"><span class="badge warn">in review</span></td><td class="repo muted">weyenk/airlie</td><td class="when muted">7 days ago</td></tr>
+        </tbody>
+      </table>
+
+      <div class="phone-only" style="flex-direction: column">
+        <div class="list-row"><div class="top"><span class="mono muted">AIR-17</span><span class="badge info">building</span><span class="grow"></span><span class="meta">2 min ago</span></div><div>Board: open a ticket as a centered card modal with click-to-edit</div></div>
+        <div class="list-row"><div class="top"><span class="mono muted">AIR-30</span><span class="badge danger">blocked</span><span class="grow"></span><span class="meta">48 min ago</span></div><div>Architect calls a tool on its tool-less last turn</div><div class="why">Blocked: layer 02 failed its gate twice</div></div>
+        <div class="list-row"><div class="top"><span class="mono muted">AIR-22</span><span class="badge warn">in review</span><span class="grow"></span><span class="meta">3 h ago</span></div><div>A failed layer keeps its worktree for inspection</div></div>
+        <div class="list-row"><div class="top"><span class="mono muted">AIR-9</span><span class="badge warn">in review</span><span class="grow"></span><span class="meta">yesterday</span></div><div>Context gathering for the coder: guide, map and read_file</div></div>
+        <div class="list-row"><div class="top"><span class="mono muted">AIR-31</span><span class="badge warn">in review</span><span class="grow"></span><span class="meta">5 days ago</span></div><div>Coder 8-bit publishes the stacked PRs on its own</div></div>
+      </div>
+
+      <div class="foot">
+        <span class="muted">1–25 of 132</span>
+        <span class="pages desk-only"><span>‹</span><span class="on">1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>›</span></span>
+        <span class="pages phone-only"><span>‹</span><span class="on">1 / 6</span><span>›</span></span>
+      </div>
+    </section>
+  </div>
+
+  <nav class="tabbar">
+    <a><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</a>
+    <a class="on"><svg viewBox="0 0 24 24"><path d="M3 6h4v4H3zM10 14h4v4h-4zM17 6h4v4h-4zM7 8h10M12 8v6"/></svg>Workflows</a>
+    <a><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="11" rx="1"/></svg>Board</a>
+    <a><svg viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-4 3 3 5-6"/></svg>Metrics</a>
+    <a><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 11a3 3 0 1 0 0-6M22 21a6 6 0 0 0-5-5.9"/></svg>Admin</a>
+  </nav>
+
+<div id="mock-toolbar" style="position:fixed;right:12px;bottom:12px;z-index:99;display:flex;gap:6px;font:12px system-ui;">
+  <button onclick="toggle('light')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Light / dark</button>
+</div>
+<script>
+  function toggle(cls, on) { const h = document.documentElement; if (cls === "light") { h.classList.toggle("light"); h.classList.toggle("dark"); } else { ["show-modal","show-create"].forEach(c => c !== cls && h.classList.remove(c)); h.classList.toggle(cls); } }
+</script>
+</body>
+</html>

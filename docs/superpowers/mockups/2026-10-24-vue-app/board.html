@@ -1,0 +1,319 @@
+<!doctype html>
+<html class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* The approved look: shadcn-vue shapes, PrimeVue Aura colours (Tailwind palette). Shared by every screen mockup. */
+.dark {
+  --background: #09090b; --foreground: #ffffff; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+  --border: #27272a; --input: #3f3f46; --primary: #34d399; --primary-fg: #18181b; --ring: #34d399;
+  --track: #3f3f46; --chip: #27272a; --chip-fg: #d4d4d8; --bar: #18181b; --row-hover: #1f1f23; --code: #111113;
+  --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+  --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+  --violet-bg: rgba(139,92,246,.18); --violet-fg: #c4b5fd;
+  --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px -1px rgba(0,0,0,.1);
+}
+.light {
+  --background: #f8fafc; --foreground: #334155; --card: #ffffff; --muted: #f1f5f9; --muted-fg: #64748b;
+  --border: #e2e8f0; --input: #cbd5e1; --primary: #10b981; --primary-fg: #ffffff; --ring: #10b981;
+  --track: #e2e8f0; --chip: #f1f5f9; --chip-fg: #475569; --bar: #ffffff; --row-hover: #f8fafc; --code: #f8fafc;
+  --info-bg: #e0f2fe; --info-fg: #0369a1; --warn-bg: #ffedd5; --warn-fg: #c2410c;
+  --danger-bg: #fee2e2; --danger-fg: #b91c1c; --ok-bg: #dcfce7; --ok-fg: #15803d;
+  --violet-bg: #ede9fe; --violet-fg: #6d28d9;
+  --shadow: 0 1px 3px rgba(15,23,42,.08), 0 1px 2px -1px rgba(15,23,42,.06);
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; background: var(--background); color: var(--foreground); font-size: 14px; }
+svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+a { color: inherit; text-decoration: none; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.muted { color: var(--muted-fg); }
+.small { font-size: 12px; }
+.grow { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.bar { display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bar); position: sticky; top: 0; z-index: 2; }
+.brand { font-weight: 700; font-size: 16px; }
+.tabs { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+.tab { padding: 5px 12px; border-radius: 6px; font-size: 13px; color: var(--muted-fg); font-weight: 500; }
+.tab.on { background: var(--card); color: var(--primary); font-weight: 600; box-shadow: var(--shadow); }
+.badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-fg); } .badge.info { background: var(--info-bg); color: var(--info-fg); }
+.badge.warn { background: var(--warn-bg); color: var(--warn-fg); } .badge.danger { background: var(--danger-bg); color: var(--danger-fg); }
+.badge.chip { background: var(--chip); color: var(--chip-fg); } .badge.violet { background: var(--violet-bg); color: var(--violet-fg); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--muted-fg); }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; background: var(--track); font-size: 12px; font-weight: 600; }
+
+.page { max-width: 1160px; margin: 0 auto; padding: 24px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+h2 { margin: 0; font-size: 15px; font-weight: 600; }
+h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted-fg); }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 6px; background: var(--primary); color: var(--primary-fg); font-size: 13px; font-weight: 600; border: 0; white-space: nowrap; }
+.btn.ghost { background: transparent; color: var(--foreground); border: 1px solid var(--border); font-weight: 500; }
+.btn.danger { background: transparent; color: var(--danger-fg); border: 1px solid var(--danger-bg); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.card-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.pad { padding: 16px 18px; }
+.count { font-size: 12px; color: var(--muted-fg); background: var(--muted); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+.progress { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+pre { margin: 0; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; color: var(--foreground); }
+
+.tabbar, .phone-only { display: none; }
+@media (max-width: 640px) {
+  .bar { padding: 0 16px; }
+  .bar .tabs, .bar .theme { display: none; }
+  .page { padding: 16px 12px 88px; gap: 14px; }
+  h1 { font-size: 20px; }
+  .desk-only { display: none !important; }
+  .phone-only { display: flex; }
+  .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 64px; background: var(--bar); border-top: 1px solid var(--border); justify-content: space-around; align-items: center; padding-bottom: 6px; z-index: 3; }
+  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted-fg); font-weight: 500; }
+  .tabbar a.on { color: var(--primary); }
+  .tabbar svg { width: 20px; height: 20px; }
+}
+</style>
+<style>
+  .page { max-width: none; padding-bottom: 24px; }
+  .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .select-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; font-size: 13px; color: var(--muted-fg); background: var(--background); }
+  .select-btn strong { color: var(--foreground); font-weight: 500; }
+  .seg { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+  .seg span { padding: 4px 11px; font-size: 13px; color: var(--muted-fg); border-radius: 6px; font-weight: 500; }
+  .seg span.on { background: var(--card); color: var(--foreground); box-shadow: var(--shadow); }
+  .cols { display: grid; grid-template-columns: repeat(6, minmax(190px, 1fr)); gap: 12px; height: calc(100vh - 160px); min-height: 320px; }
+  .col { background: color-mix(in srgb, var(--muted) 45%, transparent); border: 1px solid var(--border); border-radius: 12px; padding: 10px 6px 10px 10px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .col-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+  .col-list::-webkit-scrollbar { width: 6px; } .col-list::-webkit-scrollbar-thumb { background: var(--track); border-radius: 3px; }
+  .col-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 4px; }
+  .col-head .n { font-size: 12px; color: var(--muted-fg); font-weight: 600; }
+  .card.item { padding: 11px 12px; display: flex; flex-direction: column; gap: 6px; cursor: grab; }
+  .item .meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted-fg); }
+  .item .title { font-weight: 500; line-height: 1.35; }
+  .item.fresh { box-shadow: 0 0 0 2px var(--ring); border-color: transparent; }
+  .fresh-note { font-size: 12px; color: var(--ok-fg); display: flex; align-items: center; gap: 6px; }
+  .drop { border: 2px dashed var(--ring); border-radius: 10px; height: 46px; opacity: .6; }
+  .type { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+  .type i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+  .t-initiative i { background: #a78bfa; } .t-epic i { background: #60a5fa; } .t-story i { background: #34d399; } .t-subtask i { background: #a1a1aa; }
+  .t-spike i { background: #fb923c; } .t-research i { background: #38bdf8; } .t-design i { background: #f472b6; } .t-bug i { background: #f87171; }
+  .label { font-size: 11px; background: var(--chip); color: var(--chip-fg); border-radius: 6px; padding: 1px 7px; align-self: flex-start; }
+
+  /* modal */
+  .scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 10; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; }
+  .show-modal .scrim:not(.create-scrim) { display: flex; }
+  .modal { width: 760px; max-width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.4); }
+  .m-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; }
+  .m-body { padding: 8px 20px 20px; display: flex; flex-direction: column; gap: 16px; }
+  .m-title { font-size: 21px; font-weight: 700; line-height: 1.3; }
+  .editable { border-radius: 6px; padding: 2px 4px; margin: -2px -4px; }
+  .editable:hover { background: var(--muted); }
+  .edit-hint { color: var(--muted-fg); font-size: 12px; }
+  .section h3 { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .section h3 .grow { flex: 1; }
+  .moves { display: flex; gap: 6px; flex-wrap: wrap; }
+  .moves span { height: 30px; padding: 0 11px; display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .ac { display: grid; grid-template-columns: 40px 1fr; gap: 6px 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .ac .id { font-family: ui-monospace, monospace; color: var(--primary); font-weight: 600; }
+  .ac .kw { color: var(--muted-fg); }
+  .layer { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .comment { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .comment .who { font-size: 12px; color: var(--muted-fg); display: flex; gap: 8px; align-items: center; }
+  .textarea { border: 1px solid var(--input); border-radius: 8px; min-height: 64px; padding: 10px 12px; color: var(--muted-fg); background: var(--background); }
+  .foot { font-size: 12px; color: var(--muted-fg); border-top: 1px solid var(--border); padding-top: 12px; }
+  .x { width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted-fg); border: 1px solid var(--border); }
+
+
+  details.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted-fg); margin-bottom: 6px; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary .chev { transition: transform .15s; }
+  details.fold[open] > summary .chev { transform: rotate(90deg); }
+  details.fold:not([open]) > summary { margin-bottom: 0; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  details.fold > summary .grow { flex: 1; }
+  .kbd { font-family: ui-monospace, monospace; font-size: 11px; border: 1px solid var(--input); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--muted-fg); }
+  /* create modal and the repository type-ahead */
+  .create-scrim { display: none; }
+  .show-create .create-scrim { display: flex; }
+  .types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .types span { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .types span i { width: 9px; height: 9px; border-radius: 2px; }
+  .types span.on { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); font-weight: 600; }
+  .field label { display: block; font-size: 13px; font-weight: 600; color: var(--muted-fg); margin-bottom: 6px; }
+  .input { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--background); }
+  .input.focus { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); }
+  .caret { display: inline-block; width: 1px; height: 15px; vertical-align: -2px; background: var(--foreground); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .ghost-text { color: var(--muted-fg); }
+  .suggest { margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); box-shadow: 0 8px 24px rgba(0,0,0,.25); overflow: hidden; }
+  .suggest div { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 13px; }
+  .suggest div.on { background: var(--muted); }
+  .suggest b { color: var(--primary); font-weight: 700; }
+  .suggest .hint { margin-left: auto; font-family: Inter, system-ui, sans-serif; font-size: 12px; color: var(--muted-fg); display: flex; align-items: center; gap: 6px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 640px) { .types { grid-template-columns: repeat(2, 1fr); } .two { grid-template-columns: 1fr; } }
+  /* phone */
+  .status-strip { display: none; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .status-strip span { flex: none; display: inline-flex; gap: 6px; align-items: center; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 13px; }
+  .status-strip span.on { border-color: var(--ring); color: var(--primary); font-weight: 600; }
+  @media (max-width: 640px) {
+    .cols { grid-template-columns: 1fr; }
+    .cols .col:not(.phone-col) { display: none; }
+    .col { min-height: 0; }
+    .status-strip { display: flex; }
+    .head .select-btn { display: none; }
+    .scrim { padding: 0; }
+    .modal { border-radius: 0; min-height: 100%; width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="brand">airlie</span>
+    <div class="tabs"><span class="tab">Chat</span><span class="tab">Workflows</span><span class="tab on">Board</span><span class="tab">Metrics</span><span class="tab">Admin</span></div>
+    <span class="grow"></span>
+    <span class="badge ok"><span class="dot"></span>Live</span>
+    <span class="icon-btn theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+    <span class="avatar">NK</span>
+  </div>
+
+  <div class="page">
+    <div class="head">
+      <h1>Board</h1>
+      <span class="grow"></span>
+      <span class="select-btn">Type <strong>All</strong> <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+      <span class="btn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Create</span>
+    </div>
+    <div class="status-strip">
+      <span>To do 2</span><span>Approved 1</span><span class="on">Doing 2</span><span>Review 2</span><span>Blocked 1</span><span>Done 2</span>
+    </div>
+
+    <div class="cols">
+      <div class="col">
+        <div class="col-head"><span class="badge chip">To do</span><span class="n">3</span></div>
+        <div class="col-list">
+          <div class="card item"><div class="meta"><span class="mono">AIR-34</span><span class="type t-subtask"><i></i>subtask</span></div><div class="title">Topic constants for the live feed</div></div>
+          <div class="card item"><div class="meta"><span class="mono">AIR-37</span><span class="type t-bug"><i></i>bug</span></div><div class="title">Doctor tracebacks on a broken web pin</div><span class="label">repo:weyenk/airlie</span></div>
+          <div class="card item"><div class="meta"><span class="mono">AIR-38</span><span class="type t-spike"><i></i>spike</span></div><div class="title">Does Vue's Vapor mode help the board's redraws?</div></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="badge info">Approved</span><span class="n">1</span></div>
+        <div class="col-list">
+          <div class="card item"><div class="meta"><span class="mono">AIR-35</span><span class="type t-story"><i></i>story</span></div><div class="title">Sign-in stops the live feed on public screens</div><span class="label">repo:weyenk/airlie</span></div>
+          <div class="drop"></div>
+        </div>
+      </div>
+      <div class="col phone-col">
+        <div class="col-head"><span class="badge info"><span class="dot"></span>Doing</span><span class="n">2</span></div>
+        <div class="col-list">
+          <div class="card item fresh"><div class="meta"><span class="mono">AIR-17</span><span class="type t-story"><i></i>story</span></div><div class="title">Board: open a ticket as a centered card modal with click-to-edit</div><span class="label">repo:weyenk/airlie</span><div class="fresh-note"><span class="dot"></span>updated just now</div></div>
+          <div class="card item"><div class="meta"><span class="mono">AIR-36</span><span class="type t-epic"><i></i>epic</span></div><div class="title">Vue app, part 2: components, screens and the switch</div></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="badge warn">Review</span><span class="n">2</span></div>
+        <div class="col-list">
+          <div class="card item"><div class="meta"><span class="mono">AIR-8</span><span class="type t-story"><i></i>story</span></div><div class="title">Live Topology page: a run's agents as a node tree</div><span class="label">repo:weyenk/airlie</span></div>
+          <div class="card item"><div class="meta"><span class="mono">AIR-9</span><span class="type t-epic"><i></i>epic</span></div><div class="title">Context gathering for the coder</div></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="badge danger">Blocked</span><span class="n">1</span></div>
+        <div class="col-list">
+          <div class="card item"><div class="meta"><span class="mono">AIR-30</span><span class="type t-story"><i></i>story</span></div><div class="title">Architect calls a tool on its tool-less last turn</div><span class="label">repo:weyenk/airlie</span></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-head"><span class="badge ok">Done</span><span class="n">24</span></div>
+        <div class="col-list">
+          <div class="card item"><div class="meta"><span class="mono">AIR-16</span><span class="type t-story"><i></i>story</span></div><div class="title">Board: columns fill the page width</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-7</span><span class="type t-story"><i></i>story</span></div><div class="title">Metrics tab: traceability, observability and performance</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-31</span><span class="type t-story"><i></i>story</span></div><div class="title">Coder 8-bit publishes the stacked PRs on its own</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-29</span><span class="type t-bug"><i></i>bug</span></div><div class="title">Thinking budget cut the tester's last turn</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-27</span><span class="type t-research"><i></i>research</span></div><div class="title">Measure wall-clock per layer, 8-bit vs 16-bit coder</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-24</span><span class="type t-design"><i></i>design</span></div><div class="title">Mockups for the metrics tab</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-22</span><span class="type t-story"><i></i>story</span></div><div class="title">A failed layer keeps its worktree for inspection</div><span class="label">repo:weyenk/airlie</span></div><div class="card item"><div class="meta"><span class="mono">AIR-21</span><span class="type t-spike"><i></i>spike</span></div><div class="title">Can MTP speed up decode on the M3 Ultra?</div><span class="label">repo:weyenk/airlie</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scrim">
+    <div class="modal">
+      <div class="m-head"><span class="mono muted">AIR-17</span><span class="grow"></span><span class="x"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span></div>
+      <div class="m-body">
+        <div>
+          <div class="m-title editable">Board: open a ticket as a centered card modal with click-to-edit</div>
+          <div class="row" style="margin-top: 8px"><span class="badge info"><span class="dot"></span>Doing</span><span class="badge chip">story</span><a class="mono small" style="color: var(--primary)">↑ AIR-36</a><span class="small muted">· Repository</span><span class="mono small editable" title="Click to change: type to search, Tab to complete">weyenk/airlie</span></div>
+        </div>
+        <div class="section"><h3>Move to</h3><div class="moves"><span>To do</span><span>Approved</span><span>Review</span><span>Blocked</span><span>Done</span></div></div>
+        <div class="section"><h3>Description <span class="edit-hint">click to edit</span></h3>
+          <div class="editable">A ticket opens as a centered card over the dimmed board. Each section is edited where it is shown: click it, change it, and Enter or a click outside saves; Escape discards.</div></div>
+        <details class="fold mobile-closed" open><summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>Acceptance criteria <span class="count">5</span></summary>
+          <div class="ac"><span class="id">AC1</span><span><span class="kw">Given</span> the board <span class="kw">when</span> a card is clicked <span class="kw">then</span> it opens as a centered modal over the dimmed board</span></div>
+          <div class="ac"><span class="id">AC2</span><span><span class="kw">Given</span> an open card <span class="kw">when</span> Escape or the backdrop is clicked <span class="kw">then</span> it closes and the board is as it was</span></div>
+          <div class="ac"><span class="id">AC3</span><span><span class="kw">Given</span> an open card <span class="kw">when</span> its description is clicked <span class="kw">then</span> it becomes an editor</span></div>
+          <div class="ac"><span class="id">AC4</span><span><span class="kw">Given</span> an editor <span class="kw">when</span> Enter or a click outside <span class="kw">then</span> the change is saved and shown</span></div>
+          <div class="ac"><span class="id">AC5</span><span><span class="kw">Given</span> an editor <span class="kw">when</span> Escape is pressed <span class="kw">then</span> the change is discarded and the modal stays open</span></div>
+        </details>
+        <details class="fold mobile-closed" open><summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>Workflow <span class="badge info"><span class="dot"></span>layer 03 of 4</span><span class="grow"></span><span class="btn ghost" style="height: 28px">Open pipeline</span></summary>
+          <div class="layer"><span class="mono" style="color: var(--primary)">Layer 01</span>Comment id store<span class="badge ok">passed</span></div>
+          <div class="layer"><span class="mono" style="color: var(--primary)">Layer 02</span>Comment edit endpoint<span class="badge ok">passed</span></div>
+          <div class="layer"><span class="mono" style="color: var(--primary)">Layer 03</span>Card modal shell<span class="badge info"><span class="dot"></span>building</span></div>
+          <div class="layer"><span class="mono muted">Layer 04</span><span class="muted">Click-to-edit sections</span><span class="badge chip">pending</span></div>
+        </details>
+        <div class="section"><h3>Subtasks <span class="count">0</span><span class="grow"></span><span class="btn ghost" style="height: 28px">Add child</span></h3><div class="small muted">None yet.</div></div>
+        <div class="section"><h3>Comments <span class="count">2</span></h3>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <div class="comment"><div class="who"><span class="avatar" style="width: 20px; height: 20px; font-size: 10px">NK</span>noah · 2 h ago<span class="grow"></span><span>Edit</span></div><div>Keep the modal under 760 px wide on desktop.</div></div>
+            <div class="comment"><div class="who"><span class="avatar" style="width: 20px; height: 20px; font-size: 10px">A</span>airlie · 1 h ago</div><div>Layer 02 published as draft PR #141.</div></div>
+            <div class="textarea">Add a comment</div>
+            <div><span class="btn ghost">Comment</span></div>
+          </div>
+        </div>
+        <div class="foot">Created Oct 23, 2026 by noah · updated just now</div>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="scrim create-scrim">
+    <div class="modal">
+      <div class="m-head"><strong style="font-size: 16px">Create</strong><span class="grow"></span><span class="x"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span></div>
+      <div class="m-body">
+        <div class="field"><label>Type</label>
+          <div class="types">
+            <span><i style="background:#a78bfa"></i>Initiative</span><span><i style="background:#60a5fa"></i>Epic</span><span class="on"><i style="background:#34d399"></i>Story</span><span><i style="background:#a1a1aa"></i>Subtask</span>
+            <span><i style="background:#fb923c"></i>Spike</span><span><i style="background:#38bdf8"></i>Research</span><span><i style="background:#f472b6"></i>Design</span><span><i style="background:#f87171"></i>Bug</span>
+          </div>
+        </div>
+        <div class="field"><label>Title</label><div class="input">Board: drag a card between columns on the phone</div></div>
+        <div class="two">
+          <div class="field"><label>Parent <span class="small" style="font-weight: 400">(optional)</span></label><div class="input"><span class="mono muted">AIR-36</span>Vue app, part 2<span class="grow"></span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div></div>
+          <div class="field"><label>Repository</label>
+            <div class="input focus"><span class="mono">weyenk/air<span class="caret"></span><span class="ghost-text">lie</span></span></div>
+            <div class="suggest">
+              <div class="on"><span>weyenk/<b>air</b>lie</span><span class="hint"><span class="kbd">Tab</span>to complete</span></div>
+              <div><span>weyenk/<b>air</b>lie-evals</span></div>
+              <div><span>weyenk/<b>air</b>table-sync</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="field"><label>Description</label><div class="input" style="min-height: 72px; align-items: flex-start; padding-top: 9px; color: var(--muted-fg)">What should change, and why</div></div>
+        <div class="row"><span class="btn">Create story</span><span class="btn ghost">Cancel</span><span class="small muted">The type decides where it can sit: a subtask needs a parent.</span></div>
+      </div>
+    </div>
+  </div>
+  <nav class="tabbar">
+    <a><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</a>
+    <a><svg viewBox="0 0 24 24"><path d="M3 6h4v4H3zM10 14h4v4h-4zM17 6h4v4h-4zM7 8h10M12 8v6"/></svg>Workflows</a>
+    <a class="on"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="11" rx="1"/></svg>Board</a>
+    <a><svg viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-4 3 3 5-6"/></svg>Metrics</a>
+    <a><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 11a3 3 0 1 0 0-6M22 21a6 6 0 0 0-5-5.9"/></svg>Admin</a>
+  </nav>
+  <script>if (innerWidth < 640) for (const d of document.querySelectorAll("details.mobile-closed")) d.removeAttribute("open");</script>
+
+<div id="mock-toolbar" style="position:fixed;right:12px;bottom:12px;z-index:99;display:flex;gap:6px;font:12px system-ui;">
+  <button onclick="toggle('light')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Light / dark</button><button onclick="toggle('show-modal')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Open card</button><button onclick="toggle('show-create')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Create</button>
+</div>
+<script>
+  function toggle(cls, on) { const h = document.documentElement; if (cls === "light") { h.classList.toggle("light"); h.classList.toggle("dark"); } else { ["show-modal","show-create"].forEach(c => c !== cls && h.classList.remove(c)); h.classList.toggle(cls); } }
+</script>
+</body>
+</html>
