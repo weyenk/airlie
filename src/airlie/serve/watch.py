@@ -128,7 +128,14 @@ class Watcher:
         if self.running:
             return
         loop = asyncio.get_running_loop()
-        self.poll()
+        try:
+            self.poll()
+        except Exception:
+            # as in the loop: a poll that fails (an unreadable state directory) must not end the stream that
+            # called this, after its headers are sent; with no baseline, the loop's next poll becomes it
+            log.warning(
+                "watching %s failed; no starting point, the next poll takes it", self._state, exc_info=True
+            )
         self._task = loop.create_task(self._run(interval_s))
 
     def stop(self) -> None:

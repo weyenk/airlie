@@ -2,9 +2,10 @@
 optional key (`board` / `AIR-17`, `runs`, `jobs`); the page refetches through the existing GET routes, so the
 feed carries no data and keeps no history (a client that reconnects refetches everything it shows).
 
-`Feed.publish` is safe from any thread: the board routes are plain `def`s, which FastAPI runs in a worker
-thread, while the job manager and the watcher publish from the event loop. Each subscriber has its own queue,
-filled through `loop.call_soon_threadsafe` on the loop the subscriber lives in."""
+`Feed.publish` is safe from any thread, for a caller that is not on the event loop (a plain `def` route, which
+FastAPI runs in a worker thread, would be one): today the board routes, the job manager and the watcher all
+publish from the event loop. Each subscriber has its own queue, filled through `loop.call_soon_threadsafe` on
+the loop the subscriber lives in."""
 
 from __future__ import annotations
 

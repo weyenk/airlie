@@ -398,6 +398,37 @@ async def test_the_loop_survives_a_poll_that_fails_and_says_so(
         assert (change.topic, change.key) == ("runs", "r1")
 
 
+async def test_a_first_poll_that_fails_is_logged_and_the_loop_starts_and_takes_the_baseline_next(
+    state: Path, make_watcher: Callable[..., Watcher], caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unreadable state directory at connect time must not end the stream that asked for the watcher
+    (its headers are already sent): ensure_running logs it, the loop starts, and its next poll records the
+    starting point, so a write after that is a change."""
+
+    class FirstFails(Watcher):
+        polls = 0
+
+        def poll(self) -> list[tuple[str, str | None]]:
+            self.polls += 1
+            if self.polls == 1:
+                raise PermissionError("state dir unreadable")
+            return super().poll()
+
+    feed = Feed()
+    append_run_log(state, "r1")
+    w = make_watcher(feed, FirstFails)
+    caplog.set_level(logging.WARNING, logger="airlie.serve.watch")
+    async with feed.subscribe() as sub:
+        w.ensure_running(interval_s=0.01)  # must not raise
+        assert w.running
+        [record] = [r for r in caplog.records if r.name == "airlie.serve.watch"]
+        assert record.levelno == logging.WARNING and "state dir unreadable" in caplog.text
+        await eventually(lambda: w.polls >= 2)  # the next poll recorded the baseline: nothing published
+        append_run_log(state, "r1")
+        change = await asyncio.wait_for(anext(aiter(sub)), 5)
+        assert (change.topic, change.key) == ("runs", "r1")
+
+
 async def test_stop_ends_the_loop_and_forgets_the_baseline(
     state: Path, make_watcher: Callable[..., Watcher]
 ) -> None:
