@@ -1652,3 +1652,51 @@ def test_a_diff_over_the_limit_is_listed_by_file(tmp_path: Path) -> None:
     (repo / "tests" / "test_x.py").unlink()
     (repo / "README.md").write_text("hi\n")
     assert own_changes(repo, since) == ""
+
+
+def mypy_cache_in(repo: Path, marker: str) -> Path:
+    """A `.mypy_cache` as mypy leaves one: its own .gitignore (no commit ever carries it) and one cache file,
+    holding `marker` so a copy can be told from a fresh one."""
+    cache = repo / ".mypy_cache"
+    (cache / "3.12").mkdir(parents=True)
+    (cache / ".gitignore").write_text("# Automatically created by mypy\n*\n")
+    (cache / "3.12" / "cache.0.db").write_text(marker)
+    return cache
+
+
+LOOK = Plan((), (Subtask("d", "describe the repo", "docs"),))
+
+
+async def test_the_worktree_starts_with_the_checkouts_mypy_cache(tmp_path: Path) -> None:
+    """Performance review of 2026-10-23, finding 4: `.mypy_cache` is gitignored, so every layer's fresh
+    worktree ran mypy cold (18.8 s against 0.7 s warm here). The worktree now starts with a copy of the
+    checkout's cache, and without one when the checkout has none."""
+    repo = repo_with_marker_tests(tmp_path)
+    mypy_cache_in(repo, "warm")
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    orch = StudioOrchestrator(cfg, FakeEngine({"docs": [DONE]}), router=ChiefRouter())
+    await orch.execute_task("g", repo=repo, plan=LOOK, detach=True, synthesise=False)
+    worktree = orch.run_dir.path / "studio"
+    assert (worktree / ".mypy_cache" / "3.12" / "cache.0.db").read_text() == "warm"
+    assert "mypy_cache" not in _git(worktree, "ls-files")  # the seed is not in the base commit
+    (tmp_path / "bare").mkdir()
+    bare = repo_with_marker_tests(tmp_path / "bare")
+    orch = StudioOrchestrator(cfg, FakeEngine({"docs": [DONE]}), router=ChiefRouter())
+    await orch.execute_task("g", repo=bare, plan=LOOK, detach=True, synthesise=False)
+    assert not (orch.run_dir.path / "studio" / ".mypy_cache").exists()
+
+
+async def test_a_mypy_cache_that_cannot_be_copied_whole_is_left_out_not_left_half(tmp_path: Path) -> None:
+    """A half-copied cache is one mypy may trip over; a missing one only costs the cold run."""
+    repo = repo_with_marker_tests(tmp_path)
+    cache = mypy_cache_in(repo, "warm")
+    (cache / "3.12" / "cache.1.db").write_text("x")
+    (cache / "3.12" / "cache.1.db").chmod(0)  # copytree fails on it, after it has copied cache.0.db
+    cfg = cfg_for(tmp_path, review={"enabled": False})
+    orch = StudioOrchestrator(cfg, FakeEngine({"docs": [DONE]}), router=ChiefRouter())
+    try:
+        report = await orch.execute_task("g", repo=repo, plan=LOOK, detach=True, synthesise=False)
+    finally:
+        (cache / "3.12" / "cache.1.db").chmod(0o644)
+    assert not (orch.run_dir.path / "studio" / ".mypy_cache").exists()
+    assert report.teams[0].ok and report.teams[0].final_text == "done"  # the run itself is unaffected

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -42,6 +43,24 @@ def add_worktree(repo: Path, path: Path, *, branch: str | None, start_point: str
     new = ["--detach"] if branch is None else ["-b", branch]
     _git(repo, "worktree", "add", "-q", *new, str(path), base)
     return path
+
+
+def seed_mypy_cache(repo: Path, worktree: Path) -> None:
+    """`worktree/.mypy_cache` as a copy of `repo`'s, when `repo` has one: a fresh worktree then runs mypy
+    warm instead of cold (0.7 s against 18.8 s in this repository, performance review of 2026-10-23,
+    finding 4; mypy re-hashes a module whose path or mtime differ from its cache entry and keeps the entry
+    when the hash matches). A copy, not one directory shared through MYPY_CACHE_DIR: layers and stories
+    will run in parallel, and several mypy runs writing one cache at once is a race. A copy that fails
+    part-way is removed again, since mypy may trip over half a cache where a missing one only costs the
+    cold run. mypy writes a `.gitignore` into the cache, so no commit of the worktree picks the copy up."""
+    source = repo / ".mypy_cache"
+    if not source.is_dir():
+        return
+    target = worktree / ".mypy_cache"
+    try:
+        shutil.copytree(source, target)
+    except OSError:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def checkout_worktree(repo: Path, path: Path, branch: str) -> Path:
