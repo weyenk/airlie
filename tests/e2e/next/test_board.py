@@ -122,3 +122,44 @@ def test_dragging_a_card_onto_another_moves_it_above_it(
     keys = [c.get_attribute("data-item") for c in doing.all()]
     evidence.shot("it sits above the card it was dropped on", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
     assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys
+
+
+def test_the_landing_mark_stays_put_over_itself_and_the_gaps(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    """Real hit-testing: the mark takes no pointer, so over it and the 8px gaps the pointer is on the list."""
+    next_page.goto(own_server.url + "/next/board")
+    doing = next_page.get_by_role("region", name="Doing")
+    evidence.expect(doing.locator("[data-item]"), "Doing has two").to_have_count(2)
+
+    def centre(box: dict[str, float]) -> tuple[float, float]:
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def below(key: str) -> str | None:
+        return doing.locator("[data-drop]").evaluate("m => m.nextElementSibling?.getAttribute('data-item')")
+
+    src = next_page.locator("[data-item=AIR-3]").bounding_box()
+    two = doing.locator("[data-item=AIR-2]").bounding_box()
+    assert src and two
+    mouse = next_page.mouse
+    mouse.move(*centre(src))
+    mouse.down()
+    mouse.move(*centre(src), steps=2)
+    mouse.move(*centre(two), steps=10)
+    evidence.expect(doing.locator("[data-drop]"), "the mark shows above AIR-2").to_have_count(1)
+    assert below("AIR-2") == "AIR-2"
+    mark = doing.locator("[data-drop]").bounding_box()
+    one = doing.locator("[data-item=AIR-1]").bounding_box()
+    assert mark and one
+    mouse.move(*centre(mark), steps=5)  # over the mark itself
+    assert below("AIR-2") == "AIR-2", "the mark moved when the pointer was on it"
+    gap_y = one["y"] + one["height"] + (mark["y"] - one["y"] - one["height"]) / 2
+    mouse.move(centre(mark)[0], gap_y, steps=5)  # over the gap between AIR-1 and the mark
+    assert below("AIR-2") == "AIR-2", "the mark moved when the pointer was in the gap"
+    evidence.shot("the mark stayed above AIR-2 over itself and the gap", doing.locator("[data-drop]"))
+    mouse.up()
+    cards = doing.locator("[data-item]")
+    evidence.expect(cards, "the card joined Doing").to_have_count(3)
+    keys = [c.get_attribute("data-item") for c in cards.all()]
+    evidence.shot("a drop there landed above AIR-2", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
+    assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys

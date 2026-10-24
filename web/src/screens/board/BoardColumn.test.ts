@@ -64,15 +64,28 @@ test("dragging over shows where the card lands, leaving clears it", async () => 
   expect(w.find("[data-drop]").exists()).toBe(false);
 });
 
-test("the landing mark takes no pointer, and a dragover or drop on it keeps the place it shows", async () => {
+test("the landing mark takes no pointer", async () => {
   const w = make();
   await over(w.findAll("[data-item]")[1]);
-  const mark = w.find("[data-drop]");
-  expect(mark.classes()).toContain("pointer-events-none");
-  await over(mark);
+  expect(w.find("[data-drop]").classes()).toContain("pointer-events-none");
+});
+
+test("over the gap or the mark the list is what is hit: the place stays, and a drop there lands where the mark shows", async () => {
+  const w = make();
+  await over(w.findAll("[data-item]")[1]);
+  await over(w.find("[data-list]")); // the real target over the mark's box and the 8px gaps
   expect(w.find("[data-drop]").element.nextElementSibling?.getAttribute("data-item")).toBe("AIR-2"); // not the bottom
-  await drop(mark);
+  await drop(w.find("[data-list]"));
   expect(w.emitted("move")).toEqual([["AIR-9", "todo", "AIR-2"]]);
+});
+
+test("the strip below the last card is the bottom: the mark goes there and a drop sends null", async () => {
+  const w = make();
+  await over(w.findAll("[data-item]")[1]);
+  await over(w.find("[data-tail]"));
+  expect(w.find("[data-drop]").element.nextElementSibling?.getAttribute("data-tail")).toBe("");
+  await drop(w.find("[data-tail]"));
+  expect(w.emitted("move")).toEqual([["AIR-9", "todo", null]]);
 });
 
 test("a drag that is not one of the board's cards is ignored", async () => {

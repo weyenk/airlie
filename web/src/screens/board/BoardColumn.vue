@@ -18,15 +18,32 @@ const MARK = "h-[46px] shrink-0 rounded-[10px] border-2 border-dashed border-rin
 
 const target = (e: Event) => e.target as HTMLElement | null;
 const cardUnder = (e: Event): string | null => target(e)?.closest<HTMLElement>("[data-item]")?.dataset.item ?? null;
-/** The landing mark sits under the pointer once shown; it must not read as "empty space" and move itself. */
-const onMark = (e: Event): boolean => !!target(e)?.closest("[data-drop]");
 const isOurs = (e: DragEvent): boolean => !!e.dataTransfer && Array.from(e.dataTransfer.types ?? []).includes(DRAG_TYPE);
+
+/**
+ * Where the pointer says the card would land: above the card under it, or the bottom over the strip below the
+ * last card. Over anything else (the 8px gaps, the landing mark, which takes no pointer so the list is what is
+ * hit there) the place stays as it is, so the mark never jumps; only a drag that has no place yet falls back to
+ * the pointer's height against the cards' middles.
+ */
+function placeFor(e: DragEvent): string | null | undefined {
+  const el = target(e);
+  const card = cardUnder(e);
+  if (card !== null) return card;
+  if (el?.closest("[data-tail]")) return null;
+  if (landing.value !== undefined || typeof e.clientY !== "number" || !Number.isFinite(e.clientY)) return landing.value;
+  for (const c of el?.closest("[data-list]")?.querySelectorAll<HTMLElement>("[data-item]") ?? []) {
+    const r = c.getBoundingClientRect();
+    if (e.clientY < r.top + r.height / 2) return c.dataset.item ?? null;
+  }
+  return null;
+}
 
 function over(e: DragEvent): void {
   if (!isOurs(e)) return; // a foreign drag is not ours to take
   e.preventDefault(); // allow the drop
   if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-  if (!onMark(e)) landing.value = cardUnder(e);
+  landing.value = placeFor(e);
 }
 function leave(e: DragEvent): void {
   // moving between this column's own children also fires dragleave; only leaving the column clears the mark
@@ -36,8 +53,7 @@ function drop(e: DragEvent): void {
   if (!isOurs(e)) return;
   e.preventDefault();
   const key = e.dataTransfer?.getData(DRAG_TYPE);
-  // dropped on the mark: where it shows, not "the bottom"
-  const before = onMark(e) ? (landing.value ?? null) : cardUnder(e);
+  const before = placeFor(e) ?? null;
   landing.value = undefined;
   if (!key || key === before) return;
   const at = props.items.findIndex((i) => i.key === key);
