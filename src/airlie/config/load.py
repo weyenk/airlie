@@ -86,6 +86,31 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+def _read_yaml_with_includes(path: Path, _seen: frozenset[Path] | None = None) -> dict[str, Any]:
+    """Load a mapping: resolve `includes:` first (relative to this file), then merge other keys on top.
+    Cycles and missing includes are ConfigErrors. Data paths resolve against the root config directory in
+    `load_config`, not the including file."""
+    resolved = path.resolve()
+    seen = _seen or frozenset()
+    if resolved in seen:
+        chain = " -> ".join(str(p) for p in (*seen, resolved))
+        raise ConfigError(f"{path}: includes: cycle {chain}")
+    seen = seen | {resolved}
+    raw = _read_yaml(path)
+    includes = raw.get("includes")
+    merged: dict[str, Any] = {}
+    if includes is not None:
+        if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
+            raise ConfigError(f"{path}: includes must be a list of paths")
+        for inc in includes:
+            inc_path = (path.parent / inc).resolve()
+            if not inc_path.is_file():
+                raise ConfigError(f"{path}: includes: file not found: {inc}")
+            merged = deep_merge(merged, _read_yaml_with_includes(inc_path, seen))
+    body = {k: v for k, v in raw.items() if k != "includes"}
+    return deep_merge(merged, body)
+
+
 REMOVED = {
     "story.tests_role": "removed on 2026-10-16: one coder (story.build_role) now writes a layer's tests and "
     "its code; delete story.tests_role from your config",
@@ -190,7 +215,7 @@ def load_config(
     path = (path or find_config()).resolve()
     if not path.is_file():
         raise ConfigError(f"config file not found: {path}")
-    data = _read_yaml(path)
+    data = _read_yaml_with_includes(path)
     local = local_path if local_path is not None else path.with_name(DEFAULT_LOCAL)
     if local.is_file():
         data = deep_merge(data, _read_yaml(local))

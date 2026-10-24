@@ -2,6 +2,11 @@
 # Reference: docs/superpowers/specs/2026-10-12-airlie-design.md. Validate with `task doctor`, inspect with `task config`.
 version: 1
 
+includes:
+  - config/models.yaml
+  - config/roles.yaml
+  - config/profiles.yaml
+
 # ---- Inference engines ------------------------------------------------------------------------------------------
 # A `vllm_mlx` engine is a process airlie starts for you (`task up`); `openai_http` is any external
 # OpenAI-compatible server (llama-server, mlx_lm.server, vllm-mlx you run yourself). Roles pick a model; the engine
@@ -28,145 +33,7 @@ engines:
     models: [kev4b]
     ctx_size: 16384
 
-# ---- Model catalog (pinned HF revisions; `task models:pull` fetches exactly these) ---------------------------------
-# Spec 01 §1 names Llama-3.3-70B-Instruct-4bit or Qwen2.5-32B-Instruct-4bit for the base-model slot (20.5–42.5 GB).
-# Noah 2026-10-12: a modern model for the same slot is fine as long as it stays configurable and benchmarkable, so the
-# spec's two models stay here, pinned, loadable on demand, and in `task bench:models`.
-# The team model is `generalist` (Qwen3.8-27B, hybrid attention): the engine's hybrid prefix cache (engine/patches/
-# hybrid_prefix_cache.py) keeps a resumed turn from re-prefilling its whole prompt. Qwen3-Coder was dropped as the
-# team model (Noah 2026-10-18: AIR-5 showed its 6-bit fidelity too low for the speed) and kept at 8-bit as `coder8`,
-# the coder seat of the `studio-coder8` profile below: an experiment, not the default (Noah 2026-10-18, after AIR-7
-# layer 02 took seven attempts on the non-thinking generalist). To swap the team model: change `roles.coder.model`.
-models:
-  coder8:                          # Qwen3-Coder-30B-A3B at 8-bit: MoE (3B active), standard GQA attention, coding + tool use
-    repo: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit   # the 4-bit dropped `"` before `]` (HDS-5); 8-bit for fidelity
-    revision: 7c6ee1bbb5ee3051c4b3bc6553f24bdc2d01393a   # 2025-07-31
-    preload: false                 # `studio-coder8` preloads it; `task models:pull -- coder8` fetches it (32.5 GB)
-    bench: true
-    tags: [modern, coder, moe]
-    estimated_memory_gb: 32.5
-    kv_mb_per_1k_tokens: 96        # 48 layers × 4 KV heads × 128 dim, K and V in bf16 = 96 KB a token
-    tool_call_parser: qwen3_xml_raw  # airlie's: values stay raw text (vllm-mlx's qwen3_coder mangles code, bench 2026-10-14)
-    reasoning_parser: qwen3        # server-wide flag (taken from the team model): the thinking generalist roles still
-                                   # return reasoning_content under `studio-coder8`
-  llama70b:                        # spec 01 §1 / 02 §1 named model
-    repo: mlx-community/Llama-3.3-70B-Instruct-4bit
-    revision: de2dfaf56839b7d0e834157d2401dee02726874d   # 2024-12-06
-    preload: false
-    bench: true
-    tags: [spec]
-    estimated_memory_gb: 40
-    kv_mb_per_1k_tokens: 320       # 80 layers × 8 KV heads × 128 dim
-    tool_call_parser: llama
-  qwen25_32b:                      # spec 01 §1 named model
-    repo: mlx-community/Qwen2.5-32B-Instruct-4bit
-    revision: 2938092373e5f97b95538884112085364c2da315   # 2024-09-18
-    preload: false
-    bench: true
-    tags: [spec]
-    estimated_memory_gb: 19
-    kv_mb_per_1k_tokens: 256       # 64 layers × 8 KV heads × 128 dim
-    tool_call_parser: qwen
-  small:
-    repo: mlx-community/Qwen3-4B-4bit
-    revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28
-    preload: true
-    estimated_memory_gb: 3
-    kv_mb_per_1k_tokens: 144       # 36 layers × 8 KV heads × 128 dim
-    reasoning_parser: qwen3
-  generalist:                      # Qwen3.8-27B: the team model (coder, security, aggregator) and the chief; vision; hybrid attention
-    repo: mlx-community/Qwen3.8-27B-4bit
-    revision: 10c35caafbb80f7dc6a7a432cdd11af10a6d4818   # 2026-09-14
-    preload: true
-    bench: true
-    estimated_memory_gb: 16.1
-    kv_mb_per_1k_tokens: 64        # 16 full-attention layers (every 4th of 64) × 4 KV heads × 256 dim = 64 KB a token;
-                                   # the 48 linear-attention layers keep a fixed-size state (was 256, Qwen2.5-32B's number,
-                                   # until 2026-10-24: review 2026-10-23 finding 8)
-    tool_call_parser: qwen3_xml_raw  # Qwen3.8 writes Qwen3-Coder's XML; airlie's parser keeps values raw
-    reasoning_parser: qwen3
-    tags: [modern, coder, vision, hybrid-attention]
-  reviewer:                        # Muse Glimmer 30B (Meta, Apache 2.0): the cross-family adversarial reviewer
-    repo: mlx-community/Muse-Glimmer-30B-4bit
-    revision: 3e7677d7a40d348a3daba263a2b1c0aa41910710   # 2026-08-10
-    preload: false
-    estimated_memory_gb: 19.4
-    kv_mb_per_1k_tokens: 64        # 2 KV heads × 128 dim × 52 layers, 3/4 of them sliding-window
-    tool_call_parser: muse_glimmer
-    reasoning_parser: muse_glimmer
-    tags: [modern, vision, reviewer]
-  kev4b:                           # System One decision model behind the Jev API (router, decide tool)
-    repo: ggml-org/Kev-4B-GGUF
-    revision: d924f2e2c3872da8b8aaf3eb4453b4126deceb79
-    file: Kev-4B-Q4_K_M.gguf
-    preload: true
-    estimated_memory_gb: 3
-  controller_base:                 # M5: base for the learned LTS admission controller (LoRA r=16)
-    repo: Qwen/Qwen3-0.6B
-    revision: c1899de289a04d12100db370d81485cdf75e47ca
-    preload: false
-    estimated_memory_gb: 1.5
 
-# ---- Roles --------------------------------------------------------------------------------------------------------
-roles:
-  coder:                           # the team agent: ReAct loop with repo tools
-    prompt: prompts/roles/coder.md
-    model: generalist
-    max_context: 65536
-    max_tokens: 10240                # the answer alone (no thinking): room for a whole-file write (HDS-5)
-    thinking: false                  # 2026-10-18: the architect's brief is the plan. A thinking coder (Qwen3.8) ran its
-                                     # budget out re-deliberating the brief every step and read instead of writing
-                                     # (AIR-7, AIR-28: 10 of 21 steps at the cap); its fast steps were the ones where
-                                     # it did not think
-    nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
-    green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
-    write_schedule: { tests: 0.25, code: 0.75 }   # a test written by a quarter of its steps, code by three quarters,
-                                     # else told once, then write-only tools (AIR-28: it read 21 of 40 steps)
-    sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 }   # low temp; 1.05 guards against repetition collapse
-  summarizer:                      # LTS summary keys (15–20 words), stateless
-    prompt: prompts/roles/summarizer.md
-    model: small
-    max_context: 8192
-    max_tokens: 64
-    thinking: false
-    sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
-  judge:                           # YES/NO admission judge and aggregator tie-breaker
-    prompt: prompts/roles/judge.md
-    model: small
-    max_context: 16384
-    max_tokens: 256
-    thinking: false
-    sampling: { temperature: 0.0, top_p: 1.0, top_k: 0, min_p: 0.0, presence_penalty: 0.0 }
-  hypothesizer:                    # fork-when-stuck: lists distinct root-cause hypotheses at a fork point
-    prompt: prompts/roles/hypothesizer.md
-    model: small
-    max_context: 16384
-    max_tokens: 400
-    thinking: false
-    sampling: { temperature: 0.7, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
-  # ---- studio roles (design 2026-10-13): specialists are prompts over three models; summaries route them ----
-  # A thinking role's max_tokens caps its thinking AND its answer, so config load refuses max_tokens <= thinking_budget
-  # (HDS-3, 2026-10-15). These roles use 16384 over a budget of 8192, which leaves up to 8192 tokens for the answer.
-  chief:        { prompt: prompts/roles/chief.md, model: generalist, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  chat:         { prompt: prompts/roles/chat.md, skills: skills/chat, model: generalist, tools: [], vision: true, max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }   # the web app's Chat (AIR-36): prose, no tools (the passthrough runs none); skills/chat are its slash commands
-  architect:    { prompt: prompts/roles/architect.md, model: generalist, tools: [read_file, list_dir, grep], max_context: 131072, max_tokens: 16384, thinking: true, thinking_budget: 8192, last_turn_thinking: false, nudge_stuck: true, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  tester:       { prompt: prompts/roles/tester.md, model: generalist, tools: [read_file, list_dir, grep, write_file, edit_file, run_tests], max_context: 65536, max_tokens: 16384, thinking: true, thinking_budget: 4096, last_turn_thinking: false, nudge_stuck: true, max_steps: 20, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }   # lever 2 (2026-10-19): writes a layer's acceptance tests before the coder; thinking on, since the test is the design
-  product:      { prompt: prompts/roles/product.md, model: generalist, tools: [read_file, list_dir], max_tokens: 4096, thinking: false, max_steps: 8, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  ux:           { prompt: prompts/roles/ux.md, model: generalist, tools: [web_search, web_fetch], max_steps: 6, vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  design:       { prompt: prompts/roles/design.md, model: generalist, tools: [web_search, web_fetch], max_steps: 6, vision: true, max_tokens: 8192, thinking: false, sampling: { temperature: 0.5, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  docs:         { prompt: prompts/roles/docs.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  research:     { prompt: prompts/roles/research.md, model: generalist, tools: [read_file, list_dir, grep, search_knowledge, web_search, web_fetch], knowledge: knowledge/research, max_tokens: 16384, thinking: true, thinking_budget: 8192, max_steps: 12, sampling: { temperature: 0.4, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }
-  security:     { prompt: prompts/roles/security.md, model: generalist, tools: [read_file, list_dir, grep], max_tokens: 4096, thinking: false, max_steps: 15, sampling: { temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.05 } }
-  reviewer:     { prompt: prompts/roles/reviewer.md, model: reviewer, tools: [web_search, web_fetch], max_steps: 4, max_context: 131072, max_tokens: 16384, thinking: false, chat_template_kwargs: { reasoning_strength: low }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }  # low: at medium a review ran its whole 16384 tokens still thinking (AIR-7 layer 02 round 1, 2026-10-18)
-  supervisor:   { prompt: prompts/roles/supervisor.md, model: reviewer, tools: [read_file, list_dir, grep], max_steps: 6, max_context: 131072, max_tokens: 8192, thinking: false, chat_template_kwargs: { reasoning_strength: low }, sampling: { temperature: 0.2, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 } }   # layer 1 of the supervisor (spec 2026-10-22): advisory triage on the reviewer model; run_test is added by the triage, not listed
-  aggregator:                      # spec 01 §4 step 9: combines team outputs into the final verified answer
-    prompt: prompts/roles/aggregator.md
-    model: generalist
-    max_context: 65536
-    max_tokens: 4096
-    thinking: false
-    thinking_budget: 8192
-    sampling: { temperature: 0.3, top_p: 0.9, top_k: 20, min_p: 0.0, presence_penalty: 0.0 }
 
 # ---- Tools --------------------------------------------------------------------------------------------------------
 tools:
@@ -174,9 +41,11 @@ tools:
   shell_timeout_s: 600
   output_cap_chars: 20000
   write_file_max_overwrite_lines: 200   # longer existing files change with edit_file, not a rewrite
-mcp: {}                            # name: { command, args, env } — exposed to teams as extra tools
+mcp: {}                              # name: { command, args, env } — exposed to teams as extra tools
 web:
-  search: { kind: searxng, url: http://127.0.0.1:8888 }   # web_search backend; `task doctor` checks it
+  search:                          # web_search backend; `task doctor` checks it
+    kind: searxng
+    url: http://127.0.0.1:8888
   fetch_timeout_s: 30
 
 # ---- Chat attachments (design 2026-10-22-chat-attachments) -------------------------------------------------------
@@ -186,9 +55,19 @@ web:
 # as its text cut at max_text_kb, anything else as a line saying what it is. 100 MB of video is what the Cloudflare
 # quick tunnel lets through; Tailscale has no such limit.
 chat:
-  attachments: { max_image_mb: 20, max_video_mb: 100, max_file_mb: 25, max_text_kb: 200, max_per_message: 10,
-                 keep_days: 30, max_image_px: 1536, video_fps: 1.0, video_max_frames: 32, video_frame_px: 448,
-                 history_images: 4, history_videos: 1 }
+  attachments:
+    max_image_mb: 20
+    max_video_mb: 100
+    max_file_mb: 25
+    max_text_kb: 200
+    max_per_message: 10
+    keep_days: 30
+    max_image_px: 1536
+    video_fps: 1.0
+    video_max_frames: 32
+    video_frame_px: 448
+    history_images: 4
+    history_videos: 1
 
 # ---- Learning to Share --------------------------------------------------------------------------------------------
 lts:
@@ -198,7 +77,11 @@ lts:
     judge_role: judge
     threshold: 0.5
     duplicate_jaccard: 0.8
-  summarizer: { kind: role, role: summarizer, max_words: 20, truncate_chars: 100 }   # truncate = spec 04 §3 blueprint
+  summarizer:                      # truncate = spec 04 §3 blueprint
+    kind: role
+    role: summarizer
+    max_words: 20
+    truncate_chars: 100
   max_keys: 12                     # keys injected per step, ranked for the team (see ranking)
   max_value_chars: 20000
   background_admission: true       # summarize + decide off the team's critical path
@@ -209,48 +92,15 @@ lts:
   inline_chars: 1500
 
 # ---- Router (design 2026-10-13 §6) ------------------------------------------------------------------------------
-router: { kind: jev, model: kev4b, ambiguous_gap: 0.15, min_confidence: 0.5 }   # jev | chief
+router:                            # jev | chief
+  kind: jev
+  model: kev4b
+  ambiguous_gap: 0.15
+  min_confidence: 0.5
 
 # ---- Topology -------------------------------------------------------------------------------------------------
 topology:
   kind: single                     # single | teams | fork; each selects its profile below (task run -- --topology X)
-  profiles:
-    single: { teams: { k: 1 }, lts: { enabled: false } }
-    teams:  { teams: { k: 3 }, lts: { enabled: true } }
-    fork:   { teams: { k: 1 }, lts: { enabled: false } }
-    studio:                        # chief + Kev router + specialists (design 2026-10-13); needs `task restart -- --topology studio`
-      # server_parsers stays true: without the flag vllm-mlx 0.5.0's batched engine renders tools in its own
-      # bracket protocol and the coder's calls arrive argument-less (seen 2026-10-13). The server parses the Qwen
-      # family with airlie's qwen3_xml_raw; airlie parses what it leaves raw (Muse channels).
-      engines: { main: { max_kv_size: 131072 } }
-      models: { generalist: { preload: true }, reviewer: { preload: true } }
-      teams: { k: 1, max_steps: 40 }
-      lts: { enabled: false }
-      studio: { parallel: 3 }
-    studio-qwen25:                 # the experiment: Qwen2.5-32B (4-bit, already in the catalog) in the coder seat,
-      # everything else as studio (Noah 2026-10-18: a less clever but steadier coder may build a layer in less
-      # wall-clock once fix cycles count). Select it with `--topology studio-qwen25`, or for ticks with
-      # `story: { topology: studio-qwen25 }` in airlie.local.yaml; `task restart -- --topology studio-qwen25` first.
-      # The server-wide tool parser follows the coder's model: airlie's qwen3_xml_raw reads Qwen2.5's JSON calls
-      # as well as Qwen3.8's XML (checked 2026-10-18), while vllm-mlx's `qwen` strips the indentation of XML values,
-      # so the generalist roles keep their parser. KV at the coder's 64k: 57.5 GB of resident weights plus the
-      # studio's 131072 KV would project over the 104 GB wired limit.
-      extends: studio
-      engines: { main: { max_kv_size: 65536 } }
-      roles: { coder: { model: qwen25_32b, thinking: false, max_tokens: 10240 } }
-      models: { qwen25_32b: { preload: true, tool_call_parser: qwen3_xml_raw, reasoning_parser: qwen3 } }
-    studio-coder8:                 # the experiment: Qwen3-Coder 8-bit in the coder seat, everything else as studio
-      # (Noah 2026-10-18). Select it for one run with `--topology studio-coder8`, or for stories by setting
-      # `story.topology`; the resident model set changes, so `task restart -- --topology studio-coder8` first.
-      # Standard attention: vllm-mlx's own prefix cache serves it. `task doctor -- --topology studio-coder8`
-      # projects the memory with the coder's model's KV constant: 74 GB of resident weights (coder8, generalist,
-      # reviewer, small, and Kev on the decision engine) + 12.3 GB for the studio's 131072 KV at coder8's
-      # 96 MB/1k + 12 GB reserve = 98 GB, under the 104 GB wired limit, so the studio's KV stays. (Until
-      # 2026-10-24 coder8's constant was 192, the projection 111 GB, and this profile halved the KV to 65536,
-      # which capped the reviewer's prompt at 64k too; review 2026-10-23 finding 8.)
-      extends: studio
-      roles: { coder: { model: coder8, thinking: false, max_tokens: 10240 } }
-      models: { coder8: { preload: true } }
 fork:
   width: 2                         # children per fork point
   after_failures: 2                # consecutive failing run_tests that mark a branch stuck
@@ -262,16 +112,37 @@ fork:
   temperatures: [0.3, 0.7]
 
 # ---- Repository map (every topology) --------------------------------------------------------------------------
-repo_map: { enabled: true, max_chars: 6000, depth: 3 }   # tree + Python signatures, injected before the goal
+repo_map:                          # tree + Python signatures, injected before the goal
+  enabled: true
+  max_chars: 6000
+  depth: 3
 
 # ---- Scheduling, teams, aggregation --------------------------------------------------------------------------------
-scheduler: { kind: slots, max_active: 4, starvation_ms: 30000 }
-teams: { k: 1, role: coder, orchestrator: native, max_steps: 40, token_budget: 200000, stop_on_first_pass: true, fresh_continuation_tokens: 32768 }   # k: 1 = single agent (bench 2026-10-13); spec: k: 3
-aggregator: { kind: llm, role: aggregator, judge_role: judge }   # spec 01 §4 step 9
+scheduler:
+  kind: slots
+  max_active: 4
+  starvation_ms: 30000
+teams:                             # k: 1 = single agent (bench 2026-10-13); spec: k: 3
+  k: 1
+  role: coder
+  orchestrator: native
+  max_steps: 40
+  token_budget: 200000
+  stop_on_first_pass: true
+  fresh_continuation_tokens: 32768
+aggregator:                        # spec 01 §4 step 9
+  kind: llm
+  role: aggregator
+  judge_role: judge
 
 # ---- Host + observability -----------------------------------------------------------------------------------------
-memory: { wired_limit_mb: 106496, os_reserve_gb: 12 }  # docs/wiki/build-spec/01 §1; `task doctor` projects the total
-observability: { state_dir: ~/.local/state/airlie, capture: true, retain_days: 14 }
+memory:                            # docs/wiki/build-spec/01 §1; `task doctor` projects the total
+  wired_limit_mb: 106496
+  os_reserve_gb: 12
+observability:
+  state_dir: ~/.local/state/airlie
+  capture: true
+  retain_days: 14
 # Sign-in for the web app (docs/superpowers/plans/2026-10-17-sign-in.md): people come as themselves, by Tailscale
 # identity behind `tailscale serve` or a passkey from an invite (`task auth:admin`, `task auth:invite`); the
 # --api-key stays for OpenCode and `airlie mcp`. The user store is observability.state_dir/auth.sqlite.
@@ -296,9 +167,16 @@ story:
   trunk: main                      # the stack's base branch
   tester_role: tester              # lever 2 (2026-10-19): a thinking role writes every layer's tests, checked red before the coder builds; null: the coder writes its own
   max_layers: 5
-  supervisor: { enabled: true, per_layer: 6, timeout_s: 300 }   # the trial (spec 2026-10-22); false = today's behaviour exactly
+  supervisor:                      # the trial (spec 2026-10-22); false = today's behaviour exactly
+    enabled: true
+    per_layer: 6
+    timeout_s: 300
   jira:
-    statuses: { intake: "To Do", building: "In Progress", review: "In Review", blocked: "Blocked" }
+    statuses:
+      intake: "To Do"
+      building: "In Progress"
+      review: "In Review"
+      blocked: "Blocked"
   github_app:                      # publish as a GitHub App's bot, never with your own gh login or SSH key
     app_id: 5332832                # airlie-bot-weyenk; put your own app's id in airlie.local.yaml (null: your login)
 
