@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -33,13 +33,14 @@ from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Jobs
-from airlie.serve.listing import recent_runs, repos, stories
+from airlie.serve.listing import recent_runs, repos, stories, story_page
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
+from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -605,8 +606,19 @@ def create_app(
             await asyncio.sleep(0.25)
 
     @app.get("/v1/airlie/stories")
-    async def story_list() -> dict[str, Any]:
-        return {"stories": stories(cfg.observability.state_dir)}
+    async def story_list(
+        page: int = Query(1, ge=1),
+        size: int | None = Query(None, ge=1, le=100),
+        stage: str | None = None,
+        repo: str | None = None,
+        blocked: bool | None = None,
+        q: str | None = None,
+        sort: Literal["activity", "key", "stage"] = "activity",
+    ) -> dict[str, Any]:
+        if stage is not None and stage not in STAGES:
+            raise HTTPException(422, f"unknown stage {stage!r}; use one of {', '.join(STAGES)}")
+        rows = stories(cfg.observability.state_dir)
+        return story_page(rows, page=page, size=size, stage=stage, repo=repo, blocked=blocked, q=q, sort=sort)
 
     @app.get("/v1/airlie/stories/{key}/flow")
     async def story_flow_get(key: str) -> dict[str, Any]:
