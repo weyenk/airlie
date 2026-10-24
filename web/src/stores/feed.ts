@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { connectFeed } from "../feed";
+import { useSessionStore } from "./session";
 import type { FeedState } from "../feed";
 
 /** The page's one live feed: its state, and the changes it hears handed to whoever listens by topic. */
@@ -35,6 +36,7 @@ export const useFeedStore = defineStore("feed", () => {
           }
         }
       },
+      onUnauthorized: () => useSessionStore().signedOut(),
       onState: (next) => {
         state.value = next;
         if (next === "live") generation.value += 1;

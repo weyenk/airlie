@@ -26,3 +26,11 @@ test("the theme toggle persists under airlie.theme", async () => {
   expect(document.documentElement.classList.contains("dark")).toBe(true);
   expect(localStorage.getItem("airlie.theme")).toBe("dark");
 });
+
+test("two toggles stay in step", async () => {
+  applyStoredTheme();
+  const a = mount(ThemeToggle);
+  const b = mount(ThemeToggle);
+  await a.find("button").trigger("click");
+  expect(b.find("button").attributes("aria-label")).toBe("Switch to dark theme");
+});

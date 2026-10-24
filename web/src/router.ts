@@ -42,18 +42,19 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/next
 
   router.beforeEach(async (to) => {
     const session = useSessionStore();
-    const feed = useFeedStore();
-    if (to.meta.public) {
-      // nobody known means the feed is already stopped (signedOut did it)
-      if (session.me) feed.stop();
-      return true;
-    }
+    if (to.meta.public) return true;
     if (!session.me) await session.load();
-    if (!session.me) {
-      return { path: "/signin", query: { next: to.fullPath }, replace: true };
-    }
-    feed.start();
+    if (!session.me) return { path: "/signin", query: { next: to.fullPath }, replace: true };
     return true;
+  });
+  // the feed follows the page once it is committed (a 401 on the feed then knows which page to come back to)
+  router.afterEach((to, _from, failure) => {
+    if (failure) return;
+    const session = useSessionStore();
+    const feed = useFeedStore();
+    if (!session.me) return; // nobody known: the feed is already stopped
+    if (to.meta.public) feed.stop();
+    else feed.start();
   });
   return router;
 }

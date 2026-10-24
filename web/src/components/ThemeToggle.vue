@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { Moon, Sun } from "lucide-vue-next";
-import { ref } from "vue";
-import { currentTheme, setTheme } from "@/lib/theme";
-import type { Theme } from "@/lib/theme";
-
-const theme = ref<Theme>(currentTheme());
+import { setTheme, theme } from "@/lib/theme";
 
 function flip(): void {
-  theme.value = theme.value === "dark" ? "light" : "dark";
-  setTheme(theme.value);
+  setTheme(theme.value === "dark" ? "light" : "dark");
 }
 </script>
 

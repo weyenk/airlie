@@ -329,3 +329,14 @@ test("after a drop one timer is pending at a time: the retry, then one watchdog,
   await vi.advanceTimersByTimeAsync(1000);
   expect(fetchImpl).toHaveBeenCalledTimes(3);
 });
+
+test("a 401 with an onUnauthorized handler tells it once and never reconnects", async () => {
+  const { fetchImpl } = fakeFetch(401);
+  const onUnauthorized = vi.fn();
+  const states: FeedState[] = [];
+  connectFeed({ onChange: () => {}, onState: (s) => states.push(s), fetchImpl, onUnauthorized });
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(["connecting"]);
+});

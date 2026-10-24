@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>airlie</title>
+    <script>
+      // before first paint, so a light theme never flashes dark (main.ts does the same as a fallback)
+      try {
+        document.documentElement.classList.add(localStorage.getItem("airlie.theme") === "light" ? "light" : "dark");
+      } catch (e) {
+        document.documentElement.classList.add("dark");
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>

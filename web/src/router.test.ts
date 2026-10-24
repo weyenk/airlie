@@ -102,3 +102,31 @@ test("signing out posts the logout and goes to sign in", async () => {
   expect(f).toHaveBeenCalledWith("/v1/auth/logout", expect.objectContaining({ method: "POST" }));
   expect(router.currentRoute.value.fullPath).toBe("/signin?next=/admin");
 });
+
+test("the feed stops when a public page is visited after sign-in", async () => {
+  fakeFetch("signed-in");
+  const router = createAppRouter(createMemoryHistory("/next/"));
+  await router.push("/board");
+  await flushPromises();
+  const feed = useFeedStore();
+  feed.state = "live";
+  const stop = vi.spyOn(feed, "stop");
+  await router.push("/signin");
+  expect(stop).toHaveBeenCalledTimes(1);
+  expect(feed.state).toBe("connecting");
+});
+
+test("the feed answering 401 signs the session out", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (url === "/v1/auth/me") return Response.json(ME);
+      return new Response("no", { status: 401 }); // the feed itself
+    }),
+  );
+  const router = createAppRouter(createMemoryHistory("/next/"));
+  await router.push("/board");
+  await flushPromises();
+  expect(useSessionStore().me).toBeNull();
+  expect(router.currentRoute.value.fullPath).toBe("/signin?next=/board");
+});

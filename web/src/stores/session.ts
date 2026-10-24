@@ -30,7 +30,7 @@ export const useSessionStore = defineStore("session", () => {
     const router = activeRouter();
     const here = router?.currentRoute.value;
     if (!router || !here || here.meta.public) return;
-    void router.push({ path: "/signin", query: { next: here.fullPath } });
+    void router.push({ path: "/signin", query: { next: here.fullPath }, replace: true });
   }
 
   async function signOut(): Promise<void> {

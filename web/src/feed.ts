@@ -53,6 +53,8 @@ function changeOf(data: string): Change | undefined {
   }
 }
 
+class Unauthorized extends Error {}
+
 /** Run `fn` for a consumer's sake: a consumer that throws must not take the stream down with it. */
 function guarded(fn: () => void) {
   try {
@@ -75,6 +77,8 @@ export function connectFeed(opts: {
   fetchImpl?: typeof fetch;
   backoffMs?: number[];
   silenceMs?: number;
+  /** The feed answered 401: nobody is signed in. The feed stops (no retry) and this is told. */
+  onUnauthorized?(): void;
 }): () => void {
   const delays = opts.backoffMs?.length ? opts.backoffMs : BACKOFF_MS;
   const silenceMs = opts.silenceMs ?? SILENCE_MS;
@@ -109,6 +113,7 @@ export function connectFeed(opts: {
       credentials: "same-origin",
       signal,
     });
+    if (response.status === 401 && opts.onUnauthorized) throw new Unauthorized();
     if (!response.ok || !response.body) {
       void response.body?.cancel().catch(() => {});
       throw new Error(`the feed answered HTTP ${response.status}`);
@@ -138,8 +143,12 @@ export function connectFeed(opts: {
     arm(); // also covers a connection that never answers at all
     try {
       await read(current.signal, arm);
-    } catch {
+    } catch (e) {
       // a network error, a non-2xx status, the watchdog's abort or ours: all end the stream the same way
+      if (e instanceof Unauthorized && !stopped) {
+        stopped = true;
+        guarded(() => opts.onUnauthorized?.());
+      }
     } finally {
       clearTimeout(watchdog);
     }
