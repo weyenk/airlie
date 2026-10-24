@@ -7,6 +7,7 @@ runs one: shell, git, run_tests and its gate steps.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import uuid
@@ -125,6 +126,15 @@ def test_writable_roots_are_real_paths_and_never_the_whole_disk(repo: Path) -> N
     assert repo.resolve() in roots and (repo / ".git").resolve() in roots
     assert Path("/private/tmp") in roots and Path("/private/tmp/x") in roots and Path("/") not in roots
     assert len(roots) == len(set(roots))
+
+
+def test_npm_cache_is_writable_so_the_gate_can_install(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
+    monkeypatch.delenv("npm_config_cache", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_CACHE", raising=False)
+    roots = confine.writable_roots(repo)
+    assert Path(os.path.realpath(Path.home() / ".npm")) in roots
+    monkeypatch.setenv("npm_config_cache", str(repo / "npmcache"))
+    assert Path(os.path.realpath(repo / "npmcache")) in confine.writable_roots(repo)
 
 
 def test_the_note_is_added_only_to_a_failure_on_a_refused_write() -> None:
