@@ -214,14 +214,14 @@ export function render(root, [key], ctx) {
 
   // ---- the card modal: a wide, centered card over the dimmed board ----
   const backdrop = h("div", { class: "backdrop", hidden: true });
-  const modal = h("div", { class: "card modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
+  const modal = h("div", { class: "modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
   root.append(backdrop, modal); // siblings of the page, never inside .board-body's flex, so the columns keep full width
 
   let openKey = null; // the card that opened the modal: focus returns to it when the modal closes
   let trap = null; // the document keydown listener while the modal is open
 
   function focusable() {
-    return [...card.querySelectorAll("a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex='-1'])")].filter((el) => el.offsetParent !== null);
+    return [...modal.querySelectorAll("a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex='-1'])")].filter((el) => el.offsetParent !== null);
   }
 
   function onKey(ev) {
@@ -234,18 +234,18 @@ export function render(root, [key], ctx) {
     const els = focusable();
     if (!els.length) {
       ev.preventDefault();
-      card.focus();
+      modal.focus();
       return;
     }
     const first = els[0];
     const last = els[els.length - 1];
     const active = document.activeElement;
     if (ev.shiftKey) {
-      if (active === first || !card.contains(active)) {
+      if (active === first || !modal.contains(active)) {
         ev.preventDefault();
         last.focus();
       }
-    } else if (active === last || !card.contains(active)) {
+    } else if (active === last || !modal.contains(active)) {
       ev.preventDefault();
       first.focus();
     }
@@ -253,33 +253,35 @@ export function render(root, [key], ctx) {
 
   function openModal() {
     backdrop.hidden = false;
-    card.hidden = false;
+    modal.hidden = false;
     trap = onKey;
     document.addEventListener("keydown", trap, true);
-    card.focus(); // the card takes focus so the Tab trap has a place to start
+    modal.focus(); // the modal takes focus so the Tab trap has a place to start
   }
 
   function closeModal() {
     backdrop.hidden = true;
-    card.hidden = true;
+    modal.hidden = true;
     if (trap) {
       document.removeEventListener("keydown", trap, true);
       trap = null;
     }
-    if (location.hash !== "#/board") ctx.go("#/board");
+    // Change the address without the router: a hashchange would tear the board down and re-render it, losing
+    // the card that should take focus back. The modal is state over the same screen, not another screen.
+    if (location.hash !== "#/board") history.replaceState(null, "", "#/board");
     // drawColumns rebuilds the cards, so re-find the one that opened the modal by its key.
     const el = openKey ? columns.querySelector(`.item[data-key="${CSS.escape(openKey)}"]`) : null;
     openKey = null;
     if (el) el.focus();
-    else card.focus(); // the card is gone (e.g. the board was re-rendered): keep focus out of the backdrop
+    else modal.focus(); // the card is gone (e.g. the board was re-rendered): keep focus out of the backdrop
   }
 
   // Clicking the dimmed backdrop (not the card) closes the modal.
   backdrop.addEventListener("click", closeModal);
 
   function modalFrame(titleText, ...body) {
-    clear(card);
-    card.append(
+    clear(modal);
+    modal.append(
       h("div", { class: "row spread modal-head" }, h("h2", { class: "h2 ellipsis" }, titleText), h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: closeModal }, icon("close", 18))),
       h("div", { class: "modal-body" }, ...body),
     );
@@ -435,6 +437,6 @@ export function render(root, [key], ctx) {
       trap = null;
     }
     backdrop.remove();
-    card.remove();
+    modal.remove();
   };
 }

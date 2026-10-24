@@ -1163,7 +1163,11 @@ a.jobrow:hover strong {
   z-index: 10;
   background: rgb(0 0 0 / 0.55);
 }
+/* The card look (not the .card class: .main > .card is the page-body layout, which would widen it to 1240px). */
 .modal-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
   position: fixed;
   top: 24px;
   left: 50%;
@@ -1227,6 +1231,7 @@ a.jobrow:hover strong {
   .modal-card {
     position: fixed;
     inset: 0;
+    width: auto; /* the desktop width would leave 40px of the screen uncovered */
     transform: none;
     z-index: 11;
     max-width: none;

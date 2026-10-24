@@ -1,6 +1,7 @@
 """AIR-16 in Chromium: the six columns share the page width in one row, between 180px and 360px each, scroll
-sideways when the panel leaves less than that, snap at phone width, and no card is wider than its column. Each
-check leaves its screenshot in test-results/evidence/ (conftest.Evidence)."""
+sideways when the page is narrower than that, keep that layout with a card modal open, snap at phone width,
+and no card is wider than its column. Each check leaves its screenshot in test-results/evidence/
+(conftest.Evidence)."""
 
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ def board(page: Page, server: Server, width: int, path: str = "#/board") -> dict
     page.goto(f"{server.url}/{path}")
     page.locator("section.column").nth(5).wait_for()
     if path != "#/board":
-        page.locator("aside.panel").wait_for()
+        page.locator("[role='dialog'][aria-modal='true']").wait_for()
     result: dict[str, Any] = page.evaluate(GEOMETRY)
     return result
 
@@ -78,19 +79,19 @@ def test_no_card_is_wider_than_its_column(
     assert held, g["items"]
 
 
-def test_with_the_panel_open_the_columns_scroll_sideways_instead_of_wrapping(
+def test_with_the_card_modal_open_the_columns_keep_their_row_and_width(
     signed_in: Page, server: Server, evidence: Evidence
 ) -> None:
     g = board(signed_in, server, 1280, "#/board/AIR-4")
     columns = signed_in.locator("section.column")
     one_row = len(set(g["tops"])) == 1
-    evidence.shot("panel open at 1280px: still one row", columns, held=one_row)
+    evidence.shot("modal open at 1280px: still one row", columns, held=one_row)
     assert one_row, g["tops"]
     sideways = g["overflowX"] in ("auto", "scroll") and (g["scrolls"] or g["gridWidth"] >= 6 * 180)
-    evidence.shot("panel open at 1280px: the board scrolls sideways when narrow", columns, held=sideways)
+    evidence.shot("modal open at 1280px: the board scrolls sideways when narrow", columns, held=sideways)
     assert sideways, g
     held = no_card_overflows(g)
-    evidence.shot("panel open at 1280px: every card fits its column", signed_in.locator(".item"), held=held)
+    evidence.shot("modal open at 1280px: every card fits its column", signed_in.locator(".item"), held=held)
     assert held, g["items"]
 
 
