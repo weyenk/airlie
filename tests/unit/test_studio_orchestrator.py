@@ -184,6 +184,56 @@ async def test_a_subtask_that_follows_a_writer_starts_with_that_writers_files_as
     assert by_id["t"] == () and by_id["fix"] == ("tests/test_x.py",)
 
 
+async def test_a_writers_files_committed_by_a_checkpoint_still_count_as_already_written(
+    tmp_path: Path,
+) -> None:
+    """AIR-17 layer 02, 2026-10-20 and 2026-10-23: in a story layer the pre-code checkpoint commits the
+    tester's tests and locks them before the coder starts, so the coder's subtask began after that commit
+    and found nothing changed since its own start. Its write schedule then asked it for a test by step 10,
+    switched its reads off at step 14, and it ended on refused greps. What the layer holds since the run's
+    base counts as written, committed or not."""
+    d = json.loads(PLAN.text)
+    d["subtasks"] = [
+        {"id": "t", "role": "qa", "brief": "write the test"},
+        {"id": "fix", "role": "coder", "brief": "make the check pass", "depends_on": ["t"]},
+    ]
+    write_test = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "tests/test_x.py", "content": "x\n"}))]
+    )
+    engine = FakeEngine(
+        {
+            "chief": [FakeReply(text=json.dumps(d)), SYNTH],
+            "qa": [write_test, DONE],
+            "coder": [WRITE_PASS, RUN, DONE],
+            "reviewer": [APPROVE],
+        }
+    )
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    async def commit_and_lock() -> bool:  # what the story pipeline's pre-code check does before the coder
+        assert orch.worktree is not None
+        commit_wip(orch.worktree, "studio: layer 01 (tests)")
+        orch.lock(["tests/test_x.py"], orch.runs["t"].role)
+        return True
+
+    orch.team.run = run  # type: ignore[method-assign]
+    report = await orch.execute_task(
+        "fix the build",
+        repo=repo_with_marker_tests(tmp_path),
+        test_cmd="./check.sh",
+        checkpoints={"t": commit_and_lock},
+    )
+    assert report.final_answer == "all done"
+    by_id = {c.team_id: c.already_written for c in seen}
+    assert by_id["t"] == () and by_id["fix"] == ("tests/test_x.py",)
+
+
 def plan_with_criteria() -> FakeReply:
     d = json.loads(PLAN.text)
     d["subtasks"][0]["brief"] = (
