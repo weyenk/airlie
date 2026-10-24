@@ -537,9 +537,8 @@ def serve(
     ] = None,
 ) -> None:
     """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
-    import uvicorn
-
     from airlie.serve import create_app
+    from airlie.serve.server import run
 
     cfg = _load(config)
     raw = [m for m in cfg.models if m not in cfg.roles]
@@ -547,9 +546,7 @@ def serve(
         f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
         f"catalog models: {', '.join(raw)}; api key: {'required' if api_key else 'none'})"
     )
-    # proxy_headers off: the resolver reads the real peer to tell tailscale serve (loopback, with the device's
-    # tailnet address forwarded) from the Mac itself; uvicorn's default would rewrite it to X-Forwarded-For.
-    uvicorn.run(create_app(cfg, api_key=api_key), host=host, port=port, log_level="info", proxy_headers=False)
+    run(create_app(cfg, api_key=api_key), host=host, port=port)
 
 
 def _auth_store(cfg: AirlieConfig):  # type: ignore[no-untyped-def]

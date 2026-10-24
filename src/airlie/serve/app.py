@@ -709,7 +709,6 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
-        feed.close()
         await client.aclose()
         board.close()
         store.close()

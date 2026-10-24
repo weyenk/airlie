@@ -115,14 +115,19 @@ def test_revoke_deletes_the_person_their_passkeys_and_sessions(tmp_path: Path) -
 def test_serve_runs_uvicorn_without_proxy_header_rewriting(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """uvicorn would replace the client address with X-Forwarded-For for a loopback peer, and loopback is what
     the resolver reads to tell a tailscale serve proxy from the Mac itself."""
-    seen: dict[str, object] = {}
     import uvicorn
 
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    seen: dict[str, uvicorn.Config] = {}
+
+    def fake_run(self: uvicorn.Server, sockets: object = None) -> None:
+        seen["config"] = self.config
+        self.started = True  # as a server that came up and was stopped: no startup-failure exit
+
+    monkeypatch.setattr(uvicorn.Server, "run", fake_run)
     r = runner.invoke(cli.app, ["serve", "--port", "8099", *config(tmp_path)])
     assert r.exit_code == 0, r.output
-    assert seen["proxy_headers"] is False
-    assert seen["port"] == 8099
+    assert seen["config"].proxy_headers is False
+    assert seen["config"].port == 8099
 
 
 def test_invite_by_id_issues_a_fresh_link_for_an_existing_person(tmp_path: Path) -> None:
