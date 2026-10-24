@@ -88,6 +88,31 @@ test("the strip below the last card is the bottom: the mark goes there and a dro
   expect(w.emitted("move")).toEqual([["AIR-9", "todo", null]]);
 });
 
+test("a drag entering through the header, padding or gap resolves by the pointer's height, not to the bottom", async () => {
+  const w = make();
+  const cards = w.findAll("[data-item]");
+  // card n spans y = 100n .. 100n+80 (middles 100n+40)
+  cards.forEach((c, n) => {
+    c.element.getBoundingClientRect = () => ({ top: 100 * n, height: 80 }) as DOMRect;
+  });
+  const at = (y: number) => ({ dataTransfer: { types: [DRAG_TYPE], getData: () => "AIR-9" }, clientY: y });
+  const markAbove = () => w.find("[data-drop]").element.nextElementSibling?.getAttribute("data-item") ?? "bottom";
+
+  await w.find("[data-count]").trigger("dragover", at(-30)); // the header, above every card
+  expect(markAbove()).toBe("AIR-1");
+  await w.trigger("dragleave");
+  await w.trigger("dragover", at(150)); // the section's padding, past AIR-2's middle (140)
+  expect(markAbove()).toBe("AIR-3");
+  await w.trigger("dragleave");
+  await w.find("[data-list]").trigger("dragover", at(130)); // the gap, before AIR-2's middle (140)
+  expect(markAbove()).toBe("AIR-2");
+  await w.find("[data-list]").trigger("dragover", at(260)); // later gap hovers keep it
+  expect(markAbove()).toBe("AIR-2");
+  await w.trigger("dragleave");
+  await w.trigger("dragover", at(999)); // below every middle: an explicit bottom
+  expect(markAbove()).toBe("bottom");
+});
+
 test("a drag that is not one of the board's cards is ignored", async () => {
   const w = make();
   const files = { dataTransfer: { types: ["Files"], getData: () => "AIR-9" } };

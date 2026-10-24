@@ -127,7 +127,9 @@ def test_dragging_a_card_onto_another_moves_it_above_it(
 def test_the_landing_mark_stays_put_over_itself_and_the_gaps(
     next_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    """Real hit-testing: the mark takes no pointer, so over it and the 8px gaps the pointer is on the list."""
+    """Real hit-testing: the mark takes no pointer, so over it and the 8px gaps the pointer is on the list.
+    The mark's place is checked at every stop: entering through the header, onto cards, over the mark and the
+    gaps (where keeping the place and re-deciding by the pointer's height give different answers)."""
     next_page.goto(own_server.url + "/next/board")
     doing = next_page.get_by_role("region", name="Doing")
     evidence.expect(doing.locator("[data-item]"), "Doing has two").to_have_count(2)
@@ -135,27 +137,40 @@ def test_the_landing_mark_stays_put_over_itself_and_the_gaps(
     def centre(box: dict[str, float]) -> tuple[float, float]:
         return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
 
-    def below(key: str) -> str | None:
+    def box(selector: str) -> dict[str, float]:
+        found = doing.locator(selector).bounding_box()
+        assert found, selector
+        return found
+
+    def mark_above() -> str | None:
         return doing.locator("[data-drop]").evaluate("m => m.nextElementSibling?.getAttribute('data-item')")
 
     src = next_page.locator("[data-item=AIR-3]").bounding_box()
-    two = doing.locator("[data-item=AIR-2]").bounding_box()
-    assert src and two
+    assert src
     mouse = next_page.mouse
     mouse.move(*centre(src))
     mouse.down()
     mouse.move(*centre(src), steps=2)
-    mouse.move(*centre(two), steps=10)
-    evidence.expect(doing.locator("[data-drop]"), "the mark shows above AIR-2").to_have_count(1)
-    assert below("AIR-2") == "AIR-2"
-    mark = doing.locator("[data-drop]").bounding_box()
-    one = doing.locator("[data-item=AIR-1]").bounding_box()
-    assert mark and one
+
+    head = box("[data-count]")  # enter the column through its header: above every card
+    mouse.move(head["x"], head["y"] + head["height"] / 2, steps=15)
+    evidence.expect(doing.locator("[data-drop]"), "entering by the header shows the mark").to_have_count(1)
+    assert mark_above() == "AIR-1", mark_above()
+
+    mouse.move(*centre(box("[data-item=AIR-1]")), steps=5)
+    assert mark_above() == "AIR-1", mark_above()
+    one, two = box("[data-item=AIR-1]"), box("[data-item=AIR-2]")
+    gap_y = (one["y"] + one["height"] + two["y"]) / 2  # between AIR-1 and AIR-2: by height it is AIR-2's
+    mouse.move(centre(one)[0], gap_y, steps=5)
+    assert mark_above() == "AIR-1", f"the mark moved in the gap: {mark_above()}"
+
+    mouse.move(*centre(box("[data-item=AIR-2]")), steps=5)
+    assert mark_above() == "AIR-2", mark_above()
+    mark, one = box("[data-drop]"), box("[data-item=AIR-1]")
     mouse.move(*centre(mark), steps=5)  # over the mark itself
-    assert below("AIR-2") == "AIR-2", "the mark moved when the pointer was on it"
-    gap_y = one["y"] + one["height"] + (mark["y"] - one["y"] - one["height"]) / 2
-    mouse.move(centre(mark)[0], gap_y, steps=5)  # over the gap between AIR-1 and the mark
-    assert below("AIR-2") == "AIR-2", "the mark moved when the pointer was in the gap"
+    assert mark_above() == "AIR-2", f"the mark moved under the pointer: {mark_above()}"
+    mouse.move(centre(mark)[0], (one["y"] + one["height"] + mark["y"]) / 2, steps=5)  # the gap above the mark
+    assert mark_above() == "AIR-2", f"the mark moved in the gap: {mark_above()}"
     evidence.shot("the mark stayed above AIR-2 over itself and the gap", doing.locator("[data-drop]"))
     mouse.up()
     cards = doing.locator("[data-item]")

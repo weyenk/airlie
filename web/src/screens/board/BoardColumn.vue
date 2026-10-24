@@ -24,7 +24,7 @@ const isOurs = (e: DragEvent): boolean => !!e.dataTransfer && Array.from(e.dataT
  * Where the pointer says the card would land: above the card under it, or the bottom over the strip below the
  * last card. Over anything else (the 8px gaps, the landing mark, which takes no pointer so the list is what is
  * hit there) the place stays as it is, so the mark never jumps; only a drag that has no place yet falls back to
- * the pointer's height against the cards' middles.
+ * the pointer's height against the cards' middles, wherever in the column it entered (the header, the padding).
  */
 function placeFor(e: DragEvent): string | null | undefined {
   const el = target(e);
@@ -32,7 +32,7 @@ function placeFor(e: DragEvent): string | null | undefined {
   if (card !== null) return card;
   if (el?.closest("[data-tail]")) return null;
   if (landing.value !== undefined || typeof e.clientY !== "number" || !Number.isFinite(e.clientY)) return landing.value;
-  for (const c of el?.closest("[data-list]")?.querySelectorAll<HTMLElement>("[data-item]") ?? []) {
+  for (const c of (e.currentTarget as HTMLElement | null)?.querySelectorAll<HTMLElement>("[data-list] [data-item]") ?? []) {
     const r = c.getBoundingClientRect();
     if (e.clientY < r.top + r.height / 2) return c.dataset.item ?? null;
   }
