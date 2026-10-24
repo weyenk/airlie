@@ -188,7 +188,9 @@ without this design they would have no view at all in the new app. After:
   - **fork:** the agent until it got stuck, a lane per fork, then the winner;
   - **studio:** the chief's plan, the specialists, the reviewer, then the synthesis.
 
-  The builder settles the exact stages from the run events. A studio run's plan is approved on this view,
+  A story is not a fifth topology. The story pipeline runs on top of the studio: its build stage runs one
+  studio run per layer, which is why a story's view has a lane of jobs per layer. A standalone run's view
+  shows its own topology's stages instead. The builder settles the exact stages from the run events. A studio run's plan is approved on this view,
   before anything is built; only studio plans first. Stop is on the view while the work runs, for
   jobs this server started through the jobs API (plans, runs and stories), as on the job page today. A story
   the launchd tick runs belongs to another process, and `POST /v1/airlie/run` holds its request open until
