@@ -10,6 +10,8 @@ const props = defineProps<{
   modelValue: string;
   source: string[] | ((q: string) => Promise<Suggestion[]>);
   placeholder?: string;
+  /** The field's accessible name. */
+  label?: string;
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 
@@ -105,6 +107,7 @@ function after(s: Suggestion): string {
       <Input
         :model-value="text"
         :placeholder="placeholder"
+        :aria-label="label"
         autocomplete="off"
         spellcheck="false"
         class="relative font-mono text-sm md:text-sm"

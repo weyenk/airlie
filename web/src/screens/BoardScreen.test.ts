@@ -8,6 +8,7 @@ import { item } from "./board/fixtures";
 
 const api = vi.hoisted(() => ({
   listItems: vi.fn(),
+  getItem: vi.fn(),
   createItem: vi.fn(),
   patchItem: vi.fn(),
   moveItem: vi.fn(),
@@ -15,6 +16,8 @@ const api = vi.hoisted(() => ({
   editComment: vi.fn(),
 }));
 vi.mock("@/api/board", () => api);
+const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
+vi.mock("@/api/workflows", () => wf);
 
 const ITEMS: Item[] = [
   item("AIR-1", { status: "todo", level: "epic" }),
@@ -36,6 +39,9 @@ async function open() {
 beforeEach(() => {
   setActivePinia(createPinia());
   api.listItems.mockReset().mockResolvedValue(structuredClone(ITEMS));
+  wf.storyFlow.mockReset().mockRejectedValue(Object.assign(new Error("none"), { status: 404 }));
+  wf.repoNames.mockReset().mockResolvedValue([]);
+  api.getItem.mockReset().mockRejectedValue(new Error("unused"));
   api.moveItem.mockReset().mockImplementation(async (key: string, status: Item["status"]) => item(key, { status, updated_at: 5 }));
 });
 afterEach(() => {
@@ -79,13 +85,6 @@ test("a card click goes to its own address", async () => {
   expect(router.currentRoute.value.fullPath).toBe("/board/AIR-3");
 });
 
-test("Create goes to ?create=1, where the create modal will open", async () => {
-  const { w, router } = await open();
-  await w.find("[data-create]").trigger("click");
-  await flushPromises();
-  expect(router.currentRoute.value.query.create).toBe("1");
-});
-
 test("the phone's pills show one column, Doing first, and choosing another swaps it", async () => {
   const { w } = await open();
   const shown = () => w.findAll("section[aria-label]").filter((c) => !c.classes().includes("max-[640px]:hidden")).map((c) => c.attributes("aria-label"));
@@ -100,4 +99,27 @@ test("the columns end 24px above the window: the page is the window less the hea
   expect(w.find("[data-board]").classes().join(" ")).toContain("h-[calc(100dvh-var(--header-h))]");
   expect(w.find("[data-board]").classes()).toContain("pb-6");
   expect(w.find("[data-columns]").classes()).toContain("min-h-80"); // board.html's min-height: 320px
+});
+
+test("Create opens the create modal, and its close puts the board back", async () => {
+  const { w } = await open();
+  await w.get("[data-create]").trigger("click");
+  await flushPromises();
+  expect(document.body.querySelector("[data-submit]")!.textContent).toBe("Create story");
+  (document.body.querySelector("[data-cancel]") as HTMLElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-submit]")).toBeNull();
+});
+
+test("an address with a key shows that card's modal over the board; closing returns to /board", async () => {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
+  await router.push("/board/AIR-2");
+  const w = mount(BoardScreen, { global: { plugins: [router] }, attachTo: document.body });
+  await flushPromises();
+  expect(document.body.querySelector("[role=dialog]")!.textContent).toContain("AIR-2");
+  (document.body.querySelector("button[aria-label=Close]") as HTMLElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/board");
+  expect(document.body.querySelector("[role=dialog]")).toBeNull();
+  w.unmount();
 });

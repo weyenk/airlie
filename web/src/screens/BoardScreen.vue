@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronDown, Plus } from "lucide-vue-next";
 import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import type { Item, Level, Status } from "@/api/board";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useBoardStore } from "@/stores/board";
 import BoardColumn from "./board/BoardColumn.vue";
+import CardModal from "./board/CardModal.vue";
+import CreateModal from "./board/CreateModal.vue";
 import StatusPills from "./board/StatusPills.vue";
 import { STATUSES, TYPE_FILTERS } from "./board/statuses";
 
 const board = useBoardStore();
 const router = useRouter();
+const route = useRoute();
 
 const type = ref<"all" | Level>("all");
 /** The column the phone shows (the pills choose it). */
@@ -33,8 +36,20 @@ const byStatus = computed(() => {
 const counts = computed(() => Object.fromEntries(STATUSES.map((s) => [s, byStatus.value[s].length])) as Record<Status, number>);
 const typeLabel = computed(() => TYPE_FILTERS.find((t) => t.value === type.value)?.label ?? "All");
 
-// Task 7 wires the create modal to this query
-const create = () => void router.push({ query: { create: "1" } });
+/** The open card, from the address (/board/AIR-4). */
+const openKey = computed(() => (typeof route.params.key === "string" && route.params.key ? route.params.key : null));
+/** Create, when it is open: `parent` is the card Add child was pressed on. */
+const creating = ref<{ parent: Item | null } | null>(null);
+const closeCard = () => void router.push("/board");
+const addChild = (parent: Item) => {
+  creating.value = { parent }; // Create takes the card's place over the board
+};
+/** Create is done (made, or given up): back to the card it was opened from, else the board. */
+const closeCreate = () => {
+  const parent = creating.value?.parent;
+  creating.value = null;
+  if (parent) void router.push(`/board/${encodeURIComponent(parent.key)}`);
+};
 const move = (key: string, status: Status, before: string | null) => void board.move(key, status, before).catch(() => {});
 </script>
 
@@ -57,7 +72,7 @@ const move = (key: string, status: Status, before: string | null) => void board.
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
-      <Button data-create class="h-[34px]" @click="create"><Plus />Create</Button>
+      <Button data-create class="h-[34px]" @click="creating = { parent: null }"><Plus />Create</Button>
     </div>
     <ErrorBanner v-if="board.error" :error="board.error" />
     <StatusPills v-model="phoneStatus" :counts="counts" />
@@ -72,5 +87,7 @@ const move = (key: string, status: Status, before: string | null) => void board.
         @move="move"
       />
     </div>
+    <CardModal v-if="openKey && !creating" :key="openKey" :item-key="openKey" @close="closeCard" @add-child="addChild" />
+    <CreateModal v-if="creating" :parent="creating.parent" @close="closeCreate" @created="closeCreate" />
   </div>
 </template>
