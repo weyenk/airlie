@@ -4,9 +4,9 @@ Status: agreed in conversation with Noah on 2026-10-24, including the reshaped W
 done; awaiting his review of the full text. Parent: `2026-10-17-web-app-and-local-board-design.md`, whose "no
 framework, no bundler, no node build" rule this reverses on purpose. Look reference:
 `docs/superpowers/mockups/2026-10-24-vue-app/board-look-dark.html` and `board-look-light.html`. Approved screen
-mockups, in the same folder: `workflows.html`, `workflow-story.html`, `workflow-runs.html`, `board.html`,
-`chat.html` (each has buttons to switch light and dark; the board's also open a card or Create, the chat's the /
-menu).
+mockups, in the same folder, all approved by Noah on 2026-10-24: `workflows.html`, `workflow-story.html`,
+`workflow-runs.html`, `board.html`, `chat.html`, `metrics.html`, `admin.html`, `sign-in.html` (each has buttons to
+switch light and dark, and to show the screen's other states). `look.css` holds the shared tokens and base styles.
 
 ## Why
 
