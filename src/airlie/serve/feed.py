@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from types import TracebackType
 
@@ -127,11 +127,17 @@ def _frame(change: Change) -> bytes:
     return f"id: {change.id}\nevent: change\ndata: {data}\n\n".encode()
 
 
-async def event_stream(feed: Feed, *, heartbeat_s: float = HEARTBEAT_S) -> AsyncIterator[bytes]:
+async def event_stream(
+    feed: Feed, *, heartbeat_s: float = HEARTBEAT_S, on_subscribed: Callable[[], None] | None = None
+) -> AsyncIterator[bytes]:
     """The body of `GET /v1/events` (server-sent events). It subscribes before it yields `: connected`, so
-    nothing published after that line is missed; `: ping` fills each idle `heartbeat_s`. It ends when the feed
-    closes, and leaves the subscriber count whether it ends, is closed or is cancelled."""
+    nothing published after that line is missed; `: ping` fills each idle `heartbeat_s`. `on_subscribed`, when
+    given, runs once between the two: the watcher takes its baseline there (airlie.serve.watch), counted as a
+    subscriber and before the page is told it is connected. It ends when the feed closes, and leaves the
+    subscriber count whether it ends, is closed or is cancelled."""
     async with feed.subscribe() as sub:
+        if on_subscribed is not None:
+            on_subscribed()
         yield b": connected\n\n"
         while True:
             try:

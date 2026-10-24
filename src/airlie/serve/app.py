@@ -36,6 +36,7 @@ from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
+from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
@@ -220,6 +221,8 @@ def create_app(
     jobs = Jobs()
     feed = Feed()
     app.state.feed = feed
+    watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
+    app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board))
@@ -364,9 +367,10 @@ def create_app(
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
         """What changed, live: server-sent hints (`board` / `AIR-17`, `runs`, `jobs`) that a page answers by
-        refetching. No history is kept; a reconnecting page refetches what it shows."""
+        refetching. No history is kept; a reconnecting page refetches what it shows. Other processes' writes
+        are noticed by the watcher, which this starts (and takes its baseline) before `: connected`."""
         return StreamingResponse(
-            event_stream(feed),
+            event_stream(feed, on_subscribed=watcher.ensure_running),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -709,6 +713,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        watcher.stop()
         await client.aclose()
         board.close()
         store.close()

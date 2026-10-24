@@ -206,3 +206,16 @@ async def test_the_events_route_stops_counting_a_client_that_disconnects(tmp_pat
     inbox.put_nowait({"type": "http.disconnect"})
     await asyncio.wait_for(call, 5)
     assert feed.subscribers == 0
+
+
+async def test_on_subscribed_runs_after_the_stream_has_subscribed_and_before_it_says_connected() -> None:
+    """What lets the watcher take its baseline after the page is counted and before the page is told it is
+    connected: a write after `: connected` is never folded into that baseline."""
+    feed = Feed()
+    seen: list[int] = []
+    stream = event_stream(feed, on_subscribed=lambda: seen.append(feed.subscribers))
+    assert seen == []  # nothing runs until the stream is read
+    assert await anext(stream) == b": connected\n\n"
+    assert seen == [1]  # subscribed by then
+    await stream.aclose()
+    assert feed.subscribers == 0
