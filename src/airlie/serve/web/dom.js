@@ -40,7 +40,7 @@ export function clear(el) {
 /** An inline SVG icon from a fixed path set (static strings, never user text). */
 const ICONS = {
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
-  jobs: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  workflows: '<rect x="3" y="4" width="6" height="6" rx="1"/><rect x="15" y="14" width="6" height="6" rx="1"/><path d="M9 7h3a3 3 0 0 1 3 3v4M15 17h-3"/>',
   board: '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/>',
   topology:
     '<circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M12 12l-6 4M12 12l6 4"/>',

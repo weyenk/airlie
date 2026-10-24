@@ -1010,6 +1010,118 @@ a.jobrow:hover strong {
 .lg-wait {
   border: 1px dashed var(--ink2);
 }
+/* ---- topology: a run's agents as a live tree ---- */
+.topo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.topo-side {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.topo-main {
+  flex: 999 1 640px;
+  min-width: 0;
+}
+.topo-diagram {
+  min-height: 160px;
+}
+.topo-svg {
+  display: block;
+  overflow: visible;
+}
+.topo-seg {
+  fill: none;
+  stroke: var(--seg);
+  stroke-width: 2;
+}
+.topo-seg.on {
+  stroke: var(--seg-on);
+  stroke-width: 3.5;
+}
+.topo-node {
+  cursor: pointer;
+  outline: none;
+}
+.topo-node circle {
+  stroke: var(--node-edge);
+  stroke-width: 1;
+}
+.topo-node text {
+  fill: #0a1a2b;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+.topo-label {
+  font-weight: 600;
+}
+.topo-node.active circle {
+  stroke: #f4c6cf;
+  stroke-width: 5;
+  filter: drop-shadow(0 0 10px rgba(244, 198, 207, 0.6));
+}
+.topo-node.idle circle {
+  stroke-dasharray: 6 4;
+  stroke-width: 2;
+}
+.topo-node.waiting {
+  opacity: 0.55;
+}
+.topo-node.waiting circle {
+  stroke-dasharray: 4 4;
+}
+.topo-node.failed circle {
+  stroke: #e0b34e;
+  stroke-width: 4;
+}
+.topo-node.won circle {
+  stroke: #9ccb84;
+  stroke-width: 4;
+}
+.topo-node[aria-pressed="true"] circle,
+.topo-node:focus-visible circle {
+  stroke: var(--accent);
+  stroke-width: 4;
+}
+.topo-handoffs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.topo-handoffs li {
+  border-left: 3px solid var(--seg);
+  padding: 2px 0 2px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.topo-handoffs li > .row {
+  width: 100%;
+}
+.topo-handoffs li.on {
+  border-left-color: var(--seg-on);
+}
+.topo-text {
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.lg-line {
+  width: 28px;
+  height: 3px;
+  background: var(--seg-on);
+  display: inline-block;
+}
+.lg-stuck {
+  background: #e28f8f;
+}
 .facts {
   margin: 0;
   display: grid;
@@ -1240,4 +1352,180 @@ a.jobrow:hover strong {
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
     overflow: auto;
   }
+}
+
+/* the workflow screen: a story's pipeline, one lane of jobs per layer, and the selected job */
+.wf-flow {
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.wf-stages {
+  display: flex;
+  align-items: center;
+  min-width: max-content;
+}
+.wf-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wf-conn {
+  width: 28px;
+  text-align: center;
+  color: var(--line);
+  font-size: 18px;
+}
+.wf-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wf-lane {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+.wf-lane.failed {
+  border-color: var(--err);
+}
+.wf-lane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.wf-lane-jobs {
+  display: flex;
+  align-items: center;
+}
+.wf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.wf-dot.passed {
+  background: var(--ok);
+}
+.wf-dot.failed {
+  background: var(--err);
+}
+.wf-dot.running {
+  background: var(--run);
+}
+.wf-job {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 132px;
+  padding: 8px 12px;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.wf-job.passed {
+  border-color: var(--ok);
+}
+.wf-job.failed {
+  border-color: var(--err);
+  background: var(--err-bg);
+}
+.wf-job.running {
+  border-color: var(--run);
+}
+.wf-job.pending,
+.wf-job.skipped {
+  border-style: dashed;
+  color: var(--ink2);
+}
+.wf-job[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wf-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.wf-name {
+  font-weight: 600;
+}
+.wf-sub {
+  font-size: 12px;
+  color: var(--ink2);
+}
+.wf-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+.wf-stat {
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.wf-retry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line2);
+  font-size: 13px;
+}
+.wf-retry code {
+  color: var(--err);
+  font-size: 12px;
+}
+.wf-io {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .wf-io {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.wf-pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 var(--mono, ui-monospace, monospace);
+  background: var(--bubble);
+  border-radius: 8px;
+}
+.wf-step {
+  border-top: 1px solid var(--line2);
+  padding: 4px 0;
+}
+.wf-step summary {
+  display: grid;
+  grid-template-columns: 4em auto minmax(0, 1fr) auto;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.criterion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line2);
+  font-size: 13px;
+}
+.criterion em {
+  font-style: normal;
+  color: var(--ink2);
 }

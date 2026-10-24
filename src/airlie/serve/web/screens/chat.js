@@ -520,8 +520,8 @@ export function render(root, _params, ctx) {
       const running = jobs.filter((j) => j.state === "running").length;
       const failed = jobs.filter((j) => j.state === "failed").length + stories.filter((s) => s.blocked).length;
       append(clear(strip), [
-        failed ? h("a", { href: "#/jobs", class: "chip warn" }, `${failed} need${failed === 1 ? "s" : ""} you`) : null,
-        h("a", { href: "#/jobs", class: `chip ${running ? "run" : "mute"}` }, `${running} running`),
+        failed ? h("a", { href: "#/workflows", class: "chip warn" }, `${failed} need${failed === 1 ? "s" : ""} you`) : null,
+        h("a", { href: "#/workflows", class: `chip ${running ? "run" : "mute"}` }, `${running} running`),
         chip("ok", "Studio online"),
       ]);
     } catch (e) {
