@@ -23,7 +23,11 @@ JOB_STATUS = {
     "done": "passed",
     "failed": "failed",
 }
-"""A job's status by the state of its node in the tree (every state the tree gives a node)."""
+"""A job's status by the state of its node in the tree (every state the tree gives a node), while the run
+runs. Once it is over, a job still at work failed: a trunk left stuck, or an agent its failed job cut off."""
+
+PARALLEL = frozenset({"teams", "forks"})
+"""The stages of attempts side by side, where one winning is the point and the others losing is normal."""
 
 
 def _stages(tree: dict[str, Any]) -> list[tuple[str, str, list[dict[str, Any]]]]:
@@ -56,8 +60,22 @@ def _stages(tree: dict[str, Any]) -> list[tuple[str, str, list[dict[str, Any]]]]
     return stages
 
 
-def _stage_status(jobs: list[dict[str, Any]]) -> str:
+def _job_status(state: str, over: bool) -> str:
+    status = JOB_STATUS[state]
+    return "failed" if over and status == "running" else status
+
+
+def _stage_status(stage_id: str, jobs: list[dict[str, Any]]) -> str:
+    """A parallel stage (PARALLEL) passed when any attempt passed, runs while any runs, and failed only when
+    every attempt failed. Any other stage failed when any job failed, runs while any runs, and passed once
+    every job passed. Otherwise the stage is pending (it has no jobs, or some have not run)."""
     statuses = {j["status"] for j in jobs}
+    if stage_id in PARALLEL:
+        if "passed" in statuses:
+            return "passed"
+        if "running" in statuses:
+            return "running"
+        return "failed" if statuses == {"failed"} else "pending"
     if "failed" in statuses:
         return "failed"
     if "running" in statuses:
@@ -65,12 +83,16 @@ def _stage_status(jobs: list[dict[str, Any]]) -> str:
     return "passed" if statuses == {"passed"} else "pending"
 
 
-def run_flow(state_dir: Path, run_id: str, *, models: Mapping[str, str] | None = None) -> dict[str, Any]:
+def run_flow(
+    state_dir: Path, run_id: str, *, models: Mapping[str, str] | None = None, ended: bool = False
+) -> dict[str, Any]:
     """The flow of run `run_id` under `state_dir/runs`: its `nodes` (stages) left to right, each with its
-    `jobs`, made as a story's are; `stage` is "running" until the run's run_done, then "done", and `progress`
-    the share of its agents finished (None for one agent). RunNotFound for an id that names no run directory.
-    `models` is passed to the tree (airlie.serve.tree.build_tree)."""
+    `jobs`, made as a story's are; `stage` is "running" until the run is over, then "done", and `progress`
+    the share of its agents finished (None for one agent). The run is over at its run_done, or when `ended`
+    says it stopped short (its job failed or was cancelled); then no stage or job runs. RunNotFound for an id
+    that names no run directory. `models` is passed to the tree (airlie.serve.tree.build_tree)."""
     tree = run_tree(state_dir, run_id, models=models)
+    over = ended or tree["state"] == "done"
     nodes: list[dict[str, Any]] = []
     for stage_id, label, members in _stages(tree):
         jobs = [
@@ -78,7 +100,7 @@ def run_flow(state_dir: Path, run_id: str, *, models: Mapping[str, str] | None =
                 n["id"],
                 n["label"],
                 n["role"],
-                JOB_STATUS[n["state"]],
+                _job_status(n["state"], over),
                 studio_run=run_id,
                 tokens=n["tokens"],
                 fix_rounds=n["fix_rounds"],
@@ -86,9 +108,8 @@ def run_flow(state_dir: Path, run_id: str, *, models: Mapping[str, str] | None =
             )
             for n in members
         ]
-        nodes.append(
-            {"id": stage_id, "label": label, "kind": "stage", "status": _stage_status(jobs), "jobs": jobs}
-        )
+        status = _stage_status(stage_id, jobs)
+        nodes.append({"id": stage_id, "label": label, "kind": "stage", "status": status, "jobs": jobs})
     return {
         "key": run_id,
         "kind": "run",
@@ -96,7 +117,7 @@ def run_flow(state_dir: Path, run_id: str, *, models: Mapping[str, str] | None =
         "mode": tree["mode"],
         "title": tree["goal"],
         "summary": None,
-        "stage": tree["state"],
+        "stage": "done" if over else "running",
         "blocked": None,
         "acceptance": [],
         "ok": tree["ok"],
@@ -105,11 +126,13 @@ def run_flow(state_dir: Path, run_id: str, *, models: Mapping[str, str] | None =
     }
 
 
-def run_job_detail(state_dir: Path, run_id: str, node_id: str, job_id: str) -> dict[str, Any]:
+def run_job_detail(
+    state_dir: Path, run_id: str, node_id: str, job_id: str, *, ended: bool = False
+) -> dict[str, Any]:
     """One job of a run's flow, with the keys of a story job's detail (airlie.serve.flow.job_detail): the job,
     what it was opened with, what it said last and the steps it took, from runs/<run_id>/trace/<job_id>/.
-    RunNotFound for a run, stage or job that is not there."""
-    flow = run_flow(state_dir, run_id)
+    `ended` as for run_flow. RunNotFound for a run, stage or job that is not there."""
+    flow = run_flow(state_dir, run_id, ended=ended)
     node = next((n for n in flow["nodes"] if n["id"] == node_id), None)
     job = next((j for j in (node or {}).get("jobs", []) if j["id"] == job_id), None)
     if node is None or job is None:

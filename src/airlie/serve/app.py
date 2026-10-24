@@ -202,6 +202,12 @@ def _plan_of(job: Job | None) -> dict[str, Any] | None:
     return plan if isinstance(plan, dict) else None
 
 
+def _ended(job: Job | None) -> bool:
+    """Whether this server's job for a run failed or was cancelled: the run is over though its log has no
+    run_done."""
+    return job is not None and job.state in ("failed", "cancelled")
+
+
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
@@ -632,21 +638,20 @@ def create_app(
         server's job state for it, or None; and `plan`: the plan its finished plan job returned, for a person
         to approve before anything is built, or None."""
         models = {name: role.model for name, role in cfg.roles.items()}
+        state, job = cfg.observability.state_dir.expanduser(), jobs.get(run_id)
         try:
-            flow = run_flow(cfg.observability.state_dir.expanduser(), run_id, models=models)
+            flow = run_flow(state, run_id, models=models, ended=_ended(job))
         except RunNotFound as e:
             raise HTTPException(404, str(e)) from None
-        job = jobs.get(run_id)
         flow["job"] = job.state if job is not None else None
-        if job is not None and job.state in ("failed", "cancelled"):
-            flow["stage"] = "done"  # it ended without its run_done
         flow["plan"] = _plan_of(job)
         return flow
 
     @app.get("/v1/airlie/runs/{run_id}/flow/{node_id}/{job_id}")
     async def run_job_get(run_id: str, node_id: str, job_id: str) -> dict[str, Any]:
+        state = cfg.observability.state_dir.expanduser()
         try:
-            return run_job_detail(cfg.observability.state_dir.expanduser(), run_id, node_id, job_id)
+            return run_job_detail(state, run_id, node_id, job_id, ended=_ended(jobs.get(run_id)))
         except RunNotFound as e:
             raise HTTPException(404, str(e)) from None
 

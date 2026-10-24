@@ -50,6 +50,13 @@ def lanes(flow: dict[str, Any]) -> list[tuple[str, str, list[tuple[str, str]]]]:
     return [(n["id"], n["status"], [(j["id"], j["status"]) for j in n["jobs"]]) for n in flow["nodes"]]
 
 
+def running_anything(flow: dict[str, Any]) -> bool:
+    """Whether any stage or job of the flow says it is running."""
+    return any(
+        n["status"] == "running" or any(j["status"] == "running" for j in n["jobs"]) for n in flow["nodes"]
+    )
+
+
 # ---- the studio ----
 
 
@@ -201,6 +208,37 @@ def test_a_teams_run_has_a_lane_per_team_and_the_judge(tmp_path: Path) -> None:
     assert [n["label"] for n in f["nodes"]] == ["Teams", "Judge"] and f["progress"] == 1.0
 
 
+def test_a_teams_run_whose_judge_picked_the_team_that_passed_has_passed_teams(tmp_path: Path) -> None:
+    """Teams are attempts side by side: one losing is normal, so the stage passes when any team passed."""
+    start = [
+        ev("run_start", 1.0, goal="g", k=2, repo="/r", orchestrator="native"),
+        ev("team_start", 1.1, team_id="t1", worktree="/w/1"),
+        ev("team_start", 1.1, team_id="t2", worktree="/w/2"),
+        ev("team_done", 3.0, team_id="t1", ok=False, stop_reason="max_steps", steps=3),
+    ]
+    one_failed_one_working = run_flow(write_run(tmp_path, "r1", start), "r1")
+    assert lanes(one_failed_one_working)[0] == ("teams", "running", [("t1", "failed"), ("t2", "running")])
+    judged = [
+        *start,
+        ev("team_done", 3.0, team_id="t2", ok=True, stop_reason="done", steps=3),
+        ev("aggregate", 4.0, winner="t2", reason="tests pass", scores={"t1": 0.0, "t2": 1.0}),
+        ev("run_done", 5.0, ok=True, wall_ms=4000.0),
+    ]
+    f = run_flow(write_run(tmp_path, "r2", judged), "r2")
+    assert lanes(f) == [
+        ("teams", "passed", [("t1", "failed"), ("t2", "passed")]),
+        ("judge", "passed", [("aggregate", "passed")]),
+    ]
+    t1, t2 = node(f, "teams")["jobs"]
+    assert t1["won"] is False and t2["won"] is True
+    all_failed = [
+        *start,
+        ev("team_done", 3.0, team_id="t2", ok=False, stop_reason="max_steps", steps=3),
+        ev("run_done", 5.0, ok=False, wall_ms=4000.0),
+    ]
+    assert lanes(run_flow(write_run(tmp_path, "r3", all_failed), "r3"))[0][:2] == ("teams", "failed")
+
+
 def test_a_single_run_has_one_agent_and_no_progress_number(tmp_path: Path) -> None:
     events = [
         ev("run_start", 1.0, goal="g", k=1, repo="/r", orchestrator="native"),
@@ -236,6 +274,46 @@ def test_a_fork_run_has_the_agent_then_its_forks_and_marks_the_winner(tmp_path: 
     assert lanes(two)[1] == ("forks", "running", [("b1", "running"), ("b2", "running")])
     alone = run_flow(write_run(tmp_path, "r3", FORK[:3]), "r3")  # not stuck yet: no forks
     assert lanes(alone) == [("agent", "running", [("b0", "running")])]
+    forked = run_flow(write_run(tmp_path, "r4", FORK[:5]), "r4")  # forked, no fork started yet
+    assert lanes(forked)[1] == ("forks", "pending", [("b1", "pending"), ("b2", "pending")])
+    one_out = [*FORK[:5], ev("branch_done", 4.0, branch="b1", ok=False, stop_reason="max_steps", steps=0)]
+    waiting = run_flow(write_run(tmp_path, "r5", one_out), "r5")  # one fork failed, the other not started
+    assert lanes(waiting)[1] == ("forks", "pending", [("b1", "failed"), ("b2", "pending")])
+
+
+def test_a_finished_fork_run_whose_trunk_ended_stuck_shows_nothing_running(tmp_path: Path) -> None:
+    events = [
+        *FORK,
+        ev("branch_done", 5.0, branch="b1", ok=True, stop_reason="done", steps=1),
+        ev("branch_done", 5.0, branch="b2", ok=False, stop_reason="cancelled", steps=0),
+        ev("fork_resolved", 5.1, round=1, winner="b1", how="tests"),
+        ev("run_done", 6.0, ok=True, wall_ms=5000.0, forks=2, rounds=1, winner="b1"),
+    ]
+    state = write_run(tmp_path, "r1", events)
+    f = run_flow(state, "r1")
+    assert f["stage"] == "done" and f["ok"] is True
+    assert lanes(f) == [
+        ("agent", "failed", [("b0", "failed")]),  # stuck, and the run is over: it never finished
+        ("forks", "passed", [("b1", "passed"), ("b2", "failed")]),  # a fork won
+    ]
+    assert not running_anything(f)
+    assert run_job_detail(state, "r1", "agent", "b0")["job"]["status"] == "failed"
+
+
+def test_a_run_ended_without_its_run_done_shows_nothing_running(tmp_path: Path) -> None:
+    """`ended`: the run's job failed or was cancelled, so the log stops short: what was still at work failed,
+    what never started stays pending."""
+    state = write_run(tmp_path, "r1", STUDIO_START)
+    assert run_flow(state, "r1")["stage"] == "running"
+    f = run_flow(state, "r1", ended=True)
+    assert f["stage"] == "done" and not running_anything(f)
+    assert lanes(f) == [
+        ("plan", "failed", [("chief", "failed")]),
+        ("specialists", "failed", [("fix", "failed"), ("note", "pending")]),
+        ("review", "pending", [("reviewer", "pending")]),
+    ]
+    assert run_job_detail(state, "r1", "specialists", "fix", ended=True)["job"]["status"] == "failed"
+    assert run_job_detail(state, "r1", "specialists", "fix")["job"]["status"] == "running"
 
 
 def test_a_run_with_no_start_yet_has_no_stages_and_an_unknown_run_is_not_found(tmp_path: Path) -> None:
@@ -528,5 +606,8 @@ def test_a_run_whose_job_failed_before_its_run_done_is_done(tmp_path: Path) -> N
         job = client.post("/v1/airlie/plans", json={"goal": "g", "repo": str(repo)}).json()["job_id"]
         assert finish(client, job)["state"] == "failed"
         body = client.get(f"/v1/airlie/runs/{job}/flow").json()
+        chief = client.get(f"/v1/airlie/runs/{job}/flow/plan/chief").json()
     assert body["job"] == "failed" and body["stage"] == "done" and body["plan"] is None
-    assert body["topology"] == "studio" and [n["id"] for n in body["nodes"]] == ["plan", "specialists"]
+    assert body["topology"] == "studio" and not running_anything(body)
+    assert lanes(body) == [("plan", "failed", [("chief", "failed")]), ("specialists", "pending", [])]
+    assert chief["job"]["status"] == "failed"  # the job detail agrees with the flow
