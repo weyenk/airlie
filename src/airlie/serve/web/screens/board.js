@@ -1,6 +1,6 @@
 // The Board: columns by status from /v1/board/items, a level filter, and a centered card modal for an item's
 // children, description, comments and status buttons, plus New initiative. Built against the local-board plan's routes.
-import { request } from "../api.js";
+import { getKey, request } from "../api.js";
 import { append, chip, clear, h, icon } from "../dom.js";
 import { markdown } from "../md.js";
 
@@ -106,6 +106,7 @@ export function render(root, [key], ctx) {
   let level = ""; // the filter; "" is every level
   let items = [];
   let gone = false;
+  let me = null; // who the server says we are: a comment is editable only when it is ours
 
   const columns = h("div", { class: "columns", style: { "--board-columns": String(STATUSES.length) } });
   const filter = h("div", { role: "group", "aria-label": "Level", class: "seg-group" });
@@ -138,6 +139,13 @@ export function render(root, [key], ctx) {
 
   // ---- data ----
   async function load() {
+    // Who we are, asked with the stored key (whoami() asks without one, for sessions the server knows by cookie
+    // or Tailscale): an explicit key keeps a 401 from opening Sign in; nobody known leaves every comment read-only.
+    request("/v1/auth/me", { key: getKey() }).then((p) => {
+      if (!gone) me = p; // fetched once on board load; a comment is editable only when it is ours
+    }).catch(() => {
+      /* nobody the server knows: me stays null */
+    });
     try {
       ({ items } = await request("/v1/board/items"));
       error.textContent = "";
@@ -259,6 +267,83 @@ export function render(root, [key], ctx) {
     );
   }
 
+  // ---- in-place section editors: click a rendered section, edit it where it stands, Save/Cancel ----
+  // One at a time (AC13): opening a section saves any other open one first. `save` resolves when the PATCH
+  // has landed (or failed, with the error in `err`); `cancel` discards; Escape reaches `cancel` through the
+  // modal's keydown listener.
+  let editor = null; // the one section editor open in the card, if any (AC13: at most one)
+  let reopen = null; // after a save rebuilds the card: the section the user had moved to, { name, value }
+
+  function sectionEditor({ name, rendered, field, save, err }) {
+    const box = h("div", { class: "sec" });
+    // The buttons take no focus on mousedown: the field's blur saves, and it would otherwise beat Cancel to it.
+    const keepFocus = (ev) => ev.preventDefault();
+    const controls = h(
+      "div",
+      { class: "row sec-controls", hidden: true },
+      h("button", { type: "button", class: "btn primary small", onmousedown: keepFocus, onclick: () => api.save() }, "Save"),
+      h("button", { type: "button", class: "btn small", onmousedown: keepFocus, onclick: () => api.cancel() }, "Cancel"),
+    );
+    box.append(rendered, field, controls);
+    rendered.hidden = false; // the section shows its rendered text until it is clicked
+    field.hidden = true; // …and the editor waits, hidden, in its spot, with its Save and Cancel
+    let busy = false;
+    const close = () => {
+      field.hidden = true;
+      controls.hidden = true;
+      rendered.hidden = false;
+      if (editor === api) editor = null;
+    };
+    const api = {
+      name,
+      field,
+      open() {
+        if (editor && editor !== api) editor.save(); // at most one section is ever open
+        rendered.hidden = true;
+        field.hidden = false;
+        controls.hidden = false;
+        editor = api;
+        field.focus();
+      },
+      save() {
+        if (field.hidden || busy) return;
+        if (typeof field.checkValidity === "function" && !field.checkValidity()) {
+          // e.g. a repository that is not owner/name: nothing is sent and the section shows its previous value
+          err.textContent = [field.validationMessage, field.title].filter(Boolean).join(" ");
+          close();
+          return;
+        }
+        busy = true;
+        close();
+        save()
+          .catch((e) => {
+            if (e?.name !== "AuthError") err.textContent = e.message; // a 403 says so, it does not revert silently
+          })
+          .finally(() => {
+            busy = false; // a failed save leaves the section editable again
+          });
+      },
+      cancel() {
+        close();
+      },
+    };
+    rendered.addEventListener("click", (ev) => {
+      if (ev.target.closest("a")) return; // a link in the text opens its tab, not the editor
+      api.open();
+    });
+    field.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && field.tagName !== "TEXTAREA") api.save();
+      else if (ev.key === "Escape") {
+        ev.stopPropagation(); // the modal's Escape must not fire while an editor is open
+        api.cancel();
+      }
+    });
+    field.addEventListener("blur", (ev) => {
+      if (!field.hidden && !controls.contains(ev.relatedTarget)) api.save(); // clicking away saves; a move to Save or Cancel waits for the button
+    });
+    return { box, api };
+  }
+
   // ---- the card modal: a wide, centered card over the dimmed board ----
   const backdrop = h("div", { class: "backdrop", hidden: true });
   const modal = h("div", { class: "modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
@@ -274,7 +359,8 @@ export function render(root, [key], ctx) {
   function onKey(ev) {
     if (ev.key === "Escape") {
       ev.preventDefault();
-      closeModal();
+      if (editor) editor.cancel(); // an open edit is discarded first; the modal stays open
+      else closeModal();
       return;
     }
     if (ev.key !== "Tab") return;
@@ -307,6 +393,7 @@ export function render(root, [key], ctx) {
   }
 
   function closeModal() {
+    if (editor) editor.cancel(); // never close with an edit left open
     backdrop.hidden = true;
     modal.hidden = true;
     if (trap) {
@@ -327,6 +414,7 @@ export function render(root, [key], ctx) {
   backdrop.addEventListener("click", closeModal);
 
   function modalFrame(titleText, ...body) {
+    editor = null; // the card is rebuilt: no section editor survives it
     clear(modal);
     modal.append(
       h("div", { class: "row spread modal-head" }, h("h2", { class: "h2 ellipsis" }, titleText), h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: closeModal }, icon("close", 18))),
@@ -351,54 +439,107 @@ export function render(root, [key], ctx) {
     if (gone) return;
     openKey = k;
     const err = h("span", { class: "error" });
+    // A save rebuilds the card from the updated item. A section the user has moved to meanwhile (clicking it saved
+    // the previous one, AC13) opens again in the rebuilt card, with what was typed so far.
+    const rerender = () => {
+      reopen = editor ? { name: editor.name, value: editor.field.value } : null;
+      drawColumns();
+      openItem(k);
+    };
     const patch = async (body) => {
       try {
         const updated = await request(`/v1/board/items/${encodeURIComponent(k)}`, { method: "PATCH", body });
         items = items.map((i) => (i.key === k ? updated : i));
-        drawColumns();
-        openItem(k);
+        rerender();
       } catch (e) {
         if (e?.name !== "AuthError") err.textContent = e.message;
       }
     };
-    const titleField = h("input", { class: "field", value: item.title, "aria-label": "Title" });
-    const descField = h("textarea", { class: "field", rows: 5, "aria-label": "Description" }, item.description || "");
-    const repoField = repoInput(repoOf(item.labels));
-    const labelsField = labelsInput(otherLabels(item.labels).join(", "));
-    const commentField = h("textarea", { class: "field", rows: 2, placeholder: "Add a comment", "aria-label": "Comment" });
     const parent = item.parent ? h("a", { href: `#/board/${encodeURIComponent(item.parent)}`, class: "mono small" }, `↑ ${item.parent}`) : null;
     const [, statusLabel] = STATUSES.find(([s]) => s === item.status) || [item.status, item.status];
+
+    // ---- the editable sections: title, description, repository, labels, own comments ----
+    const titleRendered = h("h2", { class: "modal-title" }, item.title); // the one heading that carries the title: clicking it edits it
+    const titleField = h("input", { class: "field sec-field", value: item.title, "aria-label": "Title" });
+    const titleEditor = sectionEditor({
+      name: "title",
+      err,
+      rendered: titleRendered,
+      field: titleField,
+      save: () => patch({ title: titleField.value.trim() || item.title }),
+    });
+
+    const descRendered = item.description
+      ? h("div", { class: "desc" }, markdown(item.description))
+      : h("div", { class: "muted small sec-prompt" }, "Add a more detailed description…");
+    const descField = h("textarea", { class: "field sec-field", rows: 5, "aria-label": "Description", value: item.description || "" }); // value, not a text child: the rendered text stays the only match for its words
+    const descEditor = sectionEditor({
+      name: "desc",
+      err,
+      rendered: descRendered,
+      field: descField,
+      save: () => patch({ description: descField.value }),
+    });
+
+    const repo = repoOf(item.labels);
+    const repoRendered = repo
+      ? h("div", { class: "small" }, "Repository ", h("span", { class: "mono sec-repo" }, repo))
+      : h("div", { class: "small muted sec-prompt" }, "Add a repository");
+    const repoField = repoInput(repo);
+    const repoEditor = sectionEditor({
+      name: "repo",
+      err,
+      rendered: repoRendered,
+      field: repoField,
+      save: () => patch({ labels: labelsFrom(repoField, labelsField) }), // the other labels keep their current value
+    });
+
+    const labelsRendered = otherLabels(item.labels).length
+      ? h("div", { class: "small" }, "Labels ", otherLabels(item.labels).map((l) => chip("mute", l)))
+      : null;
+    const labelsField = labelsInput(otherLabels(item.labels).join(", "));
+    const labelsEditor = labelsRendered
+      ? sectionEditor({
+          name: "labels",
+          err,
+          rendered: labelsRendered,
+          field: labelsField,
+          save: () => patch({ labels: labelsFrom(repoField, labelsField) }), // the repository keeps its current value
+        })
+      : null; // no labels beyond the repository: nothing rendered to click, so no editor
+
+    const commentField = h("textarea", { class: "field", rows: 2, placeholder: "Add a comment", "aria-label": "Comment" });
+    const commentEditors = (item.comments || []).map((c) => {
+      const mine = me && c.author === (me.name || me.user_id); // only own comments are editable
+      const text = h("div", { class: "comment-text" }, markdown(c.text));
+      if (!mine) return { c, api: null, box: text }; // someone else's, or an airlie role's: read-only, no editor (AC15)
+      const field = h("textarea", { class: "field sec-field", rows: 2, value: c.text });
+      const { box, api } = sectionEditor({
+        name: `comment:${c.id}`,
+        err,
+        rendered: text,
+        field,
+        save: () =>
+          request(`/v1/board/items/${encodeURIComponent(k)}/comments/${c.id}`, { method: "PATCH", body: { text: field.value } }).then((updated) => {
+            items = items.map((i) => (i.key === k ? updated : i));
+            rerender();
+          }),
+      });
+      text.classList.add("comment-editable"); // the affordance: own comments open for editing
+      return { c, api, box };
+    });
+    const editors = { title: titleEditor, desc: descEditor, repo: repoEditor, labels: labelsEditor };
+    for (const ce of commentEditors) if (ce.api) editors[`comment:${ce.c.id}`] = { api: ce.api };
+
     modalFrame(
-      `${item.key} · ${item.title}`,
-      h("div", { class: "modal-title" }, item.title),
+      item.key, // the head shows the key; the title is the h2 below, where it can be edited
+      titleEditor.box,
       h("div", { class: "modal-status muted" }, `in ${statusLabel}`),
       h("div", { class: "row" }, statusChip(item.status), chip("mute", item.level), parent),
-      repoOf(item.labels)
-        ? h("div", { class: "small" }, "Repository ", h("span", { class: "mono" }, repoOf(item.labels)))
-        : h("div", { class: "small muted" }, "No repository: set one under Edit."),
+      repoEditor.box,
+      labelsEditor ? labelsEditor.box : null,
       h("div", { class: "row", "aria-label": "Move to" }, STATUSES.filter(([s]) => s !== item.status).map(([s, label]) => h("button", { type: "button", class: "btn small", onclick: () => patch({ status: s }) }, label))),
-      item.description ? h("div", { class: "desc" }, markdown(item.description)) : h("div", { class: "muted small" }, "No description."),
-      h(
-        "details",
-        { class: "small" },
-        h("summary", null, "Edit"),
-        h(
-          "form",
-          {
-            class: "stack",
-            style: { marginTop: "8px" },
-            onsubmit: (ev) => {
-              ev.preventDefault();
-              patch({ title: titleField.value.trim() || item.title, description: descField.value, labels: labelsFrom(repoField, labelsField) });
-            },
-          },
-          titleField,
-          descField,
-          repoField,
-          labelsField,
-          h("button", { type: "submit", class: "btn small" }, "Save"),
-        ),
-      ),
+      descEditor.box,
       flow ? acceptanceSection(flow) : null,
       flow ? workflowSection(flow) : null,
       CHILD[item.level]
@@ -413,7 +554,7 @@ export function render(root, [key], ctx) {
         "section",
         { class: "stack", style: { gap: "8px" } },
         h("h3", { class: "h3" }, `Comments (${item.comments?.length || 0})`),
-        (item.comments || []).map((c) => h("div", { class: "comment" }, h("div", { class: "small muted" }, `${c.author} · ${when(c.at)}`), h("div", null, c.text))),
+        ...commentEditors.map(({ c, box }) => h("div", { class: "comment" }, h("div", { class: "small muted" }, `${c.author} · ${when(c.at)}`), box)),
         h(
           "form",
           {
@@ -439,6 +580,15 @@ export function render(root, [key], ctx) {
       h("div", { class: "small muted" }, `Created ${when(item.created_at)} by ${item.created_by || "?"} · updated ${when(item.updated_at)}`),
       err,
     );
+    if (reopen) {
+      const again = editors[reopen.name];
+      const typed = reopen.value;
+      reopen = null;
+      if (again) {
+        again.api.open();
+        again.api.field.value = typed;
+      }
+    }
   }
 
   function openNew(newLevel, parentKey, parentRepo = "") {

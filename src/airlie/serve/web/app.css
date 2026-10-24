@@ -1302,6 +1302,7 @@ a.jobrow:hover strong {
   gap: 14px;
 }
 .modal-title {
+  margin: 0;
   font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1326,6 +1327,32 @@ a.jobrow:hover strong {
 .comment {
   border-left: 2px solid var(--line);
   padding-left: 10px;
+}
+/* In-place section editors in the card modal: the rendered text and its editor share one spot. */
+.sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sec [hidden] {
+  display: none !important;
+}
+.sec-field {
+  width: 100%;
+}
+.sec-prompt {
+  cursor: pointer;
+  text-decoration: underline dotted var(--ink2);
+}
+.sec-prompt:hover {
+  color: var(--accent);
+}
+.sec-repo,
+.comment-editable {
+  cursor: pointer;
+}
+.comment-editable:hover {
+  color: var(--accent);
 }
 
 @media (max-width: 1023px) {
