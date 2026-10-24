@@ -22,6 +22,7 @@ CHECK_KINDS = frozenset(
         "test_checks_retry",
         "test_checks_skipped",
         "tester_lint_fixed",
+        "tester_lint_round",
         "lint_fails",
         "no_new_test",
         "passes_before_code",

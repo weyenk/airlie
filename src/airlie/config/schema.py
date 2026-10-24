@@ -522,6 +522,12 @@ class StorySpec(Strict):
         "contract: checked to fail before any code is written, then read-only to the coder (airlie.yaml "
         "seats 'tester'); null: the coder writes its own tests, one subtask per layer",
     )
+    lint_round_steps: int = Field(
+        default=6,
+        ge=1,
+        description="steps the tester may spend on a lint round: when all that is left after its pre-code "
+        "retry is lint its fixer could not fix, it is sent back once more with only ruff's output",
+    )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)

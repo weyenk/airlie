@@ -45,7 +45,7 @@ models:
     bench: true
     tags: [modern, coder, moe]
     estimated_memory_gb: 32.5
-    kv_mb_per_1k_tokens: 192
+    kv_mb_per_1k_tokens: 96        # 48 layers × 4 KV heads × 128 dim, K and V in bf16 = 96 KB a token
     tool_call_parser: qwen3_xml_raw  # airlie's: values stay raw text (vllm-mlx's qwen3_coder mangles code, bench 2026-10-14)
     reasoning_parser: qwen3        # server-wide flag (taken from the team model): the thinking generalist roles still
                                    # return reasoning_content under `studio-coder8`
@@ -56,7 +56,7 @@ models:
     bench: true
     tags: [spec]
     estimated_memory_gb: 40
-    kv_mb_per_1k_tokens: 320
+    kv_mb_per_1k_tokens: 320       # 80 layers × 8 KV heads × 128 dim
     tool_call_parser: llama
   qwen25_32b:                      # spec 01 §1 named model
     repo: mlx-community/Qwen2.5-32B-Instruct-4bit
@@ -65,13 +65,14 @@ models:
     bench: true
     tags: [spec]
     estimated_memory_gb: 19
-    kv_mb_per_1k_tokens: 256
+    kv_mb_per_1k_tokens: 256       # 64 layers × 8 KV heads × 128 dim
     tool_call_parser: qwen
   small:
     repo: mlx-community/Qwen3-4B-4bit
     revision: 4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25   # 2025-04-28
     preload: true
     estimated_memory_gb: 3
+    kv_mb_per_1k_tokens: 144       # 36 layers × 8 KV heads × 128 dim
     reasoning_parser: qwen3
   generalist:                      # Qwen3.8-27B: the team model (coder, security, aggregator) and the chief; vision; hybrid attention
     repo: mlx-community/Qwen3.8-27B-4bit
@@ -79,7 +80,9 @@ models:
     preload: true
     bench: true
     estimated_memory_gb: 16.1
-    kv_mb_per_1k_tokens: 256
+    kv_mb_per_1k_tokens: 64        # 16 full-attention layers (every 4th of 64) × 4 KV heads × 256 dim = 64 KB a token;
+                                   # the 48 linear-attention layers keep a fixed-size state (was 256, Qwen2.5-32B's number,
+                                   # until 2026-10-24: review 2026-10-23 finding 8)
     tool_call_parser: qwen3_xml_raw  # Qwen3.8 writes Qwen3-Coder's XML; airlie's parser keeps values raw
     reasoning_parser: qwen3
     tags: [modern, coder, vision, hybrid-attention]
@@ -240,11 +243,12 @@ topology:
       # (Noah 2026-10-18). Select it for one run with `--topology studio-coder8`, or for stories by setting
       # `story.topology`; the resident model set changes, so `task restart -- --topology studio-coder8` first.
       # Standard attention: vllm-mlx's own prefix cache serves it. `task doctor -- --topology studio-coder8`
-      # projects the memory: 71 GB of resident weights (coder8, generalist, reviewer, small) leave no room for
-      # the studio's 131072 KV (111 GB projected vs the 104 GB wired limit), so the KV is the coder's own
-      # max_context, which caps the reviewer's prompt at 64k too (its reviews ran 16-23k on AIR-7).
+      # projects the memory with the coder's model's KV constant: 74 GB of resident weights (coder8, generalist,
+      # reviewer, small, and Kev on the decision engine) + 12.3 GB for the studio's 131072 KV at coder8's
+      # 96 MB/1k + 12 GB reserve = 98 GB, under the 104 GB wired limit, so the studio's KV stays. (Until
+      # 2026-10-24 coder8's constant was 192, the projection 111 GB, and this profile halved the KV to 65536,
+      # which capped the reviewer's prompt at 64k too; review 2026-10-23 finding 8.)
       extends: studio
-      engines: { main: { max_kv_size: 65536 } }
       roles: { coder: { model: coder8, thinking: false, max_tokens: 10240 } }
       models: { coder8: { preload: true } }
 fork:

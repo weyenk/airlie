@@ -149,10 +149,6 @@ def _loop(recent: list[tuple[str, ...]], limit: int) -> tuple[str, ...] | None:
     return None
 
 
-_CARRIED_HEAD = entry("reasoning-carried").body.split("{tail}")[0]
-"""The fixed opening of the carried-reasoning message, by which the one carried before it is found."""
-
-
 def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall) -> str:
     """The tail of a turn's reasoning to carry to the next: the turn thought, its completion reached the
     role's thinking_budget (vllm-mlx closes the think block there), and its action was a read rather than a
@@ -162,10 +158,6 @@ def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall
     if not (thinking and budget and cap and reasoning) or call.name in WRITE_TOOLS_ONLY:
         return ""
     return reasoning[-cap:] if res.completion_tokens >= budget else ""
-
-
-def _is_carried(m: Message) -> bool:
-    return m.role == "user" and isinstance(m.content, str) and m.content.startswith(_CARRIED_HEAD)
 
 
 _STALE_BUDGET = tuple(
@@ -515,8 +507,8 @@ class NativeTeam:
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
                 tail = _carried_tail(ctx.role, bool(req.thinking), res, call)
-                if tail:  # after the observation, before any nudge; replaces the one carried before it
-                    messages[:] = [m for m in messages if not _is_carried(m)]
+                if tail:  # after the observation, before any nudge; the earlier carries stay: removing one
+                    # mid-history misses the engine's prefix cache and re-prefills the whole conversation
                     carried = _steer(ctx, steps, "reasoning-carried", tail=tail)
                     messages.append(Message(role="user", content=carried))
                     if ctx.emit is not None:

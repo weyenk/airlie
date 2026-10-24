@@ -86,9 +86,11 @@ async def run(
     test_cmd: str = PYTEST,
     gate: tuple[str, ...] = (),
     base_test: str = "assert add(1, 2) == 3",
+    story: dict[str, object] | None = None,
 ) -> tuple[StoryState, FakeEngine]:
     """The one-layer story, with a tester when `tester` is given (its replies), else the coder alone. With
-    `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`; `base_test` as in calc_repo."""
+    `gate`, the repository's AGENTS.md gate runs instead of `test_cmd`; `base_test` as in calc_repo; `story`
+    is more story settings, over the tester's."""
     scripts = {"product": [STORY], "architect": [LAYERS], "coder": coder, "reviewer": [APPROVE, APPROVE]}
     if tester is not None:
         scripts["tester"] = tester
@@ -99,7 +101,12 @@ async def run(
         story = pipeline(tmp_path, repo, engine, test_cmd=cmd)
     else:
         story = pipeline(
-            tmp_path, repo, engine, test_cmd=cmd, story={"tester_role": "tester"}, roles=TESTER_ROLES
+            tmp_path,
+            repo,
+            engine,
+            test_cmd=cmd,
+            story={"tester_role": "tester", **(story or {})},
+            roles=TESTER_ROLES,
         )
     st = await story.run(text_card("multiply"))
     return st, engine
@@ -129,6 +136,10 @@ TOO_LONG = write(
     "from calc import mul\n\n\ndef test_mul():\n    # " + "words " * 12 + "end\n    assert mul(2, 3) == 6\n",
 )
 """A comment too long for the line length: ruff format does not wrap comments, so only the tester can."""
+TOO_LONG_NO_ASSERT = write(
+    "tests/test_calc.py",
+    "from calc import mul\n\n\ndef test_mul():\n    # " + "words " * 12 + "end\n    mul(2, 3)\n",
+)
 
 
 # ---- with a tester: red before the code ----
@@ -317,14 +328,81 @@ async def test_what_ruff_cannot_fix_goes_back_to_the_tester_with_the_rule(tmp_pa
     assert "E501" in retry and "tests/test_calc.py" in retry
 
 
-async def test_a_lint_error_still_there_after_the_retry_stops_the_layer_before_the_coder(
+# ---- a lint error left after the retry gets a lint round of its own (AIR-22 layer 03, 2026-10-24) ----
+
+
+async def test_a_lint_error_still_there_after_the_retry_gets_a_lint_round_and_the_layer_builds(
     tmp_path: Path,
 ) -> None:
     st, engine = await run(
-        tmp_path, [FEATURE, DONE], tester=[TOO_LONG, LISTED, TOO_LONG, LISTED], gate=RUFF_GATE
+        tmp_path,
+        [FEATURE, DONE],
+        tester=[TOO_LONG, LISTED, TOO_LONG, LISTED, RED, LISTED],
+        gate=RUFF_GATE,
+    )
+    assert st.blocked is None and "01" in st.built, st.blocked
+    [lint_round] = kinds(st.path / "events.jsonl", "tester_lint_round")
+    assert (lint_round["layer"], lint_round["rules"]) == ("01", ["E501"])
+    [told] = [p for p in prompts(engine, "tester") if hub_text("lint-round") in p]
+    assert "E501" in told and "tests/test_calc.py" in told
+    assert hub_text("checks-fix-before-code") not in told  # only the lines ruff names, not the tests again
+    assert ("lint-round", "tester", "01") in steers(st)
+    assert "mul(2, 3) == 6" in built_file(tmp_path, st, "tests/test_calc.py")
+
+
+async def test_a_lint_error_still_there_after_the_lint_round_stops_the_layer_before_the_coder(
+    tmp_path: Path,
+) -> None:
+    st, engine = await run(
+        tmp_path,
+        [FEATURE, DONE],
+        tester=[TOO_LONG, LISTED, TOO_LONG, LISTED, TOO_LONG, LISTED],
+        gate=RUFF_GATE,
     )
     assert st.blocked is not None and "fails on the tester's files" in st.blocked
+    assert "after one retry and a lint round" in st.blocked
+    assert len(kinds(st.path / "events.jsonl", "tester_lint_round")) == 1
     assert prompts(engine, "coder") == []
+
+
+async def test_a_lint_error_beside_another_finding_gets_no_lint_round(tmp_path: Path) -> None:
+    st, engine = await run(
+        tmp_path,
+        [FEATURE, DONE],
+        tester=[TOO_LONG_NO_ASSERT, LISTED, TOO_LONG_NO_ASSERT, LISTED],
+        gate=RUFF_GATE,
+    )
+    assert st.blocked is not None and "has no assertion" in st.blocked
+    assert "after one retry (" in st.blocked
+    assert kinds(st.path / "events.jsonl", "tester_lint_round") == []
+    assert [p for p in prompts(engine, "tester") if hub_text("lint-round") in p] == []
+
+
+async def test_a_lint_round_that_leaves_a_test_passing_before_the_code_stops_the_layer(
+    tmp_path: Path,
+) -> None:
+    st, engine = await run(
+        tmp_path,
+        [FEATURE, DONE],
+        tester=[TOO_LONG, LISTED, TOO_LONG, LISTED, VACUOUS, LISTED],
+        gate=RUFF_GATE,
+    )
+    assert st.blocked is not None and "passes before the code is written" in st.blocked
+    assert prompts(engine, "coder") == []
+
+
+async def test_the_lint_round_is_held_to_its_own_steps(tmp_path: Path) -> None:
+    st, engine = await run(
+        tmp_path,
+        [FEATURE, DONE],
+        tester=[TOO_LONG, LISTED, TOO_LONG, LISTED, *[TOO_LONG] * 6, LISTED],
+        gate=RUFF_GATE,
+        story={"lint_round_steps": 2},
+    )
+    assert st.blocked is not None and "fails on the tester's files" in st.blocked
+    studio = tmp_path / "state" / "runs" / st.runs[-1] / "events.jsonl"
+    *_, last = [e for e in kinds(studio, "subtask_done") if e["subtask"] == "tests"]
+    assert (last["stop_reason"], last["steps"]) == ("max_steps", 2)
 
 
 # ---- a wrong acceptance test goes back to the tester (AIR-9 layer 02, 2026-10-21) ----

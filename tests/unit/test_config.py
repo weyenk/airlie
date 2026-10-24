@@ -361,7 +361,21 @@ def test_the_coder8_experiment_is_a_profile_beside_the_default() -> None:
     assert (coder.model, coder.thinking, coder.max_tokens) == ("coder8", False, 10240)
     assert [cfg.models[m].preload for m in ("coder8", "generalist", "reviewer")] == [True, True, True]
     assert cfg.roles["security"].model == "generalist" and cfg.roles["chief"].model == "generalist"
-    assert cfg.engines["main"].max_kv_size == 65536  # 71 GB of weights: no room for the studio's 131k
+    # the studio's KV: 74 GB of weights + 12.3 GB KV (coder8 at 96 MB/1k) + 12 GB reserve = 98 GB < 104 GB
+    assert cfg.engines["main"].max_kv_size == 131072
+
+
+def test_catalog_kv_constants_follow_each_models_attention_geometry() -> None:
+    """kv_mb_per_1k_tokens is K and V in bf16 per token: the layers whose cache grows with the prompt × KV
+    heads × head dim × 4 bytes. The 2026-10-23 review (finding 8) found the generalist's copied from
+    Qwen2.5-32B, four times what its 16 full-attention layers hold, and the number had already shrunk a
+    profile's KV."""
+    models = load_config(ROOT / "airlie.yaml", NO_LOCAL).models
+    assert models["generalist"].kv_mb_per_1k_tokens == 64  # 16 full-attention layers × 4 heads × 256 dim
+    assert models["coder8"].kv_mb_per_1k_tokens == 96  # 48 layers × 4 heads × 128 dim
+    assert models["small"].kv_mb_per_1k_tokens == 144  # 36 layers × 8 heads × 128 dim
+    assert models["qwen25_32b"].kv_mb_per_1k_tokens == 256  # 64 layers × 8 heads × 128 dim
+    assert models["llama70b"].kv_mb_per_1k_tokens == 320  # 80 layers × 8 heads × 128 dim
 
 
 # ---- M0 Task 2: catalog fields ----

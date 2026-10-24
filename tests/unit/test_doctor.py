@@ -490,3 +490,24 @@ def test_run_checks_fails_the_node_row_when_web_package_json_has_no_readable_pin
 def test_a_pin_that_names_no_major_fails_whatever_node_is_found() -> None:
     r = node_check("v26.10.0", "*")
     assert r.status == "fail" and "engines.node" in r.detail
+
+
+# ---- the committed config's projection (review 2026-10-23, finding 8: a KV constant four times too high) --
+
+ROOT = Path(__file__).resolve().parents[2]
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
+
+
+def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant() -> None:
+    from airlie.doctor import project_memory_gb
+
+    studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
+    projected, unknown = project_memory_gb(studio, "main")
+    # 41.5 GB of weights (small, generalist, reviewer, Kev) + 131.072k × 64 MB/1k = 8.2 GB KV + 12 GB reserve
+    assert (round(projected, 1), unknown) == (61.7, [])
+    coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
+    projected, unknown = project_memory_gb(coder8, "main")
+    # the KV is the coder's model's: + coder8's 32.5 GB of weights, 131.072k × 96 MB/1k = 12.3 GB of KV
+    assert coder8.engines["main"].max_kv_size == 131072
+    assert (round(projected, 1), unknown) == (98.3, [])
+    assert projected < coder8.memory.wired_limit_mb / 1024  # 104 GB: the studio's KV fits this profile
