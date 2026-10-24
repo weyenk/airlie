@@ -34,9 +34,14 @@ FIRST_CHANGE_JS = """key => {
 `: connected`, and `window.firstChange` to the data line of the first `change` event."""
 
 
-def _listen(page: Page, server: Server) -> None:
-    """Open the app, start the page's own read of the stream, and wait until the server has connected it."""
-    page.goto(server.url + "/next/")
+def _listen(page: Page, server: Server, evidence: Evidence) -> None:
+    """Open the app, check it is the Vue app that was served (`fetch` works from the 503 page of a missing
+    build too), start the page's own read of the stream, and wait until the server has connected it."""
+    response = page.goto(server.url + "/next/")
+    assert response is not None and response.ok, f"/next/ answered {response and response.status}"
+    evidence.expect(
+        page.get_by_role("heading", name="airlie"), "the Vue app at /next/ rendered"
+    ).to_be_visible()
     page.evaluate(FIRST_CHANGE_JS, KEY)
     page.wait_for_function("() => window.connected", timeout=3000)  # no replay: write only once connected
 
@@ -50,7 +55,7 @@ def _first_change(page: Page) -> dict[str, object]:
 def test_a_board_write_through_the_api_reaches_an_open_page(
     page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    _listen(page, own_server)
+    _listen(page, own_server, evidence)
     reply = httpx.post(
         own_server.url + "/v1/board/items",
         json={"level": "initiative", "title": "live"},
@@ -66,7 +71,7 @@ def test_a_board_write_through_the_api_reaches_an_open_page(
 def test_a_write_from_another_process_reaches_an_open_page_within_two_seconds(
     page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    _listen(page, own_server)
+    _listen(page, own_server, evidence)
     store = BoardStore(own_server.state / "board.sqlite")
     try:
         store.create(level="initiative", title="tick")
