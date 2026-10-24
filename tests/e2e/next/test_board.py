@@ -1,0 +1,96 @@
+"""The Vue app's Board in Chromium (/next/board): six columns that fit the window, a card that rings when
+another process changes it, the phone's status pills, and a long title that cannot break a card. Each check
+leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+from playwright.sync_api import Page
+
+from airlie.board.store import BoardStore
+from tests.e2e.conftest import Evidence, Server
+
+pytestmark = pytest.mark.e2e
+
+COLUMNS = re.compile("^(To do|Approved|Doing|Review|Blocked|Done)$")
+
+
+def test_each_status_has_a_column_and_columns_fit_the_window(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    next_page.goto(server.url + "/next/board")
+    columns = next_page.get_by_role("region", name=COLUMNS)
+    evidence.expect(columns, "six columns").to_have_count(6)
+    box = next_page.locator("[data-columns]").bounding_box()
+    viewport = next_page.viewport_size
+    assert box is not None and viewport is not None
+    held = box["y"] + box["height"] <= viewport["height"] - 16
+    grid = next_page.locator("[data-columns]")
+    evidence.shot("the columns end above the window's bottom edge", grid, held=held)
+    assert held, box
+    page_scrolls = next_page.evaluate("document.documentElement.scrollHeight > innerHeight + 1")
+    evidence.shot("the page itself does not scroll down", held=not page_scrolls)
+    assert not page_scrolls
+
+
+def test_a_change_from_another_process_rings_its_card(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    next_page.goto(own_server.url + "/next/board")
+    evidence.expect(next_page.get_by_text("Live", exact=True), "the feed is live").to_be_visible()
+    card = next_page.locator("[data-item=AIR-3]")
+    evidence.expect(card, "the card starts in To do, quiet").to_be_visible()
+    evidence.expect(card.locator("[data-fresh-note]"), "no ring before the change").to_have_count(0)
+    store = BoardStore(own_server.state / "board.sqlite")
+    try:
+        store.move("AIR-3", "doing")  # as the story tick would: straight into the file, no request
+    finally:
+        store.close()
+    moved = next_page.get_by_role("region", name="Doing").locator("[data-item=AIR-3]")
+    evidence.expect(moved, "the card is now in Doing").to_be_visible()
+    note = moved.locator("[data-fresh-note]")
+    evidence.expect(note, "it says updated just now").to_have_text("updated just now")
+    evidence.expect(note, "the ring fades after about 4 s").to_have_count(0, timeout=8000)
+
+
+def test_the_phone_board_shows_one_column_and_the_status_pills(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    next_page.set_viewport_size({"width": 375, "height": 812})
+    next_page.goto(server.url + "/next/board")
+    pills = next_page.locator("[data-pills]")
+    evidence.expect(pills, "the status pills show").to_be_visible()
+    evidence.expect(pills.get_by_role("button"), "one pill per status").to_have_count(6)
+    evidence.expect(next_page.get_by_role("region", name=COLUMNS), "one column at a time").to_have_count(1)
+    evidence.expect(next_page.get_by_role("region", name="Doing"), "Doing first").to_be_visible()
+    pills.get_by_role("button", name=re.compile("^Done")).click()
+    done = next_page.get_by_role("region", name="Done")
+    evidence.expect(done, "choosing Done swaps the column").to_be_visible()
+    evidence.expect(next_page.get_by_role("region", name=COLUMNS), "still one column").to_have_count(1)
+    sideways = next_page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
+    evidence.shot("the phone page does not scroll sideways", held=not sideways)
+    assert not sideways
+
+
+def test_a_long_title_does_not_break_its_card(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    title = "w" * 200
+    store = BoardStore(own_server.state / "board.sqlite")
+    try:
+        store.create(level="story", title=title, labels=["repo:" + "o" * 100 + "/name"])
+    finally:
+        store.close()
+    next_page.goto(own_server.url + "/next/board")
+    card = next_page.locator("[data-item]", has=next_page.locator(f"[title='{title}']"))
+    evidence.expect(card, "the card with the 200-character title").to_be_visible()
+    geometry = card.evaluate(
+        """c => ({ card: c.getBoundingClientRect().width,
+                   column: c.closest('section').getBoundingClientRect().width,
+                   overflow: c.scrollWidth - c.clientWidth })"""
+    )
+    held = geometry["card"] <= geometry["column"] and geometry["overflow"] <= 0
+    evidence.shot("the card stays inside its column", card, held=held)
+    assert held, geometry

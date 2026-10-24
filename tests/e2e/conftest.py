@@ -390,6 +390,14 @@ def signed_in(context: BrowserContext, page: Page, server: Server) -> Page:
 
 
 @pytest.fixture
+def next_page(signed_in: Page) -> Page:
+    """A page signed in for the Vue app served at /next/ (it reads the same `airlie.key` as today's app, so
+    the one init script signs in both). Go to `<server.url>/next/<path>`: the server is the test's choice
+    (`server`, or `own_server` when it changes the board)."""
+    return signed_in
+
+
+@pytest.fixture
 def errors(page: Page) -> list[str]:
     """What the page logs as an error or throws, collected while the test runs."""
     seen: list[str] = []
