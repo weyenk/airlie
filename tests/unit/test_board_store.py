@@ -161,7 +161,9 @@ def test_export_round_trips_every_field(tmp_path: Path) -> None:
         "status": "todo",
         "parent": None,
         "labels": ["x"],
-        "comments": [{"author": "noah", "text": "hi", "at": item["comments"][0]["at"]}],
+        "comments": [
+            {"id": item["comments"][0]["id"], "author": "noah", "text": "hi", "at": item["comments"][0]["at"]}
+        ],
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
         "created_by": "bot",

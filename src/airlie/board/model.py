@@ -21,6 +21,7 @@ def parent_level(level: Level) -> Level | None:
 
 @dataclass(frozen=True)
 class Comment:
+    id: int
     author: str
     text: str
     at: float
