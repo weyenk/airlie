@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,8 +51,12 @@ def read_events(path: Path, since: int) -> tuple[list[dict[str, Any]], int]:
 
 
 class Jobs:
-    def __init__(self) -> None:
+    """`publish`, when given, is told `("jobs", job_id)` when a job starts and again when it ends (done,
+    failed or cancelled): task serve passes its feed's, so an open page refetches the jobs at once."""
+
+    def __init__(self, publish: Callable[[str, str | None], None] | None = None) -> None:
         self._jobs: dict[str, Job] = {}
+        self._publish = publish
 
     def start(
         self, kind: str, job_id: str, events_path: Path, work: Coroutine[Any, Any, dict[str, Any]]
@@ -63,6 +67,10 @@ class Jobs:
             raise ValueError(f"job '{job_id}' is already running")
         job = Job(job_id, kind, events_path, asyncio.create_task(work))
         self._jobs[job_id] = job
+        if self._publish is not None:
+            publish = self._publish
+            publish("jobs", job_id)
+            job.task.add_done_callback(lambda _task: publish("jobs", job_id))
         return job
 
     def get(self, job_id: str) -> Job | None:

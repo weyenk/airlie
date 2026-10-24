@@ -36,9 +36,10 @@ def step(run: str, team: str, n: int, *, completion: int = 100, gen_ms: float = 
     }
 
 
-@pytest.fixture
-def state_dir(tmp_path: Path) -> Path:
-    story = tmp_path / "stories" / KEY
+def write_story(root: Path) -> Path:
+    """Story KEY under `root`: refined and planned in two layers, layer 01 built, layer 02 blocked on its
+    tests; the studio runs its stages and layers name, and the tester's trace of layer 01. Returns `root`."""
+    story = root / "stories" / KEY
     story.mkdir(parents=True)
     layers = [
         {
@@ -85,7 +86,7 @@ def state_dir(tmp_path: Path) -> Path:
             {"ts": 381.0, "kind": "blocked", "stage": "layers", "reason": "layer 02 stopped"},
         ],
     )
-    runs = tmp_path / "runs"
+    runs = root / "runs"
     write_events(
         runs / "run-refine" / "events.jsonl",
         [step("run-refine", "refine", 1), step("run-refine", "refine", 2)],
@@ -161,7 +162,12 @@ def state_dir(tmp_path: Path) -> Path:
             }
         )
     )
-    return tmp_path
+    return root
+
+
+@pytest.fixture
+def state_dir(tmp_path: Path) -> Path:
+    return write_story(tmp_path)
 
 
 def by_id(items: list[dict[str, Any]], id: str) -> dict[str, Any]:

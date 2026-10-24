@@ -12,11 +12,11 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
@@ -30,14 +30,19 @@ from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
-from airlie.serve.jobs import Jobs
-from airlie.serve.listing import recent_runs, repos, stories
+from airlie.serve.jobs import Job, Jobs
+from airlie.serve.listing import recent_runs, repos, stories, story_page
+from airlie.serve.run_flow import run_flow, run_job_detail
+from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
+from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning, StorySetupError
+from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -45,6 +50,14 @@ from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, pl
 WEB_DIR = Path(__file__).parent / "web"
 """The web app's static files: `GET /` is its index.html, `/app/*` the rest. No key: the shell is harmless
 without one, and every call it makes goes to /v1, which keeps the guard."""
+
+NEXT_DIR = Path(__file__).parent / "web_next"
+"""The Vue app's build (`task web:build`, a Vite build with base `/next/`): `GET /next/*` serves it, beside
+the app above. Not in git; without it `/next` answers 503 and says how to build it."""
+
+NEXT_NOT_BUILT = "the new web app is not built: run task web:build"
+IMMUTABLE = "public, max-age=31536000, immutable"
+"""The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
 
 
 class ToolCallStreamRepair:
@@ -178,6 +191,23 @@ async def _finish_plan(run_id: str, work: Awaitable[PlanOutcome]) -> dict[str, A
     return {**body, "type": "answer", "answer": out.answer}
 
 
+def _plan_of(job: Job | None) -> dict[str, Any] | None:
+    """The plan `job` returned when it is a finished plan job whose chief planned (_finish_plan): the studio's
+    own `plan` event names only the subtasks and their roles, so this is where the whole plan is. None for
+    any other job, a plan job still running, or a chief that answered instead."""
+    if job is None or job.kind != "plan" or job.state != "done":
+        return None
+    result = job.task.result()
+    plan = result.get("plan") if result.get("type") == "plan" else None
+    return plan if isinstance(plan, dict) else None
+
+
+def _ended(job: Job | None) -> bool:
+    """Whether this server's job for a run failed or was cancelled: the run is over though its log has no
+    run_done."""
+    return job is not None and job.state in ("failed", "cancelled")
+
+
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
     from airlie.cli import _orchestrator, apply_k, select_topology
     from airlie.config import TOPOLOGY_KINDS
@@ -198,18 +228,24 @@ def create_app(
     story_job: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
+    next_dir: Path | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job).
-    `auth_store` (default: observability.state_dir/auth.sqlite) and `now` are for tests."""
+    `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
+    default NEXT_DIR) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
-    jobs = Jobs()
+    feed = Feed()
+    app.state.feed = feed
+    jobs = Jobs(feed.publish)
+    watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
+    app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
-    app.include_router(board_router(board))
+    app.include_router(board_router(board, feed.publish))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()
@@ -311,6 +347,30 @@ def create_app(
 
     app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
 
+    next_root = (next_dir or NEXT_DIR).resolve()
+
+    @app.get("/next", include_in_schema=False)
+    async def next_slash() -> RedirectResponse:
+        return RedirectResponse("/next/")
+
+    @app.get("/next/{path:path}", include_in_schema=False)
+    async def next_app(path: str) -> Response:
+        """The Vue app: a path naming a file inside its build is that file (a hashed one under assets/ is
+        cached for good), anything else is index.html, which the app's router reads. Like `/`, it needs no
+        sign-in: every call the app makes goes to /v1, which keeps the guard."""
+        index = next_root / "index.html"
+        if not index.is_file():
+            return JSONResponse({"error": NEXT_NOT_BUILT}, status_code=503)
+        try:
+            target = (next_root / path).resolve()
+            served = target if target.is_relative_to(next_root) and target.is_file() else None
+        except (OSError, ValueError):  # a NUL byte, or a name too long for the filesystem: no such file
+            served = None
+        if served is not None:
+            cache = IMMUTABLE if served.is_relative_to(next_root / "assets") else "no-cache"
+            return FileResponse(served, headers={"Cache-Control": cache})
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
     @app.middleware("http")
     async def _revalidate_static(request: Request, call_next: Callable[..., Any]) -> Any:
         """The shell's files are revalidated on every load (ETags keep that cheap), so a new airlie never
@@ -323,6 +383,17 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles)}
+
+    @app.get("/v1/events")
+    async def events() -> StreamingResponse:
+        """What changed, live: server-sent hints (`board` / `AIR-17`, `runs`, `jobs`) that a page answers by
+        refetching. No history is kept; a reconnecting page refetches what it shows. Other processes' writes
+        are noticed by the watcher, which this starts (and takes its baseline) before `: connected`."""
+        return StreamingResponse(
+            event_stream(feed, on_subscribed=watcher.ensure_running),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
@@ -529,6 +600,14 @@ def create_app(
     async def job_list() -> dict[str, Any]:
         return {"jobs": jobs.list()}
 
+    @app.get("/v1/airlie/running")
+    async def running_list() -> dict[str, Any]:
+        """Every story and run in progress, whoever started it, newest activity first: the state directory
+        says what the tick or a `task` command is doing; this server's running jobs stay listed however
+        quiet (airlie.serve.running)."""
+        live = frozenset(j["id"] for j in jobs.list() if j["state"] == "running")
+        return {"running": in_progress(cfg.observability.state_dir.expanduser(), live=live, now=now())}
+
     @app.get("/v1/airlie/runs")
     async def run_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
         return {"runs": recent_runs(cfg.observability.state_dir, limit)}
@@ -553,9 +632,43 @@ def create_app(
                 return tree
             await asyncio.sleep(0.25)
 
+    @app.get("/v1/airlie/runs/{run_id}/flow")
+    async def run_flow_get(run_id: str) -> dict[str, Any]:
+        """A run of any topology as the workflow view draws it (airlie.serve.run_flow), with `job`: this
+        server's job state for it, or None; and `plan`: the plan its finished plan job returned, for a person
+        to approve before anything is built, or None."""
+        models = {name: role.model for name, role in cfg.roles.items()}
+        state, job = cfg.observability.state_dir.expanduser(), jobs.get(run_id)
+        try:
+            flow = run_flow(state, run_id, models=models, ended=_ended(job))
+        except RunNotFound as e:
+            raise HTTPException(404, str(e)) from None
+        flow["job"] = job.state if job is not None else None
+        flow["plan"] = _plan_of(job)
+        return flow
+
+    @app.get("/v1/airlie/runs/{run_id}/flow/{node_id}/{job_id}")
+    async def run_job_get(run_id: str, node_id: str, job_id: str) -> dict[str, Any]:
+        state = cfg.observability.state_dir.expanduser()
+        try:
+            return run_job_detail(state, run_id, node_id, job_id, ended=_ended(jobs.get(run_id)))
+        except RunNotFound as e:
+            raise HTTPException(404, str(e)) from None
+
     @app.get("/v1/airlie/stories")
-    async def story_list() -> dict[str, Any]:
-        return {"stories": stories(cfg.observability.state_dir)}
+    async def story_list(
+        page: int = Query(1, ge=1),
+        size: int | None = Query(None, ge=1, le=100),
+        stage: str | None = None,
+        repo: str | None = None,
+        blocked: bool | None = None,
+        q: str | None = None,
+        sort: Literal["activity", "key", "stage"] = "activity",
+    ) -> dict[str, Any]:
+        if stage is not None and stage not in STAGES:
+            raise HTTPException(422, f"unknown stage {stage!r}; use one of {', '.join(STAGES)}")
+        rows = stories(cfg.observability.state_dir)
+        return story_page(rows, page=page, size=size, stage=stage, repo=repo, blocked=blocked, q=q, sort=sort)
 
     @app.get("/v1/airlie/stories/{key}/flow")
     async def story_flow_get(key: str) -> dict[str, Any]:
@@ -662,6 +775,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        watcher.stop()
         await client.aclose()
         board.close()
         store.close()

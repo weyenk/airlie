@@ -40,7 +40,7 @@ _STUDIO = frozenset(
 
 
 class RunNotFound(LookupError):
-    """No run directory of that id."""
+    """No run directory of that id, or (airlie.serve.run_flow) no stage or job of that id in its flow."""
 
 
 def _plural(n: int, word: str) -> str:

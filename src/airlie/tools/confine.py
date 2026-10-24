@@ -9,9 +9,9 @@ coder whose `python` failed (a stale asdf shim) re-pointed `~/.asdf/shims/python
 Writable: the worktree, the repository's git directory (a worktree's commits and refs live in the main
 repository's `.git`), the temporary directories (`/private/tmp`, and the per-user ones macOS gives every
 program: `mktemp` and clang use them whatever TMPDIR says), uv's cache and Python installs (`uv sync` and
-`uv run` in a worktree need them), `/dev` (null, tty, the pipes), and what `tools.writable` adds. Reads, the
-network and running programs are not restricted: this is about not changing the machine, not about secrets
-(see `agent_env`).
+`uv run` in a worktree need them), npm's cache (`npm ci` in a story's gate needs it), `/dev` (null, tty, the
+pipes), and what `tools.writable` adds. Reads, the network and running programs are not restricted: this is
+about not changing the machine, not about secrets (see `agent_env`).
 
 A write outside fails as the OS fails it ("Operation not permitted"); the command's output then gets a line
 saying why, so a model does not go looking for another way round. Off macOS (no `sandbox-exec`) commands run
@@ -98,6 +98,12 @@ def _uv_dirs() -> list[Path]:
     ]
 
 
+def _npm_dirs() -> list[Path]:
+    # npm's own spelling is lowercase; the upper-case form is the fallback
+    cache = os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE")  # noqa: SIM112
+    return [Path(cache or Path.home() / ".npm")]
+
+
 def writable_roots(worktree: Path, extra: Sequence[Path] = ()) -> list[Path]:
     """Every directory a confined command in `worktree` may write under, resolved (Seatbelt matches real
     paths: /tmp is /private/tmp), without repeats."""
@@ -108,6 +114,7 @@ def writable_roots(worktree: Path, extra: Sequence[Path] = ()) -> list[Path]:
         _darwin_dir(_CS_DARWIN_USER_TEMP_DIR),
         _darwin_dir(_CS_DARWIN_USER_CACHE_DIR),
         *_uv_dirs(),
+        *_npm_dirs(),
         Path("/dev"),
         *extra,
     ]

@@ -1,5 +1,5 @@
 name: setup
-description: uv, Task and the locked dependencies; the same toolchain a developer gets from `task setup`
+description: uv, Task, node and the locked dependencies; the same toolchain a developer gets from `task setup`
 runs:
   using: composite
   steps:
@@ -10,6 +10,12 @@ runs:
       with:
         version: 3.x
         repo-token: ${{ github.token }}
+    # The node web/package.json pins, for the Vue app's `task web:gate`; npm's download cache is keyed on its lockfile.
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: web/package.json
+        cache: npm
+        cache-dependency-path: web/package-lock.json
     - name: Install locked dependencies
       shell: bash
       run: uv sync --all-groups --frozen

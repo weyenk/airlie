@@ -4,11 +4,15 @@ stories (from each story's state.json) and the repositories a job may be started
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from airlie.config import AirlieConfig
 from airlie.serve.jobs import read_events
+from airlie.story.state import STAGES
+
+_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def recent_runs(state_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
@@ -41,15 +45,38 @@ def recent_runs(state_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
     return out
 
 
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:  # not there (yet, or any more)
+        return None
+
+
+def _last_activity(state_dir: Path, story: Path, runs: object) -> float:
+    """The newest mtime of the story's events.jsonl and state.json and of the events.jsonl of the last run
+    in `runs` (the story's run ids, oldest first): the files a story writes as it works. Files that are
+    not there are skipped; a story with none of them has 0.0 (the epoch), so it sorts as the stalest. A run
+    id comes from state.json, so it is joined into a path only as one safe name (as flow.py does): any other
+    is no run, and its log is not looked for."""
+    files = [story / "events.jsonl", story / "state.json"]
+    if isinstance(runs, list) and runs:
+        last = runs[-1]
+        if isinstance(last, str) and _SAFE.fullmatch(last) and last not in (".", ".."):
+            files.append(state_dir / "runs" / last / "events.jsonl")
+    return max((t for t in map(_mtime, files) if t is not None), default=0.0)
+
+
 def stories(state_dir: Path) -> list[dict[str, Any]]:
     """Every story directory under `state_dir/stories`, by key, with its stage and blocked reason from
-    state.json: a story without one yet has None there, a damaged one says so in `blocked`."""
+    state.json: a story without one yet has None there, a damaged one says so in `blocked`. `last_activity`
+    (seconds since the epoch) is when the story or its last run last wrote (see _last_activity)."""
     root = state_dir / "stories"
     if not root.is_dir():
         return []
     out: list[dict[str, Any]] = []
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
         row: dict[str, Any] = {"key": d.name, "title": None, "repo": None, "stage": None, "blocked": None}
+        runs: object = None
         f = d / "state.json"
         if f.is_file():
             try:
@@ -62,8 +89,60 @@ def stories(state_dir: Path) -> list[dict[str, Any]]:
                 card: dict[str, Any] = st["card"] if isinstance(st.get("card"), dict) else {}
                 row["title"] = card.get("title")
                 row["repo"], row["stage"], row["blocked"] = st.get("repo"), st.get("stage"), st.get("blocked")
+                runs = st.get("runs")
+        row["last_activity"] = _last_activity(state_dir, d, runs)
         out.append(row)
     return out
+
+
+def _natural(key: str) -> list[str | int]:
+    """`key` as the pieces to compare it by: text (any case) and numbers, so AIR-9 comes before AIR-17. The
+    pieces alternate text, number, text, ...: two keys always compare text with text, number with number."""
+    return [int(p) if i % 2 else p for i, p in enumerate(re.split(r"(\d+)", key.casefold()))]
+
+
+def _stage_rank(stage: object) -> int:
+    """Where a story's stage sorts: none yet first, then STAGES order, then any stage airlie does not know."""
+    if stage is None:
+        return -1
+    return STAGES.index(stage) if stage in STAGES else len(STAGES)
+
+
+def story_page(
+    rows: list[dict[str, Any]],
+    *,
+    page: int = 1,
+    size: int | None = None,
+    stage: str | None = None,
+    repo: str | None = None,
+    blocked: bool | None = None,
+    q: str | None = None,
+    sort: Literal["activity", "key", "stage"] = "activity",
+) -> dict[str, Any]:
+    """The rows of `stories()` the web app asks for: those with this `stage` and `repo`, `blocked` (True: a
+    blocked reason is set, False: none is) and with `q` in their key or title (case-insensitively), sorted
+    by `sort` (activity: newest first; key: AIR-9 before AIR-17; stage: STAGES order, a story with no stage
+    yet first, then newest first; ties fall to the key), then the 1-based `page` of `size` of them. Without
+    a `size` it is one page of every row, whatever `page` says. `total` counts the rows after filtering."""
+    if page < 1 or (size is not None and size < 1):
+        raise ValueError("page and size are at least 1")
+    needle = q.casefold() if q else None
+    chosen = [
+        r
+        for r in rows
+        if (stage is None or r["stage"] == stage)
+        and (repo is None or r["repo"] == repo)
+        and (blocked is None or bool(r["blocked"]) is blocked)
+        and (needle is None or needle in r["key"].casefold() or needle in str(r["title"] or "").casefold())
+    ]
+    if sort == "key":
+        chosen.sort(key=lambda r: _natural(r["key"]))
+    elif sort == "stage":
+        chosen.sort(key=lambda r: (_stage_rank(r["stage"]), -r["last_activity"], _natural(r["key"])))
+    else:
+        chosen.sort(key=lambda r: (-r["last_activity"], _natural(r["key"])))
+    shown = chosen if size is None else chosen[(page - 1) * size : page * size]
+    return {"stories": shown, "total": len(chosen), "page": page, "size": size}
 
 
 def repos(cfg: AirlieConfig) -> list[str]:

@@ -8,18 +8,20 @@ memory bank between the teams and an EdgeAgent-style scheduler, exactly as laid 
 
 ## Install
 
-Two tools, then everything else is a task:
+Three tools, then everything else is a task (node 26 builds the web app in `web/`, and must be the first `node` on
+your `PATH`: an nvm node that comes first stops the web tasks with a message naming it):
 
 ```bash
-brew install go-task uv
+brew install go-task uv node@26
 ```
 
 ```bash
 task setup
 ```
 
-`task setup` installs the pinned Python and every dependency into a project-local environment managed by uv. You
-never run pip, activate a venv, or install anything else by hand. Then:
+`task setup` installs the pinned Python and every dependency into a project-local environment managed by uv, and
+builds the web app (`npm ci` and Vite under `web/`, into `src/airlie/serve/web_next`). You never run pip, activate a
+venv, or install anything else by hand. Then:
 
 ```bash
 task doctor
@@ -36,7 +38,7 @@ Run `task` to list them. The ones that exist today:
 | Task | Does |
 | --- | --- |
 | `task setup` | one-time, idempotent setup |
-| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools, vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
+| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
@@ -45,6 +47,7 @@ Run `task` to list them. The ones that exist today:
 | `task run -- "goal" --repo PATH [--topology fork] [--k 3] [--test-cmd "pytest -q"]` | run the configured topology on a goal; every team/branch works in its own git worktree under the run directory and the report lists each one's outcome, branch and trace |
 | `task eval -- lang_detect [--topology fork] [--k 1]` | materialize a graded task from `evals/tasks/`, run it, grade every worktree with the hidden tests |
 | `task serve [-- --port 8090]` | OpenAI-compatible endpoint: roles are models (`/v1/models`, `/v1/chat/completions` with the role prompt prepended), plus `POST /v1/airlie/run {goal, repo, k}`; jobs: `POST /v1/airlie/plans`, `/runs` or `/stories`, then `GET /v1/airlie/jobs/{id}?since=&wait=` (long poll), `DELETE` to cancel |
+| `task web:install` / `web:check` / `web:build` / `web:gate` / `web:dev` | the Vue app in `web/` (node 26, pinned in `web/package.json`): `npm ci` / typecheck + lint + tests / build into `src/airlie/serve/web_next` (`task serve` and `task setup` run it) / check then build, skipped while nothing under `web/` changed since it last passed / Vite dev server with `/v1` proxied to `task serve` |
 | `task studio -- "goal" --repo PATH [--image shot.png] [--test-cmd "pytest -q"]` | the studio topology: the chief plans in JSON, Kev routes each subtask to a specialist role (and a skill), specialists run on one worktree, a cross-family reviewer gets one fix round, the chief synthesises; `report.md` and `routing.jsonl` land in the run directory |
 | `task story -- ISSUE [--repo PATH] [--test-cmd CMD]` / `task story -- --text "request" …` | a board item (a key like `AIR-7`; a Jira issue or its link with `story.board: jira`) or a written request → product's story → architect's layers → each layer built test-first by the studio on its own branch → stacked draft PRs (gh stack) → the issue in *In Review*; only a human merges; a stopped story resumes from its last finished stage; an issue is built in the repository its `repo:<owner>/<name>` label names (its clone in `~/git`, `story.repos_root`), and every layer must pass the `## Test gate` of that repository's `AGENTS.md`; Jira comes from the `ATLASSIAN_*` variables in `~/.config/airlie/.env` (or a `.env` beside `airlie.yaml`), which airlie reads itself and never exports; with `story.github_app.app_id` set, a GitHub App's bot pushes, opens the PRs and authors the layer commits with a token scoped to the story's one repository, never your gh login or SSH key; the committed `airlie.yaml` publishes as this repository owner's app, so in a clone set `story.github_app.app_id: null` in `airlie.local.yaml` to publish with your own gh login, or set your own app's id there (`docs/integrations/story.md`) |
 | `task story:tick` / `task story:check [-- ISSUE]` | one scheduler beat (what the launchd agent runs): build the top *To Do* issue unless a story is in flight / check roles, gh + gh-stack, which board is in use (with Jira: its credentials, project and statuses), and an issue's label, checkout, trunk and test gate |

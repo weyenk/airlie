@@ -2,12 +2,20 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from airlie.config import AirlieConfig, load_config
-from airlie.doctor import CheckResult, SystemProbe, run_checks
+from airlie.doctor import CheckResult, SystemProbe, node_check, run_checks, web_node_pin
 
-TOOLS_OK = {"task": "3.54.0", "uv": "0.6.0", "git": "2.45.0", "hf": "1.0.0", "vllm-mlx": "0.5.0"}
+TOOLS_OK = {
+    "task": "3.54.0",
+    "uv": "0.6.0",
+    "git": "2.45.0",
+    "hf": "1.0.0",
+    "vllm-mlx": "0.5.0",
+    "node": "v26.10.0",
+}
 
 
 class FakeProbe(SystemProbe):
@@ -409,6 +417,79 @@ def test_invalid_profile_is_a_fail_row_not_a_crash(tmp_path: Path) -> None:
     rows = by_name(run_checks(cfg, FakeProbe(snapshots={"org/t@r1"})))
     row = rows["engine:main:memory_projection[single]"]
     assert row.status == "fail" and "config invalid" in row.detail
+
+
+def test_node_matching_the_pin_is_ok() -> None:
+    assert node_check("v26.10.0", "26.x") == CheckResult("tool:node", "ok", "v26.10.0")
+
+
+def test_node_of_another_major_fails_and_names_both() -> None:
+    r = node_check("v24.16.0", "26.x")
+    assert r.status == "fail" and "v24.16.0" in r.detail and "26" in r.detail
+
+
+def test_no_node_fails_and_says_to_install_it() -> None:
+    r = node_check(None, "26.x")
+    assert r.status == "fail" and "install node 26" in r.detail
+
+
+def test_node_with_a_version_line_that_is_not_a_version_fails() -> None:
+    # RealProbe.tool_version answers "present" when `node --version` could not be run to the end
+    r = node_check("present", "26.x")
+    assert r.status == "fail" and "present" in r.detail and "26" in r.detail
+
+
+def test_web_node_pin_reads_engines_node_from_web_package_json(tmp_path: Path) -> None:
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "package.json").write_text('{"engines": {"node": "30.x"}}')
+    assert web_node_pin(tmp_path) == "30.x"
+
+
+def test_web_node_pin_of_this_repo_is_a_node_26_pin() -> None:
+    assert web_node_pin(Path(__file__).resolve().parents[2]).startswith("26")
+
+
+def test_run_checks_holds_node_to_the_web_pin(tmp_path: Path) -> None:
+    ok = by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"})))["tool:node"]
+    assert ok.status == "ok"
+    probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "node": "v24.16.0"})
+    stale = by_name(run_checks(managed(tmp_path), probe))["tool:node"]
+    assert stale.status == "fail" and "v24.16.0" in stale.detail
+
+
+def _checks_for_package_json(tmp_path: Path, text: str | None) -> dict[str, CheckResult]:
+    """run_checks for a checkout whose web/package.json holds `text` (None: there is no such file)."""
+    root = tmp_path / "checkout"
+    (root / "web").mkdir(parents=True)
+    if text is not None:
+        (root / "web" / "package.json").write_text(text)
+    return by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"}), root=root))
+
+
+def test_run_checks_fails_the_node_row_when_web_package_json_is_missing_and_still_runs_the_rest(
+    tmp_path: Path,
+) -> None:
+    rows = _checks_for_package_json(tmp_path, None)
+    assert rows["tool:node"].status == "fail"
+    assert "web/package.json" in rows["tool:node"].detail and "engines.node" in rows["tool:node"].detail
+    assert rows["tool:uv"].status == "ok" and rows["model:team"].status == "ok"  # the other checks ran
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"engines": ', '{"name": "airlie-web"}', '{"engines": {}}', '{"engines": "26.x"}', "[]"],
+    ids=["malformed", "no-engines", "no-node", "engines-not-an-object", "not-an-object"],
+)
+def test_run_checks_fails_the_node_row_when_web_package_json_has_no_readable_pin(
+    tmp_path: Path, text: str
+) -> None:
+    row = _checks_for_package_json(tmp_path, text)["tool:node"]
+    assert row.status == "fail" and "web/package.json" in row.detail and "engines.node" in row.detail
+
+
+def test_a_pin_that_names_no_major_fails_whatever_node_is_found() -> None:
+    r = node_check("v26.10.0", "*")
+    assert r.status == "fail" and "engines.node" in r.detail
 
 
 # ---- the committed config's projection (review 2026-10-23, finding 8: a KV constant four times too high) --

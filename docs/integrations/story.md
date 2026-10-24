@@ -513,6 +513,10 @@ writes it to `~/Library/LaunchAgents/dev.airlie.story-tick.plist` and loads it; 
   launchd owns, so the signal reaches airlie, which stops the story and kills `gh`'s process group. The login shell
   puts `uv`, `gh` and `git` on the PATH, but only from the files a login shell reads (`~/.zshenv`, `~/.zprofile`,
   `/etc/zprofile`), not from `~/.zshrc`.
+- **Its gate needs node 26 for airlie's own stories:** a story built in this repository runs this repository's
+  test gate (its `AGENTS.md`), which ends with `task web:gate`. Node 26 must therefore be the first `node` on the
+  login shell's PATH, set in a file the login shell reads as above (an nvm node from `~/.zshrc` is not seen); if
+  another node comes first, `task web:gate` stops with a message naming it, and the layer fails its gate.
 - **Install it from the checkout you keep** (your main one, not a temporary worktree). The beat reads that
   checkout's `airlie.yaml`, `airlie.local.yaml` (`story.repos_root`, if your clones are not in `~/git`) and `.env`
   (or `~/.config/airlie/.env`). Each issue it takes is built in the repository its `repo:` label names.

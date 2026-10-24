@@ -12,4 +12,5 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 uv run pytest -q -n auto --maxprocesses 8
+task web:gate
 ```
