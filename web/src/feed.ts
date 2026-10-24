@@ -39,6 +39,9 @@ export function parseSse(buffer: string): { blocks: Block[]; rest: string } {
 }
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+/** The server pings every 15 s, so a stream silent for this long is dead (a socket that sleep/wake or a network
+ * change left half-open reports neither an end nor an error). */
+const SILENCE_MS = 40_000;
 
 function changeOf(data: string): Change | undefined {
   try {
@@ -63,20 +66,24 @@ function guarded(fn: () => void) {
  * Read the feed until the returned function is called. `onState` hears `connecting` first, `live` when the server
  * sends `: connected`, and `reconnecting` when the stream ends, fails or answers with a non-2xx status; after
  * that it retries once `backoffMs[n]` has passed (n counts the retries since it was last live, and stays at the
- * last entry), and reports `live` again when it is.
+ * last entry), and reports `live` again when it is. Any bytes (`: connected`, `: ping`, a change) restart a
+ * watchdog; when `silenceMs` passes with none, the request is aborted and that is one more dropped stream.
  */
 export function connectFeed(opts: {
   onChange(c: Change): void;
   onState(s: FeedState): void;
   fetchImpl?: typeof fetch;
   backoffMs?: number[];
+  silenceMs?: number;
 }): () => void {
   const delays = opts.backoffMs?.length ? opts.backoffMs : BACKOFF_MS;
+  const silenceMs = opts.silenceMs ?? SILENCE_MS;
   let stopped = false;
   let state: FeedState | undefined;
   let retries = 0;
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
 
   const setState = (next: FeedState) => {
     if (next === state) return;
@@ -94,7 +101,8 @@ export function connectFeed(opts: {
     }
   };
 
-  async function read(signal: AbortSignal) {
+  /** Read one stream to its end. `heard` is told every time bytes arrive. */
+  async function read(signal: AbortSignal, heard: () => void) {
     const doFetch = opts.fetchImpl ?? fetch;
     const response = await doFetch("/v1/events", {
       headers: { ...authHeaders(), Accept: "text/event-stream" },
@@ -111,6 +119,7 @@ export function connectFeed(opts: {
     for (;;) {
       const { value, done } = await reader.read();
       if (done || stopped) return;
+      heard();
       buffer += decoder.decode(value, { stream: true });
       const parsed = parseSse(buffer);
       buffer = parsed.rest;
@@ -119,11 +128,20 @@ export function connectFeed(opts: {
   }
 
   async function run() {
-    controller = new AbortController();
+    const current = (controller = new AbortController());
+    // Aborting is all the watchdog does: the read then fails like any other dropped stream, so there is one
+    // way to reconnect and no way to reconnect twice.
+    const arm = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => current.abort(), silenceMs);
+    };
+    arm(); // also covers a connection that never answers at all
     try {
-      await read(controller.signal);
+      await read(current.signal, arm);
     } catch {
-      // a network error, a non-2xx status or our own abort: all end the stream the same way
+      // a network error, a non-2xx status, the watchdog's abort or ours: all end the stream the same way
+    } finally {
+      clearTimeout(watchdog);
     }
     if (stopped) return;
     setState("reconnecting");
@@ -136,6 +154,7 @@ export function connectFeed(opts: {
   return () => {
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(watchdog);
     controller?.abort();
   };
 }

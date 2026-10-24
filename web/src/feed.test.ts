@@ -32,7 +32,7 @@ function fakeFetch(...steps: Step[]) {
   return { fetchImpl, streams };
 }
 
-function start(fetchImpl: typeof fetch, backoffMs?: number[]) {
+function start(fetchImpl: typeof fetch, backoffMs?: number[], silenceMs?: number) {
   const states: FeedState[] = [];
   const changes: Change[] = [];
   const stop = connectFeed({
@@ -40,6 +40,7 @@ function start(fetchImpl: typeof fetch, backoffMs?: number[]) {
     onState: (s) => states.push(s),
     fetchImpl,
     backoffMs,
+    silenceMs,
   });
   return { states, changes, stop };
 }
@@ -235,4 +236,96 @@ test("a response that arrives after stop is dropped", async () => {
   expect(fetchImpl).toHaveBeenCalledTimes(1);
   expect(states).toEqual(["connecting"]);
   expect(changes).toEqual([]);
+});
+
+test("a stream that goes silent is cut, reported reconnecting, and retried after the backoff", async () => {
+  const { fetchImpl, streams } = fakeFetch("stream", "stream");
+  const { states } = start(fetchImpl, [1000], 100);
+  streams[0].send(": connected\n\n");
+  await settle();
+  expect(states).toEqual(["connecting", "live"]);
+
+  await vi.advanceTimersByTimeAsync(99);
+  expect(states).toEqual(["connecting", "live"]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(states).toEqual(["connecting", "live", "reconnecting"]);
+  expect(fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+  await vi.advanceTimersByTimeAsync(999);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+  streams[1].send(": connected\n\n");
+  await settle();
+
+  expect(states).toEqual(["connecting", "live", "reconnecting", "live"]);
+});
+
+test("pings and changes inside silenceMs keep the stream live", async () => {
+  const { fetchImpl, streams } = fakeFetch("stream");
+  const { states, changes } = start(fetchImpl, [0], 100);
+  streams[0].send(": connected\n\n");
+  await settle();
+
+  for (let i = 0; i < 10; i++) {
+    await vi.advanceTimersByTimeAsync(60);
+    streams[0].send(i % 2 ? 'event: change\ndata: {"topic":"runs","key":null}\n\n' : ": ping\n\n");
+    await settle();
+  }
+
+  expect(states).toEqual(["connecting", "live"]);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(changes).toHaveLength(5);
+});
+
+test("a connection that never answers is cut by the same watchdog", async () => {
+  const fetchImpl = vi.fn<typeof fetch>(
+    (_url, init) =>
+      new Promise((_resolve, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+      ),
+  );
+  const { states } = start(fetchImpl, [1000], 100);
+
+  await vi.advanceTimersByTimeAsync(100);
+  expect(states).toEqual(["connecting", "reconnecting"]);
+  await vi.advanceTimersByTimeAsync(1000);
+
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+});
+
+test("stop during a live, silent stream leaves no timers behind", async () => {
+  const { fetchImpl, streams } = fakeFetch("stream");
+  const { states, stop } = start(fetchImpl, [1000], 100);
+  streams[0].send(": connected\n\n");
+  await settle();
+  expect(vi.getTimerCount()).toBe(1); // the watchdog
+
+  stop();
+  expect(vi.getTimerCount()).toBe(0);
+  await settle();
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(60_000);
+
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(["connecting", "live"]);
+});
+
+test("after a drop one timer is pending at a time: the retry, then one watchdog, then one retry", async () => {
+  const { fetchImpl, streams } = fakeFetch("stream", "stream");
+  const { states } = start(fetchImpl, [1000], 100);
+  streams[0].send(": connected\n\n");
+  streams[0].end();
+  await settle();
+  expect(states).toEqual(["connecting", "live", "reconnecting"]);
+  expect(vi.getTimerCount()).toBe(1); // the retry
+
+  await vi.advanceTimersByTimeAsync(1000); // the retry runs and arms a watchdog of its own
+  expect(vi.getTimerCount()).toBe(1);
+  await vi.advanceTimersByTimeAsync(100); // that one fires once: one reconnect, no double
+  expect(states).toEqual(["connecting", "live", "reconnecting"]);
+  expect(vi.getTimerCount()).toBe(1); // the new retry
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(fetchImpl).toHaveBeenCalledTimes(3);
 });
