@@ -622,10 +622,11 @@ class StudioOrchestrator:
             )
             run.result = await self.team.run(ctx, self.observer)
 
-    async def follow_up(self, subtask_id: str, nudge: str) -> None:
+    async def follow_up(self, subtask_id: str, nudge: str, *, max_steps: int | None = None) -> None:
         """Send subtask `subtask_id`, which has run, back once more in its own conversation with `nudge` (as a
         fix round is), on the run's worktree, with no review: for a check that runs after the plan and before
-        the gate (`execute_task`'s `before_gate`). An engine failure is its result, never raised."""
+        the gate (`execute_task`'s `before_gate`). `max_steps` holds this one turn to fewer steps than the
+        role's. An engine failure is its result, never raised."""
         run = self.runs[subtask_id]
         role = self.cfg.roles[run.role]
         self.sink.emit("follow_up", subtask=subtask_id, role=run.role)
@@ -638,6 +639,8 @@ class StudioOrchestrator:
             nudge=nudge,
             attempt=self._next_attempt(run),  # after the done-check and fix rounds, if any
         )
+        if max_steps is not None:
+            ctx.max_steps = min(ctx.max_steps, max_steps)
         try:
             async with self.write_lock, self.sem:
                 run.result = await self.team.run(ctx, self.observer)
