@@ -126,6 +126,9 @@ class TeamContext:
     it resumes the conversation or starts it again. Every step record carries it (its trace folder)."""
     on_stuck: StuckAdvisor | None = None
     """The repeat guard's advisor (the supervisor, in a story run): its advice goes after repeated, cycled."""
+    on_prompt: Callable[[list[dict[str, Any]]], None] | None = None
+    """Told the messages this run opened with (the whole conversation, or for a continuation only the message
+    it added), so what the role was told can be read afterwards."""
 
 
 @dataclass

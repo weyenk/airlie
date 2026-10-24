@@ -55,6 +55,53 @@ function when(epoch) {
   return epoch ? new Date(epoch * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
 }
 
+/** The story's flow when airlie has built (or started) it, else null: a card with no story has nothing to show. */
+async function storyFlow(key) {
+  try {
+    return await request(`/v1/airlie/stories/${encodeURIComponent(key)}/flow`);
+  } catch {
+    return null; // 404: no story yet; an auth error shows on the next call that matters
+  }
+}
+
+function acceptanceSection(flow) {
+  if (!flow.acceptance.length) return null;
+  return h(
+    "section",
+    { class: "stack", style: { gap: "8px" }, "aria-label": "Acceptance criteria" },
+    h("h3", { class: "h3" }, `Acceptance criteria (${flow.acceptance.length})`),
+    flow.acceptance.map((c) =>
+      h("div", { class: "criterion" }, h("span", { class: "mono small" }, c.id), h("span", null, h("em", null, "Given "), c.given, h("em", null, " when "), c.when, h("em", null, " then "), c.then)),
+    ),
+  );
+}
+
+const JOB_CHIP = { passed: "ok", failed: "err", running: "run", pending: "mute", skipped: "mute" };
+
+function workflowSection(flow) {
+  const base = `#/workflows/${encodeURIComponent(flow.key)}`;
+  const layers = flow.nodes.filter((n) => n.kind === "layer");
+  return h(
+    "section",
+    { class: "stack", style: { gap: "8px" }, "aria-label": "Workflow" },
+    h("div", { class: "row spread" }, h("h3", { class: "h3" }, "Workflow"), h("a", { href: base, class: "btn small" }, "Open pipeline")),
+    flow.blocked ? h("div", { class: "error small" }, flow.blocked) : null,
+    layers.length
+      ? layers.map((n) =>
+          h(
+            "a",
+            { href: `${base}/${n.id}/build`, class: "child" },
+            h("span", { class: "mono small muted" }, n.label),
+            " ",
+            n.title || "",
+            " ",
+            chip(JOB_CHIP[n.status] || "mute", n.attempts > 1 ? `${n.status} · ${n.attempts} attempts` : n.status),
+          ),
+        )
+      : h("div", { class: "muted small" }, `Planned stage: ${flow.stage}. No layers yet.`),
+  );
+}
+
 export function render(root, [key], ctx) {
   let level = ""; // the filter; "" is every level
   let items = [];
@@ -272,14 +319,14 @@ export function render(root, [key], ctx) {
 
   // ---- the card modal: a wide, centered card over the dimmed board ----
   const backdrop = h("div", { class: "backdrop", hidden: true });
-  const modal = h("div", { class: "card modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
+  const modal = h("div", { class: "modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
   root.append(backdrop, modal); // siblings of the page, never inside .board-body's flex, so the columns keep full width
 
   let openKey = null; // the card that opened the modal: focus returns to it when the modal closes
   let trap = null; // the document keydown listener while the modal is open
 
   function focusable() {
-    return [...card.querySelectorAll("a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex='-1'])")].filter((el) => el.offsetParent !== null);
+    return [...modal.querySelectorAll("a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex='-1'])")].filter((el) => el.offsetParent !== null);
   }
 
   function onKey(ev) {
@@ -293,18 +340,18 @@ export function render(root, [key], ctx) {
     const els = focusable();
     if (!els.length) {
       ev.preventDefault();
-      card.focus();
+      modal.focus();
       return;
     }
     const first = els[0];
     const last = els[els.length - 1];
     const active = document.activeElement;
     if (ev.shiftKey) {
-      if (active === first || !card.contains(active)) {
+      if (active === first || !modal.contains(active)) {
         ev.preventDefault();
         last.focus();
       }
-    } else if (active === last || !card.contains(active)) {
+    } else if (active === last || !modal.contains(active)) {
       ev.preventDefault();
       first.focus();
     }
@@ -312,26 +359,28 @@ export function render(root, [key], ctx) {
 
   function openModal() {
     backdrop.hidden = false;
-    card.hidden = false;
+    modal.hidden = false;
     trap = onKey;
     document.addEventListener("keydown", trap, true);
-    card.focus(); // the card takes focus so the Tab trap has a place to start
+    modal.focus(); // the modal takes focus so the Tab trap has a place to start
   }
 
   function closeModal() {
     if (editor) editor.cancel(); // never close with an edit left open
     backdrop.hidden = true;
-    card.hidden = true;
+    modal.hidden = true;
     if (trap) {
       document.removeEventListener("keydown", trap, true);
       trap = null;
     }
-    if (location.hash !== "#/board") ctx.go("#/board");
+    // Change the address without the router: a hashchange would tear the board down and re-render it, losing
+    // the card that should take focus back. The modal is state over the same screen, not another screen.
+    if (location.hash !== "#/board") history.replaceState(null, "", "#/board");
     // drawColumns rebuilds the cards, so re-find the one that opened the modal by its key.
     const el = openKey ? columns.querySelector(`.item[data-key="${CSS.escape(openKey)}"]`) : null;
     openKey = null;
     if (el) el.focus();
-    else card.focus(); // the card is gone (e.g. the board was re-rendered): keep focus out of the backdrop
+    else modal.focus(); // the card is gone (e.g. the board was re-rendered): keep focus out of the backdrop
   }
 
   // Clicking the dimmed backdrop (not the card) closes the modal.
@@ -339,8 +388,8 @@ export function render(root, [key], ctx) {
 
   function modalFrame(titleText, ...body) {
     editor = null; // the card is rebuilt: no section editor survives it
-    clear(card);
-    card.append(
+    clear(modal);
+    modal.append(
       h("div", { class: "row spread modal-head" }, h("h2", { class: "h2 ellipsis" }, titleText), h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: closeModal }, icon("close", 18))),
       h("div", { class: "modal-body" }, ...body),
     );
@@ -358,6 +407,8 @@ export function render(root, [key], ctx) {
       modalFrame(k, h("div", { class: "error" }, e?.status === 404 ? "No such item." : e.message));
       return;
     }
+    if (gone) return;
+    const flow = item.level === "story" ? await storyFlow(k) : null;
     if (gone) return;
     openKey = k;
     const err = h("span", { class: "error" });
@@ -442,6 +493,8 @@ export function render(root, [key], ctx) {
       labelsRendered ? labelsEditor.box : null,
       h("div", { class: "row", "aria-label": "Move to" }, STATUSES.filter(([s]) => s !== item.status).map(([s, label]) => h("button", { type: "button", class: "btn small", onclick: () => patch({ status: s }) }, label))),
       descEditor.box,
+      flow ? acceptanceSection(flow) : null,
+      flow ? workflowSection(flow) : null,
       CHILD[item.level]
         ? h(
             "section",
@@ -529,6 +582,6 @@ export function render(root, [key], ctx) {
       trap = null;
     }
     backdrop.remove();
-    card.remove();
+    modal.remove();
   };
 }
