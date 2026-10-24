@@ -39,10 +39,17 @@ async function detailOf(response: Response): Promise<string> {
   }
 }
 
+let unauthorizedHandler: (() => void) | undefined;
+
+/** Who hears a 401 from any call: the session store, which sends the person to sign in. */
+export function onUnauthorized(fn: (() => void) | undefined): void {
+  unauthorizedHandler = fn;
+}
+
 /** JSON in, JSON out. A non-2xx answer is an ApiError. */
 export async function request<T>(
   path: string,
-  init: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+  init: { method?: string; body?: unknown; signal?: AbortSignal; quiet401?: boolean } = {},
 ): Promise<T> {
   const headers = authHeaders();
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
@@ -53,6 +60,7 @@ export async function request<T>(
     credentials: "same-origin",
     signal: init.signal,
   });
+  if (response.status === 401 && !init.quiet401) unauthorizedHandler?.();
   if (!response.ok) throw new ApiError(response.status, await detailOf(response));
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
