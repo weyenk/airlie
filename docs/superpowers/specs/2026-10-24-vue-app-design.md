@@ -46,7 +46,9 @@ Noah wants pages that update on their own, and components built once and reused.
   end to end (its steps, roles and artifacts) is its own design (proposed 2026-10-24 as a separate session); this
   app draws whatever steps that design's API describes.
 - The Start new work page (Noah, 2026-10-24: "kill this page"). Stories start from Chat's `/story` card or as Board
-  items the tick picks up; studio, single, teams and fork runs start from the command line, the API or OpenCode.
+  items the tick picks up; single, teams and fork runs start from the command line, the API or OpenCode. Noah
+  wants the studio to become a lighter board work type (one plan, one branch, less scrutiny than a story); that is
+  part of the work-types design, and once it lands the Board's Create starts studio runs from the web app.
   The Workflows area has no Start button and Chat has no Start quick reply. A studio run started elsewhere still
   gets its plan approved and its Stop in the workflow view.
 - Topology in the new app, for now. Noah likes its visuals, but the workflow view already shows most of the
