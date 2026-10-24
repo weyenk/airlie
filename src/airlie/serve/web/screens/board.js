@@ -272,8 +272,9 @@ export function render(root, [key], ctx) {
   // has landed (or failed, with the error in `err`); `cancel` discards; Escape reaches `cancel` through the
   // modal's keydown listener.
   let editor = null; // the one section editor open in the card, if any (AC13: at most one)
+  let reopen = null; // after a save rebuilds the card: the section the user had moved to, { name, value }
 
-  function sectionEditor({ rendered, field, save, err }) {
+  function sectionEditor({ name, rendered, field, save, err }) {
     const box = h("div", { class: "sec" });
     // The buttons take no focus on mousedown: the field's blur saves, and it would otherwise beat Cancel to it.
     const keepFocus = (ev) => ev.preventDefault();
@@ -294,6 +295,8 @@ export function render(root, [key], ctx) {
       if (editor === api) editor = null;
     };
     const api = {
+      name,
+      field,
       open() {
         if (editor && editor !== api) editor.save(); // at most one section is ever open
         rendered.hidden = true;
@@ -436,12 +439,18 @@ export function render(root, [key], ctx) {
     if (gone) return;
     openKey = k;
     const err = h("span", { class: "error" });
+    // A save rebuilds the card from the updated item. A section the user has moved to meanwhile (clicking it saved
+    // the previous one, AC13) opens again in the rebuilt card, with what was typed so far.
+    const rerender = () => {
+      reopen = editor ? { name: editor.name, value: editor.field.value } : null;
+      drawColumns();
+      openItem(k);
+    };
     const patch = async (body) => {
       try {
         const updated = await request(`/v1/board/items/${encodeURIComponent(k)}`, { method: "PATCH", body });
         items = items.map((i) => (i.key === k ? updated : i));
-        drawColumns();
-        openItem(k);
+        rerender();
       } catch (e) {
         if (e?.name !== "AuthError") err.textContent = e.message;
       }
@@ -453,6 +462,7 @@ export function render(root, [key], ctx) {
     const titleRendered = h("h2", { class: "modal-title" }, item.title); // the one heading that carries the title: clicking it edits it
     const titleField = h("input", { class: "field sec-field", value: item.title, "aria-label": "Title" });
     const titleEditor = sectionEditor({
+      name: "title",
       err,
       rendered: titleRendered,
       field: titleField,
@@ -464,6 +474,7 @@ export function render(root, [key], ctx) {
       : h("div", { class: "muted small sec-prompt" }, "Add a more detailed description…");
     const descField = h("textarea", { class: "field sec-field", rows: 5, "aria-label": "Description", value: item.description || "" }); // value, not a text child: the rendered text stays the only match for its words
     const descEditor = sectionEditor({
+      name: "desc",
       err,
       rendered: descRendered,
       field: descField,
@@ -476,6 +487,7 @@ export function render(root, [key], ctx) {
       : h("div", { class: "small muted sec-prompt" }, "Add a repository");
     const repoField = repoInput(repo);
     const repoEditor = sectionEditor({
+      name: "repo",
       err,
       rendered: repoRendered,
       field: repoField,
@@ -488,6 +500,7 @@ export function render(root, [key], ctx) {
     const labelsField = labelsInput(otherLabels(item.labels).join(", "));
     const labelsEditor = labelsRendered
       ? sectionEditor({
+          name: "labels",
           err,
           rendered: labelsRendered,
           field: labelsField,
@@ -502,19 +515,21 @@ export function render(root, [key], ctx) {
       if (!mine) return { c, api: null, box: text }; // someone else's, or an airlie role's: read-only, no editor (AC15)
       const field = h("textarea", { class: "field sec-field", rows: 2, value: c.text });
       const { box, api } = sectionEditor({
+        name: `comment:${c.id}`,
         err,
         rendered: text,
         field,
         save: () =>
           request(`/v1/board/items/${encodeURIComponent(k)}/comments/${c.id}`, { method: "PATCH", body: { text: field.value } }).then((updated) => {
             items = items.map((i) => (i.key === k ? updated : i));
-            drawColumns();
-            openItem(k);
+            rerender();
           }),
       });
       text.classList.add("comment-editable"); // the affordance: own comments open for editing
       return { c, api, box };
     });
+    const editors = { title: titleEditor, desc: descEditor, repo: repoEditor, labels: labelsEditor };
+    for (const ce of commentEditors) if (ce.api) editors[`comment:${ce.c.id}`] = { api: ce.api };
 
     modalFrame(
       item.key, // the head shows the key; the title is the h2 below, where it can be edited
@@ -565,6 +580,15 @@ export function render(root, [key], ctx) {
       h("div", { class: "small muted" }, `Created ${when(item.created_at)} by ${item.created_by || "?"} · updated ${when(item.updated_at)}`),
       err,
     );
+    if (reopen) {
+      const again = editors[reopen.name];
+      const typed = reopen.value;
+      reopen = null;
+      if (again) {
+        again.api.open();
+        again.api.field.value = typed;
+      }
+    }
   }
 
   function openNew(newLevel, parentKey, parentRepo = "") {

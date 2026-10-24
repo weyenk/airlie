@@ -103,7 +103,9 @@ def test_saving_the_description_patches_and_survives_a_reload(
     evidence.expect(modal, "the card shows the updated rendered markdown").to_contain_text(
         "The panel must be wide and centered"
     )
-    evidence.expect(modal.get_by_text("The panel must be wide").last, "the old text is gone").to_be_hidden()
+    evidence.expect(
+        modal.get_by_text("The panel must be wide", exact=True).last, "the old text is gone"
+    ).to_be_hidden()
 
     signed_in.reload()
     signed_in.locator("section.column").nth(5).wait_for()
