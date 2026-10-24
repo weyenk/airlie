@@ -46,8 +46,11 @@ test("running refetches on stories, runs and jobs changes, and on no other topic
   expect(api.listRunning).toHaveBeenCalledTimes(4);
 });
 
-test("the stories page loads with its query, and a new query loads again", async () => {
+test("no page is asked for until a query is set; then it loads with its query, and a new query loads again", async () => {
   const store = useWorkflowsStore();
+  await flush();
+  expect(api.listStories).not.toHaveBeenCalled();
+  store.query = {};
   await flush();
   expect(store.stories?.total).toBe(2);
   expect(api.listStories).toHaveBeenLastCalledWith({});
@@ -60,7 +63,7 @@ test("the stories page loads with its query, and a new query loads again", async
 });
 
 test("the stories page refetches when a story changes", async () => {
-  useWorkflowsStore();
+  useWorkflowsStore().query = {};
   await flush();
 
   change("stories", "AIR-1");
@@ -71,6 +74,7 @@ test("the stories page refetches when a story changes", async () => {
 
 test("a failed stories load keeps the last page and reports the error", async () => {
   const store = useWorkflowsStore();
+  store.query = {};
   await flush();
   api.listStories.mockRejectedValueOnce(new Error("offline"));
 

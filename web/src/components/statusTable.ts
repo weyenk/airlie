@@ -13,14 +13,15 @@ export const STATUS_TABLE: Record<ChipKind, Record<string, ChipSpec>> = {
     blocked: { label: "Blocked", family: "danger" },
     done: { label: "Done", family: "ok" },
   },
+  // keyed by the API's `stage`, the last stage a story finished: the chip names the one it is in now
   stage: {
-    refining: { label: "refining", family: "violet" },
-    planning: { label: "planning layers", family: "info", dot: true },
-    "planning layers": { label: "planning layers", family: "info", dot: true },
-    building: { label: "building", family: "info", dot: true },
-    publishing: { label: "publishing", family: "info", dot: true },
+    new: { label: "new", family: "chip" },
+    intake: { label: "refining", family: "violet" },
+    refine: { label: "planning layers", family: "info", dot: true },
+    layers: { label: "building", family: "info", dot: true },
+    build: { label: "publishing", family: "info", dot: true },
+    publish: { label: "in review", family: "warn" },
     review: { label: "in review", family: "warn" },
-    "in review": { label: "in review", family: "warn" },
     blocked: { label: "blocked", family: "danger" },
   },
   job: {

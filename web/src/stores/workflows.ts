@@ -8,8 +8,9 @@ import { liveResource } from "./live";
 export const useWorkflowsStore = defineStore("workflows", () => {
   const running = liveResource(["stories", "runs", "jobs"], listRunning);
 
-  const query = ref<StoryQuery>({});
-  const page = liveResource("stories", () => listStories(query.value));
+  // null until a screen sets it: nothing asks for a page nobody is showing
+  const query = ref<StoryQuery | null>(null);
+  const page = liveResource("stories", async () => (query.value ? listStories(query.value) : undefined));
   // a different query is a different page; the live resource only refetches when the feed says so
   watch(query, () => void page.refresh(), { deep: true });
 

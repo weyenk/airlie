@@ -24,7 +24,7 @@ test("a row shows key, title, stage, repository and last activity, and opens the
   const { w, router } = await show([story({})]);
   const row = w.get("[data-story=AIR-17]");
   expect(row.text()).toContain("Board card modal");
-  expect(row.text()).toContain("build");
+  expect(row.text()).toContain("publishing"); // build is the last stage finished: publishing is next
   expect(row.text()).toContain("weyenk/airlie");
   expect(row.text()).toContain("2 min ago");
   await row.trigger("click");
@@ -40,12 +40,25 @@ test("a blocked row shows its reason and a blocked chip; an unblocked one shows 
   expect(w.get("[data-story=AIR-17]").text()).not.toContain("Blocked");
 });
 
+test("the stage chip names the stage in progress", async () => {
+  const words: Record<string, string> = { new: "new", intake: "refining", refine: "planning layers", layers: "building", build: "publishing", publish: "in review", review: "in review" };
+  const { w } = await show(Object.keys(words).map((stage) => story({ key: `S-${stage}`, stage })));
+  for (const [stage, word] of Object.entries(words)) expect(w.get(`[data-story=S-${stage}]`).text()).toContain(word);
+  const none = await show([story({ key: "N-1", stage: null })]);
+  expect(none.w.text()).toContain("new");
+});
+
 test("long keys, titles and repositories truncate with their full text on hover", async () => {
   const long = "w".repeat(200);
   const { w } = await show([story({ key: "HDS-1234", title: long, repo: "o".repeat(100) + "/name" })]);
   expect(w.get(`[title='${long}']`).classes()).toContain("truncate");
   expect(w.get(`[title='${"o".repeat(100)}/name']`).classes()).toContain("truncate");
   expect(w.get("[data-story]").text()).toContain("HDS-1234");
+});
+
+test("a path repository shows its basename, with the full value on hover", async () => {
+  const { w } = await show([story({ repo: "/Users/n/git/airlie" })]);
+  expect(w.get("[title='/Users/n/git/airlie']").text()).toBe("airlie");
 });
 
 test("no stories says why", async () => {

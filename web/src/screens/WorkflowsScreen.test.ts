@@ -138,3 +138,71 @@ test("running rows come from the store", async () => {
   const { w } = await open();
   expect(w.get("a[href='/workflows/AIR-17']").text()).toContain("Card modal");
 });
+
+test("the first request is the address's own, never an unpaged one", async () => {
+  await open("/workflows?stage=build");
+  const pageCalls = api.listStories.mock.calls.map((c) => c[0]).filter((q) => q.size !== undefined);
+  expect(pageCalls).toEqual([{ page: 1, size: 25, stage: "build" }]);
+  expect(api.listStories.mock.calls.filter((c) => c[0].size === undefined)).toHaveLength(1); // the repository choices
+});
+
+test("an invalid stage or sort is dropped from the address and is not a filter", async () => {
+  const { w, router } = await open("/workflows?stage=nonsense&sort=bogus");
+  expect(router.currentRoute.value.query).toEqual({});
+  expect(lastPageCall()).toEqual({ page: 1, size: 25 });
+  expect(w.text()).not.toContain("No stories match");
+});
+
+test("a page past the last falls back to the last page", async () => {
+  const { router } = await open("/workflows?page=9");
+  expect(router.currentRoute.value.query.page).toBe("3");
+  expect(lastPageCall()).toEqual({ page: 3, size: 25 });
+});
+
+test("the Metrics window shows as a chip that clears both ends", async () => {
+  const { w, router } = await open("/workflows?active_from=1792800000&active_to=1792886400&stage=build");
+  expect(w.get("[data-window]").text()).toContain("Active");
+  await w.get("[data-window] button").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.query).toEqual({ stage: "build" });
+  expect(w.find("[data-window]").exists()).toBe(false);
+});
+
+test("typing keeps its trailing space while the address catches up", async () => {
+  vi.useFakeTimers();
+  try {
+    const { w } = await open();
+    const input = w.get("[data-search]");
+    await input.trigger("focus");
+    await input.setValue("card ");
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+    expect((input.element as HTMLInputElement).value).toBe("card ");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a failed repository list is shown, not swallowed", async () => {
+  api.listStories.mockImplementation(async (q: { size?: number }) => {
+    if (q.size === undefined) throw new Error("repos offline");
+    return { stories: STORIES, total: 2, page: 1, size: q.size };
+  });
+  const { w } = await open();
+  expect(w.text()).toContain("repos offline");
+});
+
+test("path repositories show their basename and send the full path back", async () => {
+  api.listStories.mockImplementation(async (q: { size?: number }) => ({
+    stories: [{ ...STORIES[0], repo: "/Users/n/git/airlie" }],
+    total: 1,
+    page: 1,
+    size: q.size ?? null,
+  }));
+  const { w, router } = await open();
+  const option = w.get("[data-filter=repo]").findAll("option")[1];
+  expect(option.text()).toBe("airlie");
+  await w.get("[data-filter=repo]").setValue("/Users/n/git/airlie");
+  await flushPromises();
+  expect(router.currentRoute.value.query.repo).toBe("/Users/n/git/airlie");
+});

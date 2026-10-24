@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronDown, ChevronLeft, ChevronRight, ListFilter, Search } from "lucide-vue-next";
+import { ChevronDown, ChevronLeft, ChevronRight, ListFilter, Search, X } from "lucide-vue-next";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { listStories, STAGES } from "@/api/workflows";
@@ -7,6 +7,8 @@ import type { Stage, StoryQuery } from "@/api/workflows";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { liveResource } from "@/stores/live";
 import { useWorkflowsStore } from "@/stores/workflows";
+import { date } from "./board/time";
+import { repoLabels } from "./workflows/repoLabel";
 import RunningCard from "./workflows/RunningCard.vue";
 import StoriesTable from "./workflows/StoriesTable.vue";
 
@@ -54,6 +56,30 @@ const parsed = computed<StoryQuery>(() => {
 });
 watch(parsed, (q) => (store.query = q), { immediate: true });
 
+/** The address `q` stands for: the defaults (page 1, sorted by activity) and anything invalid are left out. */
+function addressOf(q: StoryQuery): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (q.page && q.page > 1) out.page = String(q.page);
+  if (q.stage) out.stage = q.stage;
+  if (q.repo) out.repo = q.repo;
+  if (q.blocked !== undefined) out.blocked = String(q.blocked);
+  if (q.q) out.q = q.q;
+  if (q.sort) out.sort = q.sort;
+  if (q.active_from !== undefined) out.active_from = String(q.active_from);
+  if (q.active_to !== undefined) out.active_to = String(q.active_to);
+  return out;
+}
+// an invalid stage or sort, a page below 1 or a stray parameter is dropped from the address
+watch(
+  () => [parsed.value, route.query] as const,
+  ([q, current]) => {
+    const want = addressOf(q);
+    const have = Object.fromEntries(Object.entries(current).flatMap(([k, v]) => (typeof v === "string" ? [[k, v]] : [])));
+    if (JSON.stringify(Object.entries(want).sort()) !== JSON.stringify(Object.entries(have).sort())) void router.replace({ query: want });
+  },
+  { immediate: true },
+);
+
 /** The address for the current query with `change` applied; the defaults (page 1, sorted by activity) are left out. */
 function go(change: Record<string, string | undefined>, keepPage = false) {
   const next: Record<string, string> = {};
@@ -70,11 +96,22 @@ const sort = computed(() => parsed.value.sort ?? "activity");
 const blocked = computed(() => (parsed.value.blocked === undefined ? "all" : String(parsed.value.blocked)));
 
 const search = ref(parsed.value.q ?? "");
-watch(() => parsed.value.q, (q) => (search.value = q ?? ""));
 let timer: ReturnType<typeof setTimeout> | undefined;
+const focused = ref(false);
+// the address wins (Back, a link) unless the person is typing: their text is not overwritten
+watch(
+  () => parsed.value.q,
+  (q) => {
+    if (focused.value || timer !== undefined) return;
+    search.value = q ?? "";
+  },
+);
 function typed() {
   clearTimeout(timer);
-  timer = setTimeout(() => go({ q: search.value.trim() || undefined }), 300);
+  timer = setTimeout(() => {
+    timer = undefined;
+    go({ q: search.value.trim() || undefined });
+  }, 300);
 }
 onBeforeUnmount(() => clearTimeout(timer));
 
@@ -83,8 +120,10 @@ const all = liveResource("stories", () => listStories({}));
 const repos = computed(() => {
   const seen = new Set<string>(repo.value ? [repo.value] : []);
   for (const s of all.data.value?.stories ?? []) if (s.repo) seen.add(s.repo);
-  return [...seen].sort((a, b) => a.localeCompare(b));
+  return [...seen];
 });
+const labels = computed(() => repoLabels(repos.value));
+const repoOptions = computed(() => repos.value.map((value) => ({ value, label: labels.value.get(value) ?? value })).sort((a, b) => a.label.localeCompare(b.label)));
 
 const total = computed(() => store.stories?.total ?? 0);
 const page = computed(() => parsed.value.page ?? 1);
@@ -97,7 +136,21 @@ const numbers = computed(() => {
   const to = Math.min(pages.value, from + 6);
   return Array.from({ length: to - from + 1 }, (_, i) => from + i);
 });
-const filtered = computed(() => Object.keys(route.query).some((k) => k !== "page" && k !== "sort"));
+const filtered = computed(() => {
+  const p = parsed.value;
+  return Boolean(p.stage || p.repo || p.blocked !== undefined || p.q || p.active_from !== undefined || p.active_to !== undefined);
+});
+/** The Metrics window the list is narrowed to (active_from to active_to), shown so it can be removed. */
+const windowText = computed(() => {
+  const { active_from: from, active_to: to } = parsed.value;
+  if (from === undefined && to === undefined) return null;
+  const day = (e: number) => date(e);
+  return from !== undefined && to !== undefined ? `Active ${day(from)} – ${day(to)}` : from !== undefined ? `Active since ${day(from)}` : `Active until ${day(to as number)}`;
+});
+// a page past the last one (a stale link, or stories removed) falls back to the last
+watch([total, page, pages], () => {
+  if (store.stories && page.value > pages.value) go({ page: String(pages.value) }, true);
+});
 const sortedBy = computed(() => `${SORTS.find((s) => s.value === sort.value)?.label ?? "Last activity"}${sort.value === "activity" ? " ↓" : ""}`);
 
 const showFilters = ref(false);
@@ -128,6 +181,8 @@ const selectClass =
             placeholder="Search key or title"
             class="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none"
             @input="typed"
+            @focus="focused = true"
+            @blur="focused = false"
           >
         </label>
         <div
@@ -145,7 +200,7 @@ const selectClass =
             Repository
             <select data-filter="repo" :value="repo" :class="[selectClass, 'max-w-44']" @change="go({ repo: ($event.target as HTMLSelectElement).value || undefined })">
               <option value="">All</option>
-              <option v-for="r in repos" :key="r" :value="r">{{ r }}</option>
+              <option v-for="r in repoOptions" :key="r.value" :value="r.value" :title="r.value">{{ r.label }}</option>
             </select>
           </label>
           <div role="group" aria-label="Blocked" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
@@ -162,6 +217,16 @@ const selectClass =
             </button>
           </div>
         </div>
+        <span
+          v-if="windowText"
+          data-window
+          class="inline-flex h-[34px] items-center gap-1.5 rounded-md bg-muted pl-2.5 pr-1 text-[13px]"
+        >
+          {{ windowText }}
+          <button type="button" aria-label="Clear the active window" class="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground" @click="go({ active_from: undefined, active_to: undefined })">
+            <X class="size-3.5" />
+          </button>
+        </span>
         <span class="grow" />
         <button
           type="button"
@@ -184,7 +249,8 @@ const selectClass =
       </div>
 
       <ErrorBanner v-if="store.storiesError" :error="store.storiesError" />
-      <StoriesTable :stories="store.stories?.stories ?? []" :sorted="sortedBy" :empty="filtered ? 'No stories match' : 'No stories yet'" />
+      <ErrorBanner v-if="all.error.value" :error="all.error.value" />
+      <StoriesTable :stories="store.stories?.stories ?? []" :repo-labels="labels" :sorted="sortedBy" :empty="filtered ? 'No stories match' : 'No stories yet'" />
 
       <div class="flex items-center justify-between px-[18px] py-3 text-[13px] max-[640px]:px-4">
         <span class="text-muted-foreground">{{ first1 }}–{{ last1 }} of {{ total }}</span>

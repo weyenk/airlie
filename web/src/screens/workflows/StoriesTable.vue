@@ -5,8 +5,11 @@ import EmptyState from "@/components/EmptyState.vue";
 import ItemKey from "@/components/ItemKey.vue";
 import StatusChip from "@/components/StatusChip.vue";
 import { ago } from "@/screens/board/time";
+import { computed } from "vue";
+import { repoLabels as makeLabels } from "./repoLabel";
 
-withDefaults(defineProps<{ stories: StoryRow[]; empty: string; sorted?: string }>(), { sorted: "Last activity ↓" });
+const props = withDefaults(defineProps<{ stories: StoryRow[]; empty: string; sorted?: string; repoLabels?: Map<string, string> }>(), { sorted: "Last activity ↓", repoLabels: undefined });
+const labels = computed(() => props.repoLabels ?? makeLabels(props.stories.flatMap((s) => (s.repo ? [s.repo] : []))));
 
 const router = useRouter();
 const href = (s: StoryRow) => `/workflows/${encodeURIComponent(s.key)}`;
@@ -39,7 +42,7 @@ const GRID = "grid grid-cols-[90px_minmax(0,1fr)_150px_170px_120px] gap-x-4 max-
         <div v-if="s.blocked" class="mt-[3px] break-words text-xs text-danger-foreground">Blocked: {{ s.blocked }}</div>
       </div>
       <div class="max-[640px]:order-2"><StatusChip kind="stage" :value="s.blocked ? 'blocked' : (s.stage ?? 'new')" /></div>
-      <div v-if="s.repo" :title="s.repo" class="min-w-0 truncate text-muted-foreground max-[640px]:hidden">{{ s.repo }}</div>
+      <div v-if="s.repo" :title="s.repo" class="min-w-0 truncate text-muted-foreground max-[640px]:hidden">{{ labels.get(s.repo) ?? s.repo }}</div>
       <div v-else class="max-[640px]:hidden" />
       <div class="whitespace-nowrap text-muted-foreground max-[640px]:order-3 max-[640px]:ml-auto max-[640px]:text-xs">{{ ago(s.last_activity) }}</div>
     </div>
