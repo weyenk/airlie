@@ -58,6 +58,15 @@ def test_next_answers_a_path_that_is_not_a_path_with_the_page(tmp_path: Path) ->
     assert r.status_code == 200 and '<div id="app">' in r.text
 
 
+def test_next_answers_a_path_too_long_for_the_filesystem_with_the_page(tmp_path: Path) -> None:
+    c = client_with(tmp_path, built=True)
+    segment = "a" * 300  # past NAME_MAX; the second is a whole path past PATH_MAX
+    for path in (f"/next/{segment}", f"/next/assets/{segment}", "/next/" + "/".join(["a" * 200] * 30)):
+        r = c.get(path)
+        assert r.status_code == 200 and '<div id="app">' in r.text
+        assert r.headers["cache-control"] == "no-cache"
+
+
 def test_an_unbuilt_app_says_how_to_build_it_and_today_app_still_works(tmp_path: Path) -> None:
     c = client_with(tmp_path, built=False)
     for path in ("/next/", "/next/board"):

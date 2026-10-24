@@ -337,11 +337,12 @@ def create_app(
             return JSONResponse({"error": NEXT_NOT_BUILT}, status_code=503)
         try:
             target = (next_root / path).resolve()
-        except ValueError:  # a NUL byte: no such file
-            target = next_root
-        if target.is_relative_to(next_root) and target.is_file():
-            cache = IMMUTABLE if target.is_relative_to(next_root / "assets") else "no-cache"
-            return FileResponse(target, headers={"Cache-Control": cache})
+            served = target if target.is_relative_to(next_root) and target.is_file() else None
+        except (OSError, ValueError):  # a NUL byte, or a name too long for the filesystem: no such file
+            served = None
+        if served is not None:
+            cache = IMMUTABLE if served.is_relative_to(next_root / "assets") else "no-cache"
+            return FileResponse(served, headers={"Cache-Control": cache})
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     @app.middleware("http")
