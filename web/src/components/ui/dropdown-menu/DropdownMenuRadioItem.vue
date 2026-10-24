@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { DropdownMenuRadioItemEmits, DropdownMenuRadioItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
-import { Circle } from "@lucide/vue"
+import { Circle } from "lucide-vue-next"
 import { reactiveOmit } from "@vueuse/core"
-import { cn } from "cn"
+import { cn } from "@/lib/cn"
 import {
   DropdownMenuItemIndicator,
   DropdownMenuRadioItem,

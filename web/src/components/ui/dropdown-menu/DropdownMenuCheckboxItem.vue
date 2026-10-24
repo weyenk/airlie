@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { DropdownMenuCheckboxItemEmits, DropdownMenuCheckboxItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
-import { Check } from "@lucide/vue"
+import { Check } from "lucide-vue-next"
 import { reactiveOmit } from "@vueuse/core"
-import { cn } from "cn"
+import { cn } from "@/lib/cn"
 import {
   DropdownMenuCheckboxItem,
   DropdownMenuItemIndicator,

@@ -1,7 +1,8 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
 
-@custom-variant dark (&:is(.dark *));
+/* dark is the default theme (on :root); only .light turns it off */
+@custom-variant dark (&:not(.light, .light *));
 
 /* Map the tokens so bg-card, text-muted-foreground, border-border, bg-primary ... resolve to them. */
 @theme inline {

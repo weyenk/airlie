@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { HTMLAttributes } from "vue"
-import { cn } from "cn"
+import { cn } from "@/lib/cn"
 import { DialogClose } from "reka-ui"
 import { Button } from '@/components/ui/button'
 

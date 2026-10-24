@@ -25,3 +25,9 @@ test("card, input, textarea and progress render", () => {
 test("cn merges conflicting tailwind classes", () => {
   expect(cn("px-2", "px-4", false && "hidden")).toBe("px-4");
 });
+
+test("ui components merge classes with the local cn", () => {
+  const b = mount(Button, { props: { class: "bg-danger" }, slots: { default: "x" } });
+  expect(b.classes()).toContain("bg-danger");
+  expect(b.classes()).not.toContain("bg-primary");
+});
