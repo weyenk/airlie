@@ -269,7 +269,7 @@ export function render(root, [key], ctx) {
   // modal's keydown listener.
   let editor = null; // the one section editor open in the card, if any (AC13: at most one)
 
-  function sectionEditor({ rendered, field, save, cancel }) {
+  function sectionEditor({ rendered, field, save, err }) {
     const box = h("div", { class: "sec" });
     box.append(rendered, field);
     rendered.hidden = false; // the section shows its rendered text until it is clicked
@@ -429,6 +429,7 @@ export function render(root, [key], ctx) {
     const titleRendered = h("div", { class: "modal-title" }, item.title);
     const titleField = h("input", { class: "field sec-field", value: item.title, "aria-label": "Title" });
     const titleEditor = sectionEditor({
+      err,
       rendered: titleRendered,
       field: titleField,
       save: () => patch({ title: titleField.value.trim() || item.title }),
@@ -439,6 +440,7 @@ export function render(root, [key], ctx) {
       : h("div", { class: "muted small sec-prompt" }, "Add a more detailed description…");
     const descField = h("textarea", { class: "field sec-field", rows: 5, "aria-label": "Description" }, item.description || "");
     const descEditor = sectionEditor({
+      err,
       rendered: descRendered,
       field: descField,
       save: () => patch({ description: descField.value }),
@@ -450,6 +452,7 @@ export function render(root, [key], ctx) {
       : h("div", { class: "small muted sec-prompt" }, "Add a repository");
     const repoField = repoInput(repo);
     const repoEditor = sectionEditor({
+      err,
       rendered: repoRendered,
       field: repoField,
       save: () => patch({ labels: labelsFrom(repoField, labelsField) }), // the other labels keep their current value
@@ -459,11 +462,14 @@ export function render(root, [key], ctx) {
       ? h("div", { class: "small" }, "Labels ", otherLabels(item.labels).map((l) => chip("mute", l)))
       : null;
     const labelsField = labelsInput(otherLabels(item.labels).join(", "));
-    const labelsEditor = sectionEditor({
-      rendered: labelsRendered,
-      field: labelsField,
-      save: () => patch({ labels: labelsFrom(repoField, labelsField) }), // the repository keeps its current value
-    });
+    const labelsEditor = labelsRendered
+      ? sectionEditor({
+          err,
+          rendered: labelsRendered,
+          field: labelsField,
+          save: () => patch({ labels: labelsFrom(repoField, labelsField) }), // the repository keeps its current value
+        })
+      : null; // no labels beyond the repository: nothing rendered to click, so no editor
 
     const commentField = h("textarea", { class: "field", rows: 2, placeholder: "Add a comment", "aria-label": "Comment" });
     const commentEditors = (item.comments || []).map((c) => {
@@ -471,6 +477,7 @@ export function render(root, [key], ctx) {
       const text = h("div", { class: "comment-text" }, markdown(c.text));
       const field = h("textarea", { class: "field sec-field", rows: 2, value: c.text });
       const { box, api } = sectionEditor({
+        err,
         rendered: text,
         field,
         save: () =>
@@ -490,7 +497,7 @@ export function render(root, [key], ctx) {
       h("div", { class: "modal-status muted" }, `in ${statusLabel}`),
       h("div", { class: "row" }, statusChip(item.status), chip("mute", item.level), parent),
       repoEditor.box,
-      labelsRendered ? labelsEditor.box : null,
+      labelsEditor ? labelsEditor.box : null,
       h("div", { class: "row", "aria-label": "Move to" }, STATUSES.filter(([s]) => s !== item.status).map(([s, label]) => h("button", { type: "button", class: "btn small", onclick: () => patch({ status: s }) }, label))),
       descEditor.box,
       flow ? acceptanceSection(flow) : null,
