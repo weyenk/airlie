@@ -67,18 +67,18 @@ def test_each_card_sits_in_its_status_column(
     evidence.expect(card, f"'{title}' in {column}").to_be_visible()
 
 
-def test_a_card_opens_its_panel_and_close_puts_the_board_back(
+def test_a_card_opens_its_modal_and_close_puts_the_board_back(
     signed_in: Page, server: Server, evidence: Evidence
 ) -> None:
     signed_in.goto(f"{server.url}/#/board")
     signed_in.locator(".item", has_text="Board: panel width").click()
     evidence.expect(signed_in, "the card's own address").to_have_url(re.compile(r"#/board/AIR-4$"))
-    panel = signed_in.locator("aside.panel")
-    evidence.expect(panel, "the item panel opens").to_be_visible()
-    title = panel.get_by_role("heading", name="Board: panel width")
-    evidence.expect(title, "the panel shows the card's title").to_be_visible()
-    panel.get_by_role("button", name="Close").click()
-    evidence.expect(panel, "Close hides the panel").to_be_hidden()
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
+    evidence.expect(modal, "the card modal opens").to_be_visible()
+    title = modal.get_by_role("heading", name="Board: panel width")
+    evidence.expect(title, "the modal shows the card's title").to_be_visible()
+    modal.get_by_role("button", name="Close").click()
+    evidence.expect(modal, "Close hides the modal").to_be_hidden()
     evidence.expect(signed_in, "back on the board's address").to_have_url(re.compile(r"#/board$"))
 
 
@@ -110,17 +110,18 @@ def _board(server: Server) -> BoardStore:
 
 def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evidence: Evidence) -> None:
     signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    panel = signed_in.locator("aside.panel")
-    evidence.expect(panel, "the panel names the card's repository").to_contain_text(
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
+    evidence.expect(modal, "the modal names the card's repository").to_contain_text(
         "Repository weyenk/airlie"
     )
-    panel.get_by_text("Edit", exact=True).click()
-    repo = panel.get_by_label("Repository")
-    evidence.expect(repo, "Edit holds the repository as owner/name").to_have_value("weyenk/airlie")
+    modal.get_by_text("weyenk/airlie").last.click()
+    repo = modal.get_by_label("Repository")
+    evidence.expect(repo, "the repository turns into an input holding owner/name").to_have_value(
+        "weyenk/airlie"
+    )
     repo.fill("weyenk/OpenHand")
-    panel.get_by_label("Labels").fill("web, board")
-    panel.get_by_role("button", name="Save").click()
-    evidence.expect(panel, "the panel names the new repository").to_contain_text("Repository weyenk/OpenHand")
+    modal.get_by_role("button", name="Save").click()
+    evidence.expect(modal, "the modal names the new repository").to_contain_text("Repository weyenk/OpenHand")
     card = signed_in.locator(".item", has_text="Board: panel width")
     evidence.expect(card, "the card carries the new repo: label").to_contain_text("repo:weyenk/OpenHand")
     board = _board(own_server)
@@ -128,23 +129,22 @@ def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evide
         labels = board.get("AIR-4").labels
     finally:
         board.close()
-    evidence.shot(
-        "the board stored one repo: label and the others",
-        card,
-        held=labels == ("repo:weyenk/OpenHand", "web", "board"),
-    )
-    assert labels == ("repo:weyenk/OpenHand", "web", "board")
+    evidence.shot("the board stored the one repo: label", card, held=labels == ("repo:weyenk/OpenHand",))
+    assert labels == ("repo:weyenk/OpenHand",)
 
 
 def test_a_repository_that_is_not_owner_slash_name_is_not_saved(
     signed_in: Page, own_server: Server, evidence: Evidence
 ) -> None:
     signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    panel = signed_in.locator("aside.panel")
-    panel.get_by_text("Edit", exact=True).click()
-    panel.get_by_label("Repository").fill("OpenHand")
-    panel.get_by_role("button", name="Save").click()
-    evidence.expect(panel, "the panel keeps the old repository").to_contain_text("Repository weyenk/airlie")
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
+    modal.get_by_text("weyenk/airlie").last.click()
+    modal.get_by_label("Repository").fill("OpenHand")
+    modal.get_by_role("button", name="Save").click()
+    evidence.expect(modal, "the modal keeps the old repository").to_contain_text("Repository weyenk/airlie")
+    evidence.expect(modal, "and says what a repository looks like").to_contain_text(
+        "owner/name, the GitHub repository"
+    )
     board = _board(own_server)
     try:
         labels = board.get("AIR-4").labels
@@ -157,15 +157,15 @@ def test_a_new_child_starts_with_its_parents_repository(
     signed_in: Page, own_server: Server, evidence: Evidence
 ) -> None:
     signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    panel = signed_in.locator("aside.panel")
-    panel.get_by_role("button", name="Add child").click()
-    repo = panel.get_by_label("Repository")
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
+    modal.get_by_role("button", name="Add child").click()
+    repo = modal.get_by_label("Repository")
     evidence.expect(repo, "the new subtask has its story's repository").to_have_value("weyenk/airlie")
-    panel.get_by_label("Title").fill("Panel width on phones")
+    modal.get_by_label("Title").fill("Panel width on phones")
     repo.fill("weyenk/OpenHand")
-    panel.get_by_role("button", name="Create").click()
+    modal.get_by_role("button", name="Create").click()
     evidence.expect(signed_in, "Create opens the new card").to_have_url(re.compile(r"#/board/AIR-8$"))
-    evidence.expect(panel, "the new card names its repository").to_contain_text("Repository weyenk/OpenHand")
+    evidence.expect(modal, "the new card names its repository").to_contain_text("Repository weyenk/OpenHand")
     board = _board(own_server)
     try:
         made = board.get("AIR-8")
