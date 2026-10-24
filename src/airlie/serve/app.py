@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
@@ -45,6 +45,14 @@ from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, pl
 WEB_DIR = Path(__file__).parent / "web"
 """The web app's static files: `GET /` is its index.html, `/app/*` the rest. No key: the shell is harmless
 without one, and every call it makes goes to /v1, which keeps the guard."""
+
+NEXT_DIR = Path(__file__).parent / "web_next"
+"""The Vue app's build (`task web:build`, a Vite build with base `/next/`): `GET /next/*` serves it, beside
+the app above. Not in git; without it `/next` answers 503 and says how to build it."""
+
+NEXT_NOT_BUILT = "the new web app is not built: run task web:build"
+IMMUTABLE = "public, max-age=31536000, immutable"
+"""The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
 
 
 class ToolCallStreamRepair:
@@ -198,11 +206,13 @@ def create_app(
     story_job: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
+    next_dir: Path | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job).
-    `auth_store` (default: observability.state_dir/auth.sqlite) and `now` are for tests."""
+    `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
+    default NEXT_DIR) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
@@ -310,6 +320,29 @@ def create_app(
         return FileResponse(WEB_DIR / "index.html")
 
     app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
+
+    next_root = (next_dir or NEXT_DIR).resolve()
+
+    @app.get("/next", include_in_schema=False)
+    async def next_slash() -> RedirectResponse:
+        return RedirectResponse("/next/")
+
+    @app.get("/next/{path:path}", include_in_schema=False)
+    async def next_app(path: str) -> Response:
+        """The Vue app: a path naming a file inside its build is that file (a hashed one under assets/ is
+        cached for good), anything else is index.html, which the app's router reads. Like `/`, it needs no
+        sign-in: every call the app makes goes to /v1, which keeps the guard."""
+        index = next_root / "index.html"
+        if not index.is_file():
+            return JSONResponse({"error": NEXT_NOT_BUILT}, status_code=503)
+        try:
+            target = (next_root / path).resolve()
+        except ValueError:  # a NUL byte: no such file
+            target = next_root
+        if target.is_relative_to(next_root) and target.is_file():
+            cache = IMMUTABLE if target.is_relative_to(next_root / "assets") else "no-cache"
+            return FileResponse(target, headers={"Cache-Control": cache})
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     @app.middleware("http")
     async def _revalidate_static(request: Request, call_next: Callable[..., Any]) -> Any:
