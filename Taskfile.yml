@@ -178,13 +178,21 @@ tasks:
     cmds:
       - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
 
-  web:install:
-    desc: "Install the Vue app's npm dependencies exactly as web/package-lock.json pins them (npm ci); needs node 26"
+  # Task shows a command's output but discards a `sh:` precondition's, so the node check is a task of its own: its
+  # message (which node was found) reaches the user, and as a dep of web:install it runs even when npm ci is skipped.
+  web:node:
+    internal: true
+    silent: true
     dir: web
     run: once
-    preconditions:
-      - sh: node scripts/check-node.mjs
-        msg: install node 26
+    cmds:
+      - node scripts/check-node.mjs
+
+  web:install:
+    desc: "Install the Vue app's npm dependencies exactly as web/package-lock.json pins them (npm ci); needs node 26 first on the PATH"
+    dir: web
+    run: once
+    deps: [web:node]
     # npm ci empties node_modules and needs the network, so it runs only when the lockfile moved or node_modules is gone
     sources:
       - package.json

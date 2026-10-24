@@ -8,7 +8,8 @@ memory bank between the teams and an EdgeAgent-style scheduler, exactly as laid 
 
 ## Install
 
-Three tools, then everything else is a task (node 26 builds the web app in `web/`):
+Three tools, then everything else is a task (node 26 builds the web app in `web/`, and must be the first `node` on
+your `PATH`: an nvm node that comes first stops the web tasks with a message naming it):
 
 ```bash
 brew install go-task uv node@26
