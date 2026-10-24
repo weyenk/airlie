@@ -38,7 +38,7 @@ Run `task` to list them. The ones that exist today:
 | Task | Does |
 | --- | --- |
 | `task setup` | one-time, idempotent setup |
-| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools, vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
+| `task doctor` | validates `airlie.yaml`, checks the wired-memory limit, RAM, tools (node against the pin in `web/package.json`: the first `node` on your `PATH` must be that major), vllm-mlx, model weights, and the spec's memory projection; exit 1 on any red row |
 | `task config` | prints the fully resolved configuration (`airlie.yaml` + `airlie.local.yaml`) |
 | `task searxng:up` / `:status` / `:down` / `:destroy` | SearXNG for the web roles' `web_search`, in a Tart Linux VM reached at `127.0.0.1:8888` (the first `up` downloads a few GB and installs it); `docs/integrations/web-tools.md` |
 | `task web:e2e [-- --roles chief,ux]` | asks every web-enabled role (chief, research, ux, design, reviewer) about something after its training data and checks it searched and cited what it found |
