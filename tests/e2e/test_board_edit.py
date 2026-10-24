@@ -66,7 +66,7 @@ def test_clicking_the_description_opens_a_prefilled_editor(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    rendered = modal.get_by_text("The panel must be wide").last()
+    rendered = modal.get_by_text("The panel must be wide").last
 
     rendered.click()
 
@@ -93,7 +93,7 @@ def test_saving_the_description_patches_and_survives_a_reload(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    rendered = modal.get_by_text("The panel must be wide").last()
+    rendered = modal.get_by_text("The panel must be wide").last
 
     rendered.click()
     editor = modal.get_by_label("Description")
@@ -103,7 +103,7 @@ def test_saving_the_description_patches_and_survives_a_reload(
     evidence.expect(modal, "the card shows the updated rendered markdown").to_contain_text(
         "The panel must be wide and centered"
     )
-    evidence.expect(modal.get_by_text("The panel must be wide").last(), "the old text is gone").to_be_hidden()
+    evidence.expect(modal.get_by_text("The panel must be wide").last, "the old text is gone").to_be_hidden()
 
     signed_in.reload()
     signed_in.locator("section.column").nth(5).wait_for()
@@ -132,7 +132,7 @@ def test_escape_in_the_description_editor_discards_and_keeps_the_modal(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    rendered = modal.get_by_text("The panel must be wide").last()
+    rendered = modal.get_by_text("The panel must be wide").last
 
     rendered.click()
     editor = modal.get_by_label("Description")
@@ -190,7 +190,7 @@ def test_clicking_the_empty_description_prompt_opens_an_empty_editor(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    prompt = modal.get_by_text("Add a more detailed description…").last()
+    prompt = modal.get_by_text("Add a more detailed description…").last
 
     evidence.expect(prompt, "the empty-description prompt is shown").to_be_visible()
     prompt.click()
@@ -215,7 +215,7 @@ def test_clicking_the_empty_repository_prompt_opens_an_input_and_saving_adds_a_r
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    prompt = modal.get_by_text("Add a repository").last()
+    prompt = modal.get_by_text("Add a repository").last
 
     evidence.expect(prompt, "the empty-repository prompt is shown").to_be_visible()
     prompt.click()
@@ -243,7 +243,7 @@ def test_clicking_the_repository_opens_a_prefilled_input_and_saving_updates_the_
     with the current owner/name, and saving updates the repo:<owner>/<name> label."""
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    repo_text = modal.get_by_text("weyenk/airlie").last()
+    repo_text = modal.get_by_text("weyenk/airlie").last
 
     evidence.expect(repo_text, "the repository is displayed").to_be_visible()
     repo_text.click()
@@ -279,7 +279,7 @@ def test_clicking_the_labels_opens_a_prefilled_input_and_saving_updates_them(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    labels_text = modal.get_by_text("web").last()
+    labels_text = modal.get_by_text("web").last
 
     evidence.expect(labels_text, "the non-repo labels are displayed").to_be_visible()
     labels_text.click()
@@ -308,7 +308,7 @@ def test_clicking_the_title_opens_a_prefilled_input_and_enter_saves(
     title, and pressing Enter saves it."""
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    title_text = modal.get_by_role("heading", name=TITLE).last()
+    title_text = modal.get_by_role("heading", name=TITLE).last
 
     evidence.expect(title_text, "the title is shown as text").to_be_visible()
     title_text.click()
@@ -344,12 +344,12 @@ def test_clicking_a_different_section_saves_the_first_and_opens_the_second(
     modal = _modal(signed_in)
 
     # Open the description editor and change it.
-    modal.get_by_text("The panel must be wide").last().click()
+    modal.get_by_text("The panel must be wide").last.click()
     desc_editor = modal.get_by_label("Description")
     desc_editor.fill("The panel must be wide and centered")
 
     # Click a different section (the title): the description editor must save and close.
-    modal.get_by_role("heading", name=TITLE).last().click()
+    modal.get_by_role("heading", name=TITLE).last.click()
 
     evidence.expect(desc_editor, "the first section is closed").to_be_hidden()
     title_editor = modal.get_by_label("Title")
@@ -375,7 +375,7 @@ def test_clicking_own_comment_opens_a_prefilled_editor_and_saving_patches_it(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    comment_text = modal.get_by_text("first note").last()
+    comment_text = modal.get_by_text("first note").last
 
     evidence.expect(comment_text, "the comment is displayed").to_contain_text("first note")
     comment_text.click()
@@ -410,7 +410,7 @@ def test_clicking_someone_elses_comment_stays_read_only(
 
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
-    comment_text = modal.get_by_text("a note from noah").last()
+    comment_text = modal.get_by_text("a note from noah").last
 
     evidence.expect(comment_text, "the comment is displayed").to_contain_text("a note from noah")
     comment_text.click()
@@ -438,7 +438,7 @@ def test_escape_cancels_only_the_open_editor_and_keeps_the_modal(
     open_modal(signed_in, own_server.url)
     modal = _modal(signed_in)
 
-    modal.get_by_text("The panel must be wide").last().click()
+    modal.get_by_text("The panel must be wide").last.click()
     editor = modal.get_by_label("Description")
     editor.fill("changed, then discarded")
     editor.press("Escape")
@@ -446,7 +446,7 @@ def test_escape_cancels_only_the_open_editor_and_keeps_the_modal(
     evidence.expect(modal, "the modal stays open").to_be_visible()
     evidence.expect(editor, "the description editor is cancelled").to_be_hidden()
     evidence.expect(
-        modal.get_by_text("The panel must be wide").last(), "the description reverts"
+        modal.get_by_text("The panel must be wide").last, "the description reverts"
     ).to_contain_text("The panel must be wide")
     evidence.expect(modal, "the other sections stay intact").to_contain_text("in Approved")
     evidence.expect(

@@ -1,6 +1,6 @@
 // The Board: columns by status from /v1/board/items, a level filter, and a centered card modal for an item's
 // children, description, comments and status buttons, plus New initiative. Built against the local-board plan's routes.
-import { request, whoami } from "../api.js";
+import { getKey, request } from "../api.js";
 import { append, chip, clear, h, icon } from "../dom.js";
 import { markdown } from "../md.js";
 
@@ -139,8 +139,12 @@ export function render(root, [key], ctx) {
 
   // ---- data ----
   async function load() {
-    whoami().then((p) => {
+    // Who we are, asked with the stored key (whoami() asks without one, for sessions the server knows by cookie
+    // or Tailscale): an explicit key keeps a 401 from opening Sign in; nobody known leaves every comment read-only.
+    request("/v1/auth/me", { key: getKey() }).then((p) => {
       if (!gone) me = p; // fetched once on board load; a comment is editable only when it is ours
+    }).catch(() => {
+      /* nobody the server knows: me stays null */
     });
     try {
       ({ items } = await request("/v1/board/items"));
@@ -271,12 +275,21 @@ export function render(root, [key], ctx) {
 
   function sectionEditor({ rendered, field, save, err }) {
     const box = h("div", { class: "sec" });
-    box.append(rendered, field);
+    // The buttons take no focus on mousedown: the field's blur saves, and it would otherwise beat Cancel to it.
+    const keepFocus = (ev) => ev.preventDefault();
+    const controls = h(
+      "div",
+      { class: "row sec-controls", hidden: true },
+      h("button", { type: "button", class: "btn primary small", onmousedown: keepFocus, onclick: () => api.save() }, "Save"),
+      h("button", { type: "button", class: "btn small", onmousedown: keepFocus, onclick: () => api.cancel() }, "Cancel"),
+    );
+    box.append(rendered, field, controls);
     rendered.hidden = false; // the section shows its rendered text until it is clicked
-    field.hidden = true; // …and the editor waits, hidden, in its spot
+    field.hidden = true; // …and the editor waits, hidden, in its spot, with its Save and Cancel
     let busy = false;
     const close = () => {
       field.hidden = true;
+      controls.hidden = true;
       rendered.hidden = false;
       if (editor === api) editor = null;
     };
@@ -285,16 +298,27 @@ export function render(root, [key], ctx) {
         if (editor && editor !== api) editor.save(); // at most one section is ever open
         rendered.hidden = true;
         field.hidden = false;
+        controls.hidden = false;
         editor = api;
         field.focus();
       },
       save() {
         if (field.hidden || busy) return;
+        if (typeof field.checkValidity === "function" && !field.checkValidity()) {
+          // e.g. a repository that is not owner/name: nothing is sent and the section shows its previous value
+          err.textContent = [field.validationMessage, field.title].filter(Boolean).join(" ");
+          close();
+          return;
+        }
         busy = true;
         close();
-        save().catch((e) => {
-          if (e?.name !== "AuthError") err.textContent = e.message; // a 403 says so, it does not revert silently
-        });
+        save()
+          .catch((e) => {
+            if (e?.name !== "AuthError") err.textContent = e.message; // a 403 says so, it does not revert silently
+          })
+          .finally(() => {
+            busy = false; // a failed save leaves the section editable again
+          });
       },
       cancel() {
         close();
@@ -311,8 +335,8 @@ export function render(root, [key], ctx) {
         api.cancel();
       }
     });
-    field.addEventListener("blur", () => {
-      if (!field.hidden) api.save(); // clicking away saves
+    field.addEventListener("blur", (ev) => {
+      if (!field.hidden && !controls.contains(ev.relatedTarget)) api.save(); // clicking away saves; a move to Save or Cancel waits for the button
     });
     return { box, api };
   }
@@ -426,7 +450,7 @@ export function render(root, [key], ctx) {
     const [, statusLabel] = STATUSES.find(([s]) => s === item.status) || [item.status, item.status];
 
     // ---- the editable sections: title, description, repository, labels, own comments ----
-    const titleRendered = h("div", { class: "modal-title" }, item.title);
+    const titleRendered = h("h2", { class: "modal-title" }, item.title); // the one heading that carries the title: clicking it edits it
     const titleField = h("input", { class: "field sec-field", value: item.title, "aria-label": "Title" });
     const titleEditor = sectionEditor({
       err,
@@ -438,7 +462,7 @@ export function render(root, [key], ctx) {
     const descRendered = item.description
       ? h("div", { class: "desc" }, markdown(item.description))
       : h("div", { class: "muted small sec-prompt" }, "Add a more detailed description…");
-    const descField = h("textarea", { class: "field sec-field", rows: 5, "aria-label": "Description" }, item.description || "");
+    const descField = h("textarea", { class: "field sec-field", rows: 5, "aria-label": "Description", value: item.description || "" }); // value, not a text child: the rendered text stays the only match for its words
     const descEditor = sectionEditor({
       err,
       rendered: descRendered,
@@ -475,6 +499,7 @@ export function render(root, [key], ctx) {
     const commentEditors = (item.comments || []).map((c) => {
       const mine = me && c.author === (me.name || me.user_id); // only own comments are editable
       const text = h("div", { class: "comment-text" }, markdown(c.text));
+      if (!mine) return { c, api: null, box: text }; // someone else's, or an airlie role's: read-only, no editor (AC15)
       const field = h("textarea", { class: "field sec-field", rows: 2, value: c.text });
       const { box, api } = sectionEditor({
         err,
@@ -487,12 +512,12 @@ export function render(root, [key], ctx) {
             openItem(k);
           }),
       });
-      if (mine) text.classList.add("comment-editable"); // the affordance: only own comments open for editing
+      text.classList.add("comment-editable"); // the affordance: own comments open for editing
       return { c, api, box };
     });
 
     modalFrame(
-      `${item.key} · ${item.title}`,
+      item.key, // the head shows the key; the title is the h2 below, where it can be edited
       titleEditor.box,
       h("div", { class: "modal-status muted" }, `in ${statusLabel}`),
       h("div", { class: "row" }, statusChip(item.status), chip("mute", item.level), parent),

@@ -114,11 +114,12 @@ def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evide
     evidence.expect(modal, "the modal names the card's repository").to_contain_text(
         "Repository weyenk/airlie"
     )
-    modal.get_by_text("Edit", exact=True).click()
+    modal.get_by_text("weyenk/airlie").last.click()
     repo = modal.get_by_label("Repository")
-    evidence.expect(repo, "Edit holds the repository as owner/name").to_have_value("weyenk/airlie")
+    evidence.expect(repo, "the repository turns into an input holding owner/name").to_have_value(
+        "weyenk/airlie"
+    )
     repo.fill("weyenk/OpenHand")
-    modal.get_by_label("Labels").fill("web, board")
     modal.get_by_role("button", name="Save").click()
     evidence.expect(modal, "the modal names the new repository").to_contain_text("Repository weyenk/OpenHand")
     card = signed_in.locator(".item", has_text="Board: panel width")
@@ -128,12 +129,8 @@ def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evide
         labels = board.get("AIR-4").labels
     finally:
         board.close()
-    evidence.shot(
-        "the board stored one repo: label and the others",
-        card,
-        held=labels == ("repo:weyenk/OpenHand", "web", "board"),
-    )
-    assert labels == ("repo:weyenk/OpenHand", "web", "board")
+    evidence.shot("the board stored the one repo: label", card, held=labels == ("repo:weyenk/OpenHand",))
+    assert labels == ("repo:weyenk/OpenHand",)
 
 
 def test_a_repository_that_is_not_owner_slash_name_is_not_saved(
@@ -141,10 +138,13 @@ def test_a_repository_that_is_not_owner_slash_name_is_not_saved(
 ) -> None:
     signed_in.goto(f"{own_server.url}/#/board/AIR-4")
     modal = signed_in.locator("[role='dialog'][aria-modal='true']")
-    modal.get_by_text("Edit", exact=True).click()
+    modal.get_by_text("weyenk/airlie").last.click()
     modal.get_by_label("Repository").fill("OpenHand")
     modal.get_by_role("button", name="Save").click()
     evidence.expect(modal, "the modal keeps the old repository").to_contain_text("Repository weyenk/airlie")
+    evidence.expect(modal, "and says what a repository looks like").to_contain_text(
+        "owner/name, the GitHub repository"
+    )
     board = _board(own_server)
     try:
         labels = board.get("AIR-4").labels
