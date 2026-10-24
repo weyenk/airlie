@@ -64,6 +64,17 @@ WRITE_TOOLS = {"write_file", "edit_file", "shell", "git"}
 SKILL_QUESTION = "Which guideline should this specialist follow as the primary lens?"
 CHARS_PER_TOKEN = 4
 """A rough size of a stored conversation, without a tokenizer: about four characters to a token."""
+HANDOFF_CHARS = 280
+"""How much of what one agent hands another a `handoff` event keeps: enough for the topology page's edge."""
+
+
+def findings_text(review: Review) -> str:
+    """A review as its hand-off back to the writer: the verdict, then its findings (blocking first)."""
+    if not review.findings:
+        return f"{review.verdict}: no findings"
+    ordered = sorted(review.findings, key=lambda f: f.severity != "blocking")
+    where = [f"{f.file}:{f.line}" if f.line is not None else f.file for f in ordered]
+    return f"{review.verdict}: " + "; ".join(f"{w} {f.claim}" for w, f in zip(where, ordered, strict=True))
 
 
 def _estimated_tokens(state: dict[str, Any]) -> int:
@@ -464,6 +475,11 @@ class StudioOrchestrator:
         run.skill, skill_text = await self._skill(run.subtask, role)
         preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
         writes = self._writes(role)
+        self._handoff("chief", run.subtask.id, "brief", run.subtask.brief)
+        for d in run.subtask.depends_on:
+            dep = self.runs.get(d)
+            if dep is not None and dep.result is not None:
+                self._handoff(d, run.subtask.id, "result", dep.result.final_text)
         self.sink.emit("subtask_start", subtask=run.subtask.id, role=run.role, skill=run.skill, writes=writes)
         try:
             if writes:  # the lock first: a writer waiting its turn must not hold a parallel slot
@@ -494,6 +510,12 @@ class StudioOrchestrator:
             steps=res.steps,
             fix_rounds=run.fix_rounds,
         )
+        self._handoff(run.subtask.id, "chief", "result", res.final_text)
+
+    def _handoff(self, src: str, dst: str, what: str, text: str, **more: Any) -> None:
+        """Log what agent `src` hands agent `dst` (a subtask id, or chief, reviewer, synthesis): the topology
+        page draws it as an edge, `what` its kind and `text` the start of what went across."""
+        self.sink.emit("handoff", src=src, dst=dst, what=what, text=text[:HANDOFF_CHARS], **more)
 
     @staticmethod
     def _next_attempt(run: SubtaskRun) -> int:
@@ -545,11 +567,14 @@ class StudioOrchestrator:
         reviewer = Reviewer(self.engine, rv.role, self.cfg.roles[rv.role], self._lookup_tools(rv.role))
         for round_no in range(rv.rounds + 1):
             commit_wip(self.worktree, f"studio: {run.subtask.id} (round {round_no})")
+            changed = changed_files(self.worktree, before)
             files = {
                 p: (self.worktree / p).read_text(errors="replace")
-                for p in changed_files(self.worktree, before)
+                for p in changed
                 if (self.worktree / p).is_file()
             }
+            listed = f"{len(changed)} file{'' if len(changed) == 1 else 's'} changed: {', '.join(changed)}"
+            self._handoff(run.subtask.id, "reviewer", "diff", listed, role=rv.role)
             try:
                 review = await reviewer.review(
                     run.subtask.brief,
@@ -575,6 +600,7 @@ class StudioOrchestrator:
                 blocking=len(review.blocking),
                 round=round_no,
             )
+            self._handoff("reviewer", run.subtask.id, "findings", findings_text(review), role=rv.role)
             if review.verdict != "request_changes" or not review.blocking or round_no >= rv.rounds:
                 return
             run.fix_rounds += 1
@@ -625,6 +651,7 @@ class StudioOrchestrator:
             steps=res.steps,
             fix_rounds=run.fix_rounds,
         )
+        self._handoff(subtask_id, "chief", "result", res.final_text)
 
     def lock(self, paths: Sequence[str], owner: str, *, since: str | None = None) -> None:
         """From now on only role `owner` may write `paths` (from the worktree's root): the file tools refuse
@@ -910,6 +937,7 @@ class StudioOrchestrator:
             final = parsed.answer if isinstance(parsed, Synthesis) else text
             open_q = list(parsed.open_questions) if isinstance(parsed, Synthesis) else []
             self.sink.emit("synthesis", chars=len(final), open_questions=open_q)
+            self._handoff("chief", "synthesis", "answer", final)
             return final
         return ""  # unreachable: the last round always returns
 

@@ -185,7 +185,7 @@ export function render(root, [rawId], ctx) {
       h(
         "div",
         { class: "job-grid" },
-        h("section", { class: "card pad stack" }, h("div", { class: "row spread" }, h("h2", { class: "h2" }, "Agents"), h("span", { class: "small muted" }, "tap a circle for its steps")), treeBox, legend),
+        h("section", { class: "card pad stack" }, h("div", { class: "row spread" }, h("h2", { class: "h2" }, "Agents"), h("a", { class: "small", href: `#/topology/${encodeURIComponent(id)}` }, "Topology view")), treeBox, legend),
         h("aside", { class: "stack", style: { gap: "20px" } }, detail, resultBox),
       ),
       h("section", { class: "card pad stack" }, h("h2", { class: "h2" }, "Events"), timeline),

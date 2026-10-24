@@ -33,6 +33,7 @@ from airlie.report import RunReport
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
+from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
@@ -531,6 +532,26 @@ def create_app(
     @app.get("/v1/airlie/runs")
     async def run_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
         return {"runs": recent_runs(cfg.observability.state_dir, limit)}
+
+    @app.get("/v1/airlie/runs/{run_id}/tree")
+    async def run_tree_get(run_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:
+        """The topology page's tree of a run, followed by long polls as a job is: with `wait` the reply is
+        held until the run's log grows past `since` lines, the run ends, or `wait` seconds pass."""
+        models = {name: role.model for name, role in cfg.roles.items()}
+        deadline = time.monotonic() + max(0.0, min(wait, 300.0))
+        while True:
+            try:
+                tree = run_tree(cfg.observability.state_dir.expanduser(), run_id, models=models)
+            except RunNotFound as e:
+                raise HTTPException(404, str(e)) from None
+            job = jobs.get(run_id)
+            tree["job"] = job.state if job is not None else None
+            if job is not None and job.state in ("failed", "cancelled"):
+                tree["state"] = job.state  # it ended without its run_done
+            ended = tree["state"] != "running" or tree["job"] not in (None, "running")
+            if tree["next"] > since or ended or time.monotonic() >= deadline:
+                return tree
+            await asyncio.sleep(0.25)
 
     @app.get("/v1/airlie/stories")
     async def story_list() -> dict[str, Any]:
