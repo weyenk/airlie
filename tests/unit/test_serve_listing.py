@@ -304,6 +304,17 @@ def test_last_activity_skips_what_is_missing_and_is_zero_with_nothing(tmp_path: 
     assert activity(state, "AIR-7") == 90.0
 
 
+def test_last_activity_ignores_a_run_id_that_cannot_name_a_run_directory(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    touch(state / "events.jsonl", 999)  # what the id ".." would reach
+    touch(state / "elsewhere" / "events.jsonl", 999)  # what "../elsewhere" would reach
+    touch(state / "runs" / "events.jsonl", 999)  # what "" and "." would reach
+    for i, run in enumerate(["a\0b", "..", ".", "", "../elsewhere", "a/b", "r r"]):
+        d = story_dir(state, f"AIR-{i}", runs=["r-earlier", run])
+        touch(d / "state.json", 50)
+        assert activity(state, f"AIR-{i}") == 50.0, repr(run)  # no error, and the story's own file dates it
+
+
 def test_the_stories_route_takes_the_options_and_rejects_an_unknown_stage(tmp_path: Path) -> None:
     state = tmp_path / "state"
     for key, stage, repo, blocked, title, mtime in (

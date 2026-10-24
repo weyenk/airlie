@@ -12,6 +12,8 @@ from airlie.config import AirlieConfig
 from airlie.serve.jobs import read_events
 from airlie.story.state import STAGES
 
+_SAFE = re.compile(r"[A-Za-z0-9._-]+")
+
 
 def recent_runs(state_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
     """The newest `limit` run directories under `state_dir/runs` (ids sort by time), each with what its
@@ -53,10 +55,14 @@ def _mtime(path: Path) -> float | None:
 def _last_activity(state_dir: Path, story: Path, runs: object) -> float:
     """The newest mtime of the story's events.jsonl and state.json and of the events.jsonl of the last run
     in `runs` (the story's run ids, oldest first): the files a story writes as it works. Files that are
-    not there are skipped; a story with none of them has 0.0 (the epoch), so it sorts as the stalest."""
+    not there are skipped; a story with none of them has 0.0 (the epoch), so it sorts as the stalest. A run
+    id comes from state.json, so it is joined into a path only as one safe name (as flow.py does): any other
+    is no run, and its log is not looked for."""
     files = [story / "events.jsonl", story / "state.json"]
-    if isinstance(runs, list) and runs and isinstance(runs[-1], str):
-        files.append(state_dir / "runs" / runs[-1] / "events.jsonl")
+    if isinstance(runs, list) and runs:
+        last = runs[-1]
+        if isinstance(last, str) and _SAFE.fullmatch(last) and last not in (".", ".."):
+            files.append(state_dir / "runs" / last / "events.jsonl")
     return max((t for t in map(_mtime, files) if t is not None), default=0.0)
 
 

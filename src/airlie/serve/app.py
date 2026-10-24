@@ -34,6 +34,7 @@ from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories, story_page
+from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
@@ -580,6 +581,14 @@ def create_app(
     @app.get("/v1/airlie/jobs")
     async def job_list() -> dict[str, Any]:
         return {"jobs": jobs.list()}
+
+    @app.get("/v1/airlie/running")
+    async def running_list() -> dict[str, Any]:
+        """Every story and run in progress, whoever started it, newest activity first: the state directory
+        says what the tick or a `task` command is doing; this server's running jobs stay listed however
+        quiet (airlie.serve.running)."""
+        live = frozenset(j["id"] for j in jobs.list() if j["state"] == "running")
+        return {"running": in_progress(cfg.observability.state_dir.expanduser(), live=live, now=now())}
 
     @app.get("/v1/airlie/runs")
     async def run_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
