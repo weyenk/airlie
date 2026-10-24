@@ -14,6 +14,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = ("unit", "functional", "contract", "integration", "e2e", "journey", "performance", "security")
+# The unit layer runs under pytest-xdist exactly as the AGENTS.md test gate does, so CI and the gate agree.
+# Given before the caller's args, so `-n 0` from the caller still wins.
+LAYER_ARGS = {"unit": ["-n", "auto", "--maxprocesses", "8"]}
 
 
 def has_tests(layer_dir: Path) -> bool:
@@ -29,7 +32,7 @@ def main(argv: list[str]) -> int:
     if not has_tests(layer_dir):
         print(f"no {layer} tests yet (tests/{layer}/); nothing to run")
         return 0
-    cmd = [sys.executable, "-m", "pytest", str(layer_dir), *rest]
+    cmd = [sys.executable, "-m", "pytest", str(layer_dir), *LAYER_ARGS.get(layer, []), *rest]
     return subprocess.run(cmd, cwd=ROOT, check=False).returncode
 
 
