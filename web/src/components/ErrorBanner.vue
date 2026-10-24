@@ -6,5 +6,5 @@ const message = computed(() => (typeof props.error === "string" ? props.error : 
 </script>
 
 <template>
-  <div role="alert" class="rounded-lg bg-danger px-3.5 py-2.5 text-[13px] font-medium text-danger-foreground">{{ message }}</div>
+  <div role="alert" class="break-words rounded-lg bg-danger px-3.5 py-2.5 text-[13px] font-medium text-danger-foreground">{{ message }}</div>
 </template>

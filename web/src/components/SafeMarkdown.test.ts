@@ -29,6 +29,19 @@ test("only http and https links are links", () => {
   expect(a[0].attributes("rel")).toContain("noopener");
   expect(w.text()).toContain("bad");
 });
+test("javascript and data URLs of any case are plain words, with no stray bracket", () => {
+  for (const url of ["JavaScript:alert(1)", "data:text/html;base64,AAA", "JAVASCRIPT:alert(1)"]) {
+    const w = md(`x [bad](${url}) y`);
+    expect(w.find("a").exists()).toBe(false);
+    expect(w.text()).toBe("x bad y");
+  }
+});
+test("keys are not linked inside code, link text or bare URLs", () => {
+  const w = md("`AIR-1` [AIR-2](https://e.com/AIR-3) https://e.com/AIR-4 AIR-5", true);
+  const hrefs = w.findAll("a").map((a) => a.attributes("href"));
+  expect(hrefs).toEqual(["https://e.com/AIR-3", "/workflows/AIR-5"]);
+  expect(w.find("code a").exists()).toBe(false);
+});
 test("with linkKeys a story key becomes a router link", () => {
   const w = md("see AIR-36 now", true);
   expect(w.find("a").attributes("href")).toBe("/workflows/AIR-36");

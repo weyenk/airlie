@@ -35,6 +35,35 @@ test("arrows move, Enter accepts the moved-to match, Escape closes", async () =>
   await input.trigger("keydown", { key: "Escape" });
   expect(w.findAll("[data-suggestion]").length).toBe(0);
 });
+test("it is a combobox with a listbox of options", async () => {
+  const w = make();
+  const input = w.find("input");
+  await input.setValue("weyenk/air");
+  expect(input.attributes("role")).toBe("combobox");
+  expect(input.attributes("aria-expanded")).toBe("true");
+  expect(input.attributes("aria-autocomplete")).toBe("list");
+  const list = w.find("[role=listbox]");
+  expect(input.attributes("aria-controls")).toBe(list.attributes("id"));
+  const opts = w.findAll("[role=option]");
+  expect(opts.length).toBe(2);
+  expect(input.attributes("aria-activedescendant")).toBe(opts[0].attributes("id"));
+  expect(opts[0].attributes("aria-selected")).toBe("true");
+  expect(opts[1].attributes("aria-selected")).toBe("false");
+  expect(w.find("kbd").text()).toBe("Tab");
+});
+test("a rejecting source is no suggestions, and clearing the text clears them", async () => {
+  const w = make({ source: vi.fn(async () => { throw new Error("down"); }) });
+  await w.find("input").setValue("x");
+  await flushPromises();
+  expect(w.findAll("[data-suggestion]").length).toBe(0);
+  const ok = make({ source: vi.fn(async () => [{ value: "xa" }]) });
+  await ok.find("input").setValue("x");
+  await flushPromises();
+  expect(ok.findAll("[data-suggestion]").length).toBe(1);
+  await ok.find("input").setValue("");
+  await flushPromises();
+  expect(ok.findAll("[data-suggestion]").length).toBe(0);
+});
 test("a function source is asked, and its suggestions show with their label and meta", async () => {
   const fetcher = vi.fn(async (q: string) => [{ value: `${q}-1`, label: "One", meta: "3 stories" }]);
   const w = make({ source: fetcher });

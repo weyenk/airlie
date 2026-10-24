@@ -3,5 +3,5 @@ defineProps<{ value: string }>();
 </script>
 
 <template>
-  <span class="shrink-0 whitespace-nowrap font-mono text-xs text-muted-foreground">{{ value }}</span>
+  <span :title="value" class="shrink-0 whitespace-nowrap font-mono text-xs text-muted-foreground">{{ value }}</span>
 </template>

@@ -1,4 +1,5 @@
 import { mount } from "@vue/test-utils";
+import TypeTag from "./TypeTag.vue";
 import StatusChip from "./StatusChip.vue";
 import { STATUS_TABLE } from "./statusTable";
 
@@ -13,6 +14,11 @@ test("status chips use one table for every kind", () => {
   expect(mount(StatusChip, { props: { kind: "board", value: "review" } }).text()).toBe("Review");
   expect(mount(StatusChip, { props: { kind: "run", value: "studio" } }).text()).toBe("studio run");
   for (const kind of ["board", "stage", "job", "run"] as const) expect(Object.keys(STATUS_TABLE[kind]).length).toBeGreaterThan(2);
+});
+
+test("server strings that name object members fall back", () => {
+  expect(mount(StatusChip, { props: { kind: "job", value: "constructor" } }).text()).toBe("constructor");
+  expect(mount(TypeTag, { props: { type: "constructor" } }).find("[data-square]").attributes("style")).toMatch(/#a1a1aa|rgb\(161, 161, 170\)/);
 });
 
 test("an unknown value shows as a neutral chip with its own words", () => {

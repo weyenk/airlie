@@ -2,9 +2,10 @@
 import { h, type VNode } from "vue";
 import { RouterLink } from "vue-router";
 
-const KEY = /\b[A-Z][A-Z0-9]*-\d+\b/;
+const KEY = /\b[A-Z]+-\d+\b/;
+const BARE_URL = /https?:\/\/\S+/;
 // code, bold, italic, link: first match in the text wins, then the rest is scanned again
-const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\s][^*]*)\*|\[([^\]]+)\]\(([^)\s]+)\)/;
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\s][^*]*)\*|\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/;
 
 function safeUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
@@ -12,6 +13,11 @@ function safeUrl(url: string): boolean {
 
 function keyed(text: string, linkKeys: boolean): (VNode | string)[] {
   if (!linkKeys) return [text];
+  // a bare URL stays plain text: a key inside its path is not a story
+  const url = BARE_URL.exec(text);
+  if (url) {
+    return [...keyed(text.slice(0, url.index), true), url[0], ...keyed(text.slice(url.index + url[0].length), true)].filter((x) => x !== "");
+  }
   const out: (VNode | string)[] = [];
   let rest = text;
   for (let m = KEY.exec(rest); m; m = KEY.exec(rest)) {

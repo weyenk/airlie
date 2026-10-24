@@ -50,5 +50,6 @@ export const FAMILY_CLASS: Record<Family, string> = {
 };
 
 export function chipSpec(kind: ChipKind, value: string): ChipSpec {
-  return STATUS_TABLE[kind][value] ?? { label: value, family: "chip" };
+  const table = STATUS_TABLE[kind];
+  return Object.hasOwn(table, value) ? table[value] : { label: value, family: "chip" };
 }

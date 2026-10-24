@@ -17,6 +17,7 @@ const text = ref(props.modelValue);
 watch(() => props.modelValue, (v) => { text.value = v; });
 
 const open = ref(false);
+const uid = `ta-${Math.random().toString(36).slice(2, 8)}`;
 const active = ref(0);
 const fetched = ref<Suggestion[]>([]);
 let asked = 0;
@@ -51,7 +52,9 @@ async function onInput(value: string | number) {
   emit("update:modelValue", v);
   if (typeof props.source === "function") {
     const mine = ++asked;
-    const got = await props.source(v);
+    if (!v) { fetched.value = []; return; }
+    let got: Suggestion[] = [];
+    try { got = await props.source(v); } catch { got = []; } // a failing lookup is just no suggestions
     if (mine === asked) fetched.value = got; // a slower, older answer never overwrites a newer one
   }
 }
@@ -92,7 +95,11 @@ function after(s: Suggestion): string {
   <div class="relative">
     <div class="relative">
       <!-- the greyed completion sits behind the transparent field, lined up with what was typed -->
-      <div v-if="ghost" aria-hidden="true" class="pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre px-3 font-mono text-sm">
+      <div
+        v-if="ghost"
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre px-[calc(0.75rem+1px)] font-mono text-sm"
+      >
         <span class="invisible">{{ text }}</span><span data-ghost class="text-muted-foreground">{{ ghost }}</span>
       </div>
       <Input
@@ -100,17 +107,25 @@ function after(s: Suggestion): string {
         :placeholder="placeholder"
         autocomplete="off"
         spellcheck="false"
-        class="relative font-mono"
+        class="relative font-mono text-sm md:text-sm"
+        role="combobox"
+        aria-autocomplete="list"
+        :aria-expanded="suggestions.length > 0"
+        :aria-controls="`${uid}-list`"
+        :aria-activedescendant="suggestions.length ? `${uid}-opt-${active}` : undefined"
         @update:model-value="onInput"
         @keydown="onKey"
         @blur="open = false"
       />
     </div>
-    <div v-if="suggestions.length" class="absolute inset-x-0 z-20 mt-1 overflow-hidden rounded-lg border bg-card shadow-lg">
+    <div v-if="suggestions.length" :id="`${uid}-list`" role="listbox" class="absolute inset-x-0 z-20 mt-1 overflow-hidden rounded-lg border bg-card shadow-lg">
       <div
         v-for="(s, i) in suggestions"
         :key="s.value"
         :class="['flex items-center gap-2 px-3 py-2 font-mono text-[13px]', i === active ? 'bg-muted' : '']"
+        :id="`${uid}-opt-${i}`"
+        role="option"
+        :aria-selected="i === active"
         :title="s.value"
         @mousedown.prevent="accept(s)"
       >
@@ -118,7 +133,7 @@ function after(s: Suggestion): string {
           <span class="min-w-0 truncate">{{ before(s) }}<b class="font-bold text-primary">{{ typed(s) }}</b>{{ after(s) }}</span>
           <span v-if="s.meta" class="ml-auto shrink-0 font-sans text-xs text-muted-foreground">{{ s.meta }}</span>
         </span>
-        <span v-if="i === 0 && !s.meta" class="shrink-0 font-sans text-xs text-muted-foreground">Tab to complete</span>
+        <span v-if="i === 0 && !s.meta" class="flex shrink-0 items-center gap-1.5 font-sans text-xs text-muted-foreground"><kbd class="rounded border bg-muted px-1.5 py-px font-mono text-[11px]">Tab</kbd>to complete</span>
       </div>
     </div>
   </div>
