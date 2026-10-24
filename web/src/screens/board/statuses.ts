@@ -12,3 +12,6 @@ export const TYPE_FILTERS: { value: "all" | Level; label: string }[] = [
   { value: "story", label: "Story" },
   { value: "subtask", label: "Subtask" },
 ];
+
+/** The drag payload's type: only a card of this board is taken, a file or text dragged in is ignored. */
+export const DRAG_TYPE = "application/x-airlie-item";

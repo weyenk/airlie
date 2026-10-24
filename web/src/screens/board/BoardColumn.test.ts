@@ -1,11 +1,14 @@
 import { mount } from "@vue/test-utils";
 import BoardColumn from "./BoardColumn.vue";
-import { item } from "./fixtures";
+import { boardRouter, item } from "./fixtures";
+import { DRAG_TYPE } from "./statuses";
 
 const make = (items = [item("AIR-1"), item("AIR-2"), item("AIR-3")], extra: Record<string, unknown> = {}) =>
-  mount(BoardColumn, { props: { status: "todo", items, changed: new Set<string>(), active: true, ...extra } });
-const drop = (target: { trigger(e: string, o?: object): Promise<void> }, key: string) =>
-  target.trigger("drop", { dataTransfer: { getData: () => key } });
+  mount(BoardColumn, { props: { status: "todo", items, changed: new Set<string>(), active: true, ...extra }, global: { plugins: [boardRouter()] } });
+type Target = { trigger(e: string, o?: object): Promise<void> };
+const ours = (key = "AIR-9") => ({ dataTransfer: { types: [DRAG_TYPE], getData: (t: string) => (t === DRAG_TYPE ? key : "") } });
+const drop = (target: Target, key = "AIR-9") => target.trigger("drop", ours(key));
+const over = (target: Target) => target.trigger("dragover", ours());
 
 test("a column is a region named for its status, with its count and its cards in order", () => {
   const w = make();
@@ -22,14 +25,18 @@ test("an empty column says Nothing here", () => {
 
 test("a card dropped on another card moves above it", async () => {
   const w = make();
-  await drop(w.findAll("[data-item]")[1], "AIR-9");
+  await drop(w.findAll("[data-item]")[1]);
   expect(w.emitted("move")).toEqual([["AIR-9", "todo", "AIR-2"]]);
 });
 
-test("a card dropped below the cards moves to the bottom", async () => {
+test("a card dropped below the cards, on the list or the strip under the last one, moves to the bottom", async () => {
   const w = make();
-  await drop(w.find("[data-list]"), "AIR-9");
-  expect(w.emitted("move")).toEqual([["AIR-9", "todo", null]]);
+  await drop(w.find("[data-list]"));
+  await drop(w.find("[data-tail]"));
+  expect(w.emitted("move")).toEqual([
+    ["AIR-9", "todo", null],
+    ["AIR-9", "todo", null],
+  ]);
 });
 
 test("a card dropped on itself moves nowhere", async () => {
@@ -38,9 +45,18 @@ test("a card dropped on itself moves nowhere", async () => {
   expect(w.emitted("move")).toBeUndefined();
 });
 
+test("a drop that leaves the card where it is sends nothing", async () => {
+  const w = make();
+  await drop(w.findAll("[data-item]")[1], "AIR-1"); // AIR-1 above AIR-2: it already is
+  await drop(w.find("[data-list]"), "AIR-3"); // AIR-3 to the bottom: it already is
+  expect(w.emitted("move")).toBeUndefined();
+  await drop(w.findAll("[data-item]")[2], "AIR-1"); // AIR-1 above AIR-3: a real move
+  expect(w.emitted("move")).toEqual([["AIR-1", "todo", "AIR-3"]]);
+});
+
 test("dragging over shows where the card lands, leaving clears it", async () => {
   const w = make();
-  await w.findAll("[data-item]")[1].trigger("dragover");
+  await over(w.findAll("[data-item]")[1]);
   const marks = w.findAll("[data-drop]");
   expect(marks).toHaveLength(1);
   expect(marks[0].element.nextElementSibling?.getAttribute("data-item")).toBe("AIR-2");
@@ -48,11 +64,29 @@ test("dragging over shows where the card lands, leaving clears it", async () => 
   expect(w.find("[data-drop]").exists()).toBe(false);
 });
 
-test("a card that opens or rings is passed on", async () => {
+test("the landing mark takes no pointer, and a dragover or drop on it keeps the place it shows", async () => {
+  const w = make();
+  await over(w.findAll("[data-item]")[1]);
+  const mark = w.find("[data-drop]");
+  expect(mark.classes()).toContain("pointer-events-none");
+  await over(mark);
+  expect(w.find("[data-drop]").element.nextElementSibling?.getAttribute("data-item")).toBe("AIR-2"); // not the bottom
+  await drop(mark);
+  expect(w.emitted("move")).toEqual([["AIR-9", "todo", "AIR-2"]]);
+});
+
+test("a drag that is not one of the board's cards is ignored", async () => {
+  const w = make();
+  const files = { dataTransfer: { types: ["Files"], getData: () => "AIR-9" } };
+  await w.findAll("[data-item]")[1].trigger("dragover", files);
+  expect(w.find("[data-drop]").exists()).toBe(false);
+  await w.findAll("[data-item]")[1].trigger("drop", files);
+  expect(w.emitted("move")).toBeUndefined();
+});
+
+test("a card that rings shows its note", () => {
   const w = make(undefined, { changed: new Set(["AIR-3"]) });
   expect(w.findAll("[data-fresh-note]")).toHaveLength(1);
-  await w.findAll("[data-item]")[0].trigger("click");
-  expect(w.emitted("open")).toEqual([["AIR-1"]]);
 });
 
 test("off the phone's chosen status the column hides below 640px", () => {

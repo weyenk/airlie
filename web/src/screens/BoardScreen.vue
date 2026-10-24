@@ -33,15 +33,14 @@ const byStatus = computed(() => {
 const counts = computed(() => Object.fromEntries(STATUSES.map((s) => [s, byStatus.value[s].length])) as Record<Status, number>);
 const typeLabel = computed(() => TYPE_FILTERS.find((t) => t.value === type.value)?.label ?? "All");
 
-const open = (key: string) => void router.push(`/board/${encodeURIComponent(key)}`);
 // Task 7 wires the create modal to this query
 const create = () => void router.push({ query: { create: "1" } });
 const move = (key: string, status: Status, before: string | null) => void board.move(key, status, before).catch(() => {});
 </script>
 
 <template>
-  <!-- the window less the 56px header; the 24px bottom padding is the buffer (the phone's tab bar takes 64px more) -->
-  <div data-board class="flex h-[calc(100vh-56px)] flex-col gap-4 px-5 pt-6 pb-6 max-[640px]:h-[calc(100vh-120px)] max-[640px]:gap-3.5 max-[640px]:px-3 max-[640px]:pt-4">
+  <!-- the window less the header; the 24px bottom padding is the buffer (the phone's tab bar comes off too) -->
+  <div data-board class="flex h-[calc(100dvh-var(--header-h))] flex-col gap-4 px-5 pt-6 pb-6 max-[640px]:h-[calc(100dvh-var(--header-h)-var(--tabbar-h))] max-[640px]:gap-3.5 max-[640px]:px-3 max-[640px]:pt-4">
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-[22px] font-bold tracking-[-0.01em] max-[640px]:text-xl">Board</h1>
       <span class="grow" />
@@ -62,7 +61,7 @@ const move = (key: string, status: Status, before: string | null) => void board.
     </div>
     <ErrorBanner v-if="board.error" :error="board.error" />
     <StatusPills v-model="phoneStatus" :counts="counts" />
-    <div data-columns class="grid min-h-0 flex-1 grid-cols-[repeat(6,minmax(190px,1fr))] gap-3 overflow-x-auto max-[640px]:grid-cols-1">
+    <div data-columns class="grid min-h-80 flex-1 grid-cols-[repeat(6,minmax(190px,1fr))] gap-3 overflow-x-auto max-[640px]:grid-cols-1">
       <BoardColumn
         v-for="s in STATUSES"
         :key="s"
@@ -71,7 +70,6 @@ const move = (key: string, status: Status, before: string | null) => void board.
         :changed="board.changed"
         :active="s === phoneStatus"
         @move="move"
-        @open="open"
       />
     </div>
   </div>

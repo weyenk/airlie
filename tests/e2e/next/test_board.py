@@ -94,3 +94,31 @@ def test_a_long_title_does_not_break_its_card(
     held = geometry["card"] <= geometry["column"] and geometry["overflow"] <= 0
     evidence.shot("the card stays inside its column", card, held=held)
     assert held, geometry
+
+
+def test_a_card_is_a_link_that_enter_follows(next_page: Page, server: Server, evidence: Evidence) -> None:
+    next_page.goto(server.url + "/next/board")
+    card = next_page.locator("[data-item=AIR-3]")
+    evidence.expect(card, "the card is a link to its own address").to_have_attribute(
+        "href", "/next/board/AIR-3"
+    )
+    card.focus()
+    next_page.keyboard.press("Enter")
+    evidence.expect(next_page, "Enter on the focused card goes to it").to_have_url(
+        re.compile(r"/next/board/AIR-3$")
+    )
+
+
+def test_dragging_a_card_onto_another_moves_it_above_it(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    next_page.goto(own_server.url + "/next/board")
+    evidence.expect(
+        next_page.get_by_role("region", name="Doing").locator("[data-item]"), "Doing has two"
+    ).to_have_count(2)
+    next_page.locator("[data-item=AIR-3]").drag_to(next_page.locator("[data-item=AIR-2]"))
+    doing = next_page.get_by_role("region", name="Doing").locator("[data-item]")
+    evidence.expect(doing, "the card joined Doing").to_have_count(3)
+    keys = [c.get_attribute("data-item") for c in doing.all()]
+    evidence.shot("it sits above the card it was dropped on", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
+    assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys

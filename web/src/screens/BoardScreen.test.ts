@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
 import BoardScreen from "./BoardScreen.vue";
+import { DRAG_TYPE } from "./board/statuses";
 import { item } from "./board/fixtures";
 
 const api = vi.hoisted(() => ({
@@ -21,6 +22,8 @@ const ITEMS: Item[] = [
   item("AIR-3", { status: "doing" }),
   item("AIR-4", { status: "done", level: "initiative" }),
 ];
+
+const ours = (key: string) => ({ dataTransfer: { types: [DRAG_TYPE], getData: () => key } });
 
 async function open() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
@@ -63,9 +66,9 @@ test("the Type filter narrows the cards to one level", async () => {
 test("a drop posts the move with the status and the card it lands above", async () => {
   const { w } = await open();
   const doing = w.findAll("section[aria-label]")[2];
-  await doing.find("[data-item]").trigger("drop", { dataTransfer: { getData: () => "AIR-1" } });
+  await doing.find("[data-item]").trigger("drop", ours("AIR-1"));
   expect(api.moveItem).toHaveBeenCalledWith("AIR-1", "doing", "AIR-3");
-  await doing.find("[data-list]").trigger("drop", { dataTransfer: { getData: () => "AIR-2" } });
+  await doing.find("[data-list]").trigger("drop", ours("AIR-2"));
   expect(api.moveItem).toHaveBeenLastCalledWith("AIR-2", "doing", null);
 });
 
@@ -94,6 +97,7 @@ test("the phone's pills show one column, Doing first, and choosing another swaps
 
 test("the columns end 24px above the window: the page is the window less the header, with a 24px buffer", async () => {
   const { w } = await open();
-  expect(w.find("[data-board]").classes().join(" ")).toContain("h-[calc(100vh-56px)]");
+  expect(w.find("[data-board]").classes().join(" ")).toContain("h-[calc(100dvh-var(--header-h))]");
   expect(w.find("[data-board]").classes()).toContain("pb-6");
+  expect(w.find("[data-columns]").classes()).toContain("min-h-80"); // board.html's min-height: 320px
 });
