@@ -1,5 +1,5 @@
 """The Workflows screen in Chromium: the stories to pick from, one story's pipeline and its jobs, and the
-ticket panel's acceptance criteria and workflow section. Each check leaves its screenshot (see
+card modal's acceptance criteria and workflow section. Each check leaves its screenshot (see
 conftest.Evidence)."""
 
 from __future__ import annotations
@@ -79,17 +79,17 @@ def test_a_job_without_a_recorded_prompt_says_so(signed_in: Page, server: Server
     )
 
 
-def test_the_ticket_panel_shows_acceptance_criteria_and_links_to_the_workflow(
+def test_the_card_modal_shows_acceptance_criteria_and_links_to_the_workflow(
     signed_in: Page, server: Server, evidence: Evidence
 ) -> None:
     signed_in.goto(f"{server.url}/#/board/{STORY_KEY}")
-    panel = signed_in.locator("aside.panel")
-    criteria = panel.get_by_label("Acceptance criteria")
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
+    criteria = modal.get_by_label("Acceptance criteria")
     evidence.expect(criteria, "the criteria have their own section").to_contain_text(
         "the panel width follows"
     )
     evidence.expect(criteria.locator(".criterion"), "both criteria are listed").to_have_count(2)
-    workflow = panel.get_by_label("Workflow")
+    workflow = modal.get_by_label("Workflow")
     evidence.expect(workflow, "layer 02's block reason shows").to_contain_text("Full screen toggle")
     workflow.get_by_role("link", name="Open pipeline").click()
     evidence.expect(signed_in, "Open pipeline goes to the story").to_have_url(
@@ -101,9 +101,9 @@ def test_a_card_with_no_story_has_no_criteria_section(
     signed_in: Page, server: Server, evidence: Evidence
 ) -> None:
     signed_in.goto(f"{server.url}/#/board/AIR-3")
-    panel = signed_in.locator("aside.panel")
+    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
     evidence.expect(
-        panel.get_by_role("heading", name="Board: columns fill the page width"), "panel is open"
+        modal.get_by_role("heading", name="Board: columns fill the page width"), "the modal is open"
     ).to_be_visible()
-    evidence.expect(panel.get_by_label("Acceptance criteria"), "no criteria section").to_have_count(0)
-    evidence.expect(panel.get_by_label("Workflow"), "no workflow section").to_have_count(0)
+    evidence.expect(modal.get_by_label("Acceptance criteria"), "no criteria section").to_have_count(0)
+    evidence.expect(modal.get_by_label("Workflow"), "no workflow section").to_have_count(0)
