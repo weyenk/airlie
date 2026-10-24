@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from airlie.config import AirlieConfig, load_config
@@ -454,6 +455,36 @@ def test_run_checks_holds_node_to_the_web_pin(tmp_path: Path) -> None:
     probe = FakeProbe(snapshots={"org/model@r1"}, tools={**TOOLS_OK, "node": "v24.16.0"})
     stale = by_name(run_checks(managed(tmp_path), probe))["tool:node"]
     assert stale.status == "fail" and "v24.16.0" in stale.detail
+
+
+def _checks_for_package_json(tmp_path: Path, text: str | None) -> dict[str, CheckResult]:
+    """run_checks for a checkout whose web/package.json holds `text` (None: there is no such file)."""
+    root = tmp_path / "checkout"
+    (root / "web").mkdir(parents=True)
+    if text is not None:
+        (root / "web" / "package.json").write_text(text)
+    return by_name(run_checks(managed(tmp_path), FakeProbe(snapshots={"org/model@r1"}), root=root))
+
+
+def test_run_checks_fails_the_node_row_when_web_package_json_is_missing_and_still_runs_the_rest(
+    tmp_path: Path,
+) -> None:
+    rows = _checks_for_package_json(tmp_path, None)
+    assert rows["tool:node"].status == "fail"
+    assert "web/package.json" in rows["tool:node"].detail and "engines.node" in rows["tool:node"].detail
+    assert rows["tool:uv"].status == "ok" and rows["model:team"].status == "ok"  # the other checks ran
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"engines": ', '{"name": "airlie-web"}', '{"engines": {}}', '{"engines": "26.x"}', "[]"],
+    ids=["malformed", "no-engines", "no-node", "engines-not-an-object", "not-an-object"],
+)
+def test_run_checks_fails_the_node_row_when_web_package_json_has_no_readable_pin(
+    tmp_path: Path, text: str
+) -> None:
+    row = _checks_for_package_json(tmp_path, text)["tool:node"]
+    assert row.status == "fail" and "web/package.json" in row.detail and "engines.node" in row.detail
 
 
 def test_a_pin_that_names_no_major_fails_whatever_node_is_found() -> None:

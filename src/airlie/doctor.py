@@ -16,6 +16,8 @@ from airlie.config import AirlieConfig, ConfigError, load_config
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_TOOLS = ("task", "uv", "git", "hf")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+"""This checkout: where web/package.json, the node pin, is read from."""
 
 
 @dataclass(frozen=True)
@@ -221,7 +223,7 @@ def _profile_variants(cfg: AirlieConfig) -> dict[str, AirlieConfig | ConfigError
     return out
 
 
-def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
+def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT) -> list[CheckResult]:
     results: list[CheckResult] = []
     variants = _profile_variants(cfg)
     for tool in REQUIRED_TOOLS:
@@ -231,7 +233,19 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 f"tool:{tool}", "ok" if v else "fail", v or f"'{tool}' not on PATH (see README install)"
             )
         )
-    results.append(node_check(probe.tool_version("node"), web_node_pin(Path(__file__).resolve().parents[2])))
+    try:
+        pin = web_node_pin(root)
+    except (OSError, ValueError, KeyError, TypeError) as err:  # no file, not JSON, no engines.node
+        results.append(
+            CheckResult(
+                "tool:node",
+                "fail",
+                f"cannot read the node pin: web/package.json is missing, malformed or has no engines.node "
+                f"({type(err).__name__}: {err})",
+            )
+        )
+    else:
+        results.append(node_check(probe.tool_version("node"), pin))
 
     if cfg.web.search.kind == "searxng":
         if probe.http_ok(f"{cfg.web.search.url.rstrip('/')}/search?q=doctor&format=json"):
