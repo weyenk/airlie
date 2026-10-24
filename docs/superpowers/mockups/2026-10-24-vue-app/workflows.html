@@ -125,7 +125,6 @@
   <div class="page">
     <div class="head">
       <h1>Workflows</h1>
-      <span class="btn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Start new work</span>
     </div>
 
     <section class="card">
@@ -198,11 +197,9 @@
     <a><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 11a3 3 0 1 0 0-6M22 21a6 6 0 0 0-5-5.9"/></svg>Admin</a>
   </nav>
 
-<div id="mock-toolbar" style="position:fixed;right:12px;bottom:12px;z-index:99;display:flex;gap:6px;font:12px system-ui;">
-  <button onclick="toggle('light')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Light / dark</button>
-</div>
+<div id="mock-toolbar" style="position:fixed;right:12px;bottom:12px;z-index:99;display:flex;gap:6px;font:12px system-ui;"><button onclick="toggle('light')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Light / dark</button></div>
 <script>
-  function toggle(cls, on) { const h = document.documentElement; if (cls === "light") { h.classList.toggle("light"); h.classList.toggle("dark"); } else { ["show-modal","show-create"].forEach(c => c !== cls && h.classList.remove(c)); h.classList.toggle(cls); } }
+  function toggle(cls) { const h = document.documentElement; if (cls === "light") { h.classList.toggle("light"); h.classList.toggle("dark"); } else { ["show-modal","show-create","show-slash"].forEach(c => c !== cls && h.classList.remove(c)); h.classList.toggle(cls); } }
 </script>
 </body>
 </html>

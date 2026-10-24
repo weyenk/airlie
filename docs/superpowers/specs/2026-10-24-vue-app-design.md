@@ -4,8 +4,9 @@ Status: agreed in conversation with Noah on 2026-10-24, including the reshaped W
 done; awaiting his review of the full text. Parent: `2026-10-17-web-app-and-local-board-design.md`, whose "no
 framework, no bundler, no node build" rule this reverses on purpose. Look reference:
 `docs/superpowers/mockups/2026-10-24-vue-app/board-look-dark.html` and `board-look-light.html`. Approved screen
-mockups, in the same folder: `workflows.html`, `workflow-story.html`, `workflow-runs.html`, `board.html` (each has
-buttons to switch light and dark, and the board's to open a card or Create).
+mockups, in the same folder: `workflows.html`, `workflow-story.html`, `workflow-runs.html`, `board.html`,
+`chat.html` (each has buttons to switch light and dark; the board's also open a card or Create, the chat's the /
+menu).
 
 ## Why
 
@@ -44,6 +45,10 @@ Noah wants pages that update on their own, and components built once and reused.
 - Running spike, bug, research and design work. The Create modal offers those types, but how airlie runs each one
   end to end (its steps, roles and artifacts) is its own design (proposed 2026-10-24 as a separate session); this
   app draws whatever steps that design's API describes.
+- The Start new work page (Noah, 2026-10-24: "kill this page"). Stories start from Chat's `/story` card or as Board
+  items the tick picks up; studio, single, teams and fork runs start from the command line, the API or OpenCode.
+  The Workflows area has no Start button and Chat has no Start quick reply. A studio run started elsewhere still
+  gets its plan approved and its Stop in the workflow view.
 - Topology in the new app, for now. Noah likes its visuals, but the workflow view already shows most of the
   same information. It keeps working in today's app until the switch and is not carried over.
 - Changes to the core, the engines, or how jobs run.
@@ -114,7 +119,8 @@ Noah wants pages that update on their own, and components built once and reused.
 - In the Workflows area (Noah confirmed these when they were played back): the Stories list shows 25 stories
   a page, filters by stage, repository and blocked, searches key and title, and sorts by last activity by
   default, or by key or stage. Running lists every story and run in progress, whoever started it.
-  Progress counts finished stages and layers against the total. The Start new work button stays.
+  Progress counts finished stages and layers against the total. There is no Start new work button (see
+  Non-goals).
 - The parity target is `main` when the build starts, which includes AIR-17's centred item modal and
   click-to-edit (PRs 140 to 143, merged 2026-10-24).
 
@@ -245,7 +251,7 @@ Each at `/next` plus its clean path, desktop and phone:
 | `#/workflows/{key}/{node}/{job}` | `/next/workflows/{key}/{node}/{job}` |
 | (none: runs only had the job page or Topology) | a workflow view for a run of any topology; the builder picks a path that cannot clash with a story key |
 | `#/jobs/{id}` | gone; redirects to the workflow view of the work it ran |
-| `#/start` | `/next/start` |
+| `#/start` | not carried over; redirects to `/next/` (Chat) |
 | `#/board/{key}` (with the item modal, comment edit and drag-and-drop) | `/next/board/{key}`, with the changes under "The Board" |
 | `#/topology/{run}` | not carried over; stays in today's app until the switch |
 | `#/metrics` | `/next/metrics` |
