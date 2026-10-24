@@ -39,6 +39,7 @@ from airlie.teams.worktree import (
     own_changes,
     put_back,
     read_blob,
+    seed_mypy_cache,
 )
 from airlie.tools import ToolContext, ToolRegistry, attach_decide
 from airlie.tools.knowledge import SearchKnowledge
@@ -877,6 +878,7 @@ class StudioOrchestrator:
         )
         name = None if detach else (branch or f"airlie/{self.run_dir.run_id}/studio")
         self.worktree = add_worktree(repo, self.run_dir.path / "studio", branch=name, start_point=base)
+        seed_mypy_cache(repo, self.worktree)  # the gate's mypy runs warm from the roles' first run_tests on
         self.base_sha = commit_wip(self.worktree, "studio: base")
         self.test_cmd, self.test_steps = test_cmd, tuple(test_steps)
         self.scope_base = self.base_sha if scope_tests else ""
