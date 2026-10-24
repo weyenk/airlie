@@ -427,8 +427,11 @@ class StudioOrchestrator:
         state, goal, nudge = self._continuation(run, parent, nudge)
         # a fix round or follow-up continues work that is in the worktree (committed before the review), and
         # a first run may start on what the subtasks it depends on left there (a tester's tests): the write
-        # nudges must count those files, not ask for them again (AIR-7, 2026-10-18; AIR-30, 2026-10-19)
-        written = tuple(changed_in_tree(self.worktree, run.before)) if run.before else ()
+        # nudges must count those files, not ask for them again (AIR-7, 2026-10-18; AIR-30, 2026-10-19).
+        # Since the run's base, not this subtask's start: a story's pre-code checkpoint commits the tester's
+        # tests before the coder starts, so from the coder's own start nothing had changed, its schedule
+        # asked it for a test by step 10 and switched its reads off at 14 (AIR-17 layer 02, 2026-10-23)
+        written = tuple(changed_in_tree(self.worktree, self.base_sha)) if self.base_sha else ()
         folder = run.subtask.id if attempt == 0 else f"{run.subtask.id}/round-{attempt}"
 
         def save_prompt(messages: list[dict[str, Any]]) -> None:
