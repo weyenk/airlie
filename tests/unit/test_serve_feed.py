@@ -4,13 +4,20 @@ refetches through the existing GET routes), from any thread."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
+from fastapi import FastAPI, Request
 
+from airlie.auth.principal import Principal
+from airlie.board import BoardStore
+from airlie.board.api import board_router
 from airlie.serve.app import create_app
 from airlie.serve.feed import Change, Feed, event_stream
+from airlie.serve.jobs import Jobs
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_serve import FakeUpstream, cfg
 
@@ -219,3 +226,200 @@ async def test_on_subscribed_runs_after_the_stream_has_subscribed_and_before_it_
     assert seen == [1]  # subscribed by then
     await stream.aclose()
     assert feed.subscribers == 0
+
+
+# ---- in-process changes publish at once: the board routes and the job manager ----
+
+SIGNED_IN = Principal("api-key", "api-key", "admin", "api-key")  # as the app's key middleware sets it
+
+
+@pytest.fixture
+def board_store(tmp_path: Path) -> Iterator[BoardStore]:
+    store = BoardStore(tmp_path / "b.sqlite")
+    yield store
+    store.close()
+
+
+def board_client(
+    store: BoardStore, seen: list[tuple[str, str | None]], principal: Principal | None = None
+) -> TestClient:
+    """The board router on its own, publishing into `seen`; `principal` stands in for the key middleware."""
+    app = FastAPI()
+    app.include_router(board_router(store, lambda topic, key: seen.append((topic, key))))
+    if principal is not None:
+
+        @app.middleware("http")
+        async def _sign_in(request: Request, call_next: Callable[..., Any]) -> Any:
+            request.state.principal = principal
+            return await call_next(request)
+
+    return TestClient(app)
+
+
+def test_each_board_write_publishes_its_key(board_store: BoardStore) -> None:
+    seen: list[tuple[str, str | None]] = []
+    c = board_client(board_store, seen)
+    key = c.post("/v1/board/items", json={"level": "initiative", "title": "x"}).json()["key"]
+    assert seen == [("board", key)]  # the create, with the key the store gave it
+    assert c.patch(f"/v1/board/items/{key}", json={"title": "y"}).status_code == 200
+    assert c.post(f"/v1/board/items/{key}/move", json={"status": "doing"}).status_code == 200
+    assert c.post(f"/v1/board/items/{key}/comments", json={"text": "hi"}).status_code == 200
+    assert seen == [("board", key)] * 4
+
+
+def test_an_edited_comment_publishes_its_item_s_key(board_store: BoardStore) -> None:
+    seen: list[tuple[str, str | None]] = []
+    c = board_client(board_store, seen, SIGNED_IN)
+    key = c.post("/v1/board/items", json={"level": "initiative", "title": "x"}).json()["key"]
+    board_store.comment(key, "api-key", "first draft")  # the signed-in person's own comment
+    seen.clear()
+    r = c.patch(f"/v1/board/items/{key}/comments/1", json={"text": "revised"})
+    assert r.status_code == 200 and r.json()["comments"][0]["text"] == "revised"
+    assert seen == [("board", key)]
+
+
+def test_a_rejected_board_write_publishes_nothing(board_store: BoardStore) -> None:
+    """The hint follows a write that happened: a refused request (404, 403, 401, 422) changes nothing, so a
+    page has nothing to refetch."""
+    seen: list[tuple[str, str | None]] = []
+    c = board_client(board_store, seen, SIGNED_IN)
+    key = c.post("/v1/board/items", json={"level": "initiative", "title": "x"}).json()["key"]
+    board_store.comment(key, "someone-else", "theirs")
+    seen.clear()
+    refused = {
+        "create under a parent that is not there": c.post(
+            "/v1/board/items", json={"level": "epic", "title": "e", "parent": "AIR-99"}
+        ),
+        "create with a level that is no level": c.post(
+            "/v1/board/items", json={"level": "saga", "title": "e"}
+        ),
+        "update of an unknown item": c.patch("/v1/board/items/AIR-99", json={"title": "y"}),
+        "update to a parent that is not there": c.patch(f"/v1/board/items/{key}", json={"parent": "AIR-99"}),
+        "move of an unknown item": c.post("/v1/board/items/AIR-99/move", json={"status": "doing"}),
+        "move above a card that is not in the column": c.post(
+            f"/v1/board/items/{key}/move", json={"status": "doing", "before": "AIR-99"}
+        ),
+        "comment on an unknown item": c.post("/v1/board/items/AIR-99/comments", json={"text": "hi"}),
+        "edit of an unknown item's comment": c.patch("/v1/board/items/AIR-99/comments/1", json={"text": "z"}),
+        "edit of an unknown comment": c.patch(f"/v1/board/items/{key}/comments/99", json={"text": "z"}),
+        "edit of someone else's comment": c.patch(f"/v1/board/items/{key}/comments/1", json={"text": "z"}),
+    }
+    assert {name: r.status_code for name, r in refused.items()} == {
+        "create under a parent that is not there": 422,
+        "create with a level that is no level": 422,
+        "update of an unknown item": 404,
+        "update to a parent that is not there": 422,
+        "move of an unknown item": 404,
+        "move above a card that is not in the column": 422,
+        "comment on an unknown item": 404,
+        "edit of an unknown item's comment": 404,
+        "edit of an unknown comment": 404,
+        "edit of someone else's comment": 403,
+    }
+    assert seen == []
+    # and a request that is not signed in at all
+    assert (
+        board_client(board_store, seen)
+        .patch(f"/v1/board/items/{key}/comments/1", json={"text": "z"})
+        .status_code
+        == 401
+    )
+    assert seen == []
+
+
+async def test_a_job_publishes_when_it_starts_and_when_it_ends(tmp_path: Path) -> None:
+    seen: list[tuple[str, str | None]] = []
+    jobs = Jobs(publish=lambda topic, key: seen.append((topic, key)))
+
+    async def work() -> dict[str, Any]:
+        return {}
+
+    job = jobs.start("run", "r1", tmp_path / "e.jsonl", work())
+    assert seen == [("jobs", "r1")]  # at once, with the job already listed as running
+    await job.task
+    await asyncio.sleep(0)  # the done callback runs on the loop's next turn
+    assert seen == [("jobs", "r1"), ("jobs", "r1")]
+
+
+async def test_a_failed_or_cancelled_job_publishes_when_it_ends_too(tmp_path: Path) -> None:
+    seen: list[tuple[str, str | None]] = []
+    jobs = Jobs(publish=lambda topic, key: seen.append((topic, key)))
+
+    async def boom() -> dict[str, Any]:
+        raise RuntimeError("engine fell over")
+
+    async def hang() -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {}
+
+    failed = jobs.start("run", "r1", tmp_path / "e.jsonl", boom())
+    with pytest.raises(RuntimeError):
+        await failed.task
+    await asyncio.sleep(0)
+    assert seen == [("jobs", "r1")] * 2 and failed.state == "failed"
+    hung = jobs.start("run", "r2", tmp_path / "e.jsonl", hang())
+    assert jobs.cancel("r2") is True
+    await asyncio.wait([hung.task])
+    await asyncio.sleep(0)
+    assert seen[2:] == [("jobs", "r2")] * 2 and hung.state == "cancelled"
+
+
+async def test_a_job_that_is_refused_publishes_nothing(tmp_path: Path) -> None:
+    seen: list[tuple[str, str | None]] = []
+    jobs = Jobs(publish=lambda topic, key: seen.append((topic, key)))
+
+    async def hang() -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {}
+
+    running = jobs.start("run", "r1", tmp_path / "e.jsonl", hang())
+    seen.clear()
+    with pytest.raises(ValueError, match="already running"):
+        jobs.start("run", "r1", tmp_path / "e.jsonl", hang())
+    await asyncio.sleep(0)
+    assert seen == []
+    running.task.cancel()
+
+
+async def test_jobs_without_a_feed_start_and_end_quietly(tmp_path: Path) -> None:
+    async def work() -> dict[str, Any]:
+        return {"ok": True}
+
+    job = Jobs().start("run", "r1", tmp_path / "e.jsonl", work())
+    assert await job.task == {"ok": True}
+
+
+async def test_the_app_wires_the_board_and_the_jobs_to_its_feed(tmp_path: Path) -> None:
+    """Through create_app: a board write and a story job reach a subscriber of app.state.feed at once,
+    with no watcher running (nothing opened /v1/events)."""
+    events = tmp_path / "story-events.jsonl"
+
+    async def fake_story_job(cfg: Any, **kw: Any) -> tuple[str, Path, Any]:
+        async def work() -> dict[str, Any]:
+            return {"stage": "review"}
+
+        return "story-1", events, work()
+
+    app = create_app(
+        cfg(tmp_path),
+        transport=httpx.MockTransport(FakeUpstream()),
+        api_key="k",
+        story_job=fake_story_job,
+    )
+    feed: Feed = app.state.feed
+    auth = {"Authorization": "Bearer k"}
+    async with (
+        feed.subscribe() as sub,
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=auth) as c,
+    ):
+        changes = aiter(sub)
+        r = await c.post("/v1/board/items", json={"level": "initiative", "title": "x"})
+        assert r.status_code == 201
+        change = await asyncio.wait_for(anext(changes), 5)
+        assert (change.topic, change.key) == ("board", r.json()["key"])
+        r = await c.post("/v1/airlie/stories", json={"text": "avatars"})
+        assert r.status_code == 202
+        started = await asyncio.wait_for(anext(changes), 5)
+        ended = await asyncio.wait_for(anext(changes), 5)
+        assert [(x.topic, x.key) for x in (started, ended)] == [("jobs", "story-1")] * 2
+        assert ended.id == started.id + 1

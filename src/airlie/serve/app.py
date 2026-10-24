@@ -218,14 +218,14 @@ def create_app(
     app = FastAPI(title="airlie", version="0.1.0")
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
-    jobs = Jobs()
     feed = Feed()
     app.state.feed = feed
+    jobs = Jobs(feed.publish)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
-    app.include_router(board_router(board))
+    app.include_router(board_router(board, feed.publish))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()

@@ -4,7 +4,7 @@ export. v1 has one person: every comment and item is noah's; a later per-person 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -50,8 +50,14 @@ class EditComment(BaseModel):
     text: str
 
 
-def board_router(store: BoardStore) -> APIRouter:
+def board_router(store: BoardStore, publish: Callable[[str, str | None], None] | None = None) -> APIRouter:
+    """`publish`, when given, is told `("board", key)` right after each write that succeeded (a refused one
+    publishes nothing): task serve passes its feed's, so an open page refetches that one item at once."""
     router = APIRouter(prefix="/v1/board", tags=["board"])
+
+    def changed(key: str) -> None:
+        if publish is not None:
+            publish("board", key)
 
     def item(key: str) -> dict[str, Any]:
         try:
@@ -80,6 +86,7 @@ def board_router(store: BoardStore) -> APIRouter:
             )
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
+        changed(made.key)
         return made.to_dict()
 
     @router.get("/items/{key}")
@@ -90,7 +97,7 @@ def board_router(store: BoardStore) -> APIRouter:
     async def change_item(key: str, body: ChangeItem) -> dict[str, Any]:
         item(key)  # 404 before anything else
         try:
-            changed = store.update(
+            updated = store.update(
                 key,
                 title=body.title,
                 description=body.description,
@@ -100,20 +107,25 @@ def board_router(store: BoardStore) -> APIRouter:
             )
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
-        return changed.to_dict()
+        changed(key)
+        return updated.to_dict()
 
     @router.post("/items/{key}/move")
     async def move_item(key: str, body: MoveItem) -> dict[str, Any]:
         item(key)
         try:
-            return store.move(key, body.status, body.before).to_dict()
+            moved = store.move(key, body.status, body.before)
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
+        changed(key)
+        return moved.to_dict()
 
     @router.post("/items/{key}/comments")
     async def add_comment(key: str, body: AddComment) -> dict[str, Any]:
         item(key)
-        return store.comment(key, PERSON, body.text).to_dict()
+        commented = store.comment(key, PERSON, body.text)
+        changed(key)
+        return commented.to_dict()
 
     @router.patch("/items/{key}/comments/{comment_id}")
     async def edit_comment(key: str, comment_id: int, body: EditComment, request: Request) -> dict[str, Any]:
@@ -127,7 +139,9 @@ def board_router(store: BoardStore) -> APIRouter:
         comment = comments[0]
         if comment["author"] not in (principal.name, principal.user_id):
             raise HTTPException(403, "you can only edit your own comments")
-        return store.edit_comment(key, comment_id, body.text).to_dict()
+        edited = store.edit_comment(key, comment_id, body.text)
+        changed(key)
+        return edited.to_dict()
 
     @router.get("/export")
     async def export() -> dict[str, Any]:
