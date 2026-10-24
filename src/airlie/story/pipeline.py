@@ -37,6 +37,7 @@ from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import (
     Finding,
+    PytestChecks,
     amend_feedback_said,
     checks_for,
     feedback,
@@ -60,7 +61,7 @@ from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
-from airlie.story.tester_lint import lint_for
+from airlie.story.tester_lint import LayerLint, lint_for, lint_round_said, lint_rules
 from airlie.supervisor.advice import with_advice
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
@@ -794,7 +795,10 @@ class StoryPipeline:
                 whose = (
                     "the tester's tests do not hold before the code" if tester else "its tests need fixing"
                 )
-                reason = f"layer {nn} ({layer.title}): {whose} after one retry ({listed}){cut}{kept}"
+                # lint alone is left only after the lint round (_check_tests)
+                linted = tester and all(f.kind == "lint_fails" for f in findings)
+                tries = "one retry and a lint round" if linted else "one retry"
+                reason = f"layer {nn} ({layer.title}): {whose} after {tries} ({listed}){cut}{kept}"
                 diagnosis = await self._at_block(
                     sup,
                     orch,
@@ -908,7 +912,8 @@ class StoryPipeline:
         findings go back to the tester once (`follow_up`), and what is left after that is returned, for the
         layer to stop on. Each finding is an event. A gate that does not run pytest gets no check, and an
         event says so. Before each run, the gate's ruff steps fix what they can in the tester's files and
-        report the rest (tester_lint), so the coder is never left a lint error in files it cannot edit."""
+        report the rest (tester_lint), so the coder is never left a lint error in files it cannot edit. When
+        lint is all that is left after the retry, the tester gets a lint round (`_lint_round`)."""
         confinement = self.cfg.tools.confinement()
         checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
         lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
@@ -929,20 +934,7 @@ class StoryPipeline:
                     sup.settle("precode_retry", "unknown", subtask="tests")
                 return found
             commit_wip(wt, f"studio: layer {nn} (pre-code check {attempt})")
-            found = []
-            if lint is not None:
-                fixed = await lint.fix(wt, base_sha)
-                if fixed:
-                    commit_wip(wt, f"studio: layer {nn} (lint fixes {attempt})")
-                    st.emit("tester_lint_fixed", layer=nn, attempt=attempt, files=fixed)
-                found = await lint.check(wt, base_sha)
-            found += await checks.run(wt, base_sha)
-            if (
-                checks.failing_at_base
-            ):  # red on the base already: not the tester's to fix, but the gate's to see
-                st.emit(
-                    "existing_tests_fail_at_base", layer=nn, attempt=attempt, tests=checks.failing_at_base
-                )
+            found = await self._tests_found(st, wt, base_sha, nn, attempt, checks, lint)
             self._emit_findings(st, found, nn, attempt, studio_run)
             if sup is not None and attempt > 1:
                 sup.settle("precode_retry", "not_helped" if found else "helped", subtask="tests")
@@ -955,6 +947,66 @@ class StoryPipeline:
                 sent, ids = feedback_said(found, advice=advice)
                 self._steer(st, ids, self._role_of(orch, "tests"), nn)
                 await orch.follow_up("tests", sent)
+        if lint is not None and all(f.kind == "lint_fails" for f in found):
+            return await self._lint_round(st, orch, wt, base_sha, nn, checks, lint, found)
+        return found
+
+    async def _tests_found(
+        self,
+        st: StoryState,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        attempt: int,
+        checks: PytestChecks,
+        lint: LayerLint | None,
+    ) -> list[Finding]:
+        """One run of the pre-code check on the committed tests: the gate's ruff fixers on the tester's files
+        (what they change is committed), then what lint is left and the checks' findings."""
+        found: list[Finding] = []
+        if lint is not None:
+            fixed = await lint.fix(wt, base_sha)
+            if fixed:
+                commit_wip(wt, f"studio: layer {nn} (lint fixes {attempt})")
+                st.emit("tester_lint_fixed", layer=nn, attempt=attempt, files=fixed)
+            found = await lint.check(wt, base_sha)
+        found += await checks.run(wt, base_sha)
+        if checks.failing_at_base:  # red on the base already: not the tester's to fix, but the gate's to see
+            st.emit("existing_tests_fail_at_base", layer=nn, attempt=attempt, tests=checks.failing_at_base)
+        return found
+
+    async def _lint_round(
+        self,
+        st: StoryState,
+        orch: StudioOrchestrator,
+        wt: Path,
+        base_sha: str,
+        nn: str,
+        checks: PytestChecks,
+        lint: LayerLint,
+        found: list[Finding],
+    ) -> list[Finding]:
+        """When all that is left after the tester's retry is lint its fixer could not fix (`found`), the
+        tester is sent back once more, told only ruff's output and to change only the lines it names, in at
+        most story.lint_round_steps steps; then the whole pre-code check runs again, since a rename can still
+        break a test, and what is left is returned. A lint error alone used to block the layer: AIR-22 layer
+        03 (2026-10-24) lost about 2.5 hours to E741, a loop variable named `l`. No supervisor advice: the fix
+        is what ruff says."""
+        attempt = CHECK_ATTEMPTS + 1
+        st.emit("tester_lint_round", layer=nn, rules=lint_rules(found))
+        told, ids = lint_round_said(found)
+        self._steer(st, ids, self._role_of(orch, "tests"), nn)
+        await orch.follow_up("tests", told, max_steps=self.s.lint_round_steps)
+        ended = orch.runs["tests"].result
+        if ended is not None and ended.stop_reason == "engine_error":  # as in _check_tests
+            found = [Finding("engine_error", orch.runs["tests"].role, ended.final_text, "")]
+            self._emit_findings(st, found, nn, attempt, orch.run_dir.run_id)
+            return found
+        commit_wip(wt, f"studio: layer {nn} (lint round)")
+        found = await self._tests_found(st, wt, base_sha, nn, attempt, checks, lint)
+        self._emit_findings(st, found, nn, attempt, orch.run_dir.run_id)
+        if not found:
+            st.emit("test_checks_passed", layer=nn, attempt=attempt)
         return found
 
     async def _amend_tests(

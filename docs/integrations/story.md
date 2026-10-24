@@ -103,6 +103,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
 | `story.tester_role` | `null` (airlie.yaml: `tester`) | the role that writes every layer's tests before its coder builds it, as the coder's contract: checked to fail before any code is written, then read-only to the coder (a test wrong about a name the brief fixes is named in the coder's reply, not changed); `null`: the coder writes its own tests, one subtask per layer, and they are only read for assertions. The 2026-10-16 qa seat was removed for blowing its context on a fast model; this one is a thinking role with the whole layer brief, 20 steps, and the same checks on what it writes |
+| `story.lint_round_steps` | 6 | steps the tester may spend on its lint round, when lint its fixer could not fix is all that is left after its pre-code retry (*The pre-code check*) |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
@@ -302,6 +303,14 @@ is involved.
 - **One retry, for the tester:** with findings, the tester is sent back once, in the same conversation, with each
   test's id and why. Findings after that stop the layer before the coder starts: the note lists them, and the
   worktree and branch are kept.
+- **Lint, then a lint round:** before each run of the check, the gate's ruff steps fix what they can in the
+  tester's files (`tester_lint_fixed`) and what they cannot is a `lint_fails` finding: the coder cannot edit those
+  files, so lint left in them would fail the gate with no one able to fix it. When lint is all that is left after
+  the retry, the tester gets a lint round (`tester_lint_round`, with the rules): ruff's output and the
+  `lint-round` steering text (change only the lines ruff names), in at most `story.lint_round_steps` steps.
+  Then the whole check runs again, since a rename can still break a test; what is left stops the layer. Lint
+  beside any other finding gets no lint round. AIR-22 layer 03 (2026-10-24) lost about 2.5 hours to E741, a loop
+  variable named `l`, which ruff's fixer cannot rename.
 - **Then locked:** once the check passes, every file the tester changed is read-only to the coder: `write_file`
   and `edit_file` refuse them (with a `locked` event naming them), and before the final gate any change to them
   (by a shell, say) is put back, with a `locked_restored` event.
@@ -399,7 +408,7 @@ note work the other way round: they are posted before their stage is saved, so w
   `the reply was cut off at max_tokens (N) before it ended` and names the `roles.<role>.max_tokens` to raise. A
   thinking role needs `max_tokens` above its `thinking_budget`, and config loading refuses one that has not;
 - the repository has no test gate on the trunk (*What stops a story before it starts*);
-- a layer's tests still fail airlie's pre-code check after the tester's retry (*The pre-code check*): the note
+- a layer's tests still fail airlie's pre-code check after the tester's retry, or its lint round (*The pre-code check*): the note
   lists each test and why, and the coder never started;
 - a layer changed nothing, or the test gate fails on it. Its branch and worktree are kept for you to look at, and
   the comment names them. When a subtask's reply in that layer was cut off at its `max_tokens`, the comment names the

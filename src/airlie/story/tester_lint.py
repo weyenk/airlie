@@ -17,12 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import Finding
 from airlie.teams.worktree import changed_files, differs_from
 from airlie.tools.protocol import ToolContext
 from airlie.tools.shell import run_cmd
 
 LINT_FAILS = "the gate's lint step fails on the tester's files after airlie ran its fixer: fix these by hand"
+_RULE = re.compile(r"^([A-Z]+[0-9]+) ", re.MULTILINE)
+"""A rule code at the start of a line of ruff's output (`E741 Ambiguous variable name: `l``)."""
 _RUFF = re.compile(r"^(?P<ruff>[^;&|<>`$()]*?\bruff)\s+(?P<sub>check|format)\b(?P<rest>[^;&|<>`$()]*)$")
 _PYTHON = (".py", ".pyi")
 _OUTPUT_CHARS = 8_000
@@ -104,3 +107,16 @@ def lint_for(
     """The tester's lint for a gate of `commands`, or None when the gate runs no ruff."""
     steps = ruff_steps(commands)
     return LayerLint(steps, timeout_s=timeout_s, confinement=confinement) if steps else None
+
+
+def lint_rules(findings: Sequence[Finding]) -> list[str]:
+    """The ruff rules the `lint_fails` findings name, each once, in the order ruff reported them."""
+    rules = [r for f in findings if f.kind == "lint_fails" for r in _RULE.findall(f.why)]
+    return list(dict.fromkeys(rules))
+
+
+def lint_round_said(findings: Sequence[Finding]) -> tuple[str, tuple[str, ...]]:
+    """What the tester is told on its lint round, and the hub id of the steering in it: each lint step's
+    output as ruff gave it, then `lint-round` (change only the lines ruff names)."""
+    out = "\n\n".join(f"- {f.test}: {f.why}" for f in findings)
+    return f"{out}\n\n{hub_text('lint-round')}", ("lint-round",)
