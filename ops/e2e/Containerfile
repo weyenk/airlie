@@ -2,6 +2,13 @@
 # places it runs: Apple's `container` on the Mac (task test:e2e) and the e2e job in GitHub, built from the
 # repository root:  container build -f ops/e2e/Containerfile .
 #
+# The web stage builds the Vue app that the web app serves at /next, on the node major web/package.json pins
+# (`engines`); the final stage takes only its build.
+FROM node:26-slim AS web
+WORKDIR /src
+COPY web web
+RUN cd web && npm ci && npm run build
+
 # The base carries Chromium and the libraries it needs; its tag is the playwright version uv.lock pins, so
 # bump the two together. uv is the same release the lockfile was written with.
 FROM mcr.microsoft.com/playwright/python:v1.64.0-noble
@@ -27,6 +34,7 @@ ARG SKIP="torch triton cuda-bindings cuda-pathfinder cuda-toolkit nvidia-cublas 
 RUN uv sync --frozen --no-install-project $(printf -- '--no-install-package %s ' $SKIP)
 
 COPY . .
+COPY --from=web /src/src/airlie/serve/web_next src/airlie/serve/web_next
 RUN uv sync --frozen $(printf -- '--no-install-package %s ' $SKIP)
 
 # Arguments after the image name are pytest's: container run --rm airlie-e2e -k board

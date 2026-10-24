@@ -1,4 +1,5 @@
-# What the e2e image (ops/e2e/Containerfile) is built without: local environments, caches, results, secrets.
+# What the e2e image (ops/e2e/Containerfile) is built without: local environments, caches, results, secrets, and
+# the Vue app's host-built node_modules and build (the image's web stage makes its own).
 .git
 .venv
 **/__pycache__
@@ -10,5 +11,7 @@ mutants
 runs
 test-results
 .env
+web/node_modules
+src/airlie/serve/web_next
 airlie.local.yaml
 .claude
