@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from airlie.board.model import Level, Status
@@ -41,6 +41,11 @@ class MoveItem(BaseModel):
 
 
 class AddComment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+
+
+class EditComment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str
 
@@ -109,6 +114,20 @@ def board_router(store: BoardStore) -> APIRouter:
     async def add_comment(key: str, body: AddComment) -> dict[str, Any]:
         item(key)
         return store.comment(key, PERSON, body.text).to_dict()
+
+    @router.patch("/items/{key}/comments/{comment_id}")
+    async def edit_comment(key: str, comment_id: int, body: EditComment, request: Request) -> dict[str, Any]:
+        principal = getattr(request.state, "principal", None)
+        if principal is None:
+            raise HTTPException(401, "not signed in")
+        item(key)  # 404 before anything else
+        comments = [c for c in item(key)["comments"] if c["id"] == comment_id]
+        if not comments:
+            raise HTTPException(404, f"no comment {comment_id} on {key}")
+        comment = comments[0]
+        if comment["author"] not in (principal.name, principal.user_id):
+            raise HTTPException(403, "you can only edit your own comments")
+        return store.edit_comment(key, comment_id, body.text).to_dict()
 
     @router.get("/export")
     async def export() -> dict[str, Any]:
