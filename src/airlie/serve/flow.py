@@ -46,9 +46,14 @@ class StoryNotFound(LookupError):
     """No story of that key, or no such node or job in it."""
 
 
+def _safe(value: str) -> bool:
+    """Whether `value` is one path component that stays inside its parent directory."""
+    return _SAFE.fullmatch(value) is not None and value not in (".", "..")
+
+
 def _name(value: str, what: str) -> str:
     """`value` as one path component, or StoryNotFound: it names a directory and must not leave its parent."""
-    if not _SAFE.fullmatch(value) or value in (".", ".."):
+    if not _safe(value):
         raise StoryNotFound(f"no {what} '{value}'")
     return value
 
@@ -69,7 +74,7 @@ def _load(state_dir: Path, key: str) -> tuple[Path, dict[str, Any], list[dict[st
 
 
 def _run_events(state_dir: Path, run: str | None) -> list[dict[str, Any]]:
-    if not run or not _SAFE.fullmatch(run):
+    if not run or not _safe(run):
         return []
     return read_events(state_dir / "runs" / run / "events.jsonl", 0)[0]
 
@@ -365,6 +370,28 @@ def _steps(trace: Path) -> list[dict[str, Any]]:
     return out
 
 
+def trace_of(state_dir: Path, run: str, team: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """(prompt, steps): what subtask `team` of run `run` was opened with (its prompt.json; None when that was
+    not recorded or is not an object) and the steps it took in every attempt, from runs/<run>/trace/<team>/.
+    (None, []) when either name is not one path component: both come from event logs and URLs."""
+    if not (_safe(run) and _safe(team)):
+        return None, []
+    trace = state_dir / "runs" / run / "trace" / team
+    prompt: Any = None
+    if (trace / "prompt.json").is_file():
+        try:
+            prompt = json.loads((trace / "prompt.json").read_text())
+        except (ValueError, OSError):
+            prompt = None
+    steps = _steps(trace) if trace.is_dir() else []
+    return (prompt if isinstance(prompt, dict) else None), steps
+
+
+def final_text(steps: list[dict[str, Any]]) -> str:
+    """The last thing a job said in its steps (`steps` as trace_of reads them); "" when it said nothing."""
+    return next((s["assistant_text"] for s in reversed(steps) if s["assistant_text"]), "")
+
+
 def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str, Any]:
     """One job of the flow: its summary, what it was given, what it produced and the steps it took."""
     _, st, _ = _load(state_dir, key)
@@ -375,20 +402,11 @@ def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str
         raise StoryNotFound(f"no job '{job_id}' in '{node_id}' of {key}")
     team = job_id if node["kind"] == "layer" else node_id
     run = job.get("studio_run")
-    trace = state_dir / "runs" / run / "trace" / team if run and _SAFE.fullmatch(run) else None
-    prompt = None
-    if trace is not None and (trace / "prompt.json").is_file():
-        try:
-            prompt = json.loads((trace / "prompt.json").read_text())
-        except (ValueError, OSError):
-            prompt = None
+    prompt, steps = trace_of(state_dir, run, team) if isinstance(run, str) else (None, [])
     note = None
     if prompt is None:
         note = "airlie's own check, no model" if job_id == "checks" else "opening prompt not recorded"
-    steps = _steps(trace) if trace is not None and trace.is_dir() else []
-    output: dict[str, Any] = {
-        "final_text": next((s["assistant_text"] for s in reversed(steps) if s["assistant_text"]), "")
-    }
+    output: dict[str, Any] = {"final_text": final_text(steps)}
     if node["kind"] == "layer":
         i = int(node_id.split("-")[1]) - 1
         layers = st.get("layers") or []

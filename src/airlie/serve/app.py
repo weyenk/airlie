@@ -32,8 +32,9 @@ from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
-from airlie.serve.jobs import Jobs
+from airlie.serve.jobs import Job, Jobs
 from airlie.serve.listing import recent_runs, repos, stories, story_page
+from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
@@ -188,6 +189,17 @@ async def _finish_plan(run_id: str, work: Awaitable[PlanOutcome]) -> dict[str, A
     if out.plan is not None:
         return {**body, "type": "plan", "plan": plan_to_dict(out.plan)}
     return {**body, "type": "answer", "answer": out.answer}
+
+
+def _plan_of(job: Job | None) -> dict[str, Any] | None:
+    """The plan `job` returned when it is a finished plan job whose chief planned (_finish_plan): the studio's
+    own `plan` event names only the subtasks and their roles, so this is where the whole plan is. None for
+    any other job, a plan job still running, or a chief that answered instead."""
+    if job is None or job.kind != "plan" or job.state != "done":
+        return None
+    result = job.task.result()
+    plan = result.get("plan") if result.get("type") == "plan" else None
+    return plan if isinstance(plan, dict) else None
 
 
 def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = None) -> Any:
@@ -613,6 +625,30 @@ def create_app(
             if tree["next"] > since or ended or time.monotonic() >= deadline:
                 return tree
             await asyncio.sleep(0.25)
+
+    @app.get("/v1/airlie/runs/{run_id}/flow")
+    async def run_flow_get(run_id: str) -> dict[str, Any]:
+        """A run of any topology as the workflow view draws it (airlie.serve.run_flow), with `job`: this
+        server's job state for it, or None; and `plan`: the plan its finished plan job returned, for a person
+        to approve before anything is built, or None."""
+        models = {name: role.model for name, role in cfg.roles.items()}
+        try:
+            flow = run_flow(cfg.observability.state_dir.expanduser(), run_id, models=models)
+        except RunNotFound as e:
+            raise HTTPException(404, str(e)) from None
+        job = jobs.get(run_id)
+        flow["job"] = job.state if job is not None else None
+        if job is not None and job.state in ("failed", "cancelled"):
+            flow["stage"] = "done"  # it ended without its run_done
+        flow["plan"] = _plan_of(job)
+        return flow
+
+    @app.get("/v1/airlie/runs/{run_id}/flow/{node_id}/{job_id}")
+    async def run_job_get(run_id: str, node_id: str, job_id: str) -> dict[str, Any]:
+        try:
+            return run_job_detail(cfg.observability.state_dir.expanduser(), run_id, node_id, job_id)
+        except RunNotFound as e:
+            raise HTTPException(404, str(e)) from None
 
     @app.get("/v1/airlie/stories")
     async def story_list(
