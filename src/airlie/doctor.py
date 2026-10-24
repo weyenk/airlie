@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -149,6 +150,41 @@ class RealProbe:
             return "present"
 
 
+def web_node_pin(root: Path) -> str:
+    """The node the web app pins (engines.node in web/package.json, the only place node is pinned)."""
+    package = json.loads((root / "web" / "package.json").read_text())
+    return str(package["engines"]["node"])
+
+
+def node_check(version: str | None, pin: str) -> CheckResult:
+    """The first node on the PATH must be the major `pin` names (npm itself only warns about engines).
+
+    Worded like web/scripts/check-node.mjs, which stops the web tasks for the same reason."""
+    pinned = re.search(r"\d+", pin)
+    if pinned is None:
+        return CheckResult(
+            "tool:node", "fail", f"web/package.json's engines.node {pin!r} names no node major"
+        )
+    wanted = int(pinned.group())
+    if version is None:
+        return CheckResult(
+            "tool:node",
+            "fail",
+            f"'node' not on PATH; install node {wanted} (see README install) "
+            "and put its bin directory on your PATH",
+        )
+    found = re.match(r"v?(\d+)\.", version)
+    if found and int(found.group(1)) == wanted:
+        return CheckResult("tool:node", "ok", version)
+    return CheckResult(
+        "tool:node",
+        "fail",
+        f"node {version} is the first node on the PATH; airlie's web app needs node {wanted} "
+        f"first on the PATH (install node {wanted} and put its bin directory ahead of the other node's "
+        "in your PATH)",
+    )
+
+
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
     """Spec 01 §1 budget: preloaded weights + K × KV at max_kv_size + OS reserve.
 
@@ -195,6 +231,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe) -> list[CheckResult]:
                 f"tool:{tool}", "ok" if v else "fail", v or f"'{tool}' not on PATH (see README install)"
             )
         )
+    results.append(node_check(probe.tool_version("node"), web_node_pin(Path(__file__).resolve().parents[2])))
 
     if cfg.web.search.kind == "searxng":
         if probe.http_ok(f"{cfg.web.search.url.rstrip('/')}/search?q=doctor&format=json"):
