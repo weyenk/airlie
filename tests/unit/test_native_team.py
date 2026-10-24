@@ -1737,12 +1737,24 @@ async def test_a_read_after_thinking_cut_at_the_budget_gets_its_reasoning_back_n
     assert [m.role for m in last[-2:]] == ["tool", "user"]  # right after the observation
 
 
-async def test_the_carried_reasoning_is_replaced_by_the_next_cut_not_stacked(tmp_path: Path) -> None:
+async def test_each_cut_appends_its_own_carried_reasoning_and_the_earlier_one_stays(tmp_path: Path) -> None:
+    """Until 2026-10-24 the next cut replaced the message carried before it. Removing a message from the
+    middle of the history changes every prompt token after it, so the engine's stored prefix (keyed by the
+    whole prompt up to the generation prompt) no longer matched and the next step re-prefilled the whole
+    conversation: 20.5-35.6 s of prefill against ~2 s on the other steps, 47 s on a 39k prompt in a live run
+    on 2026-10-23, 14 carries since 2026-10-19 (docs/bench/2026-10-23-performance-review.md, finding 3).
+    Each carry now goes after its own tool result and the earlier ones stay, so every prompt is a prefix of
+    the next; the ~400 stale tokens a kept carry costs are cheaper than the re-prefill."""
     engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
     team, ctx = thinking_team(tmp_path, engine)
     await team.run(ctx, Recorder())
-    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'a')}\n\n{GO_ON}"]
-    assert carried(engine, 3) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]
+    a, b = (f"{CUT}\n{thought(8, t)}\n\n{GO_ON}" for t in "ab")
+    assert carried(engine, 2) == [a]
+    assert carried(engine, 3) == [a, b]
+    history = engine.requests[2].messages
+    before_each = [history[i - 1] for i, m in enumerate(history) if m.role == "user" and CUT in m.content]
+    assert [(m.role, m.tool_call_id) for m in before_each] == [("tool", "c-a"), ("tool", "c-b")]
+    assert history[: len(engine.requests[1].messages)] == engine.requests[1].messages  # the prefix holds
 
 
 async def test_a_turn_under_the_budget_leaves_the_last_carried_reasoning_where_it_is(tmp_path: Path) -> None:
@@ -1807,7 +1819,9 @@ async def test_carrying_reasoning_is_a_reasoning_carried_event(tmp_path: Path) -
     ]
 
 
-async def test_a_resumed_conversation_replaces_the_reasoning_its_last_run_carried(tmp_path: Path) -> None:
+async def test_a_resumed_conversation_keeps_the_reasoning_its_last_run_carried(tmp_path: Path) -> None:
+    """The last run's carried message is history like any other (it sits after its tool result and holds):
+    the resumed run adds its own after it rather than editing the middle of the prompt."""
     first = FakeEngine({"coder": [cut_read("a")]})
     team, ctx = thinking_team(tmp_path, first, max_steps=1)
     ctx.stop_when = lambda step: True
@@ -1816,7 +1830,9 @@ async def test_a_resumed_conversation_replaces_the_reasoning_its_last_run_carrie
     team, ctx = thinking_team(tmp_path, engine)
     ctx.initial_state = state
     await team.run(ctx, Recorder())
-    assert carried(engine, 2) == [f"{CUT}\n{thought(8, 'b')}\n\n{GO_ON}"]
+    a, b = (f"{CUT}\n{thought(8, t)}\n\n{GO_ON}" for t in "ab")
+    assert carried(engine, 1) == [a]
+    assert carried(engine, 2) == [a, b]
 
 
 # ---- each steering text the loop sends comes from the prompt hub and is a steer event (2026-10-22) ----
