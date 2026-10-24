@@ -220,3 +220,17 @@ test("a listener that throws does not starve the others", () => {
   expect(second).toHaveBeenCalledTimes(1);
   expect(error).toHaveBeenCalledTimes(1);
 });
+
+test("a resource on several topics refetches on each of them", async () => {
+  const load = vi.fn(async () => "x");
+  liveResource(["stories", "runs", "jobs"], load);
+  await flush();
+
+  change("stories", null);
+  change("runs", "r1");
+  change("jobs", null);
+  change("board", null);
+  await flush();
+
+  expect(load).toHaveBeenCalledTimes(4);
+});
