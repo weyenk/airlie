@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmDialog from "./ConfirmDialog.vue";
 import TabBar from "./TabBar.vue";
 import TopBar from "./TopBar.vue";
 </script>
@@ -9,4 +10,5 @@ import TopBar from "./TopBar.vue";
     <slot />
   </main>
   <TabBar />
+  <ConfirmDialog />
 </template>

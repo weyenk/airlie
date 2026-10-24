@@ -59,3 +59,9 @@
     font-size: 14px;
   }
 }
+
+/* the indeterminate progress bar's sliding segment */
+@keyframes airlie-slide {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
