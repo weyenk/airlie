@@ -82,8 +82,8 @@ Noah wants pages that update on their own, and components built once and reused.
 - **Claude builds all of it.**
 - **The Workflows area is reshaped, not ported** (details under "The Workflows area"): Running becomes the top
   card with a progress bar per item; the Stories list gains pages, filters and sorting; Needs you and Recent
-  results go away; one workflow's view stays; studio runs open in that view too, with plan approval and Stop
-  on it; the job page goes away.
+  results go away; one workflow's view stays; runs of every topology (single, teams, fork and studio) open in
+  that view too, with a studio run's plan approval and Stop on it; the job page goes away.
 - **airlie's pipeline stays off web work until a follow-up teaches it Vue.** During the build, web stories on
   this repository stay off airlie's To Do. After the switch and until that follow-up lands, web stories here
   go to Claude. The test gate must still pass inside every story, so Python-only stories keep working.
@@ -108,7 +108,7 @@ Noah wants pages that update on their own, and components built once and reused.
   mockups add and that needs server work becomes its own follow-up.
 - In the Workflows area (Noah confirmed these when they were played back): the Stories list shows 25 stories
   a page, filters by stage, repository and blocked, searches key and title, and sorts by last activity by
-  default, or by key or stage. Running lists every story and studio run in progress, whoever started it.
+  default, or by key or stage. Running lists every story and run in progress, whoever started it.
   Progress counts finished stages and layers against the total. The Start new work button stays.
 - The parity target is `main` when the build starts, which includes AIR-17's centred item modal and
   click-to-edit (PRs 140 to 143, merged 2026-10-24).
@@ -167,22 +167,32 @@ sign-in as the rest of the API.
 ### The Workflows area
 
 Today it has four sections (Stories, Running, Needs you, Recent results), one workflow's view
-(`workflow.js`), and a separate job page (`job.js`) that is the only view a studio run has. After:
+(`workflow.js`), and a separate job page (`job.js`) that is the only view a studio run has. Runs of the
+other topologies (single, teams and fork) are shown only by the Topology page, which is not carried over, so
+without this design they would have no view at all in the new app. After:
 
-- **Running, the top card.** One row per story or studio run in progress, whoever started it: the web app, the
-  launchd story tick or a `task` command. Today's Running section lists only jobs this server started, so it
-  misses the tick's stories. A row shows the key (or the run's name) and title, a progress bar, and nothing
-  else. Clicking it opens that work's workflow view. Rows appear, advance and leave live, through the feed.
+- **Running, the top card.** One row per story or run in progress, of any topology, whoever started it: the
+  web app, the launchd story tick, a `task` command or `POST /v1/airlie/run`. Today's Running section lists
+  only jobs this server started, so it misses the tick's stories. A row shows the key (or the run's goal) and
+  title, a progress bar, and nothing else. Clicking it opens that work's workflow view. Rows appear, advance
+  and leave live, through the feed.
 - **Stories, below Running.** The list stays, with pages, filters, search and sorting (the choices are under
   "Decided by Claude"). Paging, filtering and sorting happen in the API, so the list stays fast with hundreds
   of stories.
 - **Needs you and Recent results** go away.
 - **One workflow's view** stays as it is today, in the new look: the stages left to right, a lane of jobs per
   layer, and the selected job's status, role, retries, input, output and steps.
-- **Studio runs open in the same view.** Their stages are the chief's plan, the specialists, the reviewer and
-  the synthesis. The plan is approved on this view, before anything is built, and Stop is on it while the
-  work runs. Stop appears only for work this server runs, as it does on the job page today; a story the
-  launchd tick runs belongs to another process.
+- **Runs of every topology open in the same view,** with stages shaped by the topology that ran it:
+  - **single:** the one agent's work, then its result;
+  - **teams:** a lane per team working in parallel, then the judge's pick;
+  - **fork:** the agent until it got stuck, a lane per fork, then the winner;
+  - **studio:** the chief's plan, the specialists, the reviewer, then the synthesis.
+
+  The builder settles the exact stages from the run events. A studio run's plan is approved on this view,
+  before anything is built; only studio plans first. Stop is on the view while the work runs, for
+  jobs this server started through the jobs API (plans, runs and stories), as on the job page today. A story
+  the launchd tick runs belongs to another process, and `POST /v1/airlie/run` holds its request open until
+  the run ends, so neither has a Stop.
 - **The job page goes away.** Its agent tree and event timeline are not carried over. Links that pointed to
   it, including the chat's "job started" cards, point to the work's workflow view instead.
 
@@ -191,9 +201,11 @@ What the API gains for this ("exposing more on the API"):
 - The stories list takes page, page size, filters, search and sort, and returns the total count and each
   story's last-activity time. Today it returns every story with key, title, repository, stage and blocked
   reason, and no time.
-- A running list: every story and studio run in progress, each with its progress worked out on the server.
-- A flow for a studio run, in the same shape as a story's flow, so one view draws both. The job detail under
-  it (input, output, steps) works for run jobs as it does for story jobs.
+- A running list: every story and run in progress, each with its progress worked out on the server.
+- A flow for a run of any topology, in the same shape as a story's flow, so one view draws them all. It is
+  built from the run's `events.jsonl`, the same log the Topology page reads; `airlie.serve.tree` already tells
+  the four topologies apart from it. The job detail under it (input, output, steps) works for run jobs as it
+  does for story jobs.
 
 ### Screens
 
@@ -204,7 +216,7 @@ Each at `/next` plus its clean path, desktop and phone:
 | `#/` Chat | `/next/` |
 | `#/workflows` | `/next/workflows`, reshaped as above |
 | `#/workflows/{key}/{node}/{job}` | `/next/workflows/{key}/{node}/{job}` |
-| (none: studio runs only had the job page) | a workflow view for a studio run; the builder picks a path that cannot clash with a story key |
+| (none: runs only had the job page or Topology) | a workflow view for a run of any topology; the builder picks a path that cannot clash with a story key |
 | `#/jobs/{id}` | gone; redirects to the workflow view of the work it ran |
 | `#/start` | `/next/start` |
 | `#/board/{key}` (with the item modal, comment edit and drag-and-drop) | `/next/board/{key}` |
@@ -257,7 +269,8 @@ plan cards can still approve a plan in the chat.
   catches a write from another connection to the board database and growth of an event log. Serving: `/next`
   returns the page for unknown paths and the files under their own paths. At the switch: the redirects. The
   Workflows API: the stories list's paging, filters, search, sort, count and last-activity time; the running
-  list including a story the tick started in another process, with its progress; a studio run's flow.
+  list including a story the tick started in another process, with its progress; a run's flow for each of
+  the four topologies, from recorded event logs.
 - **Vitest:** the shared components, and a store refetching when its topic arrives.
 - **The browser suite** (`tests/e2e`, Playwright in Apple `container`) covers `/next` the way it covers `/`
   today, with evidence screenshots. The key check: with the board open, a change made from outside the page
@@ -295,5 +308,5 @@ Each step is its own pull request, except the mockups.
 
 The exact event topics and payloads, the watcher's interval, file layout under `web/`, the build output
 directory's name, the exact gate lines, lint rules, the highlight's duration, which shadcn-vue components to
-copy, how the Pinia stores are split, the path of a studio run's workflow view, the exact progress formula,
-and the API's parameter names for paging, filters and sorting.
+copy, how the Pinia stores are split, the path of a run's workflow view, each topology's exact stages, the
+exact progress formula, and the API's parameter names for paging, filters and sorting.
