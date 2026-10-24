@@ -109,6 +109,7 @@ pytest_add_cli_args = [
 also_copy = [
     "airlie.yaml",
     "config",
+    "web/package.json",
     "prompts",
     "evals",
     "scripts",
