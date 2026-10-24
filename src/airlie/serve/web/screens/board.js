@@ -1,5 +1,5 @@
-// The Board: columns by status from /v1/board/items, a level filter, an item panel with its children,
-// description, comments and status buttons, and New initiative. Built against the local-board plan's routes.
+// The Board: columns by status from /v1/board/items, a level filter, and a centered card modal for an item's
+// children, description, comments and status buttons, plus New initiative. Built against the local-board plan's routes.
 import { request } from "../api.js";
 import { append, chip, clear, h, icon } from "../dom.js";
 import { markdown } from "../md.js";
@@ -62,7 +62,6 @@ export function render(root, [key], ctx) {
 
   const columns = h("div", { class: "columns", style: { "--board-columns": String(STATUSES.length) } });
   const filter = h("div", { role: "group", "aria-label": "Level", class: "seg-group" });
-  const panel = h("aside", { class: "panel", hidden: true });
   const error = h("div", { class: "error" });
 
   function setFilter(next) {
@@ -86,7 +85,7 @@ export function render(root, [key], ctx) {
         h("div", { class: "row" }, filter, h("button", { type: "button", class: "btn primary small", onclick: () => openNew("initiative", null) }, "New initiative")),
       ),
       error,
-      h("div", { class: "board-body" }, columns, panel),
+      h("div", { class: "board-body" }, columns),
     ),
   );
 
@@ -213,21 +212,78 @@ export function render(root, [key], ctx) {
     );
   }
 
-  // ---- the panel ----
-  function closePanel() {
-    panel.hidden = true;
-    clear(panel);
-    if (location.hash !== "#/board") ctx.go("#/board");
+  // ---- the card modal: a wide, centered card over the dimmed board ----
+  const backdrop = h("div", { class: "backdrop", hidden: true });
+  const modal = h("div", { class: "card modal-card", role: "dialog", "aria-modal": "true", tabindex: "-1", hidden: true });
+  root.append(backdrop, modal); // siblings of the page, never inside .board-body's flex, so the columns keep full width
+
+  let openKey = null; // the card that opened the modal: focus returns to it when the modal closes
+  let trap = null; // the document keydown listener while the modal is open
+
+  function focusable() {
+    return [...card.querySelectorAll("a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex='-1'])")].filter((el) => el.offsetParent !== null);
   }
 
-  function panelFrame(titleText, ...body) {
-    clear(panel);
-    panel.hidden = false;
-    panel.append(
-      h("div", { class: "row spread panel-head" }, h("h2", { class: "h2 ellipsis" }, titleText), h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: closePanel }, icon("close", 18))),
-      ...body,
+  function onKey(ev) {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeModal();
+      return;
+    }
+    if (ev.key !== "Tab") return;
+    const els = focusable();
+    if (!els.length) {
+      ev.preventDefault();
+      card.focus();
+      return;
+    }
+    const first = els[0];
+    const last = els[els.length - 1];
+    const active = document.activeElement;
+    if (ev.shiftKey) {
+      if (active === first || !card.contains(active)) {
+        ev.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || !card.contains(active)) {
+      ev.preventDefault();
+      first.focus();
+    }
+  }
+
+  function openModal() {
+    backdrop.hidden = false;
+    card.hidden = false;
+    trap = onKey;
+    document.addEventListener("keydown", trap, true);
+    card.focus(); // the card takes focus so the Tab trap has a place to start
+  }
+
+  function closeModal() {
+    backdrop.hidden = true;
+    card.hidden = true;
+    if (trap) {
+      document.removeEventListener("keydown", trap, true);
+      trap = null;
+    }
+    if (location.hash !== "#/board") ctx.go("#/board");
+    // drawColumns rebuilds the cards, so re-find the one that opened the modal by its key.
+    const el = openKey ? columns.querySelector(`.item[data-key="${CSS.escape(openKey)}"]`) : null;
+    openKey = null;
+    if (el) el.focus();
+    else card.focus(); // the card is gone (e.g. the board was re-rendered): keep focus out of the backdrop
+  }
+
+  // Clicking the dimmed backdrop (not the card) closes the modal.
+  backdrop.addEventListener("click", closeModal);
+
+  function modalFrame(titleText, ...body) {
+    clear(card);
+    card.append(
+      h("div", { class: "row spread modal-head" }, h("h2", { class: "h2 ellipsis" }, titleText), h("button", { type: "button", class: "iconbtn", "aria-label": "Close", onclick: closeModal }, icon("close", 18))),
+      h("div", { class: "modal-body" }, ...body),
     );
-    panel.scrollTop = 0;
+    openModal();
   }
 
   async function openItem(k) {
@@ -238,10 +294,11 @@ export function render(root, [key], ctx) {
       if (CHILD[item.level]) ({ items: children } = await request(`/v1/board/items?parent=${encodeURIComponent(k)}`));
     } catch (e) {
       if (e?.name === "AuthError") return;
-      panelFrame(k, h("div", { class: "error" }, e?.status === 404 ? "No such item." : e.message));
+      modalFrame(k, h("div", { class: "error" }, e?.status === 404 ? "No such item." : e.message));
       return;
     }
     if (gone) return;
+    openKey = k;
     const err = h("span", { class: "error" });
     const patch = async (body) => {
       try {
@@ -259,8 +316,11 @@ export function render(root, [key], ctx) {
     const labelsField = labelsInput(otherLabels(item.labels).join(", "));
     const commentField = h("textarea", { class: "field", rows: 2, placeholder: "Add a comment", "aria-label": "Comment" });
     const parent = item.parent ? h("a", { href: `#/board/${encodeURIComponent(item.parent)}`, class: "mono small" }, `↑ ${item.parent}`) : null;
-    panelFrame(
+    const [, statusLabel] = STATUSES.find(([s]) => s === item.status) || [item.status, item.status];
+    modalFrame(
       `${item.key} · ${item.title}`,
+      h("div", { class: "modal-title" }, item.title),
+      h("div", { class: "modal-status muted" }, `in ${statusLabel}`),
       h("div", { class: "row" }, statusChip(item.status), chip("mute", item.level), parent),
       repoOf(item.labels)
         ? h("div", { class: "small" }, "Repository ", h("span", { class: "mono" }, repoOf(item.labels)))
@@ -334,7 +394,7 @@ export function render(root, [key], ctx) {
     const repoField = repoInput(parentRepo);
     const labelsField = labelsInput("");
     const err = h("span", { class: "error" });
-    panelFrame(
+    modalFrame(
       `New ${newLevel}${parentKey ? ` under ${parentKey}` : ""}`,
       h(
         "form",
@@ -360,7 +420,7 @@ export function render(root, [key], ctx) {
         descField,
         repoField,
         labelsField,
-        h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary small" }, "Create"), h("button", { type: "button", class: "btn small", onclick: closePanel }, "Cancel")),
+        h("div", { class: "row" }, h("button", { type: "submit", class: "btn primary small" }, "Create"), h("button", { type: "button", class: "btn small", onclick: closeModal }, "Cancel")),
         err,
       ),
     );
@@ -370,5 +430,11 @@ export function render(root, [key], ctx) {
   load();
   return () => {
     gone = true;
+    if (trap) {
+      document.removeEventListener("keydown", trap, true);
+      trap = null;
+    }
+    backdrop.remove();
+    card.remove();
   };
 }

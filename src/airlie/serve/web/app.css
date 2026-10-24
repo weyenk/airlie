@@ -1157,25 +1157,41 @@ a.jobrow:hover strong {
   font-weight: 500;
   overflow-wrap: anywhere;
 }
-.panel {
-  flex: 0 0 380px;
-  max-width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: rgb(0 0 0 / 0.55);
+}
+.modal-card {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 11;
+  width: calc(100% - 40px);
+  max-width: 768px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  position: sticky;
-  top: 0;
-  max-height: calc(100vh - 140px);
-  overflow: auto;
+  overflow-wrap: anywhere;
 }
-.panel-head {
+.modal-head {
   gap: 8px;
 }
-.panel .desc p:first-child {
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.modal-card .desc p:first-child {
   margin-top: 0;
 }
 .child {
@@ -1204,13 +1220,19 @@ a.jobrow:hover strong {
   .column {
     scroll-snap-align: start;
   }
-  .panel {
+  .backdrop {
     position: fixed;
     inset: 0;
-    z-index: 10;
+  }
+  .modal-card {
+    position: fixed;
+    inset: 0;
+    transform: none;
+    z-index: 11;
+    max-width: none;
     border-radius: 0;
     border: 0;
-    max-height: none;
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
+    overflow: auto;
   }
 }
