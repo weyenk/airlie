@@ -1077,8 +1077,22 @@ def test_include_cycle_is_a_config_error(tmp_path: Path) -> None:
     for role in MINIMAL["roles"].values():
         (tmp_path / role["prompt"]).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / role["prompt"]).write_text("# prompt\n")
-    with pytest.raises(ConfigError, match=r"includes: cycle"):
+    with pytest.raises(ConfigError, match=r"includes: cycle") as exc:
         load_config(root)
+    msg = str(exc.value)
+    assert " -> " in msg and "a.yaml" in msg and "b.yaml" in msg
+
+
+@pytest.mark.parametrize(
+    "includes",
+    ["single.yaml", {"path": "x.yaml"}, ["frag.yaml", 1]],
+    ids=["string", "mapping", "non-string-element"],
+)
+def test_invalid_includes_shape_is_a_config_error(tmp_path: Path, includes: object) -> None:
+    base = write(tmp_path, {**MINIMAL, "includes": includes})
+    with pytest.raises(ConfigError) as exc:
+        load_config(base)
+    assert "includes must be a list of paths" in str(exc.value)
 
 
 def test_includes_key_never_reaches_schema(tmp_path: Path) -> None:
