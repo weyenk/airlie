@@ -46,6 +46,7 @@ from airlie.story.layer_checks import (
     is_testers_test,
     static_findings,
 )
+from airlie.story.lessons import LessonsStore
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -269,6 +270,7 @@ class StoryPipeline:
         self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
+        self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
         that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
