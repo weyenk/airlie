@@ -1,6 +1,6 @@
 # The web app on Vue: live data and shared components
 
-Status: agreed in conversation with Noah on 2026-10-24; not yet reviewed in full. Parent:
+Status: agreed in conversation with Noah on 2026-10-24; builder check done; awaiting his review of the full text. Parent:
 `2026-10-17-web-app-and-local-board-design.md`, whose "no framework, no bundler, no node build" rule this
 reverses on purpose. Look reference: `docs/superpowers/mockups/2026-10-24-vue-app/board-look-dark.html` and
 `board-look-light.html`.
@@ -39,6 +39,10 @@ Noah wants pages that update on their own, and components built once and reused.
 - Changes to the core, the engines, or how jobs run.
 - A separate frontend server, server-side rendering, or Nuxt. FastAPI keeps serving the app.
 - Replacing the jobs API's long polls. OpenCode's `airlie_status` tool and other clients still use them.
+- Teaching airlie's story pipeline to build Vue stories. Its pre-code checks only recognise `test_*.py` files
+  (`airlie.story.layer_checks`, `airlie.tools.scope`) and its tester lint only fixes ruff
+  (`airlie.story.tester_lint`), so a tester writing Vitest specs would block. That is a follow-up after the
+  switch.
 
 ## Anti-goals
 
@@ -71,11 +75,19 @@ Noah wants pages that update on their own, and components built once and reused.
   every screen is done; then `/` switches to the new app.
 - **Clean paths** (`/board`, not `/#/board`). Old `#/` links redirect to their clean path.
 - **Claude builds all of it.**
+- **airlie's pipeline stays off web work until a follow-up teaches it Vue.** During the build, web stories on
+  this repository stay off airlie's To Do. After the switch and until that follow-up lands, web stories here
+  go to Claude. The test gate must still pass inside every story, so Python-only stories keep working.
+- **Node stays separate from Python.** Its version is pinned only in the web app's `package.json` (the
+  `engines` field) and checked by Taskfile tasks. Nothing in `pyproject.toml`, `uv.lock` or uv installs or
+  pins node.
 
 ## Decided by Claude (Noah can overrule)
 
 - TypeScript, Vite, Vue Router in history mode, Pinia for state, Tailwind v4 (shadcn-vue needs it), Vitest
-  with Vue Test Utils. npm, because it comes with node; the lockfile is committed. Node 24 LTS, pinned.
+  with Vue Test Utils. npm, because it comes with node; the lockfile is committed.
+- The pin is node 26, the newest even-numbered line, which node marks long-term support each October. It is
+  also the node the launchd story tick already finds (Homebrew's), so the tick needs no change.
 - Source in `web/` at the repository root. The build writes into the Python package under `src/airlie/serve/`,
   is gitignored, and is served by FastAPI.
 - System font stack, as today. No web fonts are fetched or bundled.
@@ -171,7 +183,12 @@ Parity with today's routes, desktop and phone, each at `/next` plus its clean pa
 
 - **Taskfile tasks** for installing, building, checking and a dev server: Vite's dev server proxies `/v1` to
   `task serve` on port 8090. `task setup` installs and builds. `task serve` builds first, and skips the build
-  when nothing changed. `task doctor` checks node's version.
+  when nothing changed.
+- **Node's version check.** `task doctor` and every web task compare the node on the path with the major
+  version in `package.json`'s `engines` field. On a mismatch they stop and say which node they found and which
+  one is needed. They never install node. On Noah's Mac today, interactive shells find nvm's node 24 and
+  login shells, including the launchd story tick, find Homebrew's node 26. With the pin at 26, nvm's default
+  has to move to 26 (or nvm step aside) before the web tasks run from an interactive shell.
 - **The test gate** in `AGENTS.md` gains the web steps after the Python ones: install from the lockfile, type
   check, lint, unit tests and the build. Every command runs from the repository root. The builder writes the
   exact lines.
@@ -220,7 +237,8 @@ Each step is its own pull request, except the mockups.
   skip-when-unchanged task keeps it to once per worktree.
 - **Burst writes from another process** collapse into one `data_version` change, so the page refetches a whole
   list instead of one item. That is correct, only less precise.
-- **Two apps for a while.** Fixes made to today's app during the build have to be carried into the new one.
+- **Two apps for a while.** With web stories off airlie's To Do, today's app only gets bug fixes during the
+  build. Each one has to be carried into the new app too.
 
 ## Left to the builder
 
