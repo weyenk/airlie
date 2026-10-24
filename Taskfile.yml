@@ -20,6 +20,7 @@ tasks:
     cmds:
       - '{{.UV}} python install 3.12'
       - '{{.UV}} sync --all-groups'
+      - task: web:build
       - cmd: test -f airlie.local.yaml || cp airlie.local.example.yaml airlie.local.yaml
         silent: true
       - task: hooks:install
@@ -173,8 +174,62 @@ tasks:
 
   serve:
     desc: "OpenAI-compatible endpoint on 127.0.0.1:8090 (roles + catalog models; POST /v1/airlie/run). task serve -- --api-key SECRET before a tunnel"
+    deps: [web:build]
     cmds:
       - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
+
+  web:install:
+    desc: "Install the Vue app's npm dependencies exactly as web/package-lock.json pins them (npm ci); needs node 26"
+    dir: web
+    run: once
+    preconditions:
+      - sh: node scripts/check-node.mjs
+        msg: install node 26
+    # npm ci empties node_modules and needs the network, so it runs only when the lockfile moved or node_modules is gone
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/.package-lock.json
+    cmds:
+      - npm ci
+
+  web:check:
+    desc: "The Vue app's typecheck, lint and tests"
+    dir: web
+    deps: [web:install]
+    cmds:
+      - npm run typecheck
+      - npm run lint
+      - npm test
+
+  web:build:
+    desc: "Build the Vue app into src/airlie/serve/web_next, which `task serve` serves at /next; skipped while nothing under web/ changed"
+    dir: web
+    deps: [web:install]
+    sources:
+      - '**/*'
+      - exclude: node_modules/**/*
+    generates:
+      - ../src/airlie/serve/web_next/index.html
+    cmds:
+      - npm run build
+
+  web:gate:
+    desc: "The Vue app's gate, web:check then web:build; skipped while nothing under web/ changed since it last passed in this checkout"
+    sources:
+      - web/**/*
+      - exclude: web/node_modules/**/*
+    cmds:
+      - task: web:check
+      - task: web:build
+
+  web:dev:
+    desc: "Vite dev server for the Vue app on :5173 with hot reload, /v1 proxied to `task serve` on 8090"
+    dir: web
+    deps: [web:install]
+    cmds:
+      - npm run dev
 
   auth:admin:
     desc: "Create the first admin and print their invite link (task auth:admin -- --name Noah [--login noah@github] [--base-url https://studio.tailxxxx.ts.net]); docs/integrations/sign-in.md"

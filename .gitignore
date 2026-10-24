@@ -11,3 +11,6 @@ airlie.local.yaml
 .env
 mutants/
 test-results/
+src/airlie/serve/web_next/
+web/node_modules/
+.task/
