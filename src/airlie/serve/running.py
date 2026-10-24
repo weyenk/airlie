@@ -6,12 +6,15 @@ jobs this server holds only keep a quiet one on the list."""
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from airlie.serve.jobs import read_events
 from airlie.serve.listing import stories
 from airlie.serve.tree import build_tree
+
+log = logging.getLogger(__name__)
 
 ACTIVE_S: float = 3600.0
 """How long a story or run may go without writing and still count as running. A story or run that crashed
@@ -82,12 +85,12 @@ def _story_row(
     }
 
 
-def _run_row(log: Path, run_id: str, touched: float) -> dict[str, Any] | None:
-    """The running row of run `run_id`, whose event log `log` last changed at `touched`: None when the log
-    has no `run_start` or has a `run_done`, or cannot be read or drawn as a tree (a damaged log skips
-    its run; it must not take the list down with it)."""
+def _run_row(events_log: Path, run_id: str, touched: float) -> dict[str, Any] | None:
+    """The running row of run `run_id`, whose event log `events_log` last changed at `touched`: None when the
+    log has no `run_start` or has a `run_done`, or cannot be read or drawn as a tree (a damaged log skips its
+    run, with a warning in the log; it must not take the list down with it)."""
     try:
-        events, _ = read_events(log, 0)
+        events, _ = read_events(events_log, 0)
         kinds = [e.get("kind") for e in events]
         if "run_start" not in kinds or "run_done" in kinds:
             return None
@@ -100,7 +103,8 @@ def _run_row(log: Path, run_id: str, touched: float) -> dict[str, Any] | None:
             "progress": run_progress(tree),
             "last_activity": touched,
         }
-    except Exception:  # noqa: BLE001 - one run's bad log is that run's problem, not the list's
+    except Exception as e:  # noqa: BLE001 - one run's bad log is that run's problem, not the list's
+        log.warning("running: run %s skipped: %s", run_id, e)
         return None
 
 

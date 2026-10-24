@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from airlie.serve.app import create_app
 from airlie.serve.running import ACTIVE_S, run_progress, running, story_progress
@@ -261,6 +263,24 @@ def test_a_damaged_state_or_log_skips_its_entry_and_raises_nothing(tmp_path: Pat
         ("story", "AIR-5"),
     ]
     assert [r["progress"] for r in out if r["kind"] == "story"] == [0.6, 0.6]  # no layers or builds known
+
+
+def test_a_run_whose_tree_cannot_be_built_is_skipped_and_the_warning_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A regression in build_tree would empty the Running card; the line in the log is what shows it."""
+    state = tmp_path / "state"
+    write_run(state, "r-bad", NOW - 5, [STUDIO_START])
+    caplog.set_level(logging.WARNING, logger="airlie.serve.running")
+
+    def broken(events: list[dict[str, Any]]) -> dict[str, Any]:
+        raise RuntimeError("no tree today")
+
+    monkeypatch.setattr("airlie.serve.running.build_tree", broken)
+    assert running(state, now=NOW) == []
+    [record] = [r for r in caplog.records if r.name == "airlie.serve.running"]
+    assert record.levelno == logging.WARNING
+    assert "r-bad" in record.getMessage() and "no tree today" in record.getMessage()
 
 
 def test_the_running_route_lists_what_is_running_with_this_servers_jobs_as_live(tmp_path: Path) -> None:
