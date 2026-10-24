@@ -1,9 +1,9 @@
 # The web app on Vue: live data and shared components
 
-Status: agreed in conversation with Noah on 2026-10-24; builder check done; awaiting his review of the full text. Parent:
-`2026-10-17-web-app-and-local-board-design.md`, whose "no framework, no bundler, no node build" rule this
-reverses on purpose. Look reference: `docs/superpowers/mockups/2026-10-24-vue-app/board-look-dark.html` and
-`board-look-light.html`.
+Status: agreed in conversation with Noah on 2026-10-24, including the reshaped Workflows area; builder check
+done; awaiting his review of the full text. Parent: `2026-10-17-web-app-and-local-board-design.md`, whose "no
+framework, no bundler, no node build" rule this reverses on purpose. Look reference:
+`docs/superpowers/mockups/2026-10-24-vue-app/board-look-dark.html` and `board-look-light.html`.
 
 ## Why
 
@@ -31,11 +31,16 @@ Noah wants pages that update on their own, and components built once and reused.
    launchd story tick, a `task` command, or another person.
 2. One shared component set that every screen is built from.
 3. A new look: shadcn-vue's components in PrimeVue Aura's colours, dark (the default) and light.
-4. Parity with today's app on desktop and phone: every screen and action that exists now exists after.
+4. Parity with today's app on desktop and phone, except where "The Workflows area" below reshapes it: every
+   other screen and action that exists now exists after.
+5. A Workflows area that helps you find a story quickly and see what is running at a glance.
 
 ## Non-goals
 
-- New features beyond live updates and the new look. Things today's app cannot do stay out.
+- New features beyond live updates, the new look and the reshaped Workflows area. Other things today's app
+  cannot do stay out.
+- Topology in the new app, for now. Noah likes its visuals, but the workflow view already shows most of the
+  same information. It keeps working in today's app until the switch and is not carried over.
 - Changes to the core, the engines, or how jobs run.
 - A separate frontend server, server-side rendering, or Nuxt. FastAPI keeps serving the app.
 - Replacing the jobs API's long polls. OpenCode's `airlie_status` tool and other clients still use them.
@@ -75,6 +80,10 @@ Noah wants pages that update on their own, and components built once and reused.
   every screen is done; then `/` switches to the new app.
 - **Clean paths** (`/board`, not `/#/board`). Old `#/` links redirect to their clean path.
 - **Claude builds all of it.**
+- **The Workflows area is reshaped, not ported** (details under "The Workflows area"): Running becomes the top
+  card with a progress bar per item; the Stories list gains pages, filters and sorting; Needs you and Recent
+  results go away; one workflow's view stays; studio runs open in that view too, with plan approval and Stop
+  on it; the job page goes away.
 - **airlie's pipeline stays off web work until a follow-up teaches it Vue.** During the build, web stories on
   this repository stay off airlie's To Do. After the switch and until that follow-up lands, web stories here
   go to Claude. The test gate must still pass inside every story, so Python-only stories keep working.
@@ -93,9 +102,14 @@ Noah wants pages that update on their own, and components built once and reused.
 - System font stack, as today. No web fonts are fetched or bundled.
 - Every screen is mocked up before the first screen is built, so the shared components are designed from the
   whole app, not grown screen by screen.
-- Cards show the fields they show today: key, level, title and labels. The look reference's extra card contents
-  (a progress bar, the role at work, PR counts, "needs a decision") are example data, not features. Anything
-  new the step-1 mockups add that needs server work becomes its own follow-up.
+- Board cards show the fields they show today: key, level, title and labels. The look reference's extra card
+  contents (a progress bar, the role at work, PR counts, "needs a decision") are example data, not board
+  features. The progress bar does appear, on the Running card in Workflows. Anything else new that the step-1
+  mockups add and that needs server work becomes its own follow-up.
+- In the Workflows area (Noah confirmed these when they were played back): the Stories list shows 25 stories
+  a page, filters by stage, repository and blocked, searches key and title, and sorts by last activity by
+  default, or by key or stage. Running lists every story and studio run in progress, whoever started it.
+  Progress counts finished stages and layers against the total. The Start new work button stays.
 - The parity target is `main` when the build starts, which includes AIR-17's centred item modal and
   click-to-edit (PRs 140 to 143, merged 2026-10-24).
 
@@ -150,25 +164,58 @@ sign-in as the rest of the API.
 - The markdown view must stay safe the way `md.js` is today: text never becomes HTML.
 - A screen does not hand-style something a shared component covers.
 
+### The Workflows area
+
+Today it has four sections (Stories, Running, Needs you, Recent results), one workflow's view
+(`workflow.js`), and a separate job page (`job.js`) that is the only view a studio run has. After:
+
+- **Running, the top card.** One row per story or studio run in progress, whoever started it: the web app, the
+  launchd story tick or a `task` command. Today's Running section lists only jobs this server started, so it
+  misses the tick's stories. A row shows the key (or the run's name) and title, a progress bar, and nothing
+  else. Clicking it opens that work's workflow view. Rows appear, advance and leave live, through the feed.
+- **Stories, below Running.** The list stays, with pages, filters, search and sorting (the choices are under
+  "Decided by Claude"). Paging, filtering and sorting happen in the API, so the list stays fast with hundreds
+  of stories.
+- **Needs you and Recent results** go away.
+- **One workflow's view** stays as it is today, in the new look: the stages left to right, a lane of jobs per
+  layer, and the selected job's status, role, retries, input, output and steps.
+- **Studio runs open in the same view.** Their stages are the chief's plan, the specialists, the reviewer and
+  the synthesis. The plan is approved on this view, before anything is built, and Stop is on it while the
+  work runs. Stop appears only for work this server runs, as it does on the job page today; a story the
+  launchd tick runs belongs to another process.
+- **The job page goes away.** Its agent tree and event timeline are not carried over. Links that pointed to
+  it, including the chat's "job started" cards, point to the work's workflow view instead.
+
+What the API gains for this ("exposing more on the API"):
+
+- The stories list takes page, page size, filters, search and sort, and returns the total count and each
+  story's last-activity time. Today it returns every story with key, title, repository, stage and blocked
+  reason, and no time.
+- A running list: every story and studio run in progress, each with its progress worked out on the server.
+- A flow for a studio run, in the same shape as a story's flow, so one view draws both. The job detail under
+  it (input, output, steps) works for run jobs as it does for story jobs.
+
 ### Screens
 
-Parity with today's routes, desktop and phone, each at `/next` plus its clean path:
+Each at `/next` plus its clean path, desktop and phone:
 
 | Today | New |
 | --- | --- |
 | `#/` Chat | `/next/` |
-| `#/workflows` | `/next/workflows` |
+| `#/workflows` | `/next/workflows`, reshaped as above |
 | `#/workflows/{key}/{node}/{job}` | `/next/workflows/{key}/{node}/{job}` |
-| `#/jobs/{id}` | `/next/jobs/{id}` |
+| (none: studio runs only had the job page) | a workflow view for a studio run; the builder picks a path that cannot clash with a story key |
+| `#/jobs/{id}` | gone; redirects to the workflow view of the work it ran |
 | `#/start` | `/next/start` |
 | `#/board/{key}` (with the item modal, comment edit and drag-and-drop) | `/next/board/{key}` |
-| `#/topology/{run}` | `/next/topology/{run}` |
+| `#/topology/{run}` | not carried over; stays in today's app until the switch |
 | `#/metrics` | `/next/metrics` |
 | `#/admin` | `/next/admin` |
 | `#/join/{token}` (public) | `/next/join/{token}` |
 | `#/signin` (public, passkeys) | `/next/signin` |
 
-`#/jobs` redirects to workflows today and keeps doing so. Chat keeps its thread in `sessionStorage`.
+`#/jobs` redirects to workflows today and keeps doing so. Chat keeps its thread in `sessionStorage`, and its
+plan cards can still approve a plan in the chat.
 
 ### Serving
 
@@ -208,7 +255,9 @@ Parity with today's routes, desktop and phone, each at `/next` plus its clean pa
 
 - **Python**, with no network: the feed needs sign-in, sends heartbeats, publishes in-process writes, and
   catches a write from another connection to the board database and growth of an event log. Serving: `/next`
-  returns the page for unknown paths and the files under their own paths. At the switch: the redirects.
+  returns the page for unknown paths and the files under their own paths. At the switch: the redirects. The
+  Workflows API: the stories list's paging, filters, search, sort, count and last-activity time; the running
+  list including a story the tick started in another process, with its progress; a studio run's flow.
 - **Vitest:** the shared components, and a store refetching when its topic arrives.
 - **The browser suite** (`tests/e2e`, Playwright in Apple `container`) covers `/next` the way it covers `/`
   today, with evidence screenshots. The key check: with the board open, a change made from outside the page
@@ -227,8 +276,10 @@ Each step is its own pull request, except the mockups.
 3. **The live feed**, server and page side.
 4. **The shared components.**
 5. **The board**, first, because it is the stalest screen and proves the feed and the components.
-6. **The remaining screens.**
-7. **The switch.**
+6. **The Workflows area:** the API's stories options, running list and run flow, then the screens, including
+   plan approval and Stop on the workflow view.
+7. **The remaining screens.**
+8. **The switch.**
 
 ## Risks
 
@@ -244,4 +295,5 @@ Each step is its own pull request, except the mockups.
 
 The exact event topics and payloads, the watcher's interval, file layout under `web/`, the build output
 directory's name, the exact gate lines, lint rules, the highlight's duration, which shadcn-vue components to
-copy, and how the Pinia stores are split.
+copy, how the Pinia stores are split, the path of a studio run's workflow view, the exact progress formula,
+and the API's parameter names for paging, filters and sorting.
