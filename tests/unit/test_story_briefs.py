@@ -1,6 +1,8 @@
 """What each specialist is told, the plan a layer runs, and the PR text a reviewer reads."""
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,6 +19,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
+from airlie.story.lessons import Lesson
 from airlie.story.model import Criterion, Layer, Story
 from airlie.topology.studio_plan import schedule
 
@@ -527,3 +530,69 @@ def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_the
     brief = full.subtasks[0].brief
     assert GUIDE_HEADING + "\n### src/profile.py" in brief
     assert brief.index("Read for you:") < brief.index("Show the avatar.")  # before the layer's own text
+
+
+def _lesson(title: str, **overrides: object) -> Lesson:
+    """A size-blocked layer's lesson with the AC1 fields; `ending` is one of the three size-block endings."""
+    base: dict[str, object] = {
+        "title": title,
+        "acceptance": ["AC1: the avatar is stored", "AC2: the profile shows it"],
+        "source_files": 12,
+        "test_files": 3,
+        "steps": 40,
+        "context_tokens": 111_000,
+        "ending": "out_of_steps",
+    }
+    base.update(overrides)
+    return Lesson(**base)  # type: ignore[arg-type]
+
+
+def test_the_layers_brief_carries_recent_lessons_newest_first() -> None:
+    """AC2: the architect's layer brief carries a 'Layers like these blocked:' section, one line per recent
+    lesson newest-first, each '<title>: <N> source files, <M> test files, <steps> steps, <ctx> tokens,
+    ended <ending>'."""
+    older = _lesson("Layer 01 storage", source_files=5, test_files=2, steps=30, context_tokens=88_000)
+    newer = _lesson(
+        "Layer 02 profile",
+        source_files=12,
+        test_files=3,
+        steps=40,
+        context_tokens=111_000,
+        ending="out_of_context",
+    )
+    text = layers_brief(STORY, 4, lessons=(older, newer))
+    assert "Layers like these blocked:" in text
+    assert (
+        "Layer 01 storage: 5 source files, 2 test files, 30 steps, 88000 tokens, ended out_of_steps" in text
+    )
+    assert (
+        "Layer 02 profile: 12 source files, 3 test files, 40 steps, 111000 tokens, ended out_of_context"
+        in text
+    )
+    # newest first: the newer lesson's line precedes the older one's
+    assert text.index("Layer 02 profile:") < text.index("Layer 01 storage:")
+
+
+def test_the_layers_brief_carries_the_sizing_rule_with_the_coders_budget() -> None:
+    """AC3: the architect's layer brief always carries the sizing rule, rendered with the coder's step and
+    context budget: one concept per layer, about 3 source files and 1 test file."""
+    text = layers_brief(STORY, 4)
+    assert "one concept per layer" in text
+    assert re.search(r"about 3 source files", text) is not None
+    assert re.search(r"1 test file", text) is not None
+    # the coder's step and context budget, rendered from the configured values
+    assert re.search(r"40 steps", text) is not None
+    assert re.search(r"65536 tokens", text) is not None
+
+
+def test_the_layers_brief_without_lessons_is_byte_for_byte_as_before_and_has_no_lesson_section() -> None:
+    """AC4: with no recorded lesson, the brief carries no 'Layers like these blocked:' section and is
+    byte-for-byte the same as before this change (the pre-change golden bytes); the with-lessons render
+    does contain it. The absence is checked in the same test that makes the presence happen."""
+    golden = json.loads((Path(__file__).parent / "data" / "prompt_texts.json").read_text(encoding="utf-8"))
+    pre_change = golden["fn:briefs.layers_brief:plain"]
+    no_lessons = layers_brief(STORY, 4)
+    assert "Layers like these blocked:" not in no_lessons
+    assert no_lessons == pre_change
+    with_lessons = layers_brief(STORY, 4, lessons=(_lesson("Layer 01 storage"),))
+    assert "Layers like these blocked:" in with_lessons

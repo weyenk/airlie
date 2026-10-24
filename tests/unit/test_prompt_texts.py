@@ -37,6 +37,7 @@ from airlie.story.layer_checks import (
     feedback,
     findings_text,
 )
+from airlie.story.lessons import Lesson
 from airlie.story.model import Layer
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
@@ -194,6 +195,22 @@ CASES |= {
     "fn:briefs.survey_brief:bare": partial(survey_brief, CARD),
     "fn:briefs.survey_brief:described": partial(survey_brief, DESCRIBED),
     "fn:briefs.layers_brief:plain": partial(layers_brief, STORY, 4),
+    "fn:briefs.layers_brief:lessons": partial(
+        layers_brief,
+        STORY,
+        4,
+        lessons=(
+            Lesson(
+                title="Layer 01 storage",
+                acceptance=["AC1: the avatar is stored"],
+                source_files=5,
+                test_files=2,
+                steps=30,
+                context_tokens=88_000,
+                ending="out_of_steps",
+            ),
+        ),
+    ),
     "fn:briefs.layers_brief:rounds": partial(layers_brief, STORY, 4, round_steps=6),
     "fn:briefs.layers_brief:guide-survey": partial(
         layers_brief, STORY, 4, guide=GUIDE, survey="- store.py holds the writes."

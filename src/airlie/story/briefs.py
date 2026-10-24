@@ -4,18 +4,21 @@ passes them to a shell. The architect's layer brief is the coder's instruction, 
 product quoted as data.
 
 The rules a brief carries are prompt hub files (`airlie/prompts/rules/`, their incident history in `why`):
-`test-rules`, `pre-code-check`, `static-check`, `tests-only`, `tests-contract`, and the `brief-*` paragraphs
-of refine_brief, survey_brief, layers_brief and layer_plan. This module puts them together: the headings
+`test-rules`, `pre-code-check`, `static-check`, `tests-only`, `tests-contract`, the `brief-layers-sizing`
+and `brief-layers-lessons` rules, and the `brief-*` paragraphs of refine_brief, survey_brief, layers_brief
+and layer_plan. This module puts them together: the headings
 over quoted data, the clipping and the joins stay here, as do the output formats beside their parsers
 (STORY_CONTRACT, LAYERS_CONTRACT, rounds.REFINE_FIELD) and the PR text a person reads."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.board import Card
+from airlie.story.lessons import Lesson
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story
 from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
@@ -154,6 +157,15 @@ def survey_brief(card: Card) -> str:
     )
 
 
+def _lesson_line(lesson: Lesson) -> str:
+    """One recorded size-block as a line of the lessons section: what it was, how big it was, how it ran
+    out."""
+    return (
+        f"{lesson.title}: {lesson.source_files} source files, {lesson.test_files} test files, "
+        f"{lesson.steps} steps, {lesson.context_tokens} tokens, ended {lesson.ending}"
+    )
+
+
 def layers_brief(
     story: Story,
     max_layers: int,
@@ -162,6 +174,9 @@ def layers_brief(
     guide: str = "",
     survey: str = "",
     round_steps: int = 0,
+    lessons: Sequence[Lesson] = (),
+    max_steps: int = 40,
+    context_budget: int = 65_536,
 ) -> str:
     parts = [
         hub_text("brief-layers-task"),
@@ -173,6 +188,12 @@ def layers_brief(
             else []
         ),
         hub_text("brief-layers-rules", max_layers=max_layers),
+        hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
+        *(
+            [hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))]
+            if lessons
+            else []
+        ),
         *(
             [hub_text("brief-layers-rounds", round_steps=round_steps) + " " + REFINE_FIELD]
             if round_steps
