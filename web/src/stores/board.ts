@@ -13,6 +13,10 @@ export const RING_MS = 4000;
  * ring (the watcher echoes them with no key, so the refetch cannot tell whose they were), so each write is
  * remembered: while it is in flight its key is held back, and once it answers, any `updated_at` up to the one it
  * returned is the tab's own. A change after that, by anyone else, rings.
+ *
+ * Blind spots, by design: while this tab has a write to a key in flight, a change by someone else to that same
+ * key lands in the same window and does not ring; and while a create is in flight, an item someone else adds
+ * (any new key) does not ring. Both windows last one request.
  */
 export const useBoardStore = defineStore("board", () => {
   const board = liveResource("board", api.listItems);

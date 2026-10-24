@@ -199,6 +199,8 @@ export function startRun(body: {
   plan?: Record<string, unknown> | null;
   test_cmd?: string | null;
   base?: string | null;
+  images?: string[];
+  synthesise?: boolean;
 }): Promise<JobStart> {
   return request<JobStart>("/v1/airlie/runs", { method: "POST", body });
 }

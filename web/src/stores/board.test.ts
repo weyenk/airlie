@@ -120,10 +120,14 @@ test("a change by someone else after this tab's own write still rings", async ()
   await flush();
   api.patchItem.mockImplementation(async () => {
     server = [item("AIR-8", 20), item("AIR-17", 10)];
+    change("AIR-8");
     return structuredClone(server[0]);
   });
   await board.patch("AIR-8", { title: "mine" });
   await flush();
+  change(null);
+  await flush();
+  expect(board.items.find((i) => i.key === "AIR-8")?.updated_at).toBe(20);
   expect(board.changed.size).toBe(0);
 
   server = [item("AIR-8", 25), item("AIR-17", 10)];
@@ -162,16 +166,25 @@ test("a comment and a comment edit are the tab's own writes too", async () => {
   await flush();
   api.addComment.mockImplementation(async () => {
     server = [item("AIR-8", 20), item("AIR-17", 10)];
+    change("AIR-8");
     return structuredClone(server[0]);
   });
   api.editComment.mockImplementation(async () => {
     server = [item("AIR-8", 21), item("AIR-17", 10)];
+    change("AIR-8");
     return structuredClone(server[0]);
   });
 
   await board.comment("AIR-8", "hi");
+  await flush();
+  change(null);
+  await flush();
+  expect(board.changed.size).toBe(0);
   await board.editComment("AIR-8", 1, "hello");
   await flush();
+  change(null);
+  await flush();
+  expect(board.items.find((i) => i.key === "AIR-8")?.updated_at).toBe(21);
 
   expect(board.changed.size).toBe(0);
   expect(api.addComment).toHaveBeenCalledWith("AIR-8", "hi");

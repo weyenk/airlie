@@ -1,5 +1,5 @@
 import { ApiError, KEY, onUnauthorized } from "./index";
-import { callOf, stubJson } from "./fetch-stub";
+import { callOf, stubJson } from "@/test-utils/fetch-stub";
 import { StreamCut, attachmentLimits, chatSkills, sseEvents, stream, upload, uploadUrl } from "./chat";
 
 afterEach(() => {

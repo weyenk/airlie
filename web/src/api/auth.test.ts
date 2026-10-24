@@ -1,4 +1,4 @@
-import { callOf, stubJson } from "./fetch-stub";
+import { callOf, stubJson } from "@/test-utils/fetch-stub";
 import {
   bufToB64url,
   b64urlToBuf,

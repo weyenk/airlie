@@ -234,3 +234,18 @@ test("a resource on several topics refetches on each of them", async () => {
 
   expect(load).toHaveBeenCalledTimes(4);
 });
+
+test("ending the scope releases the listener of every topic", async () => {
+  const load = vi.fn(async () => "x");
+  const scope = effectScope();
+  scope.run(() => liveResource(["stories", "runs", "jobs"], load));
+  await flush();
+
+  scope.stop();
+  change("stories", null);
+  change("runs", "r1");
+  change("jobs", null);
+  await flush();
+
+  expect(load).toHaveBeenCalledTimes(1);
+});

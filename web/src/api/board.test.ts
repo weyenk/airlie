@@ -1,5 +1,5 @@
 import { addComment, createItem, editComment, getItem, listItems, moveItem, patchItem } from "./board";
-import { callOf, stubJson } from "./fetch-stub";
+import { callOf, stubJson } from "@/test-utils/fetch-stub";
 
 afterEach(() => vi.unstubAllGlobals());
 

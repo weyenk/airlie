@@ -17,7 +17,7 @@ export type MetricsSummary = {
 /** One row per bucket: `t` (epoch seconds), the slice's name holding its value, and the quantiles. */
 export type SeriesRow = { t: number; p10: number; p50: number; p90: number } & { [slice: string]: string | number };
 
-type Range = { from?: number; to: number; slice?: MetricSlice };
+type Range = { from: number; to: number; slice?: MetricSlice };
 
 export function metricsSummary({ from, to, slice }: Range): Promise<MetricsSummary> {
   return request<MetricsSummary>(`/v1/metrics/summary${queryString({ from, to, slice })}`);
