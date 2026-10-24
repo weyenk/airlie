@@ -81,7 +81,7 @@ test("an unchanged value sends nothing", async () => {
   expect(w.find("input").exists()).toBe(false);
 });
 
-test("a value the rule refuses is not sent, says why, and the old value stays", async () => {
+test("a value the rule refuses is not sent and says why; the editor stays open holding what was typed", async () => {
   const { w, save } = make({ validate: (v: string) => (v.includes("/") ? null : "owner/name please") });
   await open(w);
   await w.get("input").setValue("nope");
@@ -89,10 +89,13 @@ test("a value the rule refuses is not sent, says why, and the old value stays", 
   await flushPromises();
   expect(save).not.toHaveBeenCalled();
   expect(w.get("[role=alert]").text()).toBe("owner/name please");
+  expect(w.get("input").element.value).toBe("nope");
+  await w.get("input").trigger("keydown", { key: "Escape" });
   expect(w.get("[data-display]").text()).toBe("Old title");
+  expect(w.find("[role=alert]").exists()).toBe(false);
 });
 
-test("a failed save says so and the old value comes back", async () => {
+test("a failed save says so; the editor stays open holding what was typed", async () => {
   const { w, save } = make();
   save.mockRejectedValue(new Error("403: not yours"));
   await open(w);
@@ -100,10 +103,10 @@ test("a failed save says so and the old value comes back", async () => {
   await w.get("input").trigger("keydown", { key: "Enter" });
   await flushPromises();
   expect(w.get("[role=alert]").text()).toContain("not yours");
-  expect(w.get("[data-display]").text()).toBe("Old title");
+  expect(w.get("input").element.value).toBe("Mine");
 });
 
-test("while the save is out the new value is already shown", async () => {
+test("while the save is out the editor stays; once it lands the new value is shown", async () => {
   const { w, save } = make();
   let done!: () => void;
   save.mockReturnValue(new Promise<void>((r) => (done = r)));
@@ -111,11 +114,35 @@ test("while the save is out the new value is already shown", async () => {
   await w.get("input").setValue("Soon");
   await w.get("input").trigger("keydown", { key: "Enter" });
   await flushPromises();
-  expect(w.get("[data-display]").text()).toBe("Soon");
+  expect(w.find("input").exists()).toBe(true);
   done();
-  await flushPromises();
   await w.setProps({ modelValue: "Soon" });
+  await flushPromises();
+  expect(w.find("input").exists()).toBe(false);
   expect(w.get("[data-display]").text()).toBe("Soon");
+});
+
+test("after Enter or Escape the shown text takes focus back; after a click elsewhere it does not", async () => {
+  const { w } = make();
+  await open(w);
+  await w.get("input").trigger("keydown", { key: "Escape" });
+  await flushPromises();
+  expect(document.activeElement).toBe(w.get("[data-display]").element);
+  (document.activeElement as HTMLElement).blur();
+  await open(w);
+  await w.get("input").setValue("Elsewhere");
+  await w.get("input").trigger("focusout", { relatedTarget: null });
+  await flushPromises();
+  expect(document.activeElement).not.toBe(w.get("[data-display]").element);
+});
+
+test("the shown text is a button with a name; read-only text is not", async () => {
+  const { w } = make();
+  const d = w.get("[data-display]");
+  expect(d.attributes("role")).toBe("button");
+  expect(d.attributes("aria-label")).toBe("Edit Title: Old title");
+  const r = make({ readonly: true });
+  expect(r.w.get("[data-display]").attributes("role")).toBeUndefined();
 });
 
 test("multiline: Enter is a new line, Save and Cancel are buttons, Ctrl+Enter saves", async () => {

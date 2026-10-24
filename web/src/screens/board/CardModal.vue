@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { getItem } from "@/api/board";
 import type { Item, ItemChange, Level, Status } from "@/api/board";
@@ -48,8 +48,9 @@ const fetched = shallowRef<Item>();
 const written = shallowRef<Item>();
 const failure = ref("");
 const problem = ref("");
+const stored = computed(() => board.items.find((i) => i.key === props.itemKey));
 const item = computed<Item | undefined>(() => {
-  const copies = [fetched.value, board.items.find((i) => i.key === props.itemKey), written.value].filter((i): i is Item => !!i);
+  const copies = [fetched.value, stored.value, written.value].filter((i): i is Item => !!i);
   return copies.reduce<Item | undefined>((best, c) => (!best || c.updated_at >= best.updated_at ? c : best), undefined);
 });
 
@@ -60,6 +61,20 @@ onMounted(async () => {
     failure.value = (e as { status?: number }).status === 404 ? "No such item." : (e as Error).message;
   }
 });
+
+/** Seen on the board once, and gone from it since (and the board has answered): someone deleted it. */
+const seen = ref(false);
+watch(stored, (i) => i && (seen.value = true), { immediate: true });
+const deleted = computed(() => seen.value && board.loaded && !stored.value);
+
+// Closing by the X, the backdrop or a link saves an open editor (the click moves focus out of it, which is
+// what saves); Escape in an editor discards it and keeps the card open. A close with an editor still focused
+// (the backdrop's pointerdown beats the blur) takes the focus out first, so the two ways agree.
+function close(): void {
+  const active = document.activeElement as HTMLElement | null;
+  if (active?.closest("[data-editing]")) active.blur();
+  emit("close");
+}
 
 const children = computed(() => board.items.filter((i) => i.parent === props.itemKey));
 const child = computed(() => (item.value ? CHILD[item.value.level] : undefined));
@@ -86,7 +101,10 @@ async function took(run: Promise<Item>): Promise<void> {
 
 // Focus goes back to the card that opened the modal, by its key (the card is a link the board draws)
 function giveFocusBack(e: Event): void {
-  if (handingOver) return; // Create is taking the card's place: focus belongs to it
+  if (handingOver) {
+    e.preventDefault(); // Create is taking the card's place: focus belongs to it
+    return;
+  }
   const card = [...document.querySelectorAll<HTMLElement>("[data-item]")].find((el) => el.dataset.item === props.itemKey);
   if (!card) return;
   e.preventDefault();
@@ -95,10 +113,11 @@ function giveFocusBack(e: Event): void {
 </script>
 
 <template>
-  <ModalShell :title="itemKey" @close="emit('close')" @close-auto-focus="giveFocusBack">
-    <ErrorBanner v-if="!item && failure" :error="failure" />
+  <ModalShell :title="itemKey" @close="close" @close-auto-focus="giveFocusBack">
+    <ErrorBanner v-if="deleted" error="This item was deleted." />
+    <ErrorBanner v-else-if="!item && failure" :error="failure" />
     <p v-else-if="!item" class="text-sm text-muted-foreground">Loading…</p>
-    <template v-else>
+    <template v-else-if="item">
       <div>
         <ClickToEdit
           data-title

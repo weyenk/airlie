@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
 import type { Flow } from "@/api/workflows";
+import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
 import CardModal from "./CardModal.vue";
 import { item } from "./fixtures";
@@ -147,7 +148,7 @@ test("the repository saves as a repo: label and keeps the other labels", async (
   expect(q("[data-repo]")!.textContent).toContain("weyenk/openhand");
 });
 
-test("a repository that is not owner/name is refused and nothing is sent", async () => {
+test("a repository that is not owner/name is refused, nothing is sent, and the field keeps what was typed", async () => {
   await open();
   q("[data-repo] [data-display]")!.click();
   await flushPromises();
@@ -158,7 +159,19 @@ test("a repository that is not owner/name is refused and nothing is sent", async
   await flushPromises();
   expect(api.patchItem).not.toHaveBeenCalled();
   expect(q("[data-repo] [role=alert]")!.textContent).toContain("owner/name");
-  expect(q("[data-repo]")!.textContent).toContain("weyenk/airlie");
+  expect(q<HTMLInputElement>("input[aria-label=Repository]")!.value).toBe("not-a-repo");
+});
+
+test("a repository of only dots is refused", async () => {
+  await open();
+  q("[data-repo] [data-display]")!.click();
+  await flushPromises();
+  const input = q<HTMLInputElement>("input[aria-label=Repository]")!;
+  input.value = "../..";
+  input.dispatchEvent(new Event("input"));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flushPromises();
+  expect(api.patchItem).not.toHaveBeenCalled();
 });
 
 test("a repository can be added to a card with none", async () => {
@@ -260,7 +273,7 @@ test("saving an edited comment calls the comment route with its id", async () =>
   expect(api.editComment).toHaveBeenCalledWith("AIR-4", 1, "edited note");
 });
 
-test("the close button asks to close; Escape closes when no editor is open", async () => {
+test("the close button asks to close", async () => {
   const { w } = await open();
   (q("button[aria-label=Close]") as HTMLElement).click();
   await flushPromises();
@@ -295,4 +308,27 @@ test("on a desktop they start open", async () => {
   await open();
   expect(q("[data-acceptance] [data-state]")!.getAttribute("data-state")).toBe("open");
   vi.unstubAllGlobals();
+});
+
+test("an open editor is saved when the card is closed by a click (focus leaves it first)", async () => {
+  const { w } = await open();
+  q("[data-description] [data-display]")!.click();
+  await flushPromises();
+  const area = q<HTMLTextAreaElement>("textarea[aria-label=Description]")!;
+  area.focus();
+  area.value = "typed then closed";
+  area.dispatchEvent(new Event("input"));
+  (q("button[aria-label=Close]") as HTMLElement).click(); // a real click would also move focus; the modal blurs it
+  await flushPromises();
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { description: "typed then closed" });
+  expect(w.emitted("close")).toHaveLength(1);
+});
+
+test("a card that was on the board and is gone says it was deleted", async () => {
+  await open();
+  api.listItems.mockResolvedValue(ITEMS.filter((i) => i.key !== "AIR-4"));
+  await useBoardStore().refresh();
+  await flushPromises();
+  expect(q("[role=dialog]")!.textContent).toContain("This item was deleted.");
+  expect(q("[data-title]")).toBeNull();
 });

@@ -1,8 +1,11 @@
 // A story's repository is its one `repo:<owner>/<name>` label (story/checkout.py); the other labels are untouched.
 const REPO = /^repo:/i;
 
-/** `owner/name`: GitHub's own characters on each side of the slash. */
-export const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+/** `owner/name`: GitHub's own characters on each side of the slash, and neither side only dots (`../..`). */
+export function isRepo(value: string): boolean {
+  const parts = value.split("/");
+  return parts.length === 2 && parts.every((p) => /^[A-Za-z0-9._-]+$/.test(p) && !/^\.+$/.test(p));
+}
 export const REPO_RULE = "A repository is owner/name, for example weyenk/airlie.";
 
 /** The repository a card's labels name, or "". */
@@ -17,7 +20,7 @@ export const cleanRepo = (value: string): string => value.trim().replace(REPO, "
 /** The reason `value` cannot be a repository, or null (empty is fine: no repository). */
 export function repoProblem(value: string): string | null {
   const repo = cleanRepo(value);
-  return !repo || REPO_PATTERN.test(repo) ? null : REPO_RULE;
+  return !repo || isRepo(repo) ? null : REPO_RULE;
 }
 
 /** The labels with the repository set to `repo` (or taken off when empty); the others keep their order. */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
+import { computed, nextTick, ref, useTemplateRef } from "vue";
 import Typeahead from "@/components/Typeahead.vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,13 +31,10 @@ const props = defineProps<{
 const editing = ref(false);
 const draft = ref("");
 const error = ref("");
-/** What was just saved, shown until the new value arrives (or the save fails). */
-const pending = ref<string | undefined>();
 let busy = false;
 
 const root = useTemplateRef<HTMLElement>("root");
-const shown = computed(() => pending.value ?? props.modelValue);
-watch(() => props.modelValue, () => (pending.value = undefined));
+const shown = computed(() => props.modelValue);
 
 async function start(): Promise<void> {
   if (props.readonly || editing.value) return;
@@ -48,31 +45,45 @@ async function start(): Promise<void> {
   root.value?.querySelector<HTMLElement>("input, textarea")?.focus();
 }
 
-function cancel(): void {
+/** Close the editor; after a keyboard or button close the shown text takes focus back (a click elsewhere keeps its own). */
+async function close(refocus: boolean): Promise<void> {
   editing.value = false;
+  if (!refocus) return;
+  await nextTick();
+  root.value?.querySelector<HTMLElement>("[data-display]")?.focus();
 }
 
-async function commit(): Promise<void> {
+function cancel(refocus = true): void {
+  error.value = "";
+  void close(refocus);
+}
+
+/**
+ * Save what was typed. A value the rule refuses, or a save that fails, keeps the editor open with the reason
+ * under it and what was typed in it: nothing is lost, Escape discards it.
+ */
+async function commit(refocus = false): Promise<void> {
   if (!editing.value || busy) return;
   // read from the field itself: the model behind it lags a tick behind a keystroke
   const typed = root.value?.querySelector<HTMLInputElement | HTMLTextAreaElement>("input, textarea")?.value ?? draft.value;
   const value = props.multiline ? typed : typed.trim();
-  editing.value = false;
-  if (value === props.modelValue || (!value && props.required)) return;
+  if (value === props.modelValue || (!value && props.required)) {
+    cancel(refocus);
+    return;
+  }
   const problem = props.validate?.(value);
   if (problem) {
-    error.value = problem; // nothing is sent; the old value stays
+    error.value = problem;
     return;
   }
   busy = true;
-  pending.value = value;
   try {
     await props.save(value);
     error.value = "";
+    await close(refocus);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    pending.value = undefined;
     busy = false;
   }
 }
@@ -84,7 +95,7 @@ function onKeydown(e: KeyboardEvent): void {
     cancel();
   } else if (e.key === "Enter" && !e.defaultPrevented && (!props.multiline || e.ctrlKey || e.metaKey)) {
     e.preventDefault();
-    void commit();
+    void commit(true);
   }
 }
 
@@ -113,6 +124,8 @@ defineExpose({ start });
     <div
       v-if="!editing"
       data-display
+      :role="readonly ? undefined : 'button'"
+      :aria-label="readonly ? undefined : (shown ? `Edit ${label}: ${shown}` : `Add ${label}`)"
       :tabindex="readonly ? undefined : 0"
       :class="['rounded-md px-1 py-0.5 -mx-1 -my-0.5 break-words [overflow-wrap:anywhere]', readonly ? '' : 'cursor-text outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring']"
       @click="onDisplayClick"
@@ -128,8 +141,8 @@ defineExpose({ start });
       <Textarea v-else-if="multiline" :model-value="draft" :aria-label="label" rows="5" @update:model-value="draft = String($event)" />
       <Input v-else :model-value="draft" :aria-label="label" @update:model-value="draft = String($event)" />
       <div v-if="multiline" class="mt-2 flex gap-2">
-        <Button data-save size="sm" @mousedown.prevent @click="commit">Save</Button>
-        <Button data-cancel size="sm" variant="outline" @mousedown.prevent @click="cancel">Cancel</Button>
+        <Button data-save size="sm" @mousedown.prevent @click="commit(true)">Save</Button>
+        <Button data-cancel size="sm" variant="outline" @mousedown.prevent @click="cancel()">Cancel</Button>
       </div>
     </div>
     <p v-if="error" role="alert" class="mt-1 text-xs text-danger-foreground">{{ error }}</p>

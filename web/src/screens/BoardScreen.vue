@@ -40,7 +40,12 @@ const typeLabel = computed(() => TYPE_FILTERS.find((t) => t.value === type.value
 const openKey = computed(() => (typeof route.params.key === "string" && route.params.key ? route.params.key : null));
 /** Create, when it is open: `parent` is the card Add child was pressed on. */
 const creating = ref<{ parent: Item | null } | null>(null);
-const closeCard = () => void router.push("/board");
+// Closing leaves the card's address; Back must not reopen it, so the entry the card was opened from is
+// returned to when it was the board, else the card's entry is replaced.
+const closeCard = () => {
+  if (window.history.state?.back === "/board") router.back();
+  else void router.replace("/board");
+};
 const addChild = (parent: Item) => {
   creating.value = { parent }; // Create takes the card's place over the board
 };

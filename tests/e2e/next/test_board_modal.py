@@ -193,7 +193,7 @@ def test_create_makes_an_item_on_the_board(next_page: Page, own_server: Server, 
     evidence.expect(
         dialog.get_by_role("button", name="Create epic"), "the button follows the type"
     ).to_be_visible()
-    dialog.get_by_label("Title").fill("A fresh epic")
+    dialog.get_by_label("Title", exact=True).fill("A fresh epic")
     dialog.get_by_role("button", name="Create epic").click()
     evidence.expect(dialog, "the modal closes").to_be_hidden()
     card = next_page.get_by_role("region", name="To do").locator("[data-item]", has_text="A fresh epic")
@@ -209,10 +209,10 @@ def test_add_child_opens_create_with_the_parent_set(
         dialog.get_by_role("button", name="Create subtask"), "Create opens for a subtask"
     ).to_be_visible()
     evidence.expect(overlay(next_page), "over the dimmed board").to_be_visible()
-    evidence.expect(dialog.get_by_label("Parent"), "the parent is this card").to_have_value(KEY)
-    evidence.expect(dialog.get_by_label("Repository"), "and the repository is its parent's").to_have_value(
-        "weyenk/airlie"
-    )
+    evidence.expect(dialog.get_by_label("Parent", exact=True), "the parent is this card").to_have_value(KEY)
+    evidence.expect(
+        dialog.get_by_label("Repository", exact=True), "and the repository is its parent's"
+    ).to_have_value("weyenk/airlie")
 
 
 def test_a_new_child_takes_the_parents_repository(
@@ -220,7 +220,7 @@ def test_a_new_child_takes_the_parents_repository(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_role("button", name="Add child").click()
-    dialog.get_by_label("Title").fill("A child task")
+    dialog.get_by_label("Title", exact=True).fill("A child task")
     dialog.get_by_role("button", name="Create subtask").click()
     evidence.expect(dialog.get_by_role("heading", name=TITLE), "back on the parent card").to_be_visible()
     evidence.expect(dialog.get_by_text("A child task"), "the child is listed under it").to_be_visible()
@@ -273,7 +273,7 @@ def test_clicking_the_description_opens_a_prefilled_editor(
     dialog = open_card(next_page, own_server)
     rendered = dialog.get_by_text("The panel must be wide")
     rendered.click()
-    editor = dialog.get_by_label("Description")
+    editor = dialog.get_by_label("Description", exact=True)
     evidence.expect(editor, "an editor appears in the description's spot").to_be_visible()
     evidence.expect(editor, "pre-filled with the current description").to_have_value("The panel must be wide")
     evidence.expect(rendered, "the rendered text is hidden while editing").to_be_hidden()
@@ -285,7 +285,7 @@ def test_saving_the_description_patches_and_survives_a_reload(
     change(own_server, description="The panel must be wide")
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("The panel must be wide").click()
-    dialog.get_by_label("Description").fill("The panel must be wide and centred")
+    dialog.get_by_label("Description", exact=True).fill("The panel must be wide and centred")
     dialog.get_by_role("button", name="Save").click()
     evidence.expect(dialog, "the card shows the new text").to_contain_text("wide and centred")
     next_page.reload()
@@ -299,7 +299,7 @@ def test_escape_in_an_editor_discards_it_and_keeps_the_modal(
     change(own_server, description="The panel must be wide")
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("The panel must be wide").click()
-    editor = dialog.get_by_label("Description")
+    editor = dialog.get_by_label("Description", exact=True)
     editor.fill("changed, then discarded")
     editor.press("Escape")
     evidence.expect(dialog, "the modal stays open").to_be_visible()
@@ -319,7 +319,7 @@ def test_a_link_in_the_description_opens_in_a_new_tab_without_an_editor(
         dialog.get_by_role("link", name="the docs").click()
     evidence.shot("the link opens a new tab", held="example.com" in popup.value.url)
     assert "example.com" in popup.value.url
-    evidence.expect(dialog.get_by_label("Description"), "no editor opens").to_have_count(0)
+    evidence.expect(dialog.get_by_label("Description", exact=True), "no editor opens").to_have_count(0)
 
 
 def test_the_empty_description_prompt_opens_an_empty_editor(
@@ -330,7 +330,7 @@ def test_the_empty_description_prompt_opens_an_empty_editor(
     prompt = dialog.get_by_text("Add a more detailed description…")
     evidence.expect(prompt, "the prompt is shown").to_be_visible()
     prompt.click()
-    evidence.expect(dialog.get_by_label("Description"), "an empty editor opens").to_have_value("")
+    evidence.expect(dialog.get_by_label("Description", exact=True), "an empty editor opens").to_have_value("")
 
 
 def test_the_empty_repository_prompt_adds_a_repo_label(
@@ -339,7 +339,7 @@ def test_the_empty_repository_prompt_adds_a_repo_label(
     change(own_server, labels=["web"])
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("Add a repository").click()
-    editor = dialog.get_by_label("Repository")
+    editor = dialog.get_by_label("Repository", exact=True)
     evidence.expect(editor, "the field opens empty").to_have_value("")
     editor.fill("weyenk/OpenHand")
     editor.press("Enter")
@@ -354,7 +354,7 @@ def test_clicking_the_repository_edits_it_and_saves_the_label(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("weyenk/airlie").click()
-    editor = dialog.get_by_label("Repository")
+    editor = dialog.get_by_label("Repository", exact=True)
     evidence.expect(editor, "pre-filled with the current repository").to_have_value("weyenk/airlie")
     editor.fill("weyenk/OpenHand")
     editor.press("Enter")
@@ -367,14 +367,96 @@ def test_a_repository_that_is_not_owner_slash_name_is_refused(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("weyenk/airlie").click()
-    editor = dialog.get_by_label("Repository")
+    editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("not-a-repo")
     editor.press("Enter")
     evidence.expect(dialog.locator("[data-repo]").get_by_role("alert"), "it says why").to_contain_text(
         "owner/name"
     )
-    evidence.expect(dialog, "the old repository stays").to_contain_text("weyenk/airlie")
+    evidence.expect(editor, "the editor stays open with what was typed").to_have_value("not-a-repo")
     assert list(stored(own_server).labels) == ["repo:weyenk/airlie"]
+    editor.press("Escape")
+    evidence.expect(dialog, "Escape discards it; the old repository shows").to_contain_text("weyenk/airlie")
+
+
+def test_a_full_known_repository_name_saves_on_one_enter(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    store = board(own_server)
+    try:
+        store.update("AIR-3", labels=["repo:weyenk/OpenHand"])
+    finally:
+        store.close()
+    dialog = open_card(next_page, own_server)
+    dialog.get_by_text("weyenk/airlie").click()
+    editor = dialog.get_by_label("Repository", exact=True)
+    editor.fill("weyenk/OpenHand")
+    evidence.expect(dialog.get_by_role("option").first, "the typed name is offered").to_be_visible()
+    editor.press("Enter")
+    evidence.expect(editor, "one Enter saved it and closed the field").to_have_count(0)
+    evidence.expect(dialog, "the card names it").to_contain_text("weyenk/OpenHand")
+    assert list(stored(own_server).labels) == ["repo:weyenk/OpenHand"]
+    card = next_page.locator("[data-item=AIR-4]")
+    evidence.expect(card, "the board's card carries the label").to_contain_text("repo:weyenk/OpenHand")
+
+
+def test_focus_goes_to_create_and_back_into_the_card(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    dialog = open_card(next_page, server)
+    dialog.get_by_role("button", name="Add child").click()
+    title = dialog.get_by_label("Title", exact=True)
+    evidence.expect(title, "Create's Title has focus").to_be_focused()
+    dialog.get_by_role("button", name="Cancel").click()
+    evidence.expect(dialog.get_by_role("heading", name=TITLE), "back on the card").to_be_visible()
+    inside = dialog.evaluate("m => m.contains(document.activeElement)")
+    evidence.shot("focus is inside the card modal", dialog, held=inside)
+    assert inside
+
+
+def test_closing_by_the_backdrop_saves_an_open_editor(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    change(own_server, description="The panel must be wide")
+    dialog = open_card(next_page, own_server)
+    dialog.get_by_text("The panel must be wide").click()
+    dialog.get_by_label("Description", exact=True).fill("Typed, then the backdrop")
+    next_page.mouse.click(10, 450)
+    evidence.expect(dialog, "the card closed").to_be_hidden()
+    for _ in range(20):
+        if stored(own_server).description == "Typed, then the backdrop":
+            break
+        next_page.wait_for_timeout(100)
+    assert stored(own_server).description == "Typed, then the backdrop"
+
+
+def test_back_after_closing_does_not_reopen_the_card(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    dialog = open_card(next_page, server)
+    next_page.keyboard.press("Escape")
+    evidence.expect(dialog, "closed").to_be_hidden()
+    next_page.go_back()
+    evidence.expect(modal(next_page), "Back does not bring the card back").to_have_count(0)
+
+
+def test_a_child_given_another_repository_in_create_keeps_it_and_returns_to_the_parent(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    dialog = open_card(next_page, own_server)
+    dialog.get_by_role("button", name="Add child").click()
+    dialog.get_by_label("Title", exact=True).fill("Elsewhere")
+    dialog.get_by_label("Repository", exact=True).fill("weyenk/OpenHand")
+    dialog.get_by_role("button", name="Create subtask").click()
+    evidence.expect(dialog.get_by_role("heading", name=TITLE), "back on the parent card").to_be_visible()
+    evidence.expect(dialog.get_by_text("Elsewhere"), "the child is listed").to_be_visible()
+    store = board(own_server)
+    try:
+        labels = [list(c.labels) for c in store.list(parent=KEY)]
+    finally:
+        store.close()
+    evidence.shot("the child kept the repository typed in Create", held=labels == [["repo:weyenk/OpenHand"]])
+    assert labels == [["repo:weyenk/OpenHand"]], labels
 
 
 def test_the_repository_field_completes_a_known_repository_with_tab(
@@ -382,7 +464,7 @@ def test_the_repository_field_completes_a_known_repository_with_tab(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("weyenk/airlie").click()
-    editor = dialog.get_by_label("Repository")
+    editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("weyenk/air")
     evidence.expect(dialog.get_by_role("option").first, "the top match is offered").to_contain_text(
         "weyenk/airlie"
@@ -392,7 +474,9 @@ def test_the_repository_field_completes_a_known_repository_with_tab(
     editor.fill("weyenk/air")
     editor.press("Tab")
     editor.press("Enter")
-    evidence.expect(dialog.get_by_label("Repository"), "Enter saved it and closed the field").to_have_count(0)
+    evidence.expect(
+        dialog.get_by_label("Repository", exact=True), "Enter saved it and closed the field"
+    ).to_have_count(0)
     evidence.expect(dialog, "the card names the repository").to_contain_text("weyenk/airlie")
     assert list(stored(own_server).labels) == ["repo:weyenk/airlie"]
 
@@ -402,7 +486,7 @@ def test_escape_closes_the_suggestions_first_then_discards_the_edit(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("weyenk/airlie").click()
-    editor = dialog.get_by_label("Repository")
+    editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("weyenk/air")
     evidence.expect(dialog.get_by_role("option").first, "the list is open").to_be_visible()
     editor.press("Escape")
@@ -420,7 +504,7 @@ def test_clicking_the_title_edits_it_and_enter_saves(
 ) -> None:
     dialog = open_card(next_page, own_server)
     dialog.get_by_role("heading", name=TITLE).click()
-    editor = dialog.get_by_label("Title")
+    editor = dialog.get_by_label("Title", exact=True)
     evidence.expect(editor, "pre-filled with the title").to_have_value(TITLE)
     editor.fill("Board: centred card modal")
     editor.press("Enter")
@@ -434,10 +518,10 @@ def test_clicking_a_different_section_saves_the_first_and_opens_the_second(
     change(own_server, description="The panel must be wide")
     dialog = open_card(next_page, own_server)
     dialog.get_by_text("The panel must be wide").click()
-    dialog.get_by_label("Description").fill("The panel must be wide and centred")
+    dialog.get_by_label("Description", exact=True).fill("The panel must be wide and centred")
     dialog.get_by_role("heading", name=TITLE).click()
-    evidence.expect(dialog.get_by_label("Title"), "the clicked section opens").to_be_visible()
-    evidence.expect(dialog.get_by_label("Description"), "the first one closed").to_have_count(0)
+    evidence.expect(dialog.get_by_label("Title", exact=True), "the clicked section opens").to_be_visible()
+    evidence.expect(dialog.get_by_label("Description", exact=True), "the first one closed").to_have_count(0)
     next_page.wait_for_function("() => document.body.innerText.includes('wide and centred')")
     assert stored(own_server).description == "The panel must be wide and centred"
 
@@ -454,10 +538,12 @@ def test_editing_your_own_comment_saves_it_and_someone_elses_stays_read_only(
     dialog = open_card(next_page, own_server)
     mine = dialog.locator("[data-comment]").nth(0)
     theirs = dialog.locator("[data-comment]").nth(1)
-    evidence.expect(theirs.get_by_role("button", name="Edit"), "no Edit on someone else's").to_have_count(0)
+    evidence.expect(
+        theirs.get_by_role("button", name="Edit comment by noah"), "no Edit on someone else's"
+    ).to_have_count(0)
     theirs.get_by_text("a note from noah").click()
     evidence.expect(theirs.get_by_role("textbox"), "clicking it opens nothing").to_have_count(0)
-    mine.get_by_role("button", name="Edit").click()
+    mine.get_by_role("button", name="Edit comment by api-key").click()
     editor = mine.get_by_role("textbox")
     evidence.expect(editor, "your own opens pre-filled").to_have_value("first note")
     editor.fill("first note, edited")
@@ -469,7 +555,7 @@ def test_editing_your_own_comment_saves_it_and_someone_elses_stays_read_only(
 
 def test_a_new_comment_is_added(next_page: Page, own_server: Server, evidence: Evidence) -> None:
     dialog = open_card(next_page, own_server)
-    dialog.get_by_label("Add a comment").fill("Looks right")
+    dialog.get_by_label("Add a comment", exact=True).fill("Looks right")
     dialog.get_by_role("button", name="Comment", exact=True).click()
     evidence.expect(
         dialog.locator("[data-comment]", has_text="Looks right"), "the comment is listed"

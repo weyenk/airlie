@@ -76,3 +76,8 @@ test("a failed comment keeps the text and says why", async () => {
   expect(w.get("[role=alert]").text()).toContain("nope");
   expect(w.get<HTMLTextAreaElement>("textarea[aria-label='Add a comment']").element.value).toBe("Keep me");
 });
+
+test("each Edit button names whose comment it edits", () => {
+  const { w } = make();
+  expect(w.get("[data-edit]").attributes("aria-label")).toBe("Edit comment by noah");
+});

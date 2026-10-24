@@ -72,6 +72,7 @@ function onKey(e: KeyboardEvent) {
   const list = suggestions.value;
   if (e.key === "ArrowDown" && list.length) { e.preventDefault(); active.value = (active.value + 1) % list.length; }
   else if (e.key === "ArrowUp" && list.length) { e.preventDefault(); active.value = (active.value - 1 + list.length) % list.length; }
+  else if (e.key === "Enter" && list.length && list[active.value]?.value.toLowerCase() === text.value.toLowerCase()) { open.value = false; } // already typed in full: Enter goes through (a save, a submit) instead of being spent on accepting it
   else if ((e.key === "Tab" || e.key === "Enter") && list.length) { e.preventDefault(); accept(list[active.value]); }
   else if (e.key === "Escape" && list.length) { e.preventDefault(); e.stopPropagation(); open.value = false; } // closes the list, not the modal around it
 }

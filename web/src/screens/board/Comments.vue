@@ -54,7 +54,7 @@ async function post(): Promise<void> {
         <span aria-hidden="true" class="inline-flex size-5 items-center justify-center rounded-full bg-track text-[10px] font-semibold text-foreground">{{ initials(c.author) }}</span>
         <span class="min-w-0 truncate">{{ c.author }} · {{ ago(c.at, now) }}</span>
         <span class="grow" />
-        <button v-if="mine(c)" data-edit type="button" class="rounded px-1 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" @click="editorOf(c)?.start()">Edit</button>
+        <button v-if="mine(c)" data-edit type="button" :aria-label="`Edit comment by ${c.author}`" class="rounded px-1 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" @click="editorOf(c)?.start()">Edit</button>
       </div>
       <ClickToEdit
         ref="editors"
