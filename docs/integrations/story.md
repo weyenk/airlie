@@ -179,8 +179,9 @@ tokens, each step slower than the last) and then spent 14-20 minutes thinking it
 - **A cut deliberation continues.** When a thinking turn runs to its `thinking_budget` and its action is a read
   (not a write or `run_tests`), the next turn gets the last `carried_reasoning_chars` (default 1500; 0 is off)
   characters of that reasoning back, after the tool result: "Your reasoning on the last turn, cut at the
-  budget: … Do not start over: continue from here and decide." One such message at a time: the next replaces it.
-  Each is a `reasoning_carried` event (`step`, `chars`) (AIR-30).
+  budget: … Do not start over: continue from here and decide." Each stays where it was sent: removing one would
+  miss the engine's prefix cache and re-prefill the whole conversation. Each is a `reasoning_carried` event
+  (`step`, `chars`) (AIR-30).
 - **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
   from the story's base commit, and the architect is told not to read them again.
 - **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then
