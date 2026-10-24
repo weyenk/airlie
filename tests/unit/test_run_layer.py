@@ -66,3 +66,33 @@ def test_a_populated_layer_runs_pytest_on_its_directory_and_passes_the_exit_code
 def test_every_layer_name_is_accepted(layer: str, tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(rl, "ROOT", tmp_path)
     assert rl.main([layer]) == 0
+
+
+def _ran(layer: str, args: list[str], tmp_path: Path, monkeypatch) -> list[str]:  # type: ignore[no-untyped-def]
+    (tmp_path / "tests" / layer).mkdir(parents=True)
+    (tmp_path / "tests" / layer / "test_x.py").write_text("")
+    monkeypatch.setattr(rl, "ROOT", tmp_path)
+    ran: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: object) -> object:
+        ran.append(cmd)
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(rl.subprocess, "run", fake_run)
+    assert rl.main([layer, *args]) == 0
+    return ran[0]
+
+
+def test_the_unit_layer_runs_under_xdist_like_the_agents_md_gate(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    cmd = _ran("unit", [], tmp_path, monkeypatch)
+    assert cmd[-4:] == ["-n", "auto", "--maxprocesses", "8"]
+
+
+def test_pytest_args_come_after_the_xdist_defaults_so_they_win(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    cmd = _ran("unit", ["-n", "0"], tmp_path, monkeypatch)
+    assert cmd[-6:] == ["-n", "auto", "--maxprocesses", "8", "-n", "0"]
+
+
+def test_layers_above_unit_run_serially(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    cmd = _ran("integration", ["-q"], tmp_path, monkeypatch)
+    assert "-n" not in cmd
