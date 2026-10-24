@@ -30,6 +30,7 @@ from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
+from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Jobs
 from airlie.serve.listing import recent_runs, repos, stories
@@ -217,6 +218,8 @@ def create_app(
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     jobs = Jobs()
+    feed = Feed()
+    app.state.feed = feed
     make_story = story_job or _story_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board))
@@ -357,6 +360,16 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "roles": list(cfg.roles)}
+
+    @app.get("/v1/events")
+    async def events() -> StreamingResponse:
+        """What changed, live: server-sent hints (`board` / `AIR-17`, `runs`, `jobs`) that a page answers by
+        refetching. No history is kept; a reconnecting page refetches what it shows."""
+        return StreamingResponse(
+            event_stream(feed),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/v1/models")
     async def models() -> dict[str, Any]:
@@ -696,6 +709,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        feed.close()
         await client.aclose()
         board.close()
         store.close()
