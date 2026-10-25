@@ -2755,6 +2755,33 @@ async def test_a_blocked_reply_from_product_in_the_meeting_stops_the_story(tmp_p
     assert st.meeting is None  # the next run holds the meeting afresh
 
 
+async def test_a_meeting_that_stops_the_story_leaves_its_transcript_on_disk(tmp_path: Path) -> None:
+    """The tester never posts a proof (as Muse did on the first real run): the story stops, the saved team
+    state is forgotten, and what each role said, with the problems each turn had, stays readable."""
+    repo = repo_with_levels(tmp_path)
+    script = {
+        "product": [spoken("Fine by me.", AGREE_V)] * 2,
+        "architect": [spoken("ok", AGREE_V)] * 2,
+        "tester": ["I would test the storage first."] * 2,
+    }
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(script, max_turns=8),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is not None and "the meeting ended without an agreement" in st.blocked
+    assert st.meeting is None and not (st.path / "meeting.md").exists()
+    transcript = (st.path / "meetings" / "1.md").read_text()
+    assert transcript.count("## turn ") == 8
+    assert "## turn 3: tester (verdict_missing)" in transcript
+    assert "I would test the storage first." in transcript
+    assert "no proof plan has been posted yet" in transcript  # the checker's findings, as posted
+
+
 async def test_with_amigos_off_the_split_is_the_agreement(tmp_path: Path) -> None:
     repo = repo_with_levels(tmp_path)
 

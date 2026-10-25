@@ -828,6 +828,7 @@ class StoryPipeline:
         def on_turn(turn: Turn, state: Mapping[str, Any]) -> None:
             st.meeting = dict(state)
             st.save()
+            self._transcribe(st, turn)
             thread = (
                 state.get("agent_states", {}).get("RoundRobinGroupChatManager", {}).get("message_thread", [])
             )
@@ -872,12 +873,35 @@ class StoryPipeline:
         return on_turn
 
     @staticmethod
-    def _forget_meeting(st: StoryState) -> None:
+    def _transcribe(st: StoryState, turn: Turn) -> None:
+        """Append `turn` to the meeting's transcript, `meeting.md` in the story's directory: who spoke, the
+        problems the turn had, and what was said in full. The team's saved state is not kept once a meeting
+        ends, so this is what is left to read of it."""
+        path = st.path / "meeting.md"
+        n = (path.read_text().count("\n## turn ") if path.exists() else 0) + 1
+        kinds = ", ".join(dict.fromkeys(p.kind for p in turn.problems))
+        head = f"## turn {n}: {turn.role}" + (f" ({kinds})" if kinds else "")
+        why = "".join(f"- {p.kind}: {p.why}\n" for p in turn.problems)
+        with path.open("a") as f:
+            f.write(f"\n{head}\n\n{why}{chr(10) if why else ''}{turn.text.strip()}\n")
+
+    @staticmethod
+    def _keep_transcript(st: StoryState) -> None:
+        """Move the ended meeting's transcript to `meetings/<n>.md`: a meeting held again starts its own."""
+        path = st.path / "meeting.md"
+        if path.exists():
+            kept = st.path / "meetings"
+            kept.mkdir(exist_ok=True)
+            path.rename(kept / f"{len(list(kept.glob('*.md'))) + 1}.md")
+
+    @classmethod
+    def _forget_meeting(cls, st: StoryState) -> None:
         """A meeting that ended in a stop (product said the request cannot be built; the agreement cannot
         be built) is not resumed from its history: that would end in the same stop. The next run holds it
-        afresh."""
+        afresh; its transcript is kept."""
         st.meeting = None
         st.save()
+        cls._keep_transcript(st)
 
     async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
@@ -968,6 +992,7 @@ class StoryPipeline:
         st.layers = [x.to_dict() for x in agreement.layers]
         st.meeting = None
         st.finish("layers")
+        self._keep_transcript(st)
         # after the finish, so a note that cannot be posted never has the meeting held again
         role = self.s.product_role
         await self.board.comment(card, note(agreement_note(agreement)), role=role)
