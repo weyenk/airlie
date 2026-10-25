@@ -18,6 +18,7 @@ import httpx
 import pytest
 from mcp import StdioServerParameters
 from mcp.client import Client
+from mcp.client.stdio import stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 from typer.testing import CliRunner
 
@@ -694,8 +695,11 @@ async def test_airlie_mcp_serves_the_seven_tools_over_stdio(tmp_path: Path) -> N
     cfg_for(tmp_path)
     args = ["-m", "airlie.cli", "mcp", "--config", str(tmp_path / "cfg/airlie.yaml")]
     params = StdioServerParameters(command=sys.executable, args=args, cwd=str(tmp_path))
-    with anyio.fail_after(60):
-        async with Client(params, mode="legacy") as client:
+    # The server's stderr goes to a file of the test's own. stdio_client's default is the sys.stderr bound
+    # when the mcp package was imported, which mutmut's runner has closed by the time its clean run starts
+    # (ValueError: I/O operation on closed file, PR 167); a test must not depend on that stream.
+    with (tmp_path / "server-stderr.log").open("w") as errlog, anyio.fail_after(60):
+        async with Client(stdio_client(params, errlog=errlog), mode="legacy") as client:
             names = {t.name for t in (await client.list_tools()).tools}
     assert names == {"plan", "run", "status", "cancel", "story", "initiative", "answer"}
 
