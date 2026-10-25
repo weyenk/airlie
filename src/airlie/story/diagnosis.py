@@ -19,7 +19,7 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from airlie.story.model import StoryError
 
@@ -364,3 +364,157 @@ def render_pack(pack: Pack) -> str:
     where_lines += [f"- step file: {s}" for s in p.steps]
     parts.append("Paths:\n" + "\n".join(where_lines))
     return "\n\n".join(parts)
+
+
+# ---- the class ----------------------------------------------------------------------------------------
+
+Class = Literal["transient", "environment", "content", "process", "config"]
+"""Whose fault a block is, decided by rules: `transient` (a fetch or an engine stall: try again), `process`
+(a bug in airlie's own code: a fix card), `config` (a role's caps are too small for its task: a fix card),
+`environment` (the base tree was red already: a person), `content` (the model's work: P3's resume and
+re-plan)."""
+PLANNING_STAGES = ("new", "intake", "refine")
+_FRAME = re.compile(r'File "([^"]+)", line \d+, in (\S+)')
+_AIRLIE_FILE = re.compile(r"[/\\]airlie[/\\](.+)\.py$")
+_EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*)(?::|$)")
+_TEST_ID = re.compile(r"((?:[\w.\-]+/)*test_?[\w.\-]*\.py::[\w\[\]\-.]+)")
+_UNFETCHED = re.compile(r"could not be fetched|failed to fetch", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Classified:
+    """The mechanical reading of a block: `class_`; `kind` (the rule's name, or Muse's category for content);
+    `where` (stable across edits: an exception's module and function, a hold, a test id, a role or the stage);
+    the `signature` made of them, which dedups fix cards and counts retries (never a line number: a fix moves
+    lines and the same bug must keep its signature); the `evidence` the rule matched, and the `rule`."""
+
+    class_: Class
+    kind: str
+    where: str
+    signature: str
+    evidence: tuple[str, ...]
+    rule: str
+
+
+def _made(class_: Class, kind: str, where: str, rule: str, *evidence: str) -> Classified:
+    return Classified(class_, kind, where, f"{class_}:{kind}:{where}", tuple(evidence), rule)
+
+
+def _innermost_airlie_frame(traceback: str) -> tuple[str, str] | None:
+    """(module, function) of the last frame in airlie's own code, as the traceback prints them."""
+    found: tuple[str, str] | None = None
+    for path, function in _FRAME.findall(traceback):
+        m = _AIRLIE_FILE.search(path)
+        if m:
+            found = ("airlie." + m.group(1).replace("/", ".").replace("\\", "."), function)
+    return found
+
+
+def _exception_type(traceback: str) -> str:
+    for line in reversed(traceback.strip().splitlines()):
+        m = _EXCEPTION.match(line)
+        if m:
+            return m.group(1).rsplit(".", 1)[-1]
+    return "Exception"
+
+
+def _failing_test(pack: Pack) -> str | None:
+    for text in (pack.gate_tail, pack.reason):
+        m = _TEST_ID.search(text)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _content_kind(pack: Pack) -> str:
+    r = pack.reason
+    if "changed nothing" in r:
+        return "changed_nothing"
+    if "readiness check" in r:
+        return "package_rejected"
+    if "before the code" in r or "do not test its change" in r:
+        return "precode_failed"
+    if " fails on " in r:
+        return "gate_failed"
+    if "cannot be built as written" in r:
+        return "not_actionable"
+    if "did not produce a usable" in r:
+        return "unusable_reply"
+    return "blocked"
+
+
+def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
+    """The class of a block, by these rules in this order, each naming the evidence it matched:
+
+    1. transient: an engine or fetch failure on record, or a reason that says the trunk could not be fetched;
+    2. process: a traceback with a frame in airlie's own code (kind the exception's type, where its
+       module:function; this outranks Muse's category, so a bug in airlie is never filed against the tester),
+       or a role that ended `repeated_action` after three or more refused calls (a hold that trapped it),
+       or any other `error` (unhandled);
+    3. config: a role cut off at its token cap, or a planning role out of steps;
+    4. environment: the gate was red on the base already;
+    5. content: the model's work. kind is Muse's category when it has one, else read from the reason.
+
+    The signature is `<class>:<kind>:<where>`. Dated 2026-10-25 (P5a), calibrated on the blocks recorded on
+    this Mac (docs/bench/2026-10-25-diagnosis-calibration.md)."""
+    engine = [f for f in pack.failures if "engine_error" in f]
+    fetch = [f for f in pack.failures if f.startswith("fetch_failed")]
+    if fetch or _UNFETCHED.search(pack.reason):
+        return _made("transient", "fetch_failed", pack.stage, "fetch_failed", *(fetch or [pack.reason[:200]]))
+    if engine:
+        return _made("transient", "engine_error", pack.role or pack.stage, "engine_error", *engine)
+    for tb in pack.tracebacks:
+        frame = _innermost_airlie_frame(tb)
+        if frame is not None:
+            module, function = frame
+            return _made(
+                "process",
+                _exception_type(tb),
+                f"{module}:{function}",
+                "traceback_in_airlie",
+                tb.strip().splitlines()[-1][:200],
+                f"innermost airlie frame {module}:{function}",
+            )
+    if pack.stop_reason == "repeated_action" and pack.refused_calls >= 3:
+        hold = f"write_deadline:{pack.holds[0]}" if pack.holds else "repeat_guard"
+        return _made(
+            "process",
+            "hold_trap",
+            hold,
+            "hold_trap",
+            f"{pack.refused_calls} refused calls, then repeated_action",
+            f"deadlines missed: {', '.join(pack.holds) or 'none'}",
+        )
+    if pack.tracebacks:
+        tb = pack.tracebacks[-1]
+        frames = _FRAME.findall(tb)
+        where = f"{Path(frames[-1][0]).stem}:{frames[-1][1]}" if frames else pack.stage
+        return _made("process", "unhandled", where, "unhandled_error", tb.strip().splitlines()[-1][:200])
+    who = pack.role or pack.stage
+    if pack.stop_reason == "cut_off":
+        return _made("config", "cut_off", who, "cut_off", f"{who} stopped: cut_off")
+    if pack.stop_reason == "max_steps" and (pack.layer is None or pack.stage in PLANNING_STAGES):
+        return _made(
+            "config",
+            "max_steps",
+            who,
+            "max_steps_planning",
+            f"{who} stopped: max_steps at stage {pack.stage}",
+        )
+    kind = _content_kind(pack)
+    if pack.base_gate_failed and kind == "gate_failed":
+        return _made(
+            "environment",
+            "gate_on_base",
+            pack.base_failing[0] if pack.base_failing else "gate",
+            "gate_on_base",
+            f"tests failing on the base: {', '.join(pack.base_failing)}",
+        )
+    return _made(
+        "content",
+        muse_category or kind,
+        _failing_test(pack) or pack.stage,
+        "default",
+        f"reason: {pack.reason[:200]}",
+        *([f"muse category: {muse_category}"] if muse_category else []),
+    )

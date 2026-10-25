@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from airlie.story.diagnosis import Pack, gather, render_pack
+from airlie.story.diagnosis import Pack, Paths, classify, gather, render_pack
 from airlie.story.model import StoryError
 from tests.unit.git_helpers import git
 
@@ -129,3 +129,99 @@ def test_the_nth_block_is_gathered_when_asked(tmp_path: Path) -> None:
     )
     with pytest.raises(StoryError, match="no block 3"):
         gather(state, "AIR-4", n=3)
+
+
+# ---- the class ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("case", "class_", "kind"),
+    [
+        ("hold_trap", "process", "hold_trap"),
+        ("precode", "content", "precode_failed"),
+        ("changed_nothing", "content", "changed_nothing"),
+        ("engine_stall", "transient", "engine_error"),
+        ("product_max_steps", "config", "max_steps"),
+        ("fetch_failed", "transient", "fetch_failed"),
+        ("gate_red", "content", "gate_failed"),
+    ],
+)
+def test_each_fixture_classes_as_expected(case: str, class_: str, kind: str) -> None:
+    got = classify(recorded(case))
+    assert (got.class_, got.kind) == (class_, kind)
+    assert got.signature == f"{class_}:{kind}:{got.where}" and got.evidence and got.rule
+
+
+def test_the_where_of_the_recorded_signatures_is_a_hold_a_role_or_the_stage() -> None:
+    assert classify(recorded("hold_trap")).where == "write_deadline:tests"
+    assert classify(recorded("product_max_steps")).where == "product"
+    assert classify(recorded("changed_nothing")).where == "layers"
+
+
+def traceback(line: int, *, exception: str = "KeyError: 'x'") -> str:
+    return (
+        "Traceback (most recent call last):\n"
+        f'  File "/r/src/airlie/story/pipeline.py", line {line}, in _build_once\n    x = 1\n'
+        '  File "/r/src/airlie/story/state.py", line 9, in save\n    y = 2\n'
+        f"{exception}"
+    )
+
+
+def blocked_pack(**fields: Any) -> Pack:
+    base: dict[str, Any] = {
+        "key": "AIR-1", "n": 1, "reason": "layer 01 (B) changed nothing", "stage": "layers", "layer": "01",
+        "attempt": 1, "run_id": "r", "subtask": "build", "role": "coder", "stop_reason": "done",
+        "refused_calls": 0, "holds": (), "repeats": 0, "continuations": 0, "steps": 5, "tokens": 100,
+        "minutes": 1.0, "gate_tail": "", "tracebacks": (), "failures": (), "base_gate_failed": None,
+        "base_failing": (), "diff_stat": "", "paths": Paths(Path("e"), None, None, ()),
+    }  # fmt: skip
+    return Pack(**{**base, **fields})
+
+
+def test_a_traceback_in_airlie_outranks_muses_category() -> None:
+    pack = blocked_pack(tracebacks=(traceback(120),), stop_reason="done")
+    got = classify(pack, muse_category="not_this_roles_test")
+    assert got.class_ == "process" and got.kind == "KeyError"
+    assert got.where == "airlie.story.state:save"  # the innermost airlie frame
+    assert got.rule == "traceback_in_airlie"
+
+
+def test_a_signature_does_not_change_when_lines_move() -> None:
+    a = classify(blocked_pack(tracebacks=(traceback(120),)))
+    b = classify(blocked_pack(tracebacks=(traceback(187, exception="KeyError: 'y'"),)))
+    assert a.signature == b.signature == "process:KeyError:airlie.story.state:save"
+    other = classify(blocked_pack(tracebacks=(traceback(1, exception="ValueError: z"),)))
+    assert other.signature != a.signature
+
+
+def test_an_unclassifiable_block_is_content_with_the_stage_as_where() -> None:
+    got = classify(blocked_pack(reason="something nobody has seen", stage="publish", layer=None))
+    assert (got.class_, got.kind, got.where) == ("content", "blocked", "publish")
+    assert got.signature == "content:blocked:publish"
+
+
+def test_a_planning_role_out_of_steps_is_config_but_a_coder_out_of_steps_is_content() -> None:
+    planning = blocked_pack(stage="refine", layer=None, role="architect", stop_reason="max_steps")
+    assert classify(planning).signature == "config:max_steps:architect"
+    coder = blocked_pack(stop_reason="max_steps", reason="layer 01 (B): `gate` fails on b")
+    assert classify(coder).class_ == "content"
+
+
+def test_a_gate_that_was_red_on_the_base_is_the_environments() -> None:
+    pack = blocked_pack(
+        reason="layer 01 (B): `gate` fails on b",
+        base_gate_failed=True,
+        base_failing=("tests/test_a.py::test_a",),
+    )
+    got = classify(pack)
+    assert (got.class_, got.kind, got.where) == ("environment", "gate_on_base", "tests/test_a.py::test_a")
+
+
+def test_muses_category_names_a_content_kind_and_the_failing_test_is_the_where() -> None:
+    pack = blocked_pack(
+        reason="layer 01 (B): `gate` fails on b",
+        gate_tail="FAILED tests/unit/test_x.py::test_y - assert 0",
+    )
+    got = classify(pack, muse_category="wrong_acceptance_test")
+    assert got.signature == "content:wrong_acceptance_test:tests/unit/test_x.py::test_y"
+    assert classify(pack).kind == "gate_failed"
