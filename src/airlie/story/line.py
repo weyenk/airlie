@@ -20,7 +20,10 @@ called through its module, so the tests that replace them replace them here too.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
@@ -127,6 +130,8 @@ class Line:
         probe: SystemProbe | None = None,
     ) -> None:
         self.probe = probe
+        self.gates: dict[str, str] = {}
+        """The latest beat's gates: engine, profile_match, github (ok, down, mismatch or unknown)."""
         """What the engine gate reads the running engine with (the host's `ps`); tests pass a fake."""
         self.cfg = cfg
         self.board = board
@@ -150,6 +155,12 @@ class Line:
         board = self.board
         if isinstance(board, NullBoard):
             return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
+        self.gates = dict.fromkeys(("engine", "profile_match", "github"), "unknown")
+        line = await self._beat(spawn)
+        self._record(line)
+        return line
+
+    async def _beat(self, spawn: Spawn | None) -> str:
         notes = await self._bookkeeping()
         busy = [lane for lane in self.lanes if lock_held(self.stories, lane)]
         if len(busy) == len(self.lanes):  # nothing to start: the gates are not asked (no engine, no GitHub)
@@ -193,9 +204,11 @@ class Line:
             healthy = bool((await factory._engine(self.cfg).health()).ok)
         except Exception:  # noqa: BLE001 - any failure to reach the engine means it is down
             healthy = False
+        self.gates["engine"] = "ok" if healthy else "down"
         if not healthy:
             return "engine down: start it with `task restart -- --topology studio`"
         down = await factory.github_down(self.cfg)
+        self.gates["github"] = "ok" if down is None else "down"
         if down is not None:
             return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
         return await self._profile_gate()
@@ -211,6 +224,7 @@ class Line:
         except Exception as e:  # noqa: BLE001 - a check that cannot run is no mismatch
             factory.log.warning("engine profile check failed: %s", e)
             return None
+        self.gates["profile_match"] = {"ok": "ok", "fail": "mismatch"}.get(found.status, "unknown")
         if found.status != "fail":
             return None
         line_event(self.state_dir, "engine_mismatch", profile=profile, detail=found.detail)
@@ -264,13 +278,38 @@ class Line:
             job.planned, "story", self.stories / job.planned / "events.jsonl", item, taken_from="approved"
         )
 
+    def _record(self, line: str) -> None:
+        """The beat's latest word, for the line row to read from any process: when, the gates and the line."""
+        with contextlib.suppress(OSError):
+            folder = self.state_dir / "line"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "status.json").write_text(
+                json.dumps({"ts": self.now(), "gates": self.gates, "line": line})
+            )
+
+    def _lane_record(self, job: Job, *, on: bool) -> None:
+        """`line/lanes/<lane>.json` names what the lane is doing (and since when) while its job runs; the row
+        believes it only while the lane's lock is held."""
+        path = self.state_dir / "line" / "lanes" / f"{job.lane}.json"
+        with contextlib.suppress(OSError):
+            if on:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps({"key": job.key, "what": job.what, "started": self.now(), "pid": os.getpid()})
+                )
+            else:
+                path.unlink(missing_ok=True)
+
     async def run_job(self, job: Job) -> str:
         """Run a job to its end. A failure is that lane's line, never the other lane's."""
         line_event(self.state_dir, "lane_start", lane=job.lane, key=job.key, what=job.what)
+        self._lane_record(job, on=True)
         try:
             line = await job.work()
         except (BoardError, StorySetupError, StoryError) as e:
             line = f"{job.what} {job.key}: failed ({factory._why(e)})"
+        finally:
+            self._lane_record(job, on=False)
         job.result = " ".join(line.split())
         line_event(self.state_dir, "lane_done", lane=job.lane, key=job.key, line=job.result)
         return job.result

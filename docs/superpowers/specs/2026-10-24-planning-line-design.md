@@ -7,7 +7,7 @@ P2 `specs/2026-10-24-three-amigos-design.md` + `plans/2026-10-24-three-amigos.md
 `specs/2026-10-24-specs-phase-design.md` + `plans/2026-10-25-specs-phase.md`; P5
 `specs/2026-10-25-line-scheduler-design.md` + `plans/2026-10-25-line-scheduler.md`; P6
 `plans/2026-10-25-pr-provenance.md`. Build order: P1, then P2 and P3, then P4; P5a after P1 and P5b after P3
-and P4; P6 after P1. P1 (the layer package) is built in the branch `claude/p1-layer-package` (2026-10-25); P2 (the three amigos) in `claude/p2-three-amigos` and P3 (the plans phase) in `claude/p3-plans-phase`, each stacked on it; P4 (the specs phase) on P3, and P5a (the diagnosis and the fix cards) in `claude/p5a-diagnosis` on P1 (2026-10-25); P5b (the scheduler) is built on the three merged together (`claude/p5b-line-scheduler`).
+and P4; P6 after P1. P1 (the layer package) is built in the branch `claude/p1-layer-package` (2026-10-25); P2 (the three amigos) in `claude/p2-three-amigos` and P3 (the plans phase) in `claude/p3-plans-phase`, each stacked on it; P4 (the specs phase) on P3, and P5a (the diagnosis and the fix cards) in `claude/p5a-diagnosis` on P1 (2026-10-25); P5b (the scheduler, the budgets, the stats, the rows) is built on the three merged together in `claude/p5b-line-scheduler` (2026-10-25); P6 is not built yet.
 
 ## Why
 

@@ -90,7 +90,9 @@ async def test_a_long_turn_waits_for_the_build_lanes_gap_and_a_started_one_finis
         json.loads(x)
         for x in (asker.cfg.observability.state_dir / "line" / "events.jsonl").read_text().splitlines()
     ]
-    assert [e["kind"] for e in line] == ["lane_wait"] and line[0]["key"] == "AIR-1"
+    assert [e["kind"] for e in line] == ["lane_yield", "lane_wait", "lane_resume"] and line[0][
+        "key"
+    ] == "AIR-1"
 
 
 async def test_a_short_ask_and_the_build_lanes_own_asks_never_wait(tmp_path: Path) -> None:

@@ -166,21 +166,22 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
 
-  story:launchd:install:
-    desc: "Load the launchd agent that runs the story tick (airlie story tick) every 15 minutes from this checkout (docs/integrations/story.md)"
+  line:launchd:install:
+    desc: "Load the launchd agent that runs a beat of the line (airlie line tick) every 15 minutes from this checkout, the belt beside task serve's own minute-by-minute beat; it also removes the older dev.airlie.story-tick agent (docs/integrations/story.md)"
     cmds:
       - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
-      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/story-tick.plist > ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - plutil -lint ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
-      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - echo "loaded; the log is ~/.local/state/airlie/story-tick.log"
+      - test ! -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist || { launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null; rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist; echo "removed the old dev.airlie.story-tick agent"; }
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/line-tick.plist > ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - echo "loaded; the log is ~/.local/state/airlie/line-tick.log"
 
-  story:launchd:uninstall:
-    desc: "Unload the story pickup launchd agent and remove its plist"
+  line:launchd:uninstall:
+    desc: "Unload the line's launchd agent and remove its plist"
     cmds:
-      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
-      - rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.line-tick.plist
 
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"

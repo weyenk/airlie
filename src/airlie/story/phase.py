@@ -96,37 +96,38 @@ async def wait_for_gap(
     stale_s: float = STALE_S,
 ) -> float:
     """Wait until the build lane is in a `gap` or `idle`, polling its phase file every `poll_s`; the seconds
-    waited. A wait that began emits `lane_wait` once, when it ends, with the seconds. Nothing waits when the
+    waited. A wait that began emits `lane_yield` at its start, and `lane_wait` (the seconds) and
+    `lane_resume` when it ends. Nothing waits when the
     lane is already in a gap or idle."""
     started = time.monotonic()
     waited = False
     while read_phase(stories_dir, stale_s=stale_s)[0] == "decoding":
+        if not waited:
+            emit("lane_yield")  # the planning lane gives way to the build's decode
         waited = True
         await asyncio.sleep(poll_s)
     seconds = time.monotonic() - started
     if waited:
         emit("lane_wait", seconds=round(seconds, 1))
+        emit("lane_resume")
     return seconds
 
 
-def fanout(stories_dir: Path, *, width: int, floor_tps: float, stale_s: float = STALE_S) -> int:
-    """How many short asks may run at once: `width` while the build lane is idle or in a gap, or while its
-    last five steps decoded at `floor_tps` tokens a second or better; 1 under the floor (the riders would
-    slow the build). The rate is the completion tokens over the generation seconds of the last `WINDOW`
-    `step` events of the build's studio run; a run with no steps yet, or none that can be read, is `width`."""
+def decode_state(stories_dir: Path, *, stale_s: float = STALE_S) -> dict[str, float | int] | None:
+    """How the build lane is decoding right now: `{"step", "tps"}` from the last `WINDOW` `step` events of the
+    studio run it named in the phase file (the step number of the latest, the completion tokens over the
+    generation seconds of the window). None when the build is not decoding, names no run, or the run has no
+    step yet."""
     phase, _ = read_phase(stories_dir, stale_s=stale_s)
     if phase != "decoding":
-        return width
-    data = _read(stories_dir) or {}
-    run_dir = data.get("run_dir")
+        return None
+    run_dir = (_read(stories_dir) or {}).get("run_dir")
     if not isinstance(run_dir, str):
-        return width
-    tokens = 0.0
-    gen_ms = 0.0
+        return None
     try:
         lines = (Path(run_dir) / "events.jsonl").read_text().splitlines()
     except OSError:
-        return width
+        return None
     steps = []
     for line in reversed(lines):
         try:
@@ -137,12 +138,21 @@ def fanout(stories_dir: Path, *, width: int, floor_tps: float, stale_s: float = 
             steps.append(event)
             if len(steps) == WINDOW:
                 break
-    for event in steps:
-        tokens += float(event.get("completion_tokens") or 0)
-        gen_ms += float(event.get("gen_ms") or 0)
+    tokens = sum(float(e.get("completion_tokens") or 0) for e in steps)
+    gen_ms = sum(float(e.get("gen_ms") or 0) for e in steps)
     if not steps or gen_ms <= 0:
+        return None
+    return {"step": int(steps[0].get("step") or 0), "tps": round(tokens / (gen_ms / 1000.0), 1)}
+
+
+def fanout(stories_dir: Path, *, width: int, floor_tps: float, stale_s: float = STALE_S) -> int:
+    """How many short asks may run at once: `width` while the build lane is idle or in a gap, or while its
+    last five steps decoded at `floor_tps` tokens a second or better; 1 under the floor (the riders would
+    slow the build). A run with no steps yet, or none that can be read, is `width`."""
+    state = decode_state(stories_dir, stale_s=stale_s)
+    if state is None:
         return width
-    return 1 if tokens / (gen_ms / 1000.0) < floor_tps else width
+    return 1 if state["tps"] < floor_tps else width
 
 
 @asynccontextmanager

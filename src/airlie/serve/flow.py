@@ -14,7 +14,9 @@ from typing import Any
 
 from airlie.board import BoardStore
 from airlie.serve.jobs import read_events
+from airlie.story.budgets import stage_figures
 from airlie.story.costs import queue_hours
+from airlie.story.diagnosis import latest
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import StoryPlan
 from airlie.story.initiative import Initiative
@@ -462,8 +464,25 @@ def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
         "summary": story.get("summary"),
         "stage": st.get("stage"),
         "blocked": st.get("blocked"),
+        "diagnosis": _diagnosis_row(state_dir, key),
+        "budgets": stage_figures(state_dir / "stories" / key),
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
+    }
+
+
+def _diagnosis_row(state_dir: Path, key: str) -> dict[str, Any] | None:
+    """The latest block's diagnosis for the row (planning-line P5b, D11): its class, kind and signature, and
+    how many blocks the story has had. None for a story that never blocked, or whose diagnosis cannot be
+    read."""
+    d = latest(state_dir, key)
+    if d is None:
+        return None
+    return {
+        "class": d.classified.class_,
+        "kind": d.classified.kind,
+        "signature": d.classified.signature,
+        "n": d.pack.n,
     }
 
 

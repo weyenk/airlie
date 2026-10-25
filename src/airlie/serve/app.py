@@ -35,6 +35,7 @@ from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
+from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
@@ -799,6 +800,17 @@ def create_app(
         """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
         set_paused(cfg.observability.state_dir.expanduser(), req.paused)
         return ticker.row()
+
+    @app.get("/v1/airlie/line")
+    async def line_get() -> dict[str, Any]:
+        """The line as one row (planning-line P5b, D11): paused, the gates, what each lane is doing, the hours
+        queued, the blocked stories with their diagnosis and fix card, and when it last ticked."""
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=ticker.last_tick, now=now())
+
+    @app.get("/v1/airlie/line/events")
+    async def line_events_get(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+        """The tail of the line's own log (`line/events.jsonl`): ticks, gates, lanes, pauses, fixes."""
+        return {"events": line_events_tail(cfg.observability.state_dir.expanduser(), limit)}
 
     @app.get("/v1/airlie/line/stats")
     async def line_stats_get(since: str | None = Query(None)) -> dict[str, Any]:

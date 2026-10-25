@@ -78,7 +78,7 @@ as the board (`story.board: jira` in `airlie.local.yaml`), or for the import, wh
    workflow must offer one from where the issue is; a move it does not offer stops the story with the statuses it
    does offer. If your workflow has no *In Review* or *Blocked*, add it, or name a status it has under
    `story.jira.statuses` in `airlie.local.yaml` (`blocked: null` leaves a stopped issue where it is).
-   `story.jira.jql` changes which issues `task story:tick` takes (default: the project's *To Do* issues, in rank
+   `story.jira.jql` changes which issues `task line:tick` takes (default: the project's *To Do* issues, in rank
    order).
 4. **Repositories:** clone each repository stories are built in under `~/git` (`story.repos_root`), give each
    issue a `repo:<owner>/<name>` label (*Which repository*), and give each repository an `AGENTS.md` with a
@@ -433,7 +433,7 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets
 `cannot be picked up: <reason>` and `Needs a person: fix that, then resume with ...`, and moves to *Blocked* (to
-*In Progress* when `story.jira.statuses.blocked` is null, with a note that says so, to keep `task story:tick` from
+*In Progress* when `story.jira.statuses.blocked` is null, with a note that says so, to keep `task line:tick` from
 taking it again). `task story` and `POST /v1/airlie/stories` tell the issue the same way, then say why (exit 1, or a
 400). A missing gate, or a trunk that cannot be fetched, is found once the story has started: the story stops
 after `'intake'` like any other stop, and the issue goes to *Blocked* (with `blocked: null` it stays in *In
@@ -617,15 +617,99 @@ in the `environment` of the `mcp.airlie` entry of its `opencode.json` (for the `
 jobs API and stories existed, so it answers 404 to `/v1/airlie/plans`, `/runs`, `/stories` and `/jobs`. Stop it
 and run `task serve` again from the checkout that has the code (once the branch is merged, your main checkout).
 
+## The line: two lanes, one beat
+
+One scheduler runs every level (initiatives, epics, stories, layers): `task line:tick` is one **beat**, by hand.
+`task serve` runs the same beat every minute while it is up (`line.serve_ticks`, `line.tick_s`) and the launchd
+agent (below) runs it every 15 minutes as the belt; a person's move or answer is acted on within a minute while
+serve is up. A beat runs, in order:
+
+1. **the bookkeeping, no model:** a deployed fix releases the stories it blocked, a transient block is retried
+   (*Why a story stopped*), each planned epic's status follows its stories, waiting stories are promoted, a
+   stopped story is resumed once;
+2. **the gates:** the engine answers, GitHub answers, and **the engine runs the story profile**. The doctor
+   compares the running vllm-mlx server's flags (`--max-kv-size`, `--max-num-seqs`, `--chunked-prefill-tokens`,
+   `--kv-cache-quantization`, `--cache-memory-mb`, the preloaded models) with the profile's (`story.topology`); a
+   KV smaller than the profile's rotates a long prompt and wastes a layer, so on a mismatch the beat starts nothing
+   and logs `engine mismatch: ... restart it: task restart -- --topology studio`. The line never restarts the
+   engine;
+3. **one job in each lane**, side by side:
+   - the **planning lane** (`plan.lock`) takes the oldest ready of an initiative's turn or an epic's revision (a
+     person is waiting), an epic to plan or re-plan, a story to plan (refine, the three amigos, the layer split:
+     `StoryPipeline.plan`, which ends where the agreement is stored);
+   - the **build lane** (`build.lock`, the old story lock) takes the top planned story (`StoryPipeline.build`:
+     each layer from the package the architect writes just before it, the gate, the review, the publish), after a
+     replay of a dependent story whose base moved.
+
+A job holds its lane's lock for its whole run, whoever started it: the tick, a `task serve` route or `task story`
+(which plans under `plan.lock`, then builds under `build.lock`). A beat that finds a lane held (by serve's ticker
+while the launchd tick runs, say) logs `busy: the planning lane is in use` and runs the other lane. Nothing runs
+the same lane twice.
+
+**The gaps.** The two lanes share one engine, and a long prompt prefilled beside a decoding build slows it. The
+build lane writes what it is doing to `stories/build.phase` (`decoding` while a role's turn is in flight, `gap`
+during the gate, the review, the publish and between layers, `idle`), and the planning lane's **long turns**
+(product's and the architect's, the meeting's) start only in a gap or when the build is idle; a turn that has
+started runs to its end. Its **short asks** (consultations, surveys, a planner's reads, mockup renders) ride beside
+the build's decode, `line.fanout` (4) at a time, one at a time while the build's last five steps decode under
+`line.decode_floor_tps` (12 tokens a second). The line's log records `lane_yield`, `lane_wait` (with the seconds
+waited) and `lane_resume`. The studio profile turns on chunked prefill, 8-bit stored KV and an explicit prefix
+cache (`config/profiles.yaml`) so the riders do not stall the build; they take effect at the next
+`task restart -- --topology studio`.
+
+**One switch, and the statuses.** `task line:pause` writes `line.paused` in the state directory (`task line:resume`
+removes it, `POST /v1/airlie/line {"paused": true}` does the same): a paused beat does the gates and the
+bookkeeping, logs `paused`, and starts no job; a running job finishes. The board's statuses are the other
+controls: a card a person moves to *blocked* or *todo* holds itself **and everything under it** (an initiative's
+epics and their stories); *approved* or *doing* lets them go.
+
+**What a stage costs.** Every stage's tokens (prompt plus completion), wall-clock and steps are folded into
+`stages/<stage>.json` in the card's state directory against `line.budgets` (survey, refine, questions, imagine,
+amigos, plan, package, layer, review, publish: `wall_s` and `tokens`; the defaults are the recorded medians doubled,
+`scripts/stage_medians.py`). A stage at 80 percent of either budget logs `budget_warning` and at 100 percent
+`budget_exceeded` (once each per stage per card, and one note on the card at the overrun). Nothing stops: the
+stage's own caps (steps, turns, attempts) are still the only stops. A stage that repeats per layer (package,
+layer, review) is judged by its latest run: a budget is what one layer costs.
+
+**The numbers that judge it.** `task line:stats [-- --since 2026-10-18]` (and `GET /v1/airlie/line/stats`) prints
+the **unattended rate** (of the stories that reached review, how many went from their first approval to review
+with no person's move or comment between; the board records who made each move, `moves`, and the line's own are
+`line`), blocks by class and kind with the fix cards filed and the stories resumed after a fix, each epic's hours
+against its estimate, the amigos' objections by role and part and how many a later check bore out, and the
+budgets' warnings and overruns by stage. Several stories at once wait until the unattended rate says single stories
+go through on their own.
+
+**What you see.** `GET /v1/airlie/line` is the row the app draws: `paused`, the gates (`engine`, `profile_match`,
+`github`), what each lane is doing (`card`, `title`, `stage`, and for the build `layer`, `step`, `tps`,
+`elapsed_s`, `estimate_h`), `queue_hours`, the blocked stories with their class, kind and fix card, and when it last
+ticked; `GET /v1/airlie/line/events?limit=` is the tail of `line/events.jsonl` (`tick`, `gate_failed`,
+`lane_start`, `lane_done`, `lane_yield`, `lane_wait`, `lane_resume`, `paused`, `fix_filed`, `fix_linked`,
+`resumed_after_fix`, `transient_retry`, `engine_mismatch`); `/health` carries the same `line` summary. A story's
+flow row gains its latest `diagnosis` and its `budgets`.
+
+| setting | default | what |
+| --- | --- | --- |
+| `line.tick_s` | 60 | seconds between serve's own beats |
+| `line.serve_ticks` | true | `task serve` runs the beat itself |
+| `line.fanout` | 4 | short asks at once while the build decodes at or above the floor |
+| `line.decode_floor_tps` | 12 | the build's decode rate under which short asks run one at a time |
+| `line.consult_context` | 8192 | the context a short ask is counted at in the doctor's memory projection |
+| `line.budgets.<stage>` | recorded medians doubled | `wall_s` and `tokens` a stage is expected to cost |
+| `line.home_repo` | the checkout's remote | where fix cards are built |
+| `line.transient_retries` | 2 | retries of a transient block per signature |
+
 ## Automatic pickup (launchd)
 
-`task story:tick` is one beat, by hand: it builds the top issue of the intake query (the project's *To Do* issues by
-rank, or `story.jira.jql`), unless a story is already in flight, the engine is down or GitHub does not answer.
-`task story:launchd:install` renders `docs/integrations/story-tick.plist` with this checkout's path and your home,
-writes it to `~/Library/LaunchAgents/dev.airlie.story-tick.plist` and loads it; the agent then runs the beat every
-15 minutes (log: `~/.local/state/airlie/story-tick.log`). `task story:launchd:uninstall` unloads and removes it.
+`task line:tick` is one beat of the line (above), by hand; with a Jira board it builds the top issue of the intake
+query (the project's *To Do* issues by rank, or `story.jira.jql`) in the build lane, unless a story is already in
+flight, the engine is down or GitHub does not answer. `task line:launchd:install` renders
+`docs/integrations/line-tick.plist` with this checkout's path and your home, writes it to
+`~/Library/LaunchAgents/dev.airlie.line-tick.plist` and loads it (taking out the older `dev.airlie.story-tick`
+agent if it is there); the agent then runs the beat every 15 minutes (log: `~/.local/state/airlie/line-tick.log`).
+`task line:launchd:uninstall` unloads and removes it. `task story:tick` still works for a release: it says it is
+`line:tick` now and runs the same beat.
 
-- **What it runs:** `/bin/zsh -lc 'cd "<this checkout>" && exec uv run --quiet airlie story tick'`, not `task`.
+- **What it runs:** `/bin/zsh -lc 'cd "<this checkout>" && exec uv run --quiet airlie line tick'`, not `task`.
   launchd stops a job with SIGTERM, go-task does not pass that signal on, and uv does: `exec` makes uv the process
   launchd owns, so the signal reaches airlie, which stops the story and kills `gh`'s process group. The login shell
   puts `uv`, `gh` and `git` on the PATH, but only from the files a login shell reads (`~/.zshenv`, `~/.zprofile`,
@@ -654,10 +738,14 @@ Each beat appends one line to the log: a timestamp, then one of
 | the line says | meaning |
 | --- | --- |
 | `idle: no issue matches the intake query` | nothing in *To Do* (or nothing `story.jira.jql` returns) |
-| `busy: a story is in flight` | another `task story`, tick or `task serve` story holds the lock |
+| `busy: the build lane is in use` / `busy: the planning lane is in use` | another `task story`, tick or `task serve` job holds that lane's lock; the other lane went on |
+| `paused` | `task line:pause` is on: the gates and the bookkeeping ran, no job started |
+| `engine mismatch: ...` | the running engine does not carry the story profile's flags; the line names the restart |
+| `started build story AIR-7` | a `task serve` beat handed the job to its jobs registry and returned (`/v1/airlie/jobs`) |
 | `engine down: start it with ...` | the engines are not up |
 | `github down: <why>` | GitHub did not answer, or answered with an error (as the bot: the app's key is missing or not the app's, say); no issue was taken |
 | `no board configured (...)` | no Jira site and project in the environment, this checkout's `.env`, `~/.config/airlie/.env` or `story.jira` |
+| `AIR-7 <title>: planned` | the planning lane finished a story's layers and agreement (a one-shot beat then builds it at once) |
 | `AIR-7 <title>: review` | the story finished: PRs open, the issue in *In Review* |
 | `AIR-7 <title>: blocked (<reason>)` | the story stopped; see *When a story stops* |
 | `AIR-7 <title>: cannot start (...)` | the story could not be placed (its label or checkout) or opened; set aside (below) |
@@ -736,7 +824,7 @@ What changes:
   anything but that repository's `https://github.com/` URL, before a token is minted (as you, the pin and the
   check are the same, and any of GitHub's forms of the URL passes: *What stops a merge*). Until the story has
   published, a later run that finds the remote naming another repository, or none, cannot open the story, and
-  `task story:tick` sets the issue aside (*Blocked*, with the reason).
+  `task line:tick` sets the issue aside (*Blocked*, with the reason).
 - **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
   its tokens, from merging. A private repository on GitHub Free cannot have one: there the bot could merge, and the
   only guard is that airlie has no code that merges.
@@ -791,7 +879,7 @@ What planted repository configuration can still do during a publish step:
   the same checkout, is refused at the next step when it leads anywhere but the story's repository on github.com:
   neither the story's push nor a later story's trunk fetch (and with it that story's base commit and test gate)
   goes to another repository with your credentials. A rewritten `remote.<name>.url` also keeps the next run from
-  opening the story until it has published (`task story:tick` sets the issue aside), and one on this machine is
+  opening the story until it has published (`task line:tick` sets the issue aside), and one on this machine is
   refused by the transports, so no command it names runs. What is left: where the remote of a written request
   that names no github.com repository points is the repository's to say, within those transports; and settings
   for your remote's exact URL (`http.<url>.sslVerify`, `http.<url>.curloptResolve`) outrank the general ones
@@ -927,7 +1015,7 @@ story that has published). A replay that conflicts or fails the gate blocks the 
 A dependency that has not reached review is a wait, not a stop: `task story -- KEY` on such a story says so and leaves
 it in *To Do*.
 
-**The tick** (`task story:tick`), in order: on every beat, each planned epic's status follows its stories (*doing* once
+**The tick** (`task line:tick`, above), in order: on every beat, each planned epic's status follows its stories (*doing* once
 one is picked, *review* when every story is in review or done, *done* when every story is done, back to *doing* when
 a re-plan adds work); waiting stories whose dependencies are in review (or done) are promoted; a story the line
 blocked is resumed once (below). Then the beat's one piece of work: plan the top approved epic, else re-plan an epic

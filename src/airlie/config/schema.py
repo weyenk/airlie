@@ -591,7 +591,7 @@ class BudgetSpec(Strict):
 
 class LineSpec(Strict):
     """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
-    these two; the scheduler half adds its own."""
+    `home_repo` and `transient_retries`; the scheduler half (P5b) the rest."""
 
     home_repo: str | None = Field(
         default=None,

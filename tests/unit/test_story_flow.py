@@ -732,3 +732,39 @@ def test_a_story_without_a_meeting_has_no_meeting_job_and_the_job_has_a_detail(s
     state_file.write_text(json.dumps(state))
     detail = job_detail(state_dir, KEY, "layers", "meeting")
     assert detail["output"]["agreement"] == {"turns": 4, "proof": []} and "meeting" in detail["input_note"]
+
+
+def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> None:
+    """The row the Vue app draws gains the latest block's class and kind, and the per-stage figures the line
+    recorded (planning-line P5b, D11)."""
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    write_story(tmp_path)
+    plain = story_flow(tmp_path, KEY)
+    assert plain["diagnosis"] is None and plain["budgets"] == {}  # never diagnosed, nothing recorded
+    pack = Pack(
+        key=KEY, n=2, reason="x", stage="layers", layer="02", attempt=1, run_id=None, subtask=None, role=None,
+        stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0, tokens=0,
+        minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None, base_failing=(),
+        diff_stat="", paths=Paths(tmp_path / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        tmp_path,
+        Diagnosis(
+            pack,
+            Classified("process", "hold_trap", "layers", "process:hold_trap:tests", ("x",), "r"),
+            None,
+            "n",
+        ),
+    )
+    stages = tmp_path / "stories" / KEY / "stages"
+    stages.mkdir()
+    (stages / "layer.json").write_text(json.dumps({"tokens": 5000, "wall_s": 900.0, "state": "ok"}))
+    flow = story_flow(tmp_path, KEY)
+    assert flow["diagnosis"] == {
+        "class": "process",
+        "kind": "hold_trap",
+        "signature": "process:hold_trap:tests",
+        "n": 2,
+    }
+    assert flow["budgets"] == {"layer": {"tokens": 5000, "wall_s": 900.0, "state": "ok"}}
