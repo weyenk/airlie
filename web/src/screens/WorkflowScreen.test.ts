@@ -182,3 +182,65 @@ test("another story starts afresh: its default is chosen when its own flow loads
   expect(lastDetailCall()).toEqual(["AIR-18", "layer-02", "build"]);
   expect(w.get("[data-lane][data-node=layer-02] [data-job=build]").attributes("aria-pressed")).toBe("true");
 });
+
+const FAILED_FLOW_SAME = flow([...STAGES, layer("01", "Comment id store", "passed", ["passed", "passed", "passed"]), layer("02", "Comment edit", "failed", ["passed", "failed", "pending"]), layer("03", "More", "running", ["passed", "passed", "running"])]);
+const pressed = (w: Awaited<ReturnType<typeof open>>["w"]) => w.findAll("[data-job][aria-pressed=true]").map((b) => `${b.attributes("data-node")}/${b.attributes("data-job")}`);
+
+test("a pin on a failed default stays across a refresh that has a running job too", async () => {
+  const { w } = await open();
+  api.storyFlow.mockResolvedValue(FAILED_FLOW_SAME);
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(pressed(w)).toEqual(["layer-02/checks"]);
+});
+
+test("the last-passed fallback is not pinned: a later failure takes the view", async () => {
+  const { w } = await open("/workflows/AIR-17", DONE);
+  expect(pressed(w)).toEqual(["publish/publish"]);
+  api.storyFlow.mockResolvedValue(FAILED);
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(pressed(w)).toEqual(["layer-02/checks"]);
+});
+
+test("a pinned job a refresh no longer has is dropped and the default is picked again", async () => {
+  const { w } = await open();
+  api.storyFlow.mockResolvedValue(DONE); // the layers were re-planned: layer 02 is gone
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(w.text()).not.toContain("Nothing has run yet.");
+  expect(pressed(w)).toEqual(["publish/publish"]);
+});
+
+test("picking another job shows a loading line, not the previous job, until its detail lands", async () => {
+  const { w } = await open();
+  let land: (d: ReturnType<typeof detail>) => void = () => {};
+  api.storyJob.mockImplementation(() => new Promise((r) => (land = r)));
+  await w.get("[data-lane][data-node=layer-01] [data-job=tests]").trigger("click");
+  await flushPromises();
+  expect(w.text()).toContain("Loading…");
+  expect(w.find("details[data-step]").exists()).toBe(false);
+  land(detail({ node: "layer-01", job: job({ id: "tests", label: "Tests" }) }));
+  await flushPromises();
+  expect(w.text()).not.toContain("Loading…");
+  expect(w.get("section[aria-label=Job] h2").text()).toBe("Layer 01 / Tests");
+});
+
+test("a live refresh of the job on show does not blank it", async () => {
+  const { w } = await open();
+  let land: (d: ReturnType<typeof detail>) => void = () => {};
+  api.storyJob.mockImplementation(() => new Promise((r) => (land = r)));
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(w.text()).not.toContain("Loading…");
+  expect(w.get("section[aria-label=Job] h2").text()).toBe("Layer 02 / checks");
+  land(detail({ node: "layer-02", job: job({ id: "checks", label: "checks" }) }));
+});
+
+test("a live status line outside the job names what is on show", async () => {
+  const { w } = await open();
+  expect(w.get("[aria-live=polite]").text()).toBe("Layer 02 / checks: passed");
+  await w.get("[data-lane][data-node=layer-01] [data-job=tests]").trigger("click");
+  await flushPromises();
+  expect(w.get("[aria-live=polite]").text()).toBe("Layer 01 / tests: passed");
+});

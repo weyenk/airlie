@@ -50,10 +50,8 @@ test("a running job with nothing yet says the output comes at the end; an ended 
   expect(show().text()).toContain("Nothing recorded.");
 });
 
-test("only a small status line is a live region, not the whole job", () => {
-  const w = show();
-  expect(w.get("section").attributes("aria-live")).toBeUndefined();
-  expect(w.get("[aria-live=polite]").text()).toBe("Layer 02 / Build: passed");
+test("the job is not itself a live region", () => {
+  expect(show().get("section").attributes("aria-live")).toBeUndefined();
 });
 
 test("the steps are listed with their count", () => {

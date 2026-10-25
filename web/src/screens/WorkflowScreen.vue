@@ -37,40 +37,46 @@ const running = liveResource(["stories", "runs", "jobs"], listRunning);
 
 const nodesOfThisStory = computed(() => (flow.data.value?.key === key.value ? flow.data.value.nodes : []));
 const jobsOf = (nodes: Flow["nodes"]) => nodes.flatMap((n) => n.jobs.map((j) => [n.id, j.id, j.status] as const));
-/** The failed job, else the running one, else the last that ran. */
-function interesting(nodes: Flow["nodes"]): [string, string] | null {
+type Pick = readonly [string, string, string];
+/** The failed job, else the running one, else the last that passed (with its status). */
+function interesting(nodes: Flow["nodes"]): Pick | null {
   const all = jobsOf(nodes);
-  const pick = all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed");
-  return pick ? [pick[0], pick[1]] : null;
+  return all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed") ?? null;
 }
-// With no job in the address the default is chosen once, when the story's flow first loads, and stays: the view
-// does not jump under a reader as live updates arrive. Another story starts afresh.
+// With no job in the address, a failed or running default is pinned once chosen, so the view does not jump under
+// a reader as live updates arrive. The last-passed fallback is not pinned: it follows the latest job until
+// something fails or runs. A pinned job that a refresh no longer has (layers re-planned) is dropped and re-picked.
+// Another story starts afresh.
 const pinned = ref<[string, string] | null>(null);
 let pinnedFor: string | undefined;
 watch(
   [key, () => flow.data.value],
   ([k, data]) => {
-    if (pinnedFor !== undefined && pinnedFor !== k) {
+    if (pinnedFor !== k) {
       pinned.value = null;
       pinnedFor = undefined;
     }
-    // (a story with nothing run yet has nothing pinned: its first job to run is the default)
-    if ((pinnedFor === undefined || pinned.value === null) && data && data.key === k) {
-      pinned.value = interesting(data.nodes);
-      pinnedFor = k;
-    }
+    if (!data || data.key !== k) return;
+    const have = jobsOf(data.nodes);
+    const p = pinned.value;
+    if (p && have.some((x) => x[0] === p[0] && x[1] === p[1])) return;
+    const pick = interesting(data.nodes);
+    pinned.value = pick && pick[2] !== "passed" ? [pick[0], pick[1]] : null;
+    pinnedFor = k;
   },
   { immediate: true, flush: "sync" },
 );
 
-/** The job open in the view: the one in the address, else the pinned default. */
+/** The job open in the view: the one in the address, else the pinned default, else the last that passed. */
 const selected = computed<[string, string] | null>(() => {
   const all = jobsOf(nodesOfThisStory.value);
   const node = param(route.params.node);
   const job = param(route.params.job);
   if (node && job && all.some((x) => x[0] === node && x[1] === job)) return [node, job];
   const p = pinned.value;
-  return p && all.some((x) => x[0] === p[0] && x[1] === p[1]) ? p : null;
+  if (p && all.some((x) => x[0] === p[0] && x[1] === p[1])) return p;
+  const fallback = interesting(nodesOfThisStory.value);
+  return fallback ? [fallback[0], fallback[1]] : null;
 });
 
 const detail = liveResource(["stories", "runs"], async () => (selected.value ? storyJob(key.value, selected.value[0], selected.value[1]) : null));
@@ -78,7 +84,8 @@ watch(
   () => [key.value, ...(selected.value ?? [])].join("/"),
   () => void detail.refresh(),
 );
-// the detail on show is the one for the selection (the previous one stays until the new one lands)
+// only the detail of the selected job is shown (a live refresh of it replaces it in place); another job's is never
+// shown under this one, and a loading line stands in until the new one lands
 const shown = computed(() => {
   const d = detail.data.value;
   return d && selected.value && d.node === selected.value[0] && d.job.id === selected.value[1] ? d : null;
@@ -137,7 +144,9 @@ async function stop() {
       <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" @pick="pick" />
 
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
+      <p aria-live="polite" class="sr-only">{{ shown ? `${nodeLabel ? nodeLabel + " / " : ""}${shown.job.label}: ${shown.job.status}` : "" }}</p>
       <JobDetailView v-if="shown" :detail="shown" :node-label="nodeLabel" />
+      <section v-else-if="selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
       <section v-else-if="!selected" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>
     </template>
   </div>
