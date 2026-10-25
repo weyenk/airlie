@@ -5,15 +5,20 @@ did not."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from airlie.board import BoardStore
 from airlie.serve.jobs import read_events
+from airlie.story.costs import queue_hours
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import StoryPlan
+from airlie.story.initiative import Initiative
+from airlie.story.initiative_state import waiting_on
 from airlie.story.model import StoryError
 from airlie.story.state import STAGES
 
@@ -476,6 +481,90 @@ def epic_flow(state_dir: Path, key: str, statuses: Mapping[str, str] | None = No
         "stories": stories,
         "left_out": [k for sid, k in made.items() if sid not in in_plan],
         "replans": [r for r in st.get("replans") or () if isinstance(r, dict)],
+    }
+
+
+def initiative_epic_row(store: BoardStore, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """One epic of an initiative as the app draws it: its draft's id, kind and title, and, once it is a card,
+    its key and board status with the price, the verdict, the mockup pages and the pick, read from the card's
+    own block (what a person may have changed since). An epic not yet carded has `key` None and no price."""
+    key = entry.get("key")
+    row: dict[str, Any] = {
+        "key": key,
+        "id": entry.get("id"),
+        "kind": entry.get("kind"),
+        "title": entry.get("title"),
+        "status": None,
+        "hours": None,
+        "basis": None,
+        "revised": None,
+        "actual": None,
+        "verdict": (entry.get("viability") or {}).get("verdict"),
+        "options": [],
+        "picked": None,
+        "depends_on": [],
+    }
+    if not isinstance(key, str):
+        return row
+    try:
+        item = store.get(key)
+    except KeyError:
+        return row
+    row["status"], row["title"] = item.status, item.title
+    try:
+        spec = epic_of(item.description)
+    except StoryError:
+        spec = None
+    if spec is not None:
+        row["depends_on"] = list(spec.depends_on)
+        if spec.estimate is not None:
+            est = spec.estimate
+            row.update(hours=est.hours, basis=est.basis, revised=est.revised, actual=est.actual)
+        if spec.viability is not None:
+            row["verdict"] = spec.viability.verdict
+        if spec.mockups is not None:
+            row["options"], row["picked"] = list(spec.mockups.options), spec.mockups.picked
+    return row
+
+
+def initiative_flow(state_dir: Path, store: BoardStore, key: str) -> dict[str, Any]:
+    """An initiative as the web app draws it (D9 of the specs phase): the dialogue with the person, product's
+    assumptions, every consultation, the epics (draft, card, price, verdict, mockup pages, pick) and the
+    hours already queued, with what the initiative waits on (`waiting_on`: the person or the line) and the
+    pending question. The epics' statuses and prices are the board's, read now. StoryNotFound for an
+    initiative with no record or a damaged one."""
+    f = state_dir / "initiatives" / _name(key, "initiative") / "state.json"
+    if not f.is_file():
+        raise StoryNotFound(f"no initiative '{key}'")
+    try:
+        st = json.loads(f.read_text())
+        qa = [q for q in st.get("qa") or () if isinstance(q, dict)]
+        stage = str(st["stage"])
+        epics = [e for e in st.get("epics") or () if isinstance(e, dict)]
+        consultations = [c for c in st.get("consultations") or () if isinstance(c, dict)]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise StoryNotFound(f"initiative '{key}': state.json is damaged") from None
+    pending = qa[-1] if qa and qa[-1].get("a") is None else None
+    budget = None
+    with contextlib.suppress(KeyError, StoryError):
+        budget = Initiative.from_item(store.get(key)).budget_hours
+    card = st["card"] if isinstance(st.get("card"), dict) else {}
+    return {
+        "key": key,
+        "title": card.get("title"),
+        "stage": stage,
+        "blocked": st.get("blocked"),
+        "waiting_on": waiting_on(stage, pending is not None),
+        "question": pending.get("q") if pending else None,
+        "budget_hours": budget,
+        "summary": st.get("summary") or "",
+        "qa": [{k: q.get(k) for k in ("q", "a", "asked_at", "answered_at")} for q in qa],
+        "assumptions": [str(a) for a in st.get("assumptions") or ()],
+        "consultations": [
+            {k: c.get(k) for k in ("seat", "question", "answer", "seconds", "round")} for c in consultations
+        ],
+        "epics": [initiative_epic_row(store, e) for e in epics],
+        "queue_hours": queue_hours(store, state_dir),
     }
 
 

@@ -488,3 +488,155 @@ def test_an_epic_not_planned_yet_has_no_stories(tmp_path: Path) -> None:
     flow = epic_flow(tmp_path, "AIR-1")
     assert flow["stories"] == [] and flow["blocked"] == "the epic has no closing JSON block"
     assert flow["summary"] is None
+
+
+# ---- an initiative as the app draws it (D9 of the specs phase, P4 of the planning line, 2026-10-25) ----
+
+
+def delivered_initiative(tmp_path: Path) -> tuple[Any, str, str, str]:
+    """A board with an initiative whose core and extension are carded (the core with three mockup pages, one
+    picked) and its record on disk: returns the store, the initiative's key and the two epics' keys."""
+    from airlie.board import BoardStore
+    from airlie.story.costs import Estimate
+    from airlie.story.epic import EpicCriterion, EpicSpec, Mockups, Viability, with_block
+
+    store = BoardStore(tmp_path / "board.sqlite")
+    init = store.create(
+        level="initiative", title="Linear feel", description="Faster.", labels=["repo:o/r", "budget:20h"]
+    ).key
+    urls = tuple(f"/v1/airlie/initiatives/{init}/mockups/E1/option-{n}.html" for n in (1, 3))
+    core_spec = EpicSpec(
+        ("o/r",),
+        (EpicCriterion("EC1", "a card moves"),),
+        (),
+        urls,
+        init,
+        "core",
+        estimate=Estimate(5.0, "1 M at 5.0 h (default)", "2026-10-25T00:00:00Z", revised=6.0),
+        viability=Viability("risky", ("old store",)),
+        mockups=Mockups(urls, 3),
+    )
+    core = store.create(
+        level="epic",
+        title="Fast board",
+        parent=init,
+        description=with_block("# Fast board\n", core_spec),
+        labels=[f"initiative:{init}"],
+    ).key
+    ext_spec = EpicSpec(
+        ("o/r",),
+        (EpicCriterion("EC1", "cards are cropped"),),
+        initiative=init,
+        kind="extension",
+        depends_on=(core,),
+        estimate=Estimate(2.0, "2 S at 1.0 h (default)", "2026-10-25T00:00:00Z"),
+        viability=Viability("viable", ("small",)),
+    )
+    ext = store.create(
+        level="epic",
+        title="Crops",
+        parent=init,
+        description=with_block("# Crops\n", ext_spec),
+        labels=[f"initiative:{init}", f"after:{core}"],
+    ).key
+    store.update(core, status="approved")  # approved and not done: its hours are in the queue
+    store.update(ext, status="review")
+    folder = tmp_path / "initiatives" / init
+    folder.mkdir(parents=True)
+    state = {
+        "card": {"key": init, "title": "Linear feel"},
+        "stage": "delivered",
+        "summary": "Make the board fast.",
+        "assumptions": ["one user"],
+        "qa": [
+            {"q": "What is it for?", "asked_at": 1.0, "a": "Speed.", "answered_at": 2.0},
+            {"q": "Who?", "asked_at": 3.0, "a": None, "answered_at": None},
+        ],
+        "consultations": [
+            {"seat": "ux", "question": "How?", "answer": "- keys", "seconds": 12.3, "round": 1, "chars": 6},
+        ],
+        "epics": [
+            {
+                "id": "E1",
+                "key": core,
+                "kind": "core",
+                "title": "Fast board",
+                "viability": {"verdict": "risky"},
+            },
+            {"id": "E2", "key": ext, "kind": "extension", "title": "Crops"},
+            {"id": "E3", "kind": "extension", "title": "Not carded yet"},
+        ],
+    }
+    (folder / "state.json").write_text(json.dumps(state))
+    epics_dir = tmp_path / "epics" / core
+    epics_dir.mkdir(parents=True)
+    (epics_dir / "state.json").write_text(
+        json.dumps({"estimate": {"hours": 5.0, "basis": "b", "at": "t", "revised": 6.0}})
+    )
+    return store, init, core, ext
+
+
+def test_the_initiative_flow_shows_the_dialogue_the_consultations_the_epics_and_the_queue(
+    tmp_path: Path,
+) -> None:
+    from airlie.serve.flow import initiative_flow
+
+    store, init, core, ext = delivered_initiative(tmp_path)
+    flow = initiative_flow(tmp_path, store, init)
+    assert (flow["key"], flow["title"], flow["stage"], flow["blocked"]) == (
+        init,
+        "Linear feel",
+        "delivered",
+        None,
+    )
+    assert flow["waiting_on"] == "person" and flow["question"] == "Who?" and flow["budget_hours"] == 20.0
+    assert flow["summary"] == "Make the board fast." and flow["assumptions"] == ["one user"]
+    assert flow["qa"][0] == {"q": "What is it for?", "a": "Speed.", "asked_at": 1.0, "answered_at": 2.0}
+    assert flow["qa"][1]["a"] is None
+    assert flow["consultations"] == [
+        {"seat": "ux", "question": "How?", "answer": "- keys", "seconds": 12.3, "round": 1}
+    ]
+    first, second, third = flow["epics"]
+    assert first == {
+        "key": core,
+        "id": "E1",
+        "kind": "core",
+        "title": "Fast board",
+        "status": "approved",
+        "hours": 5.0,
+        "basis": "1 M at 5.0 h (default)",
+        "revised": 6.0,
+        "actual": None,
+        "verdict": "risky",
+        "options": [
+            f"/v1/airlie/initiatives/{init}/mockups/E1/option-1.html",
+            f"/v1/airlie/initiatives/{init}/mockups/E1/option-3.html",
+        ],
+        "picked": 3,
+        "depends_on": [],
+    }
+    assert second["key"] == ext and second["status"] == "review" and second["depends_on"] == [core]
+    assert second["hours"] == 2.0 and second["options"] == [] and second["picked"] is None
+    assert third["key"] is None and third["status"] is None and third["hours"] is None  # drafted, not carded
+    assert flow["queue_hours"] == 6.0  # the approved core, at its revised price, none of it done
+    working = initiative_flow(tmp_path, store, init)
+    assert working["waiting_on"] == "person"
+
+
+def test_an_initiative_flow_names_what_the_line_works_on_and_what_is_not_there(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+    from airlie.serve.flow import initiative_flow
+
+    store = BoardStore(tmp_path / "board.sqlite")
+    folder = tmp_path / "initiatives" / "AIR-7"
+    folder.mkdir(parents=True)
+    (folder / "state.json").write_text(json.dumps({"card": {"title": "t"}, "stage": "imagining", "qa": []}))
+    flow = initiative_flow(tmp_path, store, "AIR-7")
+    assert flow["waiting_on"] == "line" and flow["question"] is None and flow["epics"] == []
+    assert flow["budget_hours"] is None  # the card is not on this board
+    (folder / "state.json").write_text("{")
+    with pytest.raises(StoryNotFound, match="damaged"):
+        initiative_flow(tmp_path, store, "AIR-7")
+    for key in ("AIR-99", "../x", ""):
+        with pytest.raises(StoryNotFound):
+            initiative_flow(tmp_path, store, key)

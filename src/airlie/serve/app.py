@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -32,9 +33,9 @@ from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
-from airlie.serve.flow import StoryNotFound, epic_flow, job_detail, story_flow
+from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
-from airlie.serve.listing import epics, recent_runs, repo_names, repos, stories, story_page
+from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
@@ -43,7 +44,8 @@ from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.epic import REPOSITORY
-from airlie.story.model import StoryBusy, StoryRunning, StorySetupError
+from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
+from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
 from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
@@ -187,6 +189,23 @@ class InitiativeRequest(BaseModel):
             if not REPOSITORY.fullmatch(r) or ".." in r.split("/"):
                 raise ValueError(f"{r!r} is not owner/name")
         return list(dict.fromkeys(v))
+
+
+class PickRequest(BaseModel):
+    """A person's pick among an epic's mockup pages (D4): the option's number, 1 to 9."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    option: int = Field(ge=1, le=9)
+
+
+MOCKUP_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    "X-Content-Type-Options": "nosniff",
+}
+"""What a mockup page is served with (D13): a model wrote it and the app shows it in a sandboxed frame, so the
+browser is told to run and fetch nothing, as the page check already holds the page to."""
+_EPIC_ID = re.compile(r"E[0-9]+", re.ASCII)
 
 
 def _initiative_job_factory() -> Callable[..., Any]:
@@ -764,6 +783,53 @@ def create_app(
             return epic_flow(state, key, statuses)
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/initiatives")
+    async def initiative_list() -> dict[str, Any]:
+        """The initiatives the specs phase has a record for: stage, epics, hours, what each waits on."""
+        return {"initiatives": initiatives(cfg.observability.state_dir.expanduser(), board)}
+
+    @app.get("/v1/airlie/initiatives/{key}/flow")
+    async def initiative_flow_get(key: str) -> dict[str, Any]:
+        """One initiative: the dialogue, the consultations, the epics with their prices, verdicts and mockup
+        pages, the hours already queued, and what it waits on."""
+        try:
+            return initiative_flow(cfg.observability.state_dir.expanduser(), board, key)
+        except StoryNotFound as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/initiatives/{key}/mockups/{epic}/{file}")
+    async def mockup_page(key: str, epic: str, file: str) -> Response:
+        """A mockup page, as a file, locked down: only `option-<1-9>.html` of an epic id under the
+        initiative's own directory is ever served (anything else is a 404), with a policy that lets the page
+        run and fetch nothing."""
+        if not OPTION_FILE.fullmatch(file) or not _EPIC_ID.fullmatch(epic):
+            raise HTTPException(404, "no such mockup")
+        try:
+            folder = mockup_dir(cfg.observability.state_dir.expanduser(), key, epic)
+        except ValueError:
+            raise HTTPException(404, "no such mockup") from None
+        page = folder / file
+        if page.is_symlink() or not page.is_file():
+            raise HTTPException(404, "no such mockup")
+        return FileResponse(page, media_type="text/html", headers=MOCKUP_HEADERS)
+
+    @app.post("/v1/airlie/epics/{key}/mockup")
+    async def pick_mockup(key: str, req: PickRequest) -> dict[str, Any]:
+        """A person's pick (D4): written into the epic card's block and label and the initiative's log. 404
+        for an item that is no epic, 400 for an option the epic has no page for."""
+        try:
+            item = board.get(key)
+        except KeyError:
+            raise HTTPException(404, f"no item {key} on the board") from None
+        if item.level != "epic":
+            raise HTTPException(404, f"{key} is not an epic")
+        try:
+            spec = record_pick(board, cfg.observability.state_dir.expanduser(), key, req.option)
+        except StoryError as e:
+            raise HTTPException(400, str(e)) from e
+        feed.publish("board", key)
+        return spec.to_dict()
 
     @app.get("/v1/airlie/repos")
     async def repo_list() -> dict[str, Any]:

@@ -867,6 +867,101 @@ pipeline stage.
 | `story.plan.max_rounds` | 3 | most rounds an epic is planned in |
 | `story.resume_attempts` | 1 | times a stopped story is resumed before its epic is re-planned |
 
+## Initiatives: a loose ask becomes priced epics
+
+One stage above an epic, the line takes a **loose ask** ("I want the board to feel like Linear", "airlie should run
+overnight without me") and, the way `superpowers:brainstorming` does for a person working with Claude, turns it into a
+**core epic and optional extensions**, each a spec a planner can work from, each priced in machine hours from the
+ledger with the arithmetic shown, with a viability verdict and, for web work, three mockup options to pick from (the
+specs phase, P4 of the planning line; the design is `docs/superpowers/specs/2026-10-24-specs-phase-design.md`). Product
+runs it and the specialists are consulted; nothing here approves an epic. The decision is yours: does the compute time
+justify itself over what else is queued. Like epics it is on airlie's own board only (`story.board: jira` logs one
+line and does nothing), and it is **off** until `story.specs.enabled` is true (`airlie.yaml` turns it on).
+
+**The card.** A board item at level `initiative`: your paragraph as the description (Markdown; a file attached in
+the Chat is linked by its `/v1/airlie/uploads/<id>` URL and is read into the briefs: text and PDF as text, pictures
+shown to ux and design), one `repo:<owner>/<name>` label per repository it concerns, and an optional `budget:<hours>h`
+label, the ceiling for the core epic. It is ready when you set it *approved*. Four ways to make one: the Board screen;
+`task initiative -- --text "..." --repo owner/name [--repo ...] [--budget HOURS] [--title TEXT]` (or `--file ask.md`),
+which creates and approves it and runs the first turn; the Chat's `/initiative` skill, which turns the conversation
+into an initiative text you edit and start; and the OpenCode chief's `airlie_initiative` and `airlie_answer` tools.
+Text that says "no questions" (or "skip the questions") gets none.
+
+**The questions.** Product asks you up to five questions (`story.specs.max_questions`), one at a time, as **comments
+on the card** by `product`, only what the code and the READMEs cannot answer; the card sits in *review* between a
+question and your answer. Answer in a comment ("go" or "skip" alone ends the questions). At the cap product states its
+assumptions and goes on.
+
+**Your answer runs the next turn at once**: the app, the chief's `airlie_answer` and `task initiative:turn -- AIR-40`
+post the comment and call `POST /v1/airlie/initiatives/{key}/turn`, a job (`initiative-<key>`) that takes the
+one-story lock. While a story is in flight it answers **409** `{"error": "busy: a story is in flight; the tick picks
+AIR-40 up within 15 minutes"}`; the comment stays on the card and the **tick** runs that turn on its next beat (in this
+order: an answered question, a comment on an epic, the oldest approved initiative with no record, then the epic and
+story steps). `POST /v1/airlie/initiatives` `{title?, text, repos: [owner/name], budget_hours?}` makes, approves and
+starts a card (`202 {key, job_id}`; a busy line answers `202` with `job_id: null` and `waiting`, and the tick starts it).
+The turn route also takes the key of an epic of the phase: a comment on it, a pick or one revision, now.
+
+**The imagining.** Product leads in rounds (`story.specs.max_rounds`): it asks seats (`story.specs.consultable`:
+architect, ux, design, security, docs, research) up to `max_asks_per_round` questions, the pipeline runs them side by
+side, read-only (`consult_steps` steps, answers clipped to `consult_chars`), and hands the answers back as one
+follow-up; `max_consultations` in all, and the last round demands the epics. The architect's survey of each repository
+runs unasked beside the first round. For a screen, product commissions **mockups**: ux names `mockup_options` (3)
+directions that differ in flow or layout, design draws one self-contained page per direction; a page with a
+`<script>`, `<link>`, `@import`, frame, event handler or any URL that is not `data:` goes back once and is then
+dropped, and the pages that pass are served at
+`GET /v1/airlie/initiatives/{key}/mockups/{epic}/{option-N.html}` with `Content-Security-Policy: default-src 'none';
+style-src 'unsafe-inline'; img-src data:`. A repository with `docs/design/look.md` has mockups drawn in its own look;
+otherwise in airlie's tokens (`specs-mockup-look`).
+
+**The epics.** Product's reply is the epics (`EPICS_CONTRACT` in `story/initiative.py`): exactly one core and zero or
+more extensions that may depend on the core, each with why, goals, non-goals, anti-goals, decisions with their reasons,
+constraints, criteria, a story sketch with sizes S/M/L, risks, a viability verdict (`viable`, `risky`, `not_viable`: a
+not-viable core is written and marked, never hidden) and what is left open. A core priced over your budget goes back
+once, then stands with the overrun named. The architect then reads each epic as the planner it will meet; its
+questions go back to product in one round, the rest land in the epic's *Open for you*. Each epic becomes a card
+under the initiative, **core first, born in review** (the hours decision is yours), with its document, its closing
+JSON block and its price; the initiative moves to *review* with a delivery note (each epic's key, kind, title, hours
+and verdict, the hours queued ahead, your budget).
+
+**The price** (`story/costs.py`): the median wall-clock of the published stories of each size (`S`, `M`, `L`, from the
+card's size or the layers built), at least `min_samples` of a size, else the overall median scaled by `size_scale`,
+else `default_hours`; times the **calibration** (actual over estimated hours of finished epics, 1.0 until three have
+finished). The card shows it as one line you can check, for example `3 S at 1.1 h (median of 7), 2 M at 5.0 h
+(default), x1.2 calibration (4 epics)`. When the epic is planned the price is revised from the real stories
+(`estimate.revised`); when it is done it is closed (`estimate.actual`), and a miss of more than 1.5x or less than
+0.5x is an `estimate_missed` event and a comment on the initiative.
+
+**What you do.** Approve an epic (the tick plans it into stories), pick a mockup (a pick button, or a comment such as
+"option 2"; an approved epic with options and no pick goes back to review with a note and is never planned), park an
+extension in *todo*, or comment: a comment is **one revision** by product (the card is rewritten; new mockup pages are
+drawn when the comment is about the screens), and a second comment waits for the control surface. An extension that
+depends on the core waits, approved, with a note until the core is in *review* or *done*. The initiative is *done*
+when every epic under it is done or parked.
+
+**The record.** `initiatives/<key>/state.json` and `events.jsonl` under the state dir: the stage (`questions`,
+`imagining`, `reading`, `delivered`, `blocked`), the Q&A, every consultation, the surveys, the mockup directions and
+files, the epics as written and priced; events `initiative_start`, `question`, `answer`, `questions_done`, `survey_done`,
+`consult_round`, `consult`, `mockups`, `mockup_dropped`, `epics_drafted`, `epics_returned`, `planner_read`, `epics`,
+`pick`, `revision`, `estimate_missed`, `blocked`. `GET /v1/airlie/initiatives` lists them and
+`GET /v1/airlie/initiatives/{key}/flow` draws one (the dialogue, the consultations, the epics with price, basis,
+verdict, options and pick, the queue's hours, and what it waits on); `POST /v1/airlie/epics/{key}/mockup`
+`{"option": 2}` records a pick.
+
+| setting | default | what |
+| --- | --- | --- |
+| `story.specs.enabled` | false (`airlie.yaml`: true) | the specs phase on |
+| `story.specs.product_role` | `product` | the role that runs it |
+| `story.specs.consultable` | architect, ux, design, security, docs, research | the seats product may ask |
+| `story.specs.max_questions` | 5 | most questions asked of you |
+| `story.specs.max_rounds` / `max_asks_per_round` / `max_consultations` | 3 / 4 / 8 | rounds, asks in a round, consultations in all |
+| `story.specs.consult_steps` / `consult_chars` | 8 / 4000 | a seat's steps; characters of its answer kept |
+| `story.specs.product_steps` / `read_steps` | 12 / 6 | product's steps a turn; the planner's read |
+| `story.specs.mockup_options` | 3 | directions and pages per screen |
+| `story.specs.revisions` | 1 | revisions a comment on an epic gets |
+| `story.specs.attempts` | 2 | tries at a reply that parses |
+| `story.specs.min_samples` | 3 | published stories of a size before their median prices it |
+| `story.specs.default_hours` / `size_scale` | S 1 M 5 L 8 / S 0.6 M 1 L 1.8 | the price with no ledger; a thin size's share of the overall median |
+
 ## The supervisor (trial)
 
 When a layer gets into trouble, Muse (the reviewer model, as the `supervisor` role) reads the trace and says

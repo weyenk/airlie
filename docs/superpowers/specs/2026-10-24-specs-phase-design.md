@@ -1,6 +1,7 @@
 # The specs phase: initiative to epics (P4 of the planning line)
 
-Status: agreed with Noah on 2026-10-25 (its decisions N1 to N7 are his). Plan:
+Status: agreed with Noah on 2026-10-25 (its decisions N1 to N7 are his); built 2026-10-25 on the P3 branch (PR
+opened, unmerged; one real initiative run is still to do). Plan:
 `docs/superpowers/plans/2026-10-25-specs-phase.md`. Parent: `2026-10-24-planning-line-design.md`
 (D6, N1, N4, and its sub-plan P4). Reads the epic in the shape P3 fixed (`2026-10-24-plans-phase-design.md`
 D1) and extends it. Its plan follows once this is agreed.
