@@ -14,11 +14,11 @@ const emit = defineEmits<{ close: []; "close-auto-focus": [event: Event]; "open-
 <template>
   <DialogRoot :open="true" @update:open="(open: boolean) => !open && emit('close')">
     <DialogPortal>
-      <DialogOverlay data-overlay class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-10 max-[1023px]:p-0">
+      <DialogOverlay data-overlay class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-overlay px-4 py-10 max-[1023px]:p-0">
         <DialogContent
           aria-modal="true"
           :aria-describedby="undefined"
-          class="relative w-[760px] max-w-full rounded-[14px] border bg-card text-card-foreground shadow-[0_20px_50px_rgba(0,0,0,.4)] outline-none max-[1023px]:fixed max-[1023px]:inset-0 max-[1023px]:w-full max-[1023px]:max-w-none max-[1023px]:overflow-y-auto max-[1023px]:rounded-none max-[1023px]:border-0"
+          class="relative w-[760px] max-w-full rounded-[14px] border bg-card text-card-foreground shadow-modal outline-none max-[1023px]:fixed max-[1023px]:inset-0 max-[1023px]:w-full max-[1023px]:max-w-none max-[1023px]:overflow-y-auto max-[1023px]:rounded-none max-[1023px]:border-0"
           @pointer-down-outside="
             (e: CustomEvent<{ originalEvent: PointerEvent }>) => {
               const o = e.detail.originalEvent;

@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
 import BoardScreen from "./BoardScreen.vue";
 import { DRAG_TYPE } from "./board/statuses";
-import { item } from "./board/fixtures";
+import { item } from "@/test-utils/board-fixtures";
 
 const api = vi.hoisted(() => ({
   listItems: vi.fn(),

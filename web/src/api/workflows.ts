@@ -51,16 +51,6 @@ export type JobRow = {
   error?: string;
 };
 
-export type RunRow = {
-  id: string;
-  goal: string | null;
-  repo: string | null;
-  kind: "run" | "plan";
-  started: number | null;
-  ok: boolean | null;
-  wall_ms: number | null;
-};
-
 export type JobStart = { job_id: string; kind: "story" | "run" | "plan" };
 
 export type FlowStatus = "pending" | "running" | "passed" | "failed" | "skipped";
@@ -164,10 +154,6 @@ export async function listRunning(): Promise<RunningRow[]> {
 
 export async function listJobs(): Promise<JobRow[]> {
   return (await request<{ jobs: JobRow[] }>("/v1/airlie/jobs")).jobs;
-}
-
-export async function listRuns(limit = 50): Promise<RunRow[]> {
-  return (await request<{ runs: RunRow[] }>(`/v1/airlie/runs${queryString({ limit })}`)).runs;
 }
 
 const seg = encodeURIComponent;

@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { layer, stage } from "./fixtures";
+import { layer, stage } from "@/test-utils/workflow-fixtures";
 import Pipeline from "./Pipeline.vue";
 
 const STAGES_ONLY = [stage("intake", "Intake"), stage("refine", "Refine", "running"), stage("survey", "Survey", "skipped"), stage("layers", "Plan layers", "pending"), stage("publish", "Publish", "pending"), stage("review", "Review", "pending")];

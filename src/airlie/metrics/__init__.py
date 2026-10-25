@@ -2,10 +2,13 @@
 
 Reads state_dir/runs/*/events.jsonl and state_dir/stories/*/events.jsonl directly (no cache in v1:
 the files stay the source of truth) and answers summary() and series() over a time range, split
-by any slice field (model, role, topology, story). A step event written before the prefill split
-(only gen_ms, no prefill_ms, no model/role/topology) aggregates without exception or dropped row:
-its prefill renders as 'unknown' (None in the dict) and missing slice values bucket under
-'unknown'.
+by a slice: the step event's own fields model, role and topology (and story), or the two the API
+names differently, task and agent. The Metrics tab offers five slices: role, model, topology, task
+and agent. "task" is the run a step belongs to (its run id) and "agent" is the team inside that run
+that took the step (its team id, i.e. a branch or subtask id, not an agent identity). A step event
+written before the prefill split (only gen_ms, no prefill_ms, no model/role/topology) aggregates
+without exception or dropped row: its prefill renders as 'unknown' (None in the dict) and missing
+slice values bucket under 'unknown'.
 """
 
 from __future__ import annotations

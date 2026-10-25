@@ -10,10 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/composables/useConfirm";
 import { ago, initials, passkeys, shortDate } from "@/lib/people";
+import { useBootstrapStore } from "@/stores/bootstrap";
 import { usePeopleStore } from "@/stores/people";
 import { useSessionStore } from "@/stores/session";
 
 const people = usePeopleStore();
+const bootstrap = useBootstrapStore();
+people.attach();
 const session = useSessionStore();
 const { confirm } = useConfirm();
 
@@ -56,7 +59,7 @@ async function invite(): Promise<void> {
   const first = people.loaded && people.users.length === 0;
   busy.value = true;
   await guarded(inviteError, "Only admins can invite.", async () => {
-    const out = await createInvite({ name: name.value.trim(), role: role.value, login: login.value.trim() || null });
+    const out = await createInvite({ name: name.value.trim(), role: role.value, login: login.value.trim() || null }, { quiet401: bootstrap.open });
     show(out);
     name.value = "";
     login.value = "";
@@ -71,14 +74,14 @@ async function invite(): Promise<void> {
 }
 
 async function newLink(u: User): Promise<void> {
-  await guarded(listError, "Only admins can make links.", async () => show(await inviteAgain(u.id)));
+  await guarded(listError, "Only admins can make links.", async () => show(await inviteAgain(u.id, { quiet401: bootstrap.open })));
 }
 
 async function revoke(u: User): Promise<void> {
   const ok = await confirm(`Remove ${u.name}? Their passkeys and sessions end now.`, { title: `Revoke ${u.name}?`, confirmLabel: "Revoke" });
   if (!ok) return;
   await guarded(listError, "Only admins can revoke.", async () => {
-    await deleteUser(u.id);
+    await deleteUser(u.id, { quiet401: bootstrap.open });
     if (link.value?.userId === u.id) link.value = null; // their link is no good now
     await people.refresh();
   });

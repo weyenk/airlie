@@ -13,22 +13,30 @@ import { liveResource } from "./live";
  * The window follows the newest list only: an older answer that arrives late cannot open or close it. */
 export const usePeopleStore = defineStore("people", () => {
   const bootstrap = useBootstrapStore();
+  // the window belongs to the Admin page: only while it is mounted can the list open (or close) it
+  let attached = false;
   const users = liveResource(
     "users",
     () => listUsers({ quiet401: bootstrap.open }),
     undefined,
     (list: User[]) => {
-      bootstrap.open = list.length === 0;
+      if (attached) bootstrap.open = list.length === 0;
     },
   );
 
-  /** The first person was just invited: stop treating a 401 as a sign-out until the list has people again. */
-  function handOver(): void {
-    bootstrap.open = true;
+  /** The people screen is up: from now on an empty list opens the window. Call before the first list arrives. */
+  function attach(): void {
+    attached = true;
   }
 
-  /** The people screen is gone: the window ends with it (a 401 is a sign-out again). */
+  /** The first person was just invited: stop treating a 401 as a sign-out until the list has people again. */
+  function handOver(): void {
+    if (attached) bootstrap.open = true;
+  }
+
+  /** The people screen is gone: the window ends with it, and the list cannot reopen it (a 401 is a sign-out again). */
   function closeWindow(): void {
+    attached = false;
     bootstrap.open = false;
   }
 
@@ -37,6 +45,7 @@ export const usePeopleStore = defineStore("people", () => {
     loaded: computed(() => users.data.value !== undefined),
     error: users.error,
     refresh: users.refresh,
+    attach,
     handOver,
     closeWindow,
   };

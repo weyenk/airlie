@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useMediaQuery } from "@vueuse/core";
 import { computed } from "vue";
+import { PHONE_QUERY } from "@/lib/breakpoints";
 import type { FlowNode } from "@/api/workflows";
 import { briefSpan } from "./format";
 import JobBox from "./JobBox.vue";
@@ -17,7 +18,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ pick: [node: string, job: string] }>();
 
-const phone = useMediaQuery("(max-width: 639px)");
+const phone = useMediaQuery(PHONE_QUERY);
 
 type Item = { kind: "stage"; node: FlowNode } | { kind: "lanes"; nodes: FlowNode[] };
 /** The nodes in order, the layers gathered into one block of lanes; a stage that never ran is left out. */

@@ -14,10 +14,6 @@ export type User = { id: string; name: string; login: string | null; role: Role;
 /** A link to hand a person (`/#/join/<token>`), when it lapses (epoch seconds), and who it is for. */
 export type Invite = { url: string; expires_at: number; user: User };
 
-export function me(): Promise<Me> {
-  return request<Me>("/v1/auth/me", { quiet401: true });
-}
-
 /** Admin only. */
 export function listUsers(init: { quiet401?: boolean } = {}): Promise<User[]> {
   return request<User[]>("/v1/auth/users", init);
@@ -37,21 +33,17 @@ export async function peekInvite(invite: string): Promise<string> {
   return String(options.user?.displayName || options.user?.name || "");
 }
 
-export function createInvite(body: { name: string; role: Role; login?: string | null }): Promise<Invite> {
-  return request<Invite>("/v1/auth/invites", { method: "POST", body });
+export function createInvite(body: { name: string; role: Role; login?: string | null }, init: { quiet401?: boolean } = {}): Promise<Invite> {
+  return request<Invite>("/v1/auth/invites", { method: "POST", body, ...init });
 }
 
 /** A fresh link for an existing person: a lapsed invite, or a passkey on another device. */
-export function inviteAgain(userId: string): Promise<Invite> {
-  return request<Invite>(`/v1/auth/users/${encodeURIComponent(userId)}/invites`, { method: "POST" });
+export function inviteAgain(userId: string, init: { quiet401?: boolean } = {}): Promise<Invite> {
+  return request<Invite>(`/v1/auth/users/${encodeURIComponent(userId)}/invites`, { method: "POST", ...init });
 }
 
-export function deleteUser(userId: string): Promise<void> {
-  return request<void>(`/v1/auth/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
-}
-
-export function logout(): Promise<void> {
-  return request<void>("/v1/auth/logout", { method: "POST", quiet401: true });
+export function deleteUser(userId: string, init: { quiet401?: boolean } = {}): Promise<void> {
+  return request<void>(`/v1/auth/users/${encodeURIComponent(userId)}`, { method: "DELETE", ...init });
 }
 
 // ---- passkeys (WebAuthn) ----

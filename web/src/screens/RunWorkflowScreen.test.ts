@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import { ApiError } from "@/api";
 import type { Flow, FlowNode } from "@/api/workflows";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, flow, job, stage } from "./workflow/fixtures";
+import { detail, flow, job, stage } from "@/test-utils/workflow-fixtures";
 import RunWorkflowScreen from "./RunWorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ runFlow: vi.fn(), runJob: vi.fn(), cancelJob: vi.fn(), startRun: vi.fn() }));

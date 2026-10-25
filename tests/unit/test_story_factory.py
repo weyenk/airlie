@@ -1414,7 +1414,7 @@ async def test_a_written_request_still_takes_a_checkout_path(
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
     assert factory.given_repo(cfg, str(repo)) == repo
-    assert factory.given_repo(cfg, "~/code/app") == Path("~/code/app")
+    assert factory.given_repo(cfg, "~/code/app") == Path.home() / "code" / "app"
     assert factory.given_repo(cfg, None) is None
 
 

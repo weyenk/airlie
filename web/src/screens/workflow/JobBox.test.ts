@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { job } from "./fixtures";
+import { job } from "@/test-utils/workflow-fixtures";
 import JobBox from "./JobBox.vue";
 
 const box = (props: Record<string, unknown>) => mount(JobBox, { props: { nodeId: "layer-01", job: job(), ...props } });

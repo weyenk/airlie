@@ -49,6 +49,16 @@ test("it opens on 7 days sliced by role, and asks for the period before as well"
   expect(api.metricsSeries).toHaveBeenCalledWith({ metric: "generation_tps", from: NOW - week, to: NOW, slice: "role" });
 });
 
+test("a failed story list leaves the other tiles and the chart standing and says unknown on its own tile", async () => {
+  api.listStories.mockRejectedValue(new Error("stories are down"));
+  const { w } = await open();
+  expect(w.get("[data-tile=stories] [data-value]").text()).toBe("unknown");
+  expect(w.get("[data-tile=stories] [data-delta]").text()).toContain("stories are down");
+  expect(w.get("[data-tile=generation] [data-value]").text()).toContain("36");
+  expect(w.find("[data-plot]").exists()).toBe(true);
+  expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
 test("the Stories tile counts and breaks down the stories active in the window, and only those", async () => {
   api.listStories.mockResolvedValue({
     stories: [

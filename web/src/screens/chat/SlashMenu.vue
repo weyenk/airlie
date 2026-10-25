@@ -8,7 +8,7 @@ const emit = defineEmits<{ choose: [skill: Skill] }>();
 <template>
   <div
     data-test="slash-menu"
-    class="absolute inset-x-[66px] bottom-[62px] z-10 overflow-hidden rounded-xl border border-border bg-card shadow-[0_12px_30px_rgba(0,0,0,.35)] max-[640px]:inset-x-3"
+    class="absolute inset-x-[66px] bottom-[62px] z-10 overflow-hidden rounded-xl border border-border bg-card shadow-pop max-[640px]:inset-x-3"
   >
     <div v-if="!skills.length" data-empty class="px-3.5 py-2 text-muted-foreground">No command matches</div>
     <div v-else role="listbox" aria-label="Commands">

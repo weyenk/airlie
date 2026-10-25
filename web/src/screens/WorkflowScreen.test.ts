@@ -5,7 +5,7 @@ import { ApiError } from "@/api";
 import type { Flow, JobRow } from "@/api/workflows";
 import { useFeedStore } from "@/stores/feed";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, flow, job, layer, stage, step } from "./workflow/fixtures";
+import { detail, flow, job, layer, stage, step } from "@/test-utils/workflow-fixtures";
 import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));

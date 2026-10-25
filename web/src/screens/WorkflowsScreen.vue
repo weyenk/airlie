@@ -81,12 +81,20 @@ function addressOf(q: StoryQuery): Record<string, string> {
 watch(
   () => [parsed.value, route.query] as const,
   ([q, current]) => {
+    if (route.name !== "workflows") return; // the route moved on (a 401 to sign in): leave its address alone
     const want = addressOf(q);
     const have = Object.fromEntries(Object.entries(current).flatMap(([k, v]) => (typeof v === "string" ? [[k, v]] : [])));
     if (JSON.stringify(Object.entries(want).sort()) !== JSON.stringify(Object.entries(have).sort())) void router.replace({ query: want });
   },
   { immediate: true },
 );
+
+/** The chip word for an API stage; two stages share one word, so those say which (the filter sends the API word). */
+function stageOption(s: Stage): string {
+  const label = chipSpec("stage", s).label;
+  const shared = STAGES.filter((o) => chipSpec("stage", o).label === label).length > 1;
+  return shared ? `${label} (${s})` : label;
+}
 
 /** The address for the current query with `change` applied; the defaults (page 1, sorted by activity) are left out. */
 function go(change: Record<string, string | undefined>, keepPage = false) {
@@ -203,7 +211,7 @@ const selectClass =
             Stage
             <select data-filter="stage" :value="stage" :class="selectClass" @change="go({ stage: ($event.target as HTMLSelectElement).value || undefined })">
               <option value="">All</option>
-              <option v-for="s in STAGES" :key="s" :value="s">{{ chipSpec("stage", s).label }}</option>
+              <option v-for="s in STAGES" :key="s" :value="s">{{ stageOption(s) }}</option>
             </select>
           </label>
           <label class="flex items-center gap-2 text-[13px] text-muted-foreground">

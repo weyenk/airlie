@@ -6,8 +6,6 @@ import {
   deleteUser,
   inviteAgain,
   listUsers,
-  logout,
-  me,
   passkeyLogin,
   passkeyRegister,
   peekInvite,
@@ -19,16 +17,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("me, users and logout use the auth routes", async () => {
+test("users use the auth route", async () => {
   const fetchMock = stubJson([{ id: "u1" }]);
 
-  await me();
   await expect(listUsers()).resolves.toEqual([{ id: "u1" }]);
-  await logout();
 
-  expect(callOf(fetchMock, 0).url).toBe("/v1/auth/me");
-  expect(callOf(fetchMock, 1).url).toBe("/v1/auth/users");
-  expect(callOf(fetchMock, 2)).toMatchObject({ url: "/v1/auth/logout", method: "POST" });
+  expect(callOf(fetchMock, 0).url).toBe("/v1/auth/users");
 });
 
 test("invites, user invites and delete user", async () => {

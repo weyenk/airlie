@@ -6,7 +6,8 @@ import type { Flow } from "@/api/workflows";
 import { useBoardStore } from "@/stores/board";
 import { useSessionStore } from "@/stores/session";
 import CardModal from "./CardModal.vue";
-import { item } from "./fixtures";
+import { item } from "@/test-utils/board-fixtures";
+import { PHONE_QUERY } from "@/lib/breakpoints";
 
 const api = vi.hoisted(() => ({
   listItems: vi.fn(),
@@ -296,7 +297,7 @@ test("the modal fills the screen below 1024px and is 760px wide above it", async
 });
 
 test("on a phone, Acceptance criteria and Workflow start folded", async () => {
-  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("639"), media: query, addEventListener() {}, removeEventListener() {} }));
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === PHONE_QUERY, media: query, addEventListener() {}, removeEventListener() {} }));
   await open();
   expect(q("[data-acceptance] [data-state]")!.getAttribute("data-state")).toBe("closed");
   expect(q("[data-workflow] [data-state]")!.getAttribute("data-state")).toBe("closed");

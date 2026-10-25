@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { Item } from "@/api/board";
 import CreateModal from "./CreateModal.vue";
-import { item } from "./fixtures";
+import { item } from "@/test-utils/board-fixtures";
 
 const api = vi.hoisted(() => ({
   listItems: vi.fn(),
