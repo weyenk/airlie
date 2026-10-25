@@ -145,7 +145,8 @@ export type FlowStep = {
 export type JobDetail = {
   node: string;
   job: FlowJob;
-  input: string | null;
+  /** What the job was opened with: the chat messages of its first prompt (null when none was recorded). */
+  input: { messages: { role: string; content: string | null }[] } | null;
   input_note: string | null;
   output: { final_text: string } & Record<string, unknown>;
   steps: FlowStep[];
