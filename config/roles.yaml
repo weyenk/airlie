@@ -130,7 +130,8 @@ roles:
     prompt: prompts/roles/product.md
     model: generalist
     tools: [read_file, list_dir]
-    max_tokens: 4096
+    max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
+    max_context: 131072             # the imagining conversation holds the consultations
     thinking: false
     max_steps: 8
     sampling:

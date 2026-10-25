@@ -7,10 +7,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from airlie.board import BoardStore, Item
-from airlie.board.model import Status
+from airlie.board.model import Comment, Status
 from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
 from airlie.story.epic_plan import after_keys, epic_key_of
 from airlie.story.epic_state import epic_needs_work
+from airlie.story.initiative import Initiative
+from airlie.story.model import StoryError
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -47,6 +49,28 @@ class LocalBoard:
             return self.store.get(key)
         except KeyError:
             raise BoardError(f"no item {key} on the board") from None
+
+    def item(self, ref: str) -> Item:
+        """The board item `ref` at any level; a BoardError when there is none."""
+        return self._item(ref)
+
+    def initiative(self, ref: str) -> Initiative:
+        """The initiative `ref`, read from its card. A BoardError for an item of another level, or an
+        initiative whose card cannot be read (no repository label, a budget that is no number)."""
+        item = self._item(ref)
+        try:
+            return Initiative.from_item(item)
+        except StoryError as e:
+            raise BoardError(str(e)) from None
+
+    def next_initiative(self) -> Item | None:
+        """The oldest initiative a person has approved (P4): the specs phase takes it next."""
+        found = self.store.list(level="initiative", status="approved")
+        return found[0] if found else None
+
+    def is_person(self, comment: Comment) -> bool:
+        """A comment whose author is not a role or airlie, and that is no airlie note: a person's."""
+        return not self.is_note(comment.author, comment.text)
 
     def _card(self, item: Item) -> Card:
         return Card(

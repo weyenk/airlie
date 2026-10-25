@@ -291,3 +291,31 @@ def test_an_epics_status_follows_the_stories_the_line_made_for_it(tmp_path: Path
     s.update(plain, status="approved")
     s.update(s.create(level="story", title="x", parent=plain).key, status="doing")
     assert b.follow_stories() == []
+
+
+def test_the_oldest_approved_initiative_is_next_and_a_persons_comment_is_told_from_a_roles(
+    tmp_path: Path,
+) -> None:
+    """P4 (2026-10-25): the specs phase takes the oldest approved initiative; a comment whose author is not a
+    role is the person's."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    board = LocalBoard(s, role_names={"product"})
+    first = s.create(level="initiative", title="one", labels=["repo:o/r"])
+    second = s.create(level="initiative", title="two", labels=["repo:o/r"])
+    assert board.next_initiative() is None  # todo: a person has not approved either
+    s.update(second.key, status="approved")
+    s.update(first.key, status="approved")
+    nxt = board.next_initiative()
+    assert nxt is not None and nxt.key == first.key  # the oldest
+    assert board.item(first.key).title == "one"
+    with pytest.raises(BoardError, match="no item AIR-99"):
+        board.item("AIR-99")
+    s.comment(first.key, "product", "What would you do first?")
+    s.comment(first.key, "noah", "go")
+    s.comment(first.key, "airlie", NOTE_PREFIX + "note")
+    comments = board.item(first.key).comments
+    assert [board.is_person(c) for c in comments] == [False, True, False]
+    assert board.initiative(first.key).key == first.key
+    epic = s.create(level="epic", title="e", parent=first.key, labels=["repo:o/r"])
+    with pytest.raises(BoardError, match="not an initiative"):
+        board.initiative(epic.key)

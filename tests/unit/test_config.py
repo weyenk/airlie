@@ -1178,3 +1178,44 @@ def test_included_role_prompt_resolves_against_root_config_dir(tmp_path: Path) -
     base = write(tmp_path, {**_minimal_without_roles(), "includes": ["config/roles.yaml"]})
     cfg = load_config(base)
     assert cfg.roles["coder"].prompt == (tmp_path / "prompts/roles/coder.md").resolve()
+
+
+def test_story_specs_has_defaults_and_floors_and_names_only_roles(tmp_path: Path) -> None:
+    """P4 (2026-10-25): the specs phase's budgets. Off in the schema (as the supervisor is) so other configs
+    are unchanged; airlie.yaml turns it on."""
+    specs = load_config(write(tmp_path, MINIMAL)).story.specs
+    assert specs.enabled is False and specs.product_role == "product"
+    assert specs.consultable == ["architect", "ux", "design", "security", "docs", "research"]
+    assert (specs.max_questions, specs.max_rounds, specs.max_asks_per_round, specs.max_consultations) == (
+        5,
+        3,
+        4,
+        8,
+    )
+    assert (specs.consult_steps, specs.consult_chars, specs.product_steps, specs.read_steps) == (
+        8,
+        4_000,
+        12,
+        6,
+    )
+    assert (specs.mockup_options, specs.revisions, specs.attempts, specs.min_samples) == (3, 1, 2, 3)
+    assert specs.default_hours == {"S": 1.0, "M": 5.0, "L": 8.0}
+    assert specs.size_scale == {"S": 0.6, "M": 1.0, "L": 1.8}
+    for field in ("max_rounds", "max_asks_per_round", "consult_steps", "product_steps", "attempts"):
+        with pytest.raises(ConfigError, match=f"story.specs.{field}"):
+            load_config(write(tmp_path, {**MINIMAL, "story": {"specs": {field: 0}}}))
+    with pytest.raises(ConfigError, match="story.specs.mockup_options"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"specs": {"mockup_options": 1}}}))
+    assert load_config(write(tmp_path, {**MINIMAL, "story": {"specs": {"max_questions": 0}}})).story.specs
+    # roles: checked only when the phase is on
+    on = {**MINIMAL, "story": {"specs": {"enabled": True}}}
+    with pytest.raises(ConfigError, match=r"story\.specs\.product_role 'product'"):
+        load_config(write(tmp_path, on))
+    roles = {**MINIMAL["roles"], "product": {"prompt": "prompts/roles/p.md", "model": "team"}}
+    named = {"enabled": True, "consultable": ["product", "ghost"]}
+    with pytest.raises(ConfigError, match=r"story\.specs\.consultable names 'ghost'"):
+        load_config(write(tmp_path, {**MINIMAL, "roles": roles, "story": {"specs": named}}))
+    # the price tables need exactly S, M and L
+    for table in ("default_hours", "size_scale"):
+        with pytest.raises(ConfigError, match=f"story.specs.{table}"):
+            load_config(write(tmp_path, {**MINIMAL, "story": {"specs": {table: {"S": 1.0, "M": 2.0}}}}))

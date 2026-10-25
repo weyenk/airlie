@@ -173,6 +173,8 @@ story:
   plan:                            # how an approved epic is planned into stories (docs/integrations/story.md, Epics)
     max_stories: 8
     max_scope_files: 8
+  specs:                           # an approved initiative becomes a core epic and extensions (docs/integrations/story.md, Initiatives)
+    enabled: true
   jira:
     statuses:
       intake: "To Do"

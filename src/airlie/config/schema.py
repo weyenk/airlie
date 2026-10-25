@@ -498,6 +498,50 @@ class PlanSpec(Strict):
     )
 
 
+class SpecsSpec(Strict):
+    """The specs phase: an initiative becomes a core epic and extensions (P4 of the planning line,
+    2026-10-25). Off in the schema, as the supervisor is, so other configs and tests are unchanged;
+    airlie.yaml turns it on."""
+
+    enabled: bool = False
+    product_role: str = "product"
+    consultable: list[str] = Field(
+        default_factory=lambda: ["architect", "ux", "design", "security", "docs", "research"],
+        description="the roles product may ask in a round of the imagining",
+    )
+    max_questions: int = Field(default=5, ge=0, description="the most questions product asks the person")
+    max_rounds: int = Field(
+        default=3, ge=1, description="the most rounds of consultation before the epics are due"
+    )
+    max_asks_per_round: int = Field(default=4, ge=1)
+    max_consultations: int = Field(default=8, ge=0, description="the most consultations in all")
+    consult_steps: int = Field(default=8, ge=1, description="steps a consulted seat gets")
+    consult_chars: int = Field(
+        default=4_000, ge=200, description="characters of a seat's answer that reach product's conversation"
+    )
+    product_steps: int = Field(default=12, ge=1, description="product's steps per turn")
+    read_steps: int = Field(
+        default=6, ge=1, description="steps the architect gets to read one epic as its planner"
+    )
+    mockup_options: int = Field(default=3, ge=2, description="directions ux names, and pages design draws")
+    revisions: int = Field(
+        default=1, ge=0, description="revisions by product a person's comment on an epic gets"
+    )
+    attempts: int = Field(default=2, ge=1, description="tries at a reply that parses before the phase blocks")
+    min_samples: int = Field(
+        default=3, ge=1, description="published stories of one size before their median prices that size"
+    )
+    default_hours: dict[str, float] = Field(
+        default_factory=lambda: {"S": 1.0, "M": 5.0, "L": 8.0},
+        description="the price of a story by size until the ledger has samples (the rough medians of the "
+        "ledger on 2026-10-24: eight published stories)",
+    )
+    size_scale: dict[str, float] = Field(
+        default_factory=lambda: {"S": 0.6, "M": 1.0, "L": 1.8},
+        description="a size's share of the overall median when it has too few samples of its own",
+    )
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -560,6 +604,7 @@ class StorySpec(Strict):
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     plan: PlanSpec = Field(default_factory=PlanSpec)
+    specs: SpecsSpec = Field(default_factory=SpecsSpec)
     resume_attempts: int = Field(
         default=1,
         ge=0,
@@ -739,6 +784,22 @@ class AirlieConfig(Strict):
         sup = self.story.supervisor
         if sup.enabled and sup.role not in self.roles:
             problems.append(f"story.supervisor.role '{sup.role}' is not a role ({sorted(self.roles)})")
+        specs = self.story.specs
+        for table, prices in (("default_hours", specs.default_hours), ("size_scale", specs.size_scale)):
+            if set(prices) != {"S", "M", "L"}:
+                problems.append(
+                    f"story.specs.{table} needs exactly the sizes S, M and L (got {sorted(prices)})"
+                )
+        if specs.enabled:
+            if specs.product_role not in self.roles:
+                problems.append(
+                    f"story.specs.product_role '{specs.product_role}' is not a role ({sorted(self.roles)})"
+                )
+            problems += [
+                f"story.specs.consultable names '{name}', which is not in roles ({sorted(self.roles)})"
+                for name in specs.consultable
+                if name not in self.roles
+            ]
         if self.topology.kind == "studio":
             need = [("studio.chief_role", self.studio.chief_role)]
             if self.studio.review.enabled:
