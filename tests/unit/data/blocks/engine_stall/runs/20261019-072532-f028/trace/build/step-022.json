@@ -1,0 +1,10 @@
+{
+ "u_t": {
+  "name": "shell",
+  "arguments": "{\"cmd\": \"grep -rn \\\"max_context\\\" src/airlie/config/schema.py; echo ---; grep -rn \\\"on_context_full\\\" src/airlie/config/schema.py\"}"
+ },
+ "o_t": "reading is switched off: use write_file, edit_file or run_tests",
+ "ok": false,
+ "assistant_text": "",
+ "reasoning": ""
+}

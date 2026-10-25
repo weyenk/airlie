@@ -1,0 +1,9 @@
+{
+ "u_t": {
+  "name": "read_file",
+  "arguments": "{\"path\": \"src/airlie/tools/protocol.py\"}"
+ },
+ "o_t": "1: \"\"\"Tool seam: what a team can do to the world. Builtins are sandboxed to the worktree; MCP tools wrap.\"\"\"\n2: \n3: from __future__ import annotations\n4: \n5: from dataclasses import dataclass\n6: from pathlib import Path\n7: from typing import Any, Protocol\n8: \n9: \n10: @dataclass(frozen=True)\n11: class ToolContext:\n12:     worktree: Path\n13:     shell_timeout_s: float = 120.0\n14:     output_cap_chars: int = 20000\n15:     test_cmd: str | None = None\n16: \n17: \n18: @dataclass(frozen=True)\n19: class ToolResult:\n20:     ok: bool\n21:     output: str\n22: \n23: \n24: class Tool(Protocol):\n25:     name: str\n26:     description: str\n27:     parameters: dict[str, Any]\n28: \n29:     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult: ...",
+ "ok": true,
+ "assistant_text": ""
+}

@@ -1,0 +1,9 @@
+{
+ "u_t": {
+  "name": "shell",
+  "arguments": "{}"
+ },
+ "o_t": "error: shell requires: cmd",
+ "ok": false,
+ "assistant_text": "Let me check what files already exist in test directory:\n\n"
+}
