@@ -3,8 +3,9 @@ import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import { ApiError } from "@/api";
 import type { Flow, JobRow } from "@/api/workflows";
+import { useFeedStore } from "@/stores/feed";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, flow, job, layer, stage } from "./workflow/fixtures";
+import { detail, flow, job, layer, stage, step } from "./workflow/fixtures";
 import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));
@@ -90,7 +91,7 @@ test("picking a box puts the job in the address and shows its detail", async () 
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows/AIR-17/layer-01/tests");
   expect(lastDetailCall()).toEqual(["AIR-17", "layer-01", "tests"]);
-  expect(w.get("section[aria-live=polite] h2").text()).toBe("Layer 01 / tests");
+  expect(w.get("section[aria-label=Job] h2").text()).toBe("Layer 01 / tests");
 });
 
 test("a story with nothing run yet says so instead of a job", async () => {
@@ -144,4 +145,40 @@ test("the progress figure uses the running list's number for this story", async 
   api.listRunning.mockResolvedValue([{ kind: "story", key: "AIR-17", title: "x", topology: null, progress: 0.62, last_activity: 1 }]);
   const { w } = await open("/workflows/AIR-17", RUNNING);
   expect(w.get("[data-progress]").text()).toBe("62% · 1 of 2 layers built");
+});
+
+test("a live refresh keeps the job on show, though the default would now be another", async () => {
+  const { w } = await open(); // the failed job opens: layer 02, checks
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-02", "checks"]);
+  api.storyFlow.mockResolvedValue(RUNNING); // now layer 02's build runs, which is what a fresh page would open on
+  api.storyJob.mockClear();
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(api.storyFlow).toHaveBeenCalledTimes(2);
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=checks]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=build]").attributes("aria-pressed")).toBe("false");
+  expect(api.storyJob.mock.calls.every((c) => c[1] === "layer-02" && c[2] === "checks")).toBe(true);
+});
+
+test("a step a reader opened stays open when the detail refreshes", async () => {
+  api.storyJob.mockImplementation(async () => detail({ node: "layer-02", job: job({ id: "checks", label: "checks" }), steps: [step({ reasoning: "think first" })] }));
+  const { w } = await open();
+  const d = w.get("details[data-step]");
+  (d.element as HTMLDetailsElement).open = true;
+  await d.trigger("toggle");
+  expect(w.text()).toContain("think first");
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(w.text()).toContain("think first");
+});
+
+test("another story starts afresh: its default is chosen when its own flow loads", async () => {
+  const { w, router } = await open();
+  api.storyFlow.mockResolvedValue({ ...RUNNING, key: "AIR-18" });
+  api.storyJob.mockClear();
+  await router.push("/workflows/AIR-18");
+  await flushPromises();
+  expect(api.storyJob.mock.calls.every((c) => c[0] === "AIR-18")).toBe(true); // never the old story's job under the new key
+  expect(lastDetailCall()).toEqual(["AIR-18", "layer-02", "build"]);
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=build]").attributes("aria-pressed")).toBe("true");
 });

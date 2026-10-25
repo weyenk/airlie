@@ -22,7 +22,8 @@ const PRE = "whitespace-pre-wrap rounded-lg border border-border bg-code px-3 py
 </script>
 
 <template>
-  <section aria-live="polite" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] shadow-sm">
+  <section aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] shadow-sm">
+    <p aria-live="polite" class="sr-only">{{ heading }}: {{ job.status }}</p>
     <div class="flex flex-wrap items-center gap-2">
       <h2 class="text-[15px] font-semibold">{{ heading }}</h2>
       <StatusChip kind="job" :value="job.status" />

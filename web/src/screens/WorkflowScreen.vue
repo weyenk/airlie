@@ -35,16 +35,42 @@ watch(key, () => void flow.refresh());
 const jobs = liveResource("jobs", listJobs);
 const running = liveResource(["stories", "runs", "jobs"], listRunning);
 
-/** The job open in the view: the one in the address, else the failed one, else the running one, else the last
- * that ran. */
+const nodesOfThisStory = computed(() => (flow.data.value?.key === key.value ? flow.data.value.nodes : []));
+const jobsOf = (nodes: Flow["nodes"]) => nodes.flatMap((n) => n.jobs.map((j) => [n.id, j.id, j.status] as const));
+/** The failed job, else the running one, else the last that ran. */
+function interesting(nodes: Flow["nodes"]): [string, string] | null {
+  const all = jobsOf(nodes);
+  const pick = all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed");
+  return pick ? [pick[0], pick[1]] : null;
+}
+// With no job in the address the default is chosen once, when the story's flow first loads, and stays: the view
+// does not jump under a reader as live updates arrive. Another story starts afresh.
+const pinned = ref<[string, string] | null>(null);
+let pinnedFor: string | undefined;
+watch(
+  [key, () => flow.data.value],
+  ([k, data]) => {
+    if (pinnedFor !== undefined && pinnedFor !== k) {
+      pinned.value = null;
+      pinnedFor = undefined;
+    }
+    // (a story with nothing run yet has nothing pinned: its first job to run is the default)
+    if ((pinnedFor === undefined || pinned.value === null) && data && data.key === k) {
+      pinned.value = interesting(data.nodes);
+      pinnedFor = k;
+    }
+  },
+  { immediate: true, flush: "sync" },
+);
+
+/** The job open in the view: the one in the address, else the pinned default. */
 const selected = computed<[string, string] | null>(() => {
-  const nodes = flow.data.value?.nodes ?? [];
-  const all = nodes.flatMap((n) => n.jobs.map((j) => [n.id, j.id, j.status] as const));
+  const all = jobsOf(nodesOfThisStory.value);
   const node = param(route.params.node);
   const job = param(route.params.job);
   if (node && job && all.some((x) => x[0] === node && x[1] === job)) return [node, job];
-  const pick = all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed");
-  return pick ? [pick[0], pick[1]] : null;
+  const p = pinned.value;
+  return p && all.some((x) => x[0] === p[0] && x[1] === p[1]) ? p : null;
 });
 
 const detail = liveResource(["stories", "runs"], async () => (selected.value ? storyJob(key.value, selected.value[0], selected.value[1]) : null));
@@ -112,7 +138,7 @@ async function stop() {
 
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
       <JobDetailView v-if="shown" :detail="shown" :node-label="nodeLabel" />
-      <section v-else-if="!selected" aria-live="polite" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>
+      <section v-else-if="!selected" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>
     </template>
   </div>
 </template>

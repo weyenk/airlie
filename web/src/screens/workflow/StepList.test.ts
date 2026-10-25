@@ -17,8 +17,15 @@ test("arguments that are an object are written out, and a step with no tool says
   expect(w.text()).toContain("{\"path\":\"a.py\"}");
 });
 
-test("a step opens its thinking, its text and what the tool returned", () => {
+async function open(w: ReturnType<typeof mount>, i = 0) {
+  const d = w.findAll("details")[i];
+  (d.element as HTMLDetailsElement).open = true;
+  await d.trigger("toggle");
+}
+
+test("a step opens its thinking, its text and what the tool returned", async () => {
   const w = mount(StepList, { props: { steps: [step({ reasoning: "start from the existing tests", assistant_text: "reading", observation: "1: x" })] } });
+  await open(w);
   const body = w.get("details");
   expect(body.text()).toContain("thinking");
   expect(body.text()).toContain("start from the existing tests");
@@ -32,4 +39,21 @@ test("a failed step says so; a step that worked says ok", () => {
   expect(bad).toContain("failed");
   expect(good).toContain("ok");
   expect(unknown).not.toMatch(/failed|ok$/);
+});
+
+test("a closed step builds no body; opening it builds one", async () => {
+  const w = mount(StepList, { props: { steps: [step({ n: 1, reasoning: "secret" }), step({ n: 2 })] } });
+  expect(w.findAll("[data-step-body]")).toHaveLength(0);
+  expect(w.text()).not.toContain("secret");
+  await open(w, 0);
+  expect(w.findAll("[data-step-body]")).toHaveLength(1);
+});
+
+test("an open step stays open when new step objects arrive (a live refresh)", async () => {
+  const w = mount(StepList, { props: { steps: [step({ n: 1, reasoning: "keep me" })] } });
+  await open(w);
+  await w.setProps({ steps: [step({ n: 1, reasoning: "keep me" }), step({ n: 2 })] });
+  expect(w.text()).toContain("keep me");
+  expect((w.findAll("details")[0].element as HTMLDetailsElement).open).toBe(true);
+  expect((w.findAll("details")[1].element as HTMLDetailsElement).open).toBe(false);
 });
