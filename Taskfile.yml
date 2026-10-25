@@ -101,6 +101,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie line why {{.CLI_ARGS}}'
 
+  line:deploy:
+    desc: "After a fix card merged: pull the home checkout's trunk (fast-forward), then say whether task serve must be restarted; the line never does either itself"
+    cmds:
+      - '{{.RUN}} airlie line deploy {{.CLI_ARGS}}'
+
   supervisor:log:
     desc: "The newest supervisor interventions: id, time, story/layer, trigger, category, outcome (task supervisor:log -- --limit 50)"
     cmds:

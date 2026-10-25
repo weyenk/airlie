@@ -1263,6 +1263,71 @@ def line_why(
     console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@line_app.command("deploy")
+def line_deploy(
+    config: ConfigOpt = None,
+    serve_url: Annotated[
+        str, typer.Option(help="where `task serve` answers /health")
+    ] = "http://127.0.0.1:8090",
+) -> None:
+    """Pull the home checkout's trunk (fast-forward only) so a merged fix is in the code the line runs, then
+    say
+    whether `task serve` must be restarted. The line never pulls its own checkout or restarts serve: this is
+    the person's one step after a fix card merges (airlie.story.fixes)."""
+    import subprocess
+
+    import httpx
+
+    from airlie.story.fixes import home_checkout
+    from airlie.story.pipeline import build_commit
+
+    cfg = _load(config)
+    home = home_checkout()
+    if home is None:
+        err.print("[red]airlie does not run from a git checkout: nothing to pull[/red]")
+        raise typer.Exit(1)
+    remote, trunk = cfg.story.remote, cfg.story.trunk
+    on = subprocess.run(
+        ["git", "-C", str(home), "branch", "--show-current"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if on != trunk:
+        err.print(
+            f"[red]{escape(str(home))} is on '{escape(on)}', not {escape(trunk)}: "
+            "switch it, then run this again[/red]"
+        )
+        raise typer.Exit(1)
+    pulled = subprocess.run(
+        ["git", "-C", str(home), "pull", "--ff-only", remote, trunk],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pulled.returncode != 0:
+        err.print(
+            f"[red]git pull --ff-only {escape(remote)} {escape(trunk)} failed:[/red] "
+            f"{escape(pulled.stderr.strip())}"
+        )
+        raise typer.Exit(1)
+    console.print(
+        f"{home}: {pulled.stdout.strip().splitlines()[-1] if pulled.stdout.strip() else 'up to date'}",
+        markup=False,
+    )
+    now = build_commit()
+    try:
+        running = httpx.get(f"{serve_url.rstrip('/')}/health", timeout=3.0).json().get("commit")
+    except (httpx.HTTPError, ValueError):
+        console.print(f"serve does not answer at {serve_url}: nothing to restart", markup=False)
+        return
+    if running == now:
+        console.print(f"serve runs {now}: up to date", markup=False)
+    else:
+        console.print(
+            f"serve runs {running or 'an unknown commit'}, the checkout is at {now}: "
+            "restart serve: task serve",
+            markup=False,
+        )
+
+
 @supervisor_app.command("stats")
 def supervisor_stats(config: ConfigOpt = None) -> None:
     """How often a retry helped, by trigger: with Muse's answer, and with today's text alone (its fallbacks,

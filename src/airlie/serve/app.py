@@ -45,6 +45,7 @@ from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.model import StoryRunning, StorySetupError
+from airlie.story.pipeline import build_commit
 from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
@@ -239,6 +240,9 @@ def create_app(
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
+    started_commit = (
+        build_commit()
+    )  # the code this process runs: a pull after it changes the checkout, not this
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     feed = Feed()
@@ -348,7 +352,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles)}
+        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit}
 
     @app.get("/v1/events")
     async def events() -> StreamingResponse:

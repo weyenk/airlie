@@ -14,6 +14,7 @@ from airlie.board import BoardStore
 from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.checkout import check_checkout, find_checkout, held_label
+from airlie.story.fixes import bookkeep
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
@@ -323,13 +324,30 @@ async def _already_in_review(board: Board, card: Card, st: StoryState) -> str:
     )
 
 
-async def tick(cfg: AirlieConfig) -> str:
-    """One scheduler beat: build the top issue of the intake query, unless a story is in flight, the engine
+async def tick(cfg: AirlieConfig, *, serve_commit: str | None = None) -> str:
+    """One scheduler beat: the bookkeeping (a deployed fix releases the stories it blocked, a transient
+    block is retried: `fixes.bookkeep`, on the local board only), then `_tick`. `serve_commit` is the commit
+    the serve process started with, when it is the one ticking; a tick from a new process runs the checkout's
+    code and passes none.
+
+    Bookkeeping is a beat's first act and never its last: its lines are added to the log line."""
+    board = make_board(cfg)
+    notes: list[str] = []
+    if isinstance(board, LocalBoard):
+        try:
+            notes = await bookkeep(cfg, board.store, serve_commit=serve_commit)
+        except Exception as e:  # noqa: BLE001 - the beat goes on whatever the bookkeeping did
+            notes = [f"bookkeeping failed ({_why(e)})"]
+    line = await _tick(cfg, board)
+    return " ".join(f"{line}; {'; '.join(notes)}".split()) if notes else line
+
+
+async def _tick(cfg: AirlieConfig, board: Board) -> str:
+    """The beat itself: build the top issue of the intake query, unless a story is in flight, the engine
     is down or GitHub does not answer (github_down), in the repository its label names, gated by its
     AGENTS.md. Returns one line for the log. An issue that a run leaves in intake would hold up the ones
     behind it, so it is moved out: one whose story cannot be placed or opened (_set_aside), or whose story has
     finished (_already_in_review)."""
-    board = make_board(cfg)
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
     with story_lock(stories_dir(cfg)) as held:

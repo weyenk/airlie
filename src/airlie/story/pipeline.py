@@ -21,7 +21,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from airlie.board import Item
+from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.prompts import text as hub_text
@@ -52,7 +52,7 @@ from airlie.story.diagnosis import (
     next_for,
     write_diagnosis,
 )
-from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card
+from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
@@ -1237,6 +1237,13 @@ class StoryPipeline:
         if isinstance(self.board, LocalBoard):
             store = self.board.store
             cfg = self.cfg
+            again = await asyncio.to_thread(self._did_not_take, store, card, d)
+            if again is not None:  # D6: resumed after a fix and blocked on the same signature: it stops here
+                st.emit("fix_did_not_take", story=card.key, fix=again, signature=sig)
+                return (
+                    f"waits for a person: {again} was deployed and this story blocked on the same signature "
+                    "again, so the fix did not take (no new card)"
+                )
 
             def file() -> tuple[Item, bool]:
                 return file_fix(store, d=d, story_key=card.key, home=home_repo(cfg, home_checkout()))
@@ -1261,6 +1268,33 @@ class StoryPipeline:
             _board_error(st, "comment", e)
         st.emit("fix_noted", story=card.key, signature=sig)
         return "a fix card, written as a note on this issue (this board files none); a person files it"
+
+    @staticmethod
+    def _did_not_take(store: BoardStore, card: Card, d: Diagnosis) -> str | None:
+        """The fix card (its key) that this story was resumed after when the block's signature is that card's:
+        the card gets a comment, and the caller files nothing. None when the story was not resumed after a
+        fix, or blocked on something else."""
+        try:
+            labels = store.get(card.key).labels
+        except KeyError:
+            return None
+        for label in labels:
+            if not label.startswith("resumed_after:"):
+                continue
+            fix_key = label.split(":", 1)[1]
+            try:
+                fix = store.get(fix_key)
+            except KeyError:
+                continue
+            if signature_label(d.classified.signature) in fix.labels:
+                store.comment(
+                    fix_key,
+                    "airlie",
+                    f"{card.key} blocked again with the same signature after this fix was deployed: "
+                    f"block {d.pack.n}, {d.pack.reason}",
+                )
+                return fix_key
+        return None
 
     async def _muse_at_block(
         self, st: StoryState, card: Card, pack: Pack, classified: Classified

@@ -1057,7 +1057,8 @@ async def test_a_board_that_is_down_does_not_hide_the_reason(tmp_path: Path) -> 
     st = await pipeline(tmp_path, repo, FakeEngine(), board=board).run(text_card("avatars"))
     assert st.blocked == "BoardError: jira is unreachable"
     failed = kinds(st.path / "events.jsonl", "board_error")
-    assert [(e["call"], e["error"]) for e in failed] == [  # the note and the move are each tried
+    assert [(e["call"], e["error"]) for e in failed] == [  # the fix card's note, the stop's note, the move
+        ("comment", "BoardError: jira is unreachable"),
         ("comment", "BoardError: jira is unreachable"),
         ("move", "BoardError: jira is unreachable"),
     ]
@@ -1071,7 +1072,10 @@ async def test_a_role_that_cannot_run_a_stage_stops_the_story_with_a_readable_re
     assert st.blocked is not None
     assert st.blocked.startswith("PlanError: subtask 'refine' names role 'nonesuch'; use one of: ")
     notes = (st.path / "notes.md").read_text()
-    assert "nonesuch" in notes and "Traceback" not in notes  # the note is the reason, not the traceback
+    stop = notes[
+        notes.index("stopped after") :
+    ]  # the fix card's note before it holds the traceback as evidence
+    assert "nonesuch" in notes and "Traceback" not in stop  # the stop's note is the reason, not the traceback
     assert "Traceback" in kinds(st.path / "events.jsonl", "error")[0]["traceback"]
     assert worktrees(repo) == 1
 

@@ -471,6 +471,38 @@ exits. The tick takes *To Do* issues, so its next beat resumes the story from it
 **A killed airlie** (SIGKILL, a crash, a power cut) cannot say so: the issue stays where the last step left it
 (normally *In Progress*), with no stop comment. Run the same command to resume.
 
+## Why a story stopped: the diagnosis and the fix cards
+
+When a story blocks, the line writes down why before it moves the card (planning-line P5a, design
+`docs/superpowers/specs/2026-10-25-line-scheduler-design.md`). It gathers an evidence pack from disk alone (the
+story's `events.jsonl`, `state.json` and the run directory: counts, the gate's tail, tracebacks, the diff stat and
+the paths of the trace), classes it by rules, asks Muse to read the pack beside the class, and writes
+`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class.
+
+| class | means | what happens |
+| --- | --- | --- |
+| `transient` | a trunk fetch or an engine stall | retried up to `line.transient_retries` (2) times per signature, then waits for you |
+| `environment` | the gate was red on the base already | waits for you |
+| `content` | the model's work | waits for you to resume it |
+| `process` | a bug in airlie's code, or a hold that trapped a role | a fix card on airlie's own board (below) |
+| `config` | a role's token or step cap is too small for its task | a fix card |
+
+Muse's reading never replaces the class: a traceback through airlie's code is `process` even when Muse blames a
+test, and both are shown. `task line:why -- KEY [--n 2] [--paths]` prints the latest diagnosis (or the nth, or only
+the paths of the evidence for a Claude session to read), and makes one for a past block that has none. `/why KEY` in
+Chat answers from it, and `GET /v1/airlie/stories/{key}/diagnosis` returns it.
+
+A `process` or `config` block files a card on the local board (`todo`, labels `fix`, `repo:<line.home_repo>`,
+`signature:...`, `blocks:KEY`) with Why, Evidence, Hypothesis, Reproduce, Acceptance criteria and Out of scope; the
+same bug blocking another story links the open card instead of filing a second, and the blocked story is labelled
+`blocked_by:<fix>`. Approve the card and the line plans and builds it, or open a Claude session on it. The line
+never merges its fix. Once the fix's PRs are merged on GitHub the card gets one note asking you to run
+`task line:deploy` (it pulls the home checkout's trunk, fast-forward only, and says whether to restart
+`task serve`); when the merge is in the code the line runs, the card is `done` and each story it blocked goes back to
+`approved` with `resumed_after:<fix>`. A story that then blocks on the same signature waits for you and the card gets
+a comment: the loop stops at one. With `story.board: jira` the card's text is a note on the issue and no label is
+written.
+
 ## From OpenCode
 
 `/story <issue key, issue link or request>` in OpenCode (it runs on the `chief` agent; see `local-agents.md`). The
