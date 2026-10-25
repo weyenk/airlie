@@ -36,7 +36,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.context import guide_budget, named_paths, repo_guide
+from airlie.story.context import guide_budget, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
@@ -823,7 +823,7 @@ class StoryPipeline:
                 synthesise=False,
                 scope_tests=True,
                 gate_follow_up="build",
-                map_focus=[*named_paths(layer.scope), *package.source_files],
+                map_focus=[*layer.paths(), *package.source_files],
                 prepare=self._place(st, orch, package, nn),
             )
             commit_wip(wt, f"studio: {branch} (final)")

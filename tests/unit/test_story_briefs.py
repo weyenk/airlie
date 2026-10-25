@@ -72,6 +72,14 @@ def test_layers_brief_states_the_rules_and_the_criteria() -> None:
     assert "at most 4 layers" in text and "AC2" in text and "cropping" in text and '"layers"' in text
 
 
+def test_the_layers_contract_asks_for_files_and_interfaces() -> None:
+    text = layers_brief(STORY, 4)
+    assert '"files": [{"path": "src/pkg/mod.py", "new": false}]' in text
+    assert '"interfaces": ["def name(arg: T) -> R' in text
+    assert "List every file the layer creates or changes under files" in text
+    assert "Name each layer's files and the interfaces at its boundary." in text
+
+
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
     for i in (1, 2):  # a layer that owns criteria, and an enabling one
         [build] = layer_plan(STORY, LAYERS, i, PACKAGE, build_role="coder").subtasks

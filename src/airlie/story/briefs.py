@@ -44,10 +44,13 @@ make), reply instead with {"type": "blocked", "reason": "the decision a person m
 
 LAYERS_CONTRACT = """End your reply with one ```json block holding exactly one object:
 {"layers": [{"slug": "data-model", "title": "...", "scope": "the files or areas this layer may touch",
- "acceptance": ["AC1"], "brief": "what to build in this layer, concretely"}]}
+ "acceptance": ["AC1"], "brief": "what to build in this layer, concretely",
+ "files": [{"path": "src/pkg/mod.py", "new": false}],
+ "interfaces": ["def name(arg: T) -> R  (what later layers import from this one)"]}]}
 List in "acceptance" each criterion id the layer makes true, each id under one layer. Use [] only for a layer
 that makes no criterion true (a foundation): a layer that makes one true lists it, which gives the layer its
-test-first step."""
+test-first step. List every file the layer creates or changes under files, and under interfaces the
+signatures a later layer will import from it."""
 
 _REFERENCE = re.compile(r"#(?=[0-9])")
 
