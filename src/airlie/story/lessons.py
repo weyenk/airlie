@@ -1,9 +1,11 @@
-"""The per-repository lesson store: when a layer blocks for size (the coder ran out of steps, ran out of
-context, or the gate was still red at step end), a Lesson is recorded to disk under the observability state
-dir, keyed by the repository. The architect's layer brief (a later layer) reads the most recent ones back
-with `recent`, so it plans layers small enough to finish. Lessons are read from disk on every call, never
-cached in memory: a lesson recorded for repository R in one process run is still present when a new process
-opens the same state dir and plans a story on R."""
+"""The per-repository lesson store: a Lesson is recorded when a package is rejected by the readiness
+check, when a layer is re-planned after a red gate, and when the coder ran out of steps or context
+(absorbed from AIR-22's branches on 2026-10-24, N5 of the planning-line design; `detail` says why the
+layer came back). Lessons are written to disk under the observability state dir, keyed by the repository.
+The architect's layer brief reads the most recent ones back with `recent`, so it plans layers small enough
+to finish. Lessons are read from disk on every call, never cached in memory: a lesson recorded for
+repository R in one process run is still present when a new process opens the same state dir and plans a
+story on R."""
 
 from __future__ import annotations
 
@@ -13,8 +15,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ENDINGS = ("out_of_steps", "out_of_context", "gate_red_at_step_end")
-"""The three size-block endings a lesson can record."""
+ENDINGS = ("out_of_steps", "out_of_context", "gate_red", "package_rejected")
+"""How a layer came back: the coder ran out of steps or context, the gate was red after the build (step end
+or not), or the architect's package failed the readiness check every time."""
 
 
 @dataclass
@@ -30,6 +33,8 @@ class Lesson:
     context_tokens: int = 0
     ending: str = "out_of_steps"
     timestamp: float = field(default_factory=time.time)
+    detail: str = ""
+    """The finding kinds of a rejected package, or the gate's first failing step."""
 
 
 def _repo_key(repo: Path) -> str:

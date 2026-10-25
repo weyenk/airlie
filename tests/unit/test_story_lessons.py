@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from airlie.story.board import NullBoard
-from airlie.story.lessons import Lesson, LessonsStore
+from airlie.story.lessons import ENDINGS, Lesson, LessonsStore
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.publish import Publisher
 from tests.unit.test_studio_orchestrator import cfg_for
@@ -67,13 +67,13 @@ def test_a_recorded_lesson_survives_a_process_restart(tmp_path: Path) -> None:
     state = tmp_path / "state"
     repo = tmp_path / "repo"
     first = LessonsStore(state, repo)
-    lesson = make_lesson("Layer 01 storage", ending="gate_red_at_step_end")
+    lesson = make_lesson("Layer 01 storage", ending="gate_red")
     first.record(lesson)
     # A new process: a fresh store over the same state dir, no shared memory with `first`.
     second = LessonsStore(state, repo)
     got = second.recent()
     assert [les.title for les in got] == ["Layer 01 storage"]
-    assert got[0].ending == "gate_red_at_step_end"
+    assert got[0].ending == "gate_red"
     assert got[0].context_tokens == 111_000
 
 
@@ -143,3 +143,14 @@ def test_the_pipeline_carries_a_lessons_store_for_its_repository(tmp_path: Path)
         repo=repo,
     )
     assert isinstance(p.lessons, LessonsStore)
+
+
+def test_a_lesson_records_why_it_came_back_and_the_endings_name_the_package_path(tmp_path: Path) -> None:
+    """P1 (2026-10-24): a lesson also records a rejected package (`package_rejected`) and why a layer came
+    back (`detail`: the finding kinds, or the gate's first failing step); old lessons still load."""
+    assert ENDINGS == ("out_of_steps", "out_of_context", "gate_red", "package_rejected")
+    lesson = make_lesson("Store", ending="package_rejected", detail="passes_before_code, lint_fails")
+    store = LessonsStore(tmp_path / "state", tmp_path / "repo")
+    store.record(lesson)
+    assert store.recent()[0].detail == "passes_before_code, lint_fails"
+    assert Lesson(title="old").detail == ""
