@@ -28,8 +28,10 @@ from airlie.story.board import note
 from airlie.story.briefs import (
     consult_brief,
     consult_round_text,
+    directions_brief,
     imagine_brief,
     questions_brief,
+    render_brief,
     survey_brief,
 )
 from airlie.story.costs import StoryCosts
@@ -48,12 +50,22 @@ from airlie.story.initiative import (
 from airlie.story.initiative_state import InitiativeState, initiatives_dir
 from airlie.story.lessons import LessonsStore
 from airlie.story.local_board import LocalBoard
+from airlie.story.mockups import (
+    Direction,
+    check_page,
+    mockup_dir,
+    mockup_look,
+    option_name,
+    page_from_reply,
+    parse_directions,
+)
 from airlie.story.model import StoryError, StorySetupError
 from airlie.story.pipeline import SURVEY_STEPS, _cap, _reason, _redact_urls
 from airlie.topology.studio_plan import extract_json_block
 
 REASON_CHARS = 800
 README_CHARS = 4_000
+MAX_PAGE_CHARS = 12_000
 GO_LINE = 'Reply "go" at any time and I will skip my remaining questions and start imagining.'
 
 
@@ -412,7 +424,7 @@ class InitiativePipeline:
             started = time.monotonic()
             try:
                 if ask.kind == "mockups":
-                    answer = "[mockups cannot be drawn yet]"
+                    answer = await self._mockups(st, initiative, asker, ask)
                 else:
                     answer = await asker.ask(
                         st,
@@ -442,6 +454,87 @@ class InitiativePipeline:
             return ask, answer
 
         return list(await asyncio.gather(*(one(a) for a in asks)))
+
+    # ---- the mockups (D4, D13) ----
+
+    async def _mockups(self, st: InitiativeState, initiative: Initiative, asker: Asker, ask: Ask) -> str:
+        """ux names `story.specs.mockup_options` directions that differ; design draws one page per direction,
+        side by side. Each page is checked (`check_page`): one with findings goes back to design once with
+        them, and is dropped when it still fails; the pages that pass are written under the initiative's
+        mockups directory. What comes back to product is the directions and how many pages were drawn."""
+        epic = ask.epic or ""
+        count = self.specs.mockup_options
+        pictures = self._pictures(initiative)
+
+        def brief(feedback: str | None) -> str:
+            return directions_brief(
+                initiative, st.qa, ask, count=count, attachments=[p.name for p in pictures], feedback=feedback
+            )
+
+        directions = await asker.usable(
+            st,
+            f"directions:{epic}",
+            "ux",
+            "set of directions",
+            brief,
+            lambda t: parse_directions(extract_json_block(t), count=count),
+            attempts=self.specs.attempts,
+            ask=partial(asker.ask, steps=self.specs.consult_steps, images=pictures),
+        )
+        look = mockup_look(asker.repo)
+        drawn = await asyncio.gather(
+            *(self._draw(st, asker, epic, n, d, look) for n, d in enumerate(directions, 1))
+        )
+        target = mockup_dir(self.cfg.observability.state_dir, initiative.key, epic)
+        target.mkdir(parents=True, exist_ok=True)
+        for stale in target.glob("option-*.html"):
+            stale.unlink()
+        options: list[str] = []
+        for n, page in enumerate(drawn, 1):
+            if page is not None:
+                (target / option_name(n)).write_text(page, encoding="utf-8")
+                options.append(option_name(n))
+        st.mockups[epic] = {"directions": [d.to_dict() for d in directions], "options": options}
+        st.save()
+        st.emit("mockups", epic=epic, options=options, directions=[d.name for d in directions])
+        lines = [f"ux named {len(directions)} directions and design drew {len(options)} pages for {epic}:"]
+        lines += [f"- {d.name}: {d.idea}" for d in directions]
+        if not options:
+            lines.append("No page passed the check; the epic will have no options to pick from.")
+        return "\n".join(lines)
+
+    async def _draw(
+        self, st: InitiativeState, asker: Asker, epic: str, n: int, direction: Direction, look: str
+    ) -> str | None:
+        """One option's page by design, checked; one try more with the findings, then None (dropped)."""
+        max_chars = MAX_PAGE_CHARS
+        findings: list[str] = []
+        for _ in range(2):
+            base = render_brief(direction, look, max_chars=max_chars)
+            brief = (
+                base
+                if not findings
+                else base + "\n\n" + hub_text("brief-reply-again", feedback="; ".join(findings))
+            )
+            try:
+                reply = await asker.ask(
+                    st, f"render:{epic}:{n}", "design", brief, steps=self.specs.consult_steps
+                )
+            except Exception as e:  # noqa: BLE001 - a page design could not draw is a dropped option, not a stop
+                findings = [f"design could not draw the page: {_cap(_reason(e))}"]
+                continue
+            page = page_from_reply(reply)
+            findings = check_page(page) if page else ["the reply holds no page (an ```html fence)"]
+            if page and len(page) > max_chars:
+                findings.append(f"the page is {len(page)} characters; keep it under {max_chars}")
+            if not findings:
+                return page
+        st.emit("mockup_dropped", epic=epic, option=n, findings=findings[:6])
+        return None
+
+    def _pictures(self, initiative: Initiative) -> list[Path]:
+        """The pictures the person attached, for the vision seats (Task 8 resolves them)."""
+        return []
 
     # ---- stops ----
 

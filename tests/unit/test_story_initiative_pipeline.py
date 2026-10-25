@@ -425,3 +425,106 @@ async def test_two_asks_at_once_leave_no_stray_worktree(tmp_path: Path) -> None:
     await rig.pipeline.turn(rig.item())
     listed = git(rig.repo, "worktree", "list", "--porcelain")
     assert listed.count("worktree ") == 1  # only the checkout itself
+
+
+GOOD_PAGE = (
+    "<!doctype html><html><head><style>body{background:#09090b}</style></head><body>Board</body></html>"
+)
+BAD_PAGE = '<!doctype html><html><body><script src="https://evil.example/x.js"></script></body></html>'
+
+
+def page(html: str) -> FakeReply:
+    return FakeReply(text="Here it is.\n```html\n" + html + "\n```\n")
+
+
+def directions(*names: str) -> FakeReply:
+    items = [
+        {"name": n, "idea": f"{n} idea", "screen": f"{n} screen", "differs": f"{n} differs"} for n in names
+    ]
+    return FakeReply(text="Three ways.\n" + fenced({"type": "directions", "directions": items}))
+
+
+MOCKUPS_ASK = {"seat": "design", "kind": "mockups", "epic": "E1", "brief": "the board screen"}
+
+
+def mockup_dir_files(rig: Rig) -> list[str]:
+    folder = rig.pipeline.dir / rig.initiative.key / "mockups" / "E1"
+    return sorted(p.name for p in folder.glob("*")) if folder.is_dir() else []
+
+
+async def test_a_mockups_ask_draws_ux_directions_then_one_page_each_side_by_side(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
+            "ux": [directions("Columns", "List", "Timeline")],
+            "design": [page(GOOD_PAGE)] * 3,
+            "architect": [say("n")],
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    st = await rig.pipeline.turn(rig.item())
+    assert st.stage == "reading"
+    assert mockup_dir_files(rig) == ["option-1.html", "option-2.html", "option-3.html"]
+    assert st.mockups["E1"]["options"] == ["option-1.html", "option-2.html", "option-3.html"]
+    assert [d["name"] for d in st.mockups["E1"]["directions"]] == ["Columns", "List", "Timeline"]
+    [event] = rig.events("mockups")
+    assert event["epic"] == "E1" and len(event["options"]) == 3
+    ux_brief = rig.asks("ux")[0]
+    assert "Name 3 directions that really differ" in ux_brief and "> the board screen" in ux_brief
+    renders = rig.asks("design")
+    assert len(renders) == 3 and all("self-contained HTML document" in r for r in renders)
+    assert all("--primary #34d399" in r for r in renders)  # the look: airlie's tokens
+    assert any("Columns" in r for r in renders) and any("Timeline" in r for r in renders)
+    follow_up = rig.asks("product")[1]
+    assert "design drew 3 pages for E1" in follow_up and "- Columns: Columns idea" in follow_up
+
+
+async def test_a_pages_findings_go_back_to_design_once_then_the_option_is_dropped(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
+            "ux": [directions("Columns", "List", "Timeline")],
+            # three first tries (one has a script), then the one retry, which still has it
+            "design": [page(GOOD_PAGE), page(GOOD_PAGE), page(BAD_PAGE), page(BAD_PAGE)],
+            "architect": [say("n")],
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    st = await rig.pipeline.turn(rig.item())
+    assert len(mockup_dir_files(rig)) == 2 and len(st.mockups["E1"]["options"]) == 2
+    [dropped] = rig.events("mockup_dropped")
+    assert dropped["epic"] == "E1" and any("script" in f for f in dropped["findings"])
+    retry = [r for r in rig.asks("design") if "Your previous reply could not be used" in r]
+    assert len(retry) == 1 and "<script" in retry[0]  # the findings went back, once
+    assert "design drew 2 pages" in rig.asks("product")[1]
+    for name in mockup_dir_files(rig):  # nothing in the directory but clean pages
+        text = (rig.pipeline.dir / rig.initiative.key / "mockups" / "E1" / name).read_text()
+        assert "<script" not in text and "evil.example" not in text
+
+
+async def test_a_page_that_passes_on_its_second_try_is_kept(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
+            "ux": [directions("Columns", "List", "Timeline")],
+            "design": [page(GOOD_PAGE), page(GOOD_PAGE), page(BAD_PAGE), page(GOOD_PAGE)],
+            "architect": [say("n")],
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    assert len(mockup_dir_files(rig)) == 3 and rig.events("mockup_dropped") == []
+
+
+async def test_directions_that_never_parse_are_a_seats_failure_not_a_stop(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [consult(MOCKUPS_ASK), epics(epic_obj())],
+            "ux": [directions("One", "Two"), directions("One", "Two")],  # two, not three, twice
+            "architect": [say("n")],
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    st = await rig.pipeline.turn(rig.item())
+    assert st.stage == "reading" and mockup_dir_files(rig) == []
+    assert "could not answer" in rig.asks("product")[1] and "exactly 3 directions" in rig.asks("product")[1]

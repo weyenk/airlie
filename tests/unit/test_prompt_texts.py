@@ -27,12 +27,14 @@ from airlie.story.briefs import (
     built_so_far,
     consult_brief,
     consult_round_text,
+    directions_brief,
     imagine_brief,
     layers_brief,
     package_brief,
     plan_brief,
     questions_brief,
     refine_brief,
+    render_brief,
     replan_brief,
     survey_brief,
 )
@@ -45,6 +47,7 @@ from airlie.story.layer_checks import (
     findings_text,
 )
 from airlie.story.lessons import Lesson
+from airlie.story.mockups import Direction
 from airlie.story.model import Layer
 from airlie.story.package import Interface, Package, PackageFile
 from airlie.story.package_checks import package_feedback_said
@@ -370,6 +373,27 @@ CASES |= {
         chars=4000,
         rounds_left=2,
         surveys={"o/r": "late notes"},
+    ),
+    "specs-mockup-directions": lambda: text("specs-mockup-directions", count=3),
+    "specs-mockup-render": lambda: text("specs-mockup-render", max_chars=12000),
+    "specs-mockup-look": lambda: text("specs-mockup-look"),
+    "fn:briefs.directions_brief:plain": partial(
+        directions_brief, INITIATIVE, [], Ask("design", "the board screen", "mockups", "E1"), count=3
+    ),
+    "fn:briefs.directions_brief:full": partial(
+        directions_brief,
+        INITIATIVE,
+        [{"q": "What is it for?", "a": "Speed."}],
+        Ask("design", "the board screen", "mockups", "E1"),
+        count=3,
+        attachments=["linear.png"],
+        feedback=BAD_JSON,
+    ),
+    "fn:briefs.render_brief": partial(
+        render_brief,
+        Direction("Columns", "A column per status", "Header, then columns of cards", "Columns, not rows"),
+        "Light, serif, one blue accent.",
+        max_chars=12000,
     ),
     "fn:briefs.consult_round_text:due": partial(
         consult_round_text,
