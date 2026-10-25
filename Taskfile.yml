@@ -220,17 +220,27 @@ tasks:
       - exclude: node_modules/**/*
     generates:
       - ../src/airlie/serve/web_next/index.html
+    # the pass stamp, for the reason web:gate gives: a build killed partway must not count as built
+    status:
+      - test "$(cat {{.ROOT_DIR}}/.task/web-build.pass 2>/dev/null)" = "{{.CHECKSUM}}"
     cmds:
       - npm run build
+      - echo {{.CHECKSUM}} > {{.ROOT_DIR}}/.task/web-build.pass
 
   web:gate:
     desc: "The Vue app's gate, web:check then web:build; skipped while nothing under web/ changed since it last passed in this checkout"
     sources:
       - web/**/*
       - exclude: web/node_modules/**/*
+    # Task stores the checksum of `sources` before the commands run and drops it only when one fails, so a run killed
+    # partway (a tool's timeout, a closed terminal) would count as passed next time. The task is up to date only while
+    # the pass stamp, written once the last command has passed, holds that same checksum.
+    status:
+      - test "$(cat .task/web-gate.pass 2>/dev/null)" = "{{.CHECKSUM}}"
     cmds:
       - task: web:check
       - task: web:build
+      - echo {{.CHECKSUM}} > .task/web-gate.pass
 
   web:dev:
     desc: "Vite dev server for the Vue app on :5173 with hot reload, /v1 proxied to `task serve` on 8090"
