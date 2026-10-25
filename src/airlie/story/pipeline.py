@@ -23,6 +23,7 @@ from typing import Any
 from airlie.config import AirlieConfig
 from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
+from airlie.story.asking import Asker, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
@@ -55,7 +56,7 @@ from airlie.story.package import Package, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
-from airlie.story.rounds import plan_in_rounds, same_layers
+from airlie.story.rounds import same_layers
 from airlie.story.state import STAGES, StoryState
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
@@ -73,9 +74,7 @@ from airlie.teams.worktree import (
     squash_since,
 )
 from airlie.topology.studio import StudioOrchestrator
-from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
-
-StudioFactory = Callable[[], StudioOrchestrator]
+from airlie.topology.studio_plan import extract_json_block
 
 _SHORT = {
     "passes_before_code": "passes before the code is written",
@@ -127,15 +126,6 @@ def build_commit() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return out or None
-
-
-class StoryBlocked(Exception):
-    """A stage cannot finish; the issue goes to blocked with this message. `diagnosis` is the supervisor's
-    reading of why, when a layer stopped and it had one: the note shows it beside the reason, never in it."""
-
-    def __init__(self, reason: str, diagnosis: str | None = None) -> None:
-        super().__init__(reason)
-        self.diagnosis = diagnosis
 
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
@@ -285,6 +275,7 @@ class StoryPipeline:
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
+        self.asker = Asker(cfg, studio, self.repo)
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
         that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
@@ -395,30 +386,6 @@ class StoryPipeline:
         self.test_cmd = run
         self._shown_cmd = _redact_urls(shown)
 
-    def _start_ask(self, st: StoryState, stage: str, at: str | None) -> tuple[Any, dict[str, str]]:
-        """The studio for one read-only turn, on record in the state and the events, and the commit it reads
-        (the story's base, or `at`)."""
-        orch = self.studio()
-        base = dict(st.base or {})
-        if at is not None:
-            base = {"ref": at, "sha": at}
-        st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
-        st.save()
-        st.emit(
-            "run", stage=stage, studio_run=orch.run_dir.run_id, base=base.get("ref"), base_sha=base.get("sha")
-        )
-        return orch, base
-
-    def _answer(self, team: Any, role: str, orch: Any) -> str:
-        """What a specialist's turn said, or the stop it ended in (a cut-off one stops the story: another try
-        with the same config meets the same cap, so it is no StoryError, which is retried with its text in
-        the model's prompt)."""
-        if team is not None and team.stop_reason == "cut_off":
-            raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
-        if team is None or not team.ok:
-            raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
-        return str(team.final_text)
-
     async def _ask(
         self,
         st: StoryState,
@@ -428,24 +395,8 @@ class StoryPipeline:
         at: str | None = None,
         steps: int | None = None,
     ) -> str:
-        """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
-        the story's base, or at commit `at` (removed after, even when the studio raises), no synthesis.
-        `steps` limits its steps (the role's own limit when None)."""
-        plan = Plan((), (Subtask(stage, brief, role),))
-        orch, base = self._start_ask(st, stage, at)
-        try:
-            report = await orch.execute_task(
-                f"{stage}: {st.card['title']}",
-                repo=self.repo,
-                plan=plan,
-                base=base.get("sha"),
-                detach=True,
-                synthesise=False,
-                max_steps=steps,
-            )
-        finally:
-            remove_worktree(self.repo, orch.run_dir.path / "studio")
-        return self._answer(report.teams[0] if report.teams else None, role, orch)
+        """One read-only specialist turn at the story's base (or `at`): `Asker.ask`."""
+        return await self.asker.ask(st, stage, role, brief, at, steps)
 
     async def _ask_in_rounds[T](
         self,
@@ -461,39 +412,19 @@ class StoryPipeline:
         rounds: int,
         signal: Callable[[str], Any] | None = None,
     ) -> str:
-        """`_ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
-        conversation until a round leaves the plan unchanged or `rounds` are used."""
-        plan = Plan((), (Subtask(stage, brief, role),))
-        orch, base = self._start_ask(st, stage, at)
-
-        async def first() -> str:
-            report = await orch.execute_task(
-                f"{stage}: {st.card['title']}",
-                repo=self.repo,
-                plan=plan,
-                base=base.get("sha"),
-                detach=True,
-                synthesise=False,
-                max_steps=round_steps,
-            )
-            return self._answer(report.teams[0] if report.teams else None, role, orch)
-
-        async def again(nudge: str) -> str:
-            await orch.follow_up(stage, nudge)
-            return self._answer(orch.runs[stage].result, role, orch)
-
-        try:
-            return await plan_in_rounds(
-                first,
-                again,
-                parse,
-                same,
-                rounds=rounds,
-                emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
-                role=role,
-            )
-        finally:
-            remove_worktree(self.repo, orch.run_dir.path / "studio")
+        """`_ask`, in rounds (story.rounds): `Asker.ask_in_rounds`."""
+        return await self.asker.ask_in_rounds(
+            st,
+            stage,
+            role,
+            brief,
+            at,
+            parse=parse,
+            same=same,
+            round_steps=round_steps,
+            rounds=rounds,
+            signal=signal,
+        )
 
     async def _usable[T](
         self,
@@ -507,18 +438,9 @@ class StoryPipeline:
         at: str | None = None,
         ask: Callable[..., Awaitable[str]] | None = None,
     ) -> T:
-        """Ask `role` until `parse` accepts the reply: an unusable one (StoryError) goes back with the reason,
-        story.stage_attempts tries in all (or `attempts`), then the story stops with the last reason. A reply
-        cut off at max_tokens is not asked again (`_ask`): the story stops at once. `at` is the commit the
-        role reads (default the story's base). `ask` replaces `_ask` (planning in rounds)."""
-        feedback: str | None = None
-        for _ in range(attempts or self.s.stage_attempts):
-            try:
-                return parse(await (ask or self._ask)(st, stage, role, brief(feedback), at))
-            except StoryError as e:
-                feedback = str(e)
-                st.emit("retry", stage=stage, error=feedback)
-        raise StoryBlocked(f"{role} did not produce a usable {what}: {feedback}")
+        """Ask `role` until `parse` accepts the reply (`Asker.usable`). `ask` replaces `_ask` (planning in
+        rounds)."""
+        return await self.asker.usable(st, stage, role, what, brief, parse, attempts, at, ask or self._ask)
 
     async def _survey(self, st: StoryState, card: Card) -> None:
         """The architect reads the code the request touches and takes notes, while product refines it: the
