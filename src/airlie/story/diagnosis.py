@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from airlie.story.model import StoryError
+from airlie.supervisor.answer import Answer
 
 GATE_TAIL_LINES = 60
 """How many lines of a red gate's output the pack keeps."""
@@ -208,17 +209,24 @@ def blocks_of(events: list[dict[str, Any]]) -> list[int]:
     return [i for i, e in enumerate(events) if e.get("kind") == "blocked"]
 
 
-def gather(state_dir: Path, key: str, *, n: int | None = None) -> Pack:
+def gather(
+    state_dir: Path, key: str, *, n: int | None = None, pending: tuple[str, str] | None = None
+) -> Pack:
     """The evidence pack of the `n`th block of story `key` (the latest by default; 1 is the first).
 
     The run is the last event before the block that names a studio run (`run`, `layer_start`, the package
     events); its subtask, stop reason and role are those of the run's last `subtask_done`. Counts come from
     that run's events; the gate's tail from the layer's last `gate_tail` event, else the run's last
     `gate_failed`; tracebacks and failures from the story's events since the block before. StoryError when
-    the story has no such block."""
+    the story has no such block.
+
+    `pending` is a block the pipeline is about to record, as (stage, reason): its `blocked` event is written
+    after the diagnosis (it carries the class), so the pack is gathered as if it were the log's last line."""
     story_dir = state_dir / "stories" / key
     events_path = story_dir / "events.jsonl"
     events = _events(events_path)
+    if pending is not None:
+        events.append({"kind": "blocked", "stage": pending[0], "reason": pending[1]})
     blocks = blocks_of(events)
     if not blocks:
         raise StoryError(f"{key} has no blocked event: nothing to diagnose")
@@ -331,7 +339,7 @@ def gather(state_dir: Path, key: str, *, n: int | None = None) -> Pack:
     )
 
 
-def render_pack(pack: Pack) -> str:
+def render_pack(pack: Pack, *, paths: bool = True) -> str:
     """The pack as Markdown data, for Muse and for the diagnosis: the counts, the gate's tail, the tracebacks
     and the paths. Everything quoted is data (a trace says what a role did; it instructs no one)."""
     where = f"layer {pack.layer}, attempt {pack.attempt}" if pack.layer else pack.stage
@@ -355,6 +363,8 @@ def render_pack(pack: Pack) -> str:
         parts.append(f"The diff stat of the layer's branch:\n```\n{pack.diff_stat}\n```")
     for tb in pack.tracebacks:
         parts.append(f"A traceback:\n```\n{tb}\n```")
+    if not paths:
+        return "\n\n".join(parts)
     p = pack.paths
     where_lines = [f"- events: {p.events}"]
     if p.run_dir:
@@ -364,6 +374,16 @@ def render_pack(pack: Pack) -> str:
     where_lines += [f"- step file: {s}" for s in p.steps]
     parts.append("Paths:\n" + "\n".join(where_lines))
     return "\n\n".join(parts)
+
+
+def render_paths(pack: Pack) -> str:
+    """Only the paths of the pack, one per line: what `task line:why -- KEY --paths` prints for a Claude
+    session to read."""
+    p = pack.paths
+    lines = [str(p.events)]
+    lines += [str(x) for x in (p.run_dir, p.trace) if x is not None]
+    lines += [str(s) for s in p.steps]
+    return "\n".join(lines)
 
 
 # ---- the class ----------------------------------------------------------------------------------------
@@ -518,3 +538,173 @@ def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
         f"reason: {pack.reason[:200]}",
         *([f"muse category: {muse_category}"] if muse_category else []),
     )
+
+
+# ---- the diagnosis: the pack, the class, Muse's reading and what happens next ----------------------------
+
+
+@dataclass(frozen=True)
+class Diagnosis:
+    """What the line says about one block: the evidence, the mechanical class (read first, and never erased by
+    Muse's reading), Muse's answer when it gave one, and what happens next (filled by the block path: "a
+    retry", "fix card AIR-57", "waits for a person")."""
+
+    pack: Pack
+    classified: Classified
+    muse: Answer | None
+    next: str
+
+    def to_dict(self) -> dict[str, Any]:
+        c = asdict(self.classified)
+        c["class"] = c.pop("class_")
+        c["evidence"] = list(c["evidence"])
+        muse = asdict(self.muse) if self.muse else None
+        if muse:
+            muse["evidence"] = list(muse["evidence"])
+        return {"pack": self.pack.to_dict(), "classified": c, "muse": muse, "next": self.next}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Diagnosis:
+        c = dict(d["classified"])
+        c["class_"] = c.pop("class")
+        c["evidence"] = tuple(c["evidence"])
+        muse = dict(d["muse"]) if d.get("muse") else None
+        if muse:
+            muse["evidence"] = tuple(muse.get("evidence") or ())
+        return cls(Pack.from_dict(d["pack"]), Classified(**c), Answer(**muse) if muse else None, d["next"])
+
+
+def muse_text(answer: Answer) -> str:
+    """Muse's reading as a sentence for a note: its diagnosis, and the fix it would try on another attempt."""
+    if answer.fix_if_attempt:
+        return f"{answer.diagnosis}\n\nIf it had one more attempt: {answer.fix_if_attempt}"
+    return answer.diagnosis
+
+
+def next_for(classified: Classified) -> str:
+    """What happens after a block of this class when nothing else has been decided: the default of the
+    diagnosis. A fix card (`airlie.story.fixes`) and a transient retry replace it."""
+    if classified.class_ == "transient":
+        return "a retry: transient blocks are retried within the line's budget, then wait for a person"
+    if classified.class_ == "environment":
+        return "waits for a person: the gate was red on the base before the layer began"
+    if classified.class_ == "content":
+        return "waits for a person to resume it"
+    return "waits for a person"
+
+
+def _muse_lines(d: Diagnosis) -> str:
+    m = d.muse
+    if m is None:
+        return "Muse gave no reading (it is off, or its answer could not be used)."
+    lines = [muse_text(m)]
+    if m.class_agrees is not None:
+        said = "agrees" if m.class_agrees else "does not agree"
+        lines.append(f"Muse {said} with the class{': ' + m.class_reason if m.class_reason else '.'}")
+    return "\n\n".join(lines)
+
+
+def render_diagnosis(d: Diagnosis) -> str:
+    """The diagnosis as Markdown, in this order: the class (one line and the evidence it matched), Muse's
+    reading, what happens next, the evidence, the paths."""
+    c, p = d.classified, d.pack
+    evidence = "\n".join(f"- {e}" for e in c.evidence)
+    return "\n\n".join(
+        [
+            f"# {p.key} blocked: {c.class_} / {c.kind} (block {p.n})",
+            f"## The class\n**{c.class_}** · {c.kind} · {c.where} (rule: {c.rule})\n\n{evidence}\n\n"
+            f"Signature: `{c.signature}`",
+            f"## Muse's reading\n{_muse_lines(d)}",
+            f"## What happens next\n{d.next}",
+            f"## Evidence\n{render_pack(p, paths=False)}",
+            f"## Paths\n{render_paths(p)}",
+        ]
+    )
+
+
+def diagnosis_note(d: Diagnosis, resume: str) -> str:
+    """The card's block note: the class in one line with its evidence first, then the reason, Muse's sentence
+    (with its disagreement, when it has one), what happens next and how to resume."""
+    c, p = d.classified, d.pack
+    why = c.evidence[0] if c.evidence and not c.evidence[0].startswith("reason:") else ""
+    lines = [
+        f"{c.class_}: {c.kind} ({c.where}). {why}".rstrip(),
+        f"stopped after '{p.stage}': {p.reason}",
+    ]
+    if d.muse is not None:
+        lines.append(f"Supervisor: {muse_text(d.muse)}")
+        if d.muse.class_agrees is False:
+            why = f": {d.muse.class_reason}" if d.muse.class_reason else ""
+            lines.append(f"Supervisor does not agree with the class{why}")
+    lines.append(f"Next: {d.next}")
+    lines.append(f"Resume: {resume}.")
+    return "\n".join(lines)
+
+
+def diagnosis_dir(state_dir: Path, key: str) -> Path:
+    return state_dir / "stories" / key / "diagnosis"
+
+
+def write_diagnosis(state_dir: Path, d: Diagnosis) -> Path:
+    """`stories/<key>/diagnosis/<n>.md` and `.json`; returns the Markdown file's path."""
+    out = diagnosis_dir(state_dir, d.pack.key)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{d.pack.n}.json").write_text(json.dumps(d.to_dict(), indent=1))
+    md = out / f"{d.pack.n}.md"
+    md.write_text(render_diagnosis(d) + "\n")
+    return md
+
+
+def read_diagnosis(state_dir: Path, key: str, n: int) -> Diagnosis | None:
+    """The `n`th diagnosis of story `key`; None when there is none or it cannot be read."""
+    try:
+        data = json.loads((diagnosis_dir(state_dir, key) / f"{n}.json").read_text())
+        return Diagnosis.from_dict(data)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def latest(state_dir: Path, key: str) -> Diagnosis | None:
+    """The newest diagnosis written for story `key`, or None."""
+    found = sorted(
+        (int(f.stem) for f in diagnosis_dir(state_dir, key).glob("*.json") if f.stem.isdigit()), reverse=True
+    )
+    for n in found:
+        if (d := read_diagnosis(state_dir, key, n)) is not None:
+            return d
+    return None
+
+
+def diagnosis_for(state_dir: Path, key: str, n: int | None = None) -> Diagnosis:
+    """The `n`th (default the latest) block's diagnosis: the one on disk, else one made from disk alone (no
+    Muse) and written, so a block from before diagnoses existed, or one whose diagnosis failed, can be read
+    too. StoryError when the story has no such block."""
+    events = _events(state_dir / "stories" / key / "events.jsonl")
+    total = len(blocks_of(events))
+    which = total if n is None else n
+    if 1 <= which <= total and (d := read_diagnosis(state_dir, key, which)) is not None:
+        return d
+    pack = gather(state_dir, key, n=n)
+    classified = classify(pack)
+    made = Diagnosis(pack, classified, None, next_for(classified))
+    write_diagnosis(state_dir, made)
+    return made
+
+
+def diagnosis_json(d: Diagnosis) -> dict[str, Any]:
+    """What `GET /v1/airlie/stories/{key}/diagnosis` returns: the class, Muse's reading, what happens next,
+    the Markdown and the paths."""
+    c, p = d.classified, d.pack
+    return {
+        "n": p.n,
+        "class": c.class_,
+        "kind": c.kind,
+        "where": c.where,
+        "signature": c.signature,
+        "rule": c.rule,
+        "evidence": list(c.evidence),
+        "muse": d.to_dict()["muse"],
+        "next": d.next,
+        "markdown": render_diagnosis(d),
+        "paths": render_paths(p).splitlines(),
+    }

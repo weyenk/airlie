@@ -87,6 +87,9 @@ class Intervention:
     model: str
     seconds: float
     tokens: int
+    class_: str | None = None
+    """At a block: the mechanical class the pipeline read first (P5a, 2026-10-25), and its signature."""
+    signature: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,9 @@ class Row:
     tokens: int | None
     outcome: Outcome | None  # the latest recorded
     verdict: Verdict | None  # the latest recorded
+    class_: str | None = None  # null for a row from before the columns
+    signature: str | None = None
+    class_agrees: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,9 @@ def _row(r: sqlite3.Row) -> Row:
         tokens=r["tokens"],
         outcome=cast("Outcome | None", r["outcome"]),
         verdict=cast("Verdict | None", r["verdict"]),
+        class_=r["class"],
+        signature=r["signature"],
+        class_agrees=None if r["class_agrees"] is None else bool(r["class_agrees"]),
     )
 
 
@@ -167,6 +176,14 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Columns added after the first ledgers (only ADD COLUMN: the rows before them read null)."""
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(interventions)")}
+        for column, kind in (("class", "TEXT"), ("signature", "TEXT"), ("class_agrees", "INTEGER")):
+            if column not in have:
+                self._db.execute(f'ALTER TABLE interventions ADD COLUMN "{column}" {kind}')
 
     def close(self) -> None:
         self._db.close()
@@ -180,7 +197,8 @@ class Ledger:
             cur = self._db.execute(
                 "INSERT INTO interventions (at, story, layer, studio_run, subtask, role, trigger, kinds_json,"
                 " category, owner, diagnosis, evidence_json, message, would_route_to, fix_if_attempt,"
-                " fallback, model, seconds, tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " fallback, model, seconds, tokens, class, signature, class_agrees)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     time.time(),
                     i.story,
@@ -201,6 +219,9 @@ class Ledger:
                     i.model,
                     i.seconds,
                     i.tokens,
+                    i.class_,
+                    i.signature,
+                    None if a is None or a.class_agrees is None else int(a.class_agrees),
                 ),
             )
             assert cur.lastrowid is not None

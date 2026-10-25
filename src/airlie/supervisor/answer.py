@@ -41,6 +41,11 @@ class Answer:
     message: str | None
     would_route_to: str | None
     fix_if_attempt: str | None
+    class_agrees: bool | None = None
+    """At a block only (P5a, 2026-10-25): whether Muse agrees with the mechanical class the diagnosis read
+    first; None when it was not asked (any other trigger) or did not say."""
+    class_reason: str | None = None
+    """Why it agrees or not, in a sentence."""
 
 
 def _text(data: dict[str, Any], key: str) -> str | None:
@@ -78,6 +83,9 @@ def parse_answer(text: str, *, block: bool) -> Answer:
         raw = []
     if not isinstance(raw, list) or not all(isinstance(e, str) for e in raw):
         raise AnswerError("evidence must be a list of strings")
+    agrees = data.get("class_agrees")
+    if agrees is not None and not isinstance(agrees, bool):
+        raise AnswerError("class_agrees must be true or false")
     return Answer(
         category=category,
         owner=owner,
@@ -86,4 +94,6 @@ def parse_answer(text: str, *, block: bool) -> Answer:
         message=message,
         would_route_to=route,
         fix_if_attempt=_text(data, "fix_if_attempt"),
+        class_agrees=agrees,
+        class_reason=_text(data, "class_reason"),
     )

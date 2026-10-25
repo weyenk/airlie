@@ -16,11 +16,13 @@ import re
 import subprocess
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig
+from airlie.engine.protocol import Engine
 from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
 from airlie.story.board import Board, Card, Column, note
@@ -37,7 +39,18 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.context import guide_budget, named_paths, repo_guide
-from airlie.story.diagnosis import GATE_TAIL_LINES
+from airlie.story.diagnosis import (
+    GATE_TAIL_LINES,
+    Classified,
+    Diagnosis,
+    Pack,
+    classify,
+    diagnosis_note,
+    gather,
+    muse_text,
+    next_for,
+    write_diagnosis,
+)
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
@@ -58,6 +71,7 @@ from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
+from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
 from airlie.supervisor.triage import triage_for
@@ -131,12 +145,8 @@ def build_commit() -> str | None:
 
 
 class StoryBlocked(Exception):
-    """A stage cannot finish; the issue goes to blocked with this message. `diagnosis` is the supervisor's
-    reading of why, when a layer stopped and it had one: the note shows it beside the reason, never in it."""
-
-    def __init__(self, reason: str, diagnosis: str | None = None) -> None:
-        super().__init__(reason)
-        self.diagnosis = diagnosis
+    """A stage cannot finish; the issue goes to blocked with this message. The diagnosis (why, by rules and by
+    Muse's reading) is made on the way into `_block`, from what is on disk."""
 
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
@@ -217,6 +227,14 @@ def _gate_detail(output: str) -> str:
     return lines[-1][:200] if lines else "the gate failed"
 
 
+def _evidence_kinds(reason: str) -> tuple[str, ...]:
+    """The ledger's kind of finding for a layer that stopped, as `recall` matches it: what the layer's stop
+    reason says happened (it changed nothing, or its gate was red)."""
+    if "changed nothing" in reason:
+        return ("changed_nothing",)
+    return ("gate_fails",) if " fails on " in reason else ()
+
+
 def _to_build(st: StoryState) -> bool:
     """A layer of the story is still to be built: its layers are not planned yet, or one is not built."""
     return st.layers is None or any(f"{i + 1:02d}" not in st.built for i in range(len(st.layers)))
@@ -286,6 +304,9 @@ class StoryPipeline:
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
+        self._engine: Engine | None = None
+        """The engine of the latest studio run: Muse's reading of a block is asked on it."""
+        self._layer_base: str | None = None
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
         that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
@@ -334,7 +355,7 @@ class StoryPipeline:
             await self._publish(st, card, story, layers)
             await self._finish(st, card)
         except StoryBlocked as e:
-            await self._block(st, card, str(e), e.diagnosis)
+            await self._block(st, card, str(e))
         except asyncio.CancelledError:
             await self._cancelled(st, card)
             raise
@@ -400,6 +421,7 @@ class StoryPipeline:
         """The studio for one read-only turn, on record in the state and the events, and the commit it reads
         (the story's base, or `at`)."""
         orch = self.studio()
+        self._engine = orch.engine
         base = dict(st.base or {})
         if at is not None:
             base = {"ref": at, "sha": at}
@@ -791,6 +813,8 @@ class StoryPipeline:
         layer = layers[i]
         last = attempt >= self.s.layer_attempts
         orch = self.studio()
+        self._engine = orch.engine  # the block path's supervisor asks it, after this studio is gone
+        self._layer_base = base_sha
         wt = orch.run_dir.path / "studio"
         st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
         if rev_parse(self.repo, f"refs/heads/{branch}") is None:
@@ -849,14 +873,13 @@ class StoryPipeline:
                         "gate_tail",
                         layer=nn,
                         studio_run=orch.run_dir.run_id,
-                        output="\n".join(orch.gate_output.strip().splitlines()[-GATE_TAIL_LINES:]),
+                        output=_redact_urls(
+                            "\n".join(orch.gate_output.strip().splitlines()[-GATE_TAIL_LINES:])
+                        ),
                     )
                 self._lesson(st, nn, layer, package, coder, ending, detail)
                 if last:
-                    diagnosis = await self._at_block(
-                        sup, orch, "build", reason, kinds=(kind,), evidence=reason
-                    )
-                    raise StoryBlocked(reason, diagnosis)
+                    raise StoryBlocked(reason)
                 st.emit("layer_replanned", layer=nn, attempt=attempt, why=ending, detail=detail)
                 told = self._replan_feedback(st, orch, nn, coder)
                 remove_worktree(self.repo, wt)
@@ -1087,24 +1110,6 @@ class StoryPipeline:
             st.emit("supervisor_fallback", trigger=None, reason=f"setup: {type(e).__name__}", layer=nn)
             return None
 
-    async def _at_block(
-        self,
-        sup: LayerSupervisor | None,
-        orch: StudioOrchestrator,
-        subtask: str,
-        reason: str,
-        *,
-        kinds: Sequence[str],
-        evidence: str,
-    ) -> str | None:
-        """The supervisor's reading of why the layer stopped, for the card; None without one, or on its
-        fallback. The role is the subtask's as it ran, or the configured one when it never ran."""
-        if sup is None:
-            return None
-        return await sup.at_block(
-            subtask, self._role_of(orch, subtask), reason, kinds=kinds, evidence=evidence
-        )
-
     @staticmethod
     def _steer(st: StoryState, ids: Sequence[str], role: str, nn: str) -> None:
         """A `steer` event for each hub steering text in what the pipeline is about to send a layer's role:
@@ -1112,11 +1117,6 @@ class StoryPipeline:
         team loop's own sends are events on the studio run's stream; these are the story's."""
         for id in ids:
             st.emit("steer", id=id, role=role, layer=nn)
-
-    def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
-        """The subtask's role as it ran, or the build role when it never ran."""
-        run = orch.runs.get(subtask)
-        return run.role if run is not None else self.s.build_role
 
     @staticmethod
     def _emit_findings(st: StoryState, found: list[Finding], nn: str, attempt: int, studio_run: str) -> None:
@@ -1173,31 +1173,110 @@ class StoryPipeline:
         await self.board.move(card, "review")
         st.finish("review")
 
-    async def _block(self, st: StoryState, card: Card, reason: str, diagnosis: str | None = None) -> None:
+    async def _block(self, st: StoryState, card: Card, reason: str) -> None:
         """Every stop ends here: the reason is masked and then cut (once, for all of them), kept in the state
         and the events, posted as a note, and the issue moved to blocked. The note and the move are separate
         calls, so a note that fails does not keep the issue out of Blocked. A cancel that lands while the
-        board is being told is a cancel like any other (back to intake, with a note), not a stop. A
-        supervisor's `diagnosis` is masked and cut the same way, on its own, and goes in the note and the
-        event beside the reason; the state keeps the reason alone."""
+        board is being told is a cancel like any other (back to intake, with a note), not a stop.
+
+        The note is the block's diagnosis (`_diagnose`): the class by rules, Muse's reading of the evidence
+        and what happens next. The state keeps the reason alone."""
         # masked first: a cut through a password would leave a piece of it
         reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
-        said = ""
-        if diagnosis is None:
-            st.emit("blocked", stage=st.stage, reason=reason)
-        else:
-            diagnosis = _cap(_redact_urls(diagnosis))
-            st.emit("blocked", stage=st.stage, reason=reason, diagnosis=diagnosis)
-            said = f"\nSupervisor: {diagnosis}"
+        text, fields = await self._diagnose(st, card, reason)
+        st.emit("blocked", stage=st.stage, reason=reason, **fields)
         try:
-            await self._tell(
-                st, card, f"stopped after '{st.stage}': {reason}{said}\nResume: {card.resume}.", "blocked"
-            )
+            await self._tell(st, card, text, "blocked")
         except asyncio.CancelledError:  # run's own handler is behind us: this stop is being handled
             await self._cancelled(st, card)
             raise
+
+    async def _diagnose(self, st: StoryState, card: Card, reason: str) -> tuple[str, dict[str, Any]]:
+        """The block's note and the fields its `blocked` event gains. The evidence is gathered from disk, the
+        class read by rules, then Muse reads both (the supervisor's `block` trigger, once, here); the
+        diagnosis is written under the story's directory. Whatever fails in it is a `diagnosis_failed` event
+        and today's plain note: a diagnosis never keeps a story out of Blocked."""
+        plain = f"stopped after '{st.stage}': {reason}\nResume: {card.resume}."
+        state_dir = self.cfg.observability.state_dir
+        try:
+            pack = gather(state_dir, card.key, pending=(st.stage, reason))
+            classified = classify(pack)
+            muse = await self._muse_at_block(st, card, pack, classified)
+            if muse is not None:
+                classified = classify(pack, muse_category=muse.category)
+            d = Diagnosis(pack, classified, muse, next_for(classified))
+            write_diagnosis(state_dir, d)
+            text = diagnosis_note(d, card.resume)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - a diagnosis that fails leaves the stop as it was
+            st.emit("diagnosis_failed", error=_cap(_redact_urls(f"{type(e).__name__}: {e}"), 300))
+            return plain, {}
+        fields: dict[str, Any] = {
+            "n": pack.n,
+            "class": classified.class_,
+            "block_kind": classified.kind,  # not "kind": that is the event's own key
+            "signature": classified.signature,
+        }
+        if muse is not None:
+            fields["diagnosis"] = _cap(_redact_urls(muse_text(muse)))
+        return text, fields
+
+    async def _muse_at_block(
+        self, st: StoryState, card: Card, pack: Pack, classified: Classified
+    ) -> Answer | None:
+        """Muse's reading of the block's evidence beside its class (story.supervisor); None when it is off,
+        no studio ran in this process, or it fell back (a `supervisor_fallback` event says why). Muse's text
+        is masked and cut like every reason. Its own supervisor, since the layer's closed with the layer."""
+        spec = self.s.supervisor
+        if not spec.enabled or self._engine is None:
+            return None
+        try:
+            if self.ledger is None:
+                self.ledger = Ledger(self.cfg.observability.state_dir / "supervisor.sqlite")
+            prompt_text(self.cfg.roles[spec.role].prompt)
+            checks = checks_for(
+                self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement()
+            )
+            kept = Path(st.attempt["worktree"]) if st.attempt else None
+            worktree = kept if kept is not None and kept.is_dir() else self.repo
+            run_dir = pack.paths.run_dir
+            sup = LayerSupervisor(
+                ledger=self.ledger,
+                triage=triage_for(self.cfg, self._engine, checks),
+                spec=spec,
+                story=card.key,
+                layer=pack.layer or "",
+                studio_run=pack.run_id or "",
+                trace_dir=run_dir / "trace" if run_dir is not None else worktree / ".no-trace",
+                worktree=worktree,
+                base_sha=self._layer_base if worktree is not self.repo and self._layer_base else "HEAD",
+                brief=pack.reason,
+                events=st.path / "events.jsonl",
+                emit=st.emit,
+            )
+        except Exception as e:  # noqa: BLE001 - a supervisor that cannot be set up leaves the block as it was
+            st.emit(
+                "supervisor_fallback", trigger="block", reason=f"setup: {type(e).__name__}", layer=pack.layer
+            )
+            return None
+        try:
+            answer = await sup.at_block(
+                pack.subtask or self.s.build_role,
+                pack.role or self.s.build_role,
+                pack.reason,
+                pack=pack,
+                classified=classified,
+                kinds=_evidence_kinds(pack.reason),
+            )
+        finally:
+            sup.close()
+        if answer is None:
+            return None
+        fix = _cap(_redact_urls(answer.fix_if_attempt)) if answer.fix_if_attempt else None
+        return replace(answer, diagnosis=_cap(_redact_urls(answer.diagnosis)), fix_if_attempt=fix)
 
     async def _tell(self, st: StoryState, card: Card, text: str, column: Column) -> None:
         """A note on the issue and then a move to `column`, as two calls: a board that is down must not hide

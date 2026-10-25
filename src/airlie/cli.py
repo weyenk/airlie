@@ -53,6 +53,11 @@ supervisor_app = typer.Typer(
     "(docs/integrations/story.md).",
 )
 app.add_typer(supervisor_app, name="supervisor")
+line_app = typer.Typer(
+    no_args_is_help=True,
+    help="The line: why a story blocked, and what the line does about it (planning-line P5).",
+)
+app.add_typer(line_app, name="line")
 prompts_app = typer.Typer(
     no_args_is_help=True,
     help="The prompt hub: the rules and steering airlie sends to models, as files "
@@ -1227,7 +1232,35 @@ def supervisor_log(
         when = datetime.fromtimestamp(r.at).strftime("%Y-%m-%d %H:%M")
         what = r.category if r.fallback is None else f"fallback:{r.fallback}"
         line = f"#{r.id}  {when}  {r.story}/{r.layer}  {r.trigger}  {what}  {r.outcome or 'open'}"
+        if r.class_:  # a block's mechanical class and whether Muse agreed (rows before it have none)
+            agreed = {True: "agrees", False: "disagrees", None: "silent"}[r.class_agrees]
+            line += f"  class:{r.class_} (Muse {agreed})"
         console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@line_app.command("why")
+def line_why(
+    key: Annotated[str, typer.Argument(help="the story's key (AIR-9)")],
+    n: Annotated[int | None, typer.Option("--n", min=1, help="the nth block (default the latest)")] = None,
+    paths: Annotated[
+        bool, typer.Option("--paths", help="only the paths of the evidence, one per line")
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Why a story blocked: the class by rules, Muse's reading, what happens next, the evidence and its
+    paths. A block with no diagnosis on disk (one from before diagnoses, say) gets one made from its events
+    and run directory. Nothing runs and no model is asked."""
+    from airlie.story.diagnosis import diagnosis_for, render_diagnosis, render_paths
+    from airlie.story.model import StoryError
+
+    state_dir = _load(config).observability.state_dir.expanduser()
+    try:
+        d = diagnosis_for(state_dir, key, n)
+    except StoryError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    text = render_paths(d.pack) if paths else render_diagnosis(d)
+    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 @supervisor_app.command("stats")

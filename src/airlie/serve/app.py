@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -42,11 +43,16 @@ from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has
 from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
+from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.model import StoryRunning, StorySetupError
 from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+
+_STORY_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+"""A story key as a directory name under stories/: a route that serves a path under the state directory
+matches it by name, so a key never walks out of it."""
 
 NEXT_DIR = Path(__file__).parent / "web_next"
 """The Vue app's build (`task web:build`, a Vite build with base `/`): `GET /` and every path that is not the
@@ -656,6 +662,19 @@ def create_app(
             return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/stories/{key}/diagnosis")
+    async def story_diagnosis_get(key: str, n: int | None = Query(None, ge=1)) -> dict[str, Any]:
+        """The diagnosis a block wrote (planning-line P5a): the class by rules, Muse's reading, what happens
+        next, its Markdown and the paths of the evidence. 404 when the story has no diagnosis. The key names a
+        directory of the state directory by name and nothing else."""
+        state = cfg.observability.state_dir.expanduser()
+        if not _STORY_DIR.fullmatch(key) or ".." in key:
+            raise HTTPException(404, f"no diagnosis for {key!r}")
+        d = read_diagnosis(state, key, n) if n is not None else latest(state, key)
+        if d is None:
+            raise HTTPException(404, f"{key} has no diagnosis" + (f" for block {n}" if n else ""))
+        return diagnosis_json(d)
 
     @app.get("/v1/airlie/repos")
     async def repo_list() -> dict[str, Any]:

@@ -467,6 +467,24 @@ async def stopped_with(tmp_path: Path, reason: str) -> tuple[StoryState, Recordi
     return st, board
 
 
+async def test_a_pack_that_cannot_be_gathered_is_an_event_and_the_plain_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(pipeline_module, "gather", broken)
+    st, board = await stopped_with(tmp_path, "layer 01 (B) changed nothing")
+    [posted] = board.notes
+    resume = "Resume: the same `task story -- --text ...` command."
+    assert posted == note(f"stopped after 'new': layer 01 (B) changed nothing\n{resume}")
+    [failed] = kinds(st.path / "events.jsonl", "diagnosis_failed")
+    assert failed["error"] == "OSError: disk gone"
+    [blocked] = kinds(st.path / "events.jsonl", "blocked")
+    assert blocked["reason"] == st.blocked and "class" not in blocked  # today's event, nothing more
+    assert board.moves[-1] == "blocked"  # a diagnosis that fails never keeps the issue out of Blocked
+
+
 async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
@@ -842,8 +860,9 @@ async def test_a_trunk_that_cannot_be_fetched_stops_the_story_before_any_model_a
     assert st.blocked.startswith(f"the trunk {trunk} could not be fetched from origin")
     assert "no network in a unit test" in st.blocked and "run the story again" in st.blocked
     assert board.moves == ["building", "blocked"]
-    stop = f"{NOTE_PREFIX}stopped after 'intake': the trunk {trunk} could not be fetched"
-    assert board.notes[-1].startswith(stop)
+    stop = f"stopped after 'intake': the trunk {trunk} could not be fetched"
+    assert board.notes[-1].startswith(f"{NOTE_PREFIX}transient: fetch_failed")  # the class leads
+    assert stop in board.notes[-1]
 
 
 async def test_a_story_builds_on_the_fetched_remote_trunk_never_on_a_local_one_a_model_moved(
@@ -912,7 +931,7 @@ async def test_a_stop_reason_of_any_kind_is_masked_in_block_once(
 ) -> None:
     # a StoryBlocked message, and a git failure as _reason words it, both reach the board through _block
     st, board = await stopped_with(tmp_path, raw)
-    assert st.blocked == masked and board.notes[0].startswith(note(f"stopped after 'new': {masked}\n"))
+    assert st.blocked == masked and f"stopped after 'new': {masked}\n" in board.notes[0]
     git_said = subprocess.CalledProcessError(128, ["git", "ls-remote", raw], stderr=f"fatal: {raw}")
     st, board = await stopped_with(tmp_path / "again", _reason(git_said))
     assert st.blocked == f"`git ls-remote {masked}` exited 128: fatal: {masked}"
@@ -935,8 +954,10 @@ async def test_a_stop_reason_is_capped_at_800_characters_keeping_its_start_and_i
     assert st.blocked is not None and len(st.blocked) == 800
     assert st.blocked.startswith("`git x` exited 128: aaa") and st.blocked.endswith("aaa the end of it")
     assert st.blocked[200] == "\u2026"
-    stopped = f"stopped after 'new': {st.blocked}\nResume: the same `task story -- --text ...` command."
-    assert board.notes == [note(stopped)]  # the board is told what the state and the event hold
+    stopped = f"stopped after 'new': {st.blocked}\n"
+    [posted] = board.notes
+    assert stopped in posted and posted.endswith("Resume: the same `task story -- --text ...` command.")
+    # the board is told what the state and the event hold
     [event] = kinds(st.path / "events.jsonl", "blocked")
     assert event["reason"] == st.blocked
     short, _ = await stopped_with(tmp_path / "short", "x" * 800)
@@ -1911,8 +1932,7 @@ async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in st.blocked
     assert "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```" in st.blocked
     assert board.moves == ["building", "blocked"]  # out of intake, so the queue moves on
-    stop = f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on origin/{trunk}"
-    assert board.notes[-1].startswith(stop)
+    assert f"stopped after 'intake': o/r has no test gate on origin/{trunk}" in board.notes[-1]
 
 
 async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
