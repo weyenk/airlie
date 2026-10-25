@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from airlie.serve.jobs import read_events
+from airlie.story.epic import epic_of
+from airlie.story.epic_plan import StoryPlan
+from airlie.story.model import StoryError
 from airlie.story.state import STAGES
 
 STAGE_ROLES = {"refine": "product", "survey": "architect", "layers": "architect", "package": "architect"}
@@ -405,6 +409,73 @@ def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
         "blocked": st.get("blocked"),
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
+    }
+
+
+def _story_json(state_dir: Path, key: str | None) -> dict[str, Any]:
+    """The state.json of the story `key` as a dict; {} when there is none (it has not started) or it cannot
+    be read."""
+    if not key or not _safe(key):
+        return {}
+    try:
+        data = json.loads((state_dir / "stories" / key / "state.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def epic_flow(state_dir: Path, key: str, statuses: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """An epic as the web app draws it (D9 of the plans phase): the plan as the architect wrote it (summary,
+    constraints, risks), the epic's criteria, each story of the plan in dependency order with its board key,
+    its dependencies, size and epic criteria, where it stands (`status`: the board's, from `statuses`, None
+    when not given; `stage` and `blocked`: its own state's, None before it starts), the cards a re-plan left
+    out, and the re-plans. StoryNotFound for an epic with no record or a damaged one."""
+    f = state_dir / "epics" / _name(key, "epic") / "state.json"
+    if not f.is_file():
+        raise StoryNotFound(f"no epic '{key}'")
+    try:
+        st = json.loads(f.read_text())
+        raw_plan = st.get("plan")
+        plan = StoryPlan.from_dict(raw_plan) if isinstance(raw_plan, dict) else None
+        card = st["card"] if isinstance(st.get("card"), dict) else {}
+        made = {str(k): str(v) for k, v in (st.get("stories") or {}).items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise StoryNotFound(f"epic '{key}': state.json is damaged") from None
+    try:
+        spec = epic_of(str(card.get("description") or ""))
+    except StoryError:
+        spec = None
+    stories: list[dict[str, Any]] = []
+    for ps in plan.order() if plan else ():
+        card_key = made.get(ps.id)
+        saved = _story_json(state_dir, card_key)
+        stories.append(
+            {
+                "id": ps.id,
+                "key": card_key,
+                "title": ps.title,
+                "size": ps.size,
+                "depends_on": list(ps.depends_on),
+                "epic_criteria": list(ps.epic_criteria),
+                "status": (statuses or {}).get(card_key or ""),
+                "stage": saved.get("stage"),
+                "blocked": saved.get("blocked"),
+            }
+        )
+    in_plan = {ps.id for ps in plan.stories} if plan else set()
+    return {
+        "key": key,
+        "title": card.get("title"),
+        "repo": st.get("repo"),
+        "stage": st.get("stage"),
+        "blocked": st.get("blocked"),
+        "summary": plan.summary if plan else None,
+        "constraints": list(plan.constraints) if plan else [],
+        "risks": [{"risk": r.risk, "pinned": r.pinned} for r in plan.risks] if plan else [],
+        "criteria": [{"id": c.id, "text": c.text} for c in spec.criteria] if spec else [],
+        "stories": stories,
+        "left_out": [k for sid, k in made.items() if sid not in in_plan],
+        "replans": [r for r in st.get("replans") or () if isinstance(r, dict)],
     }
 
 

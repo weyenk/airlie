@@ -32,9 +32,9 @@ from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
-from airlie.serve.flow import StoryNotFound, job_detail, story_flow
+from airlie.serve.flow import StoryNotFound, epic_flow, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
-from airlie.serve.listing import recent_runs, repo_names, repos, stories, story_page
+from airlie.serve.listing import epics, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
@@ -654,6 +654,21 @@ def create_app(
     async def story_job_get(key: str, node_id: str, job_id: str) -> dict[str, Any]:
         try:
             return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
+        except StoryNotFound as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/epics")
+    async def epic_list() -> dict[str, Any]:
+        """The epics the line has planned (or tried to), from their records: key, title, stage, stories."""
+        return {"epics": epics(cfg.observability.state_dir.expanduser())}
+
+    @app.get("/v1/airlie/epics/{key}/flow")
+    async def epic_flow_get(key: str) -> dict[str, Any]:
+        """One epic: its plan, its stories with their board statuses and pipeline stages, its re-plans."""
+        state = cfg.observability.state_dir.expanduser()
+        statuses = {story.key: story.status for story in board.list(level="story")}
+        try:
+            return epic_flow(state, key, statuses)
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 

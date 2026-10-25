@@ -403,7 +403,7 @@ def _line_stopped(cfg: AirlieConfig, board: LocalBoard) -> list[Item]:
     parked, or one with no epic, is not among them."""
     out: list[Item] = []
     for story in board.store.list(level="story", status="blocked"):
-        if epic_key_of(story.labels) is None or board._held(story):
+        if epic_key_of(story.labels) is None or board.is_held(story):
             continue
         saved = _saved(cfg, story.key)
         if saved is not None and saved.get("blocked"):
@@ -520,7 +520,7 @@ async def _replay_dependents(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
     notes: list[str] = []
     merged: dict[str, bool] = {}
     for item in board.store.list(level="story"):
-        if item.status not in ("approved", "doing") or board._held(item) or not after_keys(item.labels):
+        if item.status not in ("approved", "doing") or board.is_held(item) or not after_keys(item.labels):
             continue
         saved = _saved(cfg, item.key)
         base = (saved or {}).get("base") or {}

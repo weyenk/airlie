@@ -14,12 +14,14 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from airlie.board import BoardStore
 from airlie.config import load_config
 from airlie.serve.app import create_app
 from airlie.serve.jobs import Jobs
-from airlie.serve.listing import recent_runs, repo_names, repos, stories, story_page
+from airlie.serve.listing import epics, recent_runs, repo_names, repos, stories, story_page
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_serve import cfg as base_cfg
+from tests.unit.test_story_flow import write_epic
 
 
 def cfg(tmp_path: Path, **story: Any):  # type: ignore[no-untyped-def]
@@ -495,3 +497,62 @@ def test_the_names_route_needs_sign_in_and_the_activity_window_reaches_stories(t
         assert c.get("/v1/airlie/repos/names", headers=auth).json() == {"repos": ["o/a", "o/b"]}
         got = c.get("/v1/airlie/stories?active_from=150&active_to=250", headers=auth).json()
         assert keys(got) == ["HDS-2"]
+
+
+# ---- epics (P3, 2026-10-24) ----
+
+
+def test_epics_lists_each_epic_directory_with_its_stage_story_count_and_replans(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    for key, body in {
+        "AIR-3": {
+            "card": {"key": "AIR-3", "title": "Avatars"},
+            "repo": "o/r",
+            "stage": "building",
+            "blocked": None,
+            "stories": {"S1": "AIR-4", "S2": "AIR-5"},
+            "replans": [{"reason": "x"}],
+        },
+        "AIR-1": {
+            "card": {"key": "AIR-1", "title": "Older"},
+            "repo": "o/r",
+            "stage": "blocked",
+            "blocked": "why",
+        },
+    }.items():
+        (state / "epics" / key).mkdir(parents=True)
+        (state / "epics" / key / "state.json").write_text(json.dumps(body))
+    (state / "epics" / "AIR-2").mkdir()
+    (state / "epics" / "AIR-2" / "state.json").write_text("{ not json")
+    rows = epics(state)
+    assert [r["key"] for r in rows] == ["AIR-1", "AIR-2", "AIR-3"]
+    assert (rows[0]["title"], rows[0]["stage"], rows[0]["blocked"], rows[0]["stories"]) == (
+        "Older",
+        "blocked",
+        "why",
+        0,
+    )
+    assert rows[1]["blocked"] == "state.json is damaged" and rows[1]["title"] is None
+    assert (rows[2]["repo"], rows[2]["stories"], rows[2]["replans"]) == ("o/r", 2, 1)
+    assert all(isinstance(r["last_activity"], float) for r in rows)
+    assert epics(tmp_path / "nowhere") == []
+
+
+def test_the_epic_routes_list_and_draw_an_epic_with_the_boards_statuses(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    write_epic(state)
+    store = BoardStore(state / "board.sqlite")
+    for _ in range(3):
+        store.create(level="story", title="s")
+    store.update("AIR-2", status="review")
+    store.close()
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as c:
+        auth = {"Authorization": "Bearer k"}
+        assert c.get("/v1/airlie/epics").status_code == 401
+        assert c.get("/v1/airlie/epics/AIR-1/flow").status_code == 401
+        rows = c.get("/v1/airlie/epics", headers=auth).json()["epics"]
+        assert [r["key"] for r in rows] == ["AIR-1"] and rows[0]["stories"] == 3
+        flow = c.get("/v1/airlie/epics/AIR-1/flow", headers=auth).json()
+        assert flow["key"] == "AIR-1" and [s["status"] for s in flow["stories"]] == ["review", "todo"]
+        assert c.get("/v1/airlie/epics/NOPE-1/flow", headers=auth).status_code == 404

@@ -72,11 +72,11 @@ class LocalBoard:
         todo, so it waits to be approved again); epics and initiatives are never built. A story the line made
         for an epic (its `epic:` label) is passed over while its epic is held (D10 of the plans phase)."""
         for story in self.store.list(level="story", status="approved"):
-            if not self._held(story):
+            if not self.is_held(story):
                 return self._card(story)
         return None
 
-    def _held(self, story: Item) -> bool:
+    def is_held(self, story: Item) -> bool:
         """The story was made by the line for an epic that a person holds (todo or blocked) or that is not
         open (review, done). A story with no `epic:` label, or one whose epic is gone, is never held."""
         key = epic_key_of(story.labels)
@@ -101,7 +101,7 @@ class LocalBoard:
         return [
             s
             for s in self.store.list(level="story", status="todo")
-            if after_keys(s.labels) and not self._held(s)
+            if after_keys(s.labels) and not self.is_held(s)
         ]
 
     def set_epic_status(self, key: str, status: Status) -> None:

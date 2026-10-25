@@ -769,6 +769,104 @@ board is in use on its first line.
 - **Keeping Jira:** `story.board: jira` in `airlie.local.yaml` takes stories from the Jira project instead
   (*Setup*, above); `story.board` is the only switch.
 
+## Epics: an approved epic becomes prioritized stories
+
+The line takes work one stage above a story. An **epic** on the local board, once you approve it, is read by the
+architect against the repository and planned into the smallest stories that can each be delivered and reviewed on
+their own, as cards under it, in an order the tick follows (the plans phase, P3 of the planning line; the design is
+`docs/superpowers/specs/2026-10-24-plans-phase-design.md`). Epics are on airlie's own board only: with
+`story.board: jira` the tick logs one line and leaves them alone (Jira stays read-only for the line).
+
+**The epic.** A board item at level `epic` whose description is the spec's document (why, goals, non-goals,
+constraints, acceptance criteria, what is left open) closed by one JSON block (`EPIC_CONTRACT` in
+`story/epic.py`):
+
+```json
+{"type": "epic", "repositories": ["owner/name"], "criteria": [{"id": "EC1", "text": "one line, at the epic's grain"}],
+ "constraints": ["one line each"], "links": ["https://… (a mockup, a design)"]}
+```
+
+`task epic:add -- --file spec.md --repo owner/name [--title TEXT]` makes the card from a Markdown file and prints its
+key: the criteria are the bullets under the file's `## Acceptance criteria` (EC1, EC2, …) and its constraints those
+under `## Constraints`, unless the file closes with an epic block of its own. A spec with neither is refused with a
+message and makes no card. An approved epic with **no** block (a Jira import, a card typed in the app) is set aside:
+a note on the card, status *blocked*, and it is never planned from prose.
+
+**The plan.** The tick takes the top *approved* epic that has no plan (planning is a beat's one piece of work, under
+the one-story lock) and asks the architect, on a detached worktree at the trunk of the epic's **first** repository
+with read-only tools, in rounds (`story.plan.round_steps`, `story.plan.max_rounds`). The brief (`plan-brief` in the
+prompt hub) frames the story as the smallest unit that ends in a pull request stack a reviewer can judge alone and
+carries the epic (quoted as data), the repository guide, the recent lessons and the coder's budget a story's layers
+must fit. The reply is a JSON story plan (`STORY_PLAN_CONTRACT` in `story/epic_plan.py`): a summary, the epic's
+constraints, risks each pinned to a story criterion, and the stories in dependency order, each with its repository, the
+epic criteria it covers, its files (`{path, new}`), the interfaces it consumes and produces, Given/When/Then
+criteria, what it depends on and a size, S or M. The plan is refused, and goes back with the reason, up to
+`story.stage_attempts` tries, for: a repeated id; a dependency, interface or risk naming a story or criterion the plan
+does not have; a cycle; a story that depends on two stories that are not on one line (a story is built on one branch);
+a dependency in another repository (it cannot stack); an epic criterion no story covers; a story with no criterion; a
+repository the epic does not name; more than `story.plan.max_stories` stories or `story.plan.max_scope_files` paths in
+a scope (or a path that leaves the repository); a size of L. Then it is checked against the trunk, with no model: every
+scope path not marked new exists on the trunk or is created by an earlier story, a dependency is listed before its
+dependent, no Given/When/Then has a blank part. A plan that is never usable blocks the epic with the reason on its card.
+For an epic that names several repositories the architect reads the first and plans the others' stories from the epic
+alone.
+
+**The cards.** Each story becomes a card under the epic, in plan order, with `repo:`, `epic:<key>` and `plan:<id>`
+labels, its description the story as a person reads it, closed by a `story_card` block the pipeline reads. A story with
+no dependency is born *approved*; a dependent is born *todo* with an `after:<key>` label for each story it comes after.
+A story born from an epic **skips refine**: its card is its story, carrying the epic's header (the plan's summary, the
+constraints, the risk pinned to it) into the layers brief and the package briefs under *The epic this story serves*.
+
+**Stacking.** A dependent story does not wait for its dependency to merge. As soon as the story it comes after is in
+*review* (its pull requests are open) the tick promotes it to *approved*; it is then built on that story's top layer
+branch (`state.json`'s `base` is `{"ref": the branch, "sha", "story": the key}`), and published as a stack on that
+branch, its pull request bodies saying *Stacks on AIR-n's pull requests; merge those first.* One stack across the
+epic's stories, bottom up; only a human merges. When a reviewer changes a lower story (its branch moves), the tick
+replays the dependent's built layers onto the new base before it builds anything more (`restack`'s machinery, each
+layer held to the story's gate again). When the lower story's pull requests are merged, the dependent's base becomes
+the trunk, by the same replay. A dependent that has already published is replayed locally and its card says its pull
+requests still hold the old commits: push the stack to update them (`task story:restack` itself still refuses a
+story that has published). A replay that conflicts or fails the gate blocks the story with the reason, for a person.
+A dependency that has not reached review is a wait, not a stop: `task story -- KEY` on such a story says so and leaves
+it in *To Do*.
+
+**The tick** (`task story:tick`), in order: on every beat, each planned epic's status follows its stories (*doing* once
+one is picked, *review* when every story is in review or done, *done* when every story is done, back to *doing* when
+a re-plan adds work); waiting stories whose dependencies are in review (or done) are promoted; a story the line
+blocked is resumed once (below). Then the beat's one piece of work: plan the top approved epic, else re-plan an epic
+(below), else build the top approved story. The log line names which. **An epic holds its stories:** while a person
+has the epic in *todo* or *blocked* (or it is *review* or *done*), none of the stories the line made for it is
+promoted, resumed or picked; setting it *approved* again lets them go.
+
+**A story that stops.** A story the line blocked (its state records the stop, its card is in *blocked*) is moved back
+to *approved* once, with the label `resumed:1` (`story.resume_attempts`, default 1; 0 re-plans at once): the common
+stop is a model's bad day. When it stops again the architect is asked to **re-plan** the epic, once for that stop
+(`replanned_for:<story key>` on the epic), and on request with `task epic:replan -- KEY [--reason TEXT]`. It is
+given the current plan, where every story stands (not started, started, blocked with its reason and layers built, in
+review, merged), the comments a person left on the epic since the plan, and the repository's lessons, and returns the
+stories **still to be done**. A story that has started, is in review or merged, or stopped with a layer built, is
+never touched, and the re-plan may not list it again (a new story may depend on it by id). A story not started is
+changed in place (title, description, what it comes after, rank) if the plan lists it with its id, dropped (*done*,
+with a note) if it leaves it out. A story that stopped with **no layer built** is retired: *done*, with a note naming its
+replacement, its stopped attempt's worktree and branch removed, its state directory kept. New stories are made as
+above. A re-plan that is never usable changes nothing and says so on the epic's card.
+
+**What you see.** `epics/<key>/state.json` and `events.jsonl` under `observability.state_dir` hold the plan as
+written, the tries it took, the cards made (plan id → key) and each re-plan; events are `epic_start`, `plan_round`,
+`plan_returned` (with the kinds of finding), `plan`, `stories_created`, `story_promoted`, `replan`, `replan_failed` and
+`blocked`. The epic's card gets a note when its stories are made and on each re-plan. `GET /v1/airlie/epics` lists the
+epics (key, title, repo, stage, blocked reason, stories, re-plans) and `GET /v1/airlie/epics/{key}/flow` draws one: the
+plan's summary, constraints and risks, its criteria, and each story with its dependencies, size, board status and
+pipeline stage.
+
+| setting | default | what |
+| --- | --- | --- |
+| `story.plan.max_stories` | 8 | most stories a plan may hold |
+| `story.plan.max_scope_files` | 8 | most files one story's scope may name |
+| `story.plan.round_steps` | 5 | the architect plans in rounds of this many steps; 0 plans in one go |
+| `story.plan.max_rounds` | 3 | most rounds an epic is planned in |
+| `story.resume_attempts` | 1 | times a stopped story is resumed before its epic is re-planned |
+
 ## The supervisor (trial)
 
 When a layer gets into trouble, Muse (the reviewer model, as the `supervisor` role) reads the trace and says

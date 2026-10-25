@@ -1,7 +1,10 @@
 # The plans phase: an epic becomes prioritized stories, by the architect, the way writing-plans does
 
-Status: draft for Noah, 2026-10-24. Sub-plan P3 of `2026-10-24-planning-line-design.md`; it sits on P1
-(`2026-10-24-layer-package.md`) and P2 (`2026-10-24-three-amigos-design.md`), which must be built first.
+Status: built 2026-10-25 in the branch `claude/p3-plans-phase`, stacked on P1 (PR to follow the review of P1's);
+the departures from this text are in that PR's body and in `docs/integrations/story.md`, *Epics*. Drafted for Noah
+2026-10-24. Sub-plan P3 of `2026-10-24-planning-line-design.md`; it sits on P1 (`2026-10-24-layer-package.md`) and
+P2 (`2026-10-24-three-amigos-design.md`); P2's conventions reader is not wired in yet (the plan brief takes
+`conventions` and is given none).
 
 ## Why
 
