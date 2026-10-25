@@ -24,7 +24,7 @@ const initials = computed(() => {
 
 <template>
   <header
-    class="sticky top-0 z-[2] flex h-14 items-center gap-3.5 border-b border-border bg-bar px-5 max-[640px]:px-4"
+    class="sticky top-0 z-[2] flex h-(--header-h) items-center gap-3.5 border-b border-border bg-bar px-5 max-[640px]:px-4"
   >
     <RouterLink to="/" class="text-base font-bold">airlie</RouterLink>
     <nav data-test="tabs" aria-label="Main" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px] max-[640px]:hidden">

@@ -9,7 +9,7 @@ const route = useRoute();
   <nav
     data-test="tabbar"
     aria-label="Main"
-    class="fixed inset-x-0 bottom-0 z-[3] hidden h-16 items-center justify-around border-t border-border bg-bar pb-1.5 max-[640px]:flex"
+    class="fixed inset-x-0 bottom-0 z-[3] hidden h-(--tabbar-h) items-center justify-around border-t border-border bg-bar pb-1.5 max-[640px]:flex"
   >
     <RouterLink
       v-for="t in TABS"

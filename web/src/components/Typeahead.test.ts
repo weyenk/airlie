@@ -75,3 +75,18 @@ test("a function source is asked, and its suggestions show with their label and 
   await w.find("input").trigger("keydown", { key: "Enter" });
   expect(w.emitted("update:modelValue")!.at(-1)).toEqual(["x-1"]);
 });
+
+test("Enter on a name already typed in full is not spent on accepting it; Tab still completes", async () => {
+  const w = make();
+  const input = w.find("input");
+  await input.setValue("WEYENK/openhand");
+  const enter = new KeyboardEvent("keydown", { key: "Enter", cancelable: true, bubbles: true });
+  input.element.dispatchEvent(enter);
+  expect(enter.defaultPrevented).toBe(false);
+  expect(w.emitted("update:modelValue")!.at(-1)).toEqual(["WEYENK/openhand"]);
+  await input.setValue("weyenk/air");
+  const enter2 = new KeyboardEvent("keydown", { key: "Enter", cancelable: true, bubbles: true });
+  input.element.dispatchEvent(enter2);
+  expect(enter2.defaultPrevented).toBe(true);
+  expect(w.emitted("update:modelValue")!.at(-1)).toEqual(["weyenk/airlie"]);
+});

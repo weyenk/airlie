@@ -6,7 +6,7 @@ import TopBar from "./TopBar.vue";
 
 <template>
   <TopBar />
-  <main class="pb-16 min-[641px]:pb-0">
+  <main class="pb-(--tabbar-h) min-[641px]:pb-0">
     <slot />
   </main>
   <TabBar />

@@ -48,6 +48,12 @@
   --radius-xl: 12px;
 }
 
+/* the fixed chrome: the top bar's height, and the phone's tab bar; screens that fill the window use them */
+:root {
+  --header-h: 56px;
+  --tabbar-h: 64px;
+}
+
 @layer base {
   * {
     border-color: var(--border);

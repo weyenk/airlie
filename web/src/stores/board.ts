@@ -86,5 +86,8 @@ export const useBoardStore = defineStore("board", () => {
   const comment = (key: string, text: string) => write(key, () => api.addComment(key, text));
   const editComment = (key: string, id: number, text: string) => write(key, () => api.editComment(key, id, text));
 
-  return { items, changed, error: board.error, refresh: board.refresh, create, patch, move, comment, editComment };
+  /** The first load has answered (an empty board is a loaded one). */
+  const loaded = computed(() => board.data.value !== undefined);
+
+  return { items, loaded, changed, error: board.error, refresh: board.refresh, create, patch, move, comment, editComment };
 });

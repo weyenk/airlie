@@ -109,6 +109,9 @@ export type FlowNode = {
   attempts?: number;
 };
 
+/** One acceptance criterion of a story, as the refine stage wrote it. */
+export type Criterion = { id: string; given: string; when: string; then: string };
+
 /** A story's flow, or a run's (the extra fields of a run are `kind: "run"`, `topology`, `mode`, `ok`, `progress`,
  * and `job` and `plan`: this server's job state for it, and the plan a finished plan job returned). */
 export type Flow = {
@@ -117,7 +120,7 @@ export type Flow = {
   summary: string | null;
   stage: string | null;
   blocked: string | null;
-  acceptance: string[];
+  acceptance: Criterion[];
   nodes: FlowNode[];
   kind?: "run";
   topology?: string | null;
