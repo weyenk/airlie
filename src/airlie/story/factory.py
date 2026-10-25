@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
@@ -16,14 +17,16 @@ from airlie.config import AirlieConfig, ConfigError, load_config
 from airlie.obs import EventSink
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.checkout import check_checkout, find_checkout, held_label
-from airlie.story.epic import epic_of
+from airlie.story.costs import StoryCosts, read_estimate, story_wall_clock
+from airlie.story.epic import epic_of, with_block
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
 from airlie.story.epic_plan import LABEL_REPLANNED, LABEL_RESUMED, after_keys, epic_key_of
 from airlie.story.epic_state import EpicState
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
+from airlie.story.initiative import initiative_key_of
 from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
-from airlie.story.local_board import LocalBoard
+from airlie.story.local_board import PICK_FIRST, LocalBoard
 from airlie.story.model import NoTestGate, RepositoryError, StoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Checked, Publisher, PublishError
@@ -346,9 +349,22 @@ def epic_checkout(cfg: AirlieConfig, repository: str) -> Path:
     return path.resolve()
 
 
+def make_costs(cfg: AirlieConfig) -> StoryCosts:
+    """The ledger's prices (D6 of the specs phase): published stories' wall-clocks under the state dir, with
+    story.specs' fallbacks."""
+    specs = cfg.story.specs
+    return StoryCosts(
+        cfg.observability.state_dir,
+        min_samples=specs.min_samples,
+        default_hours=specs.default_hours,
+        size_scale=specs.size_scale,
+    )
+
+
 def make_epic_pipeline(cfg: AirlieConfig, board: LocalBoard) -> EpicPipeline:
     """The pipeline that plans an approved epic into stories (D3): the architect through the studio over the
-    HTTP engine, the checkouts of story.repos_root, and the publisher that fetches the trunk."""
+    HTTP engine, the checkouts of story.repos_root, and the publisher that fetches the trunk. `costs` prices
+    the planned stories again against the specs phase's estimate."""
     engine = _engine(cfg)
     return EpicPipeline(
         cfg,
@@ -356,6 +372,7 @@ def make_epic_pipeline(cfg: AirlieConfig, board: LocalBoard) -> EpicPipeline:
         studio=lambda: StudioOrchestrator(cfg, engine),
         repo_of=lambda repository: epic_checkout(cfg, repository),
         publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg)),
+        costs=make_costs(cfg),
     )
 
 
@@ -379,6 +396,9 @@ def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
         for key, _, to in board.follow_stories():
             notes.append(f"epic {key} is {to}")
             _record_stage(cfg, board.store.get(key), stages.get(to))
+            if to == "done":
+                notes += _close_estimate(cfg, board, key)
+        notes += _hold_epics(board)
         for story in board.waiting_stories():
             deps = after_keys(story.labels)
             if not all(_status(board, dep) in ("review", "done") for dep in deps):
@@ -395,6 +415,66 @@ def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
         log.warning("tick bookkeeping failed: %s", _why(e))
         notes.append(f"bookkeeping failed ({_why(e)})")
     return notes
+
+
+def _hold_epics(board: LocalBoard) -> list[str]:
+    """An approved epic that cannot be planned yet (`LocalBoard.epic_hold`) gets one note saying why. An
+    epic with mockup pages and no pick goes back to review (a person picks, then approves it again); an
+    extension that waits for its core stays approved and is planned on the tick after the core reaches review
+    (N7). A held epic is never planned: `next_epic` passes it over."""
+    notes: list[str] = []
+    for epic in board.store.list(level="epic", status="approved"):
+        why = board.epic_hold(epic)
+        if why is None:
+            continue
+        pick = why == PICK_FIRST
+        text = note(
+            f'held: {why}. Comment "option N" or press its pick button, then approve the epic again.'
+            if pick
+            else f"held: {why}. It is planned once that epic is in review or done."
+        )
+        latest = epic.comments[-1].text if epic.comments else None
+        if pick or latest != text:
+            board.store.comment(epic.key, "airlie", text)
+        if pick:
+            board.set_epic_status(epic.key, "review")
+        if pick or latest != text:
+            notes.append(f"epic {epic.key} held ({why})")
+    return notes
+
+
+def _close_estimate(cfg: AirlieConfig, board: LocalBoard, key: str) -> list[str]:
+    """An epic is done (D6): its estimate is closed with the wall-clock its stories took, in the card's block
+    and the epic's record. A miss by more than half either way (actual over 1.5x or under 0.5x the first
+    estimate) is an `estimate_missed` event on the initiative and a comment there naming both numbers, so the
+    next price can be read against it. An epic with no estimate, or one already closed, is left alone."""
+    epic = board.store.get(key)
+    spec = epic_of(epic.description)
+    est = (spec.estimate if spec else None) or read_estimate(cfg.observability.state_dir, key)
+    if spec is None or est is None or est.actual is not None:
+        return []
+    actual = 0.0
+    for story in board.children(key):
+        hours = story_wall_clock(stories_dir(cfg) / story.key / "events.jsonl")
+        actual += hours or 0.0
+    took = round(actual, 1)
+    closed = replace(est, actual=took)
+    board.store.update(key, description=with_block(epic.description, replace(spec, estimate=closed)))
+    record = EpicState.open(epics_dir(cfg) / key, board.store.get(key), spec.repositories[0])
+    record.estimate = closed.to_dict()
+    record.save()
+    initiative = initiative_key_of(epic.labels)
+    if initiative is None or not est.hours or 0.5 <= took / est.hours <= 1.5:
+        return []
+    EventSink(cfg.observability.state_dir / "initiatives" / initiative / "events.jsonl", initiative).emit(
+        "estimate_missed", epic=key, estimated=est.hours, actual=took
+    )
+    board.store.comment(
+        initiative,
+        "airlie",
+        note(f"{key} was priced at {est.hours:g} h and took {took:g} h. Its price is on the card."),
+    )
+    return [f"epic {key} took {took:g} h against {est.hours:g} h"]
 
 
 def _line_stopped(cfg: AirlieConfig, board: LocalBoard) -> list[Item]:

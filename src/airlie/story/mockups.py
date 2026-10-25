@@ -11,11 +11,15 @@ the line's guard, the header is the browser's."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from airlie.board import BoardStore
+from airlie.obs import EventSink
 from airlie.prompts import text as hub_text
+from airlie.story.epic import EpicSpec, Mockups, epic_of, with_block
+from airlie.story.initiative import initiative_key_of
 from airlie.story.model import ISSUE_KEY, NO_JSON, StoryError, _encodable
 
 DIRECTIONS_CONTRACT = """End your reply with one ```json block holding exactly one object:
@@ -151,3 +155,36 @@ def pick_from_comment(text: str) -> int | None:
     the word option, or after a leading #. None when it picks nothing."""
     m = _OPTION_WORD.search(text) or _HASH_PICK.match(text)
     return int(m.group(1)) if m else None
+
+
+def record_pick(store: BoardStore, state_dir: Path, epic_key: str, option: int) -> EpicSpec:
+    """A person's pick (D4): the epic card's closing block gets `mockups.picked`, its `mockup:<n>` label
+    replaces any older one, and a `pick` event goes on the initiative's log. A pick may be changed. StoryError
+    when `epic_key` is no epic with a block and mockups, or has no page for that option; the card is not
+    touched then."""
+    try:
+        item = store.get(epic_key)
+    except KeyError:
+        raise StoryError(f"no item {epic_key} on the board") from None
+    if item.level != "epic":
+        raise StoryError(f"{epic_key} is a {item.level}, not an epic")
+    spec = epic_of(item.description)
+    if spec is None or spec.mockups is None or not spec.mockups.options:
+        raise StoryError(f"{epic_key} has no mockups to pick from")
+    try:
+        wanted = option_name(option)
+    except ValueError as e:
+        raise StoryError(str(e)) from None
+    files = [url.rsplit("/", 1)[-1] for url in spec.mockups.options]
+    if wanted not in files:
+        have = ", ".join(f[len("option-") : -len(".html")] for f in files)
+        raise StoryError(f"{epic_key} has no option {option}; its options are {have}")
+    picked = replace(spec, mockups=Mockups(spec.mockups.options, option))
+    labels = [x for x in item.labels if not x.startswith("mockup:")] + [f"mockup:{option}"]
+    store.update(epic_key, description=with_block(item.description, picked), labels=labels)
+    initiative = initiative_key_of(item.labels)
+    if initiative is not None:
+        EventSink(state_dir / "initiatives" / initiative / "events.jsonl", initiative).emit(
+            "pick", epic=epic_key, option=option
+        )
+    return picked

@@ -444,3 +444,134 @@ async def test_resume_attempts_is_a_setting_and_zero_goes_straight_to_the_replan
     line = await tick(rig.cfg)
     assert "resumed" not in line and started == [] and "re-planned" in line
     assert f"replanned_for:{s1}" in rig.store.get(epic).labels
+
+
+# ---- the specs phase on the tick (D4, D6, N7 of the specs phase, P4 of the planning line, 2026-10-25) ----
+
+
+def specs_block(**over: Any) -> str:
+    """A specs-phase epic's closing block: SPEC's repositories and criteria, with P4's fields."""
+    from dataclasses import replace
+
+    return block(replace(SPEC, **over).to_dict())
+
+
+async def test_an_approved_epic_with_options_and_no_pick_is_not_planned_and_stays_in_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story.epic import Mockups
+    from airlie.story.mockups import record_pick
+
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    options = tuple(f"/v1/airlie/initiatives/AIR-1/mockups/E1/option-{n}.html" for n in (1, 2))
+    epic = rig.epic(EPIC_TEXT + specs_block(mockups=Mockups(options, None)))
+    for _ in range(3):  # however many ticks pass
+        await tick(rig.cfg)
+    assert rig.status(epic) == "review" and rig.engine.requests == []  # held, never planned
+    notes = [c.text for c in rig.store.get(epic).comments if "pick a mockup first" in c.text]
+    assert len(notes) == 1 and "option N" in notes[0]  # one note, not one per tick
+    assert not (rig.cfg.observability.state_dir / "epics" / epic / "state.json").exists()
+    # the person approves it again without a pick: bounced once more, with a note
+    rig.store.update(epic, status="approved")
+    await tick(rig.cfg)
+    assert rig.status(epic) == "review" and rig.engine.requests == []
+    # a pick, then approval: planned on the next tick
+    record_pick(rig.store, rig.cfg.observability.state_dir, epic, 2)
+    rig.store.update(epic, status="approved")
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+
+
+async def test_an_approved_epic_without_options_waits_for_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N4: an epic with no screen (needs_mockups false) has no options, so no pick is asked for."""
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    epic = rig.epic(EPIC_TEXT + specs_block(kind="core", initiative="AIR-1"))
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+
+
+async def test_an_approved_extension_waits_with_a_note_until_its_core_is_in_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj()), reply(plan_obj())]}))
+    core = rig.epic(EPIC_TEXT + specs_block(kind="core"))
+    ext = rig.store.create(
+        level="epic",
+        title="Cropping",
+        description=EPIC_TEXT + specs_block(kind="extension", depends_on=(core,)),
+        labels=["repo:o/r", f"after:{core}"],
+    ).key
+    rig.store.update(ext, status="approved")
+    line = await tick(rig.cfg)  # the core first; the extension waits
+    assert line.endswith(f"epic {core} Avatars: planned into 2 stories") and f"epic {ext} held" in line
+    assert rig.status(ext) == "approved"  # held, not moved
+    waiting = [c.text for c in rig.store.get(ext).comments if f"waits for {core}" in c.text]
+    assert len(waiting) == 1
+    stories = rig.stories(core)
+    assert len(rig.engine.requests) == 1  # only the core was planned
+    for key in stories:  # the core's stories are done: nothing is built, and the core's epic is done too
+        rig.store.update(key, status="review")
+    await tick(rig.cfg)  # the core reaches review; the extension is planned on this same beat
+    assert rig.status(core) == "review"
+    state = rig.cfg.observability.state_dir / "epics" / ext / "state.json"
+    assert state.is_file() and EpicState.open(state.parent, rig.store.get(ext), "").plan is not None
+    assert len([c for c in rig.store.get(ext).comments if f"waits for {core}" in c.text]) == 1
+
+
+async def test_planning_an_epic_revises_its_estimate_and_finishing_it_closes_it_and_flags_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story.costs import Estimate
+    from airlie.story.epic import epic_of
+
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    initiative = rig.store.create(level="initiative", title="Faces", labels=["repo:o/r"]).key
+    priced = Estimate(1.0, "1 S at 1.0 h (default)", "2026-10-25T00:00:00Z")
+    epic = rig.store.create(
+        level="epic",
+        title="Avatars",
+        parent=initiative,
+        description=EPIC_TEXT + specs_block(estimate=priced, initiative=initiative),
+        labels=["repo:o/r", f"initiative:{initiative}"],
+    ).key
+    rig.store.update(epic, status="approved")
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+    spec = epic_of(rig.store.get(epic).description)
+    assert spec is not None and spec.estimate is not None
+    assert (
+        spec.estimate.hours == 1.0 and spec.estimate.revised == 2.0
+    )  # two S stories, 1 h each (the default)
+    record = json.loads((rig.cfg.observability.state_dir / "epics" / epic / "state.json").read_text())
+    assert record["estimate"]["revised"] == 2.0
+    assert [e["kind"] for e in kinds_of(rig.epic_events(epic))].count("estimate_revised") == 1
+    # both stories are finished (each took two hours on its own clock); the epic follows them to done
+    for key in rig.stories(epic):
+        rig.store.update(key, status="done")
+        story_dir = stories_dir(rig.cfg) / key
+        story_dir.mkdir(parents=True, exist_ok=True)
+        (story_dir / "state.json").write_text(json.dumps({"stage": "review", "built": {}}))
+        starts = [{"ts": 0.0, "kind": "story_start"}, {"ts": 7200.0, "kind": "stage"}]
+        (story_dir / "events.jsonl").write_text("\n".join(json.dumps(x) for x in starts) + "\n")
+    await tick(rig.cfg)
+    assert rig.status(epic) == "done"
+    closed = epic_of(rig.store.get(epic).description)
+    assert closed is not None and closed.estimate is not None and closed.estimate.actual == 4.0
+    assert closed.estimate.revised == 2.0
+    assert (
+        json.loads((rig.cfg.observability.state_dir / "epics" / epic / "state.json").read_text())["estimate"][
+            "actual"
+        ]
+        == 4.0
+    )
+    missed = kinds_of(rig.cfg.observability.state_dir / "initiatives" / initiative / "events.jsonl")
+    assert [(e["kind"], e["epic"], e["estimated"], e["actual"]) for e in missed] == [
+        ("estimate_missed", epic, 1.0, 4.0)
+    ]
+    text = rig.store.get(initiative).comments[-1].text
+    assert "priced at 1 h and took 4 h" in text
+    await tick(rig.cfg)  # closing is done once
+    assert len(kinds_of(rig.cfg.observability.state_dir / "initiatives" / initiative / "events.jsonl")) == 1
+
+
+def kinds_of(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text().splitlines()]

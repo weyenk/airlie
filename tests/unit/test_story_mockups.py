@@ -3,11 +3,13 @@ P4 of the planning line, 2026-10-25)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from airlie.prompts import text
+from airlie.story.epic import EpicCriterion
 from airlie.story.mockups import (
     FORBIDDEN,
     OPTION_FILE,
@@ -160,3 +162,55 @@ def test_the_look_is_the_repositorys_file_when_it_has_one_else_the_hub_text(tmp_
 )
 def test_a_pick_is_read_from_a_comment(comment: str, pick: int | None) -> None:
     assert pick_from_comment(comment) == pick
+
+
+def test_record_pick_writes_the_block_the_label_and_the_event(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+    from airlie.story.epic import EpicSpec, Mockups, epic_of, with_block
+    from airlie.story.mockups import record_pick
+
+    store = BoardStore(tmp_path / "board.sqlite")
+    init = store.create(level="initiative", title="i", labels=["repo:o/r"])
+    urls = tuple(f"/v1/airlie/initiatives/{init.key}/mockups/E1/option-{n}.html" for n in (1, 3))
+    spec = EpicSpec(
+        ("o/r",),
+        (EpicCriterion("EC1", "a card moves"),),
+        (),
+        urls,
+        init.key,
+        "core",
+        mockups=Mockups(urls, None),
+        extra={"keep": {"me": 1}},
+    )
+    epic = store.create(
+        level="epic",
+        title="e",
+        parent=init.key,
+        description=with_block("# e\n\nProse stays.\n", spec),
+        labels=["repo:o/r", f"initiative:{init.key}", "mockup:1"],
+    )
+    done = record_pick(store, tmp_path, epic.key, 3)
+    assert done.mockups == Mockups(urls, 3)
+    card = store.get(epic.key)
+    assert epic_of(card.description) == done and "Prose stays." in card.description
+    assert done.extra == {"keep": {"me": 1}}  # an unknown key survives the rewrite
+    assert card.labels == ("repo:o/r", f"initiative:{init.key}", "mockup:3")  # the older label is replaced
+    events = [
+        json.loads(x) for x in (tmp_path / "initiatives" / init.key / "events.jsonl").read_text().splitlines()
+    ]
+    assert [(e["kind"], e["epic"], e["option"]) for e in events] == [("pick", epic.key, 3)]
+    # a pick may be changed
+    assert record_pick(store, tmp_path, epic.key, 1).mockups == Mockups(urls, 1)
+    assert "mockup:1" in store.get(epic.key).labels and "mockup:3" not in store.get(epic.key).labels
+    for option, why in [(2, "has no option 2; its options are 1, 3"), (0, "1 to 9"), (10, "1 to 9")]:
+        with pytest.raises(StoryError, match=why):
+            record_pick(store, tmp_path, epic.key, option)
+    assert epic_of(store.get(epic.key).description).mockups.picked == 1  # type: ignore[union-attr]
+    plain = store.create(level="epic", title="p", description="no block", parent=init.key)
+    with pytest.raises(StoryError, match="no mockups to pick from"):
+        record_pick(store, tmp_path, plain.key, 1)
+    story = store.create(level="story", title="s", parent=plain.key)
+    with pytest.raises(StoryError, match="is a story, not an epic"):
+        record_pick(store, tmp_path, story.key, 1)
+    with pytest.raises(StoryError, match="no item AIR-99"):
+        record_pick(store, tmp_path, "AIR-99", 1)

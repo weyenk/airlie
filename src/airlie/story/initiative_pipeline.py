@@ -25,7 +25,7 @@ from airlie.board import Comment, Item
 from airlie.config import AirlieConfig
 from airlie.prompts import text as hub_text
 from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
-from airlie.story.board import note
+from airlie.story.board import BoardError, note
 from airlie.story.briefs import (
     consult_brief,
     consult_round_text,
@@ -36,12 +36,13 @@ from airlie.story.briefs import (
     read_back_text,
     read_brief,
     render_brief,
+    revise_brief,
     survey_brief,
 )
 from airlie.story.costs import StoryCosts, queue_hours
-from airlie.story.epic import Estimate
+from airlie.story.epic import Estimate, epic_of
 from airlie.story.epic_pipeline import epics_dir
-from airlie.story.epic_plan import LABEL_AFTER
+from airlie.story.epic_plan import LABEL_AFTER, after_keys
 from airlie.story.epic_state import EpicState
 from airlie.story.initiative import (
     LABEL_INITIATIVE,
@@ -54,10 +55,12 @@ from airlie.story.initiative import (
     answer_ends_questions,
     check_epics,
     epics_feedback,
+    initiative_key_of,
     parse_epics,
     parse_imagine_reply,
     parse_question_reply,
     parse_read,
+    parse_revision,
     render_epic_document,
 )
 from airlie.story.initiative_state import InitiativeState, initiatives_dir
@@ -71,6 +74,8 @@ from airlie.story.mockups import (
     option_name,
     page_from_reply,
     parse_directions,
+    pick_from_comment,
+    record_pick,
 )
 from airlie.story.model import StoryError, StorySetupError
 from airlie.story.pipeline import SURVEY_STEPS, _cap, _reason, _redact_urls
@@ -702,6 +707,116 @@ class InitiativePipeline:
         record = EpicState.open(epics_dir(self.cfg) / card.key, card, repository)
         record.estimate = estimate.to_dict()
         record.save()
+
+    # ---- the person's turn on an epic: a pick, or one revision (D4, D8) ----
+
+    async def revise(self, epic: Item) -> InitiativeState:
+        """A person commented on the epic card `epic` (in review): a comment that picks a mockup is recorded
+        as the pick; any other is one revision round by product (`story.specs.revisions`), after which the
+        card waits for the person and a second comment is answered with a note saying so. Whatever the
+        outcome, the line leaves a comment of its own on the card, so the person's comment is never read
+        twice. A StorySetupError for a card that did not come from an initiative."""
+        key = initiative_key_of(epic.labels)
+        if key is None:
+            raise StorySetupError(f"{epic.key} did not come from an initiative: nothing to revise it from")
+        try:
+            item = self.board.item(key)
+            initiative = Initiative.from_item(item)
+        except (BoardError, StoryError) as e:
+            raise StorySetupError(str(e)) from None
+        st = InitiativeState.open(self.dir / key, item, list(initiative.repositories))
+        try:
+            await self._revise(st, initiative, epic)
+        except asyncio.CancelledError:
+            st.emit("cancelled", stage="revise")
+            raise
+        except Exception as e:  # noqa: BLE001 - a revision that fails is a note on the card, never a stop
+            reason = _cap(_redact_urls(str(e) if isinstance(e, StoryBlocked) else _reason(e)), REASON_CHARS)
+            st.emit("revision_failed", epic=epic.key, reason=reason)
+            self.board.store.comment(
+                epic.key, "airlie", note(f"could not revise this epic: {reason}\nComment again to try again.")
+            )
+        return st
+
+    async def _revise(self, st: InitiativeState, initiative: Initiative, epic: Item) -> None:
+        store = self.board.store
+        comment = self.board.latest_person_comment(epic)
+        if comment is None:
+            return
+        who = self.specs.product_role
+        option = pick_from_comment(comment.text)
+        if option is not None:
+            try:
+                record_pick(store, self.cfg.observability.state_dir, epic.key, option)
+            except StoryError as e:
+                store.comment(epic.key, who, str(e))
+            else:
+                store.comment(epic.key, who, f"Recorded: option {option} is your pick.")
+            return
+        entry = next((e for e in st.epics if e.get("key") == epic.key), None)
+        if entry is None:
+            raise StoryBlocked(f"{epic.key} is not one of the epics on the initiative's record")
+        if st.revisions.get(epic.key, 0) >= self.specs.revisions:
+            store.comment(
+                epic.key,
+                who,
+                "I have revised this epic already; changing it again waits for the control surface. "
+                "Your comment stays here for you.",
+            )
+            return
+        asker = Asker(self.cfg, self.studio, self._checkout(initiative.repositories[0]))
+        spec = epic_of(epic.description)
+        eid = str(entry["id"])
+
+        def brief(feedback: str | None) -> str:
+            return revise_brief(
+                initiative, epic.description, st.consultations, comment.text, feedback=feedback
+            )
+
+        revision = await asker.usable(
+            st,
+            f"revise:{epic.key}",
+            who,
+            "revision",
+            brief,
+            lambda t: parse_revision(extract_json_block(t), initiative=initiative, id=eid),
+            attempts=self.specs.attempts,
+            ask=partial(asker.ask, steps=self.specs.product_steps),
+        )
+        draft = revision.epic
+        if revision.redraw_mockups:
+            await self._mockups(st, initiative, asker, Ask("design", comment.text, "mockups", eid))
+        picked = (
+            None if revision.redraw_mockups or spec is None or spec.mockups is None else spec.mockups.picked
+        )
+        estimate = self.costs.estimate(draft.stories)
+        document = render_epic_document(
+            draft,
+            estimate=estimate,
+            consulted=st.consultations,
+            qa=st.qa,
+            option_urls=self._urls(st, initiative.key, eid),
+            initiative_key=initiative.key,
+            depends_keys=after_keys(epic.labels),
+            picked=picked,
+        )
+        labels = [
+            x
+            for x in epic.labels
+            if not x.startswith("viability:") and not (revision.redraw_mockups and x.startswith("mockup:"))
+        ]
+        store.update(
+            epic.key,
+            title=draft.title,
+            description=document,
+            labels=[*labels, f"viability:{draft.viability.verdict}"],
+        )
+        entry.update({**draft.to_dict(), "estimate": estimate.to_dict()})
+        st.revisions[epic.key] = st.revisions.get(epic.key, 0) + 1
+        st.save()
+        self._mirror(store.get(epic.key), draft.repositories[0], estimate)
+        store.comment(epic.key, who, f"Revised: {revision.changed}")
+        st.emit("revision", epic=epic.key, changed=revision.changed, redrawn=revision.redraw_mockups)
 
     # ---- stops ----
 

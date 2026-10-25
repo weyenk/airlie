@@ -18,6 +18,7 @@ import json
 import time
 import traceback
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -28,7 +29,8 @@ from airlie.story.asking import Asker, StoryBlocked, StudioFactory
 from airlie.story.board import note
 from airlie.story.briefs import plan_brief, replan_brief
 from airlie.story.context import guide_budget, repo_guide
-from airlie.story.epic import EpicSpec, epic_of
+from airlie.story.costs import StoryCosts
+from airlie.story.epic import EpicSpec, StorySketch, epic_of, with_block
 from airlie.story.epic_plan import (
     LABEL_AFTER,
     LABEL_EPIC,
@@ -77,6 +79,7 @@ class EpicPipeline:
         studio: StudioFactory,
         repo_of: Callable[[str], Path | None],
         publisher: Publisher,
+        costs: StoryCosts | None = None,
     ) -> None:
         """`repo_of(owner/name)` is the checkout of a repository the line has (None: it has none, and the
         plan's paths there pass unchecked); it may raise StorySetupError (a checkout that cannot be used),
@@ -87,6 +90,7 @@ class EpicPipeline:
         self.studio = studio
         self.repo_of = repo_of
         self.publisher = publisher
+        self.costs = costs
         self.epics_dir = epics_dir(cfg)
 
     # ---- planning ----
@@ -112,6 +116,7 @@ class EpicPipeline:
         try:
             if st.plan is None:
                 await self._plan(st, card)
+                self._revise_estimate(st, card)
             await self._create_stories(st, card)
         except StoryBlocked as e:
             await self._block(st, card, str(e))
@@ -122,6 +127,30 @@ class EpicPipeline:
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, card, _reason(e))
         return st
+
+    def _revise_estimate(self, st: EpicState, card: Item) -> None:
+        """The specs phase priced this epic from a sketch (D6); now that the real stories are planned it is
+        priced again from their sizes, as `estimate.revised`, in the card's block and the epic's record. An
+        epic with no estimate (written by hand), or a line with no ledger to price from, is left alone; a
+        board or a block that cannot take the write is an event, never a failure of the plan."""
+        if self.costs is None or st.plan is None:
+            return
+        try:
+            spec = epic_of(self.board.item(card.key).description)
+            if spec is None or spec.estimate is None:
+                return
+            plan = StoryPlan.from_dict(st.plan)
+            sketch = [StorySketch(s.title, s.size, s.title) for s in plan.order()]
+            revised = replace(spec.estimate, revised=self.costs.estimate(sketch).hours)
+            fresh = self.board.item(card.key)
+            self.board.store.update(
+                card.key, description=with_block(fresh.description, replace(spec, estimate=revised))
+            )
+            st.estimate = revised.to_dict()
+            st.save()
+            st.emit("estimate_revised", hours=revised.hours, revised=revised.revised)
+        except Exception as e:  # noqa: BLE001 - the price is a note to the person, not part of the plan
+            st.emit("board_error", call="estimate", error=_redact_urls(f"{type(e).__name__}: {e}"))
 
     @staticmethod
     def _made(st: EpicState) -> bool:

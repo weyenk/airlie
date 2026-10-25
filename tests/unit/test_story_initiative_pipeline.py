@@ -20,6 +20,7 @@ from airlie.story.epic import Estimate, epic_of
 from airlie.story.initiative_pipeline import InitiativePipeline
 from airlie.story.initiative_state import InitiativeState
 from airlie.story.local_board import LocalBoard
+from airlie.story.mockups import record_pick
 from airlie.story.model import StorySetupError
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
@@ -698,3 +699,124 @@ async def test_a_stop_half_way_through_the_cards_is_finished_by_the_next_turn_ne
         path = rig.pipeline.dir.parent / "epics" / card.key / "state.json"
         assert json.loads(path.read_text())["estimate"]["hours"] > 0  # both records have their price
     assert rig.item().comments[-1].author == "product" and "ready for you" in rig.item().comments[-1].text
+
+
+def revision(draft: dict[str, Any], *, redraw: bool = False, changed: str = "Made it smaller.") -> FakeReply:
+    obj = {"type": "revision", "epic": draft, "redraw_mockups": redraw, "changed": changed}
+    return FakeReply(text="Revised.\n" + fenced(obj))
+
+
+def person_comments(rig: Rig, epic: Item, text: str) -> Item:
+    rig.store.comment(epic.key, "noah", text)
+    return rig.store.get(epic.key)
+
+
+async def test_a_persons_comment_on_an_epic_is_one_revision_then_a_note_says_the_next_waits(
+    tmp_path: Path,
+) -> None:
+    smaller = epic_obj(title="A smaller board", stories=[{"title": "k", "size": "M", "scope": "k"}] * 2)
+    engine = FakeEngine({"product": [epics(epic_obj()), revision(smaller)], "architect": [arch()] * 4})
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    [core] = cards(rig)
+    assert rig.board.epics_awaiting_revision() == []  # nobody has commented yet
+    commented = person_comments(rig, core, "Please make the first step smaller.")
+    assert [e.key for e in rig.board.epics_awaiting_revision()] == [core.key]
+    st = await rig.pipeline.revise(commented)
+    revised = rig.store.get(core.key)
+    assert revised.title == "A smaller board" and revised.status == "review"
+    assert (
+        revised.comments[-1].author == "product" and revised.comments[-1].text == "Revised: Made it smaller."
+    )
+    spec = epic_of(revised.description)
+    assert spec is not None and spec.estimate is not None and spec.estimate.hours == 10.0  # re-priced: 2 M
+    assert st.revisions == {core.key: 1} and st.epics[0]["title"] == "A smaller board"
+    assert (
+        json.loads((rig.pipeline.dir.parent / "epics" / core.key / "state.json").read_text())["estimate"][
+            "hours"
+        ]
+        == 10.0
+    )
+    [event] = rig.events("revision")
+    assert event["epic"] == core.key and event["changed"] == "Made it smaller." and event["redrawn"] is False
+    brief = rig.asks("product")[-1]
+    assert "> Please make the first step smaller." in brief and "change nothing else" in brief
+    assert "# Epic E1" in brief  # the epic as written, quoted
+    assert rig.board.epics_awaiting_revision() == []  # the line has answered
+    # a second comment is read by nobody: a note says the next waits for the control surface
+    again = person_comments(rig, revised, "And smaller still.")
+    await rig.pipeline.revise(again)
+    last = rig.store.get(core.key).comments[-1]
+    assert last.author == "product" and "waits for the control surface" in last.text
+    assert len(rig.asks("product")) == 2 and rig.store.get(core.key).title == "A smaller board"
+    assert rig.board.epics_awaiting_revision() == []
+
+
+async def test_a_revision_that_cannot_be_parsed_is_a_note_not_a_loop(tmp_path: Path) -> None:
+    junk = FakeReply(text="sorry")
+    engine = FakeEngine({"product": [epics(epic_obj()), junk, junk], "architect": [arch()] * 4})
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    [core] = cards(rig)
+    st = await rig.pipeline.revise(person_comments(rig, core, "Smaller please."))
+    last = rig.store.get(core.key).comments[-1]
+    assert last.author == "airlie" and "could not revise this epic" in last.text
+    assert st.revisions == {} and rig.events("revision_failed")  # the revision was not used up
+    assert rig.board.epics_awaiting_revision() == []  # and the tick will not try again until the next comment
+
+
+async def test_a_revision_about_the_screens_redraws_three_options(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [
+                consult(MOCKUPS_ASK),
+                epics(epic_obj(needs_mockups=True)),
+                revision(epic_obj(needs_mockups=True), redraw=True, changed="New screens."),
+            ],
+            "ux": [directions("A", "B", "C"), directions("D", "E", "F")],
+            "design": [page(GOOD_PAGE)] * 6,
+            "architect": [arch()] * 4,
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    [core] = cards(rig)
+    record_pick(rig.store, rig.cfg.observability.state_dir, core.key, 2)
+    commented = person_comments(rig, rig.store.get(core.key), "The screens are too busy; calmer, please.")
+    assert "mockup:2" in commented.labels
+    st = await rig.pipeline.revise(commented)
+    revised = rig.store.get(core.key)
+    spec = epic_of(revised.description)
+    assert spec is not None and spec.mockups is not None and len(spec.mockups.options) == 3
+    assert spec.mockups.picked is None and not [x for x in revised.labels if x.startswith("mockup:")]
+    assert len(rig.asks("ux")) == 2 and "> The screens are too busy; calmer, please." in rig.asks("ux")[1]
+    assert [d["name"] for d in st.mockups["E1"]["directions"]] == ["D", "E", "F"]
+    [event] = rig.events("revision")
+    assert event["redrawn"] is True
+    assert mockup_dir_files(rig) == ["option-1.html", "option-2.html", "option-3.html"]
+
+
+async def test_an_option_comment_is_a_pick_not_a_revision(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
+            "ux": [directions("A", "B", "C")],
+            "design": [page(GOOD_PAGE)] * 3,
+            "architect": [arch()] * 4,
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    [core] = cards(rig)
+    asked_before = len(rig.asks("product"))
+    st = await rig.pipeline.revise(person_comments(rig, core, "Option 2 please."))
+    picked = rig.store.get(core.key)
+    spec = epic_of(picked.description)
+    assert spec is not None and spec.mockups is not None and spec.mockups.picked == 2
+    assert "mockup:2" in picked.labels
+    assert picked.comments[-1].author == "product" and "option 2 is your pick" in picked.comments[-1].text
+    assert len(rig.asks("product")) == asked_before and st.revisions == {}  # product was not asked
+    assert [e["option"] for e in rig.events("pick")] == [2]
+    # an option it has not got is a note saying which it has
+    await rig.pipeline.revise(person_comments(rig, picked, "no, option 7"))
+    assert "no option 7" in rig.store.get(core.key).comments[-1].text

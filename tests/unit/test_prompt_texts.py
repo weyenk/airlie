@@ -38,6 +38,7 @@ from airlie.story.briefs import (
     refine_brief,
     render_brief,
     replan_brief,
+    revise_brief,
     survey_brief,
 )
 from airlie.story.initiative import Ask, ReadReply
@@ -402,6 +403,18 @@ CASES |= {
     "fn:briefs.read_brief": partial(read_brief, "# Fast board\n\n## Why\nThe board feels slow.\n"),
     "fn:briefs.read_back_text": partial(
         read_back_text, [ReadReply("E1", False, ("Which store holds the cards?",)), ReadReply("E2", True, ())]
+    ),
+    "specs-revise": lambda: text("specs-revise"),
+    "fn:briefs.revise_brief:plain": partial(
+        revise_brief, INITIATIVE, "# Fast board\n\n## Why\nSlow.\n", [], "Make it smaller.", feedback=None
+    ),
+    "fn:briefs.revise_brief:full": partial(
+        revise_brief,
+        INITIATIVE,
+        "# Fast board\n\n## Why\nSlow.\n",
+        [{"seat": "ux", "question": "How?", "answer": "- keys"}],
+        "Make it smaller.",
+        feedback=BAD_JSON,
     ),
     "fn:briefs.consult_round_text:due": partial(
         consult_round_text,

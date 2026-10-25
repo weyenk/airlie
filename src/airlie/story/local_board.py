@@ -9,9 +9,10 @@ from pathlib import Path
 from airlie.board import BoardStore, Item
 from airlie.board.model import Comment, Status
 from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
+from airlie.story.epic import epic_of
 from airlie.story.epic_plan import after_keys, epic_key_of
 from airlie.story.epic_state import epic_needs_work
-from airlie.story.initiative import Initiative
+from airlie.story.initiative import Initiative, initiative_key_of
 from airlie.story.model import StoryError
 
 STATUS_OF: dict[Column, str] = {
@@ -21,6 +22,9 @@ STATUS_OF: dict[Column, str] = {
     "blocked": "blocked",
 }
 
+
+PICK_FIRST = "pick a mockup first"
+"""Why an approved epic with mockup pages and no pick is not planned (D4)."""
 
 OPEN_EPIC: tuple[Status, ...] = ("approved", "doing")
 """The statuses of an epic whose stories the tick may promote and pick. Any other (todo, blocked, review,
@@ -68,6 +72,27 @@ class LocalBoard:
         found = self.store.list(level="initiative", status="approved")
         return found[0] if found else None
 
+    def children(self, key: str) -> list[Item]:
+        """The items directly under `key` (an initiative's epics, an epic's stories), oldest first."""
+        return self.store.list(parent=key)
+
+    def latest_person_comment(self, item: Item) -> Comment | None:
+        """The item's newest comment when it is a person's, else None: the line answers a person's comment
+        with one of its own, so a person's comment on top is one the line has not read."""
+        if not item.comments:
+            return None
+        newest = max(item.comments, key=lambda c: (c.at, c.id))
+        return newest if self.is_person(newest) else None
+
+    def epics_awaiting_revision(self) -> list[Item]:
+        """The epics of an initiative, in review, whose newest comment is a person's: each is one pick or one
+        revision for the specs phase (D8). Oldest first."""
+        return [
+            epic
+            for epic in self.store.list(level="epic", status="review")
+            if initiative_key_of(epic.labels) is not None and self.latest_person_comment(epic) is not None
+        ]
+
     def is_person(self, comment: Comment) -> bool:
         """A comment whose author is not a role or airlie, and that is no airlie note: a person's."""
         return not self.is_note(comment.author, comment.text)
@@ -113,10 +138,38 @@ class LocalBoard:
 
     def next_epic(self) -> Item | None:
         """The oldest approved epic that still needs the pipeline (no plan yet, or cards still to make): an
-        epic is planned only once a person has approved it (D1 of the plans phase)."""
+        epic is planned only once a person has approved it (D1 of the plans phase). An epic held for a pick
+        or for its core (`epic_hold`) is passed over, so it never stands in front of the others."""
         for epic in self.store.list(level="epic", status="approved"):
+            if self.epic_hold(epic) is not None:
+                continue
             if self.epics_dir is None or epic_needs_work(self.epics_dir / epic.key):
                 return epic
+        return None
+
+    def epic_hold(self, epic: Item) -> str | None:
+        """Why an approved epic of the specs phase cannot be planned yet, in words for its card: it has
+        mockup pages and no pick (D4), or it waits for an epic (`after:`) not yet in review or done (N7).
+        None when nothing holds it (an epic written by hand never is). A block that cannot be read is no
+        hold: the planner sets that epic aside with its own reason."""
+        try:
+            spec = epic_of(epic.description)
+        except StoryError:
+            spec = None
+        if (
+            spec is not None
+            and spec.mockups is not None
+            and spec.mockups.options
+            and spec.mockups.picked is None
+        ):
+            return PICK_FIRST
+        for dep in after_keys(epic.labels):
+            try:
+                status = self.store.get(dep).status
+            except KeyError:
+                status = None
+            if status not in ("review", "done"):
+                return f"waits for {dep}, its core epic, to reach review"
         return None
 
     def waiting_stories(self) -> list[Item]:

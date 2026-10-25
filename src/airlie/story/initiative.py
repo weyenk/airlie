@@ -585,6 +585,7 @@ def render_epic_document(
     option_urls: Sequence[str],
     initiative_key: str,
     depends_keys: Sequence[str],
+    picked: int | None = None,
 ) -> str:
     """The epic's card as a person reads it, closed by the JSON block P3 reads (`EpicSpec.to_dict` with the
     specs phase's fields): the sections of `EPIC_SECTIONS` in order, the estimate's hours and basis, the
@@ -637,7 +638,7 @@ def render_epic_document(
         draft.stories,
         estimate,
         draft.viability,
-        Mockups(tuple(option_urls), None) if option_urls else None,
+        Mockups(tuple(option_urls), picked) if option_urls else None,
     )
     return (
         "\n".join(lines)
@@ -655,3 +656,38 @@ def initiative_key_of(labels: Sequence[str]) -> str | None:
         if label.startswith(LABEL_INITIATIVE) and ISSUE_KEY.fullmatch(key):
             return key
     return None
+
+
+# ---- the person's comment on an epic: one revision (D8) ----
+
+REVISION_CONTRACT = """End your reply with one ```json block holding exactly one object:
+{"type": "revision", "epic": {<the whole revised epic, in the same form as before>},
+ "redraw_mockups": false, "changed": "one line: what you changed"}"""
+
+
+@dataclass(frozen=True)
+class Revision:
+    """Product's answer to a person's comment on an epic: the epic as it now reads, whether its mockup pages
+    are to be drawn again, and one line saying what changed."""
+
+    epic: EpicDraft
+    redraw_mockups: bool
+    changed: str
+
+
+def parse_revision(obj: dict[str, Any] | None, *, initiative: Initiative, id: str) -> Revision:
+    """StoryError: no JSON or another type; the epic is flawed (`parse_epics`, one epic of any kind) or has
+    another id than `id`; `redraw_mockups` that is not true or false; no line saying what changed."""
+    if obj is None:
+        raise StoryError(NO_JSON)
+    if obj.get("type") != "revision":
+        raise StoryError('the reply needs "type": "revision"')
+    reply = parse_epics({"type": "epics", "epics": [obj.get("epic")]}, initiative=initiative, single=True)
+    draft = reply.epics[0]
+    if draft.id != id:
+        raise StoryError(f'this is a revision of epic {id}, not {draft.id}: keep "id": "{id}"')
+    redraw = obj.get("redraw_mockups", False)
+    if not isinstance(redraw, bool):
+        raise StoryError('"redraw_mockups" must be true or false')
+    changed = _one_line(_text(obj.get("changed"), "'changed'", 400), "'changed'", 400)
+    return Revision(draft, redraw, changed)

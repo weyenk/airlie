@@ -395,5 +395,12 @@ def epic_from_markdown(text: str, repo: str | None) -> tuple[str, EpicSpec]:
     return text.rstrip("\n") + "\n\n" + _fenced(spec) + "\n", spec
 
 
+def with_block(description: str, spec: EpicSpec) -> str:
+    """`description` with its closing ```json block replaced by `spec`'s (the prose before it is kept as it
+    is); a description with no closing block gets one at the end."""
+    prose, _ = split_block(description)
+    return prose.rstrip("\n") + "\n\n" + _fenced(spec) + "\n"
+
+
 def _fenced(spec: EpicSpec) -> str:
     return f"{_OPENER}\n{json.dumps(spec.to_dict(), indent=1, ensure_ascii=False)}\n```"
