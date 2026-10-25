@@ -1,12 +1,14 @@
-"""The gate's linters on the tester's files, before the tester is done: each ruff step of the gate is run
-first as its fixer (`ruff check --fix`, `ruff format`) and then as itself, on the Python files the layer
-changed and nothing else. What the fixers cannot fix is a `lint_fails` finding, which goes back to the tester
-with the pre-code check's: the coder cannot edit the tester's files, so a lint error left in them would fail
-the layer's gate with no one able to fix it (AIR-16 layer 01 loosened pyproject.toml to get past one).
+"""The gate's linters on the architect's tests, before they are placed for the coder: each ruff step of the
+gate is run first as its fixer (`ruff check --fix`, `ruff format`) and then as itself, on the Python files the
+layer changed and nothing else. What the fixers cannot fix is a `lint_fails` finding, which goes back to the
+architect with the rest of the package check's: the coder cannot edit the locked tests, so a lint error left
+in them would fail the layer's gate with no one able to fix it (AIR-16 layer 01 loosened pyproject.toml to get
+past one; AIR-22 layer 03 lost 2.5 hours to E741). The module keeps its name from the tester seat it was
+written for (retired by P1, 2026-10-24).
 
 Only a gate step that is a plain ruff command is read (no ;, &&, | or substitution): its own spelling of ruff
 (`uv run ruff`, a path) is kept, its own targets are not. Type checkers are not run here: before the code,
-the tester's imports of the names the layer adds are meant to fail them."""
+the tests' imports of the names the layer adds are meant to fail them."""
 
 from __future__ import annotations
 
@@ -17,15 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import Finding
 from airlie.teams.worktree import changed_files, differs_from
 from airlie.tools.protocol import ToolContext
 from airlie.tools.shell import run_cmd
 
-LINT_FAILS = "the gate's lint step fails on the tester's files after airlie ran its fixer: fix these by hand"
-_RULE = re.compile(r"^([A-Z]+[0-9]+) ", re.MULTILINE)
-"""A rule code at the start of a line of ruff's output (`E741 Ambiguous variable name: `l``)."""
+LINT_FAILS = "the gate's lint step fails on the package's tests after airlie ran its fixer: fix these by hand"
 _RUFF = re.compile(r"^(?P<ruff>[^;&|<>`$()]*?\bruff)\s+(?P<sub>check|format)\b(?P<rest>[^;&|<>`$()]*)$")
 _PYTHON = (".py", ".pyi")
 _OUTPUT_CHARS = 8_000
@@ -107,16 +106,3 @@ def lint_for(
     """The tester's lint for a gate of `commands`, or None when the gate runs no ruff."""
     steps = ruff_steps(commands)
     return LayerLint(steps, timeout_s=timeout_s, confinement=confinement) if steps else None
-
-
-def lint_rules(findings: Sequence[Finding]) -> list[str]:
-    """The ruff rules the `lint_fails` findings name, each once, in the order ruff reported them."""
-    rules = [r for f in findings if f.kind == "lint_fails" for r in _RULE.findall(f.why)]
-    return list(dict.fromkeys(rules))
-
-
-def lint_round_said(findings: Sequence[Finding]) -> tuple[str, tuple[str, ...]]:
-    """What the tester is told on its lint round, and the hub id of the steering in it: each lint step's
-    output as ruff gave it, then `lint-round` (change only the lines ruff names)."""
-    out = "\n\n".join(f"- {f.test}: {f.why}" for f in findings)
-    return f"{out}\n\n{hub_text('lint-round')}", ("lint-round",)

@@ -343,3 +343,28 @@ def test_ids_are_unique_across_folders(tmp_path: Path) -> None:
 
     with pytest.raises(PromptError, match=r"same.*rules/same\.md.*steering/same\.md"):
         _load_from(tmp_path)
+
+
+RETIRED = (
+    "tests-only",
+    "pre-code-check",
+    "tests-contract",
+    "static-check",
+    "brief-layer-plan-tests-first",
+    "brief-layer-plan-add-tests",
+    "brief-layer-plan-tests-where",
+    "brief-layer-plan-tests-new-file",
+    "checks-fix-before-code",
+    "checks-fix-with-code",
+    "amend",
+    "lint-round",
+)
+
+
+@pytest.mark.parametrize("id", RETIRED)
+def test_the_hub_has_no_tester_authoring_texts(id: str) -> None:
+    """P1 (2026-10-24): the architect writes every layer's tests as code and no tester agent runs, so the
+    texts that told a tester how to write them, and the pre-code retry, the mend and the lint round that sent
+    it back, are gone; the architect's are `package-*` and `brief-package-task`."""
+    with pytest.raises(PromptError, match="no prompt with id"):
+        entry(id)

@@ -8,23 +8,16 @@ import shlex
 import sys
 from pathlib import Path
 
-import pytest
-
 from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import (
     Finding,
     PytestChecks,
-    amend_feedback,
-    amend_feedback_said,
     changed_tests,
     checks_for,
-    feedback,
-    feedback_said,
     findings_text,
-    is_testers_test,
     pytest_runner,
-    static_findings,
 )
+from airlie.story.package_checks import package_feedback_said
 from tests.unit.git_helpers import git
 
 PYTEST = f"{shlex.quote(sys.executable)} -m pytest"
@@ -259,7 +252,7 @@ async def test_an_existing_test_split_by_an_insert_is_named_with_its_base_versio
     assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
     [split] = found
     assert "add(0, 0)" in split.before and "add(0, 0)" not in split.source  # where it used to end
-    told = feedback(found)
+    told = package_feedback_said(found)[0]
     assert "already there on the layer's base" in told and "assert add(0, 0) == 0" in told
     assert "passes before the layer's code" not in told
     shown = findings_text(found)
@@ -279,24 +272,6 @@ async def test_a_suite_that_does_not_run_its_tests_is_a_finding_with_its_output(
     found = await PytestChecks(f"{PYTEST} --no-such-flag", timeout_s=120).run(root, base)
     assert [f.kind for f in found] == ["suite_did_not_run"]
     assert "no-such-flag" in found[0].why
-
-
-def test_static_findings_read_the_tests_and_run_none(tmp_path: Path) -> None:
-    root, base = repo(tmp_path, {"calc.py": CALC})
-    commit(
-        root,
-        "layer",
-        {
-            "tests/test_bad.py": "def test_x(:\n    pass\n",
-            "tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n    add(1, 2)\n\n\n"
-            "def test_add_again():\n    assert add(2, 2) == 4\n",
-        },
-    )
-    kinds = sorted((f.kind, f.test) for f in static_findings(root, base))
-    assert kinds == [
-        ("assertion_free_test", "tests/test_calc.py::test_add"),
-        ("unparseable_test", "tests/test_bad.py"),
-    ]
 
 
 async def test_a_test_module_that_does_not_parse_is_a_finding_with_the_error(tmp_path: Path) -> None:
@@ -353,13 +328,13 @@ def test_a_test_that_passes_before_the_code_and_matches_an_error_is_told_its_pat
     plain = Finding(
         "passes_before_code", "tests/test_a.py::test_z", "it passes before the code", "def test_z(): ..."
     )
-    text = feedback([loose, plain])
+    text = package_feedback_said([loose, plain])[0]
     assert text.count("`match=` pattern") == 1
     assert text.index("`match=` pattern") < text.index("test_z")  # under the test that has one
 
 
 def test_feedback_names_each_test_and_why() -> None:
-    text = feedback(
+    text = package_feedback_said(
         [
             Finding(
                 "passes_before_code",
@@ -371,71 +346,18 @@ def test_feedback_names_each_test_and_why() -> None:
                 "assertion_free_test", "tests/test_a.py::test_y", "it has no assert", "def test_y(): ..."
             ),
         ]
-    )
+    )[0]
     assert "- tests/test_a.py::test_x: it passes before the code" in text
     assert "- tests/test_a.py::test_y: it has no assert" in text
-    assert "your new tests are the only red" in text and "Do not write the feature" in text
-    coder = feedback([Finding("assertion_free_test", "t::x", "it has no assert", "")], before_code=False)
-    assert "Run run_tests until your tests pass" in coder and "Do not write the feature" not in coder
-
-
-TODAYS_HEADER = "airlie checked the tests, and these need fixing:"
-TODAYS_TESTER = (
-    "Fix each one. Every test you wrote must fail now, because the code it tests is not written yet, "
-    "and pass once the brief is built. A test that only checks that nothing happens (no event, no "
-    "message, no change) passes now, where nothing happens either: put that check in the same test "
-    "that triggers the behaviour, before the trigger, or drop it. A test of something the brief keeps as "
-    "it is passes now and always will: delete it. Every test that was there before "
-    "must still pass. Keep a test for each acceptance criterion that changes something. "
-    "Do not write the feature. Run run_tests and check that your new tests are the only red, then stop."
-)
-TODAYS_CODER = (
-    "Fix each one: assert the behaviour this layer adds. Keep the tests for the acceptance criteria. "
-    "Run run_tests until your tests pass, then stop."
-)
-
-
-@pytest.mark.parametrize("before_code,what", [(True, TODAYS_TESTER), (False, TODAYS_CODER)])
-@pytest.mark.parametrize(
-    "found",
-    [
-        [],
-        [
-            Finding("passes_before_code", "t::a", "it passes before the code", 'raises(E, match="x")'),
-            Finding("assertion_free_test", "t::b", "it has no assert", ""),
-        ],
-    ],
-)
-@pytest.mark.parametrize("advice", [None, ""])
-def test_with_no_advice_feedback_is_exactly_todays_text(
-    before_code: bool, what: str, found: list[Finding], advice: str | None
-) -> None:
-    """The supervisor's off switch: no advice, and the role reads the text it read before the supervisor."""
-    listed: list[str] = []
-    for f in found:
-        listed.append(f"- {f.test}: {f.why}")
-        if f.kind == "passes_before_code":
-            listed.append("  " + hub_text("passes-before-code-choice"))
-            listed.append("  " + hub_text("loose-match"))
-    todays = "\n".join([TODAYS_HEADER, *listed, what])
-    assert feedback(found, before_code=before_code, advice=advice) == todays
-
-
-def test_feedback_says_what_to_do_with_a_test_that_checks_nothing_happens() -> None:
-    """AIR-31 layer 02: the brief asked for a test proving the feature is a no-op below its threshold. Such a
-    test passes before the code whatever the tester does, so it is told the way out, not only "fail"."""
-    text = feedback(
-        [Finding("passes_before_code", "tests/test_a.py::test_nothing", "it passes before the code", "...")]
-    )
-    assert "passes now, where nothing happens either" in text and "same test" in text and "triggers" in text
+    assert text.endswith(hub_text("package-fix")) and "Reply with the whole package again" in text
 
 
 def test_a_test_that_passes_before_code_is_told_it_may_be_deleted() -> None:
     """AIR-9 layer 05: the brief kept some notes role-less, the tester tested that, it passed before the code
     and the layer blocked; the retry may delete such a test."""
-    text = feedback(
+    text = package_feedback_said(
         [Finding("passes_before_code", "tests/test_p.py::test_keeps", "it passes before the code", "...")]
-    )
+    )[0]
     assert "test_keeps" in text
     assert "delete it (edit_file with the whole test as old and nothing as new)" in text
 
@@ -446,37 +368,20 @@ LOOSE = Finding(
 NONE_IN_IT = Finding("assertion_free_test", "t::b", "it has no assert", "")
 
 
-@pytest.mark.parametrize("advice", [None, "Read the fixtures first."])
-def test_feedback_said_is_the_text_and_the_hub_ids_in_it_in_order(advice: str | None) -> None:
+def test_package_feedback_said_is_the_text_and_the_hub_ids_in_it_in_order() -> None:
     """The pipeline emits a `steer` event per id when it sends the text, so the ids are exactly the hub texts
     in it, a loose `match=` hint once per finding that has one."""
-    tester = feedback_said([LOOSE, NONE_IN_IT, LOOSE], advice=advice)
-    assert tester == (
-        feedback([LOOSE, NONE_IN_IT, LOOSE], advice=advice),
-        (
-            "checks-found",
-            "passes-before-code-choice",
-            "loose-match",
-            "passes-before-code-choice",
-            "loose-match",
-            "checks-fix-before-code",
-        ),
+    text, ids = package_feedback_said([LOOSE, NONE_IN_IT, LOOSE])
+    assert ids == (
+        "checks-found",
+        "passes-before-code-choice",
+        "loose-match",
+        "passes-before-code-choice",
+        "loose-match",
+        "package-fix",
     )
-    coder = feedback_said([NONE_IN_IT], before_code=False, advice=advice)
-    assert coder == (
-        feedback([NONE_IN_IT], before_code=False, advice=advice),
-        ("checks-found", "checks-fix-with-code"),
-    )
-    assert tester[0].startswith(hub_text("checks-found") + "\n- t::a: ")
-    assert tester[0].endswith("\n" + hub_text("checks-fix-before-code"))
-    assert coder[0].endswith("\n" + hub_text("checks-fix-with-code"))
-
-
-def test_amend_feedback_said_is_the_text_and_the_amend_id() -> None:
-    failing = ["tests/test_a.py::test_x"]
-    said = amend_feedback_said(failing, "I built it.", ("the empty file passes",))
-    assert said == (amend_feedback(failing, "I built it.", ("the empty file passes",)), ("amend",))
-    assert said[0].startswith(hub_text("amend") + "\n\nFailing:\n- tests/test_a.py::test_x")
+    assert text.startswith(hub_text("checks-found") + "\n- t::a: ")
+    assert text.endswith("\n" + hub_text("package-fix"))
 
 
 async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
@@ -486,13 +391,3 @@ async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
     )
     out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
     assert "NameError" in out and "test_good" not in out
-
-
-def test_is_testers_test() -> None:
-    by = {"tests/test_p.py": {"test_new", "TestX"}}
-    assert is_testers_test("tests/test_w.py::test_a", {"tests/test_w.py"}, by)
-    assert is_testers_test("tests/test_p.py::test_new", set(), by)
-    assert not is_testers_test("tests/test_p.py::test_old", set(), by)
-    assert is_testers_test("tests/test_p.py::TestX::test_a[1]", set(), by)
-    assert is_testers_test("tests/test_p.py::test_new[a-b]", set(), by)
-    assert not is_testers_test("tests/test_p.py", set(), by)

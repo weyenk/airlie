@@ -35,13 +35,12 @@ from airlie.story.layer_checks import (
     EXISTING_FAILS,
     PASSES_BEFORE_CODE,
     Finding,
-    amend_feedback,
-    feedback,
     findings_text,
 )
 from airlie.story.lessons import Lesson
 from airlie.story.model import Layer
 from airlie.story.package import Interface, Package, PackageFile
+from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
@@ -138,14 +137,9 @@ CASES: dict[str, Callable[[], str]] = {
     "client-bridge": lambda: "\n\n" + text("client-bridge"),
     # --- story/briefs.py, story/rounds.py, story/layer_checks.py
     "test-rules": lambda: text("test-rules"),
-    "pre-code-check": lambda: text("pre-code-check"),
-    "static-check": lambda: text("static-check"),
-    "tests-only": lambda: text("tests-only"),
-    "tests-contract": lambda: text("tests-contract"),
     "plan-round": lambda: text("plan-round"),
     "plan-fix": lambda: text("plan-fix", error="bad json"),
     "plan-unfinished": lambda: text("plan-unfinished"),
-    "amend": lambda: text("amend"),
     "package-fix": lambda: text("package-fix"),
     "package-replan": lambda: text("package-replan"),
     "passes-before-code-choice": lambda: "  " + text("passes-before-code-choice"),
@@ -187,16 +181,10 @@ CASES |= {
     ),
 }
 CASES |= {
-    "fn:layer_checks.feedback:tester": partial(feedback, FINDINGS),
-    "fn:layer_checks.feedback:tester-advice": partial(feedback, FINDINGS, advice="Read the fixtures first."),
-    "fn:layer_checks.feedback:coder": partial(feedback, FINDINGS, before_code=False),
-    "fn:layer_checks.feedback:coder-advice": partial(
-        feedback, FINDINGS, before_code=False, advice="Read the fixtures first."
+    "fn:package_checks.package_feedback_said": lambda: package_feedback_said(FINDINGS)[0],
+    "fn:package_checks.package_feedback_said:unsourced": partial(
+        lambda found: package_feedback_said(found)[0], FOUND_AND_UNSOURCED
     ),
-    "fn:layer_checks.amend_feedback:bare": partial(amend_feedback, FAILING, "  "),
-    "fn:layer_checks.amend_feedback:account": partial(amend_feedback, FAILING, ACCOUNT),
-    "fn:layer_checks.amend_feedback:review": partial(amend_feedback, FAILING, "", BLOCKING),
-    "fn:layer_checks.amend_feedback:full": partial(amend_feedback, FAILING, ACCOUNT, BLOCKING),
     "fn:layer_checks.findings_text:two": partial(findings_text, FOUND_AND_UNSOURCED),
 }
 CASES |= {

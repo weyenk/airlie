@@ -33,8 +33,6 @@ GOAL_CLOSE = (
     "goal-tools ends every tooled team role's goal with 'change it, run the tests, stop with a short summary "
     "when they pass'; a neutral close would settle it"
 )
-NEVER_TOGETHER = "story/briefs.py sends one or the other: tests-where when the layer names a test file"
-
 ACCEPTED = (
     Accepted("architect", "answer.form", "brief-survey-task", "goal-tools", GOAL_CLOSE),
     Accepted("architect", "answer.form", "goal-tools", "role:architect", GOAL_CLOSE),
@@ -46,20 +44,6 @@ ACCEPTED = (
         "role:coder",
         "coder.md allows write_file on a short existing file, the build brief never; mild",
     ),
-    Accepted(
-        "coder",
-        "tests.location",
-        "brief-layer-plan-tests-new-file",
-        "brief-layer-plan-tests-where",
-        NEVER_TOGETHER,
-    ),
-    Accepted(
-        "coder",
-        "tests.order",
-        "brief-layer-plan-tests-first",
-        "role:coder",
-        "coder.md's steps write code (2) before tests (3); the build brief with no tester says tests first",
-    ),
     Accepted("design", "answer.form", "goal-tools", "role:design", GOAL_CLOSE),
     Accepted("docs", "answer.form", "goal-tools", "role:docs", GOAL_CLOSE),
     Accepted("docs", "repo.edit", "goal-tools", "role:docs", GOAL_CLOSE),
@@ -68,16 +52,7 @@ ACCEPTED = (
     Accepted("security", "answer.form", "goal-tools", "role:security", GOAL_CLOSE),
     Accepted("security", "repo.edit", "goal-tools", "role:security", GOAL_CLOSE),
     Accepted("tester", "answer.form", "goal-tools", "role:tester", GOAL_CLOSE),
-    Accepted("tester", "answer.form", "goal-tools", "tests-only", GOAL_CLOSE),
     Accepted("tester", "done.when", "goal-tools", "role:tester", GOAL_CLOSE),
-    Accepted("tester", "done.when", "goal-tools", "tests-only", GOAL_CLOSE),
-    Accepted(
-        "tester",
-        "tests.location",
-        "brief-layer-plan-tests-new-file",
-        "brief-layer-plan-tests-where",
-        NEVER_TOGETHER,
-    ),
     Accepted("ux", "answer.form", "goal-tools", "role:ux", GOAL_CLOSE),
 )
 
@@ -143,24 +118,3 @@ def test_every_role_named_by_a_hub_text_exists() -> None:
     known = set(_config().roles) | {"any"}
     unknown = sorted(f"{t.path}: {r}" for t in load().values() for r in t.roles if r not in known)
     assert not unknown, "these texts name a role airlie.yaml does not define:\n" + "\n".join(unknown)
-
-
-def test_the_tests_location_rules_are_settled(tmp_path: Path) -> None:
-    """PR 57's precedence, written down: the coder's prompt says tests go in a new file, and gives way to the
-    rule that a test file the layer names wins. Without coder.md's `yields_to`, the check reports it."""
-    cfg = _config()
-    roles = _role_prompts(cfg)
-    original = roles["coder"].read_text()
-    lines = original.splitlines(keepends=True)
-    without = "".join(line for line in lines if not line.startswith("yields_to:"))
-    assert without != original, "coder.md has no yields_to line to remove"
-    copy = tmp_path / "coder.md"
-    copy.write_text(without)
-
-    before = set(conflicts(load().values(), roles))
-    after = set(conflicts(load().values(), {**roles, "coder": copy}))
-    assert after - before == {
-        Conflict(
-            "coder", "tests.location", "brief-layer-plan-tests-where", "named-file", "role:coder", "new-file"
-        )
-    }
