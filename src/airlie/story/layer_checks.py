@@ -41,6 +41,10 @@ Kind = Literal[
     "no_new_test",
     "suite_did_not_run",
     "lint_fails",
+    "file_exists",
+    "file_missing",
+    "covers_missing",
+    "import_unresolved",
     "engine_error",
 ]
 """What a finding is about. `engine_error` is the pipeline's, not a check's: the tester's run ended on an
@@ -357,7 +361,7 @@ def checks_for(
     return PytestChecks(step, timeout_s=timeout_s, confinement=confinement) if step else None
 
 
-class _Said:
+class Said:
     """Hub steering texts rendered for one message, with their ids recorded in the order they are rendered,
     so the ids are exactly the texts the message holds."""
 
@@ -367,6 +371,23 @@ class _Said:
     def __call__(self, id: str, /) -> str:
         self.ids.append(id)
         return hub_text(id)
+
+
+def listed_findings(findings: Sequence[Finding], said: Said) -> list[str]:
+    """The lines that list `findings` for a role that must fix them: `checks-found`, then each finding and
+    why, a `passes-before-code-choice` line under a test that passes before the code, a `loose-match` hint
+    under such a test that has a `match=` pattern, and an existing test the layer changed as it was on the
+    base. The hub ids are recorded in `said`, in the order they are rendered."""
+    listed: list[str] = [said("checks-found")]
+    for f in findings:
+        listed.append(f"- {f.test}: {f.why}")
+        if f.kind == "passes_before_code":
+            listed.append("  " + said("passes-before-code-choice"))
+            if "match=" in f.source:
+                listed.append("  " + said("loose-match"))
+        if f.kind == "existing_test_changed":
+            listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
+    return listed
 
 
 def feedback_said(
@@ -380,16 +401,8 @@ def feedback_said(
     not written yet); else the coder's, which wrote tests and code together (`checks-fix-with-code`). `advice`
     is the supervisor's: its section goes after the findings and before the rules, so the rules are the last
     thing the role reads, whole, whatever the advice says. With none, the text is today's."""
-    said = _Said()
-    listed: list[str] = [said("checks-found")]
-    for f in findings:
-        listed.append(f"- {f.test}: {f.why}")
-        if f.kind == "passes_before_code":
-            listed.append("  " + said("passes-before-code-choice"))
-            if "match=" in f.source:
-                listed.append("  " + said("loose-match"))
-        if f.kind == "existing_test_changed":
-            listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
+    said = Said()
+    listed = listed_findings(findings, said)
     found = "\n".join(listed)
     what = said("checks-fix-before-code" if before_code else "checks-fix-with-code")
     told = f"{found}\n{what}" if not advice else f"{with_advice(found, advice)}\n\n{what}"
@@ -429,7 +442,7 @@ def amend_feedback_said(
 ) -> tuple[str, tuple[str, ...]]:
     """What the tester is told (the hub's `amend`): the failing tests, what the coder said when it stopped,
     and the reviewer's blocking findings, if any; and the hub ids in it, for the sender's `steer` events."""
-    said = _Said()
+    said = Said()
     lines = ["Failing:", *(f"- {t}" for t in failing)]
     if account.strip():
         lines += ["", "What the coder said when it stopped:", account.strip()[:_ACCOUNT_CHARS]]
