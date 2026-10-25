@@ -1016,3 +1016,110 @@ def test_every_thinking_role_in_airlie_yaml_carries_cut_reasoning() -> None:
     cfg = load_config(Path(__file__).parents[2] / "airlie.yaml")
     thinking = {n: r.carried_reasoning_chars for n, r in cfg.roles.items() if r.thinking}
     assert {"architect", "tester"} <= thinking.keys() and all(thinking.values())
+
+
+# ---- includes: (split config fragments) ----
+
+
+def _minimal_without_roles() -> dict:
+    return {k: v for k, v in MINIMAL.items() if k != "roles"}
+
+
+def test_includes_merge_in_order_and_root_overrides_fragment(tmp_path: Path) -> None:
+    (tmp_path / "inc").mkdir()
+    (tmp_path / "inc/a.yaml").write_text(yaml.safe_dump({"teams": {"k": 5, "role": "coder"}}))
+    (tmp_path / "inc/b.yaml").write_text(yaml.safe_dump({"teams": {"k": 4}}))
+    base = write(
+        tmp_path,
+        {
+            **_minimal_without_roles(),
+            "includes": ["inc/a.yaml", "inc/b.yaml"],
+            "teams": {"k": 2},
+            "roles": MINIMAL["roles"],
+        },
+    )
+    assert load_config(base).teams.k == 2
+
+
+def test_merge_order_is_include_then_root_then_local_then_profile(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text(yaml.safe_dump({"teams": {"k": 5}}))
+    base = write(
+        tmp_path,
+        {
+            **_minimal_without_roles(),
+            "includes": ["frag.yaml"],
+            "teams": {"k": 3},
+            "topology": {
+                "kind": "single",
+                "profiles": {"pick": {"teams": {"k": 1}}},
+            },
+            "roles": MINIMAL["roles"],
+        },
+    )
+    assert load_config(base).teams.k == 3
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"teams": {"k": 2}}))
+    assert load_config(base, local).teams.k == 2
+    assert load_config(base, local, topology="pick").teams.k == 1
+
+
+def test_missing_include_is_a_config_error(tmp_path: Path) -> None:
+    base = write(tmp_path, {**MINIMAL, "includes": ["missing.yaml"]})
+    with pytest.raises(ConfigError, match=r"includes: file not found: missing\.yaml"):
+        load_config(base)
+
+
+def test_include_cycle_is_a_config_error(tmp_path: Path) -> None:
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump({"includes": ["b.yaml"]}))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump({"includes": ["a.yaml"], "version": 1}))
+    root = tmp_path / "airlie.yaml"
+    root.write_text(yaml.safe_dump({**MINIMAL, "includes": ["a.yaml"]}))
+    for role in MINIMAL["roles"].values():
+        (tmp_path / role["prompt"]).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / role["prompt"]).write_text("# prompt\n")
+    with pytest.raises(ConfigError, match=r"includes: cycle") as exc:
+        load_config(root)
+    msg = str(exc.value)
+    assert ".yaml -> " in msg and "a.yaml" in msg and "b.yaml" in msg
+
+
+@pytest.mark.parametrize(
+    "includes",
+    ["single.yaml", {"path": "x.yaml"}, ["frag.yaml", 1]],
+    ids=["string", "mapping", "non-string-element"],
+)
+def test_invalid_includes_shape_is_a_config_error(tmp_path: Path, includes: object) -> None:
+    base = write(tmp_path, {**MINIMAL, "includes": includes})
+    with pytest.raises(ConfigError) as exc:
+        load_config(base)
+    assert "includes must be a list of paths" in str(exc.value)
+
+
+def test_includes_key_never_reaches_schema(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text(yaml.safe_dump({"teams": {"k": 1}}))
+    base = write(
+        tmp_path,
+        {**MINIMAL, "includes": ["frag.yaml"], "teams": {"k": 3}},
+    )
+    assert load_config(base).teams.k == 3
+
+
+def test_local_yaml_does_not_process_includes(tmp_path: Path) -> None:
+    (tmp_path / "frag.yaml").write_text(yaml.safe_dump({"teams": {"k": 1}}))
+    base = write(tmp_path, MINIMAL)
+    local = tmp_path / "airlie.local.yaml"
+    local.write_text(yaml.safe_dump({"includes": ["frag.yaml"]}))
+    with pytest.raises(ConfigError, match=r"includes"):
+        load_config(base, local)
+
+
+def test_included_role_prompt_resolves_against_root_config_dir(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    roles_only = {"roles": MINIMAL["roles"]}
+    (tmp_path / "config/roles.yaml").write_text(yaml.safe_dump(roles_only))
+    for role in MINIMAL["roles"].values():
+        (tmp_path / role["prompt"]).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / role["prompt"]).write_text("# prompt\n")
+    base = write(tmp_path, {**_minimal_without_roles(), "includes": ["config/roles.yaml"]})
+    cfg = load_config(base)
+    assert cfg.roles["coder"].prompt == (tmp_path / "prompts/roles/coder.md").resolve()

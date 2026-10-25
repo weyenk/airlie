@@ -208,8 +208,13 @@ standard-attention model; the numbers are in [`docs/bench/`](docs/bench/).
 
 ## Configuration
 
-Everything is in [`airlie.yaml`](airlie.yaml); copy `airlie.local.example.yaml` to `airlie.local.yaml` for local
-overrides (deep-merged, gitignored). Every seam is a key there: engines (`vllm_mlx` managed process, a
+Everything is in [`airlie.yaml`](airlie.yaml); the committed file `includes:` [`config/models.yaml`](config/models.yaml),
+[`config/roles.yaml`](config/roles.yaml), and [`config/profiles.yaml`](config/profiles.yaml) (paths relative to the
+file that lists them). Each included fragment is deep-merged in list order, then the root file's other keys merge on
+top, then `airlie.local.yaml` (deep-merged, gitignored, and **not** processed for `includes:`), then the selected
+topology profile. Role prompts, model paths, `story.repo`, and the like resolve against the **root** config file's
+directory (`airlie.yaml`'s parent), not the including fragment's directory. Copy `airlie.local.example.yaml` to
+`airlie.local.yaml` for local overrides. Every seam is a key there: engines (`vllm_mlx` managed process, a
 `llama_server` managed process for one GGUF such as Kev, or any `openai_http` server), the model catalog (pinned
 Hugging Face revisions; `bench: true` entries are compared by `task bench:models`; `tool_call_parser` /
 `reasoning_parser` name the parser classes, vllm-mlx's or airlie's own (`qwen3_xml_raw`, `muse_glimmer`, which

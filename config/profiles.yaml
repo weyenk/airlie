@@ -1,0 +1,75 @@
+# ---- Topology profiles (selected by topology.kind; see airlie.yaml) --------------------------------------------
+topology:
+  profiles:
+    single:
+      teams:
+        k: 1
+      lts:
+        enabled: false
+    teams:
+      teams:
+        k: 3
+      lts:
+        enabled: true
+    fork:
+      teams:
+        k: 1
+      lts:
+        enabled: false
+    studio:                        # chief + Kev router + specialists (design 2026-10-13); needs `task restart -- --topology studio`
+      # server_parsers stays true: without the flag vllm-mlx 0.5.0's batched engine renders tools in its own
+      # bracket protocol and the coder's calls arrive argument-less (seen 2026-10-13). The server parses the Qwen
+      # family with airlie's qwen3_xml_raw; airlie parses what it leaves raw (Muse channels).
+      engines:
+        main:
+          max_kv_size: 131072
+      models:
+        generalist:
+          preload: true
+        reviewer:
+          preload: true
+      teams:
+        k: 1
+        max_steps: 40
+      lts:
+        enabled: false
+      studio:
+        parallel: 3
+    studio-qwen25:                 # the experiment: Qwen2.5-32B (4-bit, already in the catalog) in the coder seat,
+      # everything else as studio (Noah 2026-10-18: a less clever but steadier coder may build a layer in less
+      # wall-clock once fix cycles count). Select it with `--topology studio-qwen25`, or for ticks with
+      # `story: { topology: studio-qwen25 }` in airlie.local.yaml; `task restart -- --topology studio-qwen25` first.
+      # The server-wide tool parser follows the coder's model: airlie's qwen3_xml_raw reads Qwen2.5's JSON calls
+      # as well as Qwen3.8's XML (checked 2026-10-18), while vllm-mlx's `qwen` strips the indentation of XML values,
+      # so the generalist roles keep their parser. KV at the coder's 64k: 57.5 GB of resident weights plus the
+      # studio's 131072 KV would project over the 104 GB wired limit.
+      extends: studio
+      engines:
+        main:
+          max_kv_size: 65536
+      roles:
+        coder:
+          model: qwen25_32b
+          thinking: false
+          max_tokens: 10240
+      models:
+        qwen25_32b:
+          preload: true
+          tool_call_parser: qwen3_xml_raw
+          reasoning_parser: qwen3
+    studio-coder8:                 # the experiment: Qwen3-Coder 8-bit in the coder seat, everything else as studio
+      # (Noah 2026-10-18). Select it for one run with `--topology studio-coder8`, or for stories by setting
+      # `story.topology`; the resident model set changes, so `task restart -- --topology studio-coder8` first.
+      # Standard attention: vllm-mlx's own prefix cache serves it. `task doctor -- --topology studio-coder8`
+      # projects the memory: 71 GB of resident weights (coder8, generalist, reviewer, small) leave no room for
+      # the studio's 131072 KV (111 GB projected vs the 104 GB wired limit), so the KV is the coder's own
+      # max_context, which caps the reviewer's prompt at 64k too (its reviews ran 16-23k on AIR-7).
+      extends: studio
+      roles:
+        coder:
+          model: coder8
+          thinking: false
+          max_tokens: 10240
+      models:
+        coder8:
+          preload: true

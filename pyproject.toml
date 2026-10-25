@@ -108,6 +108,8 @@ pytest_add_cli_args = [
 # and the story's mutation gate could not run).
 also_copy = [
     "airlie.yaml",
+    "config",
+    "web",
     "prompts",
     "evals",
     "scripts",
