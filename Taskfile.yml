@@ -101,6 +101,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  line:stats:
+    desc: "The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and kind with the fix cards filed, hours against estimates, the amigos' objections and how many were borne out, the budgets' overruns (task line:stats -- [--since 2026-10-18])"
+    cmds:
+      - '{{.RUN}} airlie line stats {{.CLI_ARGS}}'
+
   line:pause:
     desc: "Hold the line: every beat does the gates and the bookkeeping and starts no job; a running job finishes (task line:resume lets it go; a card moved to blocked or todo holds itself and everything under it)"
     cmds:

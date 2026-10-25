@@ -28,6 +28,18 @@ class Comment:
 
 
 @dataclass(frozen=True)
+class Move:
+    """One change of an item's status and who made it (planning-line P5b, D9): `by` is `line` for the tick and
+    the pipeline, otherwise the name of the person (or key) that moved it."""
+
+    key: str
+    from_status: str
+    to_status: str
+    by: str
+    at: float
+
+
+@dataclass(frozen=True)
 class Item:
     key: str
     """<prefix>-<n>: satisfies story.model.ISSUE_KEY, so it names a story directory as a Jira key does."""

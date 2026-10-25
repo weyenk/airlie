@@ -295,13 +295,13 @@ async def release_after_fix(
             )
             line_event(state_dir, "fix_awaiting_deploy", fix=fix.key, sha=sha)
         return []
-    store.update(fix.key, status="done")
+    store.update(fix.key, status="done", by="line")
     released: list[str] = []
     for story in _stories_blocked_by(store, fix):
         resumed = f"resumed_after:{fix.key}"
         if story.status != "blocked" or resumed in story.labels:
             continue
-        store.update(story.key, status="approved", labels=[*story.labels, resumed])
+        store.update(story.key, status="approved", labels=[*story.labels, resumed], by="line")
         store.comment(
             story.key, FIX_AUTHOR, note(f"{fix.key} is in the code the line runs: resumed, to be rebuilt")
         )
@@ -325,7 +325,7 @@ def transient_retry(store: BoardStore, state_dir: Path, story: Item, *, retries:
     done = sum(1 for lab in story.labels if lab.startswith(prefix))
     if done >= retries:
         return False
-    store.update(story.key, status="approved", labels=[*story.labels, f"{prefix}{done + 1}"])
+    store.update(story.key, status="approved", labels=[*story.labels, f"{prefix}{done + 1}"], by="line")
     store.comment(
         story.key,
         FIX_AUTHOR,

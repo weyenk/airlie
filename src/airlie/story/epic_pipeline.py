@@ -192,7 +192,7 @@ class EpicPipeline:
             st.stories[ps.id] = item.key
             st.save()
             if not ps.depends_on:
-                store.update(item.key, status="approved")
+                store.update(item.key, status="approved", by="line")
             made.append((ps.id, item.key))
         if not made:
             return
@@ -528,7 +528,7 @@ class EpicPipeline:
                 st.stories[ps.id] = item.key
                 st.save()
                 if not ps.depends_on:
-                    store.update(item.key, status="approved")
+                    store.update(item.key, status="approved", by="line")
                 created.append(item.key)
         retired: list[str] = []
         for p in progress:
@@ -536,7 +536,7 @@ class EpicPipeline:
                 continue
             self._clear_attempt(p.key)
             replaced = ", ".join(created) or "no new story"
-            store.update(p.key, status="done")
+            store.update(p.key, status="done", by="line")
             store.comment(
                 p.key,
                 "airlie",
@@ -546,7 +546,7 @@ class EpicPipeline:
         dropped: list[str] = []
         for sid in sorted(changeable - {s.id for s in new.stories}):
             key = st.stories[sid]
-            store.update(key, status="done")
+            store.update(key, status="done", by="line")
             store.comment(key, "airlie", note(f"dropped by the re-plan ({reason}); it had not started."))
             dropped.append(key)
         for ps in new.order():  # rank: each listed story at the bottom of its column, in the new order

@@ -1123,6 +1123,31 @@ def line_tick(config: ConfigOpt = None) -> None:
     _tick(config)
 
 
+@line_app.command("stats")
+def line_stats_cmd(
+    since: Annotated[
+        str | None, typer.Option(help="only what happened from this date (2026-10-18) or epoch seconds")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and
+    kind (and the fix cards filed), hours against estimates, the amigos' objections and how many were borne
+    out, the budgets' overruns."""
+    from airlie.board import BoardStore
+    from airlie.story.stats import line_stats, parse_since, render_stats
+
+    cfg = _load(config)
+    try:
+        floor = parse_since(since) if since else None
+    except ValueError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    state_dir = cfg.observability.state_dir.expanduser()
+    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    stats = line_stats(state_dir, store, since=floor, roles=frozenset(cfg.roles))
+    console.print(render_stats(stats), markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @line_app.command("pause")
 def line_pause(config: ConfigOpt = None) -> None:
     """Hold the line: every beat still runs the gates and the bookkeeping but starts no job. A job already

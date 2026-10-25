@@ -59,6 +59,11 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
         if publish is not None:
             publish("board", key)
 
+    def mover(request: Request) -> str:
+        """Who a status change is recorded as made by: the request's principal, else the one person (v1)."""
+        principal = getattr(request.state, "principal", None)
+        return str(principal.name) if principal is not None else PERSON
+
     def item(key: str) -> dict[str, Any]:
         try:
             return store.get(key).to_dict()
@@ -94,7 +99,7 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
         return item(key)
 
     @router.patch("/items/{key}")
-    async def change_item(key: str, body: ChangeItem) -> dict[str, Any]:
+    async def change_item(key: str, body: ChangeItem, request: Request) -> dict[str, Any]:
         item(key)  # 404 before anything else
         try:
             updated = store.update(
@@ -104,6 +109,7 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
                 status=body.status,
                 parent=body.parent,
                 labels=body.labels,
+                by=mover(request),
             )
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
@@ -111,10 +117,10 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
         return updated.to_dict()
 
     @router.post("/items/{key}/move")
-    async def move_item(key: str, body: MoveItem) -> dict[str, Any]:
+    async def move_item(key: str, body: MoveItem, request: Request) -> dict[str, Any]:
         item(key)
         try:
-            moved = store.move(key, body.status, body.before)
+            moved = store.move(key, body.status, body.before, by=mover(request))
         except BoardStoreError as e:
             raise HTTPException(422, str(e)) from None
         changed(key)

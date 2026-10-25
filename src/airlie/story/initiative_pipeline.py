@@ -197,7 +197,7 @@ class InitiativePipeline:
 
     def _doing(self, key: str) -> None:
         """The initiative is being worked on: `doing` while a turn runs (a question puts it in review)."""
-        self.board.store.update(key, status="doing")
+        self.board.store.update(key, status="doing", by="line")
 
     def _answer_to(self, item: Item, question: dict[str, object]) -> Comment | None:
         """The newest comment of a person on the card that is newer than the question: its answer."""
@@ -266,7 +266,7 @@ class InitiativePipeline:
         st.save()
         text = question if len(st.qa) > 1 else f"{question}\n\n{GO_LINE}"
         self.board.store.comment(item.key, self.specs.product_role, text)
-        self.board.store.update(item.key, status="review")
+        self.board.store.update(item.key, status="review", by="line")
         st.emit("question", n=len(st.qa), chars=len(question))
         return False
 
@@ -762,7 +762,7 @@ class InitiativePipeline:
                 labels=labels,
                 created_by=self.specs.product_role,
             )
-            store.update(card.key, status="review")
+            store.update(card.key, status="review", by="line")
             entry["key"], entry["estimate"] = card.key, estimate.to_dict()
             keys[draft.id] = card.key
             st.save()
@@ -774,7 +774,7 @@ class InitiativePipeline:
             budget_hours=initiative.budget_hours,
         )
         store.comment(initiative.key, self.specs.product_role, note_text)
-        store.update(initiative.key, status="review")
+        store.update(initiative.key, status="review", by="line")
         st.delivered_at = time.time()
         st.emit(
             "epics",

@@ -51,6 +51,7 @@ from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupEr
 from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
 from airlie.story.state import STAGES
+from airlie.story.stats import line_stats, parse_since
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -678,7 +679,7 @@ def create_app(
             labels=labels,
             created_by=principal.name if principal is not None else "noah",
         )
-        board.update(item.key, status="approved")
+        board.update(item.key, status="approved", by=principal.name if principal is not None else "person")
         feed.publish("board", item.key)
         answer = await start_turn(item.key)
         if answer.status_code == 202:
@@ -798,6 +799,23 @@ def create_app(
         """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
         set_paused(cfg.observability.state_dir.expanduser(), req.paused)
         return ticker.row()
+
+    @app.get("/v1/airlie/line/stats")
+    async def line_stats_get(since: str | None = Query(None)) -> dict[str, Any]:
+        """The numbers that judge the line (planning-line P5b, D9): the unattended rate, blocks by class and
+        kind, hours against estimates, the amigos' objections, the budgets' overruns. `since` is a date or
+        epoch seconds."""
+        try:
+            floor = parse_since(since) if since else None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return await asyncio.to_thread(
+            line_stats,
+            cfg.observability.state_dir.expanduser(),
+            board,
+            since=floor,
+            roles=frozenset(cfg.roles),
+        )
 
     @app.get("/v1/airlie/epics")
     async def epic_list() -> dict[str, Any]:

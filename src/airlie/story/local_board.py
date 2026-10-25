@@ -255,7 +255,7 @@ class LocalBoard:
         item = self._item(key)
         if item.level != "epic":
             raise BoardError(f"{item.key} is a {item.level}, not an epic")
-        self.store.update(item.key, status=status)
+        self.store.update(item.key, status=status, by="line")
 
     def follow_stories(self) -> list[tuple[str, str, str]]:
         """Move each epic the line planned along with its stories (D10): doing once a story has been picked,
@@ -281,7 +281,7 @@ class LocalBoard:
             else:
                 continue  # nothing picked yet: the epic stays as it is
             if target != epic.status:
-                self.store.update(epic.key, status=target)
+                self.store.update(epic.key, status=target, by="line")
                 moved.append((epic.key, epic.status, target))
         return moved
 
@@ -291,7 +291,7 @@ class LocalBoard:
 
     async def move(self, card: Card, column: Column) -> None:
         self._item(card.key)
-        self.store.update(card.key, status=STATUS_OF[column])  # type: ignore[arg-type]
+        self.store.update(card.key, status=STATUS_OF[column], by="line")  # type: ignore[arg-type]
 
     async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         """`text` as given (the pipeline passes note(text), as it does to every board), by `role` when one is

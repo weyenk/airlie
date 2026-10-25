@@ -427,7 +427,7 @@ def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
             deps = after_keys(story.labels)
             if not all(_status(board, dep) in ("review", "done") for dep in deps):
                 continue
-            board.store.update(story.key, status="approved")
+            board.store.update(story.key, status="approved", by="line")
             notes.append(f"promoted {story.key}")
             epic = epic_key_of(story.labels)
             if epic is not None:
@@ -810,7 +810,7 @@ async def _set_aside_initiative(board: LocalBoard, item: Item, reason: str) -> s
         board.store.comment(
             item.key, "airlie", note(f"set aside: {why}\nApprove the initiative again once that is fixed.")
         )
-        board.store.update(item.key, status="blocked")
+        board.store.update(item.key, status="blocked", by="line")
     except Exception as err:  # noqa: BLE001 - a board that fails is named, not raised
         why += f" (and the board refused the note: {_why(err)})"
     return f"{item.key} set aside ({why})"
@@ -892,7 +892,7 @@ def _finish_initiatives(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
         children = board.children(item.key)
         epics = [c for c in children if c.level == "epic"]
         if epics and all(c.status in ("done", "todo") for c in epics):
-            board.store.update(item.key, status="done")
+            board.store.update(item.key, status="done", by="line")
             notes.append(f"initiative {item.key} is done")
     return notes
 
