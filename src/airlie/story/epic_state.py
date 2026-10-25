@@ -59,6 +59,10 @@ class EpicState:
     runs: list[str] = field(default_factory=list)
     base: dict[str, str] | None = None
     seen_comments: int = 0
+    estimate: dict[str, Any] | None = None
+    """The epic's price as the specs phase wrote it (`costs.Estimate.to_dict`): the first estimate, the one
+    revised when the stories were planned, the actual once the epic is done. It mirrors the card's block so
+    the ledger (`costs.StoryCosts`) reads it without the board."""
 
     @classmethod
     def open(cls, path: Path, card: Item, repo: str) -> EpicState:
