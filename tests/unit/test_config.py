@@ -924,6 +924,20 @@ def test_story_tester_role_is_a_removed_key_with_the_reason(tmp_path: Path) -> N
     )
 
 
+def test_story_amigos_has_defaults_and_floors(tmp_path: Path) -> None:
+    """P2 (2026-10-24): the story meeting is on by default, with 12 turns, 5 files per layer and 3 tool
+    iterations per turn; a meeting needs at least a round (4 turns) and a layer at least one file."""
+    spec = load_config(write(tmp_path, MINIMAL)).story.amigos
+    assert (spec.enabled, spec.max_turns, spec.max_scope_files, spec.tool_iterations) == (True, 12, 5, 3)
+    shipped = load_config(ROOT / "airlie.yaml", NO_LOCAL).story.amigos
+    assert shipped.enabled and shipped.max_turns == 12
+    for bad, key in (({"max_turns": 3}, "max_turns"), ({"max_scope_files": 0}, "max_scope_files")):
+        with pytest.raises(ConfigError, match=key):
+            load_config(write(tmp_path, {**MINIMAL, "story": {"amigos": bad}}))
+    off = load_config(write(tmp_path, {**MINIMAL, "story": {"amigos": {"enabled": False}}}, "off.yaml"))
+    assert off.story.amigos.enabled is False
+
+
 def test_story_lint_round_steps_is_a_removed_key_with_the_reason(tmp_path: Path) -> None:
     base = write(tmp_path, MINIMAL)
     (tmp_path / "airlie.local.yaml").write_text("story: {lint_round_steps: 4}\n")

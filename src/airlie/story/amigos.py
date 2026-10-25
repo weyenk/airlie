@@ -18,9 +18,9 @@ import json
 import re
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from autogen_agentchat.agents import AssistantAgent, BaseChatAgent
 from autogen_agentchat.base import ChatAgent, Response, Team, TerminatedException, TerminationCondition
@@ -32,7 +32,13 @@ from autogen_core.models import ChatCompletionClient
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
-from airlie.story.amigos_checks import NO_FINDINGS, check_agreement, findings_message
+from airlie.story.amigos_checks import (
+    NO_FINDINGS,
+    check_agreement,
+    check_proof,
+    findings_message,
+    split_problems,
+)
 from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, _lesson_line, story_text
 from airlie.story.layer_checks import Finding
 from airlie.story.lessons import Lesson
@@ -47,7 +53,7 @@ from airlie.story.model import (
     parse_layers,
     parse_story,
 )
-from airlie.teams.autogen_team import build_function_tools
+from airlie.teams.autogen_team import build_function_tools, build_model_client
 from airlie.tools import ToolRegistry
 from airlie.tools.scope import is_test_module
 from airlie.topology.studio_plan import extract_json_block
@@ -312,15 +318,22 @@ class Agreement:
             object.__setattr__(self, "dropped", {})
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "story": self.story.to_dict(),
-            "layers": [x.to_dict() for x in self.layers],
-            "proof": [t.to_dict() for t in self.proof],
-            "turns": self.turns,
-            "unresolved": [asdict(o) for o in self.unresolved],
-            "decided_by_owner": list(self.decided_by_owner),
-            "dropped": dict(self.dropped),
-        }
+        """JSON-native (lists, not tuples), so the agreement in memory equals the one read back from the
+        state file."""
+        native: dict[str, Any] = json.loads(
+            json.dumps(
+                {
+                    "story": self.story.to_dict(),
+                    "layers": [x.to_dict() for x in self.layers],
+                    "proof": [t.to_dict() for t in self.proof],
+                    "turns": self.turns,
+                    "unresolved": [asdict(o) for o in self.unresolved],
+                    "decided_by_owner": list(self.decided_by_owner),
+                    "dropped": dict(self.dropped),
+                }
+            )
+        )
+        return native
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Agreement:
@@ -386,6 +399,30 @@ _PARTICIPANTS = (*ROLES, CHECKER)
 
 ClientFactory = Callable[[str, RoleSpec], ChatCompletionClient]
 """Role name and its spec -> the model client that role's agent speaks through."""
+
+
+class Meets(Protocol):
+    """What the pipeline needs of a meeting: `Meeting`, or a double in a test."""
+
+    async def run(
+        self,
+        opening: str,
+        story: Story,
+        layers: tuple[Layer, ...],
+        levels: Mapping[str, int],
+        guidelines: Collection[str],
+        *,
+        repo: Path,
+        base: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> Agreement: ...
+
+
+MeetingFactory = Callable[
+    [AirlieConfig, Callable[[str], ToolRegistry], Callable[["Turn", Mapping[str, Any]], None]], Meets
+]
+"""Makes a story's meeting from the config, the read-only tools for a role over the story's base and the
+callback for each turn. The pipeline's default is `default_meeting`."""
 
 
 @dataclass
@@ -851,3 +888,130 @@ class Meeting:
             decided,
             dict(standing.dropped),
         )
+
+
+# ---- settling the agreement and saying it ------------------------------------------------------------------
+
+
+def prune_references(agreement: Agreement) -> Agreement:
+    """The agreement with no reference to a criterion its story does not have (D13): a layer's `acceptance`
+    loses the ids product dropped, and a proof test that proved one is dropped, unless it is its layer's only
+    test, when it stays as a test of the layer's behaviour (`criterion` None). The meeting asks the owners to
+    fix these themselves; this is what stands when the turns ran out first, so nothing downstream ever reads
+    a dangling id."""
+    ids = {c.id for c in agreement.story.acceptance}
+    layers = tuple(
+        replace(x, acceptance=tuple(a for a in x.acceptance if a in ids)) for x in agreement.layers
+    )
+
+    def kept(t: ProofTest) -> bool:
+        return t.criterion is None or t.criterion in ids
+
+    proof: list[ProofTest] = []
+    for t in agreement.proof:
+        if kept(t):
+            proof.append(t)
+        elif not any(u.layer == t.layer and kept(u) for u in agreement.proof):
+            proof.append(replace(t, criterion=None))
+    return replace(agreement, layers=layers, proof=tuple(proof))
+
+
+def unbuildable(agreement: Agreement) -> list[Finding]:
+    """What makes an agreement impossible to build, whatever the meeting decided: a criterion no layer owns
+    or two own (`split_invalid`), a criterion or a layer with no test, a test in a layer that does not own
+    its criterion. The package call would fail on each; owner-decides does not stretch to them."""
+    return [
+        *split_problems(agreement.layers, agreement.story),
+        *check_proof(agreement.proof, agreement.story, agreement.layers),
+    ]
+
+
+def _pipe(text: str) -> str:
+    """`text` as a Markdown table cell: each pipe escaped."""
+    return text.replace("|", "\\|")
+
+
+def agreement_note(agreement: Agreement) -> str:
+    """The agreement for a person, as the card's comment: the criteria, the layers bottom first with their
+    files and interfaces, and the proof as a table."""
+    lines = [
+        f"agreement of product, the architect and the tester ({agreement.turns} turns)",
+        "criteria:",
+        *(f"- {c.line()}" for c in agreement.story.acceptance),
+        "layers, bottom first:",
+    ]
+    for n, x in enumerate(agreement.layers, 1):
+        owns = ", ".join(x.acceptance) or "enabling: no criterion"
+        files = ", ".join(f"{f.path} (new)" if f.new else f.path for f in x.files) or x.scope
+        lines.append(f"{n}. {x.title} ({owns}): {files}")
+        lines += [f"   interface: {i}" for i in x.interfaces]
+    lines += [
+        "proof:",
+        "| criterion | layer | level | test | asserts |",
+        "| --- | --- | --- | --- | --- |",
+        *(
+            f"| {t.criterion or '-'} | {t.layer} | {t.level} | {t.id} | {_pipe(t.asserts)} |"
+            for t in agreement.proof
+        ),
+    ]
+    if agreement.decided_by_owner:
+        lines.append("decided by their owner at the turn cap: " + ", ".join(agreement.decided_by_owner))
+    return "\n".join(lines)
+
+
+def criteria_note(original: Story, agreement: Agreement) -> str | None:
+    """Which criteria the meeting reworded, added or dropped, as the card's comment; None when it changed
+    none."""
+    before = {c.id: c for c in original.acceptance}
+    after = {c.id: c for c in agreement.story.acceptance}
+    lines = [f"reworded: {c.line()}" for i, c in after.items() if i in before and before[i] != c]
+    lines += [f"added: {c.line()}" for i, c in after.items() if i not in before]
+    dropped = [i for i in before if i not in after]
+    lines += [f"dropped: {i} ({agreement.dropped.get(i, 'no reason given')})" for i in dropped]
+    if not lines:
+        return None
+    return "\n".join(["the meeting changed the criteria:", *lines])
+
+
+def unresolved_note(agreement: Agreement) -> str | None:
+    """The objections still open when the meeting ended, as the card's comment; None when there are none."""
+    if not agreement.unresolved:
+        return None
+    return "\n".join(
+        [
+            "objections still open when the meeting ended (each owner's part stands):",
+            *(f"- {o.line()}" for o in agreement.unresolved),
+        ]
+    )
+
+
+# ---- the real meeting's wiring ----------------------------------------------------------------------------
+
+
+def http_clients(cfg: AirlieConfig) -> ClientFactory:
+    """The clients of a real meeting: each role's AutoGen client pointed at the engine that serves its model,
+    as `Orchestrator._default_team` points the AutoGen team's."""
+
+    def make(role_name: str, spec: RoleSpec) -> ChatCompletionClient:
+        engine = cfg.engines[cfg.engine_for_model(spec.model)]
+        return build_model_client(engine.base_url or "", engine.served_name(spec.model), spec, engine.api_key)
+
+    return make
+
+
+def default_meeting(
+    cfg: AirlieConfig,
+    tools: Callable[[str], ToolRegistry],
+    on_turn: Callable[[Turn, Mapping[str, Any]], None],
+) -> Meeting:
+    """A meeting on the engine, as `story.amigos` configures it."""
+    spec = cfg.story.amigos
+    return Meeting(
+        cfg,
+        clients=http_clients(cfg),
+        tools=tools,
+        max_turns=spec.max_turns,
+        tool_iterations=spec.tool_iterations,
+        on_turn=on_turn,
+        max_scope_files=spec.max_scope_files,
+    )

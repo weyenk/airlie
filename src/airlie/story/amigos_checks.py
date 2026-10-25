@@ -29,20 +29,26 @@ NO_FINDINGS = "no findings"
 """What the checker says when the parts are sound; the meeting's termination reads it."""
 
 
-def check_split(
-    layers: Sequence[Layer], story: Story, repo: Path, base: str, max_scope_files: int
-) -> list[Finding]:
-    """`file_missing` for a file a layer names that is not at `base` and is not marked new, `over_size` for a
-    layer naming more than `max_scope_files` files, and `split_invalid` for what `parse_layers` refuses: a
-    criterion no layer owns or two layers own. A layer that names no files is read by the paths its scope
-    mentions (D14's fallback). References to criteria the story lacks are `check_references`'."""
-    found: list[Finding] = []
+def split_problems(layers: Sequence[Layer], story: Story) -> list[Finding]:
+    """`split_invalid` for what `parse_layers` refuses of the split against the story as it stands: a
+    criterion no layer owns, or two layers own. References to criteria the story lacks are left out here
+    (they are `check_references`'), by reading each layer's acceptance without them."""
     known = {c.id for c in story.acceptance}
     try:
         owned = [{**x.to_dict(), "acceptance": [a for a in x.acceptance if a in known]} for x in layers]
         parse_layers(json.loads(json.dumps({"layers": owned})), story, max(len(layers), 1))
     except StoryError as e:
-        found.append(Finding("split_invalid", "(the split)", str(e), ""))
+        return [Finding("split_invalid", "(the split)", str(e), "")]
+    return []
+
+
+def check_split(
+    layers: Sequence[Layer], story: Story, repo: Path, base: str, max_scope_files: int
+) -> list[Finding]:
+    """`file_missing` for a file a layer names that is not at `base` and is not marked new, `over_size` for a
+    layer naming more than `max_scope_files` files, and `split_invalid` (`split_problems`). A layer that
+    names no files is read by the paths its scope mentions (D14's fallback)."""
+    found = split_problems(layers, story)
     for layer in layers:
         paths = layer.paths()
         new = {f.path for f in layer.files if f.new}

@@ -491,3 +491,23 @@ def test_the_opening_message_lays_out_the_story_the_split_the_conventions_and_th
     assert "End your reply with one" not in text  # the turn ends with the verdict, not with a part
     assert "tester" in text and "proof" in text
     assert parse_proof is not None
+
+
+def test_the_real_meeting_speaks_to_each_roles_engine_with_the_configured_limits() -> None:
+    from airlie.story.amigos import default_meeting, http_clients
+    from airlie.teams.autogen_client import RepairingOpenAIClient
+
+    clients = http_clients(CFG)
+    for role in ("product", "architect", "tester"):
+        client = clients(role, CFG.roles[role])
+        assert isinstance(client, RepairingOpenAIClient)
+        engine = CFG.engines[CFG.engine_for_model(CFG.roles[role].model)]
+        assert client.dump_component().config["base_url"] == engine.base_url
+        assert client.dump_component().config["model"] == engine.served_name(CFG.roles[role].model)
+    made = default_meeting(CFG, lambda role: pytest.fail("no tools are built until a role speaks"), noop)
+    spec = CFG.story.amigos
+    assert (made.max_turns, made.tool_iterations, made.max_scope_files) == (
+        spec.max_turns,
+        spec.tool_iterations,
+        spec.max_scope_files,
+    )

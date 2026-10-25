@@ -1,4 +1,5 @@
-"""The story pipeline: an issue → product's story → architect's layers → each layer built from a package the
+"""The story pipeline: an issue → product's story → architect's layers → the story meeting (product, the
+architect and the tester agree requirements, changes and proof) → each layer built from a package the
 architect writes just before it runs (its tests as code, the files, the interfaces, the steps), placed in the
 layer's worktree, checked red on the base and locked, then built by the studio's coder on its own branch,
 gated by the repository's test gate (its AGENTS.md at the story's base commit, or a person's --test-cmd) → a
@@ -15,14 +16,27 @@ import contextlib
 import re
 import subprocess
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig
 from airlie.prompts import text as hub_text
-from airlie.skills import prompt_text
+from airlie.skills import Skill, load_skills, prompt_text, skill_criteria
+from airlie.story.amigos import (
+    CHECKER,
+    Agreement,
+    MeetingFactory,
+    Turn,
+    agreement_note,
+    criteria_note,
+    default_meeting,
+    opening_message,
+    prune_references,
+    unbuildable,
+    unresolved_note,
+)
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
@@ -57,11 +71,13 @@ from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
+from airlie.story.testing_conventions import conventions, conventions_text, test_levels
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
 from airlie.supervisor.triage import triage_for
 from airlie.teams.protocol import TeamResult, cut_off_text
 from airlie.teams.worktree import (
+    add_worktree,
     changed_files,
     checkout_worktree,
     commit_wip,
@@ -72,7 +88,8 @@ from airlie.teams.worktree import (
     rev_parse,
     squash_since,
 )
-from airlie.topology.studio import StudioOrchestrator
+from airlie.tools import ToolContext, ToolRegistry
+from airlie.topology.studio import SKILL_QUESTION, StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
 StudioFactory = Callable[[], StudioOrchestrator]
@@ -265,10 +282,12 @@ class StoryPipeline:
         repo: Path,
         test_cmd: str | None = None,
         github_repo: str | None = None,
+        meeting: MeetingFactory | None = None,
     ) -> None:
-        """`test_cmd` is a person's (--test-cmd): it wins over the repository's test gate, and a blank one is
-        none. `github_repo` is the "owner/name" an issue's repo: label names (None for a written request): the
-        story is pinned to it and publishes there only."""
+        """`meeting` makes the story meeting (default: `amigos.default_meeting`, on the engine); tests pass
+        one over replayed models. `test_cmd` is a person's (--test-cmd): it wins over the repository's test
+        gate, and a blank one is none. `github_repo` is the "owner/name" an issue's repo: label names (None
+        for a written request): the story is pinned to it and publishes there only."""
         self.cfg = cfg
         self.s = cfg.story
         self.board = board
@@ -283,6 +302,7 @@ class StoryPipeline:
         self.timeout_s = cfg.tools.shell_timeout_s
         self._shown_cmd = _redact_urls(self.test_cmd)  # what a note or a PR says
         self.github_repo = github_repo
+        self.meeting = meeting or default_meeting
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
         self.ledger: Ledger | None = None
@@ -326,6 +346,8 @@ class StoryPipeline:
                 self._gate(st, base)
             story = await self._refine_with_survey(st, card)
             layers = await self._layers(st, card, story)
+            agreed = await self._agree(st, card, story, layers)
+            story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
             for i in range(len(layers)):
                 await self._build(st, card, story, layers, i)
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
@@ -619,9 +641,191 @@ class StoryPipeline:
             ask=ask,
         )
         st.layers = [x.to_dict() for x in layers]
-        st.finish("layers")
+        st.save()  # the stage finishes once the layers are agreed (`_agree`), not when they are split
         await self.board.comment(card, note(_layers_note(layers)), role=self.s.architect_role)
         return layers
+
+    async def _routed_guideline(self, st: StoryState, story: Story) -> Skill | None:
+        """The tester's testing guideline Kev routes for the story (the studio's `_skill`, reused): None when
+        the tester role has no guideline library, the router has no answer, or it fails (a missing guideline
+        is never a reason to stop)."""
+        spec = self.cfg.roles.get("tester")
+        skills = load_skills(spec.skills) if spec is not None and spec.skills is not None else []
+        if not skills:
+            return None
+        orch, _ = self._start_ask(st, "skill", None)
+        try:
+            d = await orch.router.route(
+                story_text(story), skill_criteria(skills), None, question="skill", instructions=SKILL_QUESTION
+            )
+        except Exception as e:  # noqa: BLE001 - a guideline is a head start: whatever fails, the meeting goes on
+            st.emit("skill", subtask="amigos", chosen=None, decision="none", reason=_cap(_reason(e), 200))
+            return None
+        st.emit("skill", subtask="amigos", chosen=d.chosen, decision=d.decision, confidence=d.confidence)
+        return next((k for k in skills if k.name == d.chosen), None)
+
+    def _meeting_tools(self, worktree: Path) -> Callable[[str], ToolRegistry]:
+        """The meeting's tools: each role's read-only ones (read_file, list_dir, grep, whichever its config
+        lists) over the detached worktree at the base, so the meeting writes nothing to the repository."""
+
+        def tools(role: str) -> ToolRegistry:
+            listed = self.cfg.roles[role].tools or ()
+            names = [n for n in listed if n in ("read_file", "list_dir", "grep")]
+            ctx = ToolContext(
+                worktree,
+                self.cfg.tools.shell_timeout_s,
+                self.cfg.tools.output_cap_chars,
+                **self.cfg.tools.confinement(),
+            )
+            return ToolRegistry.builtin(names, ctx)
+
+        return tools
+
+    def _on_turn(self, st: StoryState) -> Callable[[Turn, Mapping[str, Any]], None]:
+        """What the meeting calls after each turn: the team's state is kept (a killed story resumes from it)
+        and the turn's events are emitted: `amigos_turn`, an `amigos_objection` per objection,
+        `amigos_findings` for a checker turn that found something, and `amigos_resolved` when a speaker who
+        objected to a part earlier agrees to it now."""
+        open_: dict[tuple[str, str], list[Any]] = {}
+
+        def on_turn(turn: Turn, state: Mapping[str, Any]) -> None:
+            st.meeting = dict(state)
+            st.save()
+            thread = (
+                state.get("agent_states", {}).get("RoundRobinGroupChatManager", {}).get("message_thread", [])
+            )
+            n = sum(1 for m in thread if m.get("source") != "user")
+            v = turn.verdict
+            st.emit(
+                "amigos_turn",
+                role=turn.role,
+                turn=n,
+                verdict=None
+                if v is None
+                else {"requirements": v.requirements, "changes": v.changes, "proof": v.proof},
+                problems=[p.kind for p in turn.problems],
+                prompt_tokens=turn.prompt_tokens,
+                completion_tokens=turn.completion_tokens,
+                wall_ms=round(turn.wall_ms),
+            )
+            if turn.role == CHECKER:
+                if turn.findings:
+                    st.emit(
+                        "amigos_findings", turn=n, kinds=list(dict.fromkeys(f.kind for f in turn.findings))
+                    )
+                return
+            if v is None:
+                return
+            for o in v.objections:
+                st.emit(
+                    "amigos_objection",
+                    role=o.by,
+                    part=o.part,
+                    about=o.about,
+                    claim=o.claim,
+                    round=(n - 1) // 4 + 1,
+                )
+            for part in ("requirements", "changes", "proof"):
+                if v.of(part) == "agree":
+                    for o in open_.pop((turn.role, part), []):
+                        st.emit("amigos_resolved", role=turn.role, part=o.part, about=o.about)
+                else:
+                    open_[(turn.role, part)] = [o for o in v.objections if o.part == part]
+
+        return on_turn
+
+    async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
+        """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
+        the changes and the proof, then the stored agreement replaces the story and the layers. Skipped, and
+        the split is the agreement with an empty proof plan, when the agreement is already stored (a resume),
+        when the story is past `layers` without one (saved before the meeting existed) and when
+        `story.amigos.enabled` is false. The team's state is saved after every turn, so a killed story goes on
+        from the next speaker.
+
+        At the end: references to criteria the story no longer has are pruned (an event says which); an
+        agreement that cannot be built whatever was decided (a criterion no layer owns, a criterion or layer
+        with no test) stops the story, naming what is missing; the rest stands as each owner left it, with
+        the open objections on record and a lesson when the turns ran out."""
+        if st.agreement is not None:
+            if not st.done("layers"):
+                st.finish("layers")
+            return Agreement.from_dict(st.agreement)
+        if st.done("layers") or not self.s.amigos.enabled:
+            plain = Agreement(story, layers, ())
+            st.agreement = plain.to_dict()
+            if st.done("layers"):
+                st.save()
+            else:
+                st.finish("layers")
+            return plain
+        tester = self.cfg.roles.get("tester")
+        if tester is None:
+            raise StoryBlocked(
+                "story.amigos is on, but the config has no 'tester' role for the meeting: add the role "
+                "(config/roles.yaml) or set story.amigos.enabled to false"
+            )
+        base = await self._base(st)
+        sha = base["sha"]
+        routed = await self._routed_guideline(st, story)
+        found = conventions(self.repo, sha, tester.skills, routed)
+        opening = opening_message(
+            story, layers, conventions_text(found, self.commands), self.lessons.recent()
+        )
+        tree = st.path / "meeting-tree"
+        remove_worktree(self.repo, tree)  # one a killed run left behind
+        add_worktree(self.repo, tree, branch=None, start_point=sha)
+        try:
+            meeting = self.meeting(self.cfg, self._meeting_tools(tree), self._on_turn(st))
+            held = await meeting.run(
+                opening,
+                story,
+                layers,
+                test_levels(self.repo, sha),
+                {g.name for g in found.guidelines},
+                repo=self.repo,
+                base=sha,
+                state=st.meeting,
+            )
+        except NotActionable as e:
+            raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
+        finally:
+            remove_worktree(self.repo, tree)
+        ids = {c.id for c in held.story.acceptance}
+        stale = sorted(
+            {a for x in held.layers for a in x.acceptance if a not in ids}
+            | {t.criterion for t in held.proof if t.criterion is not None and t.criterion not in ids}
+        )
+        agreement = prune_references(held)
+        if stale:
+            st.emit("amigos_references_pruned", ids=stale)
+        holes = unbuildable(agreement)
+        if holes:
+            raise StoryBlocked(
+                "the meeting ended without an agreement that can be built: "
+                + "; ".join(f"{f.kind} {f.test}: {f.why}" for f in holes)
+            )
+        if agreement.decided_by_owner:
+            parts = list(agreement.decided_by_owner)
+            st.emit("amigos_owner_decided", parts=parts, turns=agreement.turns)
+            for o in agreement.unresolved:
+                st.emit("amigos_unresolved", role=o.by, part=o.part, about=o.about, claim=o.claim)
+            detail = ", ".join(parts)
+            self.lessons.record(Lesson(title=story.title, ending="owner_decided", detail=detail))
+            st.emit("lesson_recorded", layer="", ending="owner_decided", detail=detail)
+        else:
+            st.emit("amigos_agreed", turns=agreement.turns)
+        st.agreement = agreement.to_dict()
+        st.story = agreement.story.to_dict()
+        st.layers = [x.to_dict() for x in agreement.layers]
+        st.meeting = None
+        st.finish("layers")
+        # after the finish, so a note that cannot be posted never has the meeting held again
+        role = self.s.product_role
+        await self.board.comment(card, note(agreement_note(agreement)), role=role)
+        for text in (criteria_note(story, agreement), unresolved_note(agreement)):
+            if text is not None:
+                await self.board.comment(card, note(text), role=role)
+        return agreement
 
     async def _trunk_ref(self, st: StoryState) -> str:
         """The remote's trunk, fetched now into its remote-tracking branch (Publisher.fetch). A fetch that

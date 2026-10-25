@@ -474,6 +474,30 @@ class SupervisorSpec(Strict):
     recall: int = Field(default=3, ge=0, description="past ledger fixes shown to the supervisor")
 
 
+class AmigosSpec(Strict):
+    """The story meeting (P2 of the planning line, 2026-10-24): product, the architect and the tester agree a
+    story's requirements, changes and proof in one group chat before any layer is built."""
+
+    enabled: bool = Field(
+        default=True,
+        description="hold the meeting; false: the architect's split is the agreement, with no proof plan",
+    )
+    max_turns: int = Field(
+        default=12,
+        ge=4,
+        description="the most turns the meeting takes (the checker's count too); at the cap each owner's "
+        "part stands and the open objections are recorded",
+    )
+    max_scope_files: int = Field(
+        default=5, ge=1, description="the most files a layer may name: the sizing rule as a number"
+    )
+    tool_iterations: int = Field(
+        default=3,
+        ge=0,
+        description="read-only tool rounds an agent may take inside one turn (0: no tools in the meeting)",
+    )
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -535,6 +559,7 @@ class StorySpec(Strict):
         description="steps the architect gets to read before it writes a layer's package",
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
+    amigos: AmigosSpec = Field(default_factory=AmigosSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(

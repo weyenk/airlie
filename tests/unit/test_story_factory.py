@@ -63,7 +63,12 @@ def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -
     planning in one go and no survey (the rounds and the survey have tests of their own)."""
     extra = dict(extra or {})
     # no tester: it is a subtask per layer with scripted replies of its own (one test runs with it)
-    extra["story"] = {"plan_round_steps": 0, "survey": False, **extra.get("story", {})}
+    extra["story"] = {
+        "plan_round_steps": 0,
+        "survey": False,
+        "amigos": {"enabled": False},  # the story meeting has tests of its own (test_story_pipeline.py)
+        **extra.get("story", {}),
+    }
     kw.setdefault("done_check", False)  # it costs the coder one scripted reply per layer
     return studio_cfg_for(tmp_path, extra=extra, **kw)
 

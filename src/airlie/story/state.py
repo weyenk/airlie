@@ -72,6 +72,13 @@ class StoryState:
     """The architect's notes on the code the request touches, taken while product refined it ("" when none
     were: it failed or is switched off). None: not taken yet."""
     layers: list[dict[str, Any]] | None = None
+    agreement: dict[str, Any] | None = None
+    """The story meeting's agreement (`amigos.Agreement.to_dict`): the story as worded, the layers as split
+    and the proof plan. Once it is stored `story` and `layers` are its story and layers. None: the meeting
+    has not ended (a state from before it existed has none, and its split is its agreement)."""
+    meeting: dict[str, Any] | None = None
+    """The meeting's team state after its latest turn, saved every turn so a killed story resumes it; None
+    outside a meeting and once the agreement is stored."""
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
     attempt: dict[str, str] | None = None
     base: dict[str, str] | None = None

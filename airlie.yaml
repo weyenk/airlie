@@ -166,6 +166,9 @@ story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
   max_layers: 5
+  amigos:                          # P2 (2026-10-24): product, the architect and the tester agree requirements, changes and proof before any layer is built
+    enabled: true
+    max_turns: 12                  # at the cap each owner's part stands and the open objections are recorded
   supervisor:                      # the trial (spec 2026-10-22); false = today's behaviour exactly
     enabled: true
     per_layer: 6
