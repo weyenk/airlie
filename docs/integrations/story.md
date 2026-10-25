@@ -1079,8 +1079,8 @@ assumptions and goes on.
 
 **Your answer runs the next turn at once**: the app, the chief's `airlie_answer` and `task initiative:turn -- AIR-40`
 post the comment and call `POST /v1/airlie/initiatives/{key}/turn`, a job (`initiative-<key>`) that takes the
-one-story lock. While a story is in flight it answers **409** `{"error": "busy: a story is in flight; the tick picks
-AIR-40 up within 15 minutes"}`; the comment stays on the card and the **tick** runs that turn on its next beat (in this
+planning lane's lock. While another planning job holds it the route answers **409** `{"error": "busy: the planning
+lane is in use; the tick picks AIR-40 up within 15 minutes"}` (a build in the other lane does not stop it); the comment stays on the card and the **tick** runs that turn on its next beat (in this
 order: an answered question, a comment on an epic, the oldest approved initiative with no record, then the epic and
 story steps). `POST /v1/airlie/initiatives` `{title?, text, repos: [owner/name], budget_hours?}` makes, approves and
 starts a card (`202 {key, job_id}`; a busy line answers `202` with `job_id: null` and `waiting`, and the tick starts it).

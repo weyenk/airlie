@@ -281,3 +281,38 @@ async def test_a_profile_mismatch_is_a_gate_that_starts_no_build(
         line_module, "engine_matches_profile", lambda cfg, probe, profile: CheckResult("x", "ok", "fine")
     )
     assert f"epic {epic} Avatars: planned into 2 stories" in await tick(rig.cfg)
+
+
+async def test_a_job_that_finds_its_lane_held_leaves_the_holders_record_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`line/lanes/<lane>.json` is the lock holder's: a second job that lost the race must not write over it
+    or delete it, or the row would stop showing a lane that is still working."""
+    rig = TickRig(tmp_path, monkeypatch)
+    story = rig.store.create(level="story", title="S", labels=["repo:o/r"]).key
+    rig.store.update(story, status="approved")
+    board = factory.make_board(rig.cfg)
+    assert isinstance(board, LocalBoard)
+    state = rig.cfg.observability.state_dir
+    line = Line(rig.cfg, board=board, state_dir=state)
+    job = line._pick_plan()
+    assert job is not None
+    holder = state / "line" / "lanes" / "plan.json"
+    holder.parent.mkdir(parents=True)
+    holder.write_text(json.dumps({"key": "AIR-77", "what": "epic", "started": 1.0}))
+    with lane_lock(factory.stories_dir(rig.cfg), "plan"):  # another process holds the lane and wrote this
+        assert await line.run_job(job) == "busy: the planning lane is in use"
+    assert json.loads(holder.read_text())["key"] == "AIR-77"
+    # and a job that does hold it names itself while it runs, and leaves no record behind
+    holder.unlink()
+    seen: list[str] = []
+    real = line._working
+
+    def watch(lane: str, key: str, what: str):  # type: ignore[no-untyped-def]
+        seen.append(f"{lane} {key}")
+        return real(lane, key, what)
+
+    monkeypatch.setattr(line, "_working", watch)
+    started = started_log(monkeypatch)
+    await line.run_job(job)
+    assert seen == [f"plan {story}"] and not holder.exists() and started == []

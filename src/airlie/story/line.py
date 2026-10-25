@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -130,9 +130,9 @@ class Line:
         probe: SystemProbe | None = None,
     ) -> None:
         self.probe = probe
+        """What the engine gate reads the running engine with (the host's `ps`); tests pass a fake."""
         self.gates: dict[str, str] = {}
         """The latest beat's gates: engine, profile_match, github (ok, down, mismatch or unknown)."""
-        """What the engine gate reads the running engine with (the host's `ps`); tests pass a fake."""
         self.cfg = cfg
         self.board = board
         self.state_dir = state_dir
@@ -287,29 +287,28 @@ class Line:
                 json.dumps({"ts": self.now(), "gates": self.gates, "line": line})
             )
 
-    def _lane_record(self, job: Job, *, on: bool) -> None:
-        """`line/lanes/<lane>.json` names what the lane is doing (and since when) while its job runs; the row
-        believes it only while the lane's lock is held."""
-        path = self.state_dir / "line" / "lanes" / f"{job.lane}.json"
+    @contextlib.contextmanager
+    def _working(self, lane: Lane, key: str, what: str) -> Iterator[None]:
+        """`line/lanes/<lane>.json` names what the lane is doing (and since when) for as long as its job runs;
+        taken only by the holder of the lane's lock, so a job that found the lane held leaves the holder's
+        record alone. The row believes it only while the lock is held."""
+        path = self.state_dir / "line" / "lanes" / f"{lane}.json"
         with contextlib.suppress(OSError):
-            if on:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(
-                    json.dumps({"key": job.key, "what": job.what, "started": self.now(), "pid": os.getpid()})
-                )
-            else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"key": key, "what": what, "started": self.now(), "pid": os.getpid()}))
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
 
     async def run_job(self, job: Job) -> str:
         """Run a job to its end. A failure is that lane's line, never the other lane's."""
         line_event(self.state_dir, "lane_start", lane=job.lane, key=job.key, what=job.what)
-        self._lane_record(job, on=True)
         try:
             line = await job.work()
         except (BoardError, StorySetupError, StoryError) as e:
             line = f"{job.what} {job.key}: failed ({factory._why(e)})"
-        finally:
-            self._lane_record(job, on=False)
         job.result = " ".join(line.split())
         line_event(self.state_dir, "lane_done", lane=job.lane, key=job.key, line=job.result)
         return job.result
@@ -412,7 +411,8 @@ class Line:
             with lane_lock(self.stories, "plan") as held:
                 if not held:
                     return busy_line("plan")
-                return (await body()) or f"{what} {key}: nothing to do"
+                with self._working("plan", key, what):
+                    return (await body()) or f"{what} {key}: nothing to do"
 
         return Job("plan", key, what, events, work, planned=planned)
 
@@ -444,25 +444,29 @@ class Line:
     ) -> Job:
         board = self.board
 
+        async def under_lock() -> str:
+            notes: list[str] = []
+            if isinstance(board, LocalBoard):
+                notes += await factory._replay_dependents(self.cfg, board)
+                if item is None:
+                    return "; ".join(notes) or "replay: nothing moved"
+                top = board.item(item.key)
+                if top.status not in ("approved", "doing") or board.is_held(top):
+                    return "; ".join([*notes, f"{top.key}: moved by a person, left alone"])
+                card = board.card_of(top)
+                taken = f" (taken from {taken_from or board.status_of(card)})"
+                line, _ = await self._story_line(card, "build", taken=taken)
+            else:
+                assert isinstance(item, Card)
+                line, _ = await self._story_line(item, "run", taken="")
+            return "; ".join([*notes, line])
+
         async def work() -> str:
             with lane_lock(self.stories, "build") as held:
                 if not held:
                     return busy_line("build")
-                notes: list[str] = []
-                if isinstance(board, LocalBoard):
-                    notes += await factory._replay_dependents(self.cfg, board)
-                    if item is None:
-                        return "; ".join(notes) or "replay: nothing moved"
-                    top = board.item(item.key)
-                    if top.status not in ("approved", "doing") or board.is_held(top):
-                        return "; ".join([*notes, f"{top.key}: moved by a person, left alone"])
-                    card = board.card_of(top)
-                    taken = f" (taken from {taken_from or board.status_of(card)})"
-                    line, _ = await self._story_line(card, "build", taken=taken)
-                else:
-                    assert isinstance(item, Card)
-                    line, _ = await self._story_line(item, "run", taken="")
-                return "; ".join([*notes, line])
+                with self._working("build", key, what):
+                    return await under_lock()
 
         return Job("build", key, what, events, work)
 
