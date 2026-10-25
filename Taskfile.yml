@@ -167,6 +167,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie board export {{.CLI_ARGS}}'
 
+  epic:add:
+    desc: "Make an epic card on the local board from a Markdown spec; the line plans it into stories once you approve it (task epic:add -- --file spec.md --repo owner/name [--title TEXT])"
+    cmds:
+      - '{{.RUN}} airlie epic add {{.CLI_ARGS}}'
+
   board:import-jira:
     desc: "Import the Jira project (ATLASSIAN_*) onto the local board, each issue keeping its number under board.prefix; task board:import-jira -- --dry-run first"
     cmds:

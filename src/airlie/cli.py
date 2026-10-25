@@ -63,6 +63,11 @@ board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
 app.add_typer(board_app, name="board")
+epic_app = typer.Typer(
+    no_args_is_help=True,
+    help="Epics on the local board: the stories the line plans from them (docs/integrations/story.md).",
+)
+app.add_typer(epic_app, name="epic")
 mcp_app = typer.Typer()  # its help is mcp_serve's docstring
 app.add_typer(mcp_app, name="mcp")
 auth_app = typer.Typer(
@@ -1517,6 +1522,49 @@ def board_export(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     console.print(str(path), markup=False, highlight=False, soft_wrap=True)
+
+
+@epic_app.command("add")
+def epic_add(
+    file: Annotated[Path, typer.Option("--file", help="the epic's spec, a Markdown file")],
+    repo: Annotated[
+        str | None,
+        typer.Option(help="the repository the epic is for, owner/name (when the spec's block names none)"),
+    ] = None,
+    title: Annotated[
+        str | None, typer.Option(help="the card's title (default: the spec's first heading)")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Make an epic card on the local board from a Markdown spec, and print its key. The criteria are the
+    bullets under '## Acceptance criteria' (or the spec's own closing epic JSON block). The epic is planned
+    into stories once a person sets it approved."""
+    from airlie.board import BoardStore
+    from airlie.story.epic import epic_from_markdown, epic_title
+    from airlie.story.model import StoryError
+
+    try:
+        text = file.read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        err.print(f"[red]cannot read {escape(str(file))}: {escape(type(e).__name__)}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    try:
+        description, spec = epic_from_markdown(text, repo)
+    except StoryError as e:
+        err.print(f"[red]no epic made: {escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    cfg = _load(config)
+    store = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    try:
+        item = store.create(
+            level="epic",
+            title=(title or epic_title(text, file.stem)).strip()[:200],
+            description=description,
+            labels=[f"repo:{r}" for r in spec.repositories],
+        )
+    finally:
+        store.close()
+    console.print(item.key, markup=False, highlight=False, emoji=False)
 
 
 @board_app.command("import-jira")
