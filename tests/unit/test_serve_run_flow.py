@@ -67,7 +67,7 @@ def test_a_studio_run_part_way_has_plan_specialists_and_who_is_working(tmp_path:
     assert [(j["id"], j["status"]) for j in spec["jobs"]] == [("fix", "running"), ("note", "pending")]
     assert f["topology"] == "studio" and f["stage"] == "running"
     shape = {"key", "kind", "topology", "mode", "title", "summary", "stage", "blocked", "acceptance", "ok"}
-    assert set(f) == {*shape, "progress", "nodes"}
+    assert set(f) == {*shape, "progress", "nodes", "repo"}
     assert all(set(n) == {"id", "label", "kind", "status", "jobs"} for n in f["nodes"])
     assert {k: f[k] for k in ("key", "kind", "mode", "title", "summary", "blocked", "acceptance", "ok")} == {
         "key": "r1",
@@ -79,6 +79,7 @@ def test_a_studio_run_part_way_has_plan_specialists_and_who_is_working(tmp_path:
         "acceptance": [],
         "ok": None,
     }
+    assert f["repo"] == "/r"  # the repository the run is for, which Approve plan sends back
     assert f["progress"] == 0.0  # four nodes in the tree (chief, fix, note, reviewer), none finished
     assert lanes(f) == [
         ("plan", "running", [("chief", "running")]),  # the chief waits on its specialists: idle

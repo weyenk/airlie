@@ -8,6 +8,7 @@ index.md that lists them in order with what each one checked and whether it held
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import socket
@@ -25,8 +26,11 @@ from playwright.sync_api import BrowserContext, Locator, Page, expect
 
 from airlie.board.store import BoardStore
 from airlie.config import AirlieConfig, load_config
+from airlie.obs.run_dir import RunDir, new_run_id
 from airlie.serve.app import create_app
 from airlie.serve.server import Server as AirlieServer
+from airlie.topology.studio import PlanOutcome
+from airlie.topology.studio_plan import Plan, Subtask
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
@@ -93,6 +97,7 @@ def _config(root: Path) -> AirlieConfig:
         "chat": {"attachments": {"max_file_mb": 1}},  # small, so a too-large file is quick to make
         "observability": {"state_dir": str(root / "state")},
     }
+    data["roles"]["coder"]["summary"] = "writes the code"  # a role the studio may route a subtask to
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(root / "airlie.yaml")
 
@@ -336,6 +341,173 @@ def _topology_events(run: str, *, done: bool) -> list[dict[str, Any]]:
     ]
 
 
+RUN_TEAMS = "20261022-100000-teams"
+"""A finished teams run: three teams side by side (the first failed, the second won), then the judge."""
+RUN_FORK = "20261022-110000-fork"
+"""A finished fork run: the agent got stuck and forked twice; the first fork won."""
+RUN_SINGLE = "20261022-120000-single"
+"""A finished single run: one agent."""
+
+
+def _write_events(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _seed_topologies(state: Path) -> None:
+    """One finished run of each topology the workflow view draws (the studio is TOPO_DONE)."""
+
+    def e(run: str, kind: str, ts: float, **f: Any) -> dict[str, Any]:
+        return {"ts": ts, "run_id": run, "kind": kind, **f}
+
+    def step(run: str, team: str, n: int, ts: float) -> dict[str, Any]:
+        return e(
+            run,
+            "step",
+            ts,
+            team_id=team,
+            step=n,
+            tool="read_file",
+            ok=True,
+            prompt_tokens=900,
+            completion_tokens=90,
+            model="base",
+            role="coder",
+        )
+
+    t, run = 1792740000.0, RUN_TEAMS
+    _write_events(
+        state / "runs" / run / "events.jsonl",
+        [
+            e(
+                run,
+                "run_start",
+                t,
+                goal="Speed up repo map rebuilds",
+                k=3,
+                repo="/r/airlie",
+                orchestrator="native",
+            ),
+            *(e(run, "team_start", t + 1, team_id=f"t{i}", worktree=f"/w/{i}") for i in (1, 2, 3)),
+            *(step(run, f"t{i}", 1, t + 2) for i in (1, 2, 3)),
+            e(run, "team_done", t + 3, team_id="t1", ok=False, stop_reason="tests failed", steps=1),
+            e(run, "team_done", t + 3, team_id="t2", ok=True, stop_reason="done", steps=1),
+            e(run, "team_done", t + 3, team_id="t3", ok=True, stop_reason="done", steps=1),
+            e(
+                run,
+                "aggregate",
+                t + 4,
+                winner="t2",
+                reason="tests pass",
+                scores={"t1": 0.2, "t2": 1.0, "t3": 0.8},
+            ),
+            e(run, "run_done", t + 5, ok=True, wall_ms=5000.0),
+        ],
+    )
+    run = RUN_FORK
+    _write_events(
+        state / "runs" / run / "events.jsonl",
+        [
+            e(
+                run,
+                "run_start",
+                t,
+                goal="Parse the new tool-call format",
+                topology="fork",
+                repo="/r/airlie",
+                width=2,
+            ),
+            e(run, "branch_start", t + 1, branch="b0", worktree="/w/b0", child=False),
+            step(run, "b0", 1, t + 2),
+            e(run, "branch_done", t + 3, branch="b0", ok=False, stop_reason="stuck", steps=1),
+            e(
+                run,
+                "fork_point",
+                t + 3.1,
+                round=1,
+                parent="b0",
+                reason="stuck",
+                children=["b1", "b2"],
+                hypotheses=["the parser is wrong", "the test is wrong"],
+            ),
+            e(run, "branch_start", t + 4, branch="b1", worktree="/w/b1", child=True),
+            e(run, "branch_start", t + 4, branch="b2", worktree="/w/b2", child=True),
+            step(run, "b1", 1, t + 5),
+            e(run, "branch_done", t + 6, branch="b1", ok=True, stop_reason="done", steps=1),
+            e(run, "branch_done", t + 6, branch="b2", ok=False, stop_reason="gave up", steps=0),
+            e(run, "fork_resolved", t + 7, round=1, winner="b1", how="tests"),
+            e(run, "run_done", t + 8, ok=True, wall_ms=8000.0),
+        ],
+    )
+    run = RUN_SINGLE
+    _write_events(
+        state / "runs" / run / "events.jsonl",
+        [
+            e(
+                run,
+                "run_start",
+                t,
+                goal="Rename the repo map cache key",
+                k=1,
+                repo="/r/airlie",
+                orchestrator="native",
+            ),
+            e(run, "team_start", t + 1, team_id="t1", worktree="/w/1"),
+            step(run, "t1", 1, t + 2),
+            e(run, "team_done", t + 3, team_id="t1", ok=True, stop_reason="done", steps=1),
+            e(run, "run_done", t + 4, ok=True, wall_ms=4000.0),
+        ],
+    )
+
+
+class _FakeStudio:
+    """The studio as the Plan and Approve buttons meet it: `plan` returns a plan and writes the events a real
+    plan leaves; `execute_task` starts a run that goes on until it is stopped."""
+
+    PLAN = Plan(
+        assumptions=(
+            "The flake is the upload finishing after the assertion.",
+            "No change to the upload API is needed.",
+        ),
+        subtasks=(
+            Subtask(id="fix", brief="Wait for the upload's response before asserting.", role_hint="coder"),
+            Subtask(
+                id="retry-note",
+                brief="Note the wait in the test's docstring.",
+                role_hint="coder",
+                depends_on=("fix",),
+            ),
+        ),
+    )
+
+    def __init__(self, state: Path) -> None:
+        self.run_dir = RunDir.create(state, new_run_id() + "-fake")
+        self.path = self.run_dir.events_path
+
+    def _emit(self, kind: str, **f: Any) -> None:
+        with self.path.open("a") as out:
+            out.write(
+                json.dumps({"ts": time.time(), "run_id": self.run_dir.run_id, "kind": kind, **f}) + "\n"
+            )
+
+    async def plan(
+        self, goal: str, *, repo: Path, test_cmd: str | None = None, images: Any = ()
+    ) -> PlanOutcome:
+        self._emit("run_start", goal=goal, k=1, repo=str(repo), orchestrator="studio", mode="plan")
+        self._emit("plan", subtasks=["fix", "retry-note"], roles=["coder", "coder"])
+        self._emit("run_done", ok=True, wall_ms=10.0, subtasks=0, tests=None)
+        return PlanOutcome(self.PLAN, "", False)
+
+    async def execute_task(self, goal: str, *, repo: Path, plan: Plan | None = None, **_: Any) -> Any:
+        self._emit("run_start", goal=goal, k=1, repo=str(repo), orchestrator="studio")
+        self._emit(
+            "plan",
+            subtasks=[s.id for s in plan.subtasks] if plan else [],
+            roles=["coder"] * (len(plan.subtasks) if plan else 0),
+        )
+        await asyncio.sleep(3600)  # until a person stops it
+
+
 def _seed_topology(state: Path) -> None:
     for run, done in ((TOPO_DONE, True), (TOPO_LIVE, False)):
         d = state / "runs" / run
@@ -364,8 +536,15 @@ def _serve(root: Path) -> Iterator[Server]:
     _seed(state)
     _seed_story(state)
     _seed_topology(state)
+    _seed_topologies(state)
+    (root / "repo" / ".git").mkdir(parents=True)  # a repository a plan may name
     upstream = Upstream()
-    app = create_app(config, transport=httpx.MockTransport(upstream), api_key=KEY)
+    app = create_app(
+        config,
+        transport=httpx.MockTransport(upstream),
+        orchestrator_factory=lambda cfg, k, topology=None: _FakeStudio(state),
+        api_key=KEY,
+    )
     port = _free_port()
     # airlie's own Server, as `airlie serve` runs: shutdown ends the live feed first, so a page that holds
     # /v1/events open does not make teardown wait for it

@@ -30,6 +30,10 @@ export const STATUS_TABLE: Record<ChipKind, Record<string, ChipSpec>> = {
     failed: { label: "failed", family: "danger" },
     pending: { label: "pending", family: "chip" },
     waiting: { label: "waiting", family: "warn" },
+    // a run as a whole: ended well, or stopped by a person, or its plan ready for one to approve
+    done: { label: "done", family: "ok" },
+    stopped: { label: "stopped", family: "warn" },
+    approval: { label: "waiting for your approval", family: "warn", dot: true },
   },
   run: {
     studio: { label: "studio run", family: "violet" },

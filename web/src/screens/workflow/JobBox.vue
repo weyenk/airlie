@@ -28,6 +28,7 @@ const sub = computed(() => [props.job.role, props.job.duration_s ? briefSpan(pro
   >
     <span class="flex w-full min-w-0 items-center gap-1.5 text-[13px] font-semibold">
       <span class="truncate">{{ job.label }}</span>
+      <span v-if="job.won" data-won class="shrink-0 text-xs font-bold text-warn-foreground">★ won</span>
       <span v-if="job.attempts > 1" class="shrink-0 rounded-md bg-warn px-1.5 py-px text-xs font-bold text-warn-foreground">{{ job.attempts }}x</span>
     </span>
     <span :class="['w-full truncate text-xs text-muted-foreground', job.role || job.duration_s ? 'font-mono' : '']">{{ sub }}</span>

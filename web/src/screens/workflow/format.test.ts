@@ -40,3 +40,12 @@ test("stats list only the numbers a job has", () => {
     ["Model", "qwen"],
   ]);
 });
+
+test("a run's job has only prompt and completion token counts: the other numbers are left out, not shown as undefined", () => {
+  const partial = { prompt: 1200, completion: 90 } as unknown as NonNullable<ReturnType<typeof job>["tokens"]>;
+  expect(stats(job({ tokens: partial, duration_s: null }))).toEqual([
+    ["Attempts", "1"],
+    ["Prompt tokens", "1.2k"],
+    ["Completion tokens", "90"],
+  ]);
+});

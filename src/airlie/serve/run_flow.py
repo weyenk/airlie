@@ -87,10 +87,11 @@ def run_flow(
     state_dir: Path, run_id: str, *, models: Mapping[str, str] | None = None, ended: bool = False
 ) -> dict[str, Any]:
     """The flow of run `run_id` under `state_dir/runs`: its `nodes` (stages) left to right, each with its
-    `jobs`, made as a story's are; `stage` is "running" until the run is over, then "done", and `progress`
-    the share of its agents finished (None for one agent). The run is over at its run_done, or when `ended`
-    says it stopped short (its job failed or was cancelled); then no stage or job runs. RunNotFound for an id
-    that names no run directory. `models` is passed to the tree (airlie.serve.tree.build_tree)."""
+    `jobs`, made as a story's are; `repo` is the repository it is for (what approving its plan sends back);
+    `stage` is "running" until the run is over, then "done", and `progress` the share of its agents finished
+    (None for one agent). The run is over at its run_done, or when `ended` says it stopped short (its job
+    failed or was cancelled); then no stage or job runs. RunNotFound for an id that names no run directory.
+    `models` is passed to the tree (airlie.serve.tree.build_tree)."""
     tree = run_tree(state_dir, run_id, models=models)
     over = ended or tree["state"] == "done"
     nodes: list[dict[str, Any]] = []
@@ -116,6 +117,7 @@ def run_flow(
         "topology": tree["topology"],
         "mode": tree["mode"],
         "title": tree["goal"],
+        "repo": tree["repo"],
         "summary": None,
         "stage": "done" if over else "running",
         "blocked": None,

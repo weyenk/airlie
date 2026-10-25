@@ -13,13 +13,13 @@ import { useConfirm } from "@/composables/useConfirm";
 import { liveResource } from "@/stores/live";
 import JobDetailView from "./workflow/JobDetail.vue";
 import Pipeline from "./workflow/Pipeline.vue";
+import { useJobSelection } from "./workflow/selection";
 
 const route = useRoute();
 const router = useRouter();
 const { confirm } = useConfirm();
 
 const key = computed(() => String(route.params.key));
-const param = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
 // undefined: still loading; null: there is no such story
 const flow = liveResource<Flow | null>(["stories", "runs"], async () => {
@@ -35,49 +35,7 @@ watch(key, () => void flow.refresh());
 const jobs = liveResource("jobs", listJobs);
 const running = liveResource(["stories", "runs", "jobs"], listRunning);
 
-const nodesOfThisStory = computed(() => (flow.data.value?.key === key.value ? flow.data.value.nodes : []));
-const jobsOf = (nodes: Flow["nodes"]) => nodes.flatMap((n) => n.jobs.map((j) => [n.id, j.id, j.status] as const));
-type Pick = readonly [string, string, string];
-/** The failed job, else the running one, else the last that passed (with its status). */
-function interesting(nodes: Flow["nodes"]): Pick | null {
-  const all = jobsOf(nodes);
-  return all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed") ?? null;
-}
-// With no job in the address, a failed or running default is pinned once chosen, so the view does not jump under
-// a reader as live updates arrive. The last-passed fallback is not pinned: it follows the latest job until
-// something fails or runs. A pinned job that a refresh no longer has (layers re-planned) is dropped and re-picked.
-// Another story starts afresh.
-const pinned = ref<[string, string] | null>(null);
-let pinnedFor: string | undefined;
-watch(
-  [key, () => flow.data.value],
-  ([k, data]) => {
-    if (pinnedFor !== k) {
-      pinned.value = null;
-      pinnedFor = undefined;
-    }
-    if (!data || data.key !== k) return;
-    const have = jobsOf(data.nodes);
-    const p = pinned.value;
-    if (p && have.some((x) => x[0] === p[0] && x[1] === p[1])) return;
-    const pick = interesting(data.nodes);
-    pinned.value = pick && pick[2] !== "passed" ? [pick[0], pick[1]] : null;
-    pinnedFor = k;
-  },
-  { immediate: true, flush: "sync" },
-);
-
-/** The job open in the view: the one in the address, else the pinned default, else the last that passed. */
-const selected = computed<[string, string] | null>(() => {
-  const all = jobsOf(nodesOfThisStory.value);
-  const node = param(route.params.node);
-  const job = param(route.params.job);
-  if (node && job && all.some((x) => x[0] === node && x[1] === job)) return [node, job];
-  const p = pinned.value;
-  if (p && all.some((x) => x[0] === p[0] && x[1] === p[1])) return p;
-  const fallback = interesting(nodesOfThisStory.value);
-  return fallback ? [fallback[0], fallback[1]] : null;
-});
+const { selected } = useJobSelection(key, flow.data);
 
 const detail = liveResource(["stories", "runs"], async () => (selected.value ? storyJob(key.value, selected.value[0], selected.value[1]) : null));
 watch(
