@@ -13,9 +13,9 @@ reaches git; the plan-time checks against the trunk are `check_story_plan`, belo
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 from airlie.story.epic import REPOSITORY, EpicSpec
@@ -29,6 +29,7 @@ from airlie.story.model import (
     _strs,
     _text,
 )
+from airlie.teams.worktree import find_file
 
 STORY_PLAN_CONTRACT = """A story is the smallest unit that ends in a pull request stack a reviewer can judge alone: its acceptance criteria are what the reviewer checks, its scope is what the diff touches. End your reply with one ```json block holding exactly one object:
 {"type": "story_plan",
@@ -381,4 +382,76 @@ def parse_story_plan(
     return plan
 
 
-# ---- plan-time checks against the trunk (Task 3) --------------------------------------------------------
+# ---- plan-time checks against the trunk (D4) ------------------------------------------------------------
+
+PlanFindingKind = Literal["file_missing", "order_violation", "empty_criterion"]
+_ABSENT = frozenset({"missing", "dangling", "loop", "notdir"})
+"""What `find_file` answers for a path that leads to nothing in the commit."""
+
+
+@dataclass(frozen=True)
+class PlanFinding:
+    """A flaw the plan-time checks found in a plan that parsed: its kind, the story it is in and why, in words
+    the architect can act on."""
+
+    kind: PlanFindingKind
+    story: str
+    why: str
+
+
+def check_story_plan(
+    plan: StoryPlan, *, trunk_of: Callable[[str], tuple[Path, str] | None]
+) -> list[PlanFinding]:
+    """The mechanical checks (D4) a plan passes before any card is made, in the plan's listed order:
+    `file_missing` (a scope path not marked new that neither the trunk has nor an earlier story of the plan,
+    in that repository, creates), `order_violation` (a dependency listed after its dependent) and
+    `empty_criterion` (a Given/When/Then with a blank part). `trunk_of(repository)` is the checkout and the
+    trunk's commit, or None when the line has no checkout of it: its paths pass unchecked."""
+    found: list[PlanFinding] = []
+    position = {s.id: n for n, s in enumerate(plan.stories)}
+    created: dict[str, set[str]] = {}
+    for s in plan.stories:
+        for dep in s.depends_on:
+            if position[dep] > position[s.id]:
+                found.append(
+                    PlanFinding(
+                        "order_violation",
+                        s.id,
+                        f"{s.id} depends on {dep}, which is listed after it; list the stories in dependency "
+                        "order",
+                    )
+                )
+        where = trunk_of(s.repository)
+        mine = created.setdefault(s.repository, set())
+        for path in s.scope:
+            if path.new or path.path in mine or where is None:
+                continue
+            checkout, sha = where
+            if find_file(checkout, sha, path.path)[0] in _ABSENT:
+                found.append(
+                    PlanFinding(
+                        "file_missing",
+                        s.id,
+                        f"{s.id}: scope path {path.path} is not on the trunk of {s.repository} and no "
+                        "earlier "
+                        "story creates it; mark it new, or fix the path",
+                    )
+                )
+        mine.update(p.path for p in s.scope if p.new)
+        for c in s.acceptance:
+            blank = [k for k, v in (("given", c.given), ("when", c.when), ("then", c.then)) if not v.strip()]
+            if blank:
+                found.append(
+                    PlanFinding(
+                        "empty_criterion",
+                        s.id,
+                        f"{s.id}: acceptance {c.id} has an empty {' and '.join(blank)}; "
+                        "write all of Given, When and Then",
+                    )
+                )
+    return found
+
+
+def plan_feedback(findings: Sequence[PlanFinding]) -> str:
+    """One line per finding, for `brief-reply-again`."""
+    return "\n".join(f"- {f.story}: {f.why}" for f in findings)

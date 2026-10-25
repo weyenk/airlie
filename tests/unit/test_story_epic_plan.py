@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,9 +14,12 @@ from airlie.story.epic import EpicCriterion, EpicSpec
 from airlie.story.epic_plan import (
     STORY_PLAN_CONTRACT,
     StoryPlan,
+    check_story_plan,
     parse_story_plan,
+    plan_feedback,
 )
 from airlie.story.model import Criterion, Story, StoryError
+from tests.unit.git_helpers import git
 
 EPIC = EpicSpec(
     ("o/r",),
@@ -149,3 +153,72 @@ def test_a_flawed_plan_is_refused_with_a_reason(
 ) -> None:
     with pytest.raises(StoryError, match=why):
         parse(copy.deepcopy(obj), **kw)
+
+
+# ---- the checks against the trunk ----
+
+
+@pytest.fixture
+def trunk(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "src").mkdir()
+    (repo / "src" / "old.py").write_text("x = 1\n")
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    return repo, git(repo, "rev-parse", "HEAD")
+
+
+def scoped(*paths: tuple[str, bool]) -> list[dict[str, Any]]:
+    return [{"path": p, "new": new} for p, new in paths]
+
+
+def test_a_scope_path_the_trunk_lacks_is_a_finding_unless_an_earlier_story_creates_it(
+    trunk: tuple[Path, str],
+) -> None:
+    s1 = story("S1", scope=scoped(("src/old.py", False), ("src/gone.py", False), ("src/made.py", False)))
+    s2 = story("S2", covers=["EC2"], scope=scoped(("src/made.py", True)))
+    s3 = story("S3", depends=["S2"], covers=["EC2"], scope=scoped(("src/made.py", False)))
+    s4 = story("S4", covers=["EC2"], scope=scoped(("src/other.py", False)))
+    found = check_story_plan(parse(plan(s1, s2, s3, s4)), trunk_of={"o/r": trunk}.get)
+    # S1 names made.py before S2 creates it; S3 finds it made by S2; S4's file is nowhere
+    assert [(f.kind, f.story) for f in found] == [
+        ("file_missing", "S1"),
+        ("file_missing", "S1"),
+        ("file_missing", "S4"),
+    ]
+    assert "src/gone.py" in found[0].why and "src/made.py" in found[1].why and "src/other.py" in found[2].why
+
+
+def test_a_repository_without_a_checkout_passes_its_paths_unchecked() -> None:
+    s1 = story("S1", scope=scoped(("src/anything.py", False)))
+    assert check_story_plan(parse(plan(s1, story("S2", covers=["EC2"]))), trunk_of=lambda r: None) == []
+
+
+def test_a_dependency_later_in_the_plans_order_is_a_finding() -> None:
+    # order() sorts the stories, but the architect was told to list them in dependency order, and a plan
+    # that does not is sent back
+    obj = plan(story("S1", depends=["S2"], covers=["EC2"]), story("S2"))
+    found = check_story_plan(parse(obj), trunk_of=lambda r: None)
+    assert [(f.kind, f.story) for f in found] == [("order_violation", "S1")]
+    assert "S2" in found[0].why
+
+
+def test_an_empty_criterion_part_is_a_finding() -> None:
+    blank = story("S1", acceptance=[{"id": "AC1", "given": "a user", "when": "  ", "then": "it works"}])
+    found = check_story_plan(parse(plan(blank, story("S2", covers=["EC2"]))), trunk_of=lambda r: None)
+    assert [(f.kind, f.story) for f in found] == [("empty_criterion", "S1")]
+    assert "AC1" in found[0].why and "when" in found[0].why
+
+
+def test_plan_feedback_is_one_line_per_finding(trunk: tuple[Path, str]) -> None:
+    blank = story(
+        "S1",
+        acceptance=[{"id": "AC1", "given": "", "when": "x", "then": "y"}],
+        scope=scoped(("nope.py", False)),
+    )
+    found = check_story_plan(parse(plan(blank, story("S2", covers=["EC2"]))), trunk_of={"o/r": trunk}.get)
+    assert {f.kind for f in found} == {"file_missing", "empty_criterion"}
+    text = plan_feedback(found)
+    assert text.count("\n") == len(found) - 1 and text.startswith("- S1: ")
