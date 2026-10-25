@@ -40,6 +40,7 @@ from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -53,6 +54,7 @@ from airlie.story.model import (
 )
 from airlie.story.package import Package, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
+from airlie.story.provenance import Provenance, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
@@ -1138,10 +1140,9 @@ class StoryPipeline:
             prs = [await self.publisher.pr(wt, b) for b in branches]
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
-                rows = st.built[f"{i + 1:02d}"]["subtasks"]
                 # the gate this layer passed: a state from before layers kept theirs has none to name
                 gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(card, story, layers, i, rows, prs, gate)
+                text = pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
@@ -1151,6 +1152,20 @@ class StoryPipeline:
         st.prs = [{"branch": b, "number": n, "url": u} for b, (n, u) in zip(branches, prs, strict=True)]
         st.emit("published", prs=st.prs)
         st.finish("publish")
+
+    def provenance(
+        self,
+        st: StoryState,
+        card: Card,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        prs: Sequence[tuple[int, str]],
+    ) -> Provenance:
+        """Layer `i`'s provenance for its PR (`gather_provenance`): the board's chain when the board is local,
+        nothing above the story otherwise."""
+        store = self.board.store if isinstance(self.board, LocalBoard) else None
+        return gather_provenance(st, card, story, layers, i, prs=prs, cfg=self.cfg, store=store)
 
     async def _finish(self, st: StoryState, card: Card) -> None:
         if st.done("review"):
