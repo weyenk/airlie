@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from airlie.board import BoardStore
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
@@ -21,7 +22,9 @@ from airlie.story import pipeline as pipeline_module
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import Layer, Story, StorySetupError
+from airlie.story.package import Package
 from airlie.story.pipeline import (
     StoryBlocked,
     StoryPipeline,
@@ -533,6 +536,45 @@ async def test_publish_writes_a_body_with_the_contract_from_the_layers_package(t
     )
     assert "Epic" not in body and "None" not in body
     assert lines[-1].startswith("Built by airlie") and ", ".join(st.runs[4:6]) in lines[-1]
+
+
+async def test_a_layers_commit_carries_the_story_layer_and_run_trailers(tmp_path: Path) -> None:
+    """Each layer's commit ends in trailers (P6, 2026-10-25): keys, numbers and shas, no model text."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "product": [STORY],
+            "architect": [LAYERS, *PKGS],
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review"
+    for nn, branch in (("01", B1), ("02", B2)):
+        message = git(repo, "log", "-1", "--format=%B", branch)
+        read = ["git", "interpret-trailers", "--parse"]
+        parsed = subprocess.run(read, input=message, capture_output=True, text=True, check=True)
+        got = dict(x.split(": ", 1) for x in parsed.stdout.splitlines())
+        assert list(got)[:2] == ["Airlie-Story", "Airlie-Layer"] and list(got)[-1] == "Airlie-Tests"
+        assert got["Airlie-Story"] == "request" and got["Airlie-Layer"] == f"{nn}/02"
+        assert got["Airlie-Run"] == st.built[nn]["run_id"] and "Airlie-Epic" not in got
+        assert got["Airlie-Tests"] == "1 tests in 1 files"
+
+
+async def test_a_layers_commit_names_its_epic_when_the_local_board_has_one(tmp_path: Path) -> None:
+    """The epic above the story on airlie's own board is a trailer; any other board gives none."""
+    store = BoardStore(tmp_path / "board.sqlite")
+    epic = store.create(level="epic", title="Avatars")
+    story = store.create(level="story", title="Avatars upload", parent=epic.key)
+    pl = pipeline(tmp_path, repo_with_marker_tests(tmp_path), FakeEngine(), board=LocalBoard(store))
+    pkg = Package.from_dict(
+        {"layer": "x", "tests": {"t.py": ""}, "files": [], "interfaces": [], "steps": [], "covers": {}}
+    )
+    card = Card(story.key, story.key, story.key, "x", "")
+    got = pl._trailers(card, "01", "02", "run-1", pkg)
+    assert got["Airlie-Epic"] == epic.key and got["Airlie-Story"] == story.key
+    assert list(got)[:4] == ["Airlie-Story", "Airlie-Layer", "Airlie-Epic", "Airlie-Run"]
 
 
 async def test_product_can_stop_a_request_it_cannot_build(tmp_path: Path) -> None:

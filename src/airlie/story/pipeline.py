@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from airlie.board import BoardStore
 from airlie.config import AirlieConfig
 from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
@@ -54,7 +55,7 @@ from airlie.story.model import (
 )
 from airlie.story.package import Package, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
-from airlie.story.provenance import Provenance, gather_provenance
+from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
@@ -858,7 +859,13 @@ class StoryPipeline:
                 st.attempt = None
                 st.save()
                 return told
-            sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
+            sha = squash_since(
+                wt,
+                base_sha,
+                f"{story.title}: {layer.title} ({nn}/{total})",
+                author=author,
+                trailers=self._trailers(card, nn, total, orch.run_dir.run_id, package),
+            )
             remove_worktree(self.repo, wt)
             st.built[nn] = {
                 "branch": branch,
@@ -878,6 +885,25 @@ class StoryPipeline:
         finally:
             if sup is not None:
                 sup.close()  # after every subtask has finished: an advice in flight is never cut off
+
+    def _store(self) -> BoardStore | None:
+        """The local board's store, None for any other board."""
+        return self.board.store if isinstance(self.board, LocalBoard) else None
+
+    def _trailers(self, card: Card, nn: str, total: str, run_id: str, package: Package) -> dict[str, str]:
+        """The provenance a layer's commit carries (P6): the story's key ("request" for a written one), the
+        layer, the epic when the board has one above the story, the run, the airlie build and a count of the
+        package's tests (the ids are in the PR). Keys, numbers and shas only, never model text."""
+        _, epic = chain_items(self._store(), card.key)
+        trailers = {"Airlie-Story": card.ref or "request", "Airlie-Layer": f"{nn}/{total}"}
+        if epic:
+            trailers["Airlie-Epic"] = epic[0]
+        trailers["Airlie-Run"] = run_id
+        build = build_commit()
+        if build:
+            trailers["Airlie-Build"] = build
+        trailers["Airlie-Tests"] = f"{len(package.test_ids)} tests in {len(package.tests)} files"
+        return trailers
 
     def _replan_feedback(
         self, st: StoryState, orch: StudioOrchestrator, nn: str, coder: TeamResult | None
@@ -1164,8 +1190,7 @@ class StoryPipeline:
     ) -> Provenance:
         """Layer `i`'s provenance for its PR (`gather_provenance`): the board's chain when the board is local,
         nothing above the story otherwise."""
-        store = self.board.store if isinstance(self.board, LocalBoard) else None
-        return gather_provenance(st, card, story, layers, i, prs=prs, cfg=self.cfg, store=store)
+        return gather_provenance(st, card, story, layers, i, prs=prs, cfg=self.cfg, store=self._store())
 
     async def _finish(self, st: StoryState, card: Card) -> None:
         if st.done("review"):

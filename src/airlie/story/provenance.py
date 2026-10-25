@@ -207,7 +207,7 @@ def layer_cost(st: StoryState, nn: str) -> Cost:
     return Cost(round(seconds / 60, 1), tokens_in, tokens_out, attempts, _diagnoses(st, nn))
 
 
-def _chain_items(store: BoardStore | None, key: str) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+def chain_items(store: BoardStore | None, key: str) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
     """The (initiative, epic) as (key, title) above the board item `key`, each None when absent. A board
     that is not local, an item that is not on it, or a parent of another level gives None."""
     if store is None:
@@ -254,7 +254,7 @@ def gather_provenance(
     package = Package.from_dict(built["package"]) if isinstance(built.get("package"), dict) else None
     tests = tuple(str(t) for t in built.get("tests") or ())
 
-    initiative, epic = _chain_items(store, card.key)
+    initiative, epic = chain_items(store, card.key)
     chain = Chain(
         initiative,
         (epic[0], epic[1], "") if epic else None,
