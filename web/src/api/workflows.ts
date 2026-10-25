@@ -112,7 +112,7 @@ export type FlowNode = {
 /** One acceptance criterion of a story, as the refine stage wrote it. */
 export type Criterion = { id: string; given: string; when: string; then: string };
 
-/** A story's flow, or a run's (the extra fields of a run are `kind: "run"`, `topology`, `mode`, `ok`, `progress`,
+/** A story's flow, or a run's (the extra fields of a run are `kind: "run"`, `repo`, `topology`, `mode`, `ok`, `progress`,
  * and `job` and `plan`: this server's job state for it, and the plan a finished plan job returned). */
 export type Flow = {
   key: string;
@@ -123,6 +123,8 @@ export type Flow = {
   acceptance: Criterion[];
   nodes: FlowNode[];
   kind?: "run";
+  /** The repository the run is for (what approving its plan sends back). */
+  repo?: string | null;
   topology?: string | null;
   mode?: string | null;
   ok?: boolean | null;
@@ -145,7 +147,8 @@ export type FlowStep = {
 export type JobDetail = {
   node: string;
   job: FlowJob;
-  input: string | null;
+  /** What the job was opened with: the chat messages of its first prompt (null when none was recorded). */
+  input: { messages: { role: string; content: string | null }[] } | null;
   input_note: string | null;
   output: { final_text: string } & Record<string, unknown>;
   steps: FlowStep[];

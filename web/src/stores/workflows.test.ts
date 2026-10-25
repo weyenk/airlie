@@ -46,8 +46,11 @@ test("running refetches on stories, runs and jobs changes, and on no other topic
   expect(api.listRunning).toHaveBeenCalledTimes(4);
 });
 
-test("the stories page loads with its query, and a new query loads again", async () => {
+test("no page is asked for until a query is set; then it loads with its query, and a new query loads again", async () => {
   const store = useWorkflowsStore();
+  await flush();
+  expect(api.listStories).not.toHaveBeenCalled();
+  store.query = {};
   await flush();
   expect(store.stories?.total).toBe(2);
   expect(api.listStories).toHaveBeenLastCalledWith({});
@@ -60,7 +63,7 @@ test("the stories page loads with its query, and a new query loads again", async
 });
 
 test("the stories page refetches when a story changes", async () => {
-  useWorkflowsStore();
+  useWorkflowsStore().query = {};
   await flush();
 
   change("stories", "AIR-1");
@@ -71,6 +74,7 @@ test("the stories page refetches when a story changes", async () => {
 
 test("a failed stories load keeps the last page and reports the error", async () => {
   const store = useWorkflowsStore();
+  store.query = {};
   await flush();
   api.listStories.mockRejectedValueOnce(new Error("offline"));
 
@@ -79,4 +83,20 @@ test("a failed stories load keeps the last page and reports the error", async ()
 
   expect(store.stories?.total).toBe(2);
   expect(store.storiesError?.message).toBe("offline");
+});
+
+test("storiesFor is the query a result was loaded for, not the one asked since", async () => {
+  const store = useWorkflowsStore();
+  store.query = { page: 1, size: 25, stage: "new" };
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 1, size: 25, stage: "new" });
+
+  let finish: (v: unknown) => void = () => {};
+  api.listStories.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+  store.query = { page: 2, size: 25 };
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 1, size: 25, stage: "new" }); // the old result stays until the new lands
+  finish(page(["AIR-9"]));
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 2, size: 25 });
 });
