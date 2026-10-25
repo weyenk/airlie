@@ -45,11 +45,13 @@ from airlie.story.epic_plan import (
     same_plans,
 )
 from airlie.story.epic_state import EpicState
+from airlie.story.gate import read_gate
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.local_board import LocalBoard
-from airlie.story.model import EpicHeader, StoryError, StorySetupError
+from airlie.story.model import EpicHeader, NoTestGate, StoryError, StorySetupError
 from airlie.story.pipeline import _cap, _reason, _redact_urls
 from airlie.story.publish import Publisher, PublishError
+from airlie.story.testing_conventions import conventions, conventions_text
 from airlie.teams.worktree import delete_branch, remove_worktree, rev_parse
 from airlie.topology.studio_plan import extract_json_block
 
@@ -224,6 +226,18 @@ class EpicPipeline:
             self.s.plan.round_steps,
         )
 
+    def _conventions_text(self, repo: Path, sha: str) -> str:
+        """How `repo` is tested at `sha`, the tester's view the story meeting reads (P2), for the plan's
+        brief: the levels its test tree has, its guidelines and its own testing notes, with the gate its
+        AGENTS.md names (none known when it has none: the story that is built reports that, not the plan)."""
+        tester = self.cfg.roles.get("tester")
+        found = conventions(repo, sha, tester.skills if tester is not None else None, None)
+        try:
+            gate = read_gate(repo, sha).commands
+        except NoTestGate:
+            gate = ()
+        return conventions_text(found, gate)
+
     async def _plan(self, st: EpicState, card: Item) -> None:
         spec, repo = await self._spec_and_checkout(st, card)
         assert st.base is not None
@@ -234,12 +248,14 @@ class EpicPipeline:
             budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
         )
         ctx, limits = self._context(repo), self.s.plan
+        tested = self._conventions_text(repo, st.base["sha"])
 
         def brief(feedback: str | None) -> str:
             return plan_brief(
                 f"{card.title}\n\n{card.description}",
                 spec,
                 guide=guide,
+                conventions=tested,
                 lessons=ctx.lessons,
                 max_stories=limits.max_stories,
                 max_scope_files=limits.max_scope_files,
