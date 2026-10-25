@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
@@ -82,6 +82,7 @@ from airlie.story.local_board import LocalBoard
 from airlie.story.model import (
     _BRANCH,
     NO_JSON,
+    PLANNED,
     SURROGATE,
     Layer,
     NotActionable,
@@ -366,10 +367,29 @@ class StoryPipeline:
         return make
 
     async def run(self, card: Card) -> StoryState:
-        """Run, or resume, the story for `card`. A stop leaves `blocked` set; nothing is raised for it. Only a
-        state that cannot be used at all (StorySetupError from StoryState.open: a damaged file, another
+        """Run, or resume, the story for `card` from where its state stands to the end: `plan` then `build`
+        in one go (`task story -- KEY`, the tests). A stop leaves `blocked` set; nothing is raised for it.
+        Only a state that cannot be used at all (StorySetupError from StoryState.open: a damaged file, another
         repository) is raised, before anything runs. A cancel (a signal, a job cancelled) puts the issue back
         in intake with a note, keeps the state, and is raised again."""
+        return await self._drive(card, until="review")
+
+    async def plan(self, card: Card) -> StoryState:
+        """The planning half (planning-line P5b, D1): intake, the base, the gate, refine or the story card,
+        the story meeting and the layer split, ending at the boundary stage (`PLANNED`: the agreement is
+        stored). It needs no GitHub: nothing is published, so the planning lane runs while the build lane
+        does. Stops and resumes as `run` does; a story already past the boundary is returned as it is."""
+        return await self._drive(card, until="planned")
+
+    async def build(self, card: Card) -> StoryState:
+        """The building half: the layers (each from the package the architect writes just before it), the
+        review, the publish and the finish, from the boundary. A story that was never planned is planned
+        first, as a resume of any stage is; each stage skips itself when the state says it finished."""
+        return await self._drive(card, until="review")
+
+    async def _drive(self, card: Card, *, until: Literal["planned", "review"]) -> StoryState:
+        """The one driver of `run`, `plan` and `build`: stages in order, each skipping itself when finished,
+        stopping after the layer split and its agreement when `until` is "planned"."""
         # the GitHub repository the story is for: the issue's label, else (a written request) the one the
         # remote names now, as written. A story publishes only to the one it was started with, so a remote
         # rewritten since (by a model, say) is a story that cannot be opened.
@@ -378,10 +398,17 @@ class StoryPipeline:
         st.emit(
             "story_start", card=card.title, stage=st.stage, resumed=st.stage != "new", build=build_commit()
         )
+        if until == "planned" and st.done(PLANNED) and st.blocked is None:
+            st.emit(
+                "story_done", stage=st.stage, blocked=None
+            )  # planned already: nothing to do, nothing said
+            return st
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
-            if not st.done("publish"):  # a layer to build, or the stack to publish: GitHub comes into it
+            if until == "review" and not st.done(
+                "publish"
+            ):  # a layer to build, or the stack to publish: GitHub
                 # before any model works in this run: what it plants in the repository's git configuration
                 # later changes neither the repository every publish step must fetch from and push to (the
                 # one the bot's tokens cover) nor the person's own git settings; and an app that cannot get
@@ -391,9 +418,12 @@ class StoryPipeline:
             if st.done("intake") and not st.done("review"):
                 # It was started and stopped (blocked, or cancelled and put back in intake, or killed): back
                 # to building while the rest is built. A blocked story stays blocked on disk until the issue
-                # has moved, so a run killed right here is resumed the same way again.
+                # has moved, so a run killed right here is resumed the same way again. The build lane taking
+                # what the planning lane finished is no resume: it is moved (the card may have waited in
+                # approved) and not told so.
                 await self.board.move(card, "building")
-                await self.board.comment(card, note(f"resumed after '{st.stage}'"))
+                if not self._handoff(st, until):
+                    await self.board.comment(card, note(f"resumed after '{st.stage}'"))
                 if st.blocked is not None:
                     st.blocked = None
                     st.save()
@@ -405,6 +435,10 @@ class StoryPipeline:
             layers = await self._layers(st, card, story)
             agreed = await self._agree(st, card, story, layers)
             story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
+            if until == "planned":
+                st.emit("story_planned", layers=len(layers))
+                st.emit("story_done", stage=st.stage, blocked=st.blocked)
+                return st
             for i in range(len(layers)):
                 await self._build(st, card, story, layers, i)
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
@@ -423,6 +457,28 @@ class StoryPipeline:
             await self._block(st, card, _reason(e))
         st.emit("story_done", stage=st.stage, blocked=st.blocked)
         return st
+
+    @staticmethod
+    def _handoff(st: StoryState, until: Literal["planned", "review"]) -> bool:
+        """The build lane taking a story the planning lane finished: its last word was `story_planned`, and
+        nothing has happened since but runs starting and ending (no layer was started, nothing was stopped
+        or cancelled). That is the line's own hand-over, not a resume: no "resumed" note."""
+        if until != "review" or st.stage != PLANNED or st.built or st.blocked is not None:
+            return False
+        try:
+            lines = (st.path / "events.jsonl").read_text().splitlines()
+        except OSError:
+            return False
+        seen: list[str] = []
+        for line in lines:
+            try:
+                seen.append(str(json.loads(line).get("kind")))
+            except ValueError:
+                continue
+        if "story_planned" not in seen:
+            return False
+        after = seen[len(seen) - 1 - seen[::-1].index("story_planned") + 1 :]
+        return all(kind in ("story_start", "story_done") for kind in after)
 
     # ---- stages: each one skips itself when the state says it already finished ----
     async def _intake(self, st: StoryState, card: Card) -> None:

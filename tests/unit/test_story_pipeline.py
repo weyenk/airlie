@@ -2839,3 +2839,37 @@ async def test_the_meeting_opens_with_the_repositorys_test_levels_and_the_tester
     assert "unit: Pure functions in isolation" in opening and "./check.sh" in opening
     assert "Keep it fast." not in opening  # the router had no answer: only the summaries
     assert kinds(st.path / "events.jsonl", "skill")[0]["chosen"] is None
+
+
+async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path: Path) -> None:
+    """The planning lane's half ends at the stored layers (and agreement); the build lane's half starts there
+    and is no resume (P5b, 2026-10-25)."""
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("avatars")
+    board = RecordingBoard()
+    engine = happy_engine()
+    planner = pipeline(tmp_path, repo, engine, board=board)
+    st = await planner.plan(card)
+    assert st.stage == "layers" and st.blocked is None and not st.built
+    assert {r.role for r in engine.requests} == {"product", "architect"}  # no coder, reviewer or package
+    assert [e["layers"] for e in kinds(st.path / "events.jsonl", "story_planned")] == [2]
+    asked = len(engine.requests)
+    again = await planner.plan(card)  # planned: nothing is asked again
+    assert again.stage == "layers" and len(engine.requests) == asked
+    builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS), board=board)
+    built = await builder.build(card)
+    assert built.stage == "review" and built.blocked is None and [p["number"] for p in built.prs] == [11, 12]
+    texts = [text for call, text in board.calls if call == "comment"]
+    assert not any("resumed after" in text for text in texts)  # the hand-over is no resume
+    assert [c for c in board.calls if c[0] == "move"] == [
+        ("move", "building"),
+        ("move", "building"),
+        ("move", "review"),
+    ]
+    # and `run` is the same two halves in one go
+    elsewhere = tmp_path / "again"
+    elsewhere.mkdir()
+    full = await pipeline(elsewhere, repo_with_marker_tests(elsewhere), happy_engine()).run(
+        text_card("again")
+    )
+    assert full.stage == "review" and full.blocked is None

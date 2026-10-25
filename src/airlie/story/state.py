@@ -1,4 +1,4 @@
-"""A story's state on disk (a stopped story resumes from its last finished stage) and the one-story lock."""
+"""A story's state on disk (a stopped story resumes from its last finished stage) and the lanes' locks."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from airlie.obs import EventSink
 from airlie.story.board import Card
@@ -203,12 +203,32 @@ class StoryState:
         EventSink(self.path / "events.jsonl", self.path.name).emit(kind, **fields)
 
 
+Lane = Literal["build", "plan"]
+"""The line's two lanes (planning-line P5b, D1): the build lane builds one story at a time; the planning lane
+runs one planning job beside it (an initiative's turn, an epic's planning, a story's meeting and layer
+split)."""
+
+_OLD_LOCK = ".lock"
+"""The one-story lock's name before there were two lanes: it is the build lane's, renamed on first open."""
+
+
 @contextmanager
-def story_lock(stories_dir: Path) -> Iterator[bool]:
-    """True while this caller holds the one-story-at-a-time lock; False when another holder has it (another
-    process, or another story in this server). The OS drops the lock if its holder dies."""
+def lane_lock(stories_dir: Path, lane: Lane) -> Iterator[bool]:
+    """True while this caller holds the lane's lock (`build.lock`, `plan.lock` in the stories directory);
+    False when another holder has it (another process, or another job in this server). A job holds exactly
+    one lane for its whole run, whoever started it (the tick, a serve route, `task story`), so two schedulers
+    never run the same lane. The OS drops the lock if its holder dies.
+
+    The build lane's file was `.lock`: a process still holding it keeps the lock across the rename (a lock
+    follows the open file, not the name), so the first open under the new name moves it rather than making
+    another."""
     stories_dir.mkdir(parents=True, exist_ok=True)
-    with (stories_dir / ".lock").open("w") as f:
+    path = stories_dir / f"{lane}.lock"
+    old = stories_dir / _OLD_LOCK
+    if lane == "build" and old.exists() and not path.exists():
+        with suppress(OSError):
+            old.rename(path)
+    with path.open("w") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             held = True
@@ -223,9 +243,9 @@ def story_lock(stories_dir: Path) -> Iterator[bool]:
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def lock_held(stories_dir: Path) -> bool:
-    """Whether another holder has the one-story lock right now (P4, 2026-10-25): a non-blocking probe that
-    takes the lock for an instant and gives it back. It is a probe, not a reservation: whoever then needs
-    the lock takes it with `story_lock` and may still lose it."""
-    with story_lock(stories_dir) as held:
+def lock_held(stories_dir: Path, lane: Lane) -> bool:
+    """Whether another holder has the lane's lock right now (P4, 2026-10-25): a non-blocking probe that takes
+    the lock for an instant and gives it back. It is a probe, not a reservation: whoever then needs the lock
+    takes it with `lane_lock` and may still lose it."""
+    with lane_lock(stories_dir, lane) as held:
         return not held

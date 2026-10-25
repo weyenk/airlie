@@ -9,7 +9,7 @@ import pytest
 
 from airlie.story.board import text_card
 from airlie.story.model import StorySetupError
-from airlie.story.state import StoryState, story_lock
+from airlie.story.state import StoryState, lane_lock
 
 
 def test_state_round_trips_and_tracks_stages(tmp_path: Path) -> None:
@@ -35,11 +35,11 @@ def test_a_story_resumes_only_in_its_own_repository(tmp_path: Path) -> None:
 
 
 def test_the_lock_admits_one_story_at_a_time(tmp_path: Path) -> None:
-    with story_lock(tmp_path) as first:
+    with lane_lock(tmp_path, "build") as first:
         assert first
-        with story_lock(tmp_path) as second:
+        with lane_lock(tmp_path, "build") as second:
             assert not second
-    with story_lock(tmp_path) as again:
+    with lane_lock(tmp_path, "build") as again:
         assert again
 
 
@@ -194,9 +194,9 @@ def test_a_torn_event_line_is_closed_when_a_story_starts_again_from_scratch(tmp_
 
 
 def test_an_error_in_the_contended_branch_is_not_chained_to_the_lock(tmp_path: Path) -> None:
-    with story_lock(tmp_path) as first:
+    with lane_lock(tmp_path, "build") as first:
         assert first
-        with pytest.raises(RuntimeError, match="caller failed") as e, story_lock(tmp_path) as second:
+        with pytest.raises(RuntimeError, match="caller failed") as e, lane_lock(tmp_path, "build") as second:
             assert not second
             raise RuntimeError("caller failed")
         assert e.value.__context__ is None
@@ -421,9 +421,9 @@ def test_lock_held_probes_without_keeping_the_lock(tmp_path: Path) -> None:
     for an instant and gives it back, so the job that follows can take it."""
     from airlie.story.state import lock_held
 
-    assert lock_held(tmp_path / "stories") is False
-    with story_lock(tmp_path / "stories") as held:
-        assert held and lock_held(tmp_path / "stories") is True
-    assert lock_held(tmp_path / "stories") is False
-    with story_lock(tmp_path / "stories") as again:  # the probe left it free
+    assert lock_held(tmp_path / "stories", "build") is False
+    with lane_lock(tmp_path / "stories", "build") as held:
+        assert held and lock_held(tmp_path / "stories", "build") is True
+    assert lock_held(tmp_path / "stories", "build") is False
+    with lane_lock(tmp_path / "stories", "build") as again:  # the probe left it free
         assert again

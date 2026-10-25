@@ -27,7 +27,7 @@ from airlie.story import factory
 from airlie.story.board import BoardError
 from airlie.story.jira import JiraBoard
 from airlie.story.publish import Checked, Publisher
-from airlie.story.state import StoryState, story_lock
+from airlie.story.state import StoryState, lane_lock
 from tests.unit.git_helpers import git
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_board import FakeJira
@@ -170,10 +170,10 @@ def test_a_story_already_in_flight_is_a_message_not_a_crash(tmp_path: Path) -> N
     repo = repo_with_marker_tests(tmp_path)
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"test_cmd": "./check.sh", "repo": str(repo)}})
     assert cfg.source_path is not None
-    with story_lock(factory.stories_dir(cfg)) as held:
+    with lane_lock(factory.stories_dir(cfg), "plan") as held:
         assert held
         r = runner.invoke(cli.app, ["story", "run", "--text", "x", "--config", str(cfg.source_path)])
-    assert r.exit_code == 1 and "another story is in flight" in r.output
+    assert r.exit_code == 1 and "the planning lane is in use" in r.output
 
 
 def test_setup_problems_print_as_text_not_as_markup(tmp_path: Path) -> None:
@@ -198,12 +198,28 @@ def test_a_tick_prints_one_log_line_with_the_time(tmp_path: Path, monkeypatch: p
         return "AIR-7 [/x] " + "a long title " * 20 + ": review"
 
     monkeypatch.setattr(factory, "tick", fake_tick)
-    r = runner.invoke(cli.app, ["story", "tick", "--config", str(story_cfg(tmp_path))])
+    r = runner.invoke(cli.app, ["line", "tick", "--config", str(story_cfg(tmp_path))])
     assert r.exit_code == 0, r.output
     lines = r.output.splitlines()  # a log line is never wrapped at the terminal's width
     assert len(lines) == 1 and re.fullmatch(
         r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d AIR-7 \[/x\] .*: review", lines[0]
     )
+
+
+def test_story_tick_still_works_and_says_it_is_line_tick_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_tick(cfg):  # type: ignore[no-untyped-def]
+        return "AIR-7 Avatars: planned"
+
+    monkeypatch.setattr(factory, "tick", fake_tick)
+    p = str(story_cfg(tmp_path))
+    old = runner.invoke(cli.app, ["story", "tick", "--config", p])
+    assert old.exit_code == 0 and "story tick is now `airlie line tick`" in old.output
+    assert "AIR-7 Avatars: planned" in old.output
+    new = runner.invoke(cli.app, ["line", "tick", "--config", p])
+    assert new.exit_code == 0 and "AIR-7 Avatars: planned" in new.output
+    assert "is now" not in new.output  # the new name has nothing to apologise for
 
 
 def test_a_tick_that_cannot_run_is_a_message_and_exit_one(
@@ -747,7 +763,7 @@ def test_initiative_add_keeps_the_card_when_the_line_is_busy_and_says_when_the_t
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def busy(cfg: object, key: str) -> str:
-        raise factory.StoryBusy(f"another story is in flight; the tick picks {key} up within 15 minutes")
+        raise factory.StoryBusy(f"the planning lane is in use; the tick picks {key} up within 15 minutes")
 
     monkeypatch.setattr(factory, "initiative_one", busy)
     r = runner.invoke(
@@ -807,7 +823,7 @@ async def test_initiative_one_runs_the_turn_under_the_lock_and_prints_the_questi
     with pytest.raises(StorySetupError, match="nothing for the line to do"):
         await factory.initiative_one(cfg, key)  # not approved yet
     store.update(key, status="approved")
-    with story_lock(factory.stories_dir(cfg)) as held:
+    with lane_lock(factory.stories_dir(cfg), "plan") as held:
         assert held
         with pytest.raises(StoryBusy, match=f"the tick picks {key} up within 15 minutes"):
             await factory.initiative_one(cfg, key)

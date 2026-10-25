@@ -4,6 +4,7 @@ approve it), the pipeline's columns are the board's statuses, and airlie's notes
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from airlie.board import BoardStore, Item
@@ -13,7 +14,8 @@ from airlie.story.epic import epic_of
 from airlie.story.epic_plan import after_keys, epic_key_of
 from airlie.story.epic_state import epic_needs_work
 from airlie.story.initiative import Initiative, initiative_key_of
-from airlie.story.model import StoryError
+from airlie.story.model import PLANNED, StoryError
+from airlie.story.state import STAGES
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -33,13 +35,19 @@ done) holds them: a person moving an epic to blocked or todo pauses it whole."""
 
 class LocalBoard:
     def __init__(
-        self, store: BoardStore, role_names: set[str] | None = None, epics_dir: Path | None = None
+        self,
+        store: BoardStore,
+        role_names: set[str] | None = None,
+        epics_dir: Path | None = None,
+        stories_dir: Path | None = None,
     ) -> None:
         """`epics_dir` is where the epics' records are (observability.state_dir/epics): `next_epic` reads
-        them to tell an epic that still needs its stories from one that has them."""
+        them to tell an epic that still needs its stories from one that has them. `stories_dir` is where the
+        stories' are: `next_planned_story` and `next_unplanned_story` read how far each story got."""
         self.store = store
         self.role_names = frozenset(role_names or ())
         self.epics_dir = epics_dir
+        self.stories_dir = stories_dir
 
     def is_note(self, author: str, text: str) -> bool:
         """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
@@ -124,6 +132,43 @@ class LocalBoard:
             if not self.is_held(story):
                 return self._card(story)
         return None
+
+    def _planned(self, key: str) -> bool:
+        """The story's record has reached the boundary stage (`PLANNED`): its layers are split and agreed. A
+        story with no record, or one that cannot be read, is not planned."""
+        if self.stories_dir is None:
+            return False
+        try:
+            stage = json.loads((self.stories_dir / key / "state.json").read_text()).get("stage")
+        except (OSError, ValueError, AttributeError):
+            return False
+        return stage in STAGES and STAGES.index(stage) >= STAGES.index(PLANNED)
+
+    def _next_story(self, *, planned: bool) -> Item | None:
+        """The oldest approved story that is (or is not) planned. A planned story may also be in doing: the
+        planning lane moved its card to building when it picked it up, and nothing moves it back, so the
+        build lane takes it from there (and takes a story a killed build left, which only a person's
+        approval used to resume)."""
+        for story in self.store.list(level="story", status="approved"):
+            if not self.is_held(story) and self._planned(story.key) == planned:
+                return story
+        if planned:
+            for story in self.store.list(level="story", status="doing"):
+                if not self.is_held(story) and self._planned(story.key):
+                    return story
+        return None
+
+    def next_unplanned_story(self) -> Item | None:
+        """The oldest approved story whose record has not reached the boundary: the planning lane's (P5b)."""
+        return self._next_story(planned=False)
+
+    def next_planned_story(self) -> Item | None:
+        """The oldest approved (or doing) story whose record has: the build lane's (P5b)."""
+        return self._next_story(planned=True)
+
+    def card_of(self, item: Item) -> Card:
+        """`item` as the card a pipeline reads."""
+        return self._card(item)
 
     def is_held(self, story: Item) -> bool:
         """The story was made by the line for an epic that a person holds (todo or blocked) or that is not

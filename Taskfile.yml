@@ -86,8 +86,13 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
 
+  line:tick:
+    desc: "One beat of the line by hand: the gates, the bookkeeping, then a job in the planning lane and one in the build lane unless a lane is in use (task serve runs the same beat every minute, the launchd agent every 15; docs/integrations/story.md)"
+    cmds:
+      - '{{.RUN}} airlie line tick {{.CLI_ARGS}}'
+
   story:tick:
-    desc: "One scheduler beat by hand: build the top issue of the intake query unless a story is in flight (the launchd agent runs the same command; docs/integrations/story.md)"
+    desc: "The old name of line:tick, kept for a release (it says so and runs the same beat)"
     cmds:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 

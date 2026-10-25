@@ -31,9 +31,16 @@ class StoryRunning(RuntimeError):
     before its issue is told or moved."""
 
 
+PLANNED = "layers"
+"""The stage at which a story is planned (planning-line P5b): the layers are split and, with the story
+meeting on, the agreement is stored (P2: the `layers` stage finishes then). The planning lane ends here; the
+build lane takes a story that has reached it."""
+
+
 class StoryBusy(RuntimeError):
-    """Another story holds the one-story lock: stories are built one at a time. (Defined here so the serve
-    routes can name it without importing the factory; `factory.StoryBusy` is this class.)"""
+    """A lane's lock is held by another job: the build lane builds one story at a time and the planning lane
+    plans one thing at a time; the message names the lane. (Defined here so the serve routes can name it
+    without importing the factory; `factory.StoryBusy` is this class.)"""
 
 
 class NoTestGate(Exception):

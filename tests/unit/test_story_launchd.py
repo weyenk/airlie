@@ -38,7 +38,7 @@ def test_the_plist_runs_uv_through_a_login_shell_and_never_task() -> None:
     assert (shell, flags) == ("/bin/zsh", "-lc")
     assert [step.strip() for step in command.split("&&")] == [
         'cd "__AIRLIE_DIR__"',
-        "exec uv run --quiet airlie story tick",
+        "exec uv run --quiet airlie line tick",
     ]
     assert "task" not in shlex.split(command)  # go-task would take SIGTERM and not pass it on
     assert plist["Label"] == "dev.airlie.story-tick" and plist["StartInterval"] == 900
@@ -66,7 +66,7 @@ def test_the_install_task_renders_that_template_and_loads_what_it_wrote(tmp_path
     assert b"__AIRLIE_DIR__" not in run.stdout and b"__HOME__" not in run.stdout
     rendered = plistlib.loads(run.stdout)
     assert rendered["ProgramArguments"][:2] == ["/bin/zsh", "-lc"]
-    assert rendered["ProgramArguments"][2] == f'cd "{checkout}" && exec uv run --quiet airlie story tick'
+    assert rendered["ProgramArguments"][2] == f'cd "{checkout}" && exec uv run --quiet airlie line tick'
     log = f"{home}/.local/state/airlie/story-tick.log"  # the directory the install task makes
     assert rendered["StandardOutPath"] == rendered["StandardErrorPath"] == log
     assert any(c.startswith("mkdir -p") and "~/.local/state/airlie" in c for c in install)

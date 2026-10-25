@@ -1090,10 +1090,8 @@ def story_run(
         raise typer.Exit(1)
 
 
-@story_app.command("tick")
-def story_tick(config: ConfigOpt = None) -> None:
-    """One scheduler beat (launchd runs this): build the top issue of the intake query, unless a story is in
-    flight or the engine is down."""
+def _tick(config: Path | None) -> None:
+    """One beat of the line, printed as one log line with the time (launchd's log, `task line:tick`)."""
     import time
 
     from airlie.story import factory
@@ -1115,6 +1113,21 @@ def story_tick(config: ConfigOpt = None) -> None:
         emoji=False,
         soft_wrap=True,
     )
+
+
+@line_app.command("tick")
+def line_tick(config: ConfigOpt = None) -> None:
+    """One beat of the line (the launchd agent runs this every 15 minutes; `task serve` runs the same beat
+    every minute): the gates, the bookkeeping, then a job in each lane, the planning lane and the build lane,
+    unless a lane is in use or the line is paused."""
+    _tick(config)
+
+
+@story_app.command("tick")
+def story_tick(config: ConfigOpt = None) -> None:
+    """The old name of `airlie line tick`, kept for a release: says so, then runs the same beat."""
+    err.print("story tick is now `airlie line tick` (task line:tick); running it", emoji=False)
+    _tick(config)
 
 
 @story_app.command("restack")

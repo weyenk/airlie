@@ -39,7 +39,7 @@ from airlie.story.jira import JiraBoard
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import RepositoryError, StorySetupError
 from airlie.story.publish import Checked, Publisher
-from airlie.story.state import StoryState, story_lock
+from airlie.story.state import StoryState, lane_lock
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
 from tests.unit.github_helpers import FakeGitHub, app_spec, fake_app, key_file
@@ -222,16 +222,18 @@ async def test_a_story_whose_repository_cannot_be_used_tells_the_issue_and_raise
         f"{NOTE_PREFIX}cannot be picked up: the issue names no repository: add the label repo:<owner>/<name>"
     )
     assert not (stories_dir(cfg) / "AIR-7").exists()  # no story was started
-    with story_lock(stories_dir(cfg)) as held:
+    with lane_lock(stories_dir(cfg), "build") as held:
         assert held
 
 
 async def test_run_one_refuses_while_another_story_holds_the_lock(tmp_path: Path) -> None:
     cfg = cfg_for(tmp_path, roles=STORY_ROLES)
-    with story_lock(stories_dir(cfg)) as held:
-        assert held
-        with pytest.raises(StoryBusy):
-            await run_one(cfg, board=NullBoard(stories_dir(cfg)), card=text_card("x"), repo=tmp_path)
+    for lane in ("plan", "build"):  # the story is planned under one lock and built under the other
+        with lane_lock(stories_dir(cfg), lane) as held:  # type: ignore[arg-type]
+            assert held
+            if lane == "plan":
+                with pytest.raises(StoryBusy, match="planning lane"):
+                    await run_one(cfg, board=NullBoard(stories_dir(cfg)), card=text_card("x"), repo=tmp_path)
 
 
 async def test_run_one_builds_the_story_with_the_pipeline_and_lets_go_of_the_lock(
@@ -252,7 +254,7 @@ async def test_run_one_builds_the_story_with_the_pipeline_and_lets_go_of_the_loc
     assert st.stage == "review" and st.blocked is None and [p["number"] for p in st.prs] == [11, 12]
     assert st.path == stories_dir(cfg) / card.key and (st.path / "state.json").is_file()
     assert ["gh", "stack", "submit", "--auto", "--remote", "origin"] in gh.calls
-    with story_lock(stories_dir(cfg)) as held:
+    with lane_lock(stories_dir(cfg), "build") as held:
         assert held  # the lock was let go when the story ended
 
 
@@ -402,7 +404,7 @@ async def test_a_tick_builds_the_top_issue_and_reports_one_line(
     monkeypatch.setattr(factory, "make_pipeline", made)
     assert await tick(cfg) == "AIR-7 Avatar upload: review"
     assert built == [(TOP, board, repo.resolve(), None, "o/repo")]  # the label's repository, AGENTS.md's gate
-    with story_lock(stories_dir(cfg)) as held:
+    with lane_lock(stories_dir(cfg), "build") as held:
         assert held  # the beat let go of the lock
 
 
@@ -423,20 +425,14 @@ async def test_a_blocked_story_is_still_one_line(tmp_path: Path, monkeypatch: py
 
 
 class Rows:
-    """A LocalBoard over a real store, whose next_card is `pick` (a story's key) whatever its column."""
+    """A LocalBoard over a real store: AIR-1 waits for approval (todo), AIR-2 is approved."""
 
-    def __init__(self, tmp_path: Path, pick: str) -> None:
+    def __init__(self, tmp_path: Path) -> None:
         self.store = BoardStore(tmp_path / "board.sqlite")
         self.store.create(level="story", title="todo one", labels=["repo:o/repo"])
         self.store.create(level="story", title="approved two", labels=["repo:o/repo"])
         self.store.move("AIR-2", "approved")
-        self.pick = pick
-        self.board = LocalBoard(self.store)
-
-        async def chosen() -> Card:
-            return await self.board.card(self.pick)
-
-        self.board.next_card = chosen  # type: ignore[method-assign]
+        self.board = LocalBoard(self.store, stories_dir=tmp_path / "state" / "stories")
 
 
 def started_log(monkeypatch: pytest.MonkeyPatch) -> list[Card]:
@@ -447,6 +443,12 @@ def started_log(monkeypatch: pytest.MonkeyPatch) -> list[Card]:
             started.append(card)
             return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="review")
 
+        async def plan(self, card: Card) -> StoryState:
+            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="layers")
+
+        async def build(self, card: Card) -> StoryState:
+            return await self.run(card)
+
     monkeypatch.setattr(factory, "make_pipeline", lambda cfg, **kw: Built())
     return started
 
@@ -454,20 +456,22 @@ def started_log(monkeypatch: pytest.MonkeyPatch) -> list[Card]:
 async def test_a_tick_over_the_local_board_says_the_column_it_took_the_story_from(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    rows = Rows(tmp_path, "AIR-2")
+    rows = Rows(tmp_path)
     cfg, _ = tick_setup(tmp_path, monkeypatch, rows.board, Engine(True))
     started = started_log(monkeypatch)
+    # planned by the planning lane, then handed to the build lane in the same one-shot beat
     assert await tick(cfg) == "AIR-2 approved two: review (taken from approved)"
     assert [c.key for c in started] == ["AIR-2"]
 
 
-async def test_a_tick_refuses_a_story_that_is_not_approved_and_moves_nothing(
+async def test_a_tick_never_takes_a_story_that_is_not_approved_and_moves_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    rows = Rows(tmp_path, "AIR-1")  # a board that offers a story waiting for approval
+    rows = Rows(tmp_path)
+    rows.store.move("AIR-2", "todo")  # only a person's approval puts a story up for planning or building
     cfg, _ = tick_setup(tmp_path, monkeypatch, rows.board, Engine(True))
     started = started_log(monkeypatch)
-    assert await tick(cfg) == "refused: AIR-1 is todo, not approved (only approved stories are built)"
+    assert await tick(cfg) == "idle: no issue matches the intake query"
     assert started == [] and rows.store.get("AIR-1").status == "todo"
 
 
@@ -496,9 +500,9 @@ async def test_a_tick_does_nothing_while_a_story_is_in_flight(
     board, engine = Intake(TOP), Engine(True)
     cfg, _ = tick_setup(tmp_path, monkeypatch, board, engine)
     asked = github_answers(monkeypatch)
-    with story_lock(stories_dir(cfg)) as held:
+    with lane_lock(stories_dir(cfg), "build") as held:
         assert held
-        assert await tick(cfg) == "busy: a story is in flight"
+        assert await tick(cfg) == "busy: the build lane is in use"
     assert (board.asked, engine.probed, asked) == (0, 0, [])
 
 

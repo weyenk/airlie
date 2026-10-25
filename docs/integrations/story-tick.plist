@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- airlie story pickup: every 15 minutes it runs `airlie story tick` through uv (the command `task story:tick` wraps).
+<!-- airlie story pickup: every 15 minutes it runs `airlie line tick` through uv (the command `task line:tick` wraps).
      A template: `task story:launchd:install` fills in __AIRLIE_DIR__ (the checkout) and __HOME__, writes it to
      ~/Library/LaunchAgents and loads it. It does not run `task`: launchd stops a job with SIGTERM, go-task does not pass
      that signal on, and uv does. The login shell (zsh -l) puts uv and gh on PATH, and exec makes uv the process launchd
@@ -12,7 +12,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec uv run --quiet airlie story tick</string>
+    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec uv run --quiet airlie line tick</string>
   </array>
   <key>StartInterval</key><integer>900</integer>
   <key>StandardOutPath</key><string>__HOME__/.local/state/airlie/story-tick.log</string>
