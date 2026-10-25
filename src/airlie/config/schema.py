@@ -542,6 +542,30 @@ class SpecsSpec(Strict):
     )
 
 
+class AmigosSpec(Strict):
+    """The story meeting (P2 of the planning line, 2026-10-24): product, the architect and the tester agree a
+    story's requirements, changes and proof in one group chat before any layer is built."""
+
+    enabled: bool = Field(
+        default=True,
+        description="hold the meeting; false: the architect's split is the agreement, with no proof plan",
+    )
+    max_turns: int = Field(
+        default=12,
+        ge=4,
+        description="the most turns the meeting takes (the checker's count too); at the cap each owner's "
+        "part stands and the open objections are recorded",
+    )
+    max_scope_files: int = Field(
+        default=5, ge=1, description="the most files a layer may name: the sizing rule as a number"
+    )
+    tool_iterations: int = Field(
+        default=3,
+        ge=0,
+        description="read-only tool rounds an agent may take inside one turn (0: no tools in the meeting)",
+    )
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -611,6 +635,7 @@ class StorySpec(Strict):
         description="how many times the tick moves a story the line blocked back to approved (a rebuild, not "
         "a person's morning) before the epic it belongs to is re-planned; 0 re-plans at once",
     )
+    amigos: AmigosSpec = Field(default_factory=AmigosSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(

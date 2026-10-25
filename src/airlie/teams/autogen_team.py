@@ -3,8 +3,9 @@
 One `AssistantAgent` with `max_tool_iterations=1` is driven step by step so the StepObserver can inject
 shared memory keys before each model call and receive each (u_t, o_t) afterwards. The model client is
 AutoGen's OpenAI client pointed at the engine endpoint, so all generation still goes through vllm-mlx.
-Thinking and top_k are server defaults (`--default-chat-template-kwargs`, `--default-top-k`) because
-AutoGen's client has no per-request extra_body."""
+Per-request sampling the OpenAI client has no field for (top_k, min_p, the repetition penalty) and the role's
+thinking settings go in `extra_body` (`build_model_client`); until 2026-10-24 thinking was the server's
+default (`--default-chat-template-kwargs`), and the story meeting needed each role to think as configured."""
 
 from __future__ import annotations
 
@@ -127,6 +128,18 @@ def build_model_client(
         "family": "unknown",
         "structured_output": False,
     }
+    extra: dict[str, Any] = {  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
+        "top_k": role.sampling.top_k,
+        "min_p": role.sampling.min_p,
+        "repetition_penalty": role.sampling.repetition_penalty,
+        # the role's thinking, as HTTPEngine._body sends it (three-amigos D7, 2026-10-24): the top-level
+        # flag vllm-mlx gates its budget processor on, and the template kwarg; before this the server's
+        # defaults decided whether an AutoGen agent thought
+        "enable_thinking": bool(role.thinking),
+        "chat_template_kwargs": {"enable_thinking": bool(role.thinking), **role.chat_template_kwargs},
+    }
+    if role.thinking and role.thinking_budget:
+        extra["thinking_token_budget"] = role.thinking_budget
     client = RepairingOpenAIClient(
         model=served_model,
         base_url=base_url,
@@ -135,11 +148,7 @@ def build_model_client(
         temperature=role.sampling.temperature,
         top_p=role.sampling.top_p,
         max_tokens=role.max_tokens,
-        extra_body={  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
-            "top_k": role.sampling.top_k,
-            "min_p": role.sampling.min_p,
-            "repetition_penalty": role.sampling.repetition_penalty,
-        },  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not in the typed config
+        extra_body=extra,  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not typed
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id

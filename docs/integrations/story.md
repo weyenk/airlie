@@ -9,6 +9,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
+| meeting | product, the architect and the tester (Muse), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
 | build, per layer | the architect writes the layer's package (its tests as code, files, interfaces, steps), airlie places the tests in a scratch worktree and checks them (they fail on the base, lint, imports, covers), then the studio: the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
@@ -116,6 +117,10 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
 | `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
+| `story.amigos.enabled` | true | hold the story meeting before any layer is built; false: the split is the agreement and there is no proof plan |
+| `story.amigos.max_turns` | 12 | the most turns the meeting takes (at least 4); at the cap each owner's part stands |
+| `story.amigos.max_scope_files` | 5 | the most files a layer may name (the sizing rule as a number) |
+| `story.amigos.tool_iterations` | 3 | read-only tool rounds an agent may take inside one turn; 0: no tools in the meeting |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
@@ -296,6 +301,65 @@ node scripts/run-impacted-tests.mjs
   the failing ones; a passing command's last line), and a `cd` still carries over. Each command gets
   `tools.shell_timeout_s`. The layer's own gate, after the build, still stops at the first command that fails.
 
+## The three amigos
+
+Before any layer is built, one meeting agrees what the story is, how it is cut and how it will be proven (P2 of the
+planning line, 2026-10-24; `docs/superpowers/specs/2026-10-24-three-amigos-design.md`). It is one AutoGen group chat:
+product, the architect and the tester are three agents in one shared conversation, with airlie's own checker, which
+has no model, as a fourth. They speak in that order, the checker last; every turn ends with the speaker's verdict.
+The meeting is on by default (`story.amigos.enabled`); off, the architect's split is the agreement and carries no
+proof plan, as before.
+
+| part | owner | what it is | where it lives |
+| --- | --- | --- | --- |
+| requirements | product (the generalist) | the story's criteria: reworded under their ids, added with the next id, or dropped with `"dropped": "why"`; never renumbered | `state.agreement.story`, then `state.story` |
+| changes | the architect | the layers, bottom first, each with the `files` it creates or changes (`new: true` for a new one) and the `interfaces` at its boundary | `state.agreement.layers`, then `state.layers` |
+| proof | the tester (Muse, read-only tools) | per criterion, the tests that prove it: file, name, **level** (a directory of the repository's test tree, never one it lacks), the testing guideline (a file of `roles.tester.skills`, `skills/qa`) that fits, what it asserts and the state it needs | `state.agreement.proof` |
+
+Only the owner changes a part, by posting it whole in its JSON shape; anyone else objects with a claim and a suggestion.
+The tester reads the repository's own testing conventions first: the levels its test tree has (a directory under
+`tests/` holding a test module; `fixtures` and `data` are not levels; a flat `tests/` is the one level `tests`), its
+`docs/testing.md` or the `## Testing` section of its `AGENTS.md` or `CONTRIBUTING.md`, the guideline library's summaries
+and the guideline Kev routes for the story, in full. The meeting reads the repository at the story's base in a detached
+worktree with read-only tools and writes nothing to it.
+
+**The checker** re-reads the parts after every round and posts what a program can find, or `no findings`: a criterion
+under no layer or two (`split_invalid`), a file a layer names that is not at the base and not marked new (`file_missing`),
+a layer over `story.amigos.max_scope_files` files (`over_size`), a criterion or a layer with no test (`criterion_unproven`,
+`layer_unproven`), a test whose layer does not own its criterion (`proof_layer_mismatch`), a reference to a criterion the
+story no longer has (`stale_reference`), and a turn with no usable verdict or a part that does not parse
+(`verdict_missing`, `part_invalid`: never a crash, and never an agreement).
+
+**The end.** The meeting ends when each of the three has agreed to all three parts since the last part was posted and
+the checker, after that, has no findings: `amigos_agreed`. Or at `story.amigos.max_turns` turns (the checker's count
+too): then each owner's part stands, the parts not agreed by all are on record as decided by their owner
+(`amigos_owner_decided`), every objection still open is an `amigos_unresolved` event and a line on the issue, and a
+`owner_decided` lesson is recorded for the repository. Two things stop the story all the same: product replying
+`blocked` (the request cannot be built as written), and an agreement that cannot be built whatever was decided, a
+criterion no layer owns, or a criterion or layer with no test. References to a dropped criterion are pruned
+(`amigos_references_pruned`) so nothing downstream reads a dangling id.
+
+**Resuming.** The team's state is saved in `state.meeting` after every turn (the chat is driven one turn at a time,
+because AutoGen's round robin has already moved on to the next speaker mid-turn). A story killed mid-meeting loads it into
+fresh agents and goes on from the next speaker; the agreement replaces `state.story` and `state.layers` when it is
+stored. A story saved before the meeting existed has no agreement and gets its split as one.
+
+**The package follows the proof.** The architect's package brief lists the layer's agreed tests and its files and
+interfaces, and the package must cover exactly the agreed test ids (`proof_mismatch` otherwise; a test that proves no
+criterion is listed under `covers.behaviour`). The tester then reads the package's tests once against the proof
+(`amigos_critic`): an objection (`amigos_objection` with `source: package`) is the architect's one revision, with the
+objections and the hub's `package-fix`; a critic whose reply cannot be read is no objection (`amigos_critic_unreadable`),
+and the mechanical checks follow either way. When the architect finds the proof itself wrong it replies with
+`{"type": "proof_change", "changes": [{"test": id, "why": ...}]}` instead of a package: the tester revises that layer's
+tests in one ask (`amigos_proof_revised`), the stored agreement changes, and the architect is asked again; that
+attempt is not charged against `story.package_attempts`. A check finding on a test an earlier objection was about is an
+`amigos_borne_out` event.
+
+**Events.** `amigos_turn` (role, turn, verdict, tokens, wall-clock), `amigos_objection`, `amigos_resolved`,
+`amigos_findings`, `amigos_agreed` / `amigos_owner_decided` / `amigos_unresolved`, `amigos_references_pruned`,
+`amigos_critic`, `amigos_critic_unreadable`, `amigos_proof_revised`, `amigos_borne_out`. The flow API shows the meeting
+as a `meeting` job of the `layers` stage with its turns, objections and tokens.
+
 ## The package check
 
 After the architect writes a layer's package and before the coder starts, airlie places its test files in a scratch
@@ -391,6 +455,7 @@ the end:
 | picked up | `picked this up; progress in .../events.jsonl` | *To Do* → *In Progress* |
 | refined | `story: <title>` and one line per acceptance criterion (Given/When/Then) | |
 | layers planned | `layers, bottom first:` and a numbered list: each layer's title and the criteria it owns (`enabling: no criterion` for a foundation) | |
+| agreed | `agreement of product, the architect and the tester (N turns)`: the criteria, the layers with their files, the proof as a table; then `the meeting changed the criteria:` (reworded, added, dropped) and `objections still open when the meeting ended` when there are any | |
 | a layer built | `layer 01/03 built: <title> (<the test gate's commands> passes)`, one comment per layer | |
 | published | `stacked draft PRs, bottom layer first:` and the numbered PR links | → *In Review* |
 
@@ -408,7 +473,7 @@ failure is in the next one:
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
 | `'intake'` | refining the story, or fetching the trunk or reading its test gate |
-| `'refine'` | planning the layers, or posting the story's comment |
+| `'refine'` | planning the layers, the story meeting (`state.meeting` keeps its history for the resume), or posting the layer plan's or the agreement's comment |
 | `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
 | `'publish'` | telling the issue (the PR links or the move to *In Review*): the PRs are open |

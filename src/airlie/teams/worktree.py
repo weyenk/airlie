@@ -247,6 +247,14 @@ def read_blob(repo: Path, sha: str) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def tree_paths(repo: Path, commit: str, prefix: str = "") -> list[str]:
+    """Every file of `commit` under `prefix` ("" for all), from git's objects (never a worktree), as paths
+    from the repository's root, in git's order; [] when `prefix` is not there."""
+    spec = ["--", prefix] if prefix else []
+    out = _git(repo, "ls-tree", "-r", "-z", "--name-only", commit, *spec, check=False).stdout
+    return [p for p in out.split("\0") if p]
+
+
 def remote_url(repo: Path, remote: str) -> str | None:
     """The first URL `remote` is configured with (remote.<name>.url as written: no insteadOf applied), or None
     when it has none."""

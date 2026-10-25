@@ -33,6 +33,10 @@ PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <pa
  "done_when": "one sentence"}
 Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files."""  # noqa: E501
 
+AGREED_PROOF_CONTRACT = """`covers` names exactly the agreed tests, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package."""  # noqa: E501
+BEHAVIOUR = "behaviour"
+"""The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
+
 _HEADING = re.compile(r"^### test file: (?P<path>\S+)\s*$")
 _FENCE = re.compile(r"^(?P<fence>`{3,})(?:python|py)?\s*$")
 _JSON_OPENER = re.compile(r"^`{3,}json[ \t]*$", re.IGNORECASE)
@@ -119,6 +123,14 @@ class Package:
         return tuple(f.path for f in self.files if not is_test_module(f.path))
 
 
+@dataclass(frozen=True)
+class ProofChange:
+    """The architect's reply when it finds the agreed proof wrong (three-amigos D12): the tests it says are
+    wrong, each with why, and no package. The pipeline asks the tester to revise the layer's tests."""
+
+    changes: tuple[tuple[str, str], ...]
+
+
 def test_files_in(text: str) -> dict[str, str]:
     """The test files of a reply: each `### test file: <path>` heading and the fenced block after it. A
     block ends at the last line equal to its opening fence before the next heading (or, for the last file,
@@ -164,10 +176,28 @@ def _has_test(text: str, name: str) -> bool | None:
     return any(n == name for n, _ in test_functions(tree))
 
 
-def parse_package(text: str, layer: Layer, story: Story) -> Package:
-    """The architect's reply as a Package. A StoryError says what to fix, in words the architect acts on."""
-    raw_tests = test_files_in(text)
+def _proof_change(obj: dict[str, Any]) -> ProofChange:
+    raw = obj.get("changes")
+    if not isinstance(raw, list):
+        raise StoryError("proof_change needs 'changes': a list of {test, why} objects")
+    if not raw:
+        raise StoryError("proof_change needs at least one change: name the test and why it is wrong")
+    changes: list[tuple[str, str]] = []
+    for n, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            raise StoryError(f"changes item {n} must be an object with test and why")
+        where = f"changes item {n}"
+        changes.append((_text(item, "test", where), _text(item, "why", where)))
+    return ProofChange(tuple(changes))
+
+
+def parse_package(text: str, layer: Layer, story: Story) -> Package | ProofChange:
+    """The architect's reply as a Package, or as a ProofChange when it says the agreed proof is wrong and
+    writes no package. A StoryError says what to fix, in words the architect acts on."""
     obj = extract_json_block(text)
+    if obj is not None and obj.get("type") == "proof_change":
+        return _proof_change(obj)
+    raw_tests = test_files_in(text)
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "package":
@@ -216,7 +246,7 @@ def parse_package(text: str, layer: Layer, story: Story) -> Package:
         raise StoryError("'covers' must map each criterion id to a list of test ids")
     covers: dict[str, tuple[str, ...]] = {}
     for cid, ids in raw_covers.items():
-        if str(cid) not in {c.id for c in story.acceptance}:
+        if str(cid) not in {c.id for c in story.acceptance} and str(cid) != BEHAVIOUR:
             raise StoryError(
                 f"covers names {cid}, which the story does not have: {sorted(c.id for c in story.acceptance)}"
             )

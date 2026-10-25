@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +166,21 @@ def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
     return found
 
 
+def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
+    """A `proof_mismatch` for each agreed test the package does not cover and for each test it covers that the
+    proof does not name (three-amigos D9, D12): the package is the transcription of the agreed proof. A
+    parametrized test is its function's id."""
+    covered = {_PARAMS.sub("", t) for t in package.test_ids}
+    agreed = set(proof_ids)
+    return [
+        Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
+        for t in sorted(agreed - covered)
+    ] + [
+        Finding("proof_mismatch", t, "your package covers it, but the agreed proof does not name it", "")
+        for t in sorted(covered - agreed)
+    ]
+
+
 class PackageChecker:
     """The readiness check for a gate of `commands`: the gate's ruff steps (`lint`) and its pytest step
     (`checks`), each None when the gate has none."""
@@ -182,11 +197,19 @@ class PackageChecker:
         return self.checks is not None
 
     async def check(
-        self, package: Package, repo: Path, base: str, scratch: Path
+        self,
+        package: Package,
+        repo: Path,
+        base: str,
+        scratch: Path,
+        proof_ids: Collection[str] | None = None,
     ) -> tuple[Package, list[Finding]]:
         """The package with ruff's fixes applied to its test text, and the findings. The package is placed
-        and committed in a detached worktree of `repo` at `base` under `scratch`, removed after."""
-        found = [
+        and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
+        `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
+        package must cover exactly them (`proof_mismatch`)."""
+        found = proof_mismatches(package, proof_ids) if proof_ids is not None else []
+        found += [
             Finding("file_exists", f.path, FILE_EXISTS, "")
             for f in package.files
             if f.action == "create" and find_file(repo, base, f.path)[0] != "missing"

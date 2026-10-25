@@ -114,12 +114,26 @@ class Story:
 
 
 @dataclass(frozen=True)
+class ScopedPath:
+    """A file a layer creates (`new`) or changes, by its path from the repository's root."""
+
+    path: str
+    new: bool = False
+
+
+@dataclass(frozen=True)
 class Layer:
+    """One layer of a story. `scope` is prose for people (and for states saved before D14); `files` and
+    `interfaces` are what the architect names for the machine: every file the layer creates or changes and
+    the signatures at its boundary that later layers import (three-amigos D14, 2026-10-24)."""
+
     slug: str
     title: str
     scope: str
     brief: str
     acceptance: tuple[str, ...] = ()
+    files: tuple[ScopedPath, ...] = ()
+    interfaces: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -127,7 +141,24 @@ class Layer:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Layer:
         acceptance = tuple(str(a) for a in d.get("acceptance") or ())
-        return cls(str(d["slug"]), str(d["title"]), str(d["scope"]), str(d["brief"]), acceptance)
+        files = tuple(
+            ScopedPath(str(f["path"]), bool(f.get("new", False)))
+            if isinstance(f, dict)
+            else ScopedPath(str(f))
+            for f in d.get("files") or ()
+        )
+        interfaces = tuple(str(i) for i in d.get("interfaces") or ())
+        return cls(
+            str(d["slug"]), str(d["title"]), str(d["scope"]), str(d["brief"]), acceptance, files, interfaces
+        )
+
+    def paths(self) -> tuple[str, ...]:
+        """The files the layer names, else the paths its prose scope mentions."""
+        if self.files:
+            return tuple(f.path for f in self.files)
+        from airlie.story.context import named_paths  # not at the top: context imports the config
+
+        return tuple(named_paths(self.scope))
 
 
 def slugify(text: str, max_len: int = 40) -> str:
@@ -189,6 +220,28 @@ def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
     if isinstance(v, list):
         return tuple(_encodable(str(x), what) for x in v)
     raise StoryError(f"{what} must be a list of {of}")
+
+
+def _scoped_paths(v: Any, where: str) -> tuple[ScopedPath, ...]:
+    """A layer's `files`: a list of {"path", "new"} objects or of path strings. A path that is absolute or
+    climbs out with ".." is refused: the architect's files become paths the checks read and a package may
+    create."""
+    if v is None:
+        return ()
+    if not isinstance(v, list):
+        raise StoryError(f'{where}: \'files\' must be a list of {{"path", "new"}} objects')
+    out: list[ScopedPath] = []
+    for n, item in enumerate(v, 1):
+        raw = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(raw, str) or not raw.strip():
+            raise StoryError(f"{where}: files item {n} needs a 'path' (a path from the repository's root)")
+        path = _encodable(raw.strip(), f"{where}: files item {n}").removeprefix("./")
+        if path.startswith("/") or ".." in path.split("/"):
+            raise StoryError(
+                f"{where}: files item {n} {raw!r} must be a path inside the repository, from its root"
+            )
+        out.append(ScopedPath(path, bool(item.get("new", False)) if isinstance(item, dict) else False))
+    return tuple(out)
 
 
 def parse_story(obj: dict[str, Any] | None) -> Story:
@@ -255,7 +308,17 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
                 )
             owner[a] = slug
         where = f"layer '{slug}'"
-        layers.append(Layer(slug, title, _text(d, "scope", where), _text(d, "brief", where), acc))
+        layers.append(
+            Layer(
+                slug,
+                title,
+                _text(d, "scope", where),
+                _text(d, "brief", where),
+                acc,
+                _scoped_paths(d.get("files"), where),
+                _strs(d.get("interfaces"), f"{where}: 'interfaces'"),
+            )
+        )
     missing = sorted(known - set(owner))
     if missing:
         raise StoryError(

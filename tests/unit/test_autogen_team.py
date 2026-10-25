@@ -68,6 +68,34 @@ async def test_function_tools_call_the_registry(tmp_path: Path) -> None:
     assert schema["parameters"]["required"] == ["path", "content"]
 
 
+def test_model_client_passes_the_roles_thinking_settings_via_extra_body(tmp_path: Path) -> None:
+    """The meeting needs the architect and the tester to think as their roles are configured, as
+    HTTPEngine._body sends it: the top-level flag, the template kwargs and the budget only when thinking."""
+    (tmp_path / "p.md").write_text("x")
+    thinking = RoleSpec(
+        prompt=tmp_path / "p.md",
+        model="base",
+        thinking=True,
+        thinking_budget=512,
+        max_tokens=2000,
+        chat_template_kwargs={"reasoning_strength": "low"},
+    )
+    extra = build_model_client("http://127.0.0.1:1/v1", "base", thinking, api_key=None)._create_args[
+        "extra_body"
+    ]
+    assert extra["enable_thinking"] is True
+    assert extra["chat_template_kwargs"] == {"enable_thinking": True, "reasoning_strength": "low"}
+    assert extra["thinking_token_budget"] == 512 and extra["top_k"] == thinking.sampling.top_k
+    plain = RoleSpec(
+        prompt=tmp_path / "p.md", model="base", thinking=False, thinking_budget=512, max_tokens=64
+    )
+    extra = build_model_client("http://127.0.0.1:1/v1", "base", plain, api_key=None)._create_args[
+        "extra_body"
+    ]
+    assert extra["enable_thinking"] is False and "thinking_token_budget" not in extra
+    assert extra["chat_template_kwargs"] == {"enable_thinking": False}
+
+
 def test_model_client_targets_engine_and_role_model(tmp_path: Path) -> None:
     (tmp_path / "p.md").write_text("x")
     role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)
@@ -172,7 +200,13 @@ def test_model_client_passes_sampling_the_openai_client_lacks_via_extra_body(tmp
     )
     client = build_model_client("http://127.0.0.1:8080/v1", "base", role, api_key=None)
     extra = client._create_args["extra_body"]  # noqa: SLF001 - what the OpenAI client sends per request
-    assert extra == {"top_k": 20, "min_p": 0.05, "repetition_penalty": 1.05}
+    assert extra == {
+        "top_k": 20,
+        "min_p": 0.05,
+        "repetition_penalty": 1.05,
+        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
 
 
 async def test_registry_tool_reports_cut_off_arguments(tmp_path: Path) -> None:

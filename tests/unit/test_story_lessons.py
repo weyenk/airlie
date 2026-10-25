@@ -148,7 +148,7 @@ def test_the_pipeline_carries_a_lessons_store_for_its_repository(tmp_path: Path)
 def test_a_lesson_records_why_it_came_back_and_the_endings_name_the_package_path(tmp_path: Path) -> None:
     """P1 (2026-10-24): a lesson also records a rejected package (`package_rejected`) and why a layer came
     back (`detail`: the finding kinds, or the gate's first failing step); old lessons still load."""
-    assert ENDINGS == ("out_of_steps", "out_of_context", "gate_red", "package_rejected")
+    assert ENDINGS == ("out_of_steps", "out_of_context", "gate_red", "package_rejected", "owner_decided")
     lesson = make_lesson("Store", ending="package_rejected", detail="passes_before_code, lint_fails")
     store = LessonsStore(tmp_path / "state", tmp_path / "repo")
     store.record(lesson)

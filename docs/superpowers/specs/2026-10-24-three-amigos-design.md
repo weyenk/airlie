@@ -1,6 +1,7 @@
 # The three amigos: product, architecture and testing agree a story's requirements, changes and proof
 
-Status: draft for Noah, 2026-10-24. Sub-plan P2 of `2026-10-24-planning-line-design.md`; it builds on P1
+Status: built 2026-10-25 in the branch `claude/p2-three-amigos` (PR stacked on P1's `claude/p1-layer-package`); see
+`docs/integrations/story.md`, *The three amigos*. Draft for Noah, 2026-10-24. Sub-plan P2 of `2026-10-24-planning-line-design.md`; it builds on P1
 (`docs/superpowers/plans/2026-10-24-layer-package.md`) and changes how a story goes from refine to its
 first layer.
 
