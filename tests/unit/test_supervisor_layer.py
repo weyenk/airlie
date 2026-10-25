@@ -179,15 +179,19 @@ async def test_the_cap_counts_requests_made_not_rows(tmp_path: Path) -> None:
 async def test_a_block_gets_the_diagnosis_and_the_fix_it_would_have_tried(tmp_path: Path) -> None:
     ans = {**GOOD, "message": None, "fix_if_attempt": "import Path"}
     sup, led, _ = layer_supervisor(tmp_path, answers=[ans])
-    text = await sup.at_block("tests", "tester", "layer 02: ...")
-    assert text == f"{GOOD['diagnosis']}\n\nIf it had one more attempt: import Path"
+    answer = await sup.at_block("tests", "tester", "layer 02: ...")
+    assert answer is not None and (answer.diagnosis, answer.fix_if_attempt) == (
+        GOOD["diagnosis"],
+        "import Path",
+    )
     [row] = led.recent()
     assert row.trigger == "block" and row.outcome == "blocked"
 
 
 async def test_a_block_without_a_fix_is_the_diagnosis_alone(tmp_path: Path) -> None:
     sup, _, _ = layer_supervisor(tmp_path, answers=[{**GOOD, "message": None}])
-    assert await sup.at_block("tests", "tester", "layer 02: ...") == GOOD["diagnosis"]
+    answer = await sup.at_block("tests", "tester", "layer 02: ...")
+    assert answer is not None and answer.diagnosis == GOOD["diagnosis"] and answer.fix_if_attempt is None
 
 
 async def test_a_block_that_falls_back_is_still_blocked(tmp_path: Path) -> None:

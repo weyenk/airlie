@@ -29,12 +29,8 @@ specialist said."""
 
 
 class StoryBlocked(Exception):
-    """A stage cannot finish; the issue goes to blocked with this message. `diagnosis` is the supervisor's
-    reading of why, when a layer stopped and it had one: the note shows it beside the reason, never in it."""
-
-    def __init__(self, reason: str, diagnosis: str | None = None) -> None:
-        super().__init__(reason)
-        self.diagnosis = diagnosis
+    """A stage cannot finish; the issue goes to blocked with this message. The diagnosis (why, by rules and by
+    Muse's reading) is made on the way into the block, from what is on disk (planning-line P5a)."""
 
 
 class Recorder(Protocol):

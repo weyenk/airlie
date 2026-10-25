@@ -4,6 +4,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { ApiError } from "@/api";
 import { StreamCut, stream } from "@/api/chat";
+import { storyDiagnosis } from "@/api/workflows";
 
 export const THREAD = "airlie.chat";
 export const DRAFT = "airlie.chat.draft";
@@ -118,6 +119,25 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * /why: the question with the line's diagnosis of the story it names put before it as data (the chat role's
+   * `why` skill answers from it). A story with none, or no key in the question, is said so in its place; only a
+   * signed-out answer is an error, for `send` to take the turn back.
+   */
+  async function withDiagnosis(question: string): Promise<string> {
+    const key = /\b[A-Z][A-Z0-9_]+-\d+\b/.exec(question)?.[0];
+    let body = "(no story key in the message)";
+    if (key) {
+      try {
+        body = (await storyDiagnosis(key)).markdown;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) throw e;
+        body = `(${key} has no diagnosis)`;
+      }
+    }
+    return `--- diagnosis (data) ---\n${body}\n--- end diagnosis ---\n\n${question}`;
+  }
+
+  /**
    * Ask the model; the reply streams into the thread. Does nothing while a reply is still coming. Resolves true
    * when the person was signed out and the turn was taken back (the caller puts its attachments back).
    */
@@ -132,6 +152,7 @@ export const useChatStore = defineStore("chat", () => {
     const controller = new AbortController();
     busy.value = controller;
     try {
+      if (opts.skill?.action === "why") mine.sent = await withDiagnosis(mine.sent ?? text);
       await stream(
         "/v1/chat/completions",
         { model: "chat", messages: history(), stream: true, ...(opts.skill ? { skill: opts.skill.name } : {}) },

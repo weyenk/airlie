@@ -1,0 +1,30 @@
+{
+ "card": {
+  "key": "AIR-1",
+  "id": "AIR-1",
+  "ref": "AIR-1",
+  "title": "Move Openhand app to web",
+  "description": "We will be moving openhand to native kotlin and swift.  Before doing that we need to make a web version.  The current website is a marketing one pager.  Lets turn that into a full-fledged app.  \n\n\nNOTE: The project needs to be brought back into working order first.  Your first layer must make a clean install type-check",
+  "url": null,
+  "comments": [],
+  "labels": [
+   "repo:weyenk/OpenHand",
+   "jira:HDS-1"
+  ]
+ },
+ "repo": "~/git/openhand",
+ "stage": "intake",
+ "story": null,
+ "layers": null,
+ "built": {},
+ "attempt": null,
+ "base": null,
+ "gate": null,
+ "mutation_gate": null,
+ "mutation": null,
+ "mutation_review": null,
+ "prs": [],
+ "runs": [],
+ "blocked": "the trunk main could not be fetched from origin, and a story builds only on the remote's trunk (a model can move the local one): the remote 'origin' would fetch from git@github.com:weyenk/OpenHand.git, not https://github.com/weyenk/OpenHand: a url.<base>.insteadOf or pushInsteadOf (yours or the repository's) or a remote.origin.pushurl sends it there, and the bot fetches and pushes only over HTTPS, and only to weyenk/OpenHand. Check the remote, then run the story again",
+ "github_repo": "weyenk/OpenHand"
+}

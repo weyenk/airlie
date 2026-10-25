@@ -22,6 +22,7 @@ from airlie.story.epic import epic_of, with_block
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
 from airlie.story.epic_plan import LABEL_REPLANNED, LABEL_RESUMED, after_keys, epic_key_of
 from airlie.story.epic_state import EpicState
+from airlie.story.fixes import bookkeep
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.initiative import initiative_key_of
@@ -970,22 +971,32 @@ async def initiative_one(cfg: AirlieConfig, key: str) -> str:
     return "\n".join(lines)
 
 
-async def tick(cfg: AirlieConfig) -> str:
-    """One scheduler beat: bookkeeping on the epics (a planned epic's status follows its stories, waiting
-    stories are promoted, a dependent whose base moved is replayed onto it), then one piece of work: plan the
-    top approved epic into stories, else build the top issue of the intake query. Nothing is picked while a
-    story is in flight, the engine is down or GitHub does not answer (github_down), in the repository its
-    label names, gated by its AGENTS.md. Returns one line for the log, naming what it did. An issue that a
-    run leaves in intake would hold up the ones behind it, so it is moved out: one whose story cannot be
-    placed or opened (_set_aside), or whose story has finished (_already_in_review). With story.board: jira
-    the line only reads the board: it has no epics to plan and no cards to promote, and says so in the log."""
+async def tick(cfg: AirlieConfig, *, serve_commit: str | None = None) -> str:
+    """One scheduler beat: the fix bookkeeping first (a deployed fix releases the stories it blocked, a
+    transient block is retried: `fixes.bookkeep`, local board only; P5a), then the epics' bookkeeping (a
+    planned epic's status follows its stories, waiting stories are promoted, a dependent whose base moved is
+    replayed onto it; P3), then one piece of work: plan the top approved epic into stories, else build the
+    top issue of the intake query. Nothing is picked while a story is in flight, the engine is down or GitHub
+    does not answer (github_down), in the repository its label names, gated by its AGENTS.md. Returns one
+    line for the log, naming what it did. An issue that a run leaves in intake would hold up the ones behind
+    it, so it is moved out: one whose story cannot be placed or opened (_set_aside), or whose story has
+    finished (_already_in_review). With story.board: jira the line only reads the board: it has no epics to
+    plan and no cards to promote, and says so in the log. `serve_commit` is the commit the serve process
+    started with, when it is the one ticking; a tick from a new process runs the checkout's code and passes
+    none. The fix bookkeeping is a beat's first act and never its last: its lines join the log line."""
     board = make_board(cfg)
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
+    fixes: list[str] = []
+    if isinstance(board, LocalBoard):
+        try:
+            fixes = await bookkeep(cfg, board.store, serve_commit=serve_commit)
+        except Exception as e:  # noqa: BLE001 - the beat goes on whatever the bookkeeping did
+            fixes = [f"bookkeeping failed ({_why(e)})"]
     with story_lock(stories_dir(cfg)) as held:
         if not held:
-            return "busy: a story is in flight"
-        notes: list[str] = []
+            return "; ".join(["busy: a story is in flight", *fixes])
+        notes: list[str] = list(fixes)
         if isinstance(board, LocalBoard):
             notes += _follow(cfg, board)
         elif cfg.story.board == "jira":

@@ -187,6 +187,11 @@ story:
   github_app:                      # publish as a GitHub App's bot, never with your own gh login or SSH key
     app_id: 5332832                # airlie-bot-weyenk; put your own app's id in airlie.local.yaml (null: your login)
 
+# ---- The line (planning-line P5; docs/superpowers/specs/2026-10-25-line-scheduler-design.md) ---------------------------
+line:
+  home_repo: null                  # owner/name where fix cards are built; null = the remote of the checkout the line runs from
+  transient_retries: 2             # a story blocked by a fetch or engine failure is retried this often per signature
+
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
 # airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline
 # takes its stories from it (story.board: local, the default; `jira` keeps Jira). Keys are <prefix>-<n>; an import

@@ -77,3 +77,14 @@ def test_the_seed_categories_and_owners_are_fixed() -> None:
 def test_with_advice_keeps_the_text_whole_and_adds_the_section_after_it() -> None:
     assert with_advice("RULES", "Import Path.") == f"RULES\n\n{SUPERVISOR}\nImport Path."
     assert with_advice("RULES", None) == "RULES" and with_advice("RULES", "") == "RULES"
+
+
+def test_a_block_answer_may_carry_whether_it_agrees_with_the_class() -> None:
+    a = parse_answer(
+        json.dumps({**GOOD, "message": None, "class_agrees": False, "class_reason": "a test"}), block=True
+    )
+    assert (a.class_agrees, a.class_reason) == (False, "a test")
+    plain = parse_answer(json.dumps(GOOD), block=False)
+    assert (plain.class_agrees, plain.class_reason) == (None, None)  # optional: the other triggers never ask
+    with pytest.raises(AnswerError, match="class_agrees"):
+        parse_answer(json.dumps({**GOOD, "class_agrees": "yes"}), block=False)

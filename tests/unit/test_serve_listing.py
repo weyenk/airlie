@@ -670,3 +670,36 @@ def test_a_pick_is_recorded_through_the_route(tmp_path: Path) -> None:
             client.post(f"/v1/airlie/epics/{init}/mockup", json={"option": 1}, headers=AUTH).status_code
             == 404
         )
+
+
+def test_the_diagnosis_route_returns_the_json_and_the_markdown(tmp_path: Path) -> None:
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    c = cfg(tmp_path)
+    state = c.observability.state_dir.expanduser()
+    pack = Pack(
+        key="AIR-9", n=2, reason="layer 01 changed nothing", stage="layers", layer="01", attempt=1,
+        run_id="r1", subtask="build", role="coder", stop_reason="done", refused_calls=0, holds=(), repeats=0,
+        continuations=0, steps=3, tokens=10, minutes=0.5, gate_tail="", tracebacks=(), failures=(),
+        base_gate_failed=None, base_failing=(), diff_stat="", paths=Paths(state / "e.jsonl", None, None, ()),
+    )  # fmt: skip
+    got = Classified(
+        "content", "changed_nothing", "layers", "content:changed_nothing:layers", ("e",), "default"
+    )
+    write_diagnosis(state, Diagnosis(pack, got, None, "waits for a person"))
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    client = TestClient(app)
+    auth = {"Authorization": "Bearer k"}
+    assert client.get("/v1/airlie/stories/AIR-9/diagnosis").status_code == 401
+    r = client.get("/v1/airlie/stories/AIR-9/diagnosis", headers=auth)
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["n"], body["class"], body["kind"]) == (2, "content", "changed_nothing")
+    assert body["signature"] == "content:changed_nothing:layers" and body["muse"] is None
+    assert body["next"] == "waits for a person" and body["paths"] == [str(state / "e.jsonl")]
+    assert body["markdown"].startswith("# AIR-9 blocked: content / changed_nothing (block 2)")
+    assert client.get("/v1/airlie/stories/AIR-9/diagnosis?n=2", headers=auth).status_code == 200
+    assert client.get("/v1/airlie/stories/AIR-9/diagnosis?n=1", headers=auth).status_code == 404
+    assert client.get("/v1/airlie/stories/AIR-10/diagnosis", headers=auth).status_code == 404
+    assert client.get("/v1/airlie/stories/..%2f..%2fetc/diagnosis", headers=auth).status_code == 404
+    assert client.get("/v1/airlie/stories/.../diagnosis", headers=auth).status_code == 404

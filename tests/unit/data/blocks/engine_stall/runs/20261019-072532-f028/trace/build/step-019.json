@@ -1,0 +1,10 @@
+{
+ "u_t": {
+  "name": "grep",
+  "arguments": "{\"pattern\": \"max_context\", \"path\": \"src/airlie\"}"
+ },
+ "o_t": "reading is switched off: use write_file, edit_file or run_tests",
+ "ok": false,
+ "assistant_text": "",
+ "reasoning": ""
+}
