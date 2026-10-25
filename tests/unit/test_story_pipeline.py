@@ -485,6 +485,25 @@ async def test_a_pack_that_cannot_be_gathered_is_an_event_and_the_plain_note(
     assert board.moves[-1] == "blocked"  # a diagnosis that fails never keeps the issue out of Blocked
 
 
+async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, FakeEngine(), board=board)
+
+    async def cancelled(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(pipe, "_muse_at_block", cancelled)
+    card = text_card("avatars")
+    st = StoryState.open(pipe.stories_dir / card.key, card, pipe.repo)
+    with pytest.raises(asyncio.CancelledError):
+        await pipe._block(st, card, "layer 01 (B) changed nothing")
+    assert board.moves == ["intake"] and "back in To Do" in board.notes[-1]
+    assert kinds(st.path / "events.jsonl", "cancelled") and not kinds(st.path / "events.jsonl", "blocked")
+
+
 async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
