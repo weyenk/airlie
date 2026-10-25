@@ -189,12 +189,43 @@ def test_a_passkey_made_from_an_invite_signs_in_again(
     assert me["name"] == "Ann", me
 
 
+DROPPABLE_FEED = """
+(() => {
+  const real = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const response = await real(input, init);
+    const url = typeof input === "string" ? input : input.url;
+    if (!url.endsWith("/v1/events") || !response.ok || !response.body) return response;
+    const reader = response.body.getReader();
+    let control;
+    const body = new ReadableStream({
+      start(c) { control = c; },
+      async pull(c) {
+        const { value, done } = await reader.read();
+        if (done) c.close(); else c.enqueue(value);
+      },
+      cancel() { reader.cancel(); },
+    });
+    // the page's own event stream, which the test can cut: the read then fails as a dropped connection does
+    window.__dropFeed = () => {
+      control.error(new TypeError("network error"));
+      reader.cancel().catch(() => {});
+    };
+    return new Response(body, { status: response.status, headers: response.headers });
+  };
+})();
+"""
+"""A fetch that lets the test cut the event stream (Playwright cannot end a stream that is already open)."""
+
+
 def test_the_first_invite_hands_the_mac_over_and_the_link_stays_readable(
     page: Page, bootstrap_server: Server, evidence: Evidence
 ) -> None:
     """A fresh install, no key: this machine is the bootstrap admin. The first invite ends that, and the page
     must not send the person to Sign in before the link is read (the real middleware says 401 then)."""
+    page.add_init_script(DROPPABLE_FEED)
     page.goto(f"{bootstrap_server.url}/next/admin")
+    evidence.expect(page.get_by_text("Live", exact=True), "the feed is live").to_be_visible()
     evidence.expect(
         page.get_by_text("Nobody yet. Invite someone below."), "nobody is invited"
     ).to_be_visible()
@@ -206,8 +237,12 @@ def test_the_first_invite_hands_the_mac_over_and_the_link_stays_readable(
     evidence.expect(box, "and says the Mac is handed over").to_contain_text(
         "That was the first person, so this Mac is no longer signed in by itself."
     )
-    # the list reload and the feed both meet 401 now: give them time to (wrongly) send us away
-    page.wait_for_timeout(2500)
+    # drop the event stream, as a sleep or a blip would: the feed reconnects and the real middleware answers
+    # it 401, the moment a feed that took any 401 for a sign-out would send us away
+    with page.expect_response(lambda r: r.url.endswith("/v1/events") and r.status == 401, timeout=30_000):
+        page.evaluate("window.__dropFeed()")
+    for _ in range(2):  # let the page act on that answer
+        page.evaluate("new Promise(requestAnimationFrame)")
     evidence.expect(page, "still on the admin page").to_have_url(re.compile(r"/next/admin$"))
     evidence.expect(box, "the link is still there to read").to_be_visible()
     me = page.evaluate("fetch('/v1/auth/me').then(r => r.status)")

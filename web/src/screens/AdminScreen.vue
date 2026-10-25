@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Admin: People. Who can sign in, with their passkeys; Invite (a link to pass on) and Revoke. Admins only.
 import { Copy } from "lucide-vue-next";
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { ApiError } from "@/api";
 import { createInvite, deleteUser, inviteAgain } from "@/api/auth";
 import type { Invite, Role, User } from "@/api/auth";
@@ -16,6 +16,8 @@ import { useSessionStore } from "@/stores/session";
 const people = usePeopleStore();
 const session = useSessionStore();
 const { confirm } = useConfirm();
+
+onUnmounted(() => people.closeWindow());
 
 const name = ref("");
 const role = ref<Role>("member");

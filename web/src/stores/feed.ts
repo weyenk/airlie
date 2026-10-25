@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { connectFeed } from "../feed";
+import { useBootstrapStore } from "./bootstrap";
 import { useSessionStore } from "./session";
 import type { FeedState } from "../feed";
 
@@ -36,7 +37,12 @@ export const useFeedStore = defineStore("feed", () => {
           }
         }
       },
-      onUnauthorized: () => useSessionStore().signedOut(),
+      onUnauthorized: () => {
+        // the hand-over of a fresh Mac answers 401 too: hold (the feed retries slowly) until the window ends
+        if (useBootstrapStore().open) return true;
+        useSessionStore().signedOut();
+        return false;
+      },
       onState: (next) => {
         state.value = next;
         if (next === "live") generation.value += 1;

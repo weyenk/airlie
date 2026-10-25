@@ -340,3 +340,28 @@ test("a 401 with an onUnauthorized handler tells it once and never reconnects", 
   expect(onUnauthorized).toHaveBeenCalledTimes(1);
   expect(states).toEqual(["connecting"]);
 });
+
+test("a 401 the handler holds is not the end: the feed retries at its slowest pace and asks again each time", async () => {
+  const { fetchImpl } = fakeFetch(401);
+  const onUnauthorized = vi.fn(() => true);
+  const states: FeedState[] = [];
+  connectFeed({ onChange: () => {}, onState: (s) => states.push(s), fetchImpl, onUnauthorized, backoffMs: [100, 5000] });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(["connecting", "reconnecting"]);
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(fetchImpl).toHaveBeenCalledTimes(1); // not the quick 100 ms retry
+  await vi.advanceTimersByTimeAsync(1);
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+  expect(onUnauthorized).toHaveBeenCalledTimes(2);
+});
+
+test("once the handler stops holding, the next 401 ends the feed", async () => {
+  const { fetchImpl } = fakeFetch(401);
+  const onUnauthorized = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+  connectFeed({ onChange: () => {}, onState: () => {}, fetchImpl, onUnauthorized, backoffMs: [100] });
+  await vi.advanceTimersByTimeAsync(100);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(onUnauthorized).toHaveBeenCalledTimes(2);
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+});

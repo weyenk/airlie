@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { onUnauthorized } from "@/api";
+import { useBootstrapStore } from "./bootstrap";
 import { usePeopleStore } from "./people";
 
 // the real request path: a 401 is "signed out" unless the list asked to be quiet about it
@@ -51,4 +52,23 @@ test("after the first invite is handed over, a 401 is not a sign-out; once peopl
   await store.refresh(); // people again: the window is over
   await store.refresh();
   expect(unauthorized).toHaveBeenCalledOnce();
+});
+
+test("an older list that answers late cannot open the window", async () => {
+  let release: (r: Response) => void = () => {};
+  const slow = new Promise<Response>((r) => (release = r));
+  answers = [Response.json([{ id: "u1", name: "Ann" }])];
+  const store = usePeopleStore();
+  await settle(); // the first load: Ann is listed, window closed
+  const queue: (Response | Promise<Response>)[] = [slow, Response.json([{ id: "u1", name: "Ann" }])];
+  vi.stubGlobal("fetch", vi.fn(async () => queue.shift()));
+  const older = store.refresh(); // will answer [] ... late
+  const newer = store.refresh();
+  await newer;
+  release(Response.json([]));
+  await older;
+  expect(useBootstrapStore().open).toBe(false);
+  vi.stubGlobal("fetch", vi.fn(async () => gone()));
+  await store.refresh();
+  expect(unauthorized).toHaveBeenCalledOnce(); // so a 401 is still a sign-out
 });
