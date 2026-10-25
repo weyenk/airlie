@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import subprocess
 import traceback
@@ -38,10 +39,12 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.context import guide_budget, named_paths, repo_guide
+from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.model import (
+    _BRANCH,
     SURROGATE,
     Layer,
     NotActionable,
@@ -126,6 +129,13 @@ def build_commit() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return out or None
+
+
+class StoryWaiting(Exception):
+    """A dependent story cannot start yet: the story it is built on (its last `after:` label) has not
+    reached review, so there is no branch to build on. This is a wait, not a stop: the card goes back to
+    where it waits (To Do), nothing is recorded as blocked, and the tick promotes it when its dependency's
+    pull requests are open (D5 of the plans phase, 2026-10-24)."""
 
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
@@ -295,6 +305,8 @@ class StoryPipeline:
             "story_start", card=card.title, stage=st.stage, resumed=st.stage != "new", build=build_commit()
         )
         try:
+            if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
+                self._stacked_base(card)
             if not st.done("publish"):  # a layer to build, or the stack to publish: GitHub comes into it
                 # before any model works in this run: what it plants in the repository's git configuration
                 # later changes neither the repository every publish step must fetch from and push to (the
@@ -312,7 +324,7 @@ class StoryPipeline:
                     st.blocked = None
                     st.save()
             await self._intake(st, card)
-            base = await self._base(st)
+            base = await self._base(st, card)
             if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
                 self._gate(st, base)
             story = await self._refine_with_survey(st, card)
@@ -323,6 +335,8 @@ class StoryPipeline:
                 st.finish("build")
             await self._publish(st, card, story, layers)
             await self._finish(st, card)
+        except StoryWaiting as e:
+            await self._wait(st, card, str(e))
         except StoryBlocked as e:
             await self._block(st, card, str(e), e.diagnosis)
         except asyncio.CancelledError:
@@ -342,14 +356,21 @@ class StoryPipeline:
         await self.board.comment(card, note(f"picked this up; progress in {st.path / 'events.jsonl'}"))
         st.finish("intake")
 
-    async def _base(self, st: StoryState) -> dict[str, str]:
-        """The commit the story builds on, resolved once and kept in the state: the remote's trunk, fetched
-        now (`_trunk_ref`) and read by its full name, refs/remotes/<remote>/<trunk>. For the short name
-        <remote>/<trunk> (the one kept, to show), git reads a tag or a local branch of that name first, and a
-        model's shell can make either. Refine and layers read the code at it and its test gate is read from
-        it, layer 01 is built on it, and a resume reads and builds on that same commit whatever the remote has
-        moved on to."""
+    async def _base(self, st: StoryState, card: Card | None = None) -> dict[str, str]:
+        """The commit the story builds on, resolved once and kept in the state. A story born from an epic that
+        stacks on another (its card's `after:` labels) is built on the top layer branch of the story before it
+        (`_stacked_base`). Any other story: the remote's trunk, fetched now (`_trunk_ref`) and read by its
+        full name, refs/remotes/<remote>/<trunk>. For the short name <remote>/<trunk> (the one kept, to
+        show), git reads a tag or a local branch of that name first, and a model's shell can make either.
+        Refine and layers read the code at it and its test gate is read from it, layer 01 is built on it, and
+        a resume reads and builds on that same commit whatever the remote has moved on to."""
         if st.base is None:
+            stacked = self._stacked_base(card) if card is not None else None
+            if stacked is not None:
+                st.base = stacked
+                st.save()
+                st.emit("stacked_base", **stacked)
+                return st.base
             ref = await self._trunk_ref(st)
             sha = rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
             if sha is None:  # a fetch that succeeded leaves it there: something removed it since
@@ -360,6 +381,31 @@ class StoryPipeline:
             st.base = {"ref": ref, "sha": sha}
             st.save()
         return st.base
+
+    def _stacked_base(self, card: Card) -> dict[str, str] | None:
+        """The base of a dependent story: {"ref": the top layer branch of the story it stacks on, "sha": its
+        commit now, "story": that story's key}, read from that story's state (D5 of the plans phase,
+        2026-10-24). None for a card with no `after:` label. StoryWaiting while that story is not in review
+        (no branch to build on yet); StoryBlocked when it is and its branch is gone."""
+        deps = after_keys(card.labels)
+        if not deps:
+            return None
+        dep = deps[-1]  # labels are in plan order: the last is the one every other is below
+        try:
+            saved = json.loads((self.stories_dir / dep / "state.json").read_text())
+            stage = str(saved.get("stage"))
+        except (OSError, ValueError, AttributeError):
+            raise StoryWaiting(f"waiting for {dep}: it has not been started") from None
+        if stage != "review":
+            raise StoryWaiting(f"waiting for {dep}: its pull requests are not open yet (it is at '{stage}')")
+        built = saved.get("built") or {}
+        branch = str(built[max(built)]["branch"]) if built else ""
+        if not _BRANCH.fullmatch(branch):
+            raise StoryBlocked(f"{dep} is in review but its state names no usable top branch ({branch!r})")
+        sha = rev_parse(self.repo, f"refs/heads/{branch}")
+        if sha is None:
+            raise StoryBlocked(f"{dep}'s top branch '{branch}' does not exist in {self.repo}")
+        return {"ref": branch, "sha": sha, "story": dep}
 
     def _gate(self, st: StoryState, base: dict[str, str]) -> None:
         """The command every layer must pass: a person's --test-cmd, else the story's test gate. The gate is
@@ -460,7 +506,11 @@ class StoryPipeline:
         st.emit("survey_done", chars=len(text))
 
     async def _refine_with_survey(self, st: StoryState, card: Card) -> Story:
-        """`_refine`, with `_survey` running beside it (they read the same code and share the engine)."""
+        """`_refine`, with `_survey` running beside it (they read the same code and share the engine). A
+        story card (an epic's story) is not refined, so nothing is surveyed beside it: the architect that
+        planned the epic read the code already."""
+        if st.story is not None or self._story_card(card) is not None:
+            return await self._refine(st, card)
         survey = asyncio.create_task(self._survey(st, card))
         try:
             story = await self._refine(st, card)
@@ -472,9 +522,28 @@ class StoryPipeline:
                 with contextlib.suppress(asyncio.CancelledError):
                     await survey
 
+    @staticmethod
+    def _story_card(card: Card) -> StoryCard | None:
+        """The story card the board card closes with (an epic's story, D6), or None; a flawed block stops the
+        story with its reason."""
+        try:
+            return story_card_of(card.description)
+        except StoryError as e:
+            raise StoryBlocked(str(e)) from None
+
     async def _refine(self, st: StoryState, card: Card) -> Story:
         if st.story is not None:
             return Story.from_dict(st.story)
+        taken = self._story_card(card)
+        if taken is not None:  # the epic's plan wrote this story: the meeting reviews it, refine does not
+            st.story = taken.story.to_dict()
+            st.emit("refine_skipped", reason="story card")
+            st.finish("refine")
+            epic = taken.story.epic.key if taken.story.epic else "its epic"
+            await self.board.comment(
+                card, note(f"story taken from its card, planned under {epic}: {_story_note(taken.story)}")
+            )
+            return taken.story
         try:
             story = await self._usable(
                 st,
@@ -1055,7 +1124,11 @@ class StoryPipeline:
         # gh stack init switches the checkout it runs in: never the person's own
         checkout_worktree(self.repo, wt, branches[-1])
         try:
-            await self.publisher.stack(wt, self.s.trunk, branches)
+            stacks_on = st.base.get("story") if st.base else None
+            # a dependent story's stack sits on its dependency's top branch; any other on the trunk
+            await self.publisher.stack(
+                wt, st.base["ref"] if stacks_on and st.base else self.s.trunk, branches
+            )
             await self.publisher.submit(wt)
             prs = [await self.publisher.pr(wt, b) for b in branches]
             for i, b in enumerate(branches):
@@ -1063,7 +1136,7 @@ class StoryPipeline:
                 rows = st.built[f"{i + 1:02d}"]["subtasks"]
                 # the gate this layer passed: a state from before layers kept theirs has none to name
                 gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(card, story, layers, i, rows, prs, gate)
+                text = pr_body(card, story, layers, i, rows, prs, gate, stacks_on=stacks_on)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
@@ -1112,6 +1185,13 @@ class StoryPipeline:
         except asyncio.CancelledError:  # run's own handler is behind us: this stop is being handled
             await self._cancelled(st, card)
             raise
+
+    async def _wait(self, st: StoryState, card: Card, reason: str) -> None:
+        """A dependent story whose dependency is not in review: the event, a note, and the card back where it
+        waits (To Do). Nothing is blocked and nothing is built; the state stays as it was."""
+        st.emit("waiting", reason=reason)
+        text = f"{reason}. It is back in To Do and is built once that story's pull requests are open."
+        await self._tell(st, card, text, "intake")
 
     async def _tell(self, st: StoryState, card: Card, text: str, column: Column) -> None:
         """A note on the issue and then a move to `column`, as two calls: a board that is down must not hide

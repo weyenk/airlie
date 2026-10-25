@@ -440,15 +440,16 @@ class Publisher:
         except (PublishError, ValueError, KeyError, TypeError):
             return None  # not a stack yet
 
-    async def stack(self, wt: Path, trunk: str, branches: list[str]) -> None:
-        """Adopt `branches` (bottom first) as a stack on `trunk`; a stack that already holds exactly them on
-        that trunk (an interrupted publish) is left alone. Any other stack is not: init runs, and gh-stack's
-        refusal is the error."""
+    async def stack(self, wt: Path, base: str, branches: list[str]) -> None:
+        """Adopt `branches` (bottom first) as a stack on `base`, the trunk or, for a story that stacks on
+        another, that story's top branch; a stack that already holds exactly them on that base (an
+        interrupted publish) is left alone. Any other stack is not: init runs, and gh-stack's refusal is the
+        error."""
         _refuse_option_like(*branches)
         async with self._step(wt) as env:
-            if await self._stacked(wt, env) == (trunk, branches):
+            if await self._stacked(wt, env) == (base, branches):
                 return
-            await self.run(["gh", "stack", "init", "--base", trunk, *branches], wt, env)
+            await self.run(["gh", "stack", "init", "--base", base, *branches], wt, env)
 
     async def submit(self, wt: Path) -> None:
         """Push every layer and open the missing PRs as drafts (`--auto`: no editor; never `--open`)."""

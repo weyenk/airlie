@@ -12,16 +12,19 @@ reaches git; the plan-time checks against the trunk are `check_story_plan`, belo
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
-from airlie.story.epic import REPOSITORY, EpicSpec
+from airlie.story.epic import REPOSITORY, EpicSpec, split_block
 from airlie.story.model import (
+    ISSUE_KEY,
     NO_JSON,
     Criterion,
+    EpicHeader,
     Story,
     StoryError,
     _encodable,
@@ -340,6 +343,44 @@ def _cycle(stories: Sequence[PlannedStory]) -> list[str] | None:
     return None
 
 
+def _stackable(stories: Sequence[PlannedStory]) -> None:
+    """A story is built on its dependency's branch (a stack, bottom up, one branch below it): a dependency in
+    another repository has no branch in this one, and a story that depends on several must have them on one
+    line, each below the latest, or the one branch it is built on lacks the others' code. A StoryError says
+    which, and what to change."""
+    by_id = {s.id: s for s in stories}
+    position = {s.id: n for n, s in enumerate(stories)}
+    for s in stories:
+        for dep in s.depends_on:
+            other = by_id[dep]
+            if other.repository != s.repository:
+                raise StoryError(
+                    f"{s.id} ({s.repository}) depends on {dep} ({other.repository}), and stories in "
+                    "different repositories cannot stack: drop the dependency, or plan both in one repository"
+                )
+
+    def below(sid: str) -> set[str]:
+        seen: set[str] = set()
+        todo = list(by_id[sid].depends_on)
+        while todo:
+            x = todo.pop()
+            if x not in seen:
+                seen.add(x)
+                todo.extend(by_id[x].depends_on)
+        return seen
+
+    for s in stories:
+        if len(s.depends_on) < 2:
+            continue
+        last = max(s.depends_on, key=lambda d: position[d])
+        for dep in s.depends_on:
+            if dep != last and dep not in below(last):
+                raise StoryError(
+                    f"{s.id} depends on {dep} and {last}, which are independent of each other; a story is "
+                    f"built on one branch, so make {last} depend on {dep}, or drop one of the two"
+                )
+
+
 def parse_story_plan(
     obj: dict[str, Any] | None, epic: EpicSpec, *, max_stories: int, max_scope_files: int
 ) -> StoryPlan:
@@ -366,6 +407,7 @@ def parse_story_plan(
     cycle = _cycle(stories)
     if cycle is not None:
         raise StoryError(f"stories depend on each other in a cycle ({' -> '.join(cycle)}); break the cycle")
+    _stackable(stories)
     named = {c for s in stories for c in s.epic_criteria}
     uncovered = [c.id for c in epic.criteria if c.id not in named]
     if uncovered:
@@ -474,3 +516,116 @@ def check_story_plan(
 def plan_feedback(findings: Sequence[PlanFinding]) -> str:
     """One line per finding, for `brief-reply-again`."""
     return "\n".join(f"- {f.story}: {f.why}" for f in findings)
+
+
+# ---- the story's card (D5, D6, D7) -----------------------------------------------------------------------
+
+STORY_CARD_CONTRACT = """The story's card ends with one ```json block holding exactly one object:
+{"type": "story_card", "id": "S2", "story": {"title": ..., "summary": ..., "acceptance": [...], "out_of_scope": [...], "assumptions": [...]},
+ "scope": [{"path": "src/pkg/mod.py", "new": false}], "consumes": ["S1: def name(...) -> R"], "produces": ["def name(...) -> R"],
+ "depends_on": ["AIR-12"], "size": "S" | "M", "epic_criteria": ["EC1"],
+ "epic": {"key": "AIR-9", "summary": "...", "constraints": ["..."], "risk": "..." | null}}
+The story's card is written by airlie from the story plan; the pipeline reads this block instead of refining the story again (`size` is read later to price an epic from its finished stories)."""  # noqa: E501
+LABEL_AFTER = "after:"
+LABEL_EPIC = "epic:"
+LABEL_PLAN = "plan:"
+
+
+@dataclass(frozen=True)
+class StoryCard:
+    """A story as its board card carries it: the story (with its epic header), the plan's id for it, the
+    architect's opening proposal for its files and interfaces, the board keys of the stories it depends on,
+    its size and the epic criteria it serves."""
+
+    id: str
+    story: Story
+    scope: tuple[ScopedPath, ...]
+    consumes: tuple[str, ...]
+    produces: tuple[str, ...]
+    depends_on: tuple[str, ...]
+    size: str
+    epic_criteria: tuple[str, ...]
+
+
+def render_story_card(ps: PlannedStory, header: EpicHeader, depends_keys: Sequence[str]) -> str:
+    """The card's description: the story as a person reads it, closed by the JSON block the pipeline reads
+    (`STORY_CARD_CONTRACT`)."""
+    lines = [ps.why, "", "**Acceptance criteria**", *(f"- {c.line()}" for c in ps.acceptance)]
+    if ps.scope:
+        lines += ["", "**Files** (the architect's opening proposal, not a fence)"]
+        lines += [f"- {s.path}" + (" (new)" if s.new else "") for s in ps.scope]
+    if ps.consumes:
+        lines += ["", "**Consumes**", *(f"- {x}" for x in ps.consumes)]
+    if ps.produces:
+        lines += ["", "**Produces**", *(f"- {x}" for x in ps.produces)]
+    if ps.out_of_scope:
+        lines += ["", "**Out of scope**", *(f"- {x}" for x in ps.out_of_scope)]
+    if depends_keys:
+        lines += ["", "**Stacks on** " + ", ".join(depends_keys)]
+    lines += ["", f"**Epic {header.key}** · criteria {', '.join(ps.epic_criteria)} · size {ps.size}"]
+    block = {
+        "type": "story_card",
+        "id": ps.id,
+        "story": replace(ps.story(), epic=None).to_dict(),
+        "scope": [{"path": s.path, "new": s.new} for s in ps.scope],
+        "consumes": list(ps.consumes),
+        "produces": list(ps.produces),
+        "depends_on": list(depends_keys),
+        "size": ps.size,
+        "epic_criteria": list(ps.epic_criteria),
+        "epic": asdict(header),
+    }
+    return "\n".join(lines) + "\n\n```json\n" + json.dumps(block, indent=1, ensure_ascii=False) + "\n```\n"
+
+
+def story_card_of(description: str) -> StoryCard | None:
+    """The story card a board card's closing block holds, or None when it holds none (a Jira issue, a person's
+    story: it is refined). A block that says "story_card" and is flawed is a StoryError."""
+    _, obj = split_block(description)
+    if obj is None or obj.get("type") != "story_card":
+        return None
+    try:
+        story = Story.from_dict(obj["story"])
+        header = EpicHeader.from_dict(obj["epic"])
+        depends = tuple(str(k) for k in obj.get("depends_on") or ())
+        bad = [k for k in depends if not ISSUE_KEY.fullmatch(k)]
+        if bad:
+            raise ValueError(f"depends_on {bad} are not board keys")
+        size = str(obj["size"])
+        if size not in SIZES:
+            raise ValueError(f"size {size!r}")
+        return StoryCard(
+            str(obj["id"]),
+            replace(story, epic=header),
+            tuple(ScopedPath(str(x["path"]), bool(x.get("new"))) for x in obj.get("scope") or ()),
+            tuple(str(x) for x in obj.get("consumes") or ()),
+            tuple(str(x) for x in obj.get("produces") or ()),
+            depends,
+            size,
+            tuple(str(x) for x in obj.get("epic_criteria") or ()),
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        raise StoryError(f"the story card's closing block is flawed ({type(e).__name__}: {e})") from None
+
+
+def _labelled(labels: Sequence[str], prefix: str) -> list[str]:
+    return [x.removeprefix(prefix) for x in labels if x.startswith(prefix)]
+
+
+def epic_key_of(labels: Sequence[str]) -> str | None:
+    """The epic key of a story's `epic:<key>` label, or None; a label that is not a board key is none."""
+    found = [k for k in _labelled(labels, LABEL_EPIC) if ISSUE_KEY.fullmatch(k)]
+    return found[0] if found else None
+
+
+def plan_id_of(labels: Sequence[str]) -> str | None:
+    """The plan id of a story's `plan:<id>` label, or None."""
+    found = [k for k in _labelled(labels, LABEL_PLAN) if _ID.fullmatch(k)]
+    return found[0] if found else None
+
+
+def after_keys(labels: Sequence[str]) -> list[str]:
+    """The board keys of a story's `after:<key>` labels, in label order (the plan's order: the last is the
+    story it is built on); a label that is not a board key (a person's typo) is dropped, and the key goes on
+    to name a state directory only after this check."""
+    return [k for k in _labelled(labels, LABEL_AFTER) if ISSUE_KEY.fullmatch(k)]

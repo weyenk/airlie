@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,19 @@ import pytest
 
 from airlie.story.epic import EpicCriterion, EpicSpec
 from airlie.story.epic_plan import (
+    STORY_CARD_CONTRACT,
     STORY_PLAN_CONTRACT,
     StoryPlan,
+    after_keys,
     check_story_plan,
+    epic_key_of,
     parse_story_plan,
     plan_feedback,
+    plan_id_of,
+    render_story_card,
+    story_card_of,
 )
-from airlie.story.model import Criterion, Story, StoryError
+from airlie.story.model import Criterion, EpicHeader, Story, StoryError
 from tests.unit.git_helpers import git
 
 EPIC = EpicSpec(
@@ -153,6 +160,59 @@ def test_a_flawed_plan_is_refused_with_a_reason(
 ) -> None:
     with pytest.raises(StoryError, match=why):
         parse(copy.deepcopy(obj), **kw)
+
+
+def test_a_story_that_depends_on_two_independent_stories_is_refused() -> None:
+    """A story stacks on one branch, so the stories it depends on must be a chain: S3 on top of S1 and S2
+    could only be built on one of them, without the other's code."""
+    obj = plan(story("S1"), story("S2", covers=["EC2"]), story("S3", depends=["S1", "S2"], covers=["EC2"]))
+    with pytest.raises(StoryError, match=r"S3 depends on S1 and S2, which are independent of each other"):
+        parse(obj)
+
+
+def test_a_story_may_depend_on_two_stories_when_one_builds_on_the_other() -> None:
+    obj = plan(
+        story("S1"),
+        story("S2", depends=["S1"], covers=["EC2"]),
+        story("S3", depends=["S2", "S1"], covers=["EC2"]),
+    )
+    assert [s.id for s in parse(obj).order()] == ["S1", "S2", "S3"]
+
+
+def test_a_dependency_in_another_repository_is_refused() -> None:
+    two = EpicSpec(("o/r", "o/other"), EPIC.criteria)
+    obj = plan(story("S1"), story("S2", depends=["S1"], covers=["EC2"], repository="o/other"))
+    with pytest.raises(StoryError, match=r"S2 .*o/other.* depends on S1 .*o/r.*cannot stack"):
+        parse_story_plan(obj, two, max_stories=8, max_scope_files=8)
+
+
+def test_a_story_card_carries_the_story_its_files_its_dependencies_and_the_epic_header() -> None:
+    s2_obj = story("S2", depends=["S1"], covers=["EC2"], consumes=["S1: def s1() -> int"])
+    plan_ = parse(plan(story("S1"), s2_obj))
+    s2 = plan_.order()[1]
+    header = EpicHeader("AIR-3", plan_.summary, plan_.constraints, plan_.risk_for("S2"))
+    text = render_story_card(s2, header, ["AIR-4"])
+    assert "Acceptance criteria" in text and "src/s2.py (new)" in text and "AIR-4" in text
+    card = story_card_of(text)
+    assert card is not None
+    assert card.story == replace(s2.story(), epic=header)
+    assert (card.id, card.depends_on, card.size, card.epic_criteria) == ("S2", ("AIR-4",), "S", ("EC2",))
+    assert card.scope == s2.scope and card.consumes == s2.consumes and card.produces == s2.produces
+    assert story_card_of("prose only") is None
+    assert story_card_of(text + "\nmore prose after the block\n") is None
+    assert STORY_CARD_CONTRACT.startswith("The story's card ends")
+
+
+def test_a_story_card_block_with_a_flawed_story_is_an_error() -> None:
+    with pytest.raises(StoryError, match="story card"):
+        story_card_of('```json\n{"type": "story_card", "story": 3}\n```\n')
+
+
+def test_the_labels_of_a_story_card_name_its_epic_its_plan_id_and_what_it_comes_after() -> None:
+    labels = ("repo:o/r", "epic:AIR-3", "plan:S2", "after:AIR-4", "after:AIR-5", "after:no key", "resumed:1")
+    found = (epic_key_of(labels), plan_id_of(labels), after_keys(labels))
+    assert found == ("AIR-3", "S2", ["AIR-4", "AIR-5"])
+    assert (epic_key_of(("repo:o/r",)), plan_id_of(()), after_keys(("repo:o/r",))) == (None, None, [])
 
 
 # ---- the checks against the trunk ----

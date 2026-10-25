@@ -61,24 +61,50 @@ class Criterion:
 
 
 @dataclass(frozen=True)
+class EpicHeader:
+    """What a story born from an epic carries of it (D7 of the plans phase, 2026-10-24): the epic's card key,
+    the plan's summary, the constraints copied from the epic and the risk pinned to this story's criteria
+    (None when none is). It travels in the story's card and from there into the briefs that read the story,
+    so a story's room sees the whole without reading the epic."""
+
+    key: str
+    summary: str
+    constraints: tuple[str, ...] = ()
+    risk: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> EpicHeader:
+        risk = d.get("risk")
+        return cls(
+            str(d["key"]),
+            str(d["summary"]),
+            tuple(str(c) for c in d.get("constraints") or ()),
+            str(risk) if risk else None,
+        )
+
+
+@dataclass(frozen=True)
 class Story:
     title: str
     summary: str
     acceptance: tuple[Criterion, ...]
     out_of_scope: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()
+    epic: EpicHeader | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Story:
+        epic = d.get("epic")
         return cls(
             str(d["title"]),
             str(d["summary"]),
             tuple(Criterion(**c) for c in d["acceptance"]),
             tuple(d.get("out_of_scope") or ()),
             tuple(d.get("assumptions") or ()),
+            EpicHeader.from_dict(epic) if isinstance(epic, dict) else None,
         )
 
 

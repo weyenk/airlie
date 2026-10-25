@@ -16,9 +16,10 @@ from airlie.router import ChiefRouter
 from airlie.story.board import NOTE_PREFIX
 from airlie.story.epic import EpicCriterion, EpicSpec
 from airlie.story.epic_pipeline import EpicPipeline
-from airlie.story.epic_plan import StoryPlan
+from airlie.story.epic_plan import StoryPlan, story_card_of
 from airlie.story.epic_state import EpicState
 from airlie.story.local_board import LocalBoard
+from airlie.story.model import EpicHeader
 from airlie.story.publish import Publisher
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
@@ -201,3 +202,66 @@ def test_a_state_of_another_epic_is_refused(tmp_path: Path) -> None:
     other = rig.store.create(level="epic", title="other")
     with pytest.raises(Exception, match="belongs to"):
         EpicState.open(path, other, "o/r")
+
+
+# ---- the stories on the board (D5, D6, D7) ----
+
+
+async def planned_rig(tmp_path: Path) -> tuple[Rig, EpicState]:
+    rig = Rig(tmp_path, FakeEngine({"architect": [reply(plan_obj())]}))
+    return rig, await rig.pipeline.plan(rig.item())
+
+
+async def test_the_plans_stories_become_ranked_cards_under_the_epic_with_their_labels(tmp_path: Path) -> None:
+    rig, st = await planned_rig(tmp_path)
+    s1, s2 = rig.store.list(level="story", parent=rig.epic.key)  # listed in rank order: the plan's
+    assert (s1.title, s2.title) == ("Do S1", "Do S2")
+    base = ("repo:o/r", f"epic:{rig.epic.key}")
+    assert s1.labels == (*base, "plan:S1") and s2.labels == (*base, "plan:S2", f"after:{s1.key}")
+    assert st.stories == {"S1": s1.key, "S2": s2.key}
+    [made] = kinds(st.path / "events.jsonl", "stories_created")
+    assert made["keys"] == [s1.key, s2.key] and made["order"] == ["S1", "S2"]
+    [comment] = rig.item().comments
+    assert comment.author == "airlie" and f"1. {s1.key}" in comment.text and f"2. {s2.key}" in comment.text
+    # the description is the story as a person reads it, closed by the contract the pipeline reads
+    card = story_card_of(s2.description)
+    assert card is not None and card.depends_on == (s1.key,) and card.id == "S2"
+    header = EpicHeader(rig.epic.key, "Avatars, in two stories.", ("PNG only",), "a huge file")
+    assert card.story.epic == header
+    other = story_card_of(s1.description)
+    assert other is not None and other.story.epic is not None and other.story.epic.risk is None
+
+
+async def test_a_story_with_no_dependency_is_born_approved_and_a_dependent_waits_with_its_after_label(
+    tmp_path: Path,
+) -> None:
+    rig, _ = await planned_rig(tmp_path)
+    s1, s2 = rig.store.list(level="story", parent=rig.epic.key)
+    assert (s1.status, s2.status) == ("approved", "todo")
+    assert [label for label in s2.labels if label.startswith("after:")] == [f"after:{s1.key}"]
+
+
+async def test_stories_are_made_once_even_when_the_epic_is_planned_again_after_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = Rig(tmp_path, FakeEngine({"architect": [reply(plan_obj())]}))
+    real = rig.store.create
+    calls: list[str] = []
+
+    def flaky(**kw: Any) -> Item:
+        calls.append(kw["title"])
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real(**kw)
+
+    monkeypatch.setattr(rig.store, "create", flaky)
+    stopped = await rig.pipeline.plan(rig.item())
+    assert stopped.stage == "blocked" and "disk full" in (stopped.blocked or "") and stopped.plan is not None
+    assert len(stopped.stories) == 1
+    monkeypatch.setattr(rig.store, "create", real)
+    rig.store.update(rig.epic.key, status="approved")
+    asked = len(rig.engine.requests)
+    st = await rig.pipeline.plan(rig.item())
+    assert st.blocked is None and len(rig.engine.requests) == asked  # the plan is kept, not asked again
+    assert [s.title for s in rig.store.list(level="story")] == ["Do S1", "Do S2"]
+    assert sorted(st.stories) == ["S1", "S2"]

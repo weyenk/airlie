@@ -27,16 +27,20 @@ from airlie.story.briefs import plan_brief
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import (
+    LABEL_AFTER,
+    LABEL_EPIC,
+    LABEL_PLAN,
     StoryPlan,
     check_story_plan,
     parse_story_plan,
     plan_feedback,
+    render_story_card,
     same_plans,
 )
 from airlie.story.epic_state import EpicState
 from airlie.story.lessons import LessonsStore
 from airlie.story.local_board import LocalBoard
-from airlie.story.model import StoryError, StorySetupError
+from airlie.story.model import EpicHeader, StoryError, StorySetupError
 from airlie.story.pipeline import _cap, _reason, _redact_urls
 from airlie.story.publish import Publisher, PublishError
 from airlie.teams.worktree import rev_parse
@@ -85,13 +89,15 @@ class EpicPipeline:
         if spec is not None:
             first = spec.repositories[0]
         st = EpicState.open(self.epics_dir / card.key, card, first)
-        if st.plan is not None:
+        if st.stage == "blocked":  # a person approved it again: the plan starts over, or goes on
+            st.stage, st.blocked = ("planned" if st.plan is not None else "new"), None
+        if st.plan is not None and self._made(st):
             return st
-        if st.stage == "blocked":  # a person approved it again: the plan starts over
-            st.stage, st.blocked = "new", None
         st.emit("epic_start", card=card.title, repositories=list(spec.repositories) if spec else [])
         try:
-            await self._plan(st, card)
+            if st.plan is None:
+                await self._plan(st, card)
+            await self._create_stories(st, card)
         except StoryBlocked as e:
             await self._block(st, card, str(e))
         except asyncio.CancelledError:
@@ -101,6 +107,55 @@ class EpicPipeline:
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, card, _reason(e))
         return st
+
+    @staticmethod
+    def _made(st: EpicState) -> bool:
+        """The plan is recorded and every story of it has its card."""
+        return st.plan is not None and all(s["id"] in st.stories for s in st.plan["stories"])
+
+    async def _create_stories(self, st: EpicState, card: Item) -> None:
+        """The plan's stories as cards under the epic, in plan order (D5): a story with no dependency is born
+        approved (a card the line made is ready at birth), a dependent is born todo with an `after:<key>`
+        label for each story it stacks on, the last being the one it is built on. Each card is on record in
+        the state the moment it exists, so a stop half-way is finished by the next plan, never made twice.
+        The epic's card gets one note listing the stories made."""
+        plan = StoryPlan.from_dict(st.plan or {})
+        order = plan.order()
+        index = {s.id: n for n, s in enumerate(order)}
+        made: list[tuple[str, str]] = []
+        store = self.board.store
+        for ps in order:
+            if ps.id in st.stories:
+                continue
+            deps = [st.stories[d] for d in sorted(ps.depends_on, key=lambda d: index[d])]
+            header = EpicHeader(card.key, plan.summary, plan.constraints, plan.risk_for(ps.id))
+            item = store.create(
+                level="story",
+                parent=card.key,
+                title=ps.title,
+                description=render_story_card(ps, header, deps),
+                labels=[
+                    f"repo:{ps.repository}",
+                    f"{LABEL_EPIC}{card.key}",
+                    f"{LABEL_PLAN}{ps.id}",
+                    *(f"{LABEL_AFTER}{k}" for k in deps),
+                ],
+            )
+            st.stories[ps.id] = item.key
+            st.save()
+            if not ps.depends_on:
+                store.update(item.key, status="approved")
+            made.append((ps.id, item.key))
+        if not made:
+            return
+        st.emit("stories_created", keys=[k for _, k in made], order=[i for i, _ in made])
+        titles = {ps.id: ps.title for ps in order}
+        lines = [f"{n}. {k} {titles[i]} ({i})" for n, (i, k) in enumerate(made, 1)]
+        store.comment(
+            card.key,
+            "airlie",
+            note("planned into stories, in order; the first are ready:\n" + "\n".join(lines)),
+        )
 
     async def _plan(self, st: EpicState, card: Item) -> None:
         try:

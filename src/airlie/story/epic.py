@@ -111,7 +111,7 @@ def parse_epic(obj: dict[str, Any] | None) -> EpicSpec:
     )
 
 
-def _split_block(description: str) -> tuple[str, dict[str, Any] | None]:
+def split_block(description: str) -> tuple[str, dict[str, Any] | None]:
     """The card's prose and the object of the ```json block that closes it ("" and None when nothing closes
     it that way). A block that is not the last thing in the card, or does not hold an object, is not one."""
     at = description.rfind(_OPENER)
@@ -131,7 +131,7 @@ def _split_block(description: str) -> tuple[str, dict[str, Any] | None]:
 def epic_of(card_description: str) -> EpicSpec | None:
     """The epic of a card: its closing block parsed, or None when the card has no epic block. A block that
     says "epic" and is flawed is a StoryError: the card was meant to be an epic."""
-    _, obj = _split_block(card_description)
+    _, obj = split_block(card_description)
     if obj is None or obj.get("type") != "epic":
         return None
     return parse_epic(obj)
@@ -170,7 +170,7 @@ def epic_from_markdown(text: str, repo: str | None) -> tuple[str, EpicSpec]:
     that section, `repo` is None and the text names no repository, or `repo` is not "owner/name"."""
     if repo is not None and (not REPOSITORY.fullmatch(repo) or ".." in repo.split("/")):
         raise StoryError(f"--repo must be owner/name, not {repo!r}")
-    prose, obj = _split_block(text)
+    prose, obj = split_block(text)
     if obj is not None and obj.get("type") == "epic":
         if not obj.get("repositories"):
             if repo is None:
