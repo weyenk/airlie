@@ -179,7 +179,7 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
         "what is AIR-30"
     )
     evidence.expect(
-        next_page.locator("[data-card]"), "a job card from today's app renders"
+        next_page.locator("[data-card] [data-card-link]"), "a job card from today's app renders"
     ).to_have_attribute("href", f"/next/workflows/{STORY_KEY}")
     evidence.expect(
         next_page.locator("[data-msg=chat]").last, "the thread opens at its end"
@@ -206,7 +206,7 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
     evidence.expect(
         next_page.locator("[data-msg=chat]").last, "my own message scrolls to the answer"
     ).to_be_in_viewport()
-    next_page.locator("[data-card]").click()
+    next_page.locator("[data-card] [data-card-link]").click()
     evidence.expect(next_page, "the story card opens the story's workflow view").to_have_url(
         re.compile(rf"/next/workflows/{STORY_KEY}$")
     )

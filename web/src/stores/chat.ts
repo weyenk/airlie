@@ -117,9 +117,12 @@ export const useChatStore = defineStore("chat", () => {
     return parts;
   }
 
-  /** Ask the model; the reply streams into the thread. Does nothing while a reply is still coming. */
-  async function send(opts: SendOptions): Promise<void> {
-    if (busy.value) return;
+  /**
+   * Ask the model; the reply streams into the thread. Does nothing while a reply is still coming. Resolves true
+   * when the person was signed out and the turn was taken back (the caller puts its attachments back).
+   */
+  async function send(opts: SendOptions): Promise<boolean> {
+    if (busy.value) return false;
     const text = opts.text;
     const attachments = opts.attachments?.length ? opts.attachments : undefined;
     sends.value += 1;
@@ -146,11 +149,11 @@ export const useChatStore = defineStore("chat", () => {
       if (e instanceof ApiError && e.status === 401) {
         // signed out: the turn is taken back, and what was typed goes back into the box after sign-in
         const i = thread.value.indexOf(mine);
-        if (i < 0) return; // the thread was cleared meanwhile: nothing to take back, nothing to restore
+        if (i < 0) return false; // the thread was cleared meanwhile: nothing to take back, nothing to restore
         thread.value.splice(i, 2);
         saveThread();
         setDraft(text);
-        return;
+        return true;
       }
       // a stopped reply is cut like one the connection dropped: what arrived stays, and it says so
       if (e instanceof StreamCut || (e as { name?: string })?.name === "AbortError") reply.cut = true;
@@ -160,6 +163,19 @@ export const useChatStore = defineStore("chat", () => {
       if (busy.value === controller) busy.value = null;
       saveThread();
     }
+    return false;
+  }
+
+  /** The story card's text as edited, kept with the item. */
+  function editStory(item: ChatItem, text: string): void {
+    item.storyText = text;
+    saveThread();
+  }
+
+  /** A story the card started: the item shows its job card from now on, and after a reload. */
+  function markStarted(item: ChatItem, started: Started): void {
+    item.started = started;
+    saveThread();
   }
 
   /** Stop the reply that is streaming; what arrived stays. */
@@ -176,5 +192,5 @@ export const useChatStore = defineStore("chat", () => {
     setDraft("");
   }
 
-  return { thread, draft, busy, sends, send, stop, clear, setDraft, push, saveThread };
+  return { thread, draft, busy, sends, send, stop, clear, setDraft, push, saveThread, editStory, markStarted };
 });

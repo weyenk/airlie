@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import ChatScreen from "./ChatScreen.vue";
 
-const chatApi = vi.hoisted(() => ({ stream: vi.fn(), chatSkills: vi.fn() }));
+const chatApi = vi.hoisted(() => ({ stream: vi.fn(), chatSkills: vi.fn(), attachmentLimits: vi.fn() }));
 vi.mock("@/api/chat", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/chat")>()), ...chatApi }));
 vi.mock("./chat/StatusStrip.vue", () => ({ default: { template: "<div data-test='strip-stub' />" } }));
 
@@ -27,6 +27,7 @@ beforeEach(() => {
     onDelta("An answer.");
     return "An answer.";
   });
+  chatApi.attachmentLimits.mockReset().mockResolvedValue({ max_per_message: 10, max_image_mb: 20, max_video_mb: 100, max_file_mb: 25 });
   chatApi.chatSkills.mockReset().mockResolvedValue([
     { name: "story", summary: "s", action: "story" },
     { name: "clear", summary: "c", action: "clear" },
