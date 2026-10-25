@@ -2,7 +2,7 @@
 # places it runs: Apple's `container` on the Mac (task test:e2e) and the e2e job in GitHub, built from the
 # repository root:  container build -f ops/e2e/Containerfile .
 #
-# The web stage builds the Vue app that the web app serves at /next, on the node major web/package.json pins
+# The web stage builds the Vue app that the web app serves at /, on the node major web/package.json pins
 # (`engines`); the final stage takes only its build.
 FROM node:26-slim AS web
 WORKDIR /src

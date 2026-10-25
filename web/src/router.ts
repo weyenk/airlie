@@ -19,7 +19,7 @@ export function activeRouter(): Router | undefined {
   return active;
 }
 
-export function createAppRouter(history: RouterHistory = createWebHistory("/next/")): Router {
+export function createAppRouter(history: RouterHistory = createWebHistory("/")): Router {
   const router = createRouter({
     history,
     routes: [

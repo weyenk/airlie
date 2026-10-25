@@ -45,10 +45,10 @@ def _listen(page: Page, server: Server, evidence: Evidence) -> None:
     """Open the app signed in, check it is the Vue app that was served (`fetch` works from the 503 page of a
     missing build too: only the shell renders the Live badge), start the page's own read of the stream, and
     wait until the server has connected it."""
-    response = page.goto(server.url + "/next/")
-    assert response is not None and response.ok, f"/next/ answered {response and response.status}"
+    response = page.goto(server.url + "/")
+    assert response is not None and response.ok, f"/ answered {response and response.status}"
     evidence.expect(
-        page.locator("[data-test=live-badge]"), "the Vue app at /next/ rendered its shell"
+        page.locator("[data-test=live-badge]"), "the Vue app at / rendered its shell"
     ).to_be_visible()
     page.evaluate(FIRST_CHANGE_JS, KEY)
     page.wait_for_function("() => window.connected", timeout=3000)  # no replay: write only once connected

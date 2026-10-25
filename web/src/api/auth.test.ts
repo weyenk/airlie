@@ -26,7 +26,7 @@ test("users use the auth route", async () => {
 });
 
 test("invites, user invites and delete user", async () => {
-  const fetchMock = stubJson({ url: "/#/join/t", expires_at: 1, user: { id: "u1" } }, { status: 201 });
+  const fetchMock = stubJson({ url: "/join/t", expires_at: 1, user: { id: "u1" } }, { status: 201 });
 
   await createInvite({ name: "Ann", role: "member", login: "ann" });
   await inviteAgain("u 1");

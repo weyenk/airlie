@@ -1,5 +1,6 @@
-"""The Board screen in Chromium: sign in, six status columns holding the board's cards, the item panel. Each
-check leaves its screenshot in test-results/evidence/ (conftest.Evidence)."""
+"""The Vue app's Board in Chromium (/board): six columns that fit the window, a card that rings when
+another process changes it, the phone's status pills, and a long title that cannot break a card. Each check
+leaves its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
 
 from __future__ import annotations
 
@@ -9,166 +10,177 @@ import pytest
 from playwright.sync_api import Page
 
 from airlie.board.store import BoardStore
-from tests.e2e.conftest import KEY, Evidence, Server
+from tests.e2e.conftest import Evidence, Server
 
 pytestmark = pytest.mark.e2e
 
-COLUMNS = ["To do", "Approved", "Doing", "Review", "Blocked", "Done"]
+COLUMNS = re.compile("^(To do|Approved|Doing|Review|Blocked|Done)$")
 
 
-def test_sign_in_with_the_admin_key_lands_on_the_page_asked_for(
-    page: Page, server: Server, evidence: Evidence
+def test_each_status_has_a_column_and_columns_fit_the_window(
+    app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    page.goto(f"{server.url}/#/board")
-    evidence.expect(page, "the board sends a stranger to sign in").to_have_url(re.compile(r"#/signin$"))
-    page.get_by_label("Admin key").fill(KEY)
-    page.get_by_role("button", name="Sign in with the key").click()
-    evidence.expect(page, "the key goes back to the board").to_have_url(re.compile(r"#/board$"))
-    evidence.expect(page.get_by_role("heading", name="Board"), "the board's heading").to_be_visible()
+    app_page.goto(server.url + "/board")
+    columns = app_page.get_by_role("region", name=COLUMNS)
+    evidence.expect(columns, "six columns").to_have_count(6)
+    box = app_page.locator("[data-columns]").bounding_box()
+    viewport = app_page.viewport_size
+    assert box is not None and viewport is not None
+    held = box["y"] + box["height"] <= viewport["height"] - 16
+    grid = app_page.locator("[data-columns]")
+    evidence.shot("the columns end above the window's bottom edge", grid, held=held)
+    assert held, box
+    page_scrolls = app_page.evaluate("document.documentElement.scrollHeight > innerHeight + 1")
+    evidence.shot("the page itself does not scroll down", held=not page_scrolls)
+    assert not page_scrolls
 
 
-def test_a_wrong_key_stays_on_sign_in(page: Page, server: Server, evidence: Evidence) -> None:
-    page.goto(f"{server.url}/#/signin")
-    page.get_by_label("Admin key").fill("not-the-key")
-    page.get_by_role("button", name="Sign in with the key").click()
-    evidence.expect(page.get_by_role("alert"), "sign in says the key is wrong").not_to_be_empty()
-    evidence.expect(page, "still on sign in").to_have_url(re.compile(r"#/signin$"))
-
-
-def test_the_board_has_a_column_per_status_in_order(
-    signed_in: Page, server: Server, evidence: Evidence, errors: list[str]
+def test_a_change_from_another_process_rings_its_card(
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    signed_in.goto(f"{server.url}/#/board")
-    columns = signed_in.locator("section.column")
-    evidence.expect(columns, "one column per status").to_have_count(len(COLUMNS))
-    labels = [c.get_attribute("aria-label") for c in columns.all()]
-    evidence.shot("the columns in status order", columns, held=labels == COLUMNS)
-    assert labels == COLUMNS
-    evidence.shot("nothing logged an error", held=not errors)
-    assert errors == []
+    app_page.goto(own_server.url + "/board")
+    evidence.expect(app_page.get_by_text("Live", exact=True), "the feed is live").to_be_visible()
+    card = app_page.locator("[data-item=AIR-3]")
+    evidence.expect(card, "the card starts in To do, quiet").to_be_visible()
+    evidence.expect(card.locator("[data-fresh-note]"), "no ring before the change").to_have_count(0)
+    store = BoardStore(own_server.state / "board.sqlite")
+    try:
+        store.move("AIR-3", "doing")  # as the story tick would: straight into the file, no request
+    finally:
+        store.close()
+    moved = app_page.get_by_role("region", name="Doing").locator("[data-item=AIR-3]")
+    evidence.expect(moved, "the card is now in Doing").to_be_visible()
+    note = moved.locator("[data-fresh-note]")
+    evidence.expect(note, "it says updated just now").to_have_text("updated just now")
+    evidence.expect(note, "the ring fades after about 4 s").to_have_count(0, timeout=8000)
 
 
-@pytest.mark.parametrize(
-    ("column", "title"),
-    [
-        ("To do", "Board: columns fill the page width"),
-        ("Approved", "Board: panel width"),
-        ("Doing", "Ship the web app"),
-        ("Review", "Jira import keeps its keys"),
-        ("Blocked", "Sign-in remembers the device"),
-        ("Done", "Chat streams its answer"),
-    ],
-)
-def test_each_card_sits_in_its_status_column(
-    signed_in: Page, server: Server, evidence: Evidence, column: str, title: str
+def test_the_phone_board_shows_one_column_and_the_status_pills(
+    app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    signed_in.goto(f"{server.url}/#/board")
-    card = signed_in.get_by_role("region", name=column).locator(".item", has_text=title)
-    evidence.expect(card, f"'{title}' in {column}").to_be_visible()
+    app_page.set_viewport_size({"width": 375, "height": 812})
+    app_page.goto(server.url + "/board")
+    pills = app_page.locator("[data-pills]")
+    evidence.expect(pills, "the status pills show").to_be_visible()
+    evidence.expect(pills.get_by_role("button"), "one pill per status").to_have_count(6)
+    evidence.expect(app_page.get_by_role("region", name=COLUMNS), "one column at a time").to_have_count(1)
+    evidence.expect(app_page.get_by_role("region", name="Doing"), "Doing first").to_be_visible()
+    pills.get_by_role("button", name=re.compile("^Done")).click()
+    done = app_page.get_by_role("region", name="Done")
+    evidence.expect(done, "choosing Done swaps the column").to_be_visible()
+    evidence.expect(app_page.get_by_role("region", name=COLUMNS), "still one column").to_have_count(1)
+    sideways = app_page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
+    evidence.shot("the phone page does not scroll sideways", held=not sideways)
+    assert not sideways
 
 
-def test_a_card_opens_its_modal_and_close_puts_the_board_back(
-    signed_in: Page, server: Server, evidence: Evidence
+def test_a_long_title_does_not_break_its_card(app_page: Page, own_server: Server, evidence: Evidence) -> None:
+    title = "w" * 200
+    store = BoardStore(own_server.state / "board.sqlite")
+    try:
+        store.create(level="story", title=title, labels=["repo:" + "o" * 100 + "/name"])
+    finally:
+        store.close()
+    app_page.goto(own_server.url + "/board")
+    card = app_page.locator("[data-item]", has=app_page.locator(f"[title='{title}']"))
+    evidence.expect(card, "the card with the 200-character title").to_be_visible()
+    geometry = card.evaluate(
+        """c => ({ card: c.getBoundingClientRect().width,
+                   column: c.closest('section').getBoundingClientRect().width,
+                   overflow: c.scrollWidth - c.clientWidth })"""
+    )
+    held = geometry["card"] <= geometry["column"] and geometry["overflow"] <= 0
+    evidence.shot("the card stays inside its column", card, held=held)
+    assert held, geometry
+
+
+def test_a_card_is_a_link_that_enter_follows(app_page: Page, server: Server, evidence: Evidence) -> None:
+    app_page.goto(server.url + "/board")
+    card = app_page.locator("[data-item=AIR-3]")
+    evidence.expect(card, "the card is a link to its own address").to_have_attribute("href", "/board/AIR-3")
+    card.focus()
+    app_page.keyboard.press("Enter")
+    evidence.expect(app_page, "Enter on the focused card goes to it").to_have_url(
+        re.compile(r"/board/AIR-3$")
+    )
+
+
+def test_dragging_a_card_onto_another_moves_it_above_it(
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    signed_in.goto(f"{server.url}/#/board")
-    signed_in.locator(".item", has_text="Board: panel width").click()
-    evidence.expect(signed_in, "the card's own address").to_have_url(re.compile(r"#/board/AIR-4$"))
-    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
-    evidence.expect(modal, "the card modal opens").to_be_visible()
-    title = modal.get_by_role("heading", name="Board: panel width")
-    evidence.expect(title, "the modal shows the card's title").to_be_visible()
-    modal.get_by_role("button", name="Close").click()
-    evidence.expect(modal, "Close hides the modal").to_be_hidden()
-    evidence.expect(signed_in, "back on the board's address").to_have_url(re.compile(r"#/board$"))
-
-
-def test_the_level_filter_shows_only_that_level(signed_in: Page, server: Server, evidence: Evidence) -> None:
-    signed_in.goto(f"{server.url}/#/board")
-    cards = signed_in.locator(".item")
-    evidence.expect(cards, "every card, unfiltered").to_have_count(7)
-    signed_in.get_by_role("group", name="Level").get_by_role("button", name="Epics").click()
-    evidence.expect(cards, "Epics leaves one card").to_have_count(1)
-    evidence.expect(cards, "the epic").to_contain_text("Board polish")
-
-
-def test_the_board_loads_at_phone_width(
-    signed_in: Page, server: Server, evidence: Evidence, errors: list[str]
-) -> None:
-    signed_in.set_viewport_size({"width": 375, "height": 812})
-    signed_in.goto(f"{server.url}/#/board")
-    evidence.expect(signed_in.locator("section.column"), "six columns at 375px").to_have_count(len(COLUMNS))
+    app_page.goto(own_server.url + "/board")
     evidence.expect(
-        signed_in.get_by_role("region", name="To do"), "the first column on screen"
-    ).to_be_visible()
-    evidence.shot("nothing logged an error", held=not errors)
-    assert errors == []
+        app_page.get_by_role("region", name="Doing").locator("[data-item]"), "Doing has two"
+    ).to_have_count(2)
+    app_page.locator("[data-item=AIR-3]").drag_to(app_page.locator("[data-item=AIR-2]"))
+    doing = app_page.get_by_role("region", name="Doing").locator("[data-item]")
+    evidence.expect(doing, "the card joined Doing").to_have_count(3)
+    keys = [c.get_attribute("data-item") for c in doing.all()]
+    evidence.shot("it sits above the card it was dropped on", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
+    assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys
 
 
-def _board(server: Server) -> BoardStore:
-    return BoardStore(server.state / "board.sqlite")
-
-
-def test_edit_sets_a_cards_repository(signed_in: Page, own_server: Server, evidence: Evidence) -> None:
-    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
-    evidence.expect(modal, "the modal names the card's repository").to_contain_text(
-        "Repository weyenk/airlie"
-    )
-    modal.get_by_text("weyenk/airlie").last.click()
-    repo = modal.get_by_label("Repository")
-    evidence.expect(repo, "the repository turns into an input holding owner/name").to_have_value(
-        "weyenk/airlie"
-    )
-    repo.fill("weyenk/OpenHand")
-    modal.get_by_role("button", name="Save").click()
-    evidence.expect(modal, "the modal names the new repository").to_contain_text("Repository weyenk/OpenHand")
-    card = signed_in.locator(".item", has_text="Board: panel width")
-    evidence.expect(card, "the card carries the new repo: label").to_contain_text("repo:weyenk/OpenHand")
-    board = _board(own_server)
-    try:
-        labels = board.get("AIR-4").labels
-    finally:
-        board.close()
-    evidence.shot("the board stored the one repo: label", card, held=labels == ("repo:weyenk/OpenHand",))
-    assert labels == ("repo:weyenk/OpenHand",)
-
-
-def test_a_repository_that_is_not_owner_slash_name_is_not_saved(
-    signed_in: Page, own_server: Server, evidence: Evidence
+def test_the_landing_mark_stays_put_over_itself_and_the_gaps(
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
-    modal.get_by_text("weyenk/airlie").last.click()
-    modal.get_by_label("Repository").fill("OpenHand")
-    modal.get_by_role("button", name="Save").click()
-    evidence.expect(modal, "the modal keeps the old repository").to_contain_text("Repository weyenk/airlie")
-    evidence.expect(modal, "and says what a repository looks like").to_contain_text(
-        "owner/name, the GitHub repository"
-    )
-    board = _board(own_server)
-    try:
-        labels = board.get("AIR-4").labels
-    finally:
-        board.close()
-    assert labels == ("repo:weyenk/airlie",)
+    """Real hit-testing: the mark takes no pointer, so over it and the 8px gaps the pointer is on the list.
+    The mark's place is checked at every stop: entering through the header, onto cards, over the mark and the
+    gaps (where keeping the place and re-deciding by the pointer's height give different answers)."""
+    app_page.goto(own_server.url + "/board")
+    doing = app_page.get_by_role("region", name="Doing")
+    evidence.expect(doing.locator("[data-item]"), "Doing has two").to_have_count(2)
+
+    def centre(box: dict[str, float]) -> tuple[float, float]:
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    def box(selector: str) -> dict[str, float]:
+        found = doing.locator(selector).bounding_box()
+        assert found, selector
+        return found
+
+    def mark_above() -> str | None:
+        return doing.locator("[data-drop]").evaluate("m => m.nextElementSibling?.getAttribute('data-item')")
+
+    src = app_page.locator("[data-item=AIR-3]").bounding_box()
+    assert src
+    mouse = app_page.mouse
+    mouse.move(*centre(src))
+    mouse.down()
+    mouse.move(*centre(src), steps=2)
+
+    head = box("[data-count]")  # enter the column through its header: above every card
+    mouse.move(head["x"], head["y"] + head["height"] / 2, steps=15)
+    evidence.expect(doing.locator("[data-drop]"), "entering by the header shows the mark").to_have_count(1)
+    assert mark_above() == "AIR-1", mark_above()
+
+    mouse.move(*centre(box("[data-item=AIR-1]")), steps=5)
+    assert mark_above() == "AIR-1", mark_above()
+    one, two = box("[data-item=AIR-1]"), box("[data-item=AIR-2]")
+    gap_y = (one["y"] + one["height"] + two["y"]) / 2  # between AIR-1 and AIR-2: by height it is AIR-2's
+    mouse.move(centre(one)[0], gap_y, steps=5)
+    assert mark_above() == "AIR-1", f"the mark moved in the gap: {mark_above()}"
+
+    mouse.move(*centre(box("[data-item=AIR-2]")), steps=5)
+    assert mark_above() == "AIR-2", mark_above()
+    mark, one = box("[data-drop]"), box("[data-item=AIR-1]")
+    mouse.move(*centre(mark), steps=5)  # over the mark itself
+    assert mark_above() == "AIR-2", f"the mark moved under the pointer: {mark_above()}"
+    mouse.move(centre(mark)[0], (one["y"] + one["height"] + mark["y"]) / 2, steps=5)  # the gap above the mark
+    assert mark_above() == "AIR-2", f"the mark moved in the gap: {mark_above()}"
+    evidence.shot("the mark stayed above AIR-2 over itself and the gap", doing.locator("[data-drop]"))
+    mouse.up()
+    cards = doing.locator("[data-item]")
+    evidence.expect(cards, "the card joined Doing").to_have_count(3)
+    keys = [c.get_attribute("data-item") for c in cards.all()]
+    evidence.shot("a drop there landed above AIR-2", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
+    assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys
 
 
-def test_a_new_child_starts_with_its_parents_repository(
-    signed_in: Page, own_server: Server, evidence: Evidence
-) -> None:
-    signed_in.goto(f"{own_server.url}/#/board/AIR-4")
-    modal = signed_in.locator("[role='dialog'][aria-modal='true']")
-    modal.get_by_role("button", name="Add child").click()
-    repo = modal.get_by_label("Repository")
-    evidence.expect(repo, "the new subtask has its story's repository").to_have_value("weyenk/airlie")
-    modal.get_by_label("Title").fill("Panel width on phones")
-    repo.fill("weyenk/OpenHand")
-    modal.get_by_role("button", name="Create").click()
-    evidence.expect(signed_in, "Create opens the new card").to_have_url(re.compile(r"#/board/AIR-8$"))
-    evidence.expect(modal, "the new card names its repository").to_contain_text("Repository weyenk/OpenHand")
-    board = _board(own_server)
-    try:
-        made = board.get("AIR-8")
-    finally:
-        board.close()
-    assert (made.parent, made.labels) == ("AIR-4", ("repo:weyenk/OpenHand",))
+def test_the_type_filter_shows_only_that_type(app_page: Page, server: Server, evidence: Evidence) -> None:
+    app_page.goto(server.url + "/board")
+    cards = app_page.locator("[data-columns] [data-item]")
+    evidence.expect(cards, "every card, unfiltered").to_have_count(7)
+    app_page.locator("[data-type-filter]").click()
+    app_page.get_by_role("menuitemradio", name="Epic").click()
+    evidence.expect(cards, "Epic leaves one card").to_have_count(1)
+    evidence.expect(cards, "the epic").to_contain_text("Board polish")

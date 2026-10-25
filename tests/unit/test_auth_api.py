@@ -47,8 +47,8 @@ class Studio:
         r = self.admin.post("/v1/auth/invites", json={"name": name, **body})
         assert r.status_code == 201, r.text
         url = r.json()["url"]
-        assert url.startswith("/#/join/")
-        return url.removeprefix("/#/join/")
+        assert url.startswith("/join/")
+        return url.removeprefix("/join/")
 
     def register(self, token: str, authenticator: SoftAuthenticator, client: TestClient | None = None) -> Any:
         c = client or self.phone
@@ -355,10 +355,17 @@ def test_an_admin_issues_a_fresh_link_for_an_existing_person(studio: Studio) -> 
     pat_id = studio.store.peek_invite(token).id  # type: ignore[union-attr]
     r = studio.admin.post(f"/v1/auth/users/{pat_id}/invites")
     assert r.status_code == 201, r.text
-    assert r.json()["user"]["id"] == pat_id and r.json()["url"].startswith("/#/join/")
-    fresh = r.json()["url"].removeprefix("/#/join/")
+    assert r.json()["user"]["id"] == pat_id and r.json()["url"].startswith("/join/")
+    fresh = r.json()["url"].removeprefix("/join/")
     assert fresh != token
     assert studio.register(fresh, SoftAuthenticator()).status_code == 201
     assert [u["name"] for u in studio.admin.get("/v1/auth/users").json()] == ["Noah", "Pat"]  # nobody new
     assert studio.admin.post("/v1/auth/users/nobody/invites").status_code == 404
     assert studio.phone.post(f"/v1/auth/users/{pat_id}/invites").status_code == 403
+
+
+def test_an_invite_link_is_a_clean_path(studio: Studio) -> None:
+    r = studio.admin.post("/v1/auth/invites", json={"name": "Pat"})
+    assert r.status_code == 201, r.text
+    url = r.json()["url"]
+    assert url.startswith("/join/") and "#" not in url and len(url) > len("/join/")

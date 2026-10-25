@@ -1,4 +1,4 @@
-"""The Vue app's Workflows list in Chromium (/next/workflows): what is running, the stories with their blocked
+"""The Vue app's Workflows list in Chromium (/workflows): what is running, the stories with their blocked
 reasons, the Blocked filter in the address, and a list that follows a story's state on disk. Each check leaves
 its screenshot in test-results/e2e/evidence/ (conftest.Evidence)."""
 
@@ -35,81 +35,81 @@ def _live(page: Page, evidence: Evidence) -> None:
 
 
 def test_a_running_storys_row_opens_its_workflow_view(
-    next_page: Page, own_server: Server, evidence: Evidence
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
     _write_story(own_server.state, RUNNING_KEY)
-    next_page.goto(own_server.url + "/next/workflows")
-    row = next_page.locator(f"[data-running={RUNNING_KEY}]")
+    app_page.goto(own_server.url + "/workflows")
+    row = app_page.locator(f"[data-running={RUNNING_KEY}]")
     evidence.expect(row, "the running story is on the Running card").to_contain_text(RUNNING_TITLE)
     evidence.expect(row.get_by_role("progressbar"), "with a progress bar").to_be_visible()
     row.click()
-    evidence.expect(next_page, "the row opens its workflow view").to_have_url(
-        re.compile(rf"/next/workflows/{RUNNING_KEY}$")
+    evidence.expect(app_page, "the row opens its workflow view").to_have_url(
+        re.compile(rf"/workflows/{RUNNING_KEY}$")
     )
 
 
 def test_a_blocked_story_shows_its_reason_and_appears_under_blocked(
-    next_page: Page, own_server: Server, evidence: Evidence
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
     _write_story(own_server.state, RUNNING_KEY)
-    next_page.goto(own_server.url + "/next/workflows")
-    blocked = next_page.locator(f"[data-story={STORY_KEY}]")
+    app_page.goto(own_server.url + "/workflows")
+    blocked = app_page.locator(f"[data-story={STORY_KEY}]")
     evidence.expect(blocked, "the blocked story's row shows why").to_contain_text(
         f"Blocked: {BLOCKED_REASON}"
     )
-    next_page.get_by_role("button", name="Blocked", exact=True).click()
-    evidence.expect(next_page, "the choice is in the address").to_have_url(re.compile(r"[?&]blocked=true\b"))
+    app_page.get_by_role("button", name="Blocked", exact=True).click()
+    evidence.expect(app_page, "the choice is in the address").to_have_url(re.compile(r"[?&]blocked=true\b"))
     evidence.expect(blocked, "the blocked story stays").to_be_visible()
     evidence.expect(
-        next_page.locator(f"[data-story={RUNNING_KEY}]"), "a story that is not blocked leaves"
+        app_page.locator(f"[data-story={RUNNING_KEY}]"), "a story that is not blocked leaves"
     ).to_have_count(0)
-    next_page.get_by_role("button", name="Not blocked").click()
-    evidence.expect(next_page.locator(f"[data-story={RUNNING_KEY}]"), "Not blocked shows it").to_be_visible()
+    app_page.get_by_role("button", name="Not blocked").click()
+    evidence.expect(app_page.locator(f"[data-story={RUNNING_KEY}]"), "Not blocked shows it").to_be_visible()
     evidence.expect(blocked, "and drops the blocked one").to_have_count(0)
 
 
 def test_the_list_follows_a_storys_state_on_disk(
-    next_page: Page, own_server: Server, evidence: Evidence
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
     _write_story(own_server.state, RUNNING_KEY)
-    next_page.goto(own_server.url + "/next/workflows")
-    _live(next_page, evidence)
-    row = next_page.locator(f"[data-story={RUNNING_KEY}]")
+    app_page.goto(own_server.url + "/workflows")
+    _live(app_page, evidence)
+    row = app_page.locator(f"[data-story={RUNNING_KEY}]")
     evidence.expect(row, "the story starts unblocked").not_to_contain_text("Blocked:")
-    evidence.expect(next_page.locator(f"[data-running={RUNNING_KEY}]"), "and running").to_be_visible()
+    evidence.expect(app_page.locator(f"[data-running={RUNNING_KEY}]"), "and running").to_be_visible()
     _write_story(own_server.state, RUNNING_KEY, blocked="the tester stopped")  # as the tick would
     evidence.expect(row, "the row now says why it stopped").to_contain_text("Blocked: the tester stopped")
     evidence.expect(
-        next_page.locator(f"[data-running={RUNNING_KEY}]"), "a blocked story leaves Running"
+        app_page.locator(f"[data-running={RUNNING_KEY}]"), "a blocked story leaves Running"
     ).to_have_count(0)
 
 
 def test_the_phone_keeps_its_filters_behind_a_button(
-    next_page: Page, server: Server, evidence: Evidence
+    app_page: Page, server: Server, evidence: Evidence
 ) -> None:
-    next_page.set_viewport_size({"width": 375, "height": 812})
-    next_page.goto(server.url + "/next/workflows")
-    evidence.expect(next_page.locator(f"[data-story={STORY_KEY}]"), "the story list shows").to_be_visible()
-    stage = next_page.locator("[data-filter=stage]")
+    app_page.set_viewport_size({"width": 375, "height": 812})
+    app_page.goto(server.url + "/workflows")
+    evidence.expect(app_page.locator(f"[data-story={STORY_KEY}]"), "the story list shows").to_be_visible()
+    stage = app_page.locator("[data-filter=stage]")
     evidence.expect(stage, "the filters are folded away").to_be_hidden()
-    next_page.get_by_role("button", name="Filters").click()
+    app_page.get_by_role("button", name="Filters").click()
     evidence.expect(stage, "Filters unfolds them").to_be_visible()
-    sideways = next_page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
+    sideways = app_page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
     evidence.shot("the phone page does not scroll sideways", held=not sideways)
     assert not sideways
 
 
 def test_a_401_on_workflows_goes_to_sign_in_keeping_the_page(
-    next_page: Page, own_server: Server, evidence: Evidence
+    app_page: Page, own_server: Server, evidence: Evidence
 ) -> None:
-    next_page.goto(own_server.url + "/next/workflows?stage=refine")
-    _live(next_page, evidence)
-    next_page.evaluate("localStorage.setItem('airlie.key', 'no-longer-valid')")
+    app_page.goto(own_server.url + "/workflows?stage=refine")
+    _live(app_page, evidence)
+    app_page.evaluate("localStorage.setItem('airlie.key', 'no-longer-valid')")
     _write_story(own_server.state, RUNNING_KEY)  # a story event: the list reloads, and is refused
-    evidence.expect(next_page, "signed out goes to sign in, keeping the page and its filter").to_have_url(
-        re.compile(r"/next/signin\?next=(%2F|/)workflows(\?|%3F)stage(=|%3D)refine$")
+    evidence.expect(app_page, "signed out goes to sign in, keeping the page and its filter").to_have_url(
+        re.compile(r"/signin\?next=(%2F|/)workflows(\?|%3F)stage(=|%3D)refine$")
     )
-    next_page.evaluate("new Promise(requestAnimationFrame)")
-    evidence.expect(next_page, "and the address is not rewritten after the route moved on").to_have_url(
-        re.compile(r"/next/signin\?next=")
+    app_page.evaluate("new Promise(requestAnimationFrame)")
+    evidence.expect(app_page, "and the address is not rewritten after the route moved on").to_have_url(
+        re.compile(r"/signin\?next=")
     )

@@ -179,7 +179,7 @@ def auth_router(
         user = store.add_user(req.name, req.role, login=req.login)
         token = store.make_invite(user.id, cfg.invite_hours)
         return {
-            "url": f"/#/join/{token}",
+            "url": f"/join/{token}",
             "expires_at": now() + cfg.invite_hours * 3600,
             "user": _user_dict(user),
         }
@@ -193,7 +193,7 @@ def auth_router(
             raise HTTPException(404, "no such user")
         token = store.make_invite(user.id, cfg.invite_hours)
         return {
-            "url": f"/#/join/{token}",
+            "url": f"/join/{token}",
             "expires_at": now() + cfg.invite_hours * 3600,
             "user": _user_dict(user),
         }

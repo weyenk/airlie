@@ -570,7 +570,7 @@ def _print_invite(cfg: AirlieConfig, base_url: str, token: str, name: str) -> No
         "open it on a device with Face ID / Touch ID):"
     )
     console.print(
-        f"{base_url.rstrip('/')}/#/join/{token}", soft_wrap=True, highlight=False
+        f"{base_url.rstrip('/')}/join/{token}", soft_wrap=True, highlight=False
     )  # one line, never broken
 
 

@@ -22,7 +22,7 @@ async function open(path: string) {
   fakeFetch();
   const pinia = createPinia();
   setActivePinia(pinia);
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push(path);
   const w = mount(App, { global: { plugins: [pinia, router] }, attachTo: document.body });
   await flushPromises();
@@ -51,7 +51,7 @@ test("the sign-in screen is bare: no tabs, no top bar", async () => {
   fakeFetch(false); // nobody known: a known person is handed straight on, and sees the shell
   const pinia = createPinia();
   setActivePinia(pinia);
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/signin");
   const w = mount(App, { global: { plugins: [pinia, router] } });
   await flushPromises();

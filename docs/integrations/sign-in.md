@@ -58,10 +58,10 @@ task auth:admin -- --name Noah --login noah@github --base-url https://studio.tai
 task auth:invite -- --name Pat --base-url https://studio.tailxxxx.ts.net
 ```
 
-Each prints a link `…/#/join/<token>`, good for `auth.invite_hours` (24) and once. The person opens it on the
+Each prints a link `…/join/<token>`, good for `auth.invite_hours` (24) and once. The person opens it on the
 device whose passkey they want (a phone with Face ID, a Mac with Touch ID), the web app shows their name and
 "Create passkey", and they are signed in. iCloud Keychain syncs the passkey to their other Apple devices; on a
-new device "Use this device" on the sign-in screen asks for it. Passkeys need https, except on `localhost`.
+new device "Use this device" on the sign-in screen asks for it. Passkeys need https, except on `localhost`. Sign-in is at `/signin` (the admin key, or "Use this device" for a passkey). A link made before 2026-10-25 (`/#/join/<token>`) still works: the page turns it into `/join/<token>`.
 
 `task auth:users` lists people with their passkey counts; `task auth:revoke -- --id ID` removes a person, and
 their passkeys and sessions with them. A link that lapsed before it was used: `task auth:invite -- --id ID`
@@ -72,7 +72,7 @@ prints a fresh one for that person (the first admin's included).
 | route | who | what |
 | --- | --- | --- |
 | `GET /me` | anyone signed in | `{user_id, name, role, via}`; 401 for nobody |
-| `POST /invites` `{name, role?, login?}` | admin | `{url: "/#/join/<token>", expires_at, user}` |
+| `POST /invites` `{name, role?, login?}` | admin | `{url: "/join/<token>", expires_at, user}` |
 | `GET /users`, `DELETE /users/{id}` | admin | people with passkey counts; remove one |
 | `POST /users/{id}/invites` | admin | a fresh link for an existing person (a lapsed invite, a second device) |
 | `POST /register/options` `{invite}` → `POST /register/verify` `{invite, credential}` | the invited person | WebAuthn creation; 410 when the invite is used or expired; 201 with the session cookie |

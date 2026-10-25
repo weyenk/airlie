@@ -586,10 +586,10 @@ def signed_in(context: BrowserContext, page: Page, server: Server) -> Page:
 
 
 @pytest.fixture
-def next_page(signed_in: Page) -> Page:
-    """A page signed in for the Vue app served at /next/ (it reads the same `airlie.key` as today's app, so
-    the one init script signs in both). Go to `<server.url>/next/<path>`: the server is the test's choice
-    (`server`, or `own_server` when it changes the board)."""
+def app_page(signed_in: Page) -> Page:
+    """A page signed in for the Vue app served at / (it reads `airlie.key`, which the one init script sets).
+    Go to `<server.url>/<path>`: the server is the test's choice (`server`, or `own_server` when it changes
+    the board)."""
     return signed_in
 
 
