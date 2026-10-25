@@ -6,6 +6,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   base: "/next/",
   plugins: [vue(), tailwindcss()],
+  resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
     outDir: "../src/airlie/serve/web_next",
     emptyOutDir: true,

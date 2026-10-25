@@ -9,12 +9,12 @@ export type LiveResource<T> = {
 };
 
 /**
- * Data from `load` that stays current: it loads at once, refetches when `topic` changes (an event whose key is
+ * Data from `load` that stays current: it loads at once, refetches when `topic` (or any of several) changes (an event whose key is
  * null, or `key`; any key when none is given), and refetches whenever the feed (re)connects, since changes
  * between are not replayed. A failed load keeps the data it had and sets `error`; `refresh` never rejects.
  * Inside a component or effect scope it stops listening when the scope ends.
  */
-export function liveResource<T>(topic: string, load: () => Promise<T>, key?: string): LiveResource<T> {
+export function liveResource<T>(topic: string | string[], load: () => Promise<T>, key?: string): LiveResource<T> {
   const feed = useFeedStore();
   // each load replaces the data whole, so there is nothing for deep reactivity to watch
   const data = shallowRef<T>();
@@ -34,16 +34,18 @@ export function liveResource<T>(topic: string, load: () => Promise<T>, key?: str
     }
   }
 
-  const off = feed.on(topic, (changed) => {
-    if (changed === null || key === undefined || changed === key) void refresh();
-  });
+  const offs = [topic].flat().map((t) =>
+    feed.on(t, (changed) => {
+      if (changed === null || key === undefined || changed === key) void refresh();
+    }),
+  );
   const stopWatching = watch(
     () => feed.generation,
     () => void refresh(),
   );
   if (getCurrentScope()) {
     onScopeDispose(() => {
-      off();
+      for (const off of offs) off();
       stopWatching();
     });
   }

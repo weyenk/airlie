@@ -33,7 +33,7 @@ from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
-from airlie.serve.listing import recent_runs, repos, stories, story_page
+from airlie.serve.listing import recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
 from airlie.serve.tree import RunNotFound, run_tree
@@ -664,11 +664,24 @@ def create_app(
         blocked: bool | None = None,
         q: str | None = None,
         sort: Literal["activity", "key", "stage"] = "activity",
+        active_from: float | None = None,
+        active_to: float | None = None,
     ) -> dict[str, Any]:
         if stage is not None and stage not in STAGES:
             raise HTTPException(422, f"unknown stage {stage!r}; use one of {', '.join(STAGES)}")
         rows = stories(cfg.observability.state_dir)
-        return story_page(rows, page=page, size=size, stage=stage, repo=repo, blocked=blocked, q=q, sort=sort)
+        return story_page(
+            rows,
+            page=page,
+            size=size,
+            stage=stage,
+            repo=repo,
+            blocked=blocked,
+            q=q,
+            sort=sort,
+            active_from=active_from,
+            active_to=active_to,
+        )
 
     @app.get("/v1/airlie/stories/{key}/flow")
     async def story_flow_get(key: str) -> dict[str, Any]:
@@ -687,6 +700,11 @@ def create_app(
     @app.get("/v1/airlie/repos")
     async def repo_list() -> dict[str, Any]:
         return {"repos": repos(cfg)}
+
+    @app.get("/v1/airlie/repos/names")
+    async def repo_name_list() -> dict[str, Any]:
+        labels = [label for item in board.list() for label in item.labels]
+        return {"repos": await asyncio.to_thread(repo_names, cfg, labels)}
 
     @app.get("/v1/airlie/jobs/{job_id}")
     async def job_status(job_id: str, since: int = Query(0, ge=0), wait: float = 0.0) -> dict[str, Any]:

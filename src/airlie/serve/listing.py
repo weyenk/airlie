@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
 from airlie.config import AirlieConfig
 from airlie.serve.jobs import read_events
 from airlie.story.state import STAGES
+from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
 _SAFE = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -118,12 +121,16 @@ def story_page(
     blocked: bool | None = None,
     q: str | None = None,
     sort: Literal["activity", "key", "stage"] = "activity",
+    active_from: float | None = None,
+    active_to: float | None = None,
 ) -> dict[str, Any]:
     """The rows of `stories()` the web app asks for: those with this `stage` and `repo`, `blocked` (True: a
     blocked reason is set, False: none is) and with `q` in their key or title (case-insensitively), sorted
     by `sort` (activity: newest first; key: AIR-9 before AIR-17; stage: STAGES order, a story with no stage
     yet first, then newest first; ties fall to the key), then the 1-based `page` of `size` of them. Without
-    a `size` it is one page of every row, whatever `page` says. `total` counts the rows after filtering."""
+    a `size` it is one page of every row, whatever `page` says. `total` counts the rows after filtering.
+    `active_from` and `active_to` (epoch seconds) keep the rows whose `last_activity` is in
+    [active_from, active_to)."""
     if page < 1 or (size is not None and size < 1):
         raise ValueError("page and size are at least 1")
     needle = q.casefold() if q else None
@@ -133,6 +140,8 @@ def story_page(
         if (stage is None or r["stage"] == stage)
         and (repo is None or r["repo"] == repo)
         and (blocked is None or bool(r["blocked"]) is blocked)
+        and (active_from is None or r["last_activity"] >= active_from)
+        and (active_to is None or r["last_activity"] < active_to)
         and (needle is None or needle in r["key"].casefold() or needle in str(r["title"] or "").casefold())
     ]
     if sort == "key":
@@ -157,3 +166,39 @@ def repos(cfg: AirlieConfig) -> list[str]:
             if str(d) not in out:
                 out.append(str(d))
     return out
+
+
+_GITHUB_ORIGIN = re.compile(
+    r"(?:git@github\.com:|https?://github\.com/|ssh://git@github\.com/)([\w.-]+)/([\w.-]+?)(?:\.git)?/?",
+    re.IGNORECASE,
+)
+
+
+def _origin_name(checkout: Path) -> str | None:
+    """`owner/name` of the checkout's `origin` remote when it is on GitHub; None for no origin, another host,
+    a timeout (5 s) or no git."""
+    try:
+        done = subprocess.run(
+            ["git", *NO_HOOKS_ARGS, "-C", str(checkout), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=agent_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = _GITHUB_ORIGIN.fullmatch(done.stdout.strip()) if done.returncode == 0 else None
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def repo_names(cfg: AirlieConfig, labels: Iterable[str]) -> list[str]:
+    """The `owner/name` of every repository a story may name: the `origin` remote (GitHub, in its git@,
+    https and ssh:// forms) of `story.repo` and of each git checkout directly under `story.repos_root`, and
+    every `repo:<owner>/<name>` label in `labels`. Sorted, unique; a checkout with no origin or a
+    non-GitHub one is skipped."""
+    names = {n for path in repos(cfg) if (n := _origin_name(Path(path))) is not None}
+    for label in labels:
+        if label.startswith("repo:") and re.fullmatch(r"[\w.-]+/[\w.-]+", label[5:]):
+            names.add(label[5:])
+    return sorted(names)

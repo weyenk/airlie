@@ -1,4 +1,4 @@
-import { ApiError, KEY, getKey, request } from "./api";
+import { ApiError, KEY, getKey, onUnauthorized, queryString, request, signalUnauthorized } from "./index";
 
 beforeEach(() => {
   localStorage.clear();
@@ -75,4 +75,46 @@ test("a 204 has no body to read", async () => {
   stubFetch(new Response(null, { status: 204 }));
 
   await expect(request("/v1/board/AIR-1", { method: "DELETE" })).resolves.toBeUndefined();
+});
+
+test("a 422 with a string detail reads as that string", async () => {
+  stubFetch(Response.json({ detail: "unknown stage 'x'; use one of new, intake" }, { status: 422 }));
+
+  await expect(request("/v1/airlie/stories?stage=x")).rejects.toMatchObject({
+    status: 422,
+    message: "unknown stage 'x'; use one of new, intake",
+  });
+});
+
+test("a 422 with FastAPI's validation list reads as its messages, field first", async () => {
+  stubFetch(
+    Response.json(
+      {
+        detail: [
+          { type: "missing", loc: ["body", "title"], msg: "Field required", input: {} },
+          { type: "enum", loc: ["body", "level"], msg: "Input should be 'story'" },
+          { type: "value_error", loc: [], msg: "bad body" },
+        ],
+      },
+      { status: 422 },
+    ),
+  );
+
+  await expect(request("/v1/board/items", { method: "POST", body: {} })).rejects.toMatchObject({
+    status: 422,
+    message: "title: Field required; level: Input should be 'story'; bad body",
+  });
+});
+
+test("queryString leaves out what is not given", () => {
+  expect(queryString({ a: "x y", b: undefined, c: null, d: 0, e: false, f: true })).toBe("?a=x+y&d=0&e=false&f=true");
+  expect(queryString({ a: undefined })).toBe("");
+});
+
+test("a 401 from a helper-signalled call reaches the unauthorized handler once", () => {
+  const heard = vi.fn();
+  onUnauthorized(heard);
+  signalUnauthorized();
+  onUnauthorized(undefined);
+  expect(heard).toHaveBeenCalledTimes(1);
 });

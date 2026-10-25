@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from airlie.config import load_config
 from airlie.serve.app import create_app
 from airlie.serve.jobs import Jobs
-from airlie.serve.listing import recent_runs, repos, stories, story_page
+from airlie.serve.listing import recent_runs, repo_names, repos, stories, story_page
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_serve import cfg as base_cfg
 
@@ -434,3 +434,64 @@ def test_the_flow_routes_serve_a_story_and_its_jobs_and_404_for_what_is_not_ther
         assert job["job"]["id"] == "refine" and job["input"] is None
         assert c.get("/v1/airlie/stories/NOPE-1/flow", headers=auth).status_code == 404
         assert c.get("/v1/airlie/stories/HDS-1/flow/layer-09/build", headers=auth).status_code == 404
+
+
+def test_repo_names_read_origins_and_labels(tmp_path: Path) -> None:
+    root = tmp_path / "git"
+    for name, url in [
+        ("airlie", "git@github.com:weyenk/airlie.git"),
+        ("evals", "https://github.com/weyenk/airlie-evals"),
+        ("viassh", "ssh://git@github.com/weyenk/viassh.git"),
+        ("gitlab", "git@gitlab.com:weyenk/elsewhere.git"),
+        ("local", None),
+    ]:
+        d = root / name
+        d.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        if url:
+            subprocess.run(["git", "-C", str(d), "remote", "add", "origin", url], check=True)
+    c = cfg(tmp_path, repo=None)
+    assert repo_names(c, ["repo:weyenk/openhand", "x:y", "repo:weyenk/airlie"]) == [
+        "weyenk/airlie",
+        "weyenk/airlie-evals",
+        "weyenk/openhand",
+        "weyenk/viassh",
+    ]
+    mine = tmp_path / "mine"
+    subprocess.run(["git", "init", "-q", str(mine)], check=True)
+    subprocess.run(
+        ["git", "-C", str(mine), "remote", "add", "origin", "https://github.com/o/mine.git"], check=True
+    )
+    assert "o/mine" in repo_names(cfg(tmp_path, repo=str(mine)), [])
+
+
+def test_stories_by_activity_window() -> None:
+    assert keys(story_page(ROWS, active_from=15, active_to=31)) == ["AIR-9", "AIR-17"]  # activity 30 and 20
+    assert keys(story_page(ROWS, active_from=20, active_to=30)) == ["AIR-17"]  # from is in, to is out
+    assert keys(story_page(ROWS, active_from=15)) == ["AIR-9", "AIR-17"]
+    assert keys(story_page(ROWS, active_to=20)) == ["AIR-2"]
+
+
+def test_the_names_route_needs_sign_in_and_the_activity_window_reaches_stories(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path / "git" / "a")], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path / "git" / "a"), "remote", "add", "origin", "git@github.com:o/a.git"],
+        check=True,
+    )
+    state = tmp_path / "state"
+    for key, mtime in [("HDS-1", 100), ("HDS-2", 200)]:
+        (state / "stories" / key).mkdir(parents=True)
+        f = state / "stories" / key / "state.json"
+        f.write_text(json.dumps({"card": {"key": key}, "stage": "new"}))
+        os.utime(f, (mtime, mtime))
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as c:
+        assert c.get("/v1/airlie/repos/names").status_code == 401
+        auth = {"Authorization": "Bearer k"}
+        item = c.post(
+            "/v1/board/items", headers=auth, json={"level": "story", "title": "t", "labels": ["repo:o/b"]}
+        )
+        assert item.status_code in (200, 201), item.text
+        assert c.get("/v1/airlie/repos/names", headers=auth).json() == {"repos": ["o/a", "o/b"]}
+        got = c.get("/v1/airlie/stories?active_from=150&active_to=250", headers=auth).json()
+        assert keys(got) == ["HDS-2"]

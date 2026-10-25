@@ -1,1 +1,67 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
+
+/* dark is the default theme (on :root); only .light turns it off */
+@custom-variant dark (&:not(.light, .light *));
+
+/* Map the tokens so bg-card, text-muted-foreground, border-border, bg-primary ... resolve to them. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-fg);
+  --color-secondary: var(--chip);
+  --color-secondary-foreground: var(--chip-fg);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-fg);
+  --color-accent: var(--row-hover);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--danger-fg);
+  --color-destructive-foreground: var(--danger-fg);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-track: var(--track);
+  --color-chip: var(--chip);
+  --color-chip-foreground: var(--chip-fg);
+  --color-bar: var(--bar);
+  --color-row-hover: var(--row-hover);
+  --color-code: var(--code);
+  --color-info: var(--info-bg);
+  --color-info-foreground: var(--info-fg);
+  --color-warn: var(--warn-bg);
+  --color-warn-foreground: var(--warn-fg);
+  --color-danger: var(--danger-bg);
+  --color-danger-foreground: var(--danger-fg);
+  --color-ok: var(--ok-bg);
+  --color-ok-foreground: var(--ok-fg);
+  --color-violet: var(--violet-bg);
+  --color-violet-foreground: var(--violet-fg);
+  --shadow-card: var(--shadow);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+  }
+}
+
+/* the indeterminate progress bar's sliding segment */
+@keyframes airlie-slide {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}

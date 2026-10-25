@@ -1,0 +1,166 @@
+<!doctype html>
+<html class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* The approved look: shadcn-vue shapes, PrimeVue Aura colours (Tailwind palette). Shared by every screen mockup. */
+.dark {
+  --background: #09090b; --foreground: #ffffff; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+  --border: #27272a; --input: #3f3f46; --primary: #34d399; --primary-fg: #18181b; --ring: #34d399;
+  --track: #3f3f46; --chip: #27272a; --chip-fg: #d4d4d8; --bar: #18181b; --row-hover: #1f1f23; --code: #111113;
+  --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+  --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+  --violet-bg: rgba(139,92,246,.18); --violet-fg: #c4b5fd;
+  --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px -1px rgba(0,0,0,.1);
+}
+.light {
+  --background: #f8fafc; --foreground: #334155; --card: #ffffff; --muted: #f1f5f9; --muted-fg: #64748b;
+  --border: #e2e8f0; --input: #cbd5e1; --primary: #10b981; --primary-fg: #ffffff; --ring: #10b981;
+  --track: #e2e8f0; --chip: #f1f5f9; --chip-fg: #475569; --bar: #ffffff; --row-hover: #f8fafc; --code: #f8fafc;
+  --info-bg: #e0f2fe; --info-fg: #0369a1; --warn-bg: #ffedd5; --warn-fg: #c2410c;
+  --danger-bg: #fee2e2; --danger-fg: #b91c1c; --ok-bg: #dcfce7; --ok-fg: #15803d;
+  --violet-bg: #ede9fe; --violet-fg: #6d28d9;
+  --shadow: 0 1px 3px rgba(15,23,42,.08), 0 1px 2px -1px rgba(15,23,42,.06);
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; background: var(--background); color: var(--foreground); font-size: 14px; }
+svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+a { color: inherit; text-decoration: none; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.muted { color: var(--muted-fg); }
+.small { font-size: 12px; }
+.grow { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.bar { display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bar); position: sticky; top: 0; z-index: 2; }
+.brand { font-weight: 700; font-size: 16px; }
+.tabs { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+.tab { padding: 5px 12px; border-radius: 6px; font-size: 13px; color: var(--muted-fg); font-weight: 500; }
+.tab.on { background: var(--card); color: var(--primary); font-weight: 600; box-shadow: var(--shadow); }
+.badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-fg); } .badge.info { background: var(--info-bg); color: var(--info-fg); }
+.badge.warn { background: var(--warn-bg); color: var(--warn-fg); } .badge.danger { background: var(--danger-bg); color: var(--danger-fg); }
+.badge.chip { background: var(--chip); color: var(--chip-fg); } .badge.violet { background: var(--violet-bg); color: var(--violet-fg); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; color: var(--muted-fg); }
+.avatar { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; background: var(--track); font-size: 12px; font-weight: 600; }
+
+.page { max-width: 1160px; margin: 0 auto; padding: 24px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+h2 { margin: 0; font-size: 15px; font-weight: 600; }
+h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted-fg); }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: 6px; background: var(--primary); color: var(--primary-fg); font-size: 13px; font-weight: 600; border: 0; white-space: nowrap; }
+.btn.ghost { background: transparent; color: var(--foreground); border: 1px solid var(--border); font-weight: 500; }
+.btn.danger { background: transparent; color: var(--danger-fg); border: 1px solid var(--danger-bg); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.card-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.pad { padding: 16px 18px; }
+.count { font-size: 12px; color: var(--muted-fg); background: var(--muted); border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+.progress { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+pre { margin: 0; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; color: var(--foreground); }
+
+.tabbar, .phone-only { display: none; }
+@media (max-width: 640px) {
+  .bar { padding: 0 16px; }
+  .bar .tabs, .bar .theme { display: none; }
+  .page { padding: 16px 12px 88px; gap: 14px; }
+  h1 { font-size: 20px; }
+  .desk-only { display: none !important; }
+  .phone-only { display: flex; }
+  .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 64px; background: var(--bar); border-top: 1px solid var(--border); justify-content: space-around; align-items: center; padding-bottom: 6px; z-index: 3; }
+  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted-fg); font-weight: 500; }
+  .tabbar a.on { color: var(--primary); }
+  .tabbar svg { width: 20px; height: 20px; }
+}
+</style>
+<style>
+  .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .sub { color: var(--muted-fg); margin-top: 4px; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .seg { display: inline-flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+  .seg span { padding: 5px 11px; font-size: 13px; color: var(--muted-fg); border-radius: 6px; font-weight: 500; white-space: nowrap; }
+  .seg span.on { background: var(--card); color: var(--foreground); box-shadow: var(--shadow); }
+  .select { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; font-size: 13px; background: var(--background); white-space: nowrap; }
+  .select .k { color: var(--muted-fg); }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .tile { padding: 16px; }
+  .tile .k { font-size: 13px; color: var(--muted-fg); }
+  .tile .v { font-size: 28px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .tile .v small { font-size: 14px; color: var(--muted-fg); font-weight: 500; margin-left: 4px; }
+  .delta { font-size: 12px; font-weight: 600; margin-top: 4px; }
+  .delta.down { color: var(--danger-fg); } .delta.up { color: var(--ok-fg); } .delta.flat { color: var(--muted-fg); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted-fg); padding: 0 18px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .chart { padding: 8px 18px 16px; }
+  svg.plot { width: 100%; height: 300px; stroke-width: 2; }
+  svg.plot .grid line { stroke: var(--border); stroke-width: 1; }
+  svg.plot text { fill: var(--muted-fg); stroke: none; font-size: 11px; font-family: Inter, system-ui, sans-serif; }
+  .tip { position: absolute; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 20px rgba(0,0,0,.3); }
+  .tip div { display: flex; gap: 8px; justify-content: space-between; }
+  .later { border-style: dashed; padding: 14px 18px; color: var(--muted-fg); font-size: 13px; }
+  @media (max-width: 640px) { .tiles { grid-template-columns: 1fr 1fr; } .tile .v { font-size: 22px; } svg.plot { height: 220px; } .tip { display: none; } }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="brand">airlie</span>
+    <div class="tabs"><span class="tab">Chat</span><span class="tab">Workflows</span><span class="tab">Board</span><span class="tab on">Metrics</span><span class="tab">Admin</span></div>
+    <span class="grow"></span>
+    <span class="badge ok"><span class="dot"></span>Live</span>
+    <span class="avatar">NK</span>
+  </div>
+
+  <div class="page">
+    <div class="head">
+      <div><h1>Metrics</h1><div class="sub">Where to look when something feels off.</div></div>
+      <div class="controls">
+        <span class="seg"><span>4 hours</span><span>24 hours</span><span class="on">7 days</span><span>30 days</span><span>All time</span></span>
+        <span class="select"><span class="k">Slice by</span> role <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="tiles">
+      <section class="card tile"><div class="k">Generation tok/s</div><div class="v">36.4<small>tok/s</small></div><div class="delta down">▼ 8% vs the 7 days before</div></section>
+      <section class="card tile"><div class="k">Prefill tok/s</div><div class="v">1,180<small>tok/s</small></div><div class="delta up">▲ 3% vs the 7 days before</div></section>
+      <section class="card tile"><div class="k">Stories</div><div class="v">14</div><div class="delta flat">9 in review · 3 running · 2 blocked</div></section>
+      <section class="card tile"><div class="k">Fix rounds per layer</div><div class="v">0.6</div><div class="delta flat">same as the 7 days before</div></section>
+    </div>
+
+    <section class="card" style="position: relative">
+      <div class="card-head"><h2>Generation speed by role</h2><span class="grow"></span><span class="small muted">daily median, tok/s</span></div>
+      <div class="legend" style="padding-top: 12px"><span><i style="background:#34d399"></i>coder</span><span><i style="background:#38bdf8"></i>tester</span><span><i style="background:#fb923c"></i>reviewer</span><span><i style="background:#a78bfa"></i>chief</span></div>
+      <div class="chart">
+        <svg class="plot" viewBox="0 0 1000 300" preserveAspectRatio="none">
+          <g class="grid"><line x1="40" y1="20" x2="1000" y2="20"/><line x1="40" y1="90" x2="1000" y2="90"/><line x1="40" y1="160" x2="1000" y2="160"/><line x1="40" y1="230" x2="1000" y2="230"/><line x1="40" y1="270" x2="1000" y2="270"/></g>
+          <text x="0" y="24">60</text><text x="0" y="94">45</text><text x="0" y="164">30</text><text x="0" y="234">15</text><text x="6" y="274">0</text>
+          <text x="40" y="294">Oct 18</text><text x="190" y="294">Oct 19</text><text x="340" y="294">Oct 20</text><text x="490" y="294">Oct 21</text><text x="640" y="294">Oct 22</text><text x="790" y="294">Oct 23</text><text x="940" y="294">Oct 24</text>
+          <path d="M40 112 L190 104 L340 108 L490 96 L640 118 L790 132 L960 128" stroke="#34d399" fill="none"/>
+          <path d="M40 150 L190 146 L340 140 L490 152 L640 149 L790 158 L960 155" stroke="#38bdf8" fill="none"/>
+          <path d="M40 70 L190 78 L340 74 L490 66 L640 72 L790 80 L960 76" stroke="#fb923c" fill="none"/>
+          <path d="M40 184 L190 180 L340 190 L490 178 L640 186 L790 192 L960 188" stroke="#a78bfa" fill="none"/>
+          <line x1="790" y1="20" x2="790" y2="270" stroke="var(--muted-fg)" stroke-dasharray="3 4" stroke-width="1"/>
+          <circle cx="790" cy="132" r="5" fill="#34d399" stroke="var(--card)" stroke-width="2"/>
+        </svg>
+        <div class="tip" style="left: 61%; top: 120px"><strong>Oct 23</strong><div><span>coder</span><span class="mono">29.6</span></div><div><span>tester</span><span class="mono">24.4</span></div><div><span>reviewer</span><span class="mono">41.1</span></div><div><span>chief</span><span class="mono">16.9</span></div><div class="small muted" style="margin-top: 4px">Click for the stories that ran that day</div></div>
+      </div>
+    </section>
+
+    <section class="card later">Planned in the Metrics tab's own design and not built yet: "Looks off", the stories table and the trace. They drop in here, in this look, when that work is done.</section>
+  </div>
+
+  <nav class="tabbar">
+    <a><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</a>
+    <a><svg viewBox="0 0 24 24"><path d="M3 6h4v4H3zM10 14h4v4h-4zM17 6h4v4h-4zM7 8h10M12 8v6"/></svg>Workflows</a>
+    <a><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="11" rx="1"/></svg>Board</a>
+    <a class="on"><svg viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-4 3 3 5-6"/></svg>Metrics</a>
+    <a><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 11a3 3 0 1 0 0-6M22 21a6 6 0 0 0-5-5.9"/></svg>Admin</a>
+  </nav>
+
+<div id="mock-toolbar" style="position:fixed;right:12px;bottom:12px;z-index:99;display:flex;gap:6px;font:12px system-ui;"><button onclick="toggle('light')" style="padding:6px 10px;border-radius:6px;border:1px solid #888;background:#fff;color:#111;cursor:pointer">Light / dark</button></div>
+<script>
+  function toggle(cls) { const h = document.documentElement; if (cls === "light") { h.classList.toggle("light"); h.classList.toggle("dark"); } else { ["show-join","show-expired"].forEach(c => c !== cls && h.classList.remove(c)); h.classList.toggle(cls); } }
+</script>
+</body>
+</html>

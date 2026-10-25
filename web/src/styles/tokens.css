@@ -1,0 +1,19 @@
+/* The approved look (docs/superpowers/mockups/2026-10-24-vue-app/look.css): dark by default, light under .light. */
+:root, .dark {
+  --background: #09090b; --foreground: #ffffff; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+  --border: #27272a; --input: #3f3f46; --primary: #34d399; --primary-fg: #18181b; --ring: #34d399;
+  --track: #3f3f46; --chip: #27272a; --chip-fg: #d4d4d8; --bar: #18181b; --row-hover: #1f1f23; --code: #111113;
+  --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+  --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+  --violet-bg: rgba(139,92,246,.18); --violet-fg: #c4b5fd;
+  --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px -1px rgba(0,0,0,.1);
+}
+.light {
+  --background: #f8fafc; --foreground: #334155; --card: #ffffff; --muted: #f1f5f9; --muted-fg: #64748b;
+  --border: #e2e8f0; --input: #cbd5e1; --primary: #10b981; --primary-fg: #ffffff; --ring: #10b981;
+  --track: #e2e8f0; --chip: #f1f5f9; --chip-fg: #475569; --bar: #ffffff; --row-hover: #f8fafc; --code: #f8fafc;
+  --info-bg: #e0f2fe; --info-fg: #0369a1; --warn-bg: #ffedd5; --warn-fg: #c2410c;
+  --danger-bg: #fee2e2; --danger-fg: #b91c1c; --ok-bg: #dcfce7; --ok-fg: #15803d;
+  --violet-bg: #ede9fe; --violet-fg: #6d28d9;
+  --shadow: 0 1px 3px rgba(15,23,42,.08), 0 1px 2px -1px rgba(15,23,42,.06);
+}
