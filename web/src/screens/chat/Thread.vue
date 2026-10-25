@@ -1,21 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
 import type { ChatItem } from "@/stores/chat";
 import Bubble from "./Bubble.vue";
 
 const WELCOME =
   "Hi, I'm airlie's assistant. Ask me how airlie works or what's going on. Type / for commands such as /story or /clear.";
-const props = defineProps<{ items: ChatItem[] }>();
+defineProps<{ items: ChatItem[] }>();
 const emit = defineEmits<{ quick: [text: string] }>();
 
 const QUICK = ["What can you do?", "What's running right now?", "/story"];
-const end = ref<HTMLElement | null>(null);
-
-function scrollDown(): void {
-  void nextTick(() => end.value?.scrollIntoView?.({ block: "end" }));
-}
-watch(() => [props.items.length, props.items.at(-1)?.text.length, props.items.at(-1)?.streaming], scrollDown);
-onMounted(scrollDown);
 </script>
 
 <template>
@@ -39,6 +31,5 @@ onMounted(scrollDown);
       </div>
     </div>
     <Bubble v-for="(item, i) in items" :key="i" :item="item" />
-    <div ref="end" />
   </div>
 </template>

@@ -11,6 +11,7 @@ const TODAYS = [
   { role: "user", text: "/story add a button", sent: "add a button" },
   { role: "chat", text: "Add a button\n\nDone when it clicks.", streaming: false, thinking: true, action: "story", storyText: "Edited" },
   { role: "chat", text: "", streaming: false, thinking: false, action: "", started: { job_id: "story-1", kind: "story", label: "airlie · story" } },
+  { role: "card", job_id: "story-1", kind: "story", label: "airlie · story" },
   { role: "user", text: "look", sent: "look", attachments: [{ id: "u1", name: "shot.png", mime: "image/png", size: 10, kind: "image" }] },
 ];
 
@@ -167,4 +168,57 @@ test("a second message while a reply streams is ignored", async () => {
   expect(chat.thread.map((m) => m.text)).toEqual(["one", ""]);
   release();
   await first;
+});
+
+test("late deltas after a mid-stream clear never reach the new thread", async () => {
+  const chat = fresh();
+  let late!: (t: string) => void;
+  let release!: () => void;
+  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
+    late = onDelta;
+    await new Promise<void>((r) => (release = r));
+    throw Object.assign(new Error("aborted"), { name: "AbortError" });
+  });
+  const sending = chat.send({ text: "q" });
+  await Promise.resolve();
+  chat.clear();
+  late("stale words");
+  release();
+  await sending;
+  expect(chat.thread).toEqual([]);
+  expect(JSON.parse(sessionStorage.getItem("airlie.chat")!)).toEqual([]);
+  expect(chat.busy).toBeNull();
+  api.stream.mockResolvedValue("");
+  await chat.send({ text: "again" }); // a new question is not refused as busy
+  expect(chat.thread).toHaveLength(2);
+});
+
+test("a 401 for a reply whose thread was cleared meanwhile throws nothing and takes nothing back", async () => {
+  const chat = fresh();
+  let release!: () => void;
+  api.stream.mockImplementation(async () => {
+    await new Promise<void>((r) => (release = r));
+    throw new ApiError(401, "no");
+  });
+  const sending = chat.send({ text: "q" });
+  await Promise.resolve();
+  chat.clear();
+  chat.push({ role: "user", text: "kept", sent: "kept" });
+  release();
+  await sending;
+  expect(chat.thread.map((m) => m.text)).toEqual(["kept"]);
+});
+
+test("a stopped reply keeps what arrived and is cut, never an empty bubble", async () => {
+  const chat = fresh();
+  api.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void, opts: { signal: AbortSignal }) => {
+    onDelta("some");
+    await new Promise<void>((_, rej) => opts.signal.addEventListener("abort", () => rej(Object.assign(new Error("a"), { name: "AbortError" }))));
+    return "";
+  });
+  const sending = chat.send({ text: "q" });
+  await Promise.resolve();
+  chat.stop();
+  await sending;
+  expect(chat.thread[1]).toMatchObject({ text: "some", cut: true, streaming: false });
 });

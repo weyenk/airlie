@@ -9,6 +9,7 @@ import Thread from "./chat/Thread.vue";
 
 const chat = useChatStore();
 const box = ref<HTMLTextAreaElement | null>(null);
+const scroller = ref<HTMLElement | null>(null);
 let skills: Skill[] = [];
 
 /** "/name rest" for a skill airlie has; null when the text is not a skill command. */
@@ -24,6 +25,26 @@ function autosize(): void {
   el.style.height = "auto";
   el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 }
+
+const NEAR = 80;
+function scrollDown(): void {
+  const el = scroller.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+// A new word follows the end of the thread only when the person was already reading the end (within NEAR px of
+// it before the update); their own message always does. `flush: "pre"` reads the position before the DOM grows.
+let sentThen = chat.sends;
+watch(
+  () => [chat.thread.length, chat.thread.at(-1)?.text?.length ?? 0, chat.thread.at(-1)?.streaming, chat.sends],
+  () => {
+    const el = scroller.value;
+    const own = chat.sends !== sentThen;
+    sentThen = chat.sends;
+    const near = !el || el.scrollHeight - el.scrollTop - el.clientHeight < NEAR;
+    if (own || near) void nextTick(scrollDown);
+  },
+  { flush: "pre" },
+);
 
 // the box grows with its text, and shrinks back when the draft is sent, cleared or filled in by a quick reply
 watch(() => chat.draft, () => void nextTick(autosize));
@@ -65,6 +86,7 @@ function quick(text: string): void {
 
 onMounted(async () => {
   autosize();
+  scrollDown();
   if (matchMedia?.("(min-width: 768px)").matches) box.value?.focus();
   try {
     skills = await chatSkills();
@@ -76,7 +98,7 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-[calc(100dvh-var(--header-h))] flex-col max-[640px]:h-[calc(100dvh-var(--header-h)-var(--tabbar-h))]">
-    <div class="min-h-0 flex-1 overflow-y-auto">
+    <div ref="scroller" data-test="thread-scroll" class="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
       <div class="sticky top-0 z-[1] bg-background">
         <div class="mx-auto max-w-[780px] px-5 py-2.5 max-[640px]:px-3"><StatusStrip /></div>
       </div>

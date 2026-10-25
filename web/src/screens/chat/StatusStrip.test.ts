@@ -83,3 +83,16 @@ test("it stops asking when it is gone", async () => {
   await vi.advanceTimersByTimeAsync(60000);
   expect(http.request).not.toHaveBeenCalled();
 });
+
+test("a slow answer from an earlier question cannot overwrite a newer one", async () => {
+  const w = await open();
+  let slow!: (v: unknown) => void;
+  http.request.mockImplementationOnce(() => new Promise((r) => (slow = r)));
+  await vi.advanceTimersByTimeAsync(15000); // asks: pending
+  http.request.mockRejectedValueOnce(new ApiError(502, "down"));
+  await vi.advanceTimersByTimeAsync(15000); // asks again: offline
+  expect(w.get("[data-strip=studio]").text()).toBe("Studio offline");
+  slow({ data: [] }); // the first question answers last
+  await flushPromises();
+  expect(w.get("[data-strip=studio]").text()).toBe("Studio offline");
+});

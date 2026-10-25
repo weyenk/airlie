@@ -113,3 +113,32 @@ test("the draft is kept under airlie.chat.draft and comes back", async () => {
   const again = await open();
   expect((again.get("textarea").element as HTMLTextAreaElement).value).toBe("half");
 });
+
+/** jsdom has no layout: give the thread's scroller a size and a position. */
+function layout(w: Awaited<ReturnType<typeof open>>, top: number) {
+  const el = w.get("[data-test=thread-scroll]").element as HTMLElement;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 1000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 400 });
+  el.scrollTop = top;
+  return el;
+}
+
+test("a new word follows the end only when the person was reading the end; their own message always does", async () => {
+  chatApi.stream.mockImplementation(async (_p: string, _b: unknown, onDelta: (t: string) => void) => {
+    await new Promise((r) => setTimeout(r, 0));
+    onDelta("first");
+    await new Promise((r) => setTimeout(r, 0));
+    onDelta(" second");
+    return "";
+  });
+  const w = await open();
+  const el = layout(w, 100); // reading up the page, 500px from the end
+  await type(w, "q");
+  const sending = press(w, { key: "Enter" });
+  await flushPromises();
+  expect(el.scrollTop).toBe(1000); // my own message: to the end
+  el.scrollTop = 100; // I scroll back up while it answers
+  await new Promise((r) => setTimeout(r, 5));
+  await sending;
+  expect(el.scrollTop).toBe(100); // the words did not drag me down
+});

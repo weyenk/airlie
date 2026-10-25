@@ -23,7 +23,11 @@ export type Started = { job_id: string; kind: string; label?: string };
  */
 export type ChatItem = {
   role: "user" | "chat" | "card";
-  text: string;
+  /** Absent on a `card` (today's app pushes `{role: "card", job_id, kind, label}`). */
+  text?: string;
+  job_id?: string;
+  kind?: string;
+  label?: string;
   sent?: string;
   attachments?: Attachment[];
   streaming?: boolean;
@@ -68,6 +72,7 @@ function loadThread(): ChatItem[] {
   return saved
     .filter((m): m is ChatItem => !!m && typeof m === "object" && typeof (m as ChatItem).role === "string")
     .map((m) => {
+      if (m.role !== "card" && typeof m.text !== "string") m = { ...m, text: "" };
       if (!m.streaming) return m;
       return { ...m, streaming: false, ...(m.text ? {} : { cut: true }) };
     });
@@ -76,6 +81,8 @@ function loadThread(): ChatItem[] {
 export const useChatStore = defineStore("chat", () => {
   const thread = ref<ChatItem[]>(loadThread());
   const draft = ref(String(read<unknown>(DRAFT, "") ?? ""));
+  /** One more on every message the person sends: the screen scrolls to it whatever it was showing. */
+  const sends = ref(0);
   /** The AbortController of the reply being streamed; null when none is. */
   const busy = ref<AbortController | null>(null);
 
@@ -115,6 +122,7 @@ export const useChatStore = defineStore("chat", () => {
     if (busy.value) return;
     const text = opts.text;
     const attachments = opts.attachments?.length ? opts.attachments : undefined;
+    sends.value += 1;
     const mine = push({ role: "user", text, sent: opts.sent ?? text, ...(attachments ? { attachments } : {}) });
     const reply = push({ role: "chat", text: "", streaming: true, thinking: false, action: opts.skill?.action ?? "" });
     setDraft("");
@@ -125,7 +133,7 @@ export const useChatStore = defineStore("chat", () => {
         "/v1/chat/completions",
         { model: "chat", messages: history(), stream: true, ...(opts.skill ? { skill: opts.skill.name } : {}) },
         (delta) => {
-          reply.text += delta;
+          reply.text = (reply.text ?? "") + delta;
         },
         {
           signal: controller.signal,
@@ -137,13 +145,15 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         // signed out: the turn is taken back, and what was typed goes back into the box after sign-in
-        thread.value.splice(thread.value.indexOf(mine), 2);
+        const i = thread.value.indexOf(mine);
+        if (i >= 0) thread.value.splice(i, 2);
         saveThread();
         setDraft(text);
         return;
       }
-      if (e instanceof StreamCut) reply.cut = true;
-      else if ((e as { name?: string })?.name !== "AbortError") reply.error = `Can't reach airlie: ${(e as Error).message}`;
+      // a stopped reply is cut like one the connection dropped: what arrived stays, and it says so
+      if (e instanceof StreamCut || (e as { name?: string })?.name === "AbortError") reply.cut = true;
+      else reply.error = `Can't reach airlie: ${(e as Error).message}`;
     } finally {
       reply.streaming = false;
       if (busy.value === controller) busy.value = null;
@@ -159,10 +169,11 @@ export const useChatStore = defineStore("chat", () => {
   /** /clear: a fresh session. The thread and the draft go; a reply still streaming is stopped. */
   function clear(): void {
     busy.value?.abort();
+    busy.value = null;
     thread.value = [];
     saveThread();
     setDraft("");
   }
 
-  return { thread, draft, busy, send, stop, clear, setDraft, push, saveThread };
+  return { thread, draft, busy, sends, send, stop, clear, setDraft, push, saveThread };
 });

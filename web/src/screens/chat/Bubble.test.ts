@@ -37,3 +37,16 @@ test("my message is plain text with the names of what I attached", () => {
   expect(w.find("b").exists()).toBe(false);
   expect(w.get("[data-attachment]").text()).toBe("shot.png");
 });
+
+test("a job card from today's app shows what started and links to it", () => {
+  const w = show({ role: "card", job_id: "story-1", kind: "story", label: "airlie · story" });
+  expect(w.get("[data-card] strong").text()).toBe("Story started");
+  expect(w.get("[data-card] span").text()).toBe("airlie · story");
+  expect(w.get("[data-card]").attributes("href")).toBe("/jobs/story-1");
+});
+
+test("a card with no label names its job", () => {
+  const w = show({ role: "card", job_id: "run-7", kind: "run" });
+  expect(w.get("[data-card] strong").text()).toBe("Job started");
+  expect(w.get("[data-card] span").text()).toBe("run-7");
+});

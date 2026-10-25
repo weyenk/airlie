@@ -17,11 +17,14 @@ const running = computed(() => workflows.running.length);
 
 // Studio is online while the engine answers /v1/models; nothing in the feed says when it stops, so ask again
 const studio = ref<"online" | "offline" | null>(null);
+let asked = 0;
 async function checkStudio(): Promise<void> {
+  const mine = ++asked;
   try {
     await request("/v1/models");
-    studio.value = "online";
+    if (mine === asked) studio.value = "online"; // a newer question has been asked: its answer wins
   } catch (e) {
+    if (mine !== asked) return;
     if (e instanceof ApiError && e.status === 401) return; // signing in again is the page's job
     studio.value = "offline";
   }

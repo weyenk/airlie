@@ -7,8 +7,15 @@ defineProps<{ item: ChatItem }>();
 </script>
 
 <template>
-  <div v-if="item.role === 'user'" data-msg="user" class="flex justify-end">
-    <div class="max-w-[620px] rounded-[14px] rounded-tr-[4px] border border-primary/35 bg-[color-mix(in_srgb,var(--primary)_18%,var(--card))] px-3.5 py-2.5 leading-normal break-words whitespace-pre-wrap max-[640px]:max-w-[290px]">
+  <div v-if="item.role === 'card'" data-msg="card" class="flex items-start gap-2.5 pl-[38px]">
+    <!-- a job started from the chat: Task 12 draws the real card; this is its words and where it goes -->
+    <RouterLink :to="`/jobs/${encodeURIComponent(item.job_id ?? '')}`" data-card class="min-w-0 rounded-xl border border-border bg-card px-3.5 py-2.5 text-[13px] break-words hover:bg-muted">
+      <strong>{{ item.kind === "plan" ? "Planning" : item.kind === "story" ? "Story started" : "Job started" }}</strong>
+      <span class="ml-2 font-mono text-muted-foreground">{{ item.label || item.job_id }}</span>
+    </RouterLink>
+  </div>
+  <div v-else-if="item.role === 'user'" data-msg="user" class="flex justify-end">
+    <div class="min-w-0 max-w-[620px] rounded-[14px] rounded-tr-[4px] border border-primary/35 bg-[color-mix(in_srgb,var(--primary)_18%,var(--card))] px-3.5 py-2.5 leading-normal [overflow-wrap:anywhere] whitespace-pre-wrap max-[640px]:max-w-[290px]">
       <div v-if="item.attachments?.length" class="mb-1.5 flex flex-col gap-1">
         <span v-for="a in item.attachments" :key="a.id" data-attachment class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
           <FileText class="size-4" />{{ a.name }}
@@ -19,7 +26,7 @@ defineProps<{ item: ChatItem }>();
   </div>
   <div v-else-if="item.role === 'chat'" data-msg="chat" :data-state="item.streaming ? 'streaming' : item.cut ? 'cut' : 'done'" class="flex items-start gap-2.5">
     <span aria-hidden="true" class="inline-flex size-7 flex-none items-center justify-center rounded-lg bg-primary text-sm font-extrabold text-primary-foreground">a</span>
-    <div data-bubble class="min-w-0 max-w-[620px] rounded-[14px] rounded-tl-[4px] border border-border bg-card px-3.5 py-2.5 leading-normal max-[640px]:max-w-[290px]">
+    <div data-bubble class="min-w-0 max-w-[620px] rounded-[14px] rounded-tl-[4px] border border-border bg-card px-3.5 py-2.5 leading-normal [overflow-wrap:anywhere] max-[640px]:max-w-[290px]">
       <SafeMarkdown v-if="item.text" :text="item.text" link-keys />
       <span v-else-if="item.streaming" data-thinking class="inline-flex items-center gap-2 text-[13px] text-muted-foreground">
         <span aria-hidden="true" class="inline-flex gap-[3px]"><i class="dot" /><i class="dot" /><i class="dot" /></span>Thinking

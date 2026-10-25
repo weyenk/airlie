@@ -145,7 +145,17 @@ def test_clear_starts_a_fresh_session_without_asking_the_model(
 def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_line(
     next_page: Page, server: Server, evidence: Evidence
 ) -> None:
+    filler = [
+        m
+        for i in range(12)
+        for m in (
+            {"role": "user", "text": f"earlier {i}", "sent": f"earlier {i}"},
+            {"role": "chat", "text": f"answer {i}", "streaming": False, "thinking": False, "action": ""},
+        )
+    ]
     todays = [
+        *filler,
+        {"role": "card", "job_id": "story-1", "kind": "story", "label": "airlie · story"},  # noteJobInChat
         {"role": "user", "text": "what is AIR-30", "sent": "what is AIR-30"},
         {
             "role": "chat",
@@ -160,10 +170,16 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
         f"sessionStorage.setItem('airlie.chat', {json.dumps(json.dumps(todays))});"
     )
     open_chat(next_page, server)
-    evidence.expect(next_page.locator("[data-msg=user]"), "my earlier question").to_have_text(
+    evidence.expect(next_page.locator("[data-msg=user]").last, "my earlier question").to_have_text(
         "what is AIR-30"
     )
-    reply = next_page.locator("[data-msg=chat] [data-bubble]")
+    evidence.expect(
+        next_page.locator("[data-card]"), "a job card from today's app renders"
+    ).to_have_attribute("href", "/next/jobs/story-1")
+    evidence.expect(
+        next_page.locator("[data-msg=chat]").last, "the thread opens at its end"
+    ).to_be_in_viewport()
+    reply = next_page.locator("[data-msg=chat] [data-bubble]").last
     evidence.expect(reply, "the earlier reply").to_contain_text("is blocked.")
     evidence.expect(
         reply.get_by_role("link", name=STORY_KEY), "its story key links to the workflow"
@@ -180,8 +196,11 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
     )
     # the draft is gone, and the thread now holds four items in today's format
     stored = json.loads(next_page.evaluate("sessionStorage.getItem('airlie.chat')"))
-    assert [m["role"] for m in stored] == ["user", "chat", "user", "chat"]
-    assert stored[2] == {"role": "user", "text": "line one\nline two", "sent": "line one\nline two"}
+    assert stored[-2] == {"role": "user", "text": "line one\nline two", "sent": "line one\nline two"}
+    assert stored[24]["role"] == "card"  # the card is kept as it was
+    evidence.expect(
+        next_page.locator("[data-msg=chat]").last, "my own message scrolls to the answer"
+    ).to_be_in_viewport()
 
 
 def test_the_status_strip_counts_what_needs_you_and_follows_what_runs(
@@ -208,3 +227,33 @@ def test_the_status_strip_counts_what_needs_you_and_follows_what_runs(
     evidence.expect(next_page, "needs you opens the blocked ones").to_have_url(
         re.compile(r"/next/workflows\?blocked=true$")
     )
+
+
+def test_a_long_unbroken_path_and_a_wide_code_block_stay_inside_the_bubble_on_a_phone(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    path = "/Users/someone/git/airlie/" + "very-long-directory-name/" * 12 + "file.py"
+    wide = "x = [" + ", ".join(f"'item_number_{i}'" for i in range(40)) + "]"
+    server.upstream.reply = f"See {path} and https://example.com/{'a' * 150}\n\n```\n{wide}\n```\n"
+    next_page.set_viewport_size({"width": 375, "height": 700})
+    open_chat(next_page, server)
+    say(next_page, "where is it?")
+    bubble = next_page.locator("[data-msg=chat] [data-bubble]").last
+    evidence.expect(bubble, "the reply is shown").to_contain_text("very-long-directory-name")
+    evidence.expect(bubble.locator("pre"), "the code block is there").to_be_visible()
+    fits = next_page.evaluate(
+        """() => {
+          const doc = document.documentElement;
+          const b = [...document.querySelectorAll('[data-msg=chat] [data-bubble]')].pop();
+          const scroller = document.querySelector('[data-test=thread-scroll]');
+          const r = b.getBoundingClientRect();
+          return {
+            page: doc.scrollWidth <= doc.clientWidth,
+            scroller: scroller.scrollWidth <= scroller.clientWidth,
+            bubble: r.right <= window.innerWidth && r.left >= 0,
+            text: b.scrollWidth <= b.clientWidth,
+          };
+        }"""
+    )
+    evidence.shot("nothing overflows sideways", held=all(fits.values()))
+    assert fits == {"page": True, "scroller": True, "bubble": True, "text": True}
