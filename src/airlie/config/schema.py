@@ -566,6 +566,29 @@ class AmigosSpec(Strict):
     )
 
 
+BUDGET_STAGES = (
+    "survey",
+    "refine",
+    "questions",
+    "imagine",
+    "amigos",
+    "plan",
+    "package",
+    "layer",
+    "review",
+    "publish",
+)
+"""The stages a card's cost is kept for (planning-line P5b, D8): `story.budgets` has an entry for each."""
+
+
+class BudgetSpec(Strict):
+    """What one stage of one card is expected to cost: recorded, warned at 80 percent and noted at 100, never
+    enforced (the stage's own caps stay the only stops)."""
+
+    wall_s: int = Field(ge=1, description="seconds of wall-clock")
+    tokens: int = Field(ge=1, description="tokens processed, prompt and completion, over the stage's steps")
+
+
 class LineSpec(Strict):
     """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
     these two; the scheduler half adds its own."""
@@ -601,11 +624,25 @@ class LineSpec(Strict):
         description="the build lane's decode rate (tokens a second over its last five steps) under which "
         "the short asks run one at a time",
     )
+    budgets: dict[str, BudgetSpec] = Field(
+        default_factory=dict,
+        description="per stage (survey, refine, questions, imagine, amigos, plan, package, layer, review, "
+        "publish): the wall-clock and tokens a card's stage is expected to cost (airlie.yaml has them)",
+    )
     consult_context: int = Field(
         default=8192,
         ge=1024,
         description="the context a short ask is counted at in the doctor's memory projection",
     )
+
+    @model_validator(mode="after")
+    def _budgets_name_stages(self) -> LineSpec:
+        unknown = sorted(set(self.budgets) - set(BUDGET_STAGES))
+        if unknown:
+            raise ValueError(
+                f"line.budgets names {', '.join(unknown)}; the stages are {', '.join(BUDGET_STAGES)}"
+            )
+        return self
 
 
 class StorySpec(Strict):

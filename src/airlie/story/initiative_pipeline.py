@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 import traceback
 from collections.abc import Callable, Sequence
@@ -41,6 +42,7 @@ from airlie.story.briefs import (
     revise_brief,
     survey_brief,
 )
+from airlie.story.budgets import StageMeter, check
 from airlie.story.costs import StoryCosts, queue_hours
 from airlie.story.epic import Estimate, epic_of
 from airlie.story.epic_pipeline import epics_dir
@@ -142,6 +144,14 @@ class InitiativePipeline:
         except Exception as e:  # noqa: BLE001 - every failure ends as a note on the card, never a silent stop
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, item, _reason(e))
+        meter = StageMeter(
+            self.cfg.observability.state_dir.expanduser(), item.key, self.cfg.line.budgets, st.emit
+        )
+        for stage in ("questions", "imagine"):  # what the turn cost, against the stage's budget
+            text = check(meter, stage)
+            if text is not None:
+                with contextlib.suppress(Exception):
+                    self.board.store.comment(item.key, "airlie", note(text))
         return st
 
     async def _go(self, st: InitiativeState, initiative: Initiative) -> None:

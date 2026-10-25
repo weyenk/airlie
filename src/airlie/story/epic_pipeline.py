@@ -14,6 +14,7 @@ caller found for it (`repo_of`), a scope path only after `parse_story_plan` and 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import traceback
@@ -28,6 +29,7 @@ from airlie.config import AirlieConfig
 from airlie.story.asking import Asker, StoryBlocked, StudioFactory
 from airlie.story.board import note
 from airlie.story.briefs import plan_brief, replan_brief
+from airlie.story.budgets import StageMeter, check
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.costs import StoryCosts
 from airlie.story.epic import EpicSpec, StorySketch, epic_of, with_block
@@ -270,6 +272,19 @@ class EpicPipeline:
         st.seen_comments = len(card.comments)
         st.emit("plan", stories=[s.id for s in plan.order()], attempts=st.attempts)
         st.finish("planned")
+        self._costed(st, card, "plan")
+
+    def _costed(self, st: EpicState, card: Item, *stages: str) -> None:
+        """Record what the planning cost against its budget (planning-line P5b, D8): events on the epic, and
+        one note on its card at an overrun. Never a reason to stop."""
+        meter = StageMeter(
+            self.cfg.observability.state_dir.expanduser(), card.key, self.cfg.line.budgets, st.emit
+        )
+        for stage in stages:
+            text = check(meter, stage)
+            if text is not None:
+                with contextlib.suppress(Exception):
+                    self.board.store.comment(card.key, "airlie", note(text))
 
     async def _ask_plan(
         self,

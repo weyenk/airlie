@@ -2903,3 +2903,30 @@ async def test_the_build_writes_decoding_gap_and_idle_at_its_boundaries(
     assert seen[0] == "gap" and seen[-1] == "idle"
     assert seen[1:-1] == ["decoding", "gap"] * 4 and set(seen) == {"gap", "decoding", "idle"}
     assert phase.read_phase(builder.stories_dir)[0] == "idle"
+
+
+async def test_an_overrun_stage_is_an_event_and_one_note_and_never_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Budgets are recorded and warned, not enforced (P5b, D8): the layer ran over, the story still reaches
+    review, the events say so once each and the issue is told once."""
+    from airlie.config.schema import BudgetSpec
+    from airlie.story.budgets import Figures, StageMeter
+
+    big = Figures(5000, 500, 9999.0, 40, 1)
+    monkeypatch.setattr(StageMeter, "fold", lambda self, stage: big if stage == "layer" else Figures())
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, happy_engine(), board=board)
+    pipe.cfg.line.budgets["layer"] = BudgetSpec(wall_s=600, tokens=100_000)
+    st = await pipe.run(text_card("avatars"))
+    assert st.stage == "review" and st.blocked is None  # nothing stopped
+    events = st.path / "events.jsonl"
+    assert len(kinds(events, "budget_warning")) == 1 and len(kinds(events, "budget_exceeded")) == 1
+    [exceeded] = kinds(events, "budget_exceeded")
+    assert (
+        exceeded["stage"] == "layer" and exceeded["wall_s"] == 9999.0 and exceeded["budget"]["wall_s"] == 600
+    )
+    notes = [text for call, text in board.calls if call == "comment" and "stage cost" in text]
+    assert len(notes) == 1 and "the layer stage cost 167 min" in notes[0]  # two layers ran, one note
+    assert json.loads((st.path / "stages" / "layer.json").read_text())["state"] == "exceeded"

@@ -61,6 +61,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
+from airlie.story.budgets import StageMeter, check
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
@@ -439,8 +440,11 @@ class StoryPipeline:
             if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
                 self._gate(st, base)
             story = await self._refine_with_survey(st, card)
+            await self._costed(st, card, "survey", "refine")
             layers = await self._layers(st, card, story)
+            await self._costed(st, card, "plan")
             agreed = await self._agree(st, card, story, layers)
+            await self._costed(st, card, "amigos")
             story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
             if until == "planned":
                 st.emit("story_planned", layers=len(layers))
@@ -448,9 +452,11 @@ class StoryPipeline:
                 return st
             for i in range(len(layers)):
                 await self._build(st, card, story, layers, i)
+                await self._costed(st, card, "package", "layer", "review")
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
                 st.finish("build")
             await self._publish(st, card, story, layers)
+            await self._costed(st, card, "publish")
             await self._finish(st, card)
         except StoryWaiting as e:
             await self._wait(st, card, str(e))
@@ -467,6 +473,24 @@ class StoryPipeline:
                 write_phase(self.stories_dir, "idle")  # the build lane is free for the planning lane's turns
         st.emit("story_done", stage=st.stage, blocked=st.blocked)
         return st
+
+    async def _costed(self, st: StoryState, card: Card, *stages: str) -> None:
+        """Record what the stages cost against their budgets (planning-line P5b, D8): warnings and overruns
+        are events on the story; an overrun is also one note on the issue. Never a reason to stop."""
+        meter = StageMeter(
+            self.cfg.observability.state_dir.expanduser(),
+            card.key,
+            self.cfg.line.budgets,
+            st.emit,
+            reviewers=frozenset({self.cfg.studio.review.role}),
+        )
+        for stage in stages:
+            text = check(meter, stage)
+            if text is not None:
+                try:
+                    await self.board.comment(card, note(text))
+                except Exception as e:  # noqa: BLE001 - a note is a courtesy
+                    _board_error(st, "comment", e)
 
     @staticmethod
     def _handoff(st: StoryState, until: Literal["planned", "review"]) -> bool:
