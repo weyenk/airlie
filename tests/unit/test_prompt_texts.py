@@ -16,15 +16,17 @@ from dataclasses import replace
 from functools import partial
 from itertools import product
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from airlie.prompts import text
 from airlie.story.board import text_card
 from airlie.story.briefs import (
+    build_brief,
     built_so_far,
-    layer_plan,
     layers_brief,
+    package_brief,
     refine_brief,
     survey_brief,
 )
@@ -39,6 +41,7 @@ from airlie.story.layer_checks import (
 )
 from airlie.story.lessons import Lesson
 from airlie.story.model import Layer
+from airlie.story.package import Interface, Package, PackageFile
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
@@ -88,11 +91,19 @@ def _plan_text(plan: Plan) -> str:
     return "\n\n".join(f"[{s.id}]\n{s.brief}" for s in plan.subtasks)
 
 
-def _layer_plan(layers: tuple[Layer, ...], i: int, *, tester: bool, **kwargs: str) -> str:
-    plan = layer_plan(
-        STORY, layers, i, build_role="coder", tester_role="tester" if tester else None, **kwargs
-    )
-    return _plan_text(plan)
+SAMPLE_PACKAGE = Package(
+    "profile",
+    {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n"},
+    (PackageFile("src/profile.py", "create", "the profile view"),),
+    (Interface("src/profile.py", "def show() -> int", "returns 1, the avatar id"),),
+    ("create src/profile.py with show() returning 1", "export show from src/__init__.py"),
+    {"AC2": ("tests/unit/test_profile.py::test_shows",)},
+    "run_tests passes on tests/unit/test_profile.py",
+)
+
+
+def _package_brief(i: int, **kwargs: Any) -> str:
+    return package_brief(STORY, LAYERS, i, max_steps=40, context_budget=65_536, **kwargs)
 
 
 CASES: dict[str, Callable[[], str]] = {
@@ -227,27 +238,38 @@ CASES |= {
     ),
     "fn:briefs.built_so_far:diff": partial(built_so_far, DIFF),
 }
-# layer_plan: every layer of the fixtures, solo (the coder writes tests and code) and with a tester first
+# the package brief and the build brief: every layer of the fixtures, plain and with everything optional
+CASES |= {f"fn:briefs.package_brief:{i}": partial(_package_brief, i) for i in range(len(LAYERS))}
+CASES["fn:briefs.package_brief:full"] = partial(
+    _package_brief,
+    1,
+    guide=GUIDE,
+    built=built_so_far(DIFF),
+    feedback=BAD_JSON,
+    lessons=[
+        Lesson(
+            title="Layer 01 storage",
+            acceptance=["AC1: the avatar is stored"],
+            source_files=5,
+            test_files=2,
+            steps=30,
+            context_tokens=88_000,
+            ending="package_rejected",
+            detail="passes_before_code",
+        )
+    ],
+)
+CASES["fn:briefs.build_brief:plain"] = partial(build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE)
+CASES["fn:briefs.build_brief:guide-built"] = partial(
+    build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE, guide=GUIDE, built=built_so_far(DIFF)
+)
+CASES["fn:briefs.build_brief:foundation"] = partial(
+    build_brief, STORY, LAYERS, 2, replace(SAMPLE_PACKAGE, covers={})
+)
 CASES |= {
-    f"fn:briefs.layer_plan:{i}:{'tester' if tester else 'solo'}": partial(
-        _layer_plan, LAYERS, i, tester=tester
-    )
-    for i, tester in product(range(len(LAYERS)), (True, False))
-}
-CASES |= {
-    f"fn:briefs.layer_plan:{name}:{'tester' if tester else 'solo'}": partial(
-        _layer_plan, layers, 0, tester=tester
-    )
-    for (name, layers), tester in product(
-        (("named-test-file", (ONE_TEST_FILE, *LAYERS)), ("named-test-files", (TWO_TEST_FILES, *LAYERS))),
-        (True, False),
-    )
-}
-CASES |= {
-    f"fn:briefs.layer_plan:1:{'tester' if tester else 'solo'}-guide-built": partial(
-        _layer_plan, LAYERS, 1, tester=tester, guide=GUIDE, built=built_so_far(DIFF)
-    )
-    for tester in (True, False)
+    "brief-package-task": lambda: text("brief-package-task"),
+    "package-tests-rules": lambda: text("package-tests-rules"),
+    "package-contract": lambda: text("package-contract"),
 }
 
 

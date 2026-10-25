@@ -1,6 +1,6 @@
 ---
 kind: rule
-roles: [tester, coder]
+roles: [architect, tester]
 governs:
   tests.target: behaviour
   tests.assert: always
@@ -9,8 +9,9 @@ why: |
   How a layer's tests are written: the useful part of skills/qa.
 
   Added when one coder began to write a layer's tests and code (28107dd, 2026-10-16: the qa subtask kept
-  blocking HDS-5 and HDS-11 at layer 01 with assertion-free tests); the tester's brief carries it too since
-  the tester seat (3bda4e1, 2026-10-19).
+  blocking HDS-5 and HDS-11 at layer 01 with assertion-free tests); the tester's brief carried it too since
+  the tester seat (3bda4e1, 2026-10-19); the architect's package brief carries it since P1 (2026-10-24), and
+  the coder's no longer does: the tests are written before it.
 ---
 What makes a test count:
 - Test behaviour, not the implementation: call the code the way its users do and check what they observe
