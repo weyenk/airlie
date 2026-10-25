@@ -7,25 +7,30 @@ its id and resolved through the upload store, never fetched by URL."""
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from airlie.board import Item
 from airlie.story.board import Card
 from airlie.story.checkout import repo_labels
-from airlie.story.costs import Estimate
 from airlie.story.epic import (
     REPOSITORY,
     SIZES,
     Decision,
     EpicCriterion,
+    EpicSpec,
+    Estimate,
+    Mockups,
     StorySketch,
     Viability,
 )
-from airlie.story.model import NO_JSON, StoryError, _encodable, _one_line, _strs
+from airlie.story.model import ISSUE_KEY, NO_JSON, StoryError, _encodable, _one_line, _strs
 
+LABEL_INITIATIVE = "initiative:"
+"""The label that ties an epic card to the initiative it came from (its board key)."""
 BUDGET_LABEL = re.compile(r"budget:(\d+(?:\.\d+)?)h")
 UPLOAD_LINK = re.compile(r"/v1/airlie/uploads/([A-Za-z0-9_-]+)")
 SKIP_PHRASES = ("no questions", "skip the questions")
@@ -511,3 +516,142 @@ def check_epics(
 
 def epics_feedback(findings: Sequence[EpicFinding]) -> str:
     return "; ".join(f.why for f in findings)
+
+
+# ---- the planner's read and the epic's document (D5, D7) ----
+
+READ_CONTRACT = """End your reply with one ```json block holding exactly one object:
+{"type": "read", "epic": "E1", "ok": true, "questions": ["what you would have to ask the person"]}
+Set "ok" to false and list the questions when you could not plan stories from the epic as written."""
+
+EPIC_SECTIONS = (
+    "Why",
+    "Goals",
+    "Non-goals",
+    "Anti-goals",
+    "Decisions",
+    "Constraints",
+    "Acceptance criteria",
+    "Stories, a sketch",
+    "Risks",
+    "Viability",
+    "Estimate",
+    "Consulted",
+    "Questions asked",
+    "Open for you",
+)
+"""The sections of an epic's document, in order (D5, D11): the renderer writes them and a person reads
+them; a section with nothing says "none"."""
+
+
+@dataclass(frozen=True)
+class ReadReply:
+    """The architect's read of one epic as the planner it will meet: could stories be planned from it
+    without going back to the person, and if not, what would have to be asked."""
+
+    epic: str
+    ok: bool
+    questions: tuple[str, ...]
+
+
+def parse_read(obj: dict[str, Any] | None, *, epic: str) -> ReadReply:
+    """StoryError: no JSON; another type; a different epic id; `ok` that is not true or false; `ok` false
+    with no question."""
+    if obj is None:
+        raise StoryError(NO_JSON)
+    if obj.get("type") != "read":
+        raise StoryError('the reply needs "type": "read"')
+    if obj.get("epic") != epic:
+        raise StoryError(f'this is a read of epic {epic}, not {obj.get("epic")!r}: set "epic": "{epic}"')
+    ok = obj.get("ok")
+    if not isinstance(ok, bool):
+        raise StoryError('"ok" must be true or false')
+    questions = _strs(obj.get("questions"), "'questions'")
+    if not ok and not questions:
+        raise StoryError('"ok" is false but no question says what would have to be asked')
+    return ReadReply(epic, ok, questions)
+
+
+def _bullets(items: Sequence[str]) -> list[str]:
+    return [f"- {' '.join(i.split())}" for i in items] or ["none"]
+
+
+def render_epic_document(
+    draft: EpicDraft,
+    *,
+    estimate: Estimate,
+    consulted: Sequence[Mapping[str, Any]],
+    qa: Sequence[Mapping[str, Any]],
+    option_urls: Sequence[str],
+    initiative_key: str,
+    depends_keys: Sequence[str],
+) -> str:
+    """The epic's card as a person reads it, closed by the JSON block P3 reads (`EpicSpec.to_dict` with the
+    specs phase's fields): the sections of `EPIC_SECTIONS` in order, the estimate's hours and basis, the
+    consultations as "<seat>: <question> -> <first line of the answer>", the Q&A verbatim, then the block with
+    the mockups' URLs as its links. A section with nothing says "none"."""
+    via = draft.viability
+    decisions = [f"- {' '.join(d.what.split())}: {' '.join(d.why.split())}" for d in draft.decisions]
+    asked: list[str] = []
+    for n, entry in enumerate(qa, 1):
+        asked.append(f"- Q{n}: {' '.join(str(entry.get('q', '')).split())}")
+        answer = entry.get("a")
+        asked.append(f"  A{n}: {' '.join(str(answer).split())}" if answer else f"  A{n}: (not answered)")
+    heard = []
+    for c in consulted:
+        first = next((ln.strip() for ln in str(c.get("answer", "")).splitlines() if ln.strip()), "")
+        heard.append(f"{c.get('seat')}: {' '.join(str(c.get('question', '')).split())} -> {first}")
+    estimate_lines = [f"{estimate.hours:g} h: {estimate.basis}"]
+    if option_urls:
+        estimate_lines.append("")
+        estimate_lines.append("Mockups: " + ", ".join(option_urls))
+    sections: dict[str, list[str]] = {
+        "Why": [draft.why.strip()],
+        "Goals": _bullets(draft.goals),
+        "Non-goals": _bullets(draft.non_goals),
+        "Anti-goals": _bullets(draft.anti_goals),
+        "Decisions": decisions or ["none"],
+        "Constraints": _bullets(draft.constraints),
+        "Acceptance criteria": [f"- {c.id}: {' '.join(c.text.split())}" for c in draft.criteria],
+        "Stories, a sketch": [f"- [{s.size}] {s.title}: {' '.join(s.scope.split())}" for s in draft.stories],
+        "Risks": _bullets(draft.risks),
+        "Viability": [f"**{via.verdict}**", *_bullets(via.reasons)],
+        "Estimate": estimate_lines,
+        "Consulted": _bullets(heard),
+        "Questions asked": asked or ["none"],
+        "Open for you": _bullets(draft.open),
+    }
+    lines = [f"# {draft.title}", ""]
+    if depends_keys:
+        lines += [f"Waits for {', '.join(depends_keys)} (its core epic) before it is planned.", ""]
+    for name in EPIC_SECTIONS:
+        lines += [f"## {name}", *sections[name], ""]
+    spec = EpicSpec(
+        draft.repositories,
+        draft.criteria,
+        draft.constraints,
+        tuple(option_urls),
+        initiative_key,
+        draft.kind,
+        tuple(depends_keys),
+        draft.stories,
+        estimate,
+        draft.viability,
+        Mockups(tuple(option_urls), None) if option_urls else None,
+    )
+    return (
+        "\n".join(lines)
+        + "\n```json\n"
+        + json.dumps(spec.to_dict(), indent=1, ensure_ascii=False)
+        + "\n```\n"
+    )
+
+
+def initiative_key_of(labels: Sequence[str]) -> str | None:
+    """The board key in an epic's `initiative:<key>` label, or None (a label that is not a key, say a person's
+    typo, is no initiative: the key goes on to name a state directory only after this check)."""
+    for label in labels:
+        key = label[len(LABEL_INITIATIVE) :]
+        if label.startswith(LABEL_INITIATIVE) and ISSUE_KEY.fullmatch(key):
+            return key
+    return None

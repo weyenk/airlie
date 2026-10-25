@@ -33,12 +33,14 @@ from airlie.story.briefs import (
     package_brief,
     plan_brief,
     questions_brief,
+    read_back_text,
+    read_brief,
     refine_brief,
     render_brief,
     replan_brief,
     survey_brief,
 )
-from airlie.story.initiative import Ask
+from airlie.story.initiative import Ask, ReadReply
 from airlie.story.layer_checks import (
     ASSERTION_FREE,
     EXISTING_FAILS,
@@ -394,6 +396,12 @@ CASES |= {
         Direction("Columns", "A column per status", "Header, then columns of cards", "Columns, not rows"),
         "Light, serif, one blue accent.",
         max_chars=12000,
+    ),
+    "specs-read": lambda: text("specs-read"),
+    "specs-read-back": lambda: text("specs-read-back"),
+    "fn:briefs.read_brief": partial(read_brief, "# Fast board\n\n## Why\nThe board feels slow.\n"),
+    "fn:briefs.read_back_text": partial(
+        read_back_text, [ReadReply("E1", False, ("Which store holds the cards?",)), ReadReply("E2", True, ())]
     ),
     "fn:briefs.consult_round_text:due": partial(
         consult_round_text,

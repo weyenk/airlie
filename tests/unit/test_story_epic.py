@@ -134,3 +134,60 @@ def test_no_block_at_all_is_refused() -> None:
 def test_a_flawed_epic_block_on_a_card_is_an_error_not_a_missing_epic() -> None:
     with pytest.raises(StoryError, match="at least one criterion"):
         epic_of("prose\n\n" + fenced({**BLOCK, "criteria": []}))
+
+
+def test_a_p4_epic_block_round_trips_through_epic_spec_and_a_p3_block_still_parses() -> None:
+    from airlie.story.epic import Estimate, Mockups, StorySketch, Viability
+
+    p3 = {
+        "type": "epic",
+        "repositories": ["o/r"],
+        "criteria": [{"id": "EC1", "text": "a user can upload"}],
+        "constraints": ["PNG only"],
+        "links": [],
+    }
+    plain = parse_epic(p3)
+    assert plain.initiative is None and plain.kind is None and plain.stories == () and plain.extra == {}
+    assert plain.to_dict() == p3  # a hand-written epic writes back exactly as it was read
+    full = {
+        **p3,
+        "initiative": "AIR-40",
+        "kind": "extension",
+        "depends_on": ["AIR-41"],
+        "stories": [{"title": "keys", "size": "S", "scope": "keyboard moves"}],
+        "estimate": {"hours": 12.5, "basis": "3 S at 2.1 h (median of 7)", "at": "2026-10-24T18:02:00Z"},
+        "viability": {"verdict": "risky", "reasons": ["the store is old"]},
+        "mockups": {"options": ["/a/option-1.html"], "picked": None},
+        "a_key_the_parser_does_not_know": {"keep": ["me"]},
+    }
+    spec = parse_epic(full)
+    assert spec.initiative == "AIR-40" and spec.kind == "extension" and spec.depends_on == ("AIR-41",)
+    assert spec.stories == (StorySketch("keys", "S", "keyboard moves"),)
+    assert spec.estimate == Estimate(12.5, "3 S at 2.1 h (median of 7)", "2026-10-24T18:02:00Z")
+    assert spec.viability == Viability("risky", ("the store is old",))
+    assert spec.mockups == Mockups(("/a/option-1.html",), None)
+    assert spec.extra == {"a_key_the_parser_does_not_know": {"keep": ["me"]}}
+    assert spec.to_dict() == full  # nothing is lost on a rewrite, the unknown key included
+    assert EpicSpec.from_dict(spec.to_dict()) == spec
+    picked = EpicSpec.from_dict({**spec.to_dict(), "mockups": {"options": ["x"], "picked": 2}})
+    assert picked.mockups == Mockups(("x",), 2)
+    # the block in a card is found and read by epic_of, as P3's planner does
+    assert epic_of("# E\n\n" + fenced(full)) == spec
+
+
+@pytest.mark.parametrize(
+    ("patch", "why"),
+    [
+        ({"kind": "side"}, "core or extension"),
+        ({"initiative": 4}, "board key"),
+        ({"stories": [{"title": "x", "size": "XL"}]}, "size of S, M or L"),
+        ({"stories": "x"}, "list of"),
+        ({"estimate": {"hours": "lots"}}, "number of hours"),
+        ({"viability": {"verdict": "great"}}, "verdict"),
+        ({"mockups": {"options": ["x"], "picked": "two"}}, "picked"),
+    ],
+)
+def test_a_flawed_p4_field_is_a_reason_not_a_guess(patch: dict[str, object], why: str) -> None:
+    block = {"type": "epic", "repositories": ["o/r"], "criteria": [{"id": "EC1", "text": "x"}], **patch}
+    with pytest.raises(StoryError, match=why):
+        parse_epic(block)

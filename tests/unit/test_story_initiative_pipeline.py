@@ -4,18 +4,23 @@ mockups, the planner's read and the cards follow in later tests."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
 from airlie.engine import FakeEngine, FakeReply
 from airlie.router import ChiefRouter
 from airlie.story.costs import StoryCosts
+from airlie.story.epic import Estimate, epic_of
 from airlie.story.initiative_pipeline import InitiativePipeline
 from airlie.story.initiative_state import InitiativeState
 from airlie.story.local_board import LocalBoard
+from airlie.story.model import StorySetupError
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
@@ -34,6 +39,13 @@ ROLES = {**STORY_ROLES, **SEATS}
 
 def say(text: str) -> FakeReply:
     return FakeReply(text=text)
+
+
+def arch(notes: str = "n", *, epic: str = "E1", questions: tuple[str, ...] = ()) -> FakeReply:
+    """An architect reply that serves as a survey's notes and as a planner's read of `epic` alike (the two
+    run in an order a test does not pin)."""
+    block = {"type": "read", "epic": epic, "ok": not questions, "questions": list(questions)}
+    return FakeReply(text=f"{notes}\n" + fenced(block))
 
 
 def consult(*asks: dict[str, Any]) -> FakeReply:
@@ -151,23 +163,23 @@ async def test_an_answer_newer_than_the_question_is_recorded_and_the_next_questi
 async def test_a_reply_of_go_ends_the_questions_and_the_imagining_starts_on_the_same_turn(
     tmp_path: Path,
 ) -> None:
-    engine = FakeEngine({"product": [question("First?"), epics(epic_obj())], "architect": [say("n")]})
+    engine = FakeEngine({"product": [question("First?"), epics(epic_obj())], "architect": [arch()] * 4})
     rig = Rig(tmp_path, engine)
     await rig.pipeline.turn(rig.item())
     rig.person_says("Go.")
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and st.assumptions == []  # the imagining ran on this same turn
+    assert st.stage == "delivered" and st.assumptions == []  # the imagining ran on this same turn
     assert len(st.qa) == 1 and "ONE core epic" in rig.asks("product")[1]  # no second question: the imagining
     [over] = rig.events("questions_done")
     assert over["reason"] == "the person said go" and over["asked"] == 1
-    assert rig.item().status == "doing"  # the line is working on it now
+    assert rig.item().status == "review"  # delivered: the epics wait for the person
 
 
 async def test_an_initiative_whose_text_asks_for_no_questions_gets_none(tmp_path: Path) -> None:
-    engine = FakeEngine({"product": [epics(epic_obj())], "architect": [say("n")]})
+    engine = FakeEngine({"product": [epics(epic_obj())], "architect": [arch()] * 4})
     rig = Rig(tmp_path, engine, text="Rework the board. No questions please.")
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and st.qa == [] and len(rig.asks("product")) == 1  # the imagining only
+    assert st.stage == "delivered" and st.qa == [] and len(rig.asks("product")) == 1  # the imagining only
     assert rig.events("questions_done")[0]["reason"] == "the text asks for none"
 
 
@@ -180,20 +192,20 @@ async def test_the_cap_ends_the_questions_with_products_assumptions(tmp_path: Pa
                 done("one user", "no offline mode"),
                 epics(epic_obj()),
             ],
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, specs={"max_questions": 1})
     await rig.pipeline.turn(rig.item())
     rig.person_says("Just me.")
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and st.assumptions == ["one user", "no offline mode"]
+    assert st.stage == "delivered" and st.assumptions == ["one user", "no offline mode"]
     assert len(st.qa) == 1  # the second question was refused, not asked
     assert len(rig.asks("product")) == 4  # the question, its refused retry, the assumptions, the imagining
     assert "- one user" in rig.asks("product")[3]  # product's own assumptions carry into the imagining
     assert "questions are used up" in rig.asks("product")[2]  # why the second reply came back
     assert rig.events("questions_done")[0]["reason"] == "the cap"
-    assert [a for a, _ in rig.comments()] == ["product", "noah"]  # the refused question was never posted
+    assert [a for a, _ in rig.comments()] == ["product", "noah", "product"]  # no refused question; the note
 
 
 async def test_an_initiative_whose_repository_has_no_checkout_blocks_with_a_note(tmp_path: Path) -> None:
@@ -236,16 +248,16 @@ async def test_a_card_with_no_repository_label_is_refused_not_started(tmp_path: 
 
 async def test_epics_after_no_questions_are_drafted_in_order_and_recorded(tmp_path: Path) -> None:
     later = epic_obj("E2", "extension", depends_on=["E1"])
-    engine = FakeEngine({"product": [epics(later, epic_obj("E1"))], "architect": [say("notes")]})
+    engine = FakeEngine({"product": [epics(later, epic_obj("E1"))], "architect": [arch()] * 4})
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and st.blocked is None
+    assert st.stage == "delivered" and st.blocked is None
     assert [e["id"] for e in st.epics] == ["E1", "E2"] and st.summary == "Make the board fast."
     [drafted] = rig.events("epics_drafted")
     assert drafted["epics"] == ["E1", "E2"] and drafted["kinds"] == ["core", "extension"]
     brief = rig.asks("product")[0]
     assert "ONE core epic" in brief and "architect, ux, design" in brief and '"type": "consult"' in brief
-    assert rig.item().status == "doing"
+    assert rig.item().status == "review"  # delivered: the epics wait for the person
 
 
 async def test_the_surveys_run_for_every_repository_beside_the_first_round(tmp_path: Path) -> None:
@@ -253,17 +265,17 @@ async def test_the_surveys_run_for_every_repository_beside_the_first_round(tmp_p
         {
             "product": [consult({"seat": "ux", "question": "How do people move?"}), epics(epic_obj())],
             "ux": [say("- keyboard first")],
-            "architect": [say("NOTES ON THE REPOSITORY"), say("NOTES ON THE REPOSITORY")],
+            "architect": [arch("NOTES ON THE REPOSITORY")] * 4,
         }
     )
     rig = Rig(
         tmp_path, engine, text=NO_QUESTIONS, labels=("repo:o/r", "repo:o/s"), repo_of=lambda r: rig.repo
     )
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading"
+    assert st.stage == "delivered"
     assert set(st.surveys) == {"o/r", "o/s"}
-    assert all(v == "NOTES ON THE REPOSITORY" for v in st.surveys.values())
-    assert len(rig.asks("architect")) == 2  # one survey per repository, unasked
+    assert all(v.startswith("NOTES ON THE REPOSITORY") for v in st.surveys.values())
+    assert len([a for a in rig.asks("architect") if "Read the code this request touches" in a]) == 2
     assert {e["repository"] for e in rig.events("survey_done")} == {"o/r", "o/s"}
     second = rig.asks("product")[1]
     assert "## The architect's notes on o/r" in second and "> NOTES ON THE REPOSITORY" in second
@@ -273,16 +285,21 @@ async def test_the_surveys_run_for_every_repository_beside_the_first_round(tmp_p
 async def test_a_failed_survey_is_no_notes_and_never_a_stop(tmp_path: Path) -> None:
     ask = {"seat": "ux", "question": "q?"}
     engine = FakeEngine(
-        {
-            "product": [consult(ask), epics(epic_obj())],
-            "ux": [say("- a")],
-            "architect": [],
-        }  # no architect replies
+        {"product": [consult(ask), epics(epic_obj())], "ux": [say("- a")], "architect": [arch()] * 4}
     )
-    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+
+    def repo_of(name: str) -> Path | None:
+        if name == "o/s":  # the second repository's checkout cannot be used
+            raise StorySetupError("o/s has a damaged checkout")
+        return rig.repo
+
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS, labels=("repo:o/r", "repo:o/s"), repo_of=repo_of)
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and st.surveys.get("o/r", "") == ""
-    assert rig.events("survey_failed") and rig.events("survey_done")[0]["chars"] == 0
+    assert st.stage == "delivered" and st.surveys["o/s"] == "" and st.surveys["o/r"].startswith("n")
+    [failed] = rig.events("survey_failed")
+    assert failed["repository"] == "o/s" and "damaged checkout" in failed["reason"]
+    assert "## The architect's notes on o/r" in rig.asks("product")[1]
+    assert "o/s" not in rig.asks("product")[1].split("## From ux")[1].split("These")[0]  # no empty notes
 
 
 async def test_a_round_of_asks_runs_the_seats_side_by_side_and_their_answers_come_back_as_one_follow_up(
@@ -299,7 +316,7 @@ async def test_a_round_of_asks_runs_the_seats_side_by_side_and_their_answers_com
             ],
             "ux": [say("- one keystroke per move")],
             "design": [say("- tight rows")],
-            "architect": [say("notes")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
@@ -315,14 +332,14 @@ async def test_a_round_of_asks_runs_the_seats_side_by_side_and_their_answers_com
     consulted = rig.asks("ux")[0]
     assert "How would a person move through the board?" in consulted
     assert "under 4000 characters" in consulted
-    assert st.stage == "reading"
+    assert st.stage == "delivered"
 
 
 async def test_an_ask_for_a_seat_not_consultable_is_feedback_and_runs_no_turn(tmp_path: Path) -> None:
     engine = FakeEngine(
         {
             "product": [consult({"seat": "security", "question": "Is it safe?"}), epics(epic_obj())],
-            "architect": [say("notes")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)  # consultable: architect, ux, design
@@ -330,12 +347,12 @@ async def test_an_ask_for_a_seat_not_consultable_is_feedback_and_runs_no_turn(tm
     assert st.consultations == [] and rig.events("consult") == []
     assert "the seat 'security' is not one you can consult" in rig.asks("product")[1]
     assert rig.asks("ux") == [] and rig.asks("design") == []
-    assert st.stage == "reading"  # product recovered on its second try
+    assert st.stage == "delivered"  # product recovered on its second try
 
 
 async def test_more_asks_than_the_round_allows_is_feedback_too(tmp_path: Path) -> None:
     ask = {"seat": "ux", "question": "q?"}
-    engine = FakeEngine({"product": [consult(ask, ask, ask), epics(epic_obj())], "architect": [say("n")]})
+    engine = FakeEngine({"product": [consult(ask, ask, ask), epics(epic_obj())], "architect": [arch()] * 4})
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS, specs={"max_asks_per_round": 2})
     st = await rig.pipeline.turn(rig.item())
     assert "at most 2 asks, not 3" in rig.asks("product")[1] and st.consultations == []
@@ -343,7 +360,7 @@ async def test_more_asks_than_the_round_allows_is_feedback_too(tmp_path: Path) -
 
 async def test_an_imagining_that_never_parses_blocks_with_the_reason(tmp_path: Path) -> None:
     junk = FakeReply(text="no json here")
-    rig = Rig(tmp_path, FakeEngine({"product": [junk, junk], "architect": [say("n")]}), text=NO_QUESTIONS)
+    rig = Rig(tmp_path, FakeEngine({"product": [junk, junk], "architect": [arch()] * 4}), text=NO_QUESTIONS)
     st = await rig.pipeline.turn(rig.item())
     assert st.stage == "blocked" and "did not produce a usable round" in (st.blocked or "")
     assert st.resume == "imagining" and rig.item().status == "blocked"
@@ -359,7 +376,7 @@ async def test_the_consultation_cap_refuses_the_rest_and_the_last_round_demands_
             "product": [consult(one, two), consult(again), epics(epic_obj())],
             "ux": [say("- ux says")],
             "design": [say("- design says")],
-            "architect": [say("notes")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS, specs={"max_consultations": 1, "max_rounds": 2})
@@ -371,7 +388,7 @@ async def test_the_consultation_cap_refuses_the_rest_and_the_last_round_demands_
     )
     assert "That was the last consultation: reply with the epics now" in follow_up
     assert "the consultations are used up" in rig.asks("product")[2]  # a further ask is feedback
-    assert st.stage == "reading"
+    assert st.stage == "delivered"
 
 
 async def test_the_last_round_says_the_epics_are_due(tmp_path: Path) -> None:
@@ -380,7 +397,7 @@ async def test_the_last_round_says_the_epics_are_due(tmp_path: Path) -> None:
         {
             "product": [consult(ask), consult(ask), epics(epic_obj())],
             "ux": [say("- a")],
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS, specs={"max_rounds": 1})
@@ -391,7 +408,7 @@ async def test_the_last_round_says_the_epics_are_due(tmp_path: Path) -> None:
 async def test_a_core_over_the_budget_goes_back_once_and_the_answer_stands(tmp_path: Path) -> None:
     big = epic_obj(stories=[{"title": "x", "size": "M", "scope": "x"}] * 3)  # 3 M at 5 h = 15 h
     small = epic_obj(stories=[{"title": "x", "size": "S", "scope": "x"}])
-    engine = FakeEngine({"product": [epics(big), epics(small)], "architect": [say("n")]})
+    engine = FakeEngine({"product": [epics(big), epics(small)], "architect": [arch()] * 4})
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS, labels=("repo:o/r", "budget:10h"))
     st = await rig.pipeline.turn(rig.item())
     assert [e["kinds"] for e in rig.events("epics_returned")] == [["over_budget"]]
@@ -400,7 +417,7 @@ async def test_a_core_over_the_budget_goes_back_once_and_the_answer_stands(tmp_p
     (tmp_path / "b").mkdir()
     stubborn = Rig(
         tmp_path / "b",
-        FakeEngine({"product": [epics(big), epics(big)], "architect": [say("n")]}),
+        FakeEngine({"product": [epics(big), epics(big)], "architect": [arch()] * 4}),
         text=NO_QUESTIONS,
         labels=("repo:o/r", "budget:10h"),
     )
@@ -418,7 +435,7 @@ async def test_two_asks_at_once_leave_no_stray_worktree(tmp_path: Path) -> None:
             ],
             "ux": [say("- a")],
             "design": [say("- b")],
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
@@ -458,12 +475,12 @@ async def test_a_mockups_ask_draws_ux_directions_then_one_page_each_side_by_side
             "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
             "ux": [directions("Columns", "List", "Timeline")],
             "design": [page(GOOD_PAGE)] * 3,
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading"
+    assert st.stage == "delivered"
     assert mockup_dir_files(rig) == ["option-1.html", "option-2.html", "option-3.html"]
     assert st.mockups["E1"]["options"] == ["option-1.html", "option-2.html", "option-3.html"]
     assert [d["name"] for d in st.mockups["E1"]["directions"]] == ["Columns", "List", "Timeline"]
@@ -486,7 +503,7 @@ async def test_a_pages_findings_go_back_to_design_once_then_the_option_is_droppe
             "ux": [directions("Columns", "List", "Timeline")],
             # three first tries (one has a script), then the one retry, which still has it
             "design": [page(GOOD_PAGE), page(GOOD_PAGE), page(BAD_PAGE), page(BAD_PAGE)],
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
@@ -508,7 +525,7 @@ async def test_a_page_that_passes_on_its_second_try_is_kept(tmp_path: Path) -> N
             "product": [consult(MOCKUPS_ASK), epics(epic_obj(needs_mockups=True))],
             "ux": [directions("Columns", "List", "Timeline")],
             "design": [page(GOOD_PAGE), page(GOOD_PAGE), page(BAD_PAGE), page(GOOD_PAGE)],
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
@@ -521,10 +538,163 @@ async def test_directions_that_never_parse_are_a_seats_failure_not_a_stop(tmp_pa
         {
             "product": [consult(MOCKUPS_ASK), epics(epic_obj())],
             "ux": [directions("One", "Two"), directions("One", "Two")],  # two, not three, twice
-            "architect": [say("n")],
+            "architect": [arch()] * 4,
         }
     )
     rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
     st = await rig.pipeline.turn(rig.item())
-    assert st.stage == "reading" and mockup_dir_files(rig) == []
+    assert st.stage == "delivered" and mockup_dir_files(rig) == []
     assert "could not answer" in rig.asks("product")[1] and "exactly 3 directions" in rig.asks("product")[1]
+
+
+def cards(rig: Rig) -> list[Item]:
+    return rig.store.list(level="epic", parent=rig.initiative.key)
+
+
+async def test_the_epics_land_under_the_initiative_core_first_each_in_review_with_hours_and_the_queue_noted(
+    tmp_path: Path,
+) -> None:
+    later = epic_obj("E2", "extension", depends_on=["E1"], title="Epic E2")
+    engine = FakeEngine(
+        {
+            "product": [epics(later, epic_obj("E1", stories=[{"title": "k", "size": "M", "scope": "k"}]))],
+            "architect": [arch()] * 4,
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS, labels=("repo:o/r", "budget:6h"))
+    # an epic already approved is in the queue: the note reports its hours
+    queued = rig.store.create(level="epic", title="queued", parent=rig.initiative.key)
+    rig.store.update(queued.key, status="approved")
+    queued_state = rig.pipeline.dir.parent / "epics" / queued.key
+    queued_state.mkdir(parents=True)
+    (queued_state / "state.json").write_text(
+        json.dumps({"estimate": {"hours": 4.0, "basis": "b", "at": "t"}})
+    )
+    st = await rig.pipeline.turn(rig.item())
+    core, ext = [c for c in cards(rig) if c.key != queued.key]
+    assert (core.title, ext.title) == ("Epic E1", "Epic E2")  # the core first
+    assert core.status == ext.status == "review" and core.parent == rig.initiative.key
+    assert core.level == "epic" and core.created_by == "product"
+    assert "initiative:" + rig.initiative.key in core.labels and "kind:core" in core.labels
+    assert "repo:o/r" in core.labels and "viability:viable" in core.labels
+    spec = epic_of(core.description)
+    assert spec is not None and spec.initiative == rig.initiative.key and spec.kind == "core"
+    assert spec.estimate is not None and spec.estimate.hours == 5.0  # one M story, the default 5 h
+    assert (
+        "x1.0 calibration (uncalibrated)" in spec.estimate.basis
+        and "1 M at 5.0 h (default)" in spec.estimate.basis
+    )
+    assert [s.size for s in spec.stories] == ["M"] and spec.viability is not None
+    assert [e["key"] for e in st.epics] == [core.key, ext.key]
+    assert st.epics[0]["estimate"]["hours"] == 5.0 and st.stage == "delivered" and st.delivered_at
+    # the price is also in the epic's own record, where the ledger reads it
+    assert (
+        json.loads((rig.pipeline.dir.parent / "epics" / core.key / "state.json").read_text())["estimate"][
+            "hours"
+        ]
+        == 5.0
+    )
+    note_comment = rig.item().comments[-1]
+    assert note_comment.author == "product" and rig.item().status == "review"
+    assert f"- {core.key} (core) Epic E1: 5 h, viable" in note_comment.text
+    assert f"- {ext.key} (extension) Epic E2: 1 h, viable" in note_comment.text
+    assert "Queued ahead of them: 4 h." in note_comment.text
+    assert "Your budget: 6 h; the core is priced at 5 h." in note_comment.text
+    [event] = rig.events("epics")
+    assert event["keys"] == [core.key, ext.key] and event["kinds"] == ["core", "extension"]
+    # a turn after delivery makes nothing again
+    again = await rig.pipeline.turn(rig.item())
+    assert again.stage == "delivered" and len(cards(rig)) == 3
+
+
+async def test_an_extension_carries_an_after_label_naming_the_core(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {
+            "product": [epics(epic_obj("E2", "extension", depends_on=["E1"]), epic_obj("E1"))],
+            "architect": [arch()] * 4,
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    core, ext = cards(rig)
+    assert f"after:{core.key}" in ext.labels and not [x for x in core.labels if x.startswith("after:")]
+    spec = epic_of(ext.description)
+    assert spec is not None and spec.depends_on == (core.key,)
+    assert f"Waits for {core.key}" in ext.description
+
+
+async def test_a_not_viable_core_is_written_and_marked_never_hidden(tmp_path: Path) -> None:
+    sad = epic_obj(viability={"verdict": "not_viable", "reasons": ["needs a rewrite of the store"]})
+    rig = Rig(tmp_path, FakeEngine({"product": [epics(sad)], "architect": [arch()] * 4}), text=NO_QUESTIONS)
+    await rig.pipeline.turn(rig.item())
+    [core] = cards(rig)
+    assert "viability:not_viable" in core.labels and core.status == "review"
+    assert "## Viability\n**not_viable**\n- needs a rewrite of the store" in core.description
+    spec = epic_of(core.description)
+    assert spec is not None and spec.viability is not None and spec.viability.verdict == "not_viable"
+    assert "1 h, not_viable" in rig.item().comments[-1].text
+
+
+async def test_the_planners_questions_go_back_to_product_once_and_the_rest_land_in_open(
+    tmp_path: Path,
+) -> None:
+    unsure = arch("n", questions=("Which store holds the cards?", "Is a rename allowed?"))
+    answered = epic_obj(
+        decisions=[{"what": "cards live in the board store", "why": "the planner asked"}],
+        open=["Is a rename allowed?"],
+    )
+    engine = FakeEngine({"product": [epics(epic_obj()), epics(answered)], "architect": [unsure] * 4})
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    st = await rig.pipeline.turn(rig.item())
+    follow_up = rig.asks("product")[1]
+    assert "## Questions about E1" in follow_up and "- Which store holds the cards?" in follow_up
+    assert "leave it in" not in follow_up and 'in that epic\'s "open" list' in follow_up
+    [read] = rig.events("planner_read")
+    assert read["epic"] == "E1" and read["ok"] is False and read["questions"] == 2
+    [core] = cards(rig)
+    assert "- cards live in the board store: the planner asked" in core.description
+    assert "## Open for you\n- Is a rename allowed?" in core.description  # what product could not settle
+    assert len(rig.asks("product")) == 2 and st.stage == "delivered"  # one round, never a second read
+    assert len([a for a in rig.asks("architect") if "planner who will turn" in a]) == 1
+
+
+async def test_a_stop_half_way_through_the_cards_is_finished_by_the_next_turn_never_made_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop after the drafts and between the cards: product's conversation is gone on the next turn, so the
+    planner's questions land in `open`; a card already made is not made again, and the price still reaches
+    its record."""
+    unsure = arch("n", questions=("Is a rename allowed?",))
+    engine = FakeEngine(
+        {
+            "product": [
+                epics(epic_obj(), epic_obj("E2", "extension", title="Epic E2")),
+                epics(epic_obj(), epic_obj("E2", "extension", title="Epic E2")),
+            ],
+            "architect": [unsure] * 6,
+        }
+    )
+    rig = Rig(tmp_path, engine, text=NO_QUESTIONS)
+    real = InitiativePipeline._mirror
+    calls = {"n": 0}
+
+    def flaky(self: InitiativePipeline, card: Item, repository: str, estimate: Estimate) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        real(self, card, repository, estimate)
+
+    monkeypatch.setattr(InitiativePipeline, "_mirror", flaky)
+    stopped = await rig.pipeline.turn(rig.item())
+    assert (
+        stopped.stage == "blocked" and stopped.resume == "reading" and "disk full" in (stopped.blocked or "")
+    )
+    assert len(cards(rig)) == 2  # both cards exist; the second's record was not written
+    rig.store.update(rig.initiative.key, status="approved")  # a person approves it again
+    again = await rig.pipeline.turn(rig.item())
+    assert again.stage == "delivered" and len(cards(rig)) == 2  # nobody was made twice
+    assert len(rig.asks("product")) == 2  # opening and the read-back; not asked again on the resume
+    for card in cards(rig):
+        path = rig.pipeline.dir.parent / "epics" / card.key / "state.json"
+        assert json.loads(path.read_text())["estimate"]["hours"] > 0  # both records have their price
+    assert rig.item().comments[-1].author == "product" and "ready for you" in rig.item().comments[-1].text

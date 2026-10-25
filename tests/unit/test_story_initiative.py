@@ -284,3 +284,79 @@ def test_a_core_over_the_budget_is_one_finding() -> None:
     assert "15 h" in finding.why and "3 M at 5.0 h (default)" in finding.why and "10 h budget" in finding.why
     assert check_epics(reply, budget_hours=15.0, estimate=estimate) == []
     assert check_epics(reply, budget_hours=None, estimate=estimate) == []
+
+
+def test_the_epic_document_has_every_section_in_order_and_closes_with_the_block() -> None:
+    from airlie.story.epic import epic_of
+    from airlie.story.initiative import EPIC_SECTIONS, render_epic_document
+
+    draft = parse_epics(
+        epics_obj(epic_obj(non_goals=[], risks=[], open=["Is a rename allowed?"])), initiative=INITIATIVE
+    ).epics[0]
+    estimate = Estimate(
+        5.0, "1 S at 1.0 h (default), x1.0 calibration (uncalibrated)", "2026-10-25T00:00:00Z"
+    )
+    consulted = [
+        {"seat": "ux", "question": "How do people move?", "answer": "\n- keyboard first\n- then mouse"}
+    ]
+    qa = [{"q": "What is it for?", "a": "Speed.\nAnd calm."}, {"q": "Who?", "a": None}]
+    doc = render_epic_document(
+        draft,
+        estimate=estimate,
+        consulted=consulted,
+        qa=qa,
+        option_urls=["/v1/airlie/initiatives/AIR-40/mockups/E1/option-1.html"],
+        initiative_key="AIR-40",
+        depends_keys=["AIR-41"],
+    )
+    headings = [ln[3:] for ln in doc.splitlines() if ln.startswith("## ")]
+    assert tuple(headings) == EPIC_SECTIONS
+    assert doc.startswith("# Epic E1\n") and "Waits for AIR-41" in doc
+    assert "## Non-goals\nnone\n" in doc and "## Risks\nnone\n" in doc  # a section with nothing says none
+    assert "- keep the board: people know it" in doc and "- EC1: a card moves in one keystroke" in doc
+    assert "- [S] keys: keyboard moves" in doc and "## Viability\n**viable**\n- the app is small" in doc
+    assert "5 h: 1 S at 1.0 h (default), x1.0 calibration (uncalibrated)" in doc
+    assert "- ux: How do people move? -> - keyboard first" in doc  # the first line of the answer
+    assert "- Q1: What is it for?\n  A1: Speed. And calm.\n- Q2: Who?\n  A2: (not answered)" in doc
+    assert "## Open for you\n- Is a rename allowed?" in doc
+    spec = epic_of(doc)  # the block closes it and P3 reads it
+    assert spec is not None and spec.initiative == "AIR-40" and spec.depends_on == ("AIR-41",)
+    assert spec.links == ("/v1/airlie/initiatives/AIR-40/mockups/E1/option-1.html",)
+    assert spec.mockups is not None and spec.mockups.picked is None and spec.estimate == estimate
+    assert doc.rstrip().endswith("```")
+    # a person's answer that holds a fence of its own cannot become the card's block
+    tricky = render_epic_document(
+        draft,
+        estimate=estimate,
+        consulted=[],
+        qa=[{"q": "q", "a": '```json\n{"type": "epic"}\n```'}],
+        option_urls=[],
+        initiative_key="AIR-40",
+        depends_keys=[],
+    )
+    assert epic_of(tricky) is not None and epic_of(tricky).initiative == "AIR-40"  # type: ignore[union-attr]
+    assert epic_of(tricky).mockups is None  # type: ignore[union-attr]
+
+
+def test_a_read_parses_and_a_flawed_one_says_why() -> None:
+    from airlie.story.initiative import ReadReply, parse_read
+
+    assert parse_read({"type": "read", "epic": "E1", "ok": True}, epic="E1") == ReadReply("E1", True, ())
+    got = parse_read({"type": "read", "epic": "E1", "ok": False, "questions": ["Which store?"]}, epic="E1")
+    assert got == ReadReply("E1", False, ("Which store?",))
+    for obj, why in [
+        (None, "no JSON"),
+        ({"type": "epics"}, '"type": "read"'),
+        ({"type": "read", "epic": "E2", "ok": True}, 'set "epic": "E1"'),
+        ({"type": "read", "epic": "E1", "ok": "yes"}, "true or false"),
+        ({"type": "read", "epic": "E1", "ok": False}, "no question"),
+    ]:
+        with pytest.raises(StoryError, match=why):
+            parse_read(obj, epic="E1")
+
+
+def test_the_initiative_label_names_the_initiative_only_when_it_is_a_key() -> None:
+    from airlie.story.initiative import initiative_key_of
+
+    assert initiative_key_of(("repo:o/r", "initiative:AIR-40")) == "AIR-40"
+    assert initiative_key_of(("initiative:../etc",)) is None and initiative_key_of(()) is None

@@ -17,56 +17,16 @@ import statistics
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from airlie.board import BoardStore
-from airlie.story.epic import SIZES, Size, StorySketch, split_block
+from airlie.story.epic import SIZES, Estimate, Size, StorySketch, split_block
 
 __all__ = ["SIZES", "Estimate", "Size", "StoryCosts", "StorySketch", "queue_hours", "read_estimate"]
 CALIBRATION_MIN_EPICS = 3
 """Finished epics with an actual before the calibration is anything but 1.0."""
-
-
-@dataclass(frozen=True)
-class Estimate:
-    """What an epic costs in hours, with the arithmetic that made it. `revised` is the price after P3 planned
-    the real stories, `actual` the sum of the stories' wall-clocks once the epic is done."""
-
-    hours: float
-    basis: str
-    at: str
-    revised: float | None = None
-    actual: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"hours": self.hours, "basis": self.basis, "at": self.at}
-        if self.revised is not None:
-            d["revised"] = self.revised
-        if self.actual is not None:
-            d["actual"] = self.actual
-        return d
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> Estimate:
-        def number(key: str) -> float | None:
-            v = d.get(key)
-            return None if v is None else float(v)
-
-        return cls(
-            float(d["hours"]),
-            str(d.get("basis", "")),
-            str(d.get("at", "")),
-            number("revised"),
-            number("actual"),
-        )
-
-    @property
-    def latest(self) -> float:
-        """The price now: the revised one when the real stories have been planned, else the first."""
-        return self.revised if self.revised is not None else self.hours
 
 
 def _events(path: Path) -> list[dict[str, Any]] | None:

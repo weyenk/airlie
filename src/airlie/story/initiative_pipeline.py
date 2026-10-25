@@ -17,6 +17,7 @@ import asyncio
 import time
 import traceback
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -28,24 +29,36 @@ from airlie.story.board import note
 from airlie.story.briefs import (
     consult_brief,
     consult_round_text,
+    delivery_note,
     directions_brief,
     imagine_brief,
     questions_brief,
+    read_back_text,
+    read_brief,
     render_brief,
     survey_brief,
 )
-from airlie.story.costs import StoryCosts
+from airlie.story.costs import StoryCosts, queue_hours
+from airlie.story.epic import Estimate
+from airlie.story.epic_pipeline import epics_dir
+from airlie.story.epic_plan import LABEL_AFTER
+from airlie.story.epic_state import EpicState
 from airlie.story.initiative import (
+    LABEL_INITIATIVE,
     Ask,
+    EpicDraft,
     EpicsReply,
     Initiative,
     QuestionReply,
+    ReadReply,
     answer_ends_questions,
     check_epics,
     epics_feedback,
     parse_epics,
     parse_imagine_reply,
     parse_question_reply,
+    parse_read,
+    render_epic_document,
 )
 from airlie.story.initiative_state import InitiativeState, initiatives_dir
 from airlie.story.lessons import LessonsStore
@@ -130,6 +143,8 @@ class InitiativePipeline:
                 return
         if st.stage == "imagining":
             await self._specify(st, initiative, asker)
+        elif st.stage == "reading":
+            await self._resume_reading(st, initiative, asker)
 
     def _checkout(self, repository: str) -> Path:
         """The checkout of `repository`: StoryBlocked says what is wrong when the line has none."""
@@ -267,10 +282,21 @@ class InitiativePipeline:
             ) as say:
                 reply = await self._rounds(st, initiative, asker, say, surveys)
                 self._drafted(st, reply)
+                reply = await self._read(st, initiative, asker, reply, say)
+                await self._deliver(st, initiative, reply)
         finally:
             for task in surveys:
                 task.cancel()
             await asyncio.gather(*surveys, return_exceptions=True)
+
+    async def _resume_reading(self, st: InitiativeState, initiative: Initiative, asker: Asker) -> None:
+        """A turn that finds the epics drafted and not delivered (the process stopped between): product's
+        conversation is gone, so the planner's questions land in each epic's `open` list; epics that have
+        cards already are not read or made again."""
+        reply = EpicsReply(st.summary, tuple(EpicDraft.from_dict(d) for d in st.epics))
+        if not any("key" in e for e in st.epics):
+            reply = await self._read(st, initiative, asker, reply, None)
+        await self._deliver(st, initiative, reply)
 
     def _drafted(self, st: InitiativeState, reply: EpicsReply) -> None:
         """The epics are on record as written; the planner reads them next."""
@@ -535,6 +561,147 @@ class InitiativePipeline:
     def _pictures(self, initiative: Initiative) -> list[Path]:
         """The pictures the person attached, for the vision seats (Task 8 resolves them)."""
         return []
+
+    # ---- the planner's read (D7) and the cards (D8) ----
+
+    def _urls(self, st: InitiativeState, key: str, epic: str) -> list[str]:
+        """Where the pages drawn for `epic` are served (the flow API's mockup route)."""
+        options = st.mockups.get(epic, {}).get("options", [])
+        return [f"/v1/airlie/initiatives/{key}/mockups/{epic}/{name}" for name in options]
+
+    def _document(
+        self,
+        st: InitiativeState,
+        initiative: Initiative,
+        draft: EpicDraft,
+        estimate: Estimate,
+        depends_keys: Sequence[str],
+    ) -> str:
+        return render_epic_document(
+            draft,
+            estimate=estimate,
+            consulted=st.consultations,
+            qa=st.qa,
+            option_urls=self._urls(st, initiative.key, draft.id),
+            initiative_key=initiative.key,
+            depends_keys=depends_keys,
+        )
+
+    async def _read(
+        self,
+        st: InitiativeState,
+        initiative: Initiative,
+        asker: Asker,
+        reply: EpicsReply,
+        say: Say | None,
+    ) -> EpicsReply:
+        """The architect reads each epic as the planner it will meet, side by side, once. What it could not
+        plan from goes back to product in the same conversation (one round) and comes back as the epics
+        again; with no conversation to go back to (a resume), the questions land in each epic's `open`
+        list. A read that fails or cannot be parsed is an epic read as fine: it is a check, not a gate."""
+        drafts = reply.order()
+
+        async def one(draft: EpicDraft) -> ReadReply:
+            document = self._document(st, initiative, draft, self.costs.estimate(draft.stories), [])
+            try:
+                text = await asker.ask(
+                    st,
+                    f"read:{draft.id}",
+                    self.s.architect_role,
+                    read_brief(document),
+                    steps=self.specs.read_steps,
+                )
+                got = parse_read(extract_json_block(text), epic=draft.id)
+            except Exception as e:  # noqa: BLE001 - the read is a check: whatever fails, the epic goes on
+                st.emit("planner_read_failed", epic=draft.id, reason=_cap(_reason(e)))
+                got = ReadReply(draft.id, True, ())
+            st.emit("planner_read", epic=draft.id, ok=got.ok, questions=len(got.questions))
+            return got
+
+        reads = await asyncio.gather(*(one(d) for d in drafts))
+        asked = [r for r in reads if r.questions]
+        if not asked:
+            return reply
+        if say is None:
+            by_epic = {r.epic: r.questions for r in asked}
+            return EpicsReply(
+                reply.summary, tuple(replace(d, open=(*d.open, *by_epic.get(d.id, ()))) for d in reply.epics)
+            )
+        text = await say(read_back_text(asked))
+        again = await self._reply(
+            st,
+            say,
+            text,
+            lambda t: parse_epics(extract_json_block(t), initiative=initiative),
+            what="set of epics",
+        )
+        return await self._checked(st, initiative, say, again)
+
+    async def _deliver(self, st: InitiativeState, initiative: Initiative, reply: EpicsReply) -> None:
+        """The epics become cards under the initiative, core first, each born in review (the one card the line
+        makes that waits for a person: the hours decision is theirs) with its document, its block and its
+        price; the initiative gets the delivery note and moves to review. A card is on record in the state the
+        moment it exists, so a stop half-way is finished by the next turn, never made twice."""
+        known = {e["id"]: e for e in st.epics}
+        st.epics = [
+            {**d.to_dict(), **{k: known[d.id][k] for k in ("key", "estimate") if k in known.get(d.id, {})}}
+            for d in reply.order()
+        ]
+        st.save()
+        keys: dict[str, str] = {e["id"]: e["key"] for e in st.epics if "key" in e}
+        made: list[tuple[str, EpicDraft, Estimate]] = []
+        store = self.board.store
+        for entry, draft in zip(st.epics, reply.order(), strict=True):
+            if "key" in entry:
+                done = Estimate.from_dict(entry["estimate"])
+                self._mirror(store.get(entry["key"]), draft.repositories[0], done)  # idempotent
+                made.append((entry["key"], draft, done))
+                continue
+            estimate = self.costs.estimate(draft.stories)
+            depends = [keys[d] for d in draft.depends_on if d in keys]
+            labels = [
+                *(f"repo:{r}" for r in draft.repositories),
+                f"{LABEL_INITIATIVE}{initiative.key}",
+                f"kind:{draft.kind}",
+                f"viability:{draft.viability.verdict}",
+                *(f"{LABEL_AFTER}{k}" for k in depends),
+            ]
+            card = store.create(
+                level="epic",
+                parent=initiative.key,
+                title=draft.title,
+                description=self._document(st, initiative, draft, estimate, depends),
+                labels=labels,
+                created_by=self.specs.product_role,
+            )
+            store.update(card.key, status="review")
+            entry["key"], entry["estimate"] = card.key, estimate.to_dict()
+            keys[draft.id] = card.key
+            st.save()
+            self._mirror(card, draft.repositories[0], estimate)
+            made.append((card.key, draft, estimate))
+        note_text = delivery_note(
+            made,
+            queue_hours=queue_hours(store, self.cfg.observability.state_dir),
+            budget_hours=initiative.budget_hours,
+        )
+        store.comment(initiative.key, self.specs.product_role, note_text)
+        store.update(initiative.key, status="review")
+        st.delivered_at = time.time()
+        st.emit(
+            "epics",
+            keys=[k for k, _, _ in made],
+            kinds=[d.kind for _, d, _ in made],
+            hours=[e.hours for _, _, e in made],
+        )
+        st.finish("delivered")
+
+    def _mirror(self, card: Item, repository: str, estimate: Estimate) -> None:
+        """The price also goes in the epic's own record (epics/<key>/state.json), where the ledger's
+        calibration and the queue read it without the board."""
+        record = EpicState.open(epics_dir(self.cfg) / card.key, card, repository)
+        record.estimate = estimate.to_dict()
+        record.save()
 
     # ---- stops ----
 

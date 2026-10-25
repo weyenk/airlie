@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from airlie.story.model import NO_JSON, StoryError, _encodable, _one_line, _strs
@@ -69,31 +70,137 @@ class Viability:
 
 
 @dataclass(frozen=True)
+class Estimate:
+    """What an epic costs in hours, with the arithmetic that made it (D6 of the specs phase). `revised` is
+    the price after P3 planned the real stories, `actual` the sum of the stories' wall-clocks once the epic
+    is done."""
+
+    hours: float
+    basis: str
+    at: str
+    revised: float | None = None
+    actual: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"hours": self.hours, "basis": self.basis, "at": self.at}
+        if self.revised is not None:
+            d["revised"] = self.revised
+        if self.actual is not None:
+            d["actual"] = self.actual
+        return d
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> Estimate:
+        def number(key: str) -> float | None:
+            v = d.get(key)
+            return None if v is None else float(v)
+
+        return cls(
+            float(d["hours"]),
+            str(d.get("basis", "")),
+            str(d.get("at", "")),
+            number("revised"),
+            number("actual"),
+        )
+
+    @property
+    def latest(self) -> float:
+        """The price now: the revised one when the real stories have been planned, else the first."""
+        return self.revised if self.revised is not None else self.hours
+
+
+@dataclass(frozen=True)
+class Mockups:
+    """The mockup pages drawn for an epic (their URLs) and the option a person picked (1 to 9), if any. An
+    epic with options and no pick is not planned (D4)."""
+
+    options: tuple[str, ...]
+    picked: int | None = None
+
+
+_EPIC_KEYS = frozenset(
+    {
+        "type",
+        "repositories",
+        "criteria",
+        "constraints",
+        "links",
+        "initiative",
+        "kind",
+        "depends_on",
+        "stories",
+        "estimate",
+        "viability",
+        "mockups",
+    }
+)
+
+
+@dataclass(frozen=True)
 class EpicSpec:
     """What the plan is argued from: the repositories the epic touches (the first is read by the architect),
-    its criteria, its constraints (copied into every story's brief) and links."""
+    its criteria, its constraints (copied into every story's brief) and links. The specs phase (P4) adds
+    optional fields: the initiative it came from, its kind (core or extension), the epics it waits for, its
+    story sketch, its price, its viability and its mockups. `extra` holds every key the parser does not know,
+    so a rewrite of the block loses nothing."""
 
     repositories: tuple[str, ...]
     criteria: tuple[EpicCriterion, ...]
     constraints: tuple[str, ...] = ()
     links: tuple[str, ...] = ()
+    initiative: str | None = None
+    kind: str | None = None
+    depends_on: tuple[str, ...] = ()
+    stories: tuple[StorySketch, ...] = ()
+    estimate: Estimate | None = None
+    viability: Viability | None = None
+    mockups: Mockups | None = None
+    extra: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "type": "epic",
             "repositories": list(self.repositories),
             "criteria": [{"id": c.id, "text": c.text} for c in self.criteria],
             "constraints": list(self.constraints),
             "links": list(self.links),
         }
+        if self.initiative is not None:
+            d["initiative"] = self.initiative
+        if self.kind is not None:
+            d["kind"] = self.kind
+        if self.depends_on:
+            d["depends_on"] = list(self.depends_on)
+        if self.stories:
+            d["stories"] = [{"title": x.title, "size": x.size, "scope": x.scope} for x in self.stories]
+        if self.estimate is not None:
+            d["estimate"] = self.estimate.to_dict()
+        if self.viability is not None:
+            d["viability"] = {"verdict": self.viability.verdict, "reasons": list(self.viability.reasons)}
+        if self.mockups is not None:
+            d["mockups"] = {"options": list(self.mockups.options), "picked": self.mockups.picked}
+        return {**self.extra, **d}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EpicSpec:
+        """The spec of a dict this module wrote (`to_dict`): trusted, so only the shape is read."""
+        via, mock, est = d.get("viability"), d.get("mockups"), d.get("estimate")
         return cls(
             tuple(str(r) for r in d["repositories"]),
             tuple(EpicCriterion(str(c["id"]), str(c["text"])) for c in d["criteria"]),
             tuple(str(c) for c in d.get("constraints") or ()),
             tuple(str(c) for c in d.get("links") or ()),
+            d.get("initiative"),
+            d.get("kind"),
+            tuple(str(k) for k in d.get("depends_on") or ()),
+            tuple(
+                StorySketch(str(x["title"]), x["size"], str(x.get("scope", "")))
+                for x in d.get("stories") or ()
+            ),
+            Estimate.from_dict(est) if est else None,
+            Viability(via["verdict"], tuple(str(r) for r in via.get("reasons") or ())) if via else None,
+            Mockups(tuple(str(o) for o in mock.get("options") or ()), mock.get("picked")) if mock else None,
+            {k: v for k, v in d.items() if k not in _EPIC_KEYS},
         )
 
 
@@ -138,6 +245,65 @@ def parse_epic(obj: dict[str, Any] | None) -> EpicSpec:
         tuple(criteria),
         _strs(obj.get("constraints"), "'constraints'"),
         _strs(obj.get("links"), "'links'"),
+        *_specs_fields(obj),
+        {k: v for k, v in obj.items() if k not in _EPIC_KEYS},
+    )
+
+
+def _specs_fields(
+    obj: dict[str, Any],
+) -> tuple[
+    str | None,
+    str | None,
+    tuple[str, ...],
+    tuple[StorySketch, ...],
+    Estimate | None,
+    Viability | None,
+    Mockups | None,
+]:
+    """The optional fields the specs phase writes (P4), read when present and checked as the block is read:
+    an epic written by hand has none of them and gets the defaults. StoryError for one that is flawed."""
+    initiative, kind = obj.get("initiative"), obj.get("kind")
+    if initiative is not None and not isinstance(initiative, str):
+        raise StoryError("'initiative' must be the board key of the initiative")
+    if kind is not None and kind not in ("core", "extension"):
+        raise StoryError("'kind' must be core or extension")
+    raw_stories = obj.get("stories")
+    if raw_stories is not None and not isinstance(raw_stories, list):
+        raise StoryError("'stories' must be a list of {title, size, scope} objects")
+    sketch: list[StorySketch] = []
+    for n, x in enumerate(raw_stories or (), 1):
+        if not isinstance(x, dict) or x.get("size") not in SIZES or not isinstance(x.get("title"), str):
+            raise StoryError(f"story {n} of the sketch needs a title and a size of S, M or L")
+        sketch.append(StorySketch(x["title"], x["size"], str(x.get("scope", ""))))
+    estimate = obj.get("estimate")
+    parsed_estimate: Estimate | None = None
+    if estimate is not None:
+        try:
+            parsed_estimate = Estimate.from_dict(estimate)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise StoryError("'estimate' needs a number of hours, a basis and a time") from None
+    via = obj.get("viability")
+    viability: Viability | None = None
+    if via is not None:
+        if not isinstance(via, dict) or via.get("verdict") not in ("viable", "risky", "not_viable"):
+            raise StoryError("'viability' needs a verdict of viable, risky or not_viable")
+        viability = Viability(via["verdict"], _strs(via.get("reasons"), "viability 'reasons'"))
+    mock = obj.get("mockups")
+    mockups: Mockups | None = None
+    if mock is not None:
+        picked = mock.get("picked") if isinstance(mock, dict) else None
+        if not isinstance(mock, dict) or (picked is not None and not isinstance(picked, int)):
+            raise StoryError("'mockups' needs a list of 'options' and a 'picked' number or null")
+        mockups = Mockups(_strs(mock.get("options"), "mockups 'options'"), picked)
+    return (
+        initiative,
+        kind,
+        _strs(obj.get("depends_on"), "'depends_on'"),
+        tuple(sketch),
+        parsed_estimate,
+        viability,
+        mockups,
     )
 
 

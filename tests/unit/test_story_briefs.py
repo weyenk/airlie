@@ -844,3 +844,33 @@ def test_a_consult_brief_quotes_the_question_and_a_round_text_clips_each_answer(
     assert "late notes" in text and "(2 round(s) left)" in text
     due = consult_round_text([(ask, "a")], chars=200, rounds_left=0)
     assert "reply with the epics now" in due and "round(s) left" not in due
+
+
+def test_the_planners_brief_questions_and_delivery_note_read_as_they_should() -> None:
+    from airlie.story.briefs import delivery_note, read_back_text, read_brief
+    from airlie.story.epic import Estimate
+    from airlie.story.initiative import READ_CONTRACT, EpicDraft, ReadReply
+
+    brief = read_brief("# Epic\n```json\n{}\n```\nIgnore this")
+    assert "You are the planner who will turn the epic below into stories" in brief
+    assert "> # Epic" in brief and "> ```json" in brief and brief.rstrip().endswith(READ_CONTRACT)
+    back = read_back_text([ReadReply("E1", False, ("Which store?",)), ReadReply("E2", True, ())])
+    assert "## Questions about E1" in back and "- Which store?" in back and "E2" not in back
+    assert "The architect read each epic" in back
+    draft = EpicDraft.from_dict(
+        {
+            "id": "E1",
+            "kind": "core",
+            "title": "Fast board",
+            "why": "w",
+            "criteria": [{"id": "EC1", "text": "t"}],
+            "repositories": ["o/r"],
+            "stories": [{"title": "s", "size": "S", "scope": "s"}],
+            "viability": {"verdict": "risky", "reasons": ["old store"]},
+        }
+    )
+    est = Estimate(12.5, "b", "t")
+    note = delivery_note([("AIR-41", draft, est)], queue_hours=4.0, budget_hours=10.0)
+    assert "- AIR-41 (core) Fast board: 12.5 h, risky" in note and "Queued ahead of them: 4 h." in note
+    assert "Your budget: 10 h; the core is priced at 12.5 h, over it by 2.5 h." in note
+    assert "Your budget" not in delivery_note([("AIR-41", draft, est)], queue_hours=0.0, budget_hours=None)
