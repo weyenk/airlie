@@ -108,3 +108,14 @@ test("a server that cannot be reached on arrival says so", async () => {
   const { w } = await open();
   expect(w.get("[role=alert]").text()).toBe("Can't reach airlie: Failed to fetch");
 });
+
+test("a second press while the first is working creates one passkey", async () => {
+  const { w } = await open();
+  let release: () => void = () => {};
+  api.passkeyRegister.mockReturnValue(new Promise<void>((r) => (release = r)));
+  await button(w).trigger("click");
+  await button(w).trigger("click");
+  expect(api.passkeyRegister).toHaveBeenCalledOnce();
+  release();
+  await flushPromises();
+});

@@ -21,54 +21,63 @@ const name = ref("");
 const role = ref<Role>("member");
 const login = ref("");
 const busy = ref(false);
-const actionError = ref("");
-const link = ref<{ name: string; url: string } | null>(null);
+const inviteError = ref(""); // under the invite form
+const listError = ref(""); // above the list: revoke and new link failures
+const link = ref<{ userId: string; name: string; url: string } | null>(null);
 const copied = ref(false);
 const handedOver = ref(false); // the first person was invited: this Mac is nobody's now
 
 const forbidden = computed(() => people.error instanceof ApiError && people.error.status === 403);
-const listError = computed(() => (people.error && !forbidden.value && !handedOver.value ? `Can't reach airlie: ${people.error.message}` : ""));
+const loadError = computed(() => (people.error && !forbidden.value && !handedOver.value ? `Can't reach airlie: ${people.error.message}` : ""));
 const nowSeconds = computed(() => Math.floor(Date.now() / 1000));
 const isYou = (u: User) => Boolean(session.me?.user_id) && u.id === session.me?.user_id;
 
 function show(invite: Invite): void {
-  link.value = { name: invite.user.name, url: new URL(invite.url, location.href).href };
+  link.value = { userId: invite.user.id, name: invite.user.name, url: new URL(invite.url, location.href).href };
   copied.value = false;
 }
 
-async function guarded(action: () => Promise<void>, forbiddenText?: string): Promise<void> {
-  actionError.value = "";
+/** Run `action`; a failure is said in `into`, with a friendly line for a 403 (the server's other refusals, such as the
+ * last admin or yourself, already read as sentences). */
+async function guarded(into: typeof inviteError, forbiddenText: string, action: () => Promise<void>): Promise<void> {
+  inviteError.value = "";
+  listError.value = "";
   try {
     await action();
   } catch (e) {
-    if (e instanceof ApiError && e.status === 403 && forbiddenText) actionError.value = forbiddenText;
-    else actionError.value = (e as Error).message;
+    into.value = e instanceof ApiError && e.status === 403 ? forbiddenText : (e as Error).message;
   }
 }
 
 async function invite(): Promise<void> {
+  if (busy.value) return;
   const first = people.loaded && people.users.length === 0;
   busy.value = true;
-  await guarded(async () => {
+  await guarded(inviteError, "Only admins can invite.", async () => {
     const out = await createInvite({ name: name.value.trim(), role: role.value, login: login.value.trim() || null });
     show(out);
     name.value = "";
     login.value = "";
-    if (first) handedOver.value = true; // no reload here: a 401 would send us to Sign in before the link is read
-    else await people.refresh();
-  }, "Only admins can invite.");
+    // the first person ends the Mac's implicit sign-in: a 401 on the reload that follows is not a sign-out here
+    if (first) {
+      handedOver.value = true;
+      people.handOver();
+    }
+    await people.refresh();
+  });
   busy.value = false;
 }
 
 async function newLink(u: User): Promise<void> {
-  await guarded(async () => show(await inviteAgain(u.id)));
+  await guarded(listError, "Only admins can make links.", async () => show(await inviteAgain(u.id)));
 }
 
 async function revoke(u: User): Promise<void> {
   const ok = await confirm(`Remove ${u.name}? Their passkeys and sessions end now.`, { title: `Revoke ${u.name}?`, confirmLabel: "Revoke" });
   if (!ok) return;
-  await guarded(async () => {
+  await guarded(listError, "Only admins can revoke.", async () => {
     await deleteUser(u.id);
+    if (link.value?.userId === u.id) link.value = null; // their link is no good now
     await people.refresh();
   });
 }
@@ -110,11 +119,12 @@ async function copy(): Promise<void> {
         <span v-if="people.loaded" data-count class="rounded-full bg-muted px-2 py-px text-xs font-semibold text-muted-foreground">{{ people.users.length }}</span>
       </div>
       <p v-if="forbidden" class="m-0 px-[18px] py-4 text-muted-foreground">Only admins can see who's here.</p>
-      <div v-else-if="listError" class="p-[18px]"><ErrorBanner :error="listError" /></div>
-      <p v-else-if="people.loaded && !people.users.length" class="m-0 px-[18px] py-4 text-muted-foreground">
-        {{ handedOver ? "" : "Nobody yet. Invite someone below." }}
+      <div v-else-if="loadError" class="p-[18px]"><ErrorBanner :error="loadError" /></div>
+      <p v-else-if="people.loaded && !people.users.length && !handedOver" class="m-0 px-[18px] py-4 text-muted-foreground">
+        Nobody yet. Invite someone below.
       </p>
-      <ul v-else class="m-0 list-none p-0">
+      <div v-if="listError" class="px-[18px] pt-3.5"><ErrorBanner data-list-error :error="listError" /></div>
+      <ul v-if="!forbidden && !loadError && people.users.length" class="m-0 list-none p-0">
         <li
           class="grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.7fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_150px] gap-x-4 border-b border-border px-[18px] py-2.5 text-xs font-semibold text-muted-foreground max-[640px]:hidden"
           aria-hidden="true"
@@ -185,7 +195,7 @@ async function copy(): Promise<void> {
         </div>
         <Button type="submit" class="h-[34px] text-[13px] font-semibold" :disabled="busy">Invite</Button>
       </form>
-      <div v-if="actionError" class="px-[18px] pb-[18px]"><ErrorBanner data-invite-error :error="actionError" /></div>
+      <div v-if="inviteError" class="px-[18px] pb-[18px]"><ErrorBanner data-invite-error :error="inviteError" /></div>
       <div
         v-if="link"
         data-link-box

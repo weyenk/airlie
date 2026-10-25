@@ -187,3 +187,43 @@ def test_a_passkey_made_from_an_invite_signs_in_again(
     )
     me = page.evaluate("fetch('/v1/auth/me').then(r => r.json())")
     assert me["name"] == "Ann", me
+
+
+def test_the_first_invite_hands_the_mac_over_and_the_link_stays_readable(
+    page: Page, bootstrap_server: Server, evidence: Evidence
+) -> None:
+    """A fresh install, no key: this machine is the bootstrap admin. The first invite ends that, and the page
+    must not send the person to Sign in before the link is read (the real middleware says 401 then)."""
+    page.goto(f"{bootstrap_server.url}/next/admin")
+    evidence.expect(
+        page.get_by_text("Nobody yet. Invite someone below."), "nobody is invited"
+    ).to_be_visible()
+    page.get_by_label("Name").fill("Noah")
+    page.get_by_role("radio", name="Admin").click()
+    page.get_by_role("button", name="Invite", exact=True).click()
+    box = page.locator("[data-link-box]")
+    evidence.expect(box, "the link box names the person").to_contain_text("Link for Noah.")
+    evidence.expect(box, "and says the Mac is handed over").to_contain_text(
+        "That was the first person, so this Mac is no longer signed in by itself."
+    )
+    # the list reload and the feed both meet 401 now: give them time to (wrongly) send us away
+    page.wait_for_timeout(2500)
+    evidence.expect(page, "still on the admin page").to_have_url(re.compile(r"/next/admin$"))
+    evidence.expect(box, "the link is still there to read").to_be_visible()
+    me = page.evaluate("fetch('/v1/auth/me').then(r => r.status)")
+    evidence.shot("the server really has stopped signing this machine in", held=me == 401)
+    assert me == 401
+
+
+def test_a_session_that_ends_while_admin_is_open_goes_to_sign_in_keeping_the_page(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    _invite(own_server, "Jess")  # people exist: this is no bootstrap
+    next_page.goto(own_server.url + "/next/admin")
+    evidence.expect(next_page.locator('[data-person="Jess"]'), "the list is up").to_be_visible()
+    evidence.expect(next_page.get_by_text("Live", exact=True), "the feed is live").to_be_visible()
+    next_page.evaluate("localStorage.setItem('airlie.key', 'no-longer-valid')")
+    _invite(own_server, "Kim")  # a users event: the list reloads, and is refused
+    evidence.expect(next_page, "signed out goes to sign in, keeping the page").to_have_url(
+        re.compile(r"/next/signin\?next=(%2F|/)admin$")
+    )

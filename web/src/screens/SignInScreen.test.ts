@@ -143,3 +143,14 @@ test("an unreachable server on arrival says to check Tailscale", async () => {
   await flushPromises();
   expect(alertText(w)).toBe("Can't reach airlie. Turn on Tailscale and check you're on Noah's network.");
 });
+
+test("a second press while the first is working asks nothing more", async () => {
+  const { w } = await open();
+  let release: () => void = () => {};
+  api.passkeyLogin.mockReturnValue(new Promise<void>((r) => (release = r)));
+  await w.get("[data-passkey]").trigger("click");
+  await w.get("[data-passkey]").trigger("click");
+  expect(api.passkeyLogin).toHaveBeenCalledOnce();
+  release();
+  await flushPromises();
+});

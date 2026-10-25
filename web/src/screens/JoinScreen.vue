@@ -36,6 +36,7 @@ onMounted(async () => {
 });
 
 async function create(): Promise<void> {
+  if (busy.value) return;
   busy.value = true;
   error.value = "";
   try {
@@ -66,6 +67,7 @@ async function create(): Promise<void> {
     </template>
     <template v-else>
       <h1 class="text-xl font-bold tracking-[-0.01em]">You're invited</h1>
+      <!-- "invited by Noah" is fixed wording (as in the old app): register/options returns the person's name, not who invited them -->
       <div v-if="name !== null" class="flex items-center gap-2.5 rounded-[10px] border border-border p-3">
         <span class="inline-flex size-[30px] items-center justify-center rounded-full bg-track text-xs font-semibold">{{ initials }}</span>
         <div>

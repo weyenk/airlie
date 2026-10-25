@@ -194,3 +194,69 @@ test("inviting the first person hands the Mac over, and says so beside the link"
   );
   expect(w.find("[data-invite-url]").exists()).toBe(true);
 });
+
+test("a refused Revoke says why beside the list: the server's sentence, or a friendly line for a 403", async () => {
+  const w = await open();
+  api.deleteUser.mockRejectedValueOnce(new ApiError(409, "cannot remove the last admin"));
+  await clickButton(row(w, "Jess"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(w.get("[data-list-error]").text()).toBe("cannot remove the last admin");
+  expect(w.find("[data-invite-error]").exists()).toBe(false);
+  expect(w.find('[data-person="Jess"]').exists()).toBe(true);
+
+  api.deleteUser.mockRejectedValueOnce(new ApiError(403, "admins only"));
+  await clickButton(row(w, "Jess"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(w.get("[data-list-error]").text()).toBe("Only admins can revoke.");
+
+  api.deleteUser.mockResolvedValueOnce(undefined);
+  await clickButton(row(w, "Jess"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(w.find("[data-list-error]").exists()).toBe(false); // a good try clears the old complaint
+});
+
+test("a failed New link says why beside the list", async () => {
+  const w = await open();
+  api.inviteAgain.mockRejectedValue(new ApiError(404, "no such user"));
+  await clickButton(row(w, "Jess"), "New link");
+  expect(w.get("[data-list-error]").text()).toBe("no such user");
+});
+
+test("revoking the person a link was for clears that link, and only theirs", async () => {
+  const w = await open();
+  await clickButton(row(w, "Jess"), "New link");
+  expect(w.find("[data-link-box]").exists()).toBe(true);
+  await clickButton(row(w, "Marcus"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(w.find("[data-link-box]").exists()).toBe(true); // Jess's link is still good
+  await clickButton(row(w, "Jess"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(w.find("[data-link-box]").exists()).toBe(false);
+});
+
+test("an invited person appears in the list at once, without a reload", async () => {
+  const w = await open([NOAH]);
+  api.listUsers.mockResolvedValue([NOAH, { ...MARCUS, credentials: 0 }]);
+  await w.get("#invite-name").setValue("Marcus");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(row(w, "Marcus").text()).toContain("invite waiting");
+  expect(w.get("[data-count]").text()).toBe("2");
+});
+
+test("after the hand-over the list stays quiet: no empty line, no error from the 401 that follows", async () => {
+  const w = await open([]);
+  api.listUsers.mockRejectedValue(new ApiError(401, "not signed in"));
+  await w.get("#invite-name").setValue("Noah");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(w.find("[data-link-box]").exists()).toBe(true);
+  expect(w.text()).not.toContain("Nobody yet");
+  expect(w.text()).not.toContain("Can't reach airlie");
+  expect(api.listUsers).toHaveBeenLastCalledWith({ quiet401: true });
+});

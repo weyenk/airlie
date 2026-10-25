@@ -28,6 +28,7 @@ async function done(): Promise<void> {
 }
 
 async function usePasskey(): Promise<void> {
+  if (busy.value) return;
   busy.value = true;
   error.value = "";
   try {
@@ -45,6 +46,7 @@ async function usePasskey(): Promise<void> {
 }
 
 async function submitKey(): Promise<void> {
+  if (busy.value) return;
   const trimmed = key.value.trim();
   if (!trimmed) return;
   busy.value = true;

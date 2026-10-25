@@ -14,5 +14,14 @@ export function safeNext(raw: unknown): string {
   }
   if (url.origin !== BASE) return "/";
   if (url.pathname === "/signin" || url.pathname.startsWith("/join/")) return "/";
-  return url.pathname + url.search + url.hash;
+  const out = url.pathname + url.search + url.hash;
+  // normalisation can make a path of its own ("/next/..//x" is "//x"), and a percent-encoded `\` is one to some readers
+  let decoded = url.pathname;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    return "/";
+  }
+  if (out.startsWith("//") || decoded.startsWith("//") || decoded.startsWith("/\\")) return "/";
+  return out;
 }
