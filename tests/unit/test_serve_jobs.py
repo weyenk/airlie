@@ -539,3 +539,16 @@ def test_a_story_already_running_is_a_409_before_its_issue_is_touched(
         assert r.status_code == 409 and "already running" in r.json()["detail"]
         assert len([r for r in jira.requests if r.method == "POST"]) == posted  # no note, no move
         assert client.delete("/v1/airlie/jobs/story-AIR-7").json()["cancelled"] is True
+
+
+def test_the_story_endpoint_answers_in_words_when_the_named_repository_has_no_checkout(
+    tmp_path: Path,
+) -> None:
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")  # the real story_job
+    with TestClient(app) as client:
+        body = {"text": "avatars", "repo": "weyenk/airlie"}
+        assert client.post("/v1/airlie/stories", json=body).status_code == 401  # sign-in, as before
+        r = client.post("/v1/airlie/stories", json=body, headers={"Authorization": "Bearer k"})
+        assert r.status_code == 400 and r.json()["detail"].startswith("no checkout of weyenk/airlie in ")
+        assert "clone it there" in r.json()["detail"]

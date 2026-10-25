@@ -42,9 +42,9 @@ test("Start story without a repository says to pick one and posts nothing", asyn
   expect(item.started).toBeUndefined();
 });
 
-test("a repository that is not owner/name says so and posts nothing", async () => {
+test("a repository that is neither owner/name nor a path says so and posts nothing", async () => {
   const { w } = await open();
-  await repoBox(w).setValue("/work/airlie");
+  await repoBox(w).setValue("airlie");
   await w.get("[data-start]").trigger("click");
   await flushPromises();
   expect(w.get("[role=alert]").text()).toContain("owner/name");
@@ -55,6 +55,16 @@ test("the last repository used is the default", async () => {
   localStorage.setItem("airlie.repo", "weyenk/other");
   const { w } = await open();
   expect((repoBox(w).element as HTMLInputElement).value).toBe("weyenk/other");
+});
+
+test("a path stored by today's app is honoured, sent as it is, and not overwritten by the default", async () => {
+  localStorage.setItem("airlie.repo", "/work/airlie");
+  const { w } = await open();
+  expect((repoBox(w).element as HTMLInputElement).value).toBe("/work/airlie");
+  await w.get("[data-start]").trigger("click");
+  await flushPromises();
+  expect(api.startStory).toHaveBeenCalledExactlyOnceWith({ text: STORY, repo: "/work/airlie" });
+  expect(localStorage.getItem("airlie.repo")).toBe("/work/airlie");
 });
 
 test("Start story posts the edited text and repository, and the item becomes a started job", async () => {

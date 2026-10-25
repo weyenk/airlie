@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { ApiError } from "@/api";
 import { useChatStore } from "@/stores/chat";
-import { clearPreviews } from "./attachments";
+import { clearPreviews, previews } from "./attachments";
 import Composer from "./Composer.vue";
 
 const chatApi = vi.hoisted(() => ({ stream: vi.fn(), chatSkills: vi.fn(), attachmentLimits: vi.fn(), upload: vi.fn(), uploadUrl: vi.fn() }));
@@ -180,4 +180,35 @@ test("Enter on a command typed in full runs it instead of choosing it", async ()
   await box(w).trigger("keydown", { key: "Enter" });
   await flushPromises();
   expect(chat.thread).toHaveLength(0);
+});
+
+test("removing a chip revokes its picture's URL and forgets it; a cancelled upload shows no error", async () => {
+  let reject!: (e: unknown) => void;
+  chatApi.upload.mockImplementationOnce((_f: File, o: { signal: AbortSignal }) => new Promise((_r, rej) => {
+    reject = rej;
+    o.signal.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+  }));
+  const { w } = await open();
+  await pick(w, file("shot.png", 2048, "image/png"));
+  await w.get("button[aria-label='Remove shot.png']").trigger("click");
+  reject(new DOMException("aborted", "AbortError"));
+  await flushPromises();
+  expect(w.find("li").exists()).toBe(false);
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
+  expect((send(w).element as HTMLButtonElement).disabled).toBe(false);
+  // an uploaded one: removed, its preview entry is dropped too
+  await pick(w, file("done.png", 2048, "image/png"));
+  expect(previews.has("u-done.png")).toBe(true);
+  await w.get("button[aria-label='Remove done.png']").trigger("click");
+  expect(previews.has("u-done.png")).toBe(false);
+});
+
+test("an Enter that confirms an IME composition does not choose a command or send", async () => {
+  const { w, chat } = await open();
+  await box(w).setValue("/");
+  await box(w).trigger("keydown", { key: "Enter", isComposing: true });
+  expect(chat.draft).toBe("/");
+  await box(w).setValue("hello");
+  await box(w).trigger("keydown", { key: "Enter", isComposing: true });
+  expect(chatApi.stream).not.toHaveBeenCalled();
 });

@@ -13,17 +13,21 @@ const props = defineProps<{ item: ChatItem }>();
 const chat = useChatStore();
 const names = useRepoNames();
 
+/** A repository is owner/name, or an absolute checkout path (today's app kept a path under `airlie.repo`). */
+const usable = (v: string): boolean => isRepo(v) || /^(\/|~\/)\S/.test(v);
+
 function remembered(): string {
   try {
     const v = localStorage.getItem(REPO) ?? "";
-    return isRepo(v) ? v : ""; // today's app kept a path here; only owner/name is a repository now
+    return usable(v) ? v : "";
   } catch {
     return "";
   }
 }
 
 const text = ref(props.item.storyText ?? props.item.text ?? "");
-const repo = ref(remembered());
+const first = remembered();
+const repo = ref(first);
 const error = ref("");
 const busy = ref(false);
 
@@ -40,8 +44,8 @@ async function start(): Promise<void> {
     error.value = "Pick a repository first.";
     return;
   }
-  if (!isRepo(chosen)) {
-    error.value = REPO_RULE;
+  if (!usable(chosen)) {
+    error.value = `${REPO_RULE.replace(/\.$/, "")}, or the full path of a checkout.`;
     return;
   }
   const body = text.value.trim();
@@ -52,10 +56,13 @@ async function start(): Promise<void> {
   busy.value = true;
   try {
     const out = await startStory({ text: body, repo: chosen });
-    try {
-      localStorage.setItem(REPO, chosen);
-    } catch {
-      // this page only
+    if (chosen !== first) {
+      // remembered only when the person chose it: a stored path is not overwritten by the default
+      try {
+        localStorage.setItem(REPO, chosen);
+      } catch {
+        // this page only
+      }
     }
     chat.markStarted(props.item, { job_id: out.job_id, kind: out.kind, label: `${chosen.split("/").pop()} · story` });
   } catch (e) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { listStories } from "@/api/workflows";
-import type { StoryRow } from "@/api/workflows";
+import { ApiError } from "@/api";
+import { storyFlow } from "@/api/workflows";
 import ProgressBar from "@/components/ProgressBar.vue";
 import { chipSpec } from "@/components/statusTable";
 import { liveResource } from "@/stores/live";
@@ -21,16 +21,32 @@ const workflows = useWorkflowsStore();
 const row = computed(() => workflows.running.find((r) => r.key === key.value));
 const progress = computed(() => (row.value ? (row.value.progress === null ? null : row.value.progress * 100) : undefined));
 
-// a story's stage: its row, looked up again whenever stories change
-const story = liveResource("stories", async (): Promise<StoryRow | undefined> => {
-  if (!isStory.value) return undefined;
-  return (await listStories({ q: key.value, size: 5 })).stories.find((s) => s.key === key.value);
-});
+// A story's stage, asked for by its exact key (a search would also find AIR-10 for AIR-1) and again when that
+// story changes. Once it has been published nothing more is asked: a long thread must not refetch for ever.
+type Seen = { stage: string | null; blocked: string | null } | undefined;
+let last: Seen;
+const DONE = ["publish", "review"];
+const story = liveResource<Seen>(
+  "stories",
+  async () => {
+    if (!isStory.value) return undefined;
+    if (last && !last.blocked && last.stage && DONE.includes(last.stage)) return last;
+    try {
+      const f = await storyFlow(key.value);
+      last = { stage: f.stage, blocked: f.blocked };
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+      last = undefined; // no state yet
+    }
+    return last;
+  },
+  key.value,
+);
 const stage = computed(() => {
   if (!isStory.value) return "";
   const s = story.data.value;
-  if (!s) return "starting";
-  return chipSpec("stage", s.blocked ? "blocked" : (s.stage ?? "new")).label;
+  if (s) return chipSpec("stage", s.blocked ? "blocked" : (s.stage ?? "new")).label;
+  return row.value ? "starting" : "no state yet"; // running with no state written yet, or not running and none
 });
 </script>
 

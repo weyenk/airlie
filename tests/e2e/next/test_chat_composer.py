@@ -349,7 +349,7 @@ def test_the_job_card_follows_the_story_with_no_reload(
     card.get_by_role("combobox", name="Repository").fill(REPO)
     card.get_by_role("button", name="Start story").click()
     job = next_page.locator("[data-card]")
-    evidence.expect(job.locator("[data-stage]"), "nothing has run yet").to_have_text("starting")
+    evidence.expect(job.locator("[data-stage]"), "nothing has run yet").to_have_text("no state yet")
     evidence.expect(job.get_by_role("progressbar"), "so no progress").to_have_count(0)
     _write_story(own_server.state, STARTED)  # as the tick would
     evidence.expect(job.locator("[data-stage]"), "the stage follows the story").to_have_text(
@@ -381,3 +381,42 @@ def test_the_slash_menu_and_the_tray_fit_on_a_phone(
     )
     evidence.shot("a long file name does not widen the page", held=bool(fits))
     assert fits
+
+
+def test_start_story_on_the_real_server_names_the_checkout_it_is_missing(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    """Only the repository names are stubbed: owner/name reaches the real route, which looks for the
+    checkout in story.repos_root and says in words that there is none. (This server has no story topology and
+    no clone, so a story cannot run to its end here; owner/name resolving to a checkout is a unit test.)"""
+    server.upstream.reply = STORY
+    next_page.route("**/v1/airlie/repos/names", lambda route: route.fulfill(json={"repos": [REPO]}))
+    open_plain(next_page, server)
+    say(next_page, "/story the chat gets a New chat button")
+    card = next_page.locator("[data-story-card]")
+    card.get_by_role("combobox", name="Repository").fill(REPO)
+    with next_page.expect_response(re.compile(r"/v1/airlie/stories$")) as sent:
+        card.get_by_role("button", name="Start story").click()
+    assert sent.value.status == 400
+    evidence.expect(card.get_by_role("alert"), "the refusal is said in words").to_contain_text(
+        f"no checkout of {REPO}"
+    )
+    evidence.expect(
+        next_page.locator("[data-card]"), "no job card for a story that did not start"
+    ).to_have_count(0)
+    evidence.expect(card.get_by_role("button", name="Start story"), "it can be tried again").to_be_enabled()
+
+
+def test_a_failed_upload_says_why_and_x_clears_it(
+    next_page: Page, server: Server, evidence: Evidence
+) -> None:
+    open_chat(next_page, server, [])
+    next_page.route(
+        "**/v1/airlie/uploads?*", lambda route: route.fulfill(status=507, json={"detail": "the disk is full"})
+    )
+    attach(next_page, {"name": "notes.log", "mimeType": "text/plain", "buffer": b"x"})
+    evidence.expect(chip(next_page, "notes.log"), "the chip says why").to_contain_text("the disk is full")
+    evidence.expect(next_page.get_by_role("button", name="Send"), "Send stays off").to_be_disabled()
+    next_page.get_by_role("button", name="Remove notes.log").click()
+    evidence.expect(chip(next_page, "notes.log"), "× clears it").to_have_count(0)
+    evidence.expect(next_page.get_by_role("button", name="Send"), "Send is back on").to_be_enabled()

@@ -96,13 +96,14 @@ export function useAttachments() {
     }
   }
 
-  function release(p: Pending): void {
+  function release(p: Pending, keepPreview = false): void {
     p.abort?.abort();
-    if (p.url && !(p.meta && previews.get(p.meta.id) === p.url)) URL.revokeObjectURL(p.url);
+    if (p.url && !(keepPreview && p.meta && previews.get(p.meta.id) === p.url)) URL.revokeObjectURL(p.url);
   }
 
   function remove(p: Pending): void {
     release(p);
+    if (p.meta) previews.delete(p.meta.id); // its object URL goes with it
     const i = pending.value.findIndex((q) => q.id === p.id);
     if (i >= 0) pending.value.splice(i, 1);
   }
@@ -123,7 +124,10 @@ export function useAttachments() {
 
   /** Drop every chip and stop every upload. */
   function reset(): void {
-    for (const p of pending.value.splice(0)) release(p);
+    for (const p of pending.value.splice(0)) {
+      release(p);
+      if (p.meta) previews.delete(p.meta.id);
+    }
   }
 
   onBeforeUnmount(() => {

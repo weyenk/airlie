@@ -83,6 +83,7 @@ async function submit(): Promise<void> {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
+  if (ev.isComposing) return; // an IME's Enter confirms its text: it is not ours
   if (menuOpen.value && shown.value.length) {
     if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
       ev.preventDefault();

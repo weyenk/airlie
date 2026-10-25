@@ -5,6 +5,7 @@ gh, the pipeline and the one-story lock."""
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -372,6 +373,20 @@ async def tick(cfg: AirlieConfig) -> str:
         return " ".join(line.split())
 
 
+_OWNER_NAME = re.compile(r"[A-Za-z0-9_][\w.-]*/[\w.-]+")
+
+
+def given_repo(cfg: AirlieConfig, repo: str | None) -> Path | None:
+    """The checkout a request names: a path as written, or an "owner/name" (the web app's repository field),
+    which is the checkout of that name in story.repos_root as an issue's repo: label is. A RepositoryError
+    in words when there is none."""
+    if not repo:
+        return None
+    if _OWNER_NAME.fullmatch(repo) and not Path(repo).expanduser().exists():
+        return find_checkout(cfg.story.repos_root, repo)
+    return Path(repo)
+
+
 async def story_job(
     cfg: AirlieConfig,
     *,
@@ -385,6 +400,7 @@ async def story_job(
     told so too); the story is built in the job. Its gate is the repository's AGENTS.md: a request names
     none. `running` says whether a job (by its id) runs: one for the same story is StoryRunning, before the
     issue can be told or moved."""
+    given = given_repo(cfg, repo)
     try:
         scfg = story_config(cfg)
     except ConfigError as e:  # story.topology names no profile, or the file changed under a running serve
@@ -392,7 +408,6 @@ async def story_job(
     problems = story_problems(scfg)
     if problems:
         raise StorySetupError("; ".join(problems))
-    given = Path(repo) if repo else None
     board, c = await card_for(scfg, card, text)
     job_id = f"story-{c.key}"
     if running is not None and running(job_id):
