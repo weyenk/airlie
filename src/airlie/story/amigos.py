@@ -16,20 +16,39 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection, Mapping
-from dataclasses import asdict, dataclass
-from pathlib import PurePosixPath
+import time
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
+from autogen_agentchat.agents import AssistantAgent, BaseChatAgent
+from autogen_agentchat.base import ChatAgent, Response, Team, TerminatedException, TerminationCondition
+from autogen_agentchat.messages import BaseAgentEvent, BaseChatMessage, StopMessage, TextMessage
+from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_core import CancellationToken
+from autogen_core.models import ChatCompletionClient
+
+from airlie.config import AirlieConfig, RoleSpec
+from airlie.prompts import text as hub_text
+from airlie.skills import prompt_text
+from airlie.story.amigos_checks import NO_FINDINGS, check_agreement, findings_message
+from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, _lesson_line, story_text
+from airlie.story.layer_checks import Finding
+from airlie.story.lessons import Lesson
 from airlie.story.model import (
     NO_JSON,
     Layer,
+    NotActionable,
     Story,
     StoryError,
     _encodable,
     _one_line,
+    parse_layers,
     parse_story,
 )
+from airlie.teams.autogen_team import build_function_tools
+from airlie.tools import ToolRegistry
 from airlie.tools.scope import is_test_module
 from airlie.topology.studio_plan import extract_json_block
 
@@ -355,3 +374,480 @@ def parse_story_revision(obj: dict[str, Any]) -> tuple[Story, dict[str, str]]:
         else:
             kept.append(c)
     return parse_story({**obj, "acceptance": kept if isinstance(raw, list) else raw}), dropped
+
+
+# ---- the meeting -------------------------------------------------------------------------------------------
+
+CHECKER = "airlie"
+"""The checker's name in the group chat: the fourth participant, with no model."""
+ROLES: tuple[str, ...] = ("product", "architect", "tester")
+"""The three amigos, in turn order; the checker speaks fourth."""
+_PARTICIPANTS = (*ROLES, CHECKER)
+
+ClientFactory = Callable[[str, RoleSpec], ChatCompletionClient]
+"""Role name and its spec -> the model client that role's agent speaks through."""
+
+
+@dataclass
+class Turn:
+    """One turn of the meeting as the pipeline sees it: who spoke, what, the verdict that ended it (None when
+    it had no usable one), the parts it carried (`requirements`: a Story, `changes`: layers, `proof`: tests,
+    `dropped`: criteria product dropped, `blocked`: why product says the request cannot be built), the
+    problems it had (a verdict or a part that did not parse), and, for the checker's turn, its findings."""
+
+    role: str
+    text: str
+    verdict: Verdict | None = None
+    parts: dict[str, Any] = field(default_factory=dict)
+    problems: tuple[Finding, ...] = ()
+    findings: tuple[Finding, ...] = ()
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    wall_ms: float = 0.0
+
+
+@dataclass(frozen=True)
+class ReadRules:
+    """What a turn's parts are parsed against: the most layers a split may have, the repository's test
+    levels and the guidelines the tester may name."""
+
+    max_layers: int
+    levels: Mapping[str, int]
+    guidelines: Collection[str]
+
+
+@dataclass(frozen=True)
+class Standing:
+    """The parts as they stand: the last valid version of each, by its owner. `proof` is None until the
+    tester has posted a valid one."""
+
+    story: Story
+    layers: tuple[Layer, ...]
+    proof: tuple[ProofTest, ...] | None = None
+    dropped: Mapping[str, str] = field(default_factory=dict)
+
+    def after(self, turn: Turn) -> Standing:
+        """These parts with the ones `turn` carried in place of the ones they replace."""
+        return Standing(
+            turn.parts.get("requirements", self.story),
+            turn.parts.get("changes", self.layers),
+            turn.parts.get("proof", self.proof),
+            {**self.dropped, **turn.parts.get("dropped", {})},
+        )
+
+
+def part_of(obj: Mapping[str, Any]) -> Part | None:
+    """Which part a posted JSON object is, by its shape; None for a verdict or anything else."""
+    kind = obj.get("type")
+    if kind in ("story", "blocked"):
+        return "requirements"
+    if kind == "proof":
+        return "proof"
+    if kind != "verdict" and "layers" in obj:
+        return "changes"
+    return None
+
+
+def read_turn(role: str, text: str, standing: Standing, rules: ReadRules) -> Turn:
+    """A role's turn as data. The verdict is the last ```json fence; each other fence that is a part is
+    parsed against the parts as they stood (a part is only its owner's to post). A reply that does not
+    parse is a Finding for the next checker turn (`verdict_missing`, `part_invalid`), never an exception."""
+    problems: list[Finding] = []
+    verdict: Verdict | None = None
+    try:
+        verdict = parse_verdict(text, role)
+    except StoryError as e:
+        problems.append(Finding("verdict_missing", role, str(e), ""))
+    parts: dict[str, Any] = {}
+    story, layers = standing.story, standing.layers
+    for obj in json_blocks(text):
+        part = part_of(obj)
+        if part is None:
+            continue
+        if OWNER[part] != role:
+            problems.append(
+                Finding(
+                    "part_invalid",
+                    role,
+                    f"you posted the {part}, which is {OWNER[part]}'s part; only its owner changes it: "
+                    "object with a claim and a suggestion instead",
+                    "",
+                )
+            )
+            continue
+        try:
+            if obj.get("type") == "blocked":
+                parts["blocked"] = str(obj.get("reason") or "no reason given")
+            elif part == "requirements":
+                story, dropped = parse_story_revision(obj)
+                parts["requirements"], parts["dropped"] = story, dropped
+            elif part == "changes":
+                layers = parse_layers(obj, story, rules.max_layers)
+                parts["changes"] = layers
+            else:
+                parts["proof"] = parse_proof(obj, story, layers, rules.levels, rules.guidelines)
+        except StoryError as e:
+            problems.append(Finding("part_invalid", role, f"your {part} was not used: {e}", ""))
+    return Turn(role, text, verdict, parts, tuple(problems))
+
+
+def latest_parts(
+    turns: Sequence[Turn],
+    story: Story,
+    layers: tuple[Layer, ...],
+    proof: tuple[ProofTest, ...] | None,
+) -> tuple[Story, tuple[Layer, ...], tuple[ProofTest, ...]]:
+    """The last valid version of each part by its owner, from the opening parts on; the proof is () when
+    the tester never posted a valid one."""
+    standing = Standing(story, layers, proof)
+    for turn in turns:
+        standing = standing.after(turn)
+    return standing.story, standing.layers, standing.proof or ()
+
+
+class Checker(BaseChatAgent):
+    """airlie's participant with no model: it speaks last in each round, re-reads the parts as they stand
+    from the turn log the meeting keeps, and posts the problems it finds (`amigos_checks`) with the problems
+    the turns since its last one carried, or "no findings". It always judges the parts as they stand, so a
+    finding the owner has not fixed is posted again, and "no findings" is never a silence over a problem."""
+
+    def __init__(
+        self,
+        *,
+        turns: list[Turn],
+        opening: Standing,
+        repo: Path,
+        base: str,
+        max_scope_files: int,
+    ) -> None:
+        super().__init__(CHECKER, "airlie's mechanical checks on the three parts of the agreement")
+        self._turns = turns
+        self._opening = opening
+        self._repo = repo
+        self._base = base
+        self._max_scope_files = max_scope_files
+        self.last: tuple[Finding, ...] = ()
+        """The findings of the latest turn, for the meeting's record."""
+
+    @property
+    def produced_message_types(self) -> Sequence[type[BaseChatMessage]]:
+        return (TextMessage,)
+
+    async def on_messages(
+        self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken
+    ) -> Response:
+        standing = self._opening
+        since: list[Turn] = []
+        for turn in self._turns:
+            if turn.role == CHECKER:
+                since = []
+                continue
+            standing = standing.after(turn)
+            since.append(turn)
+        found = [p for turn in since for p in turn.problems]
+        if standing.proof is None:
+            found.append(
+                Finding(
+                    "part_invalid", "tester", "no proof plan has been posted yet: the tester posts it", ""
+                )
+            )
+        else:
+            found += check_agreement(
+                standing.story, standing.layers, standing.proof, self._repo, self._base, self._max_scope_files
+            )
+        self.last = tuple(found)
+        return Response(chat_message=TextMessage(content=findings_message(found), source=self.name))
+
+    async def on_reset(self, cancellation_token: CancellationToken) -> None:
+        self.last = ()
+
+
+class OneTurn(TerminationCondition):
+    """Stops the group chat after each participant's turn, so the meeting's state is saved between turns,
+    where it is consistent (mid-turn, AutoGen's round robin has already moved on to the next speaker)."""
+
+    def __init__(self) -> None:
+        self._stopped = False
+
+    @property
+    def terminated(self) -> bool:
+        return self._stopped
+
+    async def __call__(self, messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> StopMessage | None:
+        if self._stopped:
+            raise TerminatedException("Termination condition has already been reached")
+        if any(isinstance(m, TextMessage) and m.source in _PARTICIPANTS for m in messages):
+            self._stopped = True
+            return StopMessage(content="one turn", source="OneTurn")
+        return None
+
+    async def reset(self) -> None:
+        self._stopped = False
+
+
+class AgreementReached(TerminationCondition):
+    """The meeting's end by agreement: the latest message of each of the three roles carries a verdict that
+    agrees to every part, none of them was written before the last part was posted (a verdict on a plan its
+    speaker has not seen is no agreement), and the checker's latest message, after that, is "no findings".
+    It keeps the history it sees across the one-turn runs, and `observe` feeds it a saved thread."""
+
+    def __init__(self) -> None:
+        self._seq = 0
+        self._verdicts: dict[str, tuple[int, Verdict | None]] = {}
+        self._revised = 0
+        self._checker: tuple[int, bool] | None = None
+        self._stopped = False
+
+    @property
+    def terminated(self) -> bool:
+        return self._stopped
+
+    def observe(self, messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> None:
+        """Take in messages without deciding anything: the history a resumed meeting replays."""
+        for m in messages:
+            if not isinstance(m, TextMessage) or m.source not in _PARTICIPANTS:
+                continue
+            self._seq += 1
+            if m.source == CHECKER:
+                self._checker = (self._seq, m.content.strip() == NO_FINDINGS)
+                continue
+            try:
+                verdict: Verdict | None = parse_verdict(m.content, m.source)
+            except StoryError:
+                verdict = None
+            self._verdicts[m.source] = (self._seq, verdict)
+            owned = [part_of(o) for o in json_blocks(m.content)]
+            if any(p is not None and OWNER[p] == m.source for p in owned):
+                self._revised = self._seq
+
+    def agreed(self) -> bool:
+        """Whether the meeting as observed so far has reached agreement."""
+        for role in ROLES:
+            seq, verdict = self._verdicts.get(role, (0, None))
+            if verdict is None or not verdict.agrees_to_all() or seq < self._revised:
+                return False
+        return self._checker is not None and self._checker[1] and self._checker[0] > self._revised
+
+    async def __call__(self, messages: Sequence[BaseAgentEvent | BaseChatMessage]) -> StopMessage | None:
+        if self._stopped:
+            raise TerminatedException("Termination condition has already been reached")
+        self.observe(messages)
+        if self.agreed():
+            self._stopped = True
+            return StopMessage(content="the three agree", source="AgreementReached")
+        return None
+
+    async def reset(self) -> None:
+        self._stopped = False  # the history stays: the meeting is one conversation
+
+
+def _lessons_text(lessons: Sequence[Lesson]) -> str:
+    return hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))
+
+
+def _as_turn_part(contract: str) -> str:
+    """A part's output contract as it reads inside a turn: posted as a block, then the turn ends with the
+    verdict (the contracts say "end your reply with" when they are a role's whole answer)."""
+    return contract.replace("End your reply with one", "In your turn, post it as one", 1)
+
+
+def opening_message(
+    story: Story, layers: Sequence[Layer], conventions_text: str, lessons: Sequence[Lesson]
+) -> str:
+    """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`), the
+    story as product refined it, the architect's split, the repository's testing conventions, the lessons
+    recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
+    split = json.dumps({"layers": [x.to_dict() for x in layers]}, indent=1)
+    parts = [
+        hub_text("amigos-opening"),
+        "## Product's story: the requirements as they stand\n" + story_text(story),
+        "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
+        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan.",
+        conventions_text,
+        *([_lessons_text(lessons)] if lessons else []),
+        "## How each part and your verdict travel\n"
+        + "\n\n".join(
+            [_as_turn_part(STORY_CONTRACT), _as_turn_part(LAYERS_CONTRACT), PROOF_CONTRACT, VERDICT_CONTRACT]
+        ),
+    ]
+    return "\n\n".join(parts)
+
+
+def _thread_messages(state: Mapping[str, Any]) -> list[TextMessage]:
+    """The text messages of the meeting's saved thread, in order, from the round robin's manager state."""
+    thread = state.get("agent_states", {}).get("RoundRobinGroupChatManager", {}).get("message_thread", [])
+    return [
+        TextMessage(content=str(m.get("content", "")), source=str(m["source"]))
+        for m in thread
+        if m.get("type") == "TextMessage"
+    ]
+
+
+_FINDING_PART: dict[str, Part] = {
+    "criterion_unproven": "proof",
+    "layer_unproven": "proof",
+    "proof_layer_mismatch": "proof",
+    "split_invalid": "changes",
+    "over_size": "changes",
+    "file_missing": "changes",
+}
+
+
+def _finding_objection(f: Finding, layer_slugs: Collection[str]) -> Objection | None:
+    """A checker finding that stands at the end, as an Objection on the part it is about (D4); None for a
+    kind that is about a turn, not a part."""
+    part: Part | None = _FINDING_PART.get(f.kind)
+    if f.kind == "stale_reference":
+        part = "changes" if f.test in layer_slugs else "proof"
+    if part is None:
+        return None
+    return Objection(part, f.test, f.why, f"{OWNER[part]} fixes it", CHECKER)
+
+
+class Meeting:
+    """One meeting per story: product, the architect and the tester as three `AssistantAgent`s and airlie's
+    `Checker` in a `RoundRobinGroupChat`, each agent's conversation continuing for the whole meeting (its
+    system prompt, then the shared history, append-only, so the engine's prefix cache serves every turn
+    after the first). The chat is driven one turn at a time and its state saved between turns, where it is
+    consistent: `on_turn` gets every turn and the team's state, for the pipeline to persist and emit; a
+    story killed mid-meeting resumes by loading that state into fresh agents.
+
+    The meeting ends when `AgreementReached`, or at `max_turns` turns (the checker's count), when each
+    owner's part stands, the parts not agreed by all are `decided_by_owner` and the objections still open
+    are `unresolved` (D8)."""
+
+    def __init__(
+        self,
+        cfg: AirlieConfig,
+        *,
+        clients: ClientFactory,
+        tools: Callable[[str], ToolRegistry] | None,
+        max_turns: int,
+        tool_iterations: int,
+        on_turn: Callable[[Turn, Mapping[str, Any]], None],
+        max_scope_files: int = 5,
+    ) -> None:
+        self.cfg = cfg
+        self.clients = clients
+        self.tools = tools
+        self.max_turns = max_turns
+        self.tool_iterations = tool_iterations
+        self.on_turn = on_turn
+        self.max_scope_files = max_scope_files
+
+    def _agent(self, role: str) -> tuple[AssistantAgent, ChatCompletionClient]:
+        spec = self.cfg.roles[role]
+        client = self.clients(role, spec)
+        registry = self.tools(role) if self.tools is not None and self.tool_iterations > 0 else None
+        tools = build_function_tools(registry) if registry is not None else []
+        system = "\n\n".join(
+            [prompt_text(spec.prompt), hub_text("amigos-turn"), VERDICT_CONTRACT, hub_text(f"amigos-{role}")]
+        )
+        agent = AssistantAgent(
+            role,
+            model_client=client,
+            tools=tools or None,
+            system_message=system,
+            reflect_on_tool_use=bool(tools),
+            max_tool_iterations=max(self.tool_iterations, 1),
+        )
+        return agent, client
+
+    async def run(
+        self,
+        opening: str,
+        story: Story,
+        layers: tuple[Layer, ...],
+        levels: Mapping[str, int],
+        guidelines: Collection[str],
+        *,
+        repo: Path,
+        base: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> Agreement:
+        """Hold the meeting on `story` and `layers` (the opening split), `opening` being what
+        `opening_message` made. `repo` and `base` are where the checker reads the files the split names.
+        `state` is the saved team state of a meeting that was cut short: it goes on from the next speaker.
+        Raises NotActionable when product says the request cannot be built as written."""
+        rules = ReadRules(self.cfg.story.max_layers, levels, guidelines)
+        start = Standing(story, layers)
+        turns: list[Turn] = []
+        agents = {role: self._agent(role) for role in ROLES}
+        checker = Checker(
+            turns=turns, opening=start, repo=repo, base=base, max_scope_files=self.max_scope_files
+        )
+        agreement = AgreementReached()
+        participants: list[ChatAgent | Team] = [*(agents[r][0] for r in ROLES), checker]
+        team = RoundRobinGroupChat(participants, termination_condition=OneTurn() | agreement)
+        standing = start
+        try:
+            if state is not None:
+                await team.load_state(state)
+                for msg in _thread_messages(state):
+                    if msg.source in ROLES:
+                        turn = read_turn(msg.source, msg.content, standing, rules)
+                    elif msg.source == CHECKER:
+                        turn = Turn(CHECKER, msg.content)
+                    else:
+                        continue
+                    turns.append(turn)
+                    standing = standing.after(turn)
+                    agreement.observe([msg])
+            while len(turns) < self.max_turns and not agreement.agreed():
+                t0 = time.monotonic()
+                said: TextMessage | None = None
+                task = opening if not turns and state is None else None
+                async for item in team.run_stream(task=task):
+                    if isinstance(item, TextMessage) and item.source in _PARTICIPANTS:
+                        said = item
+                if said is None:
+                    raise RuntimeError("the story meeting's turn produced no message")
+                if said.source == CHECKER:
+                    turn = Turn(CHECKER, said.content, findings=checker.last)
+                else:
+                    turn = read_turn(said.source, said.content, standing, rules)
+                usage = said.models_usage
+                turn.prompt_tokens = usage.prompt_tokens if usage else 0
+                turn.completion_tokens = usage.completion_tokens if usage else 0
+                turn.wall_ms = (time.monotonic() - t0) * 1000.0
+                turns.append(turn)
+                standing = standing.after(turn)
+                if "blocked" in turn.parts:
+                    raise NotActionable(turn.parts["blocked"])
+                self.on_turn(turn, await team.save_state())
+        finally:
+            for _, client in agents.values():
+                await client.close()
+        return self._agreement(turns, standing, agreement.agreed())
+
+    @staticmethod
+    def _agreement(turns: Sequence[Turn], standing: Standing, agreed: bool) -> Agreement:
+        """The agreement the meeting ends with: each part as its owner last had it, the objections open in the
+        latest verdicts and the findings that stand, and (unless all three agreed) the parts not agreed."""
+        latest: dict[str, Verdict] = {}
+        for turn in turns:
+            if turn.verdict is not None:
+                latest[turn.role] = turn.verdict
+        open_ = [o for v in latest.values() for o in v.objections]
+        last_check = next((t for t in reversed(turns) if t.role == CHECKER), None)
+        slugs = {x.slug for x in standing.layers}
+        if last_check is not None:
+            open_ += [o for f in last_check.findings if (o := _finding_objection(f, slugs)) is not None]
+        decided: tuple[Part, ...] = ()
+        if not agreed:
+            decided = tuple(
+                p
+                for p in PARTS
+                if len(latest) < len(ROLES)
+                or any(v.of(p) == "object" for v in latest.values())
+                or any(o.part == p for o in open_)
+            )
+        return Agreement(
+            standing.story,
+            standing.layers,
+            standing.proof or (),
+            len(turns),
+            tuple(open_),
+            decided,
+            dict(standing.dropped),
+        )

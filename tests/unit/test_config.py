@@ -1023,13 +1023,18 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
         load_config(write(tmp_path, bad))
 
 
-def test_the_tester_has_twenty_steps() -> None:
+def test_the_tester_is_a_read_only_critic_on_the_reviewer_model() -> None:
+    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, on
+    the reviewer's model so its reading is not the architect's own, with the QA guidelines and read tools."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
-    assert cfg.roles["tester"].max_steps == 20
+    tester = cfg.roles["tester"]
+    assert tester.model == cfg.roles["reviewer"].model and not tester.thinking
+    assert tester.tools == ["read_file", "list_dir", "grep"]
+    assert tester.skills is not None and tester.skills.name == "qa"
 
 
 def test_a_role_carries_1500_chars_of_cut_reasoning_unless_told_otherwise(tmp_path: Path) -> None:
-    """AIR-30: on by default, so every thinking role (architect, tester, chief, research) carries a cut
+    """AIR-30: on by default, so every thinking role (architect, chief, research) carries a cut
     deliberation to its next turn; it does nothing for a role that does not think."""
     assert load_config(write(tmp_path, MINIMAL)).roles["coder"].carried_reasoning_chars == 1500
     cfg = load_config(write(tmp_path, with_coder(carried_reasoning_chars=0)))
@@ -1047,7 +1052,7 @@ def test_a_negative_carried_reasoning_chars_is_a_config_error_at_load(tmp_path: 
 def test_every_thinking_role_in_airlie_yaml_carries_cut_reasoning() -> None:
     cfg = load_config(Path(__file__).parents[2] / "airlie.yaml")
     thinking = {n: r.carried_reasoning_chars for n, r in cfg.roles.items() if r.thinking}
-    assert {"architect", "tester"} <= thinking.keys() and all(thinking.values())
+    assert {"architect"} <= thinking.keys() and all(thinking.values())
 
 
 # ---- includes: (split config fragments) ----

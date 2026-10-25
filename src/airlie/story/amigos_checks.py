@@ -15,12 +15,15 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from airlie.prompts import text as hub_text
-from airlie.story.amigos import ProofTest
 from airlie.story.layer_checks import Finding
 from airlie.story.model import Layer, Story, StoryError, parse_layers
 from airlie.teams.worktree import find_file
+
+if TYPE_CHECKING:  # amigos imports this module; only the type of a proof test is needed here
+    from airlie.story.amigos import ProofTest
 
 NO_FINDINGS = "no findings"
 """What the checker says when the parts are sound; the meeting's termination reads it."""
