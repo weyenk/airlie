@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from airlie import cli
 from airlie.board import BoardStore
+from airlie.story import factory
 from airlie.story.epic import epic_of
+from tests.unit.test_cli_story import story_cfg
 from tests.unit.test_config import MINIMAL, write
 from tests.unit.test_story_epic import SPEC
 
@@ -87,3 +90,43 @@ def test_a_missing_file_is_named(tmp_path: Path) -> None:
 def test_epic_add_is_a_task() -> None:
     tasks = yaml.safe_load(Path("Taskfile.yml").read_text())["tasks"]
     assert "airlie epic add" in tasks["epic:add"]["cmds"][0]
+
+
+# ---- epic replan ----
+
+
+def replan_cfg(tmp_path: Path) -> Path:
+    return story_cfg(tmp_path)
+
+
+def test_epic_replan_is_a_task() -> None:
+    tasks = yaml.safe_load(Path("Taskfile.yml").read_text())["tasks"]
+    assert "airlie epic replan" in tasks["epic:replan"]["cmds"][0]
+
+
+def test_epic_replan_names_an_item_that_is_not_an_epic_and_one_that_is_not_there(tmp_path: Path) -> None:
+    cfg_path = str(replan_cfg(tmp_path))
+    state = tmp_path / "state"
+    store = BoardStore(state / "board.sqlite")
+    story = store.create(level="story", title="a story").key
+    store.close()
+    r = runner.invoke(cli.app, ["epic", "replan", story, "--config", cfg_path])
+    assert r.exit_code == 1 and f"{story} is a story, not an epic" in r.output
+    r = runner.invoke(cli.app, ["epic", "replan", "AIR-99", "--config", cfg_path])
+    assert r.exit_code == 1 and "no item AIR-99" in r.output
+
+
+def test_epic_replan_runs_the_replan_and_prints_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def fake(cfg: object, key: str, reason: str) -> str:
+        seen.append((key, reason))
+        return f"epic {key} re-planned: 1 new, 0 changed, 0 retired, 0 dropped"
+
+    monkeypatch.setattr(factory, "replan_one", fake)
+    cfg_path = str(replan_cfg(tmp_path))
+    r = runner.invoke(cli.app, ["epic", "replan", "AIR-3", "--reason", "too big", "--config", cfg_path])
+    assert r.exit_code == 0, r.output
+    assert "epic AIR-3 re-planned: 1 new" in r.output and seen == [("AIR-3", "too big")]

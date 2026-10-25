@@ -18,7 +18,7 @@ from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note,
 from airlie.story.checkout import check_checkout, find_checkout, held_label
 from airlie.story.epic import epic_of
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
-from airlie.story.epic_plan import after_keys, epic_key_of
+from airlie.story.epic_plan import LABEL_REPLANNED, LABEL_RESUMED, after_keys, epic_key_of
 from airlie.story.epic_state import EpicState
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
@@ -390,10 +390,105 @@ def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
                 EventSink(epics_dir(cfg) / epic / "events.jsonl", epic).emit(
                     "story_promoted", story=story.key, after=deps
                 )
+        notes += _resume_blocked(cfg, board)
     except Exception as e:  # noqa: BLE001 - bookkeeping is best effort: the beat goes on
         log.warning("tick bookkeeping failed: %s", _why(e))
         notes.append(f"bookkeeping failed ({_why(e)})")
     return notes
+
+
+def _line_stopped(cfg: AirlieConfig, board: LocalBoard) -> list[Item]:
+    """The stories the line made for an epic (an `epic:` label) that the line itself stopped: in blocked on
+    the board and with a stop recorded in their state, under an epic a person has not held. A story a person
+    parked, or one with no epic, is not among them."""
+    out: list[Item] = []
+    for story in board.store.list(level="story", status="blocked"):
+        if epic_key_of(story.labels) is None or board._held(story):
+            continue
+        saved = _saved(cfg, story.key)
+        if saved is not None and saved.get("blocked"):
+            out.append(story)
+    return out
+
+
+def _resume_blocked(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
+    """A story the line blocked is moved back to approved, once (story.resume_attempts), with the next
+    `resumed:N` label (D8): the common stop is a model's bad day, and a rebuild costs less than a person's
+    morning. The pipeline resumes it from its last finished stage when the tick next picks it."""
+    notes: list[str] = []
+    for story in _line_stopped(cfg, board):
+        n = sum(1 for label in story.labels if label.startswith(LABEL_RESUMED))
+        if n < cfg.story.resume_attempts:
+            board.store.update(
+                story.key, status="approved", labels=[*story.labels, f"{LABEL_RESUMED}{n + 1}"]
+            )
+            notes.append(f"resumed {story.key}")
+    return notes
+
+
+def _replan_target(cfg: AirlieConfig, board: LocalBoard) -> tuple[Item, Item] | None:
+    """The first story the line stopped again after its resumes (_resume_blocked) whose epic has not been
+    re-planned for that stop: (the epic, the story). One automatic re-plan per stop (`replanned_for:<story>`
+    on the epic)."""
+    for story in _line_stopped(cfg, board):
+        if sum(1 for label in story.labels if label.startswith(LABEL_RESUMED)) < cfg.story.resume_attempts:
+            continue
+        epic_key = epic_key_of(story.labels)
+        try:
+            epic = board.store.get(epic_key or "")
+        except KeyError:
+            continue
+        if f"{LABEL_REPLANNED}{story.key}" not in epic.labels:
+            return epic, story
+    return None
+
+
+async def _replan_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item, story: Item) -> str:
+    """Re-plan `epic` because `story` stopped again (D8). The epic is marked first (a re-plan that fails is
+    not tried again for the same stop); the line says what the architect did."""
+    board.store.update(epic.key, labels=[*epic.labels, f"{LABEL_REPLANNED}{story.key}"])
+    head = f"epic {epic.key} {epic.title}"
+    why = f"{story.key} stopped again after its resume"
+    try:
+        st = await make_epic_pipeline(cfg, board).replan(board.store.get(epic.key), reason=why)
+    except StorySetupError as e:
+        return f"{head}: re-plan failed ({_cap(_redact_urls(str(e)))})"
+    done = st.replans[-1] if st.replans and st.replans[-1]["reason"] == why else None
+    if done is None:
+        return f"{head}: re-plan failed after {story.key} stopped again (the plan stands)"
+    counts = [
+        f"{len(done[k])} {word}"
+        for k, word in (
+            ("created", "new"),
+            ("changed", "changed"),
+            ("retired", "retired"),
+            ("dropped", "dropped"),
+        )
+        if done[k]
+    ]
+    return f"{head}: re-planned after {story.key} stopped again ({', '.join(counts) or 'nothing changed'})"
+
+
+async def replan_one(cfg: AirlieConfig, key: str, reason: str) -> str:
+    """Re-plan the epic `key` now (`task epic:replan`), holding the one-story lock. Returns the line to print;
+    a BoardError for a key that is not an epic of the local board, StoryBusy while a story is in flight."""
+    board = make_board(cfg)
+    if not isinstance(board, LocalBoard):
+        raise BoardError("epics are on airlie's own board (story.board: local); the line only reads Jira")
+    item = board._item(key)
+    if item.level != "epic":
+        raise BoardError(f"{item.key} is a {item.level}, not an epic")
+    with story_lock(stories_dir(cfg)) as held:
+        if not held:
+            raise StoryBusy("another story is in flight (one at a time); try again when it finishes")
+        st = await make_epic_pipeline(cfg, board).replan(item, reason=reason)
+    done = st.replans[-1] if st.replans and st.replans[-1]["reason"] == reason else None
+    if done is None:
+        return f"epic {item.key}: the re-plan changed nothing (see {st.path / 'events.jsonl'})"
+    return (
+        f"epic {item.key} re-planned: {len(done['created'])} new, {len(done['changed'])} changed, "
+        f"{len(done['retired'])} retired, {len(done['dropped'])} dropped"
+    )
 
 
 def _status(board: LocalBoard, key: str) -> str | None:
@@ -550,6 +645,9 @@ async def _beat(cfg: AirlieConfig, board: Board, notes: list[str]) -> str:
         epic = board.next_epic()
         if epic is not None:
             return " ".join((await _plan_epic(cfg, board, epic)).split())
+        target = _replan_target(cfg, board)
+        if target is not None:
+            return " ".join((await _replan_epic(cfg, board, *target)).split())
     card = await board.next_card()
     if card is None:
         return "idle: no issue matches the intake query"

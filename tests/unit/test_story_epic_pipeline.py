@@ -4,6 +4,7 @@ phase, P3 of the planning line, 2026-10-24)."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -265,3 +266,152 @@ async def test_stories_are_made_once_even_when_the_epic_is_planned_again_after_a
     assert st.blocked is None and len(rig.engine.requests) == asked  # the plan is kept, not asked again
     assert [s.title for s in rig.store.list(level="story")] == ["Do S1", "Do S2"]
     assert sorted(st.stories) == ["S1", "S2"]
+
+
+# ---- re-planning an epic (D8) ----
+
+
+def three_story_plan() -> dict[str, Any]:
+    """S1 (the one that will stop), S2 (after S1) and S3 (alone)."""
+    obj = plan_obj()
+    obj["risks"] = []
+    obj["stories"][0]["epic_criteria"] = ["EC1"]
+    obj["stories"].append(
+        planned_story("S3", [{"path": "README.md", "new": False}], depends=[], covers=["EC1", "EC2"])
+    )
+    return obj
+
+
+def replacement_plan(*, list_s2: bool = True) -> dict[str, Any]:
+    """The architect's re-plan: S1 is replaced by S4 (a smaller first story), S2 now comes after S4 under a
+    new title, S3 is dropped (left out). Without S2 it lists S4 alone."""
+    s4 = planned_story("S4", [{"path": "src/avatar.py", "new": True}], depends=[], covers=["EC1", "EC2"])
+    stories = [s4]
+    if list_s2:
+        s2 = planned_story("S2", [{"path": "src/avatar.py", "new": False}], depends=["S4"], covers=["EC2"])
+        s2["title"] = "Show the avatar, once stored"
+        stories.append(s2)
+    return {
+        "type": "story_plan",
+        "summary": "Avatars, in a smaller first step.",
+        "constraints": ["PNG only"],
+        "risks": [],
+        "stories": stories,
+    }
+
+
+class Replanning(Rig):
+    """A rig whose epic was planned into S1, S2, S3 and whose S1 has stopped."""
+
+    def stop(self, key: str, *, built: int = 0, attempt: dict[str, str] | None = None) -> None:
+        """The story `key` stopped (blocked in its state and on the board) with `built` layers built."""
+        d = self.cfg.observability.state_dir / "stories" / key
+        d.mkdir(parents=True)
+        state = {
+            "card": {"key": key},
+            "repo": str(self.repo),
+            "stage": "layers",
+            "blocked": "layer 01 changed nothing",
+            "built": {f"{n:02d}": {"branch": f"{key}-b{n}", "sha": "0" * 40} for n in range(1, built + 1)},
+            "attempt": attempt,
+            "runs": [],
+            "handled_comments": [],
+        }
+        (d / "state.json").write_text(json.dumps(state))
+        (d / "events.jsonl").write_text("")
+        self.store.update(key, status="blocked")
+
+
+async def replanning(tmp_path: Path, scripts: list[FakeReply]) -> tuple[Replanning, EpicState, list[str]]:
+    rig = Replanning(tmp_path, FakeEngine({"architect": [reply(three_story_plan()), *scripts]}))
+    st = await rig.pipeline.plan(rig.item())
+    return rig, st, [s.key for s in rig.store.list(level="story", parent=rig.epic.key)]
+
+
+async def test_a_replan_changes_only_unstarted_cards_and_may_retire_a_blocked_story_with_no_layer(
+    tmp_path: Path,
+) -> None:
+    rig, st, (s1, s2, s3) = await replanning(tmp_path, [reply(replacement_plan())])
+    branch = "AIR-9-leftover"
+    git(rig.repo, "branch", branch)
+    rig.stop(s1, attempt={"layer": "01", "branch": branch, "worktree": str(tmp_path / "gone")})
+    before = rig.store.get(s2)
+    st = await rig.pipeline.replan(rig.item(), reason="story AIR-2 blocked again")
+    assert st.blocked is None and st.stage == "planned"
+    # the blocked story with no built layer is retired: done, with a note naming its replacement
+    retired = rig.store.get(s1)
+    assert retired.status == "done"
+    new = st.stories["S4"]
+    assert any(
+        c.author == "airlie" and "retired by the re-plan" in c.text and new in c.text
+        for c in retired.comments
+    )
+    assert not git(rig.repo, "branch", "--list", branch)  # its attempt's branch was removed
+    assert (
+        json.loads((rig.cfg.observability.state_dir / "stories" / s1 / "state.json").read_text())["attempt"]
+        is None
+    )
+    # the unstarted story with the same id is changed in place: title, description, what it comes after
+    changed = rig.store.get(s2)
+    assert changed.title == "Show the avatar, once stored" and changed.description != before.description
+    assert (
+        changed.labels == ("repo:o/r", f"epic:{rig.epic.key}", "plan:S2", f"after:{new}")
+        and changed.status == "todo"
+    )
+    # the unstarted story the architect left out is dropped; the new one is born approved
+    dropped = rig.store.get(s3)
+    assert dropped.status == "done" and any("dropped by the re-plan" in c.text for c in dropped.comments)
+    assert rig.store.get(new).status == "approved" and rig.store.get(new).parent == rig.epic.key
+    # the record: the plan now holds S2 and S4, the cards are mapped, the re-plan is on record
+    plan = StoryPlan.from_dict(st.plan or {})
+    assert [s.id for s in plan.order()] == ["S4", "S2"] and st.stories["S2"] == s2 and st.stories["S1"] == s1
+    [event] = kinds(st.path / "events.jsonl", "replan")
+    assert event["retired"] == [s1] and event["dropped"] == [s3] and event["created"] == [new]
+    assert event["changed"] == [s2] and st.replans[0]["reason"] == "story AIR-2 blocked again"
+    assert "re-planned" in rig.item().comments[-1].text
+    # the architect was told where each story stood, and what the plan was
+    brief = rig.architect_asks()[1]
+    assert (
+        "story AIR-2 blocked again" in brief
+        and "S1" in brief
+        and "retire" in brief
+        and "layer 01 changed nothing" in brief
+    )
+
+
+async def test_a_replan_never_touches_a_story_in_review_or_with_a_built_layer(tmp_path: Path) -> None:
+    refused = reply(replacement_plan())  # lists S2, which has a built layer: refused
+    good = reply(replacement_plan(list_s2=False))
+    rig, st, (s1, s2, s3) = await replanning(tmp_path, [refused, good])
+    rig.store.update(s1, status="review")  # S1 is in review: kept as it is
+    rig.stop(s2, built=1)  # S2 stopped with a layer built: kept as it is (a person's)
+    snap = {k: rig.store.get(k) for k in (s1, s2)}
+    state_before = (rig.cfg.observability.state_dir / "stories" / s2 / "state.json").read_text()
+    st = await rig.pipeline.replan(rig.item(), reason="requested")
+    assert st.blocked is None
+    asks = rig.architect_asks()
+    assert "S2 is already built or under review" in asks[2]  # the refusal went back with the reason
+    for key in (s1, s2):
+        now = rig.store.get(key)
+        assert (now.title, now.description, now.labels, now.status) == (
+            snap[key].title,
+            snap[key].description,
+            snap[key].labels,
+            snap[key].status,
+        )
+    assert (rig.cfg.observability.state_dir / "stories" / s2 / "state.json").read_text() == state_before
+    plan = StoryPlan.from_dict(st.plan or {})
+    assert {"S1", "S2"} <= {s.id for s in plan.stories}  # still in the plan, as they were
+    assert rig.store.get(s3).status == "done"  # the unstarted one the plan leaves out is dropped
+
+
+async def test_a_failed_replan_changes_nothing_and_says_so(tmp_path: Path) -> None:
+    nonsense = FakeReply(text="no plan")
+    rig, st, keys = await replanning(tmp_path, [nonsense, nonsense])
+    rig.stop(keys[0])
+    before = {k: (rig.store.get(k).title, rig.store.get(k).status) for k in keys}
+    out = await rig.pipeline.replan(rig.item(), reason="requested")
+    assert out.blocked is None and out.plan == st.plan and out.replans == []
+    assert before == {k: (rig.store.get(k).title, rig.store.get(k).status) for k in keys}
+    assert kinds(out.path / "events.jsonl", "replan_failed")
+    assert "re-plan failed" in rig.item().comments[-1].text

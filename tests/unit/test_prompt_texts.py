@@ -29,6 +29,7 @@ from airlie.story.briefs import (
     package_brief,
     plan_brief,
     refine_brief,
+    replan_brief,
     survey_brief,
 )
 from airlie.story.layer_checks import (
@@ -45,7 +46,15 @@ from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
-from tests.unit.test_story_briefs import CARD, EPIC, EPIC_TEXT, LAYERS, STORY
+from tests.unit.test_story_briefs import (
+    CARD,
+    EPIC,
+    EPIC_TEXT,
+    LAYERS,
+    REPLAN_PLAN,
+    REPLAN_PROGRESS,
+    STORY,
+)
 
 GOLDEN = Path(__file__).parent / "data" / "prompt_texts.json"
 
@@ -259,6 +268,32 @@ CASES["fn:briefs.build_brief:foundation"] = partial(
 CASES |= {
     "brief-package-task": lambda: text("brief-package-task"),
     "plan-brief": lambda: text("plan-brief", max_stories=8, max_scope_files=8),
+    "plan-replan": lambda: text("plan-replan", max_stories=8, max_scope_files=8),
+    "fn:briefs.replan_brief:plain": partial(
+        replan_brief,
+        EPIC_TEXT,
+        EPIC,
+        REPLAN_PLAN,
+        REPLAN_PROGRESS,
+        reason="requested with task epic:replan",
+        max_stories=8,
+        max_scope_files=8,
+    ),
+    "fn:briefs.replan_brief:full": partial(
+        replan_brief,
+        EPIC_TEXT,
+        EPIC,
+        REPLAN_PLAN,
+        REPLAN_PROGRESS,
+        comments=["Please make the first step smaller."],
+        reason="AIR-5 stopped again after its resume",
+        guide=GUIDE,
+        lessons=[Lesson(title="Layer 01 storage", acceptance=["AC1"], ending="out_of_steps")],
+        max_stories=6,
+        max_scope_files=4,
+        feedback=BAD_JSON,
+        round_steps=6,
+    ),
     "fn:briefs.plan_brief:plain": partial(plan_brief, EPIC_TEXT, EPIC, max_stories=8, max_scope_files=8),
     "fn:briefs.plan_brief:full": partial(
         plan_brief,

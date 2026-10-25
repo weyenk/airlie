@@ -15,6 +15,7 @@ from airlie.story.epic import EpicCriterion, EpicSpec
 from airlie.story.epic_plan import (
     STORY_CARD_CONTRACT,
     STORY_PLAN_CONTRACT,
+    PlannedStory,
     StoryPlan,
     after_keys,
     check_story_plan,
@@ -282,3 +283,54 @@ def test_plan_feedback_is_one_line_per_finding(trunk: tuple[Path, str]) -> None:
     assert {f.kind for f in found} == {"file_missing", "empty_criterion"}
     text = plan_feedback(found)
     assert text.count("\n") == len(found) - 1 and text.startswith("- S1: ")
+
+
+# ---- a re-plan lists only what is still to be done (D8) ----
+
+
+def kept_of(*stories: dict[str, Any]) -> dict[str, PlannedStory]:
+    """Stories already built, in review or merged, as an earlier plan wrote them."""
+    return {d["id"]: PlannedStory.from_dict(d) for d in stories}
+
+
+def reparse(obj: dict[str, Any], **kw: Any) -> StoryPlan:
+    return parse_story_plan(obj, EPIC, max_stories=8, max_scope_files=8, **kw)
+
+
+def test_a_replan_lists_only_what_is_still_to_be_done_and_may_depend_on_kept_stories() -> None:
+    kept = kept_of(story("S1"), story("S2", depends=["S1"], covers=["EC2"]))
+    new = reparse(plan(story("S4", depends=["S2"], covers=[]), risks=[]), kept=kept)
+    assert [s.id for s in new.order()] == ["S4"] and new.stories[0].depends_on == ("S2",)
+
+
+def test_a_replan_may_not_list_a_kept_or_a_retired_story_again() -> None:
+    kept = kept_of(story("S1"), story("S2", depends=["S1"], covers=["EC2"]))
+    with pytest.raises(StoryError, match="S2 is already built or under review"):
+        reparse(plan(story("S2", covers=["EC2"]), risks=[]), kept=kept)
+    with pytest.raises(StoryError, match="S5 was retired or dropped"):
+        reparse(plan(story("S5", covers=["EC2"]), risks=[]), kept={"S1": kept["S1"]}, retired=("S5",))
+
+
+def test_a_replan_still_covers_every_epic_criterion_with_the_kept_stories_counted() -> None:
+    kept = kept_of(story("S1"))  # EC1 is covered by a kept story
+    with pytest.raises(StoryError, match=r"no story covers epic criteria \['EC2'\]"):
+        reparse(plan(story("S4", covers=["EC1"]), risks=[]), kept=kept)
+    reparse(plan(story("S4", covers=["EC2"]), risks=[]), kept=kept)
+
+
+def test_a_replan_risk_may_be_pinned_to_a_kept_stories_criterion() -> None:
+    kept = kept_of(story("S1"))
+    reparse(plan(story("S4", covers=["EC2"]), risks=[{"risk": "r", "pinned": "S1/AC1"}]), kept=kept)
+
+
+def test_a_replan_cycle_among_the_new_stories_is_still_refused() -> None:
+    kept = kept_of(story("S1"))
+    obj = plan(story("S4", depends=["S5"], covers=["EC2"]), story("S5", depends=["S4"]), risks=[])
+    with pytest.raises(StoryError, match="cycle"):
+        reparse(obj, kept=kept)
+
+
+def test_a_story_that_depends_on_a_kept_story_is_not_an_order_violation() -> None:
+    kept = kept_of(story("S1"))
+    new = reparse(plan(story("S4", depends=["S1"], covers=["EC2"]), risks=[]), kept=kept)
+    assert check_story_plan(new, trunk_of=lambda r: None) == []

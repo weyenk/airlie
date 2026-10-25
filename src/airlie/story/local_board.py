@@ -35,7 +35,7 @@ class LocalBoard:
         self.role_names = frozenset(role_names or ())
         self.epics_dir = epics_dir
 
-    def _is_note(self, author: str, text: str) -> bool:
+    def is_note(self, author: str, text: str) -> bool:
         """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
         return author in self.role_names or author == "airlie" or text.startswith(NOTE_PREFIX)
 
@@ -56,7 +56,7 @@ class LocalBoard:
             title=item.title,
             description=item.description,
             url=None,
-            comments=tuple(c.text for c in item.comments if not self._is_note(c.author, c.text)),
+            comments=tuple(c.text for c in item.comments if not self.is_note(c.author, c.text)),
             labels=item.labels,
         )
 

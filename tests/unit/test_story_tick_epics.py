@@ -39,7 +39,11 @@ class TickRig:
     and every pipeline the tick makes runs on `engine`."""
 
     def __init__(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: FakeEngine | None = None
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        engine: FakeEngine | None = None,
+        **story_extra: Any,
     ) -> None:
         root = tmp_path / "git"
         self.tmp = tmp_path
@@ -50,6 +54,7 @@ class TickRig:
             "trunk": self.trunk,
             "plan": {"round_steps": 0},
             "layer_attempts": 1,
+            **story_extra,
         }
         self.cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": story})
         self.engine = engine or FakeEngine({"architect": []})
@@ -353,3 +358,89 @@ async def test_with_a_jira_board_the_epic_steps_log_one_line_and_do_nothing(
     said = [r.getMessage() for r in caplog.records if "epics" in r.getMessage()]
     assert said == ["story.board is jira: the line only reads it, so epics are neither planned nor followed"]
     assert board.asked == 1 and not rig.engine.requests
+
+
+# ---- one resume, then the re-plan (D8) ----
+
+
+def stopped(rig: TickRig, key: str, why: str = "layer 01 changed nothing") -> None:
+    """The line blocked the story `key`: its state says why, and its card is in blocked."""
+    d = stories_dir(rig.cfg) / key
+    d.mkdir(parents=True)
+    state = {"card": {"key": key}, "repo": str(rig.repo), "stage": "layers", "blocked": why, "built": {}}
+    (d / "state.json").write_text(json.dumps(state))
+    rig.store.update(key, status="blocked")
+
+
+def smaller_plan() -> dict[str, Any]:
+    """A re-plan that replaces everything with one smaller story, S4."""
+    first = plan_obj()["stories"][0] | {
+        "id": "S4",
+        "title": "A smaller first step",
+        "epic_criteria": ["EC1", "EC2"],
+    }
+    return {
+        "type": "story_plan",
+        "summary": "Avatars, again.",
+        "constraints": ["PNG only"],
+        "risks": [],
+        "stories": [first],
+    }
+
+
+async def test_a_blocked_story_is_resumed_once_then_its_epic_is_replanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(
+        tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj()), reply(smaller_plan())]})
+    )
+    epic = rig.epic()
+    await tick(rig.cfg)  # plan
+    s1, s2 = rig.stories(epic)
+    started = started_log(monkeypatch)
+    stopped(rig, s1)
+    # the first stop is resumed once: back to approved with the next label, and picked again
+    line = await tick(rig.cfg)
+    assert f"resumed {s1}" in line and [c.key for c in started] == [s1], line
+    assert rig.store.get(s1).labels[-1] == "resumed:1"
+    # it stops again: the epic is re-planned, once
+    rig.store.update(s1, status="blocked")
+    line = await tick(rig.cfg)
+    assert (
+        line == f"epic {epic} Avatars: re-planned after {s1} stopped again (1 new, 1 retired, 1 dropped)"
+    ), line
+    assert f"replanned_for:{s1}" in rig.store.get(epic).labels
+    assert rig.status(s1) == "done" and rig.status(s2) == "done"  # retired; the waiting S2 was left out
+    [new] = [k for k in rig.stories(epic) if k not in (s1, s2)]
+    assert rig.status(new) == "approved" and len(kinds(rig.epic_events(epic), "replan")) == 1
+    # and not again for the same stop
+    rig.store.update(s1, status="blocked")
+    assert "re-planned" not in await tick(rig.cfg)
+    assert len(rig.engine.requests) == 2  # the plan, the re-plan: the third beat asked nobody
+
+
+async def test_a_story_a_person_blocked_or_the_line_did_not_make_is_not_resumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig, epic, (s1, s2) = await planned(tmp_path, monkeypatch)
+    started = started_log(monkeypatch)
+    rig.store.update(s1, status="blocked")  # a person parked it: no state says the line stopped it
+    mine = rig.store.create(level="story", title="by hand", labels=["repo:o/r"]).key
+    stopped(rig, mine)  # a blocked story of a person's, with no epic
+    assert "resumed" not in await tick(rig.cfg)
+    assert started == [] and rig.status(s1) == "blocked" and rig.status(mine) == "blocked"
+
+
+async def test_resume_attempts_is_a_setting_and_zero_goes_straight_to_the_replan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = FakeEngine({"architect": [reply(plan_obj()), reply(smaller_plan())]})
+    rig = TickRig(tmp_path, monkeypatch, engine, resume_attempts=0)
+    epic = rig.epic()
+    await tick(rig.cfg)
+    s1, _ = rig.stories(epic)
+    started = started_log(monkeypatch)
+    stopped(rig, s1)
+    line = await tick(rig.cfg)
+    assert "resumed" not in line and started == [] and "re-planned" in line
+    assert f"replanned_for:{s1}" in rig.store.get(epic).labels

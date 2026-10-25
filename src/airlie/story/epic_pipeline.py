@@ -14,23 +14,28 @@ caller found for it (`repo_of`), a scope path only after `parse_story_plan` and 
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 import traceback
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from functools import partial
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from airlie.board import Item
 from airlie.config import AirlieConfig
 from airlie.story.asking import Asker, StoryBlocked, StudioFactory
 from airlie.story.board import note
-from airlie.story.briefs import plan_brief
+from airlie.story.briefs import plan_brief, replan_brief
 from airlie.story.context import guide_budget, repo_guide
-from airlie.story.epic import epic_of
+from airlie.story.epic import EpicSpec, epic_of
 from airlie.story.epic_plan import (
     LABEL_AFTER,
     LABEL_EPIC,
     LABEL_PLAN,
+    PlannedStory,
     StoryPlan,
+    StoryProgress,
     check_story_plan,
     parse_story_plan,
     plan_feedback,
@@ -38,12 +43,12 @@ from airlie.story.epic_plan import (
     same_plans,
 )
 from airlie.story.epic_state import EpicState
-from airlie.story.lessons import LessonsStore
+from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import EpicHeader, StoryError, StorySetupError
 from airlie.story.pipeline import _cap, _reason, _redact_urls
 from airlie.story.publish import Publisher, PublishError
-from airlie.teams.worktree import rev_parse
+from airlie.teams.worktree import delete_branch, remove_worktree, rev_parse
 from airlie.topology.studio_plan import extract_json_block
 
 REASON_CHARS = 800
@@ -51,6 +56,16 @@ REASON_CHARS = 800
 
 def epics_dir(cfg: AirlieConfig) -> Path:
     return cfg.observability.state_dir / "epics"
+
+
+class PlanContext(NamedTuple):
+    """What the architect's plan and re-plan briefs share: the lessons recorded for the repository, the
+    coder's steps and context a story's layers must fit, and the rounds the plan is made in (0: one go)."""
+
+    lessons: Sequence[Lesson]
+    coder_steps: int
+    coder_context: int
+    round_steps: int
 
 
 class EpicPipeline:
@@ -157,7 +172,9 @@ class EpicPipeline:
             note("planned into stories, in order; the first are ready:\n" + "\n".join(lines)),
         )
 
-    async def _plan(self, st: EpicState, card: Item) -> None:
+    async def _spec_and_checkout(self, st: EpicState, card: Item) -> tuple[EpicSpec, Path]:
+        """The epic of `card` and the checkout of its first repository, whose trunk is fetched now into the
+        record's base (what the architect reads). StoryBlocked says what is wrong with the epic or line."""
         try:
             spec = epic_of(card.description)
         except StoryError as e:
@@ -167,18 +184,65 @@ class EpicPipeline:
         repo = self._checkout(spec.repositories[0], required=True)
         assert repo is not None
         st.base = await self._trunk(st, repo)
-        asker = Asker(self.cfg, self.studio, repo)
+        return spec, repo
+
+    def _context(self, repo: Path) -> PlanContext:
+        coder = self.cfg.roles[self.s.build_role]
+        return PlanContext(
+            LessonsStore(self.cfg.observability.state_dir, repo).recent(),
+            coder.max_steps or self.cfg.teams.max_steps,
+            coder.max_context,
+            self.s.plan.round_steps,
+        )
+
+    async def _plan(self, st: EpicState, card: Item) -> None:
+        spec, repo = await self._spec_and_checkout(st, card)
+        assert st.base is not None
         guide = repo_guide(
             repo,
             st.base["sha"],
             card.description + "\n" + "\n".join(c.text for c in spec.criteria),
             budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
         )
-        lessons = LessonsStore(self.cfg.observability.state_dir, repo).recent()
-        coder = self.cfg.roles[self.s.build_role]
-        coder_steps, coder_context = coder.max_steps or self.cfg.teams.max_steps, coder.max_context
-        plan_spec = self.s.plan
-        checked: dict[str, Path | None] = {}
+        ctx, limits = self._context(repo), self.s.plan
+
+        def brief(feedback: str | None) -> str:
+            return plan_brief(
+                f"{card.title}\n\n{card.description}",
+                spec,
+                guide=guide,
+                lessons=ctx.lessons,
+                max_stories=limits.max_stories,
+                max_scope_files=limits.max_scope_files,
+                feedback=feedback,
+                round_steps=ctx.round_steps,
+                max_steps=ctx.coder_steps,
+                context_budget=ctx.coder_context,
+            )
+
+        plan = await self._ask_plan(st, spec, repo, brief)
+        st.plan = plan.to_dict()
+        st.seen_comments = len(card.comments)
+        st.emit("plan", stories=[s.id for s in plan.order()], attempts=st.attempts)
+        st.finish("planned")
+
+    async def _ask_plan(
+        self,
+        st: EpicState,
+        spec: EpicSpec,
+        repo: Path,
+        brief: Callable[[str | None], str],
+        *,
+        kept: Mapping[str, PlannedStory] | None = None,
+        retired: Collection[str] = (),
+        stage: str = "plan",
+    ) -> StoryPlan:
+        """Ask the architect for a story plan until one passes the parser and the checks against the trunk
+        (`story.stage_attempts` tries, in rounds when story.plan.round_steps says so). What came back with
+        flaws is an event and the next try's feedback; StoryBlocked when none is usable. `kept` and
+        `retired` are a re-plan's (parse_story_plan)."""
+        asker = Asker(self.cfg, self.studio, repo)
+        plan_spec, checked = self.s.plan, {}
 
         def trunk_of(repository: str) -> tuple[Path, str] | None:
             """The checkout of `repository` and its trunk's commit; None when the line has no checkout of it
@@ -205,6 +269,8 @@ class EpicPipeline:
                     spec,
                     max_stories=plan_spec.max_stories,
                     max_scope_files=plan_spec.max_scope_files,
+                    kept=kept,
+                    retired=retired,
                 )
             except StoryError as e:
                 st.emit("plan_returned", attempt=st.attempts, kinds=["plan_unusable"], reason=str(e)[:300])
@@ -233,27 +299,259 @@ class EpicPipeline:
                 signal=lambda text: (extract_json_block(text) or {}).get("refine"),
             )
 
-        def brief(feedback: str | None) -> str:
+        def counted(feedback: str | None) -> str:
             st.attempts += 1
             st.save()
-            return plan_brief(
+            return brief(feedback)
+
+        return await asker.usable(st, stage, self.s.architect_role, "story plan", counted, parse, ask=ask)
+
+    # ---- re-planning (D8) ----
+
+    async def replan(self, card: Item, *, reason: str) -> EpicState:
+        """Revise the plan of the epic `card` (D8 of the plans phase): the architect is asked again with the
+        current plan, where every story stands and what a person said on the epic since the plan, and returns
+        the stories still to be done. Applied to the board, an unstarted story is changed in place (title,
+        description, what it comes after, rank), a new one is made, one left out is dropped (done, with a
+        note), and a story that stopped with no layer built is retired (done, with a note naming its
+        replacement; its stopped attempt's worktree and branch go, its state directory stays). A story that
+        has started, is in review or merged, or stopped with a layer built, is never touched. A plan that is
+        never usable changes nothing: the epic's card is told and the plan stands. An epic with no plan yet is
+        a StorySetupError (plan it first)."""
+        st = EpicState.open(self.epics_dir / card.key, card, "")
+        if st.plan is None:
+            raise StorySetupError(
+                f"epic {card.key} has no plan to revise: approve it and let the tick plan it"
+            )
+        st.emit("replan_start", reason=reason)
+        try:
+            await self._replan(st, card, reason)
+        except StoryBlocked as e:
+            await self._replan_failed(st, card, str(e))
+        except asyncio.CancelledError:
+            st.emit("cancelled", stage="replan")
+            raise
+        except Exception as e:  # noqa: BLE001 - a re-plan that fails changes nothing and says so
+            st.emit("error", traceback=_redact_urls(traceback.format_exc()))
+            await self._replan_failed(st, card, _reason(e))
+        return st
+
+    def _progress(self, st: EpicState, plan: StoryPlan) -> list[StoryProgress]:
+        """Where each story of the plan stands, from its card and its state (D8): done is merged and in review
+        is in review (kept); blocked with the line's own stop and no layer built is retired; blocked with a
+        layer built, doing, or approved or todo with a started state, is kept; the rest has not started."""
+        out: list[StoryProgress] = []
+        for ps in plan.order():
+            key = st.stories.get(ps.id, "")
+            try:
+                status = self.board.store.get(key).status
+            except KeyError:
+                continue  # its card is gone: nothing of it is left to keep or change
+            saved = self._story_state(key)
+            layers = len((saved or {}).get("built") or {})
+            why = str((saved or {}).get("blocked") or "")
+            if status == "done":
+                out.append(StoryProgress(ps.id, key, ps.title, "kept", "merged"))
+            elif status == "review":
+                out.append(StoryProgress(ps.id, key, ps.title, "kept", "in review"))
+            elif status == "blocked" and why and not layers:
+                out.append(
+                    StoryProgress(ps.id, key, ps.title, "retire", f"blocked: {why}; no layer is built")
+                )
+            elif status == "blocked":
+                built = f"{layers} layer{'s' if layers != 1 else ''} built"
+                out.append(
+                    StoryProgress(ps.id, key, ps.title, "kept", f"blocked: {why or 'by a person'}; {built}")
+                )
+            elif status == "doing" or (saved and (saved.get("stage") not in (None, "new") or layers)):
+                out.append(StoryProgress(ps.id, key, ps.title, "kept", f"started ({status})"))
+            else:
+                out.append(StoryProgress(ps.id, key, ps.title, "change", "not started"))
+        return out
+
+    def _story_state(self, key: str) -> dict[str, Any] | None:
+        """The story's state.json as a dict, or None when there is none or it cannot be read."""
+        try:
+            data = json.loads((self.cfg.observability.state_dir / "stories" / key / "state.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    async def _replan(self, st: EpicState, card: Item, reason: str) -> None:
+        spec, repo = await self._spec_and_checkout(st, card)
+        assert st.base is not None
+        old = StoryPlan.from_dict(st.plan or {})
+        progress = self._progress(st, old)
+        kept = {p.id: s for p in progress if p.kind == "kept" and (s := old.story_named(p.id)) is not None}
+        retiring = [p for p in progress if p.kind == "retire"]
+        changeable = {p.id for p in progress if p.kind == "change"}
+        retired = {*(p.id for p in retiring), *(set(st.stories) - {s.id for s in old.stories})}
+        said = [c.text for c in card.comments[st.seen_comments :] if not self.board.is_note(c.author, c.text)]
+        guide = repo_guide(
+            repo,
+            st.base["sha"],
+            card.description + "\n" + "\n".join(p.title for p in progress),
+            budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
+        )
+        ctx, limits = self._context(repo), self.s.plan
+
+        def brief(feedback: str | None) -> str:
+            return replan_brief(
                 f"{card.title}\n\n{card.description}",
                 spec,
+                old,
+                progress,
+                comments=said,
+                reason=reason,
                 guide=guide,
-                lessons=lessons,
-                max_stories=plan_spec.max_stories,
-                max_scope_files=plan_spec.max_scope_files,
+                lessons=ctx.lessons,
+                max_stories=limits.max_stories,
+                max_scope_files=limits.max_scope_files,
                 feedback=feedback,
-                round_steps=round_steps,
-                max_steps=coder_steps,
-                context_budget=coder_context,
+                round_steps=ctx.round_steps,
+                max_steps=ctx.coder_steps,
+                context_budget=ctx.coder_context,
             )
 
-        plan = await asker.usable(st, "plan", self.s.architect_role, "story plan", brief, parse, ask=ask)
-        st.plan = plan.to_dict()
+        new = await self._ask_plan(st, spec, repo, brief, kept=kept, retired=retired, stage="replan")
+        await self._apply_replan(st, card, old, new, progress, changeable, reason)
+
+    async def _apply_replan(
+        self,
+        st: EpicState,
+        card: Item,
+        old: StoryPlan,
+        new: StoryPlan,
+        progress: Sequence[StoryProgress],
+        changeable: set[str],
+        reason: str,
+    ) -> None:
+        """Apply a re-plan to the board and the record, in this order: the listed stories (an unstarted one
+        changed in place, a new one made), the stories retired, the unstarted stories left out dropped, the
+        listed ones ranked in the new order. Each card is on record in the state the moment it exists."""
+        store = self.board.store
+        kept_ids = [p.id for p in progress if p.kind == "kept"]
+        order = [*kept_ids, *(s.id for s in new.order())]
+        index = {sid: n for n, sid in enumerate(order)}
+        created: list[str] = []
+        changed: list[str] = []
+        for ps in new.order():
+            deps = [st.stories[d] for d in sorted(ps.depends_on, key=lambda d: index[d])]
+            header = EpicHeader(card.key, new.summary, new.constraints, new.risk_for(ps.id))
+            managed = (LABEL_AFTER, LABEL_PLAN, LABEL_EPIC, "repo:")
+            labels = [
+                f"repo:{ps.repository}",
+                f"{LABEL_EPIC}{card.key}",
+                f"{LABEL_PLAN}{ps.id}",
+                *(f"{LABEL_AFTER}{k}" for k in deps),
+            ]
+            if ps.id in changeable:
+                key = st.stories[ps.id]
+                item = store.get(key)
+                extra = [x for x in item.labels if not x.startswith(managed)]
+                store.update(
+                    key,
+                    title=ps.title,
+                    description=render_story_card(ps, header, deps),
+                    labels=[*labels, *extra],
+                    status="todo" if deps else "approved",
+                )
+                changed.append(key)
+            else:
+                item = store.create(
+                    level="story",
+                    parent=card.key,
+                    title=ps.title,
+                    description=render_story_card(ps, header, deps),
+                    labels=labels,
+                )
+                st.stories[ps.id] = item.key
+                st.save()
+                if not ps.depends_on:
+                    store.update(item.key, status="approved")
+                created.append(item.key)
+        retired: list[str] = []
+        for p in progress:
+            if p.kind != "retire":
+                continue
+            self._clear_attempt(p.key)
+            replaced = ", ".join(created) or "no new story"
+            store.update(p.key, status="done")
+            store.comment(
+                p.key,
+                "airlie",
+                note(f"retired by the re-plan ({reason}); replaced by {replaced}. Its state is kept."),
+            )
+            retired.append(p.key)
+        dropped: list[str] = []
+        for sid in sorted(changeable - {s.id for s in new.stories}):
+            key = st.stories[sid]
+            store.update(key, status="done")
+            store.comment(key, "airlie", note(f"dropped by the re-plan ({reason}); it had not started."))
+            dropped.append(key)
+        for ps in new.order():  # rank: each listed story at the bottom of its column, in the new order
+            key = st.stories[ps.id]
+            store.move(key, store.get(key).status)
+        kept_stories = [s for s in old.stories if s.id in set(kept_ids)]
+        pinned = tuple(r for r in old.risks if r.pinned.split("/", 1)[0] in set(kept_ids))
+        st.plan = StoryPlan(
+            new.summary,
+            new.constraints,
+            (*pinned, *new.risks),
+            (*kept_stories, *new.order()),
+        ).to_dict()
         st.seen_comments = len(card.comments)
-        st.emit("plan", stories=[s.id for s in plan.order()], attempts=st.attempts)
-        st.finish("planned")
+        st.replans.append(
+            {
+                "reason": reason,
+                "at": time.time(),
+                "attempts": st.attempts,
+                "created": created,
+                "changed": changed,
+                "dropped": dropped,
+                "retired": retired,
+            }
+        )
+        st.save()
+        st.emit("replan", reason=reason, created=created, changed=changed, dropped=dropped, retired=retired)
+        lines = [
+            *(f"- new: {k} {store.get(k).title}" for k in created),
+            *(f"- changed: {k} {store.get(k).title}" for k in changed),
+            *(f"- retired: {k}" for k in retired),
+            *(f"- dropped: {k}" for k in dropped),
+        ]
+        store.comment(
+            card.key, "airlie", note(f"re-planned ({reason}):\n" + ("\n".join(lines) or "- nothing changed"))
+        )
+
+    def _clear_attempt(self, key: str) -> None:
+        """Remove the stopped attempt of the story `key`, as a resume would: its worktree and its branch, and
+        the record of it in its state (which is kept, with its events). The attempt's worktree and branch are
+        in the repository the story's state names."""
+        path = self.cfg.observability.state_dir / "stories" / key / "state.json"
+        data = self._story_state(key)
+        if data is None or not isinstance(data.get("attempt"), dict):
+            return
+        attempt = data["attempt"]
+        repo = Path(str(data.get("repo", "")))
+        if repo.is_dir():
+            remove_worktree(repo, Path(str(attempt.get("worktree", ""))))
+            delete_branch(repo, str(attempt.get("branch", "")))
+        data["attempt"] = None
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=1))
+        tmp.replace(path)
+
+    async def _replan_failed(self, st: EpicState, card: Item, reason: str) -> None:
+        """A re-plan that was never usable: nothing was changed; the event and a note on the epic say so."""
+        reason = _cap(_redact_urls(reason), REASON_CHARS)
+        st.emit("replan_failed", reason=reason)
+        try:
+            self.board.store.comment(
+                card.key, "airlie", note(f"re-plan failed: {reason}\nThe plan stands as it was.")
+            )
+        except Exception as e:  # noqa: BLE001 - a board that fails is an event, not a second failure
+            st.emit("board_error", call="comment", error=_redact_urls(f"{type(e).__name__}: {e}"))
 
     def _checkout(self, repository: str, *, required: bool) -> Path | None:
         """The checkout of `repository`: StoryBlocked when it is required and the line has none."""

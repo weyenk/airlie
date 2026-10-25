@@ -671,6 +671,16 @@ def test_story_plan_has_defaults_and_floors(tmp_path: Path) -> None:
     assert zero.round_steps == 0  # 0 plans in one go
 
 
+def test_resume_attempts_defaults_to_one_and_may_be_zero(tmp_path: Path) -> None:
+    """D8 of the plans phase: the tick moves a story the line blocked back to approved this many times before
+    it re-plans the epic."""
+    assert load_config(write(tmp_path, MINIMAL)).story.resume_attempts == 1
+    zero = load_config(write(tmp_path, {**MINIMAL, "story": {"resume_attempts": 0}}))
+    assert zero.story.resume_attempts == 0
+    with pytest.raises(ConfigError, match="story.resume_attempts"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"resume_attempts": -1}}))
+
+
 def test_github_app_defaults_to_your_own_login_and_takes_an_app_id(tmp_path: Path) -> None:
     app = load_config(write(tmp_path, MINIMAL)).story.github_app
     assert (app.app_id, app.key_file, app.api_url) == (

@@ -1567,6 +1567,31 @@ def epic_add(
     console.print(item.key, markup=False, highlight=False, emoji=False)
 
 
+@epic_app.command("replan")
+def epic_replan(
+    key: Annotated[str, typer.Argument(metavar="KEY", help="the epic's key (AIR-3)")],
+    reason: Annotated[
+        str, typer.Option(help="why, for the architect and the epic's record")
+    ] = "requested with task epic:replan",
+    config: ConfigOpt = None,
+) -> None:
+    """Ask the architect to revise a planned epic's stories now: the stories that have started, are in review
+    or merged are kept as they are; the ones not started are changed, dropped or replaced, new ones are made,
+    and a stopped story with no layer built is retired. A plan that is never usable changes nothing."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+    try:
+        line = _run_stoppable(factory.replan_one(cfg, key, reason))
+    except (factory.StoryBusy, BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @board_app.command("import-jira")
 def board_import_jira(
     dry_run: Annotated[

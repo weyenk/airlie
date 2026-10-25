@@ -172,6 +172,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie epic add {{.CLI_ARGS}}'
 
+  epic:replan:
+    desc: "Ask the architect to revise a planned epic's stories now: started, in-review and merged stories are kept; unstarted ones are changed or dropped, new ones made, a stopped story with no layer built retired (task epic:replan -- AIR-3 [--reason TEXT])"
+    cmds:
+      - '{{.RUN}} airlie epic replan {{.CLI_ARGS}}'
+
   board:import-jira:
     desc: "Import the Jira project (ATLASSIAN_*) onto the local board, each issue keeping its number under board.prefix; task board:import-jira -- --dry-run first"
     cmds:

@@ -560,6 +560,12 @@ class StorySpec(Strict):
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     plan: PlanSpec = Field(default_factory=PlanSpec)
+    resume_attempts: int = Field(
+        default=1,
+        ge=0,
+        description="how many times the tick moves a story the line blocked back to approved (a rebuild, not "
+        "a person's morning) before the epic it belongs to is re-planned; 0 re-plans at once",
+    )
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(

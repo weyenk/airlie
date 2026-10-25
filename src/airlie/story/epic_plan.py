@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -180,8 +180,9 @@ class StoryPlan:
         placed: list[PlannedStory] = []
         done: set[str] = set()
         left = list(self.stories)
+        here = {s.id for s in self.stories}  # a dependency outside the plan (a kept story) is built already
         while left:
-            ready = next((s for s in left if all(d in done for d in s.depends_on)), None)
+            ready = next((s for s in left if all(d in done or d not in here for d in s.depends_on)), None)
             if ready is None:
                 break
             placed.append(ready)
@@ -320,7 +321,7 @@ def _parse_story(
 
 
 def _cycle(stories: Sequence[PlannedStory]) -> list[str] | None:
-    """The ids of a dependency cycle, in order, or None."""
+    """The ids of a dependency cycle, in order, or None. A dependency outside `stories` is not in one."""
     after = {s.id: s.depends_on for s in stories}
     state: dict[str, int] = {}
     trail: list[str] = []
@@ -329,6 +330,8 @@ def _cycle(stories: Sequence[PlannedStory]) -> list[str] | None:
         state[sid] = 1
         trail.append(sid)
         for dep in after[sid]:
+            if dep not in after:
+                continue
             if state.get(dep) == 1:
                 return [*trail[trail.index(dep) :], dep]
             if dep not in state and (found := visit(dep)) is not None:
@@ -343,13 +346,13 @@ def _cycle(stories: Sequence[PlannedStory]) -> list[str] | None:
     return None
 
 
-def _stackable(stories: Sequence[PlannedStory]) -> None:
+def _stackable(stories: Sequence[PlannedStory], kept: Mapping[str, PlannedStory]) -> None:
     """A story is built on its dependency's branch (a stack, bottom up, one branch below it): a dependency in
     another repository has no branch in this one, and a story that depends on several must have them on one
     line, each below the latest, or the one branch it is built on lacks the others' code. A StoryError says
     which, and what to change."""
-    by_id = {s.id: s for s in stories}
-    position = {s.id: n for n, s in enumerate(stories)}
+    by_id = {**kept, **{s.id: s for s in stories}}
+    position = {**dict.fromkeys(kept, -1), **{s.id: n for n, s in enumerate(stories)}}
     for s in stories:
         for dep in s.depends_on:
             other = by_id[dep]
@@ -382,9 +385,20 @@ def _stackable(stories: Sequence[PlannedStory]) -> None:
 
 
 def parse_story_plan(
-    obj: dict[str, Any] | None, epic: EpicSpec, *, max_stories: int, max_scope_files: int
+    obj: dict[str, Any] | None,
+    epic: EpicSpec,
+    *,
+    max_stories: int,
+    max_scope_files: int,
+    kept: Mapping[str, PlannedStory] | None = None,
+    retired: Collection[str] = (),
 ) -> StoryPlan:
-    """The architect's story plan, or a StoryError whose text is the next try's feedback."""
+    """The architect's story plan, or a StoryError whose text is the next try's feedback.
+
+    A re-plan (D8) lists only what is still to be done. `kept` are the stories already built, in review or
+    merged, as they were planned: they are not listed again (an id of one is refused), a new story may depend
+    on them by id, and the epic criteria they cover count as covered. `retired` are ids that may not be used
+    again (a story the re-plan retires or drops, or that an earlier re-plan did)."""
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "story_plan":
@@ -402,13 +416,22 @@ def parse_story_plan(
     repeated = sorted({i for i in ids if ids.count(i) > 1})
     if repeated:
         raise StoryError(f"story ids repeat ({repeated}); give each story its own id")
-    known, epic_ids = set(ids), {c.id for c in epic.criteria}
+    kept = kept or {}
+    for sid in ids:
+        if sid in kept:
+            raise StoryError(
+                f"{sid} is already built or under review and is kept as it is: do not list it (depend on "
+                "it by id), and give any new story its own id"
+            )
+        if sid in retired:
+            raise StoryError(f"{sid} was retired or dropped: give its replacement a new id")
+    known, epic_ids = {*ids, *kept}, {c.id for c in epic.criteria}
     stories = tuple(_parse_story(d, n, epic, known, epic_ids, max_scope_files) for n, d in enumerate(raw, 1))
     cycle = _cycle(stories)
     if cycle is not None:
         raise StoryError(f"stories depend on each other in a cycle ({' -> '.join(cycle)}); break the cycle")
-    _stackable(stories)
-    named = {c for s in stories for c in s.epic_criteria}
+    _stackable(stories, kept)
+    named = {c for s in (*stories, *kept.values()) for c in s.epic_criteria}
     uncovered = [c.id for c in epic.criteria if c.id not in named]
     if uncovered:
         raise StoryError(
@@ -424,7 +447,7 @@ def parse_story_plan(
             raise StoryError(f"risk {n} must be an object with a risk and a pinned criterion")
         text, pinned = _text(r, "risk", f"risk {n}"), str(r.get("pinned") or "").strip()
         m = _PINNED.fullmatch(pinned)
-        story = next((s for s in stories if m and s.id == m.group("story")), None)
+        story = next((s for s in (*stories, *kept.values()) if m and s.id == m.group("story")), None)
         if m is None or story is None or m.group("criterion") not in {c.id for c in story.acceptance}:
             raise StoryError(
                 f"risk {n} is pinned to {pinned!r}, which is no criterion of a story in the plan; pin it as "
@@ -473,7 +496,7 @@ def check_story_plan(
     created: dict[str, set[str]] = {}
     for s in plan.stories:
         for dep in s.depends_on:
-            if position[dep] > position[s.id]:
+            if position.get(dep, -1) > position[s.id]:
                 found.append(
                     PlanFinding(
                         "order_violation",
@@ -518,6 +541,19 @@ def plan_feedback(findings: Sequence[PlanFinding]) -> str:
     return "\n".join(f"- {f.story}: {f.why}" for f in findings)
 
 
+@dataclass(frozen=True)
+class StoryProgress:
+    """Where one story of a plan stands when the epic is re-planned (D8): `kind` says what the re-plan may do
+    with it (kept: as it is; change: it has not started, so the re-plan may keep, change or drop it; retire:
+    it stopped with no layer built, so the re-plan replaces it) and `standing` says why, in words."""
+
+    id: str
+    key: str
+    title: str
+    kind: Literal["kept", "change", "retire"]
+    standing: str
+
+
 # ---- the story's card (D5, D6, D7) -----------------------------------------------------------------------
 
 STORY_CARD_CONTRACT = """The story's card ends with one ```json block holding exactly one object:
@@ -529,6 +565,10 @@ The story's card is written by airlie from the story plan; the pipeline reads th
 LABEL_AFTER = "after:"
 LABEL_EPIC = "epic:"
 LABEL_PLAN = "plan:"
+LABEL_RESUMED = "resumed:"
+"""On a story the tick moved back to approved after the line stopped it: resumed:1, resumed:2, ..."""
+LABEL_REPLANNED = "replanned_for:"
+"""On an epic the tick re-planned because a story stopped again: replanned_for:<story key>."""
 
 
 @dataclass(frozen=True)
