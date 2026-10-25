@@ -1080,7 +1080,7 @@ def test_include_cycle_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"includes: cycle") as exc:
         load_config(root)
     msg = str(exc.value)
-    assert " -> " in msg and "a.yaml" in msg and "b.yaml" in msg
+    assert ".yaml -> " in msg and "a.yaml" in msg and "b.yaml" in msg
 
 
 @pytest.mark.parametrize(
