@@ -4,12 +4,14 @@ import { createMemoryHistory } from "vue-router";
 import App from "@/App.vue";
 import { createAppRouter } from "@/router";
 
-function fakeFetch() {
+function fakeFetch(signedIn = true) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
       if (url === "/v1/events") return new Promise<Response>(() => {});
-      if (url === "/v1/auth/me") return Response.json({ name: "Noah Kruswicki", role: "admin", via: "cookie" });
+      if (url === "/v1/auth/me") {
+        return signedIn ? Response.json({ name: "Noah Kruswicki", role: "admin", via: "cookie" }) : Response.json({ error: "not signed in" }, { status: 401 });
+      }
       return new Response("{}", { status: 404 });
     }),
   );
@@ -46,7 +48,7 @@ test("a story page keeps the Workflows tab marked", async () => {
 });
 
 test("the sign-in screen is bare: no tabs, no top bar", async () => {
-  fakeFetch();
+  fakeFetch(false); // nobody known: a known person is handed straight on, and sees the shell
   const pinia = createPinia();
   setActivePinia(pinia);
   const router = createAppRouter(createMemoryHistory("/next/"));

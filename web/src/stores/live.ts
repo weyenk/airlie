@@ -12,9 +12,15 @@ export type LiveResource<T> = {
  * Data from `load` that stays current: it loads at once, refetches when `topic` (or any of several) changes (an event whose key is
  * null, or `key`; any key when none is given), and refetches whenever the feed (re)connects, since changes
  * between are not replayed. A failed load keeps the data it had and sets `error`; `refresh` never rejects.
+ * `onLoaded` hears each value that is kept (never a stale one).
  * Inside a component or effect scope it stops listening when the scope ends.
  */
-export function liveResource<T>(topic: string | string[], load: () => Promise<T>, key?: string): LiveResource<T> {
+export function liveResource<T>(
+  topic: string | string[],
+  load: () => Promise<T>,
+  key?: string,
+  onLoaded?: (value: T) => void,
+): LiveResource<T> {
   const feed = useFeedStore();
   // each load replaces the data whole, so there is nothing for deep reactivity to watch
   const data = shallowRef<T>();
@@ -28,6 +34,7 @@ export function liveResource<T>(topic: string | string[], load: () => Promise<T>
       if (mine !== latest) return; // a newer load has begun; its answer wins
       data.value = value;
       error.value = undefined;
+      onLoaded?.(value); // only the newest load's answer gets here
     } catch (e) {
       if (mine !== latest) return;
       error.value = e instanceof Error ? e : new Error(String(e));

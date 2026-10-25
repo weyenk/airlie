@@ -529,7 +529,14 @@ def own_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     yield from _serve(tmp_path_factory.mktemp("airlie"))
 
 
-def _serve(root: Path) -> Iterator[Server]:
+@pytest.fixture
+def bootstrap_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
+    """A fresh install: no admin key and nobody invited, so a request straight from this machine is the
+    bootstrap admin (airlie.auth.principal) until the first person is invited."""
+    yield from _serve(tmp_path_factory.mktemp("airlie"), api_key=None)
+
+
+def _serve(root: Path, api_key: str | None = KEY) -> Iterator[Server]:
     config = _config(root)
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)
@@ -543,7 +550,7 @@ def _serve(root: Path) -> Iterator[Server]:
         config,
         transport=httpx.MockTransport(upstream),
         orchestrator_factory=lambda cfg, k, topology=None: _FakeStudio(state),
-        api_key=KEY,
+        api_key=api_key,
     )
     port = _free_port()
     # airlie's own Server, as `airlie serve` runs: shutdown ends the live feed first, so a page that holds

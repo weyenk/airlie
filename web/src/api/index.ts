@@ -22,9 +22,18 @@ export function getKey(): string {
   }
 }
 
-/** The request headers that sign in by key; none when no key is stored (the cookie does it). */
-export function authHeaders(): Record<string, string> {
-  const key = getKey();
+/** Keep `key` for this browser (the admin key sign-in). */
+export function setKey(key: string): void {
+  try {
+    localStorage.setItem(KEY, key);
+  } catch {
+    // private mode or blocked storage: the key lives for this page load only, and the cookie is not set either
+  }
+}
+
+/** The request headers that sign in by key (`given`, else the stored one); none when there is no key (the cookie does it). */
+export function authHeaders(given?: string): Record<string, string> {
+  const key = given ?? getKey();
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
@@ -81,9 +90,9 @@ export function signalUnauthorized(): void {
 /** JSON in, JSON out. A non-2xx answer is an ApiError. */
 export async function request<T>(
   path: string,
-  init: { method?: string; body?: unknown; signal?: AbortSignal; quiet401?: boolean } = {},
+  init: { method?: string; body?: unknown; signal?: AbortSignal; quiet401?: boolean; key?: string } = {},
 ): Promise<T> {
-  const headers = authHeaders();
+  const headers = authHeaders(init.key);
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
     method: init.method ?? "GET",

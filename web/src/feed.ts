@@ -77,8 +77,9 @@ export function connectFeed(opts: {
   fetchImpl?: typeof fetch;
   backoffMs?: number[];
   silenceMs?: number;
-  /** The feed answered 401: nobody is signed in. The feed stops (no retry) and this is told. */
-  onUnauthorized?(): void;
+  /** The feed answered 401: nobody is signed in. The feed stops (no retry) and this is told, unless it answers
+   * `true` ("hold": not a sign-out yet): the feed then keeps retrying at its slowest pace and asks again each time. */
+  onUnauthorized?(): boolean | void;
 }): () => void {
   const delays = opts.backoffMs?.length ? opts.backoffMs : BACKOFF_MS;
   const silenceMs = opts.silenceMs ?? SILENCE_MS;
@@ -146,8 +147,14 @@ export function connectFeed(opts: {
     } catch (e) {
       // a network error, a non-2xx status, the watchdog's abort or ours: all end the stream the same way
       if (e instanceof Unauthorized && !stopped) {
-        stopped = true;
-        guarded(() => opts.onUnauthorized?.());
+        let hold = false;
+        try {
+          hold = opts.onUnauthorized?.() === true;
+        } catch (callbackError) {
+          console.error("feed: a callback threw", callbackError);
+        }
+        if (hold) retries = delays.length; // the slowest pace until it is let in or told to stop
+        else stopped = true;
       }
     } finally {
       clearTimeout(watchdog);

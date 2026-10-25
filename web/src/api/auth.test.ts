@@ -10,6 +10,8 @@ import {
   me,
   passkeyLogin,
   passkeyRegister,
+  peekInvite,
+  signInWithKey,
 } from "./auth";
 
 afterEach(() => {
@@ -90,4 +92,29 @@ test("signing in with a passkey asks for options, signs, and returns the person"
   expect(fetchMock.mock.calls[0][0]).toBe("/v1/auth/login/options");
   expect(fetchMock.mock.calls[1][0]).toBe("/v1/auth/login/verify");
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ credential: { id: "cred" } });
+});
+
+test("the admin key is checked with the key itself, and kept only when accepted", async () => {
+  localStorage.clear();
+  const ok = stubJson({ data: [] });
+  await signInWithKey("airlie_k_1");
+  expect(callOf(ok)).toMatchObject({ url: "/v1/models", headers: { Authorization: "Bearer airlie_k_1" } });
+  expect(localStorage.getItem("airlie.key")).toBe("airlie_k_1");
+
+  localStorage.clear();
+  stubJson({ error: "bad key" }, { status: 401 });
+  await expect(signInWithKey("nope")).rejects.toMatchObject({ status: 401 });
+  expect(localStorage.getItem("airlie.key")).toBeNull();
+});
+
+test("peeking at an invite names who it is for, and sends no key; a lapsed invite is a 410", async () => {
+  localStorage.setItem("airlie.key", "stored");
+  const fetchMock = stubJson({ challenge: "AQID", user: { id: "x", name: "ann", displayName: "Ann" } });
+  await expect(peekInvite("tok")).resolves.toBe("Ann");
+  expect(callOf(fetchMock)).toMatchObject({ url: "/v1/auth/register/options", method: "POST", body: { invite: "tok" }, headers: { "Content-Type": "application/json" } });
+  expect(callOf(fetchMock).headers).not.toHaveProperty("Authorization");
+
+  stubJson({ error: "invite expired or already used" }, { status: 410 });
+  await expect(peekInvite("old")).rejects.toMatchObject({ status: 410, message: "invite expired or already used" });
+  localStorage.clear();
 });

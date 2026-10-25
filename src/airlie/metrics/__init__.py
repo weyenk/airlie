@@ -17,6 +17,9 @@ from typing import Any
 import duckdb  # noqa: F401  (the module's declared engine; the v1 aggregation runs in-process)
 
 _SLICE_FIELDS = ("model", "role", "topology", "story")
+# the slices the API offers that are named differently in the step event: the task is the run a step
+# belongs to (`run_id`), the agent is the team inside it that took the step (`team_id`)
+_SLICE_SOURCES = {"task": "run_id", "agent": "team_id"}
 
 
 def _event_files(state_dir: Path) -> list[Path]:
@@ -46,6 +49,9 @@ def _row(rec: dict[str, Any]) -> dict[str, Any]:
     for f in _SLICE_FIELDS:
         v = rec.get(f)
         out[f] = "unknown" if v is None else str(v)
+    for name, source in _SLICE_SOURCES.items():
+        v = rec.get(source)
+        out[name] = "unknown" if v is None else str(v)
     for f in ("prompt_tokens", "completion_tokens", "prefill_ms", "gen_ms"):
         v = rec.get(f)
         out[f] = float(v) if isinstance(v, (int, float)) and v is not None else None

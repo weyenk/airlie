@@ -157,3 +157,12 @@ def test_metrics_not_public_and_key_still_gates(tmp_path: Path) -> None:
     r = c.get("/v1/metrics/summary", params={"from": 1000, "to": 1004})
     assert r.status_code == 401
     assert "missing or invalid API key" in r.text
+
+
+@pytest.mark.parametrize("slice_", ["role", "model", "topology", "task", "agent"])
+def test_every_offered_slice_answers_summary_and_series(tmp_path: Path, slice_: str) -> None:
+    """The metrics tab offers all five slices: none may 500 (task and agent used to raise KeyError)."""
+    c = _client(tmp_path, "events_new.jsonl")
+    params = {"from": 0, "to": 1e10, "slice": slice_}
+    assert c.get("/v1/metrics/summary", params=params, headers=_auth()).status_code == 200
+    assert c.get("/v1/metrics/series", params=params, headers=_auth()).status_code == 200

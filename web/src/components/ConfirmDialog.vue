@@ -13,12 +13,12 @@ function onOpen(open: boolean) {
   <Dialog :open="confirmState.open" @update:open="onOpen">
     <DialogContent :show-close-button="false">
       <DialogHeader>
-        <DialogTitle>Are you sure?</DialogTitle>
+        <DialogTitle>{{ confirmState.title }}</DialogTitle>
         <DialogDescription>{{ confirmState.message }}</DialogDescription>
       </DialogHeader>
       <DialogFooter>
         <Button variant="outline" data-confirm-cancel @click="answerConfirm(false)">Cancel</Button>
-        <Button data-confirm-ok @click="answerConfirm(true)">Confirm</Button>
+        <Button data-confirm-ok @click="answerConfirm(true)">{{ confirmState.confirmLabel }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
