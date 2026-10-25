@@ -378,11 +378,12 @@ _OWNER_NAME = re.compile(r"[A-Za-z0-9_][\w.-]*/[\w.-]+")
 
 def given_repo(cfg: AirlieConfig, repo: str | None) -> Path | None:
     """The checkout a request names: a path as written, or an "owner/name" (the web app's repository field),
-    which is the checkout of that name in story.repos_root as an issue's repo: label is. A RepositoryError
+    which is always the checkout of that name in story.repos_root, as an issue's repo: label is (never a
+    directory of that shape under the server's working directory). A RepositoryError
     in words when there is none."""
     if not repo:
         return None
-    if _OWNER_NAME.fullmatch(repo) and not Path(repo).expanduser().exists():
+    if _OWNER_NAME.fullmatch(repo):
         return find_checkout(cfg.story.repos_root, repo)
     return Path(repo)
 

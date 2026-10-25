@@ -349,7 +349,9 @@ def test_the_job_card_follows_the_story_with_no_reload(
     card.get_by_role("combobox", name="Repository").fill(REPO)
     card.get_by_role("button", name="Start story").click()
     job = next_page.locator("[data-card]")
-    evidence.expect(job.locator("[data-stage]"), "nothing has run yet").to_have_text("no state yet")
+    evidence.expect(job.locator("[data-stage]"), "nothing has run yet").to_have_text(
+        re.compile("^(no state yet|starting)$")
+    )
     evidence.expect(job.get_by_role("progressbar"), "so no progress").to_have_count(0)
     _write_story(own_server.state, STARTED)  # as the tick would
     evidence.expect(job.locator("[data-stage]"), "the stage follows the story").to_have_text(

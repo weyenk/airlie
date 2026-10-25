@@ -1424,3 +1424,13 @@ async def test_a_written_request_naming_a_repository_with_no_checkout_says_to_cl
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
     with pytest.raises(RepositoryError, match="^no checkout of weyenk/airlie in .*clone it there"):
         await story_job(cfg, card=None, text="avatars", repo="weyenk/airlie")
+
+
+async def test_an_owner_slash_name_never_means_a_directory_under_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "weyenk" / "airlie" / ".git").mkdir(parents=True)  # a decoy where the server runs
+    monkeypatch.chdir(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    with pytest.raises(RepositoryError, match="^no checkout of weyenk/airlie in "):
+        factory.given_repo(cfg, "weyenk/airlie")
