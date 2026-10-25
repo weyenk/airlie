@@ -127,3 +127,11 @@ class InitiativeState:
         if self.qa and self.qa[-1].get("a") is None:
             return self.qa[-1]
         return None
+
+
+def waiting_on(stage: str, pending_question: bool) -> str | None:
+    """Who the initiative waits for: the person (a question to answer, epics to approve, a stop to lift) or
+    the line (it has work to do). None for a stage that is none."""
+    if stage == "delivered" or stage == "blocked" or (stage == "questions" and pending_question):
+        return "person"
+    return "line" if stage in INITIATIVE_STAGES else None

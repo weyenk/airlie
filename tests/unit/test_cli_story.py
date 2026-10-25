@@ -672,3 +672,150 @@ def test_a_traceback_never_shows_the_locals_of_the_frames_it_passes(tmp_path: Pa
     crashed = r.returncode != 0 and "RuntimeError" in r.stderr and "the board fell over" in r.stderr
     assert crashed, r.stderr  # a traceback was printed, so its absence of locals means something
     assert "t0ken-SENTINEL" not in r.stderr and "me@example.org" not in r.stderr
+
+
+# ---- initiative add / turn (the specs phase, P4, 2026-10-25) ----
+
+
+def initiative_cfg(tmp_path: Path) -> str:
+    return str(story_cfg(tmp_path, specs={"enabled": True, "consultable": ["architect"]}))
+
+
+def test_initiative_add_creates_approves_and_asks_the_first_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.board import BoardStore
+
+    seen: list[str] = []
+
+    async def fake(cfg: object, key: str) -> str:
+        seen.append(key)
+        return f"{key} asked question 1\nQuestion for you (answer it as a comment on {key}): What first?"
+
+    monkeypatch.setattr(factory, "initiative_one", fake)
+    cfg_path = initiative_cfg(tmp_path)
+    r = runner.invoke(
+        cli.app,
+        [
+            "initiative",
+            "add",
+            "--text",
+            "Make the board feel like Linear.\n\nFast.",
+            "--repo",
+            "o/r",
+            "--repo",
+            "o/s",
+            "--budget",
+            "20",
+            "--config",
+            cfg_path,
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    lines = r.output.strip().splitlines()
+    assert lines[0] == "AIR-1" and "Question for you" in lines[-1] and seen == ["AIR-1"]
+    store = BoardStore(tmp_path / "state" / "board.sqlite")
+    [item] = store.list(level="initiative")
+    assert item.status == "approved" and item.title == "Make the board feel like Linear."
+    assert item.labels == ("repo:o/r", "repo:o/s", "budget:20h") and "Fast." in item.description
+    store.close()
+
+
+def test_initiative_add_reads_a_file_and_refuses_what_it_cannot_make(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+
+    cfg_path = initiative_cfg(tmp_path)
+    ask = tmp_path / "ask.md"
+    ask.write_text("Faster board\n\nMake it fast.\n")
+    for args, why in [
+        (["--text", "x", "--file", str(ask), "--repo", "o/r"], "not both"),
+        (["--repo", "o/r"], "not both"),
+        (["--text", "x"], "name the repository"),
+        (["--text", "x", "--repo", "../etc"], "is not owner/name"),
+        (["--text", "  ", "--repo", "o/r"], "the initiative is empty"),
+        (["--text", "x", "--repo", "o/r", "--budget", "0"], "hours above zero"),
+        (["--file", str(tmp_path / "nope.md"), "--repo", "o/r"], "nope.md"),
+    ]:
+        r = runner.invoke(cli.app, ["initiative", "add", *args, "--config", cfg_path])
+        assert r.exit_code in (1, 2) and why in r.output, (args, r.output)
+    store = BoardStore(tmp_path / "state" / "board.sqlite")
+    assert store.list() == []  # nothing was made
+    store.close()
+
+
+def test_initiative_add_keeps_the_card_when_the_line_is_busy_and_says_when_the_tick_takes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def busy(cfg: object, key: str) -> str:
+        raise factory.StoryBusy(f"another story is in flight; the tick picks {key} up within 15 minutes")
+
+    monkeypatch.setattr(factory, "initiative_one", busy)
+    r = runner.invoke(
+        cli.app,
+        ["initiative", "add", "--text", "A loose ask", "--repo", "o/r", "--config", initiative_cfg(tmp_path)],
+    )
+    assert r.exit_code == 0 and r.output.splitlines()[0] == "AIR-1"
+    assert "the tick picks AIR-1 up within 15 minutes" in r.output
+
+
+def test_initiative_turn_runs_the_next_turn_and_names_what_cannot_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake(cfg: object, key: str) -> str:
+        if key == "AIR-9":
+            raise BoardError("no item AIR-9 on the board")
+        return f"{key} delivered 2 epics (6 h)"
+
+    monkeypatch.setattr(factory, "initiative_one", fake)
+    cfg_path = initiative_cfg(tmp_path)
+    ok = runner.invoke(cli.app, ["initiative", "turn", "AIR-1", "--config", cfg_path])
+    assert ok.exit_code == 0 and "AIR-1 delivered 2 epics (6 h)" in ok.output
+    bad = runner.invoke(cli.app, ["initiative", "turn", "AIR-9", "--config", cfg_path])
+    assert bad.exit_code == 1 and "no item AIR-9" in bad.output
+
+
+def test_the_initiative_commands_are_tasks() -> None:
+    tasks = yaml.safe_load(Path("Taskfile.yml").read_text())["tasks"]
+    assert "airlie initiative add" in tasks["initiative"]["cmds"][0]
+    assert "airlie initiative turn" in tasks["initiative:turn"]["cmds"][0]
+
+
+async def test_initiative_one_runs_the_turn_under_the_lock_and_prints_the_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real `initiative_one` (what the CLI runs): the first question for a new card, StoryBusy while a
+    story holds the lock, and a refusal when the card has nothing to do."""
+    from airlie.board import BoardStore
+    from airlie.engine import FakeEngine, FakeReply
+    from airlie.story.model import StoryBusy, StorySetupError
+
+    cfg = cfg_for(
+        tmp_path,
+        roles=STORY_ROLES,
+        extra={
+            "story": {
+                "repos_root": str(tmp_path / "git"),
+                "specs": {"enabled": True, "consultable": ["architect"]},
+            }
+        },
+    )
+    checkout_of(tmp_path / "git", "o/r")
+    question = FakeReply(text='Q.\n```json\n{"type": "question", "text": "What happens first?"}\n```\n')
+    monkeypatch.setattr(factory, "_engine", lambda c: FakeEngine({"product": [question]}))
+    store = BoardStore(cfg.observability.state_dir / "board.sqlite")
+    key = store.create(level="initiative", title="Faces", description="Faces.", labels=["repo:o/r"]).key
+    with pytest.raises(StorySetupError, match="nothing for the line to do"):
+        await factory.initiative_one(cfg, key)  # not approved yet
+    store.update(key, status="approved")
+    with story_lock(factory.stories_dir(cfg)) as held:
+        assert held
+        with pytest.raises(StoryBusy, match=f"the tick picks {key} up within 15 minutes"):
+            await factory.initiative_one(cfg, key)
+    out = await factory.initiative_one(cfg, key)
+    assert out.splitlines()[0] == f"{key} asked question 1"
+    assert f"Question for you (answer it as a comment on {key}): What happens first?" in out
+    with pytest.raises(BoardError, match="no item AIR-99"):
+        await factory.initiative_one(cfg, "AIR-99")
+    epic = store.create(level="epic", title="e", parent=key).key
+    with pytest.raises(BoardError, match="is an epic, not an initiative"):
+        await factory.initiative_one(cfg, epic)

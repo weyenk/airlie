@@ -25,20 +25,26 @@ from airlie.story.epic_state import EpicState
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.initiative import initiative_key_of
+from airlie.story.initiative_pipeline import InitiativePipeline
+from airlie.story.initiative_state import InitiativeState, initiatives_dir, waiting_on
 from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
 from airlie.story.local_board import PICK_FIRST, LocalBoard
-from airlie.story.model import NoTestGate, RepositoryError, StoryError, StoryRunning, StorySetupError
+from airlie.story.model import (
+    NoTestGate,
+    RepositoryError,
+    StoryError,
+    StoryRunning,
+    StorySetupError,
+)
+from airlie.story.model import (
+    StoryBusy as StoryBusy,  # re-exported: the CLI and the tests name factory.StoryBusy
+)
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
-from airlie.story.state import STAGES, StoryState, story_lock
+from airlie.story.state import STAGES, StoryState, lock_held, story_lock
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
-
-
-class StoryBusy(RuntimeError):
-    """Another story holds the lock: stories are built one at a time."""
-
 
 PUBLISHED = STAGES[STAGES.index("publish") :]
 """The stages of a story whose PRs are open: nothing is built or published again."""
@@ -399,6 +405,7 @@ def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
             if to == "done":
                 notes += _close_estimate(cfg, board, key)
         notes += _hold_epics(board)
+        notes += _finish_initiatives(cfg, board)
         for story in board.waiting_stories():
             deps = after_keys(story.labels)
             if not all(_status(board, dep) in ("review", "done") for dep in deps):
@@ -683,6 +690,286 @@ async def _plan_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item) -> str:
     return f"{head}: set aside ({reason})"
 
 
+# ---- the specs phase (P4 of the planning line, 2026-10-25) ----
+
+TICK_MINUTES = 15
+"""How often the tick runs (launchd), as the turn route's busy line promises it."""
+
+
+def make_initiative_pipeline(cfg: AirlieConfig, board: LocalBoard) -> InitiativePipeline:
+    """The pipeline that specifies an approved initiative (D2 to D9): product and the specialists through the
+    studio over the HTTP engine, the checkouts of story.repos_root, the ledger's prices, and the Chat's
+    uploads for the attachments the text links."""
+    from airlie.serve.uploads import UploadStore  # here, not at the top: serve imports the story package
+
+    engine = _engine(cfg)
+    return InitiativePipeline(
+        cfg,
+        board=board,
+        studio=lambda: StudioOrchestrator(cfg, engine),
+        repo_of=lambda repository: epic_checkout(cfg, repository),
+        costs=make_costs(cfg),
+        uploads=UploadStore(cfg.observability.state_dir.expanduser() / "uploads", cfg.chat.attachments),
+    )
+
+
+def _a(level: str) -> str:
+    """`level` with its article: "an epic", "a story"."""
+    return f"{'an' if level[0] in 'aeiou' else 'a'} {level}"
+
+
+def _saved_initiative(cfg: AirlieConfig, key: str) -> dict[str, Any] | None:
+    """The state.json of the initiative `key` as a dict, or None when there is none or it cannot be read."""
+    try:
+        data = json.loads((initiatives_dir(cfg) / key / "state.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def initiative_turn_due(cfg: AirlieConfig, board: LocalBoard, item: Item) -> str | None:
+    """What the specs phase would do for the initiative `item` now, as one word, or None when it waits for
+    nothing the line can do: `start` (approved, no record yet), `answer` (a question is pending and a person
+    commented after it), `resume` (a person approved a blocked initiative again), `continue` (a turn that
+    stopped between its stages: approved or doing, with no pending question). A delivered initiative, or one
+    waiting for its person, is None."""
+    if item.level != "initiative" or item.status not in ("approved", "doing", "review"):
+        return None
+    state = _saved_initiative(cfg, item.key)
+    if state is None:
+        return "start" if item.status == "approved" else None
+    stage = state.get("stage")
+    if stage == "delivered":
+        return None
+    if stage == "blocked":
+        return "resume" if item.status == "approved" else None
+    if stage == "questions":
+        qa = state.get("qa") or []
+        pending = qa[-1] if qa and isinstance(qa[-1], dict) and qa[-1].get("a") is None else None
+        if pending is None:
+            return "continue" if item.status in ("approved", "doing") else None
+        asked = float(pending.get("asked_at") or 0)
+        return "answer" if any(board.is_person(c) and c.at > asked for c in item.comments) else None
+    return "continue" if item.status in ("approved", "doing") else None
+
+
+def initiative_line(st: InitiativeState) -> str:
+    """What a turn did, as the tick logs it: `AIR-40 asked question 3`, `AIR-40 delivered 3 epics (14 h)`."""
+    key = st.path.name
+    if st.stage == "blocked":
+        return f"{key} blocked ({st.blocked})"
+    if st.stage == "delivered":
+        hours = sum(float(e.get("estimate", {}).get("hours", 0)) for e in st.epics)
+        return f"{key} delivered {len(st.epics)} epics ({hours:g} h)"
+    if st.stage == "questions" and st.pending_question() is not None:
+        return f"{key} asked question {len(st.qa)}"
+    return f"{key} is {st.stage}"
+
+
+async def _set_aside_initiative(board: LocalBoard, item: Item, reason: str) -> str:
+    """A card the specs phase cannot read (no repository label, a budget that is no number): a note with the
+    reason and a move to blocked, so the intake does not meet it again until a person fixes and approves
+    it."""
+    why = _cap(_redact_urls(reason))
+    try:
+        board.store.comment(
+            item.key, "airlie", note(f"set aside: {why}\nApprove the initiative again once that is fixed.")
+        )
+        board.store.update(item.key, status="blocked")
+    except Exception as err:  # noqa: BLE001 - a board that fails is named, not raised
+        why += f" (and the board refused the note: {_why(err)})"
+    return f"{item.key} set aside ({why})"
+
+
+async def _initiative_turn(cfg: AirlieConfig, board: LocalBoard, item: Item) -> str:
+    try:
+        st = await make_initiative_pipeline(cfg, board).turn(item)
+    except StorySetupError as e:
+        return await _set_aside_initiative(board, item, str(e))
+    return initiative_line(st)
+
+
+async def _revise_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item) -> str:
+    """One person's comment on an epic of the specs phase: a pick or a revision. The line leaves a comment of
+    its own whatever happens, so the person's is not read twice."""
+    try:
+        await make_initiative_pipeline(cfg, board).revise(epic)
+    except StorySetupError as e:
+        board.store.comment(
+            epic.key, "airlie", note(f"could not read this comment: {_cap(_redact_urls(str(e)))}")
+        )
+        return f"{epic.key} comment set aside"
+    last = board.item(epic.key).comments[-1].text if board.item(epic.key).comments else ""
+    what = (
+        "revised"
+        if last.startswith("Revised:")
+        else "pick recorded"
+        if last.startswith("Recorded:")
+        else "answered"
+    )
+    return f"{epic.key} {what}"
+
+
+async def _specs_step(cfg: AirlieConfig, board: LocalBoard) -> str | None:
+    """The tick's piece of work for the specs phase (D10), in this order: resume an initiative whose question
+    a    person answered (or whose turn stopped part-way, or that a person approved again); answer the first
+    epic a person commented on; start the oldest approved initiative that has no record. None when there is
+    none, and the epic step goes on."""
+    if not cfg.story.specs.enabled:
+        return None
+    for item in board.store.list(level="initiative"):
+        if initiative_turn_due(cfg, board, item) in ("answer", "continue", "resume"):
+            return await _initiative_turn(cfg, board, item)
+    waiting = board.epics_awaiting_revision()
+    if waiting:
+        return await _revise_epic(cfg, board, waiting[0])
+    for item in board.store.list(level="initiative", status="approved"):
+        if initiative_turn_due(cfg, board, item) == "start":
+            return await _initiative_turn(cfg, board, item)
+    return None
+
+
+def _finish_initiatives(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
+    """An initiative whose epics are all done or parked (todo) is done (D8). One with no epic yet, or one
+    that has not delivered, is left alone."""
+    notes: list[str] = []
+    for item in board.store.list(level="initiative", status="review"):
+        state = _saved_initiative(cfg, item.key)
+        if state is None or state.get("stage") != "delivered":
+            continue
+        children = board.children(item.key)
+        epics = [c for c in children if c.level == "epic"]
+        if epics and all(c.status in ("done", "todo") for c in epics):
+            board.store.update(item.key, status="done")
+            notes.append(f"initiative {item.key} is done")
+    return notes
+
+
+async def initiative_job(
+    cfg: AirlieConfig, *, key: str, running: Callable[[str], bool] | None = None
+) -> tuple[str, Path, Coroutine[Any, Any, dict[str, Any]]]:
+    """For POST /v1/airlie/initiatives/{key}/turn (D15, N6): the person's move runs the next piece now.
+    Raises StoryBusy (the route's 409) while another story holds the lock, with the line saying the tick
+    will pick the initiative up; StoryRunning for a turn of the same initiative already running;
+    StorySetupError for story.board: jira, specs off, a key that is not an initiative, or nothing to do (no
+    answer, no new card); BoardError for a key not on the board. The work takes the lock itself and
+    returns {"stage", "waiting_on", "question", "epics", "blocked"}."""
+    try:
+        scfg = story_config(cfg)
+    except ConfigError as e:
+        raise StorySetupError(str(e)) from None
+    problems = story_problems(scfg)
+    if problems:
+        raise StorySetupError("; ".join(problems))
+    if scfg.story.board != "local":
+        raise StorySetupError("the specs phase works on airlie's own board (story.board: local), not Jira")
+    if not scfg.story.specs.enabled:
+        raise StorySetupError("the specs phase is off (story.specs.enabled)")
+    board = make_board(scfg)
+    assert isinstance(board, LocalBoard)
+    item = board.item(key)
+    if item.level == "epic" and initiative_key_of(item.labels) is not None:
+        return _revision_job(scfg, board, item, running)
+    if item.level != "initiative":
+        raise StorySetupError(f"{item.key} is {_a(item.level)}, not an initiative or an epic of one")
+    job_id = f"initiative-{item.key}"
+    if running is not None and running(job_id):
+        raise StoryRunning(f"job '{job_id}' is already running")
+    busy = f"busy: a story is in flight; the tick picks {item.key} up within {TICK_MINUTES} minutes"
+    if lock_held(stories_dir(scfg)):
+        raise StoryBusy(busy)
+    due = initiative_turn_due(scfg, board, item)
+    if due is None:
+        raise StorySetupError(
+            f"{item.key} has nothing for the line to do: no new card, no answer to a question, no epic "
+            "to read"
+        )
+
+    async def work() -> dict[str, Any]:
+        with story_lock(stories_dir(scfg)) as held:
+            if not held:
+                raise StoryBusy(busy)
+            st = await make_initiative_pipeline(scfg, board).turn(board.item(key))
+        pending = st.pending_question()
+        return {
+            "stage": st.stage,
+            "waiting_on": waiting_on(st.stage, pending is not None),
+            "question": pending["q"] if pending else None,
+            "epics": [e["key"] for e in st.epics if "key" in e],
+            "blocked": st.blocked,
+        }
+
+    return job_id, initiatives_dir(scfg) / item.key / "events.jsonl", work()
+
+
+def _revision_job(
+    cfg: AirlieConfig, board: LocalBoard, epic: Item, running: Callable[[str], bool] | None
+) -> tuple[str, Path, Coroutine[Any, Any, dict[str, Any]]]:
+    """The turn route for an epic of the specs phase (D15): a person's comment on it, a pick or one
+    revision, now. Same refusals as an initiative's turn; StorySetupError when nobody commented since the
+    line last did."""
+    job_id = f"initiative-{epic.key}"
+    if running is not None and running(job_id):
+        raise StoryRunning(f"job '{job_id}' is already running")
+    busy = f"busy: a story is in flight; the tick picks {epic.key} up within {TICK_MINUTES} minutes"
+    if lock_held(stories_dir(cfg)):
+        raise StoryBusy(busy)
+    if epic.status != "review" or board.latest_person_comment(epic) is None:
+        raise StorySetupError(f"{epic.key} has no comment of yours waiting for the line (and is in review)")
+    initiative = initiative_key_of(epic.labels) or ""
+
+    async def work() -> dict[str, Any]:
+        with story_lock(stories_dir(cfg)) as held:
+            if not held:
+                raise StoryBusy(busy)
+            await make_initiative_pipeline(cfg, board).revise(board.item(epic.key))
+        return {
+            "stage": "review",
+            "waiting_on": "person",
+            "question": None,
+            "epics": [epic.key],
+            "blocked": None,
+        }
+
+    return job_id, initiatives_dir(cfg) / initiative / "events.jsonl", work()
+
+
+async def initiative_one(cfg: AirlieConfig, key: str) -> str:
+    """`task initiative` and `task initiative:turn`: the next piece of the specs phase for initiative `key`,
+    in this process, holding the one-story lock. Returns what to print: the question the person is asked, or
+    the epics delivered. A BoardError for a key that is no initiative, StoryBusy while a story is in flight,
+    StorySetupError when there is nothing to do."""
+    board = make_board(cfg)
+    if not isinstance(board, LocalBoard):
+        raise BoardError("initiatives are on airlie's own board (story.board: local)")
+    if not cfg.story.specs.enabled:
+        raise StorySetupError("the specs phase is off (story.specs.enabled)")
+    item = board.item(key)
+    if item.level != "initiative":
+        raise BoardError(f"{item.key} is {_a(item.level)}, not an initiative")
+    if initiative_turn_due(cfg, board, item) is None:
+        raise StorySetupError(
+            f"{item.key} has nothing for the line to do yet: answer its question on the board"
+        )
+    with story_lock(stories_dir(cfg)) as held:
+        if not held:
+            raise StoryBusy(
+                f"another story is in flight (one at a time); the tick picks {item.key} up within "
+                f"{TICK_MINUTES} minutes"
+            )
+        st = await make_initiative_pipeline(cfg, board).turn(item)
+    lines = [initiative_line(st)]
+    pending = st.pending_question()
+    if pending is not None:
+        lines.append(f"Question for you (answer it as a comment on {item.key}): {pending['q']}")
+    lines += [
+        f"{e['key']} ({e['kind']}) {e['title']}: {e['estimate']['hours']:g} h"
+        for e in st.epics
+        if "key" in e and "estimate" in e
+    ]
+    return "\n".join(lines)
+
+
 async def tick(cfg: AirlieConfig) -> str:
     """One scheduler beat: bookkeeping on the epics (a planned epic's status follows its stories, waiting
     stories are promoted, a dependent whose base moved is replayed onto it), then one piece of work: plan the
@@ -722,6 +1009,9 @@ async def _beat(cfg: AirlieConfig, board: Board, notes: list[str]) -> str:
         return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
     if isinstance(board, LocalBoard):
         notes += await _replay_dependents(cfg, board)
+        specs = await _specs_step(cfg, board)
+        if specs is not None:
+            return " ".join(specs.split())
         epic = board.next_epic()
         if epic is not None:
             return " ".join((await _plan_epic(cfg, board, epic)).split())

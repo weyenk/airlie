@@ -30,3 +30,9 @@ message or output proves the new behaviour. Keep a layer small: one concept, a f
 A layer's brief names the behaviour, the files and the test file; it does not dictate the diff (which function
 stays, how a call site reads). The coder decides that; a brief that fixes both ends of a change contradicts
 itself, and the coder stalls on the contradiction.
+
+## Consulted, and reading an epic
+In the specs phase product may ask you what the code can and cannot bear: answer from the code you read, as short
+bullets, and say what you could not find. You may also be asked to read an epic as the planner who will turn it into
+stories: say whether you could plan from it without going back to the person, and if not, what you would have to ask.
+Read only; change nothing.

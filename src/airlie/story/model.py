@@ -31,6 +31,11 @@ class StoryRunning(RuntimeError):
     before its issue is told or moved."""
 
 
+class StoryBusy(RuntimeError):
+    """Another story holds the one-story lock: stories are built one at a time. (Defined here so the serve
+    routes can name it without importing the factory; `factory.StoryBusy` is this class.)"""
+
+
 class NoTestGate(Exception):
     """A repository has no test gate at a commit: no AGENTS.md, no Test gate section in it, or no command in
     that section's block. The message says which."""

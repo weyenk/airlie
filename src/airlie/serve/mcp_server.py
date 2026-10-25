@@ -169,9 +169,11 @@ class _Serve:
         body: dict[str, Any] | None = None,
         *,
         params: dict[str, Any] | None = None,
+        allow: frozenset[int] = frozenset(),
     ) -> dict[str, Any]:
         """One request, ended by the call's deadline whatever serve does: a cancel scope bounds it, not only
-        httpx's per-phase timeouts. _NoAnswer when the time ran out."""
+        httpx's per-phase timeouts. _NoAnswer when the time ran out. A status in `allow` (409, say) is not an
+        error: its JSON comes back with `_status` set."""
         base = str(self.http.base_url).rstrip("/")
         payload = None if body is None else {k: v for k, v in body.items() if v is not None}
         res: httpx.Response | None = None
@@ -193,14 +195,15 @@ class _Serve:
                 f"airlie at {base} did not answer {method} {path} in time (a call has {CALL_BUDGET_S:g} s; "
                 f"is it busy or hung?){maybe}"
             )
-        if not res.is_success:
+        if not res.is_success and res.status_code not in allow:
             hint = NO_KEY if res.status_code == 401 and "authorization" not in res.request.headers else ""
             raise ToolError(f"airlie {method} {path}: {res.status_code} {res.text[:800]}{hint}")
         try:
             out = res.json() if res.content else {}
         except ValueError:
             raise ToolError(f"airlie {method} {path}: the answer is not JSON: {res.text[:200]}") from None
-        return out if isinstance(out, dict) else {}
+        answer = out if isinstance(out, dict) else {}
+        return {**answer, "_status": res.status_code} if res.status_code in allow else answer
 
     async def start(self, path: str, body: dict[str, Any], call: _Call) -> str:
         """POST a job and keep its id on `call`. The POST is shielded from the client's cancel, so the id
@@ -210,6 +213,16 @@ class _Serve:
             call.job_id = job_id = str((await self.call("POST", path, call, body))["job_id"])
         await anyio.lowlevel.checkpoint()
         return job_id
+
+    async def start_initiative(self, path: str, body: dict[str, Any], call: _Call) -> dict[str, Any]:
+        """POST an initiative route and keep its job id on `call` when it started one (the line may be
+        busy: no job then, and the answer says why). Shielded as `start` is."""
+        with anyio.CancelScope(shield=True):
+            answer = await self.call("POST", path, call, body, allow=frozenset({409}))
+            if answer.get("job_id"):
+                call.job_id = str(answer["job_id"])
+        await anyio.lowlevel.checkpoint()
+        return answer
 
     async def follow(self, job_id: str, wait: float, call: _Call) -> dict[str, Any]:
         """The job's state and its events since the last call: a long poll of up to `wait` seconds."""
@@ -458,6 +471,67 @@ def build_server(
 
         async def work(call: _Call) -> str:  # the POST may wait for Jira: it gets the whole call's time
             return _started(await serve.start("/v1/airlie/stories", body, call))
+
+        return await bounded(work)
+
+    @server.tool(name="initiative", structured_output=False)
+    async def initiative_tool(
+        text: Annotated[
+            str,
+            Field(
+                description="the initiative in the person's words: the ask, what it is for, how they "
+                "would know it worked. The first line is its title"
+            ),
+        ],
+        repo: Annotated[str, Field(description="the GitHub repository it concerns, owner/name")],
+        budget: Annotated[
+            float | None,
+            Field(description="hours of machine time the person would spend on it, when they said"),
+        ] = None,
+    ) -> str:
+        """Start airlie's specs phase for a loose ask: the card is made and approved, and product begins with
+        one question for the person. Product asks a few questions (answer each with airlie_answer), imagines
+        the work with the specialists, and delivers a core epic and optional extensions, each priced in
+        hours, for the person to approve on the board. Returns the card key and a job id for airlie_status."""
+        body = {
+            "title": _given(text.strip().splitlines()[0] if text.strip() else None),
+            "text": text,
+            "repos": [repo],
+            "budget_hours": budget,
+        }
+
+        async def work(call: _Call) -> str:
+            r = await serve.start_initiative("/v1/airlie/initiatives", body, call)
+            if r.get("job_id"):
+                return f"{r.get('key')}: " + _started(str(r["job_id"]))
+            waiting = r.get("waiting") or "Its first turn waits for the tick."
+            return f"{r.get('key')} was made and approved. {waiting}"
+
+        return await bounded(work)
+
+    @server.tool(name="answer", structured_output=False)
+    async def answer_tool(
+        card: Annotated[
+            str, Field(description="the initiative's key (AIR-40), or the key of one of its epics")
+        ],
+        text: Annotated[str, Field(description="the person's answer or comment, in their words")],
+    ) -> str:
+        """Give product the person's answer to its question (or their comment on an epic: a mockup pick such
+        as "option 2", or one revision). The comment goes on the card, then the line takes its next turn at
+        once. Returns a job id for airlie_status; while a story is in flight the comment stays on the card and
+        the tick runs the turn within its cadence."""
+        key = _given(card)
+        if key is None or _given(text) is None:
+            raise ToolError("pass the card's key and the person's text")
+
+        async def work(call: _Call) -> str:
+            await serve.call("POST", f"/v1/board/items/{quote(key, safe='')}/comments", call, {"text": text})
+            r = await serve.start_initiative(f"/v1/airlie/initiatives/{quote(key, safe='')}/turn", {}, call)
+            if r.get("job_id"):
+                return _started(str(r["job_id"]))
+            return (
+                f"Your comment is on {key}. {r.get('error') or 'The line takes its next turn on the tick.'}"
+            )
 
         return await bounded(work)
 

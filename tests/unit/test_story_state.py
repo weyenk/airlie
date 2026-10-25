@@ -414,3 +414,16 @@ def test_the_last_handled_marker_is_a_list_of_the_comment_ids_or_times_already_a
     st.save()
     again = StoryState.open(where, card, tmp_path / "repo")
     assert again.handled_comments == ["1", "2"]  # both are remembered, so neither is relayed again
+
+
+def test_lock_held_probes_without_keeping_the_lock(tmp_path: Path) -> None:
+    """The turn route asks whether a story is in flight before it starts a job; the probe takes the lock
+    for an instant and gives it back, so the job that follows can take it."""
+    from airlie.story.state import lock_held
+
+    assert lock_held(tmp_path / "stories") is False
+    with story_lock(tmp_path / "stories") as held:
+        assert held and lock_held(tmp_path / "stories") is True
+    assert lock_held(tmp_path / "stories") is False
+    with story_lock(tmp_path / "stories") as again:  # the probe left it free
+        assert again

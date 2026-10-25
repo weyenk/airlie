@@ -68,6 +68,12 @@ epic_app = typer.Typer(
     help="Epics on the local board: the stories the line plans from them (docs/integrations/story.md).",
 )
 app.add_typer(epic_app, name="epic")
+initiative_app = typer.Typer(
+    no_args_is_help=True,
+    help="Initiatives on the local board: a loose ask becomes a core epic and extensions, priced in hours "
+    "(docs/integrations/story.md, Initiatives).",
+)
+app.add_typer(initiative_app, name="initiative")
 mcp_app = typer.Typer()  # its help is mcp_serve's docstring
 app.add_typer(mcp_app, name="mcp")
 auth_app = typer.Typer(
@@ -1590,6 +1596,98 @@ def epic_replan(
         err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@initiative_app.command("add")
+def initiative_add(
+    text: Annotated[str | None, typer.Option(help="the initiative, in your words")] = None,
+    file: Annotated[Path | None, typer.Option(help="the initiative, from a Markdown file")] = None,
+    repo: Annotated[
+        list[str] | None,
+        typer.Option("--repo", help="a repository it concerns, owner/name (repeat for several)"),
+    ] = None,
+    budget: Annotated[
+        float | None, typer.Option(help="hours of machine time you would spend on the core epic")
+    ] = None,
+    title: Annotated[str | None, typer.Option(help="the card's title (default: the first line)")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Make an initiative card on the local board, approve it, and run the specs phase's first turn: product
+    reads the repositories and asks you its first question, as a comment on the card (answer it there, or
+    with `task initiative:turn` once you have). It then imagines the work with the specialists and delivers
+    a core epic and extensions, each priced in hours, for you to approve."""
+    from airlie.board import BoardStore
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.epic import REPOSITORY
+    from airlie.story.model import StoryBusy, StorySetupError
+
+    if (text is None) == (file is None):
+        err.print("[red]pass the initiative as --text or --file, not both[/red]")
+        raise typer.Exit(2)
+    if file is not None:
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (OSError, ValueError) as e:
+            err.print(f"[red]cannot read {escape(str(file))}: {escape(type(e).__name__)}[/red]", emoji=False)
+            raise typer.Exit(1) from None
+    assert text is not None
+    repos = list(dict.fromkeys(repo or []))
+    problems = [f"--repo {r!r} is not owner/name" for r in repos if not REPOSITORY.fullmatch(r)]
+    if not text.strip():
+        problems.append("the initiative is empty")
+    if not repos:
+        problems.append("name the repository it concerns with --repo owner/name")
+    if budget is not None and budget <= 0:
+        problems.append("--budget is a number of hours above zero")
+    _fail(problems)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+    labels = [f"repo:{r}" for r in repos] + ([f"budget:{budget:g}h"] if budget is not None else [])
+    store = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
+    try:
+        item = store.create(
+            level="initiative",
+            title=(title or text.strip().splitlines()[0]).strip()[:200],
+            description=text,
+            labels=labels,
+        )
+        store.update(item.key, status="approved")
+    finally:
+        store.close()
+    console.print(item.key, markup=False, highlight=False, emoji=False)
+    try:
+        out = _run_stoppable(factory.initiative_one(cfg, item.key))
+    except StoryBusy as e:  # the card stands; the tick takes the first turn
+        console.print(str(e), markup=False, highlight=False, emoji=False, soft_wrap=True)
+        return
+    except (BoardError, StorySetupError) as e:
+        err.print(
+            f"[red]{item.key} was made, but its first turn did not run: {escape(str(e))}[/red]", emoji=False
+        )
+        raise typer.Exit(1) from None
+    console.print(out, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@initiative_app.command("turn")
+def initiative_turn(
+    key: Annotated[str, typer.Argument(metavar="KEY", help="the initiative's key (AIR-40)")],
+    config: ConfigOpt = None,
+) -> None:
+    """Run the specs phase's next turn for an initiative now: after you answered its question as a comment on
+    the board while `task serve` was down, or to go on from a stop you lifted by approving it again."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StoryBusy, StorySetupError
+
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+    try:
+        out = _run_stoppable(factory.initiative_one(cfg, key))
+    except (StoryBusy, BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print(out, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
 @board_app.command("import-jira")

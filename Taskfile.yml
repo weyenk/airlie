@@ -177,6 +177,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie epic replan {{.CLI_ARGS}}'
 
+  initiative:
+    desc: "Make an initiative card from a loose ask, approve it and run the specs phase's first turn: product asks you a question as a comment on the card, imagines the work with the specialists, and delivers a core epic and extensions priced in hours (task initiative -- --text \"...\" --repo owner/name [--budget HOURS] [--title TEXT]; or --file ask.md)"
+    cmds:
+      - '{{.RUN}} airlie initiative add {{.CLI_ARGS}}'
+
+  initiative:turn:
+    desc: "Run the specs phase's next turn for an initiative now, after you answered its question on the board or approved it again (task initiative:turn -- AIR-40)"
+    cmds:
+      - '{{.RUN}} airlie initiative turn {{.CLI_ARGS}}'
+
   board:import-jira:
     desc: "Import the Jira project (ATLASSIAN_*) onto the local board, each issue keeping its number under board.prefix; task board:import-jira -- --dry-run first"
     cmds:

@@ -18,7 +18,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from airlie.auth.api import PUBLIC_PATHS, auth_router
@@ -42,7 +42,8 @@ from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has
 from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
-from airlie.story.model import StoryRunning, StorySetupError
+from airlie.story.epic import REPOSITORY
+from airlie.story.model import StoryBusy, StoryRunning, StorySetupError
 from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
@@ -159,6 +160,41 @@ class StoryRequest(BaseModel):
     repo: str | None = None
 
 
+class InitiativeRequest(BaseModel):
+    """A new initiative (D1 of the specs phase): the person's paragraph, the repositories it concerns
+    (owner/name), and an optional budget in hours. The card is made, approved and its first turn started."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    text: str
+    repos: list[str]
+    budget_hours: float | None = Field(default=None, gt=0)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("the initiative needs some text")
+        return v
+
+    @field_validator("repos")
+    @classmethod
+    def _repos(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("name at least one repository (owner/name)")
+        for r in v:
+            if not REPOSITORY.fullmatch(r) or ".." in r.split("/"):
+                raise ValueError(f"{r!r} is not owner/name")
+        return list(dict.fromkeys(v))
+
+
+def _initiative_job_factory() -> Callable[..., Any]:
+    from airlie.story.factory import initiative_job
+
+    return initiative_job
+
+
 def _story_job_factory() -> Callable[..., Any]:
     from airlie.story.factory import story_job
 
@@ -223,13 +259,15 @@ def create_app(
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
     story_job: Callable[..., Any] | None = None,
+    initiative_job: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
-    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job).
+    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
+    `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
@@ -241,6 +279,7 @@ def create_app(
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
+    make_initiative = initiative_job or _initiative_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board, feed.publish))
 
@@ -555,6 +594,60 @@ def create_app(
         except ValueError as e:
             raise HTTPException(409, str(e)) from e
         return {"job_id": job.id, "kind": job.kind}
+
+    def job_running(job_id: str) -> bool:
+        job = jobs.get(job_id)
+        return job is not None and job.state == "running"
+
+    async def start_turn(key: str) -> Response:
+        """Start the specs phase's next piece for the initiative `key` (D15, N6): 202 with the job, 409 with
+        the busy line while a story holds the lock (the comment stays on the card; the tick runs the turn)."""
+        try:
+            job_id, events, work = await make_initiative(cfg, key=key, running=job_running)
+        except StoryBusy as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except StoryRunning as e:
+            raise HTTPException(409, str(e)) from e
+        except BoardError as e:
+            raise HTTPException(404, str(e)) from e
+        except StorySetupError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            job = jobs.start("initiative", job_id, events, work)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return JSONResponse({"job_id": job.id, "kind": job.kind}, status_code=202)
+
+    @app.post("/v1/airlie/initiatives", status_code=202)
+    async def start_initiative(req: InitiativeRequest, request: Request) -> Response:
+        """An initiative from a person's paragraph: the card is made and approved, and its first turn (the
+        first question) starts at once. The card stands whatever the turn does: when a story holds the lock,
+        or the turn cannot start, the answer says so beside the key and the tick takes over."""
+        principal = owner_of(request)
+        labels = [f"repo:{r}" for r in req.repos]
+        if req.budget_hours is not None:
+            labels.append(f"budget:{req.budget_hours:g}h")
+        title = (req.title or req.text.strip().splitlines()[0]).strip()[:200]
+        item = board.create(
+            level="initiative",
+            title=title,
+            description=req.text,
+            labels=labels,
+            created_by=principal.name if principal is not None else "noah",
+        )
+        board.update(item.key, status="approved")
+        feed.publish("board", item.key)
+        answer = await start_turn(item.key)
+        if answer.status_code == 202:
+            return JSONResponse({"key": item.key, **json.loads(bytes(answer.body))}, status_code=202)
+        if answer.status_code == 409 and isinstance(answer, JSONResponse):
+            waiting = json.loads(bytes(answer.body))["error"]
+            return JSONResponse({"key": item.key, "job_id": None, "waiting": waiting}, status_code=202)
+        return answer
+
+    @app.post("/v1/airlie/initiatives/{key}/turn", status_code=202)
+    async def turn_initiative(key: str) -> Response:
+        return await start_turn(key)
 
     @app.get("/v1/airlie/jobs")
     async def job_list() -> dict[str, Any]:

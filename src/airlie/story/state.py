@@ -214,3 +214,11 @@ def story_lock(stories_dir: Path) -> Iterator[bool]:
             yield True
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def lock_held(stories_dir: Path) -> bool:
+    """Whether another holder has the one-story lock right now (P4, 2026-10-25): a non-blocking probe that
+    takes the lock for an instant and gives it back. It is a probe, not a reservation: whoever then needs
+    the lock takes it with `story_lock` and may still lose it."""
+    with story_lock(stories_dir) as held:
+        return not held
