@@ -2873,3 +2873,33 @@ async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path:
         text_card("again")
     )
     assert full.stage == "review" and full.blocked is None
+
+
+async def test_the_build_writes_decoding_gap_and_idle_at_its_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planning lane reads these (P5b, D2): `gap` at the start and between layers, `decoding` while a
+    layer's studio or an architect package is in flight, `idle` when the build ends; planning writes none."""
+    from airlie.story import phase
+
+    seen: list[str] = []
+    real = phase.write_phase
+
+    def record(stories_dir: Path, value: Any, **kw: Any) -> None:
+        seen.append(value)
+        real(stories_dir, value, **kw)
+
+    monkeypatch.setattr(phase, "write_phase", record)
+    monkeypatch.setattr("airlie.story.pipeline.write_phase", record)
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("avatars")
+    planner = pipeline(tmp_path, repo, happy_engine())
+    await planner.plan(card)
+    assert seen == []  # the planning half never touches the build lane's phase
+    builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS))
+    st = await builder.build(card)
+    assert st.stage == "review"
+    # gap on entry; then per layer a package (decoding, gap) and the studio (decoding, gap); idle at the end
+    assert seen[0] == "gap" and seen[-1] == "idle"
+    assert seen[1:-1] == ["decoding", "gap"] * 4 and set(seen) == {"gap", "decoding", "idle"}
+    assert phase.read_phase(builder.stories_dir)[0] == "idle"

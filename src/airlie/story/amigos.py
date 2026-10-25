@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol, cast
@@ -814,6 +814,9 @@ class Meeting:
         self.tool_iterations = tool_iterations
         self.on_turn = on_turn
         self.max_scope_files = max_scope_files
+        self.before_turn: Callable[[], Awaitable[Any]] | None = None
+        """Awaited before each turn of a role (not the checker's): the planning lane's long turns wait for
+        the build lane's gap here (planning-line P5b, D2)."""
 
     def _agent(self, role: str) -> tuple[AssistantAgent, ChatCompletionClient]:
         spec = self.cfg.roles[role]
@@ -874,6 +877,8 @@ class Meeting:
                     standing = standing.after(turn)
                     agreement.observe([msg])
             while len(turns) < self.max_turns and not agreement.agreed():
+                if self.before_turn is not None and len(turns) % len(_PARTICIPANTS) != len(_PARTICIPANTS) - 1:
+                    await self.before_turn()  # the checker, who speaks fourth, is code
                 t0 = time.monotonic()
                 said: TextMessage | None = None
                 task = opening if not turns and state is None else None

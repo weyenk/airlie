@@ -31,6 +31,7 @@ from airlie.skills import Skill, load_skills, prompt_text, skill_criteria
 from airlie.story.amigos import (
     CHECKER,
     Agreement,
+    Meeting,
     MeetingFactory,
     ProofTest,
     Turn,
@@ -95,6 +96,7 @@ from airlie.story.model import (
 )
 from airlie.story.package import Package, ProofChange, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
+from airlie.story.phase import decoding, write_phase
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import same_layers
@@ -347,7 +349,7 @@ class StoryPipeline:
         self.meeting = meeting or default_meeting
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
-        self.asker = Asker(cfg, self.studio, self.repo)
+        self.asker = Asker(cfg, self.studio, self.repo, lane=None)
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self._layer_base: str | None = None
         self.ledger: Ledger | None = None
@@ -403,6 +405,11 @@ class StoryPipeline:
                 "story_done", stage=st.stage, blocked=None
             )  # planned already: nothing to do, nothing said
             return st
+        # the planning lane's asks wait for the build lane's gaps; the build lane's own and a standalone
+        # (nothing else is building), never do
+        self.asker.lane = "plan" if until == "planned" else None
+        if until == "review":
+            write_phase(self.stories_dir, "gap")
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
@@ -455,6 +462,9 @@ class StoryPipeline:
         except Exception as e:  # noqa: BLE001 - every failure ends as a note on the issue, never a silent stop
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, card, _reason(e))
+        finally:
+            if until == "review":
+                write_phase(self.stories_dir, "idle")  # the build lane is free for the planning lane's turns
         st.emit("story_done", stage=st.stage, blocked=st.blocked)
         return st
 
@@ -572,9 +582,11 @@ class StoryPipeline:
         brief: str,
         at: str | None = None,
         steps: int | None = None,
+        long: bool = True,
     ) -> str:
-        """One read-only specialist turn at the story's base (or `at`): `Asker.ask`."""
-        return await self.asker.ask(st, stage, role, brief, at, steps)
+        """One read-only specialist turn at the story's base (or `at`): `Asker.ask`. `long=False` for a short
+        ask (the survey), which the planning lane starts at once beside the build's decode."""
+        return await self.asker.ask(st, stage, role, brief, at, steps, long=long)
 
     async def _ask_in_rounds[T](
         self,
@@ -628,7 +640,7 @@ class StoryPipeline:
             return
         try:
             text = await self._ask(
-                st, "survey", self.s.architect_role, survey_brief(card), steps=SURVEY_STEPS
+                st, "survey", self.s.architect_role, survey_brief(card), steps=SURVEY_STEPS, long=False
             )
         except Exception as e:  # noqa: BLE001 - a survey is a head start: whatever fails, the story goes on
             st.emit("survey_failed", reason=_cap(_reason(e)))
@@ -885,6 +897,8 @@ class StoryPipeline:
         add_worktree(self.repo, tree, branch=None, start_point=sha)
         try:
             meeting = self.meeting(self.cfg, self._meeting_tools(tree), self._on_turn(st))
+            if isinstance(meeting, Meeting) and self.asker.lane == "plan":  # each long turn waits for a gap
+                meeting.before_turn = partial(self.asker.wait, st, "amigos", True)
             held = await meeting.run(
                 opening,
                 story,
@@ -1149,20 +1163,23 @@ class StoryPipeline:
             plan = layer_plan(
                 story, layers, i, package, build_role=self.s.build_role, guide=guide, built=built
             )
-            report = await orch.execute_task(
-                layer_goal(story, layers, i),
-                repo=self.repo,
-                test_cmd=self.test_cmd,
-                test_steps=self.commands,
-                plan=plan,
-                base=base_sha,
-                branch=branch,
-                synthesise=False,
-                scope_tests=True,
-                gate_follow_up="build",
-                map_focus=[*layer.paths(), *package.source_files],
-                prepare=self._place(st, orch, package, nn),
-            )
+            async with decoding(
+                self.stories_dir, orch.run_dir.path
+            ):  # the planning lane waits for the gap after
+                report = await orch.execute_task(
+                    layer_goal(story, layers, i),
+                    repo=self.repo,
+                    test_cmd=self.test_cmd,
+                    test_steps=self.commands,
+                    plan=plan,
+                    base=base_sha,
+                    branch=branch,
+                    synthesise=False,
+                    scope_tests=True,
+                    gate_follow_up="build",
+                    map_focus=[*layer.paths(), *package.source_files],
+                    prepare=self._place(st, orch, package, nn),
+                )
             commit_wip(wt, f"studio: {branch} (final)")
             cut, kept = _cut_off(orch), _kept(wt, branch)
             ran = orch.runs.get("build")
@@ -1306,9 +1323,10 @@ class StoryPipeline:
             feedback=feedback,
             proof=proof,
         )
-        text = await self._ask(
-            st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
-        )
+        async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
+            text = await self._ask(
+                st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
+            )
         self._package_run = st.runs[-1]
         return parse_package(text, layers[i], story)
 

@@ -580,6 +580,32 @@ class LineSpec(Strict):
         ge=0,
         description="how often a story blocked by a transient failure is retried per signature",
     )
+    tick_s: int = Field(
+        default=60,
+        ge=5,
+        description="how often `task serve` runs a beat of the line (the launchd agent is the belt, every 15 "
+        "minutes)",
+    )
+    serve_ticks: bool = Field(
+        default=True, description="`task serve` runs the line's beat itself every tick_s seconds"
+    )
+    fanout: int = Field(
+        default=4,
+        ge=1,
+        description="how many short asks (consultations, surveys, reads, renders, the meeting's checks) a "
+        "lane runs at once while the build lane decodes at or above decode_floor_tps",
+    )
+    decode_floor_tps: float = Field(
+        default=12.0,
+        gt=0,
+        description="the build lane's decode rate (tokens a second over its last five steps) under which "
+        "the short asks run one at a time",
+    )
+    consult_context: int = Field(
+        default=8192,
+        ge=1024,
+        description="the context a short ask is counted at in the doctor's memory projection",
+    )
 
 
 class StorySpec(Strict):

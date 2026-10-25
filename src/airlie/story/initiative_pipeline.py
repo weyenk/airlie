@@ -470,6 +470,7 @@ class InitiativePipeline:
                         ask.seat,
                         consult_brief(initiative, st.qa, ask, chars=specs.consult_chars),
                         steps=specs.consult_steps,
+                        long=False,
                     )
             except Exception as e:  # noqa: BLE001 - a seat that fails is an answer saying so
                 answer = f"[the {ask.seat} could not answer: {_cap(_reason(e))}]"
@@ -491,7 +492,7 @@ class InitiativePipeline:
             )
             return ask, answer
 
-        return list(await asyncio.gather(*(one(a) for a in asks)))
+        return await asker.gather(*(one(a) for a in asks))
 
     # ---- the mockups (D4, D13) ----
 
@@ -518,10 +519,10 @@ class InitiativePipeline:
             brief,
             lambda t: parse_directions(extract_json_block(t), count=count),
             attempts=self.specs.attempts,
-            ask=partial(asker.ask, steps=self.specs.consult_steps, images=pictures),
+            ask=partial(asker.ask, steps=self.specs.consult_steps, images=pictures, long=False),
         )
         look = mockup_look(asker.repo)
-        drawn = await asyncio.gather(
+        drawn = await asker.gather(
             *(self._draw(st, asker, epic, n, d, look, pictures) for n, d in enumerate(directions, 1))
         )
         target = mockup_dir(self.cfg.observability.state_dir, initiative.key, epic)
@@ -570,6 +571,7 @@ class InitiativePipeline:
                     brief,
                     steps=self.specs.consult_steps,
                     images=pictures,
+                    long=False,
                 )
             except Exception as e:  # noqa: BLE001 - a page design could not draw is a dropped option, not a stop
                 findings = [f"design could not draw the page: {_cap(_reason(e))}"]
@@ -685,6 +687,7 @@ class InitiativePipeline:
                     self.s.architect_role,
                     read_brief(document),
                     steps=self.specs.read_steps,
+                    long=False,
                 )
                 got = parse_read(extract_json_block(text), epic=draft.id)
             except Exception as e:  # noqa: BLE001 - the read is a check: whatever fails, the epic goes on
@@ -693,7 +696,7 @@ class InitiativePipeline:
             st.emit("planner_read", epic=draft.id, ok=got.ok, questions=len(got.questions))
             return got
 
-        reads = await asyncio.gather(*(one(d) for d in drafts))
+        reads = await asker.gather(*(one(d) for d in drafts))
         asked = [r for r in reads if r.questions]
         if not asked:
             return reply

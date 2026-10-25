@@ -38,6 +38,16 @@ from airlie.story.initiative_pipeline import InitiativePipeline
 from airlie.story.initiative_state import initiatives_dir
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import PLANNED, StoryError, StorySetupError
+from airlie.story.phase import (
+    Phase,
+    decoding,
+    fanout,
+    paused,
+    read_phase,
+    set_paused,
+    wait_for_gap,
+    write_phase,
+)
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import Lane, StoryState, lane_lock, lock_held
 
@@ -409,3 +419,20 @@ class Line:
                 line = f"{card.ref} {card.title}: {outcome}{taken}"
         # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
         return " ".join(line.split()), st
+
+
+__all__ = [
+    "LANES",
+    "Job",
+    "Line",
+    "Phase",
+    "Pipelines",
+    "busy_line",
+    "decoding",
+    "fanout",
+    "paused",
+    "read_phase",
+    "set_paused",
+    "wait_for_gap",
+    "write_phase",
+]

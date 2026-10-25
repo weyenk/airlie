@@ -23,6 +23,15 @@ topology:
       engines:
         main:
           max_kv_size: 131072
+          # The flags the 2026-10-23 performance review named (plan P5b task 7, 2026-10-25), so the
+          # planning lane's short asks riding beside the build's decode do not stall it on their prefill:
+          # chunked prefill (2048 tokens a scheduler step), stored KV at 8 bits, and the prefix cache given
+          # an explicit size, the doctor's budget minus weights and live KV: 104 GB wired limit - 59.8 GB
+          # projected (41.7 GB weights + the coder's 65536-token sequence + 4 asks at 8192 + 12 GB reserve)
+          # = 44.2 GB, 44 GB kept (`task doctor` counts it). They take effect at the next
+          # `task restart -- --topology studio`, which this change never runs.
+          kv_cache_quantization: true
+          extra_args: ["--chunked-prefill-tokens", "2048", "--cache-memory-mb", "45056"]
       models:
         generalist:
           preload: true
