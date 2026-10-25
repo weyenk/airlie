@@ -227,10 +227,14 @@ async def test_next_card_skips_a_story_of_an_epic_the_line_planned_while_a_perso
     mine = line_story(s, epic, "S1")
     hand = s.create(level="story", title="by hand", parent=epic).key  # a person's story under the same epic
     s.update(hand, status="approved")
-    for held in ("todo", "blocked", "done"):
+    s.update(epic, status="done")
+    found = await b.next_card()
+    assert found is not None and found.key == hand  # the line's story waits; a person's does not
+    for held in ("todo", "blocked"):
         s.update(epic, status=held)  # type: ignore[arg-type]
-        found = await b.next_card()
-        assert found is not None and found.key == hand, held  # the line's story waits; a person's does not
+        # a card a person parks or blocks holds everything under it (planning-line D7, P5b), a person's
+        # story too: only the line's own stories were held by the epic's other statuses
+        assert await b.next_card() is None, held
     for open_ in ("approved", "doing"):
         s.update(epic, status=open_)  # type: ignore[arg-type]
         found = await b.next_card()
@@ -319,3 +323,41 @@ def test_the_oldest_approved_initiative_is_next_and_a_persons_comment_is_told_fr
     epic = s.create(level="epic", title="e", parent=first.key, labels=["repo:o/r"])
     with pytest.raises(BoardError, match="not an initiative"):
         board.initiative(epic.key)
+
+
+def test_a_blocked_ancestor_holds_every_card_under_it_and_release_lets_them_go(tmp_path: Path) -> None:
+    """Statuses are the controls (D7): a person moving a card to blocked or todo holds it and everything under
+    it, whatever the level; approved or doing releases it (planning-line P5b, 2026-10-25)."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    board = LocalBoard(s, epics_dir=tmp_path / "epics", stories_dir=tmp_path / "stories")
+    init = s.create(level="initiative", title="i", description="x", labels=["repo:o/r"])
+    epic = s.create(
+        level="epic",
+        title="e",
+        description="x",
+        parent=init.key,
+        labels=["repo:o/r", f"initiative:{init.key}"],
+    )
+    story = s.create(level="story", title="s", parent=epic.key, labels=["repo:o/r", f"epic:{epic.key}"])
+    s.update(init.key, status="approved")
+    s.update(epic.key, status="approved")
+    s.update(story.key, status="approved")
+
+    def reachable() -> tuple[str | None, str | None]:
+        found_epic, found_story = board.next_epic(), board.next_unplanned_story()
+        return (found_epic.key if found_epic else None, found_story.key if found_story else None)
+
+    assert reachable() == (epic.key, story.key)
+    for hold in ("blocked", "todo"):
+        s.update(init.key, status=hold)  # the initiative is held: its epic and the epic's story with it
+        assert reachable() == (None, None), hold
+        assert not board.epics_awaiting_revision()
+        s.update(init.key, status="doing")  # released
+        assert reachable() == (epic.key, story.key), hold
+    s.update(epic.key, status="blocked")  # the epic alone
+    assert reachable() == (None, None)
+    s.update(epic.key, status="approved")
+    assert board.held(board.item(story.key)) is False and board.held(board.item(epic.key)) is False
+    s.update(init.key, status="blocked")
+    assert board.held(board.item(story.key)) is True and board.held(board.item(epic.key)) is True
+    assert board.held(board.item(init.key)) is False  # a card is not held by itself: its own status says so

@@ -48,6 +48,7 @@ from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
+from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
 from airlie.story.state import STAGES
 from airlie.teams.worktree import rev_parse
@@ -196,6 +197,15 @@ class InitiativeRequest(BaseModel):
             if not REPOSITORY.fullmatch(r) or ".." in r.split("/"):
                 raise ValueError(f"{r!r} is not owner/name")
         return list(dict.fromkeys(v))
+
+
+class LineRequest(BaseModel):
+    """The line's one switch (planning-line P5b, D7): `paused` true holds every lane's next job (a running
+    one finishes), false lets them go."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paused: bool
 
 
 class PickRequest(BaseModel):
@@ -782,6 +792,12 @@ def create_app(
             return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
+
+    @app.post("/v1/airlie/line")
+    async def line_switch(req: LineRequest) -> dict[str, Any]:
+        """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
+        set_paused(cfg.observability.state_dir.expanduser(), req.paused)
+        return ticker.row()
 
     @app.get("/v1/airlie/epics")
     async def epic_list() -> dict[str, Any]:

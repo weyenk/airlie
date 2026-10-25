@@ -154,6 +154,9 @@ class Line:
         if refused is not None:
             line_event(self.state_dir, "gate_failed", reason=refused)
             return self._join(notes, [refused])
+        if paused(self.state_dir):  # the gates and the bookkeeping were done; a running job finishes
+            line_event(self.state_dir, "paused")
+            return self._join(notes, ["paused"])
         lines = await self._lanes(busy, spawn)
         return self._join(notes, lines)
 

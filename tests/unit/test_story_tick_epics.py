@@ -565,6 +565,7 @@ async def test_planning_an_epic_revises_its_estimate_and_finishing_it_closes_it_
 
     rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
     initiative = rig.store.create(level="initiative", title="Faces", labels=["repo:o/r"]).key
+    rig.store.update(initiative, status="doing")  # a live initiative: one in todo would hold its epics (D7)
     priced = Estimate(1.0, "1 S at 1.0 h (default)", "2026-10-25T00:00:00Z")
     epic = rig.store.create(
         level="epic",

@@ -7,6 +7,7 @@ import fcntl
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from airlie.engine import FakeEngine
@@ -14,6 +15,7 @@ from airlie.story import factory
 from airlie.story.factory import tick
 from airlie.story.line import Line
 from airlie.story.local_board import LocalBoard
+from airlie.story.phase import paused, set_paused
 from airlie.story.state import lane_lock, lock_held
 from tests.unit.test_story_epic_pipeline import plan_obj, reply
 from tests.unit.test_story_factory import started_log
@@ -182,3 +184,59 @@ async def test_a_beat_that_finds_a_lane_held_by_another_process_logs_busy_and_ru
         for x in (rig.cfg.observability.state_dir / "line" / "events.jsonl").read_text().splitlines()
     ]
     assert [e["kind"] for e in events].count("lane_start") == 2  # one job per lane that was free, no more
+
+
+async def test_a_paused_line_does_bookkeeping_and_starts_no_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    epic = rig.epic()
+    waiting = rig.store.create(level="story", title="waits", labels=["repo:o/r", "after:AIR-99"]).key
+    done = rig.store.create(level="story", title="done", labels=["repo:o/r"]).key
+    rig.store.update(done, status="review")
+    rig.store.update(waiting, status="todo")
+    rig.store.update(waiting, labels=["repo:o/r", f"after:{done}"])
+    started = started_log(monkeypatch)
+    state = rig.cfg.observability.state_dir
+    set_paused(state, True)
+    assert paused(state)
+    line = await tick(rig.cfg)
+    assert line.endswith("paused"), line  # the gates were asked and answered; no job started
+    assert rig.status(epic) == "approved" and not rig.engine.requests and started == []
+    kinds_ = [json.loads(x)["kind"] for x in (state / "line" / "events.jsonl").read_text().splitlines()]
+    assert "paused" in kinds_ and "lane_start" not in kinds_
+    set_paused(state, False)
+    assert not paused(state)
+    assert f"epic {epic} Avatars: planned into 2 stories" in await tick(rig.cfg)  # resumed
+
+
+def test_the_pause_route_and_tasks(tmp_path: Path) -> None:
+    from airlie.serve.app import create_app
+    from tests.unit.serve_helpers import TestClient
+    from tests.unit.test_serve import FakeUpstream
+    from tests.unit.test_serve import cfg as serve_cfg
+
+    c = serve_cfg(tmp_path)
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    auth = {"Authorization": "Bearer k"}
+    with TestClient(app) as client:
+        assert client.post("/v1/airlie/line", json={"paused": True}, headers=auth).json()["paused"] is True
+        assert paused(c.observability.state_dir) and client.get("/health").json()["line"]["paused"] is True
+        assert client.post("/v1/airlie/line", json={"paused": False}, headers=auth).json()["paused"] is False
+        assert not paused(c.observability.state_dir)
+        assert client.post("/v1/airlie/line", json={"pause": True}, headers=auth).status_code == 422
+        assert (
+            client.post("/v1/airlie/line", json={"paused": True}).status_code == 401
+        )  # a principal is needed
+    from typer.testing import CliRunner
+
+    from airlie import cli
+
+    assert c.source_path is not None
+    runner = CliRunner()
+    out = runner.invoke(cli.app, ["line", "pause", "--config", str(c.source_path)])
+    assert out.exit_code == 0 and paused(c.observability.state_dir) and "paused" in out.output
+    out = runner.invoke(cli.app, ["line", "resume", "--config", str(c.source_path)])
+    assert out.exit_code == 0 and not paused(c.observability.state_dir) and "resumed" in out.output
+    tasks = (Path(__file__).resolve().parents[2] / "Taskfile.yml").read_text()
+    assert "line:pause:" in tasks and "line:resume:" in tasks

@@ -101,6 +101,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  line:pause:
+    desc: "Hold the line: every beat does the gates and the bookkeeping and starts no job; a running job finishes (task line:resume lets it go; a card moved to blocked or todo holds itself and everything under it)"
+    cmds:
+      - '{{.RUN}} airlie line pause {{.CLI_ARGS}}'
+
+  line:resume:
+    desc: "Let the line go again after task line:pause"
+    cmds:
+      - '{{.RUN}} airlie line resume {{.CLI_ARGS}}'
+
   line:why:
     desc: "Why a story blocked: its class by rules, Muse's reading, what happens next and the evidence (task line:why -- AIR-9 [--n 2] [--paths])"
     cmds:

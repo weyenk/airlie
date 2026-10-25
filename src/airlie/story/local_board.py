@@ -28,6 +28,9 @@ STATUS_OF: dict[Column, str] = {
 PICK_FIRST = "pick a mockup first"
 """Why an approved epic with mockup pages and no pick is not planned (D4)."""
 
+HOLDING: tuple[Status, ...] = ("blocked", "todo")
+"""The statuses of a card that hold everything under it (D7): a person parks it or blocks it."""
+
 OPEN_EPIC: tuple[Status, ...] = ("approved", "doing")
 """The statuses of an epic whose stories the tick may promote and pick. Any other (todo, blocked, review,
 done) holds them: a person moving an epic to blocked or todo pauses it whole."""
@@ -98,7 +101,9 @@ class LocalBoard:
         return [
             epic
             for epic in self.store.list(level="epic", status="review")
-            if initiative_key_of(epic.labels) is not None and self.latest_person_comment(epic) is not None
+            if initiative_key_of(epic.labels) is not None
+            and self.latest_person_comment(epic) is not None
+            and not self.held(epic)
         ]
 
     def is_person(self, comment: Comment) -> bool:
@@ -170,9 +175,28 @@ class LocalBoard:
         """`item` as the card a pipeline reads."""
         return self._card(item)
 
+    def held(self, item: Item) -> bool:
+        """A person holds a card above this one (planning-line P5b, D7): an ancestor, by parent, is blocked or
+        parked (todo). Moving any card to blocked holds it and everything under it, whatever the level;
+        approved or doing releases it. A card's own status is its own: it is not held by itself."""
+        parent, seen = item.parent, set()
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            try:
+                above = self.store.get(parent)
+            except KeyError:
+                return False
+            if above.status in HOLDING:
+                return True
+            parent = above.parent
+        return False
+
     def is_held(self, story: Item) -> bool:
-        """The story was made by the line for an epic that a person holds (todo or blocked) or that is not
-        open (review, done). A story with no `epic:` label, or one whose epic is gone, is never held."""
+        """The story is held (`held`), or it was made by the line for an epic that a person holds (todo or
+        blocked) or that is not open (review, done). A story with no `epic:` label, or one whose epic is gone,
+        is held by an ancestor only."""
+        if self.held(story):
+            return True
         key = epic_key_of(story.labels)
         if key is None:
             return False
@@ -186,7 +210,7 @@ class LocalBoard:
         epic is planned only once a person has approved it (D1 of the plans phase). An epic held for a pick
         or for its core (`epic_hold`) is passed over, so it never stands in front of the others."""
         for epic in self.store.list(level="epic", status="approved"):
-            if self.epic_hold(epic) is not None:
+            if self.epic_hold(epic) is not None or self.held(epic):
                 continue
             if self.epics_dir is None or epic_needs_work(self.epics_dir / epic.key):
                 return epic

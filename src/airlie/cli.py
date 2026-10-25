@@ -1123,6 +1123,26 @@ def line_tick(config: ConfigOpt = None) -> None:
     _tick(config)
 
 
+@line_app.command("pause")
+def line_pause(config: ConfigOpt = None) -> None:
+    """Hold the line: every beat still runs the gates and the bookkeeping but starts no job. A job already
+    running finishes. `airlie line resume` lets it go."""
+    from airlie.story.phase import set_paused
+
+    state_dir = _load(config).observability.state_dir.expanduser()
+    set_paused(state_dir, True)
+    console.print(f"the line is paused ({state_dir / 'line.paused'}); running jobs finish", markup=False)
+
+
+@line_app.command("resume")
+def line_resume(config: ConfigOpt = None) -> None:
+    """Let the line go again after `airlie line pause`."""
+    from airlie.story.phase import set_paused
+
+    set_paused(_load(config).observability.state_dir.expanduser(), False)
+    console.print("the line is resumed", markup=False)
+
+
 @story_app.command("tick")
 def story_tick(config: ConfigOpt = None) -> None:
     """The old name of `airlie line tick`, kept for a release: says so, then runs the same beat."""
