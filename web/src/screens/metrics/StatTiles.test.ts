@@ -24,7 +24,7 @@ test("the four tiles show their values and units", () => {
   const w = show({});
   expect(tile(w, "generation").get("[data-value]").text()).toBe("32tok/s");
   expect(tile(w, "prefill").get("[data-value]").text()).toBe("1,236tok/s");
-  expect(tile(w, "stories").get("[data-value]").text()).toBe("14");
+  expect(tile(w, "stories").get("[data-value]").text()).toBe("4");
   expect(tile(w, "fix-rounds").get("[data-value]").text()).toBe("0.6");
 });
 
@@ -57,4 +57,16 @@ test("a missing value reads unknown, never 0", () => {
 test("the stories tile says how many are in each state, blocked ones apart", () => {
   const w = show({});
   expect(tile(w, "stories").get("[data-delta]").text()).toBe("2 in review · 1 building · 1 blocked");
+});
+
+test("the Stories number is the stories of the breakdown, so the two always agree", () => {
+  const w = show({ stories: [story("A-1", "review"), story("A-2", "layers"), story("A-3", "layers", "x"), story("A-4", null), story("A-5", "publish")] });
+  expect(tile(w, "stories").get("[data-value]").text()).toBe("5");
+  expect(tile(w, "stories").get("[data-delta]").text()).toBe("2 in review · 1 building · 1 new · 1 blocked");
+});
+
+test("with no stories there is a zero and no breakdown", () => {
+  const w = show({ stories: [] });
+  expect(tile(w, "stories").get("[data-value]").text()).toBe("0");
+  expect(tile(w, "stories").get("[data-delta]").text()).toBe("");
 });

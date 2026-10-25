@@ -5,6 +5,7 @@ test-results/e2e/evidence/ (conftest.Evidence)."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import time
@@ -30,6 +31,8 @@ def _step(
         "ts": ts,
         "kind": "step",
         "role": role,
+        "run_id": "metrics-now",
+        "team_id": "tests" if role == "tester" else "build",
         "prompt_tokens": 1000,
         "completion_tokens": 100,
         "prefill_ms": prefill_ms,
@@ -44,8 +47,9 @@ def _step(
 def _seed_metrics(state: Path) -> None:
     """The last 7 days: the coder at 50 tok/s and the tester at 25, three days ago; the coder again 2 hours
     ago (no model recorded). The 7 days before: one step at 40 generation and 1000 prefill tok/s.
-    Whole window: generation 300 tokens / 8 s = 37.5, prefill 3000 tokens / 2 s = 1,500, two stories, and one
-    fix round over two layers (0.5)."""
+    Whole window: generation 300 tokens / 8 s = 37.5, prefill 3000 tokens / 2 s = 1,500, and one fix round
+    over two layers (0.5). Stories: two in review and one blocked touched in the window, one in review
+    10 days ago."""
     for seeded in ("runs", "stories"):  # the shared seed's own steps (some recent) would add to the sums
         shutil.rmtree(state / seeded, ignore_errors=True)
     now = time.time()
@@ -63,6 +67,26 @@ def _seed_metrics(state: Path) -> None:
     run = state / "runs" / "metrics-now"
     run.mkdir(parents=True)
     (run / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    for key, stage, blocked, age in (
+        ("AIR-9", "publish", None, 0),
+        ("AIR-10", "review", None, 0),
+        ("AIR-11", "layers", "the tester stopped", 0),
+        ("AIR-12", "review", None, 10 * DAY),
+    ):
+        story = state / "stories" / key
+        story.mkdir(parents=True)
+        (story / "state.json").write_text(
+            json.dumps(
+                {
+                    "card": {"key": key, "title": key},
+                    "repo": "weyenk/airlie",
+                    "stage": stage,
+                    "blocked": blocked,
+                }
+            )
+        )
+        if age:
+            os.utime(story / "state.json", (now - age, now - age))
 
 
 def test_the_tiles_show_the_numbers_and_the_change_against_the_week_before(
@@ -79,7 +103,10 @@ def test_the_tiles_show_the_numbers_and_the_change_against_the_week_before(
         "▲ 50% vs the 7 days before"
     )
     stories = next_page.locator("[data-tile=stories]")
-    evidence.expect(stories.locator("[data-value]"), "two stories had steps").to_have_text("2")
+    evidence.expect(stories.locator("[data-value]"), "three stories active in the 7 days").to_have_text("3")
+    evidence.expect(stories.locator("[data-delta]"), "the breakdown adds up to the three").to_have_text(
+        "2 in review · 1 blocked"
+    )
     fix = next_page.locator("[data-tile=fix-rounds]")
     evidence.expect(fix.locator("[data-value]"), "one fix round over two layers").to_have_text("0.5")
     evidence.expect(fix.locator("[data-delta]"), "no layers the week before").to_have_text(
@@ -139,7 +166,34 @@ def test_slicing_by_model_names_a_missing_model_unknown(
     evidence.expect(next_page.get_by_text("Generation speed by model"), "the title follows").to_be_visible()
 
 
+def test_every_slice_on_offer_draws_without_an_error(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    _seed_metrics(own_server.state)
+    next_page.goto(own_server.url + "/next/metrics")
+    options = next_page.locator("[data-slice] option").evaluate_all("els => els.map(e => e.value)")
+    assert options == ["role", "model", "topology", "task", "agent"]
+    expected = {
+        "role": "coder",
+        "model": "base",
+        "topology": "unknown",
+        "task": "metrics-now",
+        "agent": "build",
+    }
+    for option in options:
+        next_page.locator("[data-slice]").select_option(option)
+        evidence.expect(
+            next_page.get_by_text(f"Generation speed by {option}"), f"{option}: the chart is titled"
+        ).to_be_visible()
+        evidence.expect(
+            next_page.locator("[data-legend]"), f"{option}: the legend names its slices"
+        ).to_contain_text(expected[option])
+        evidence.expect(next_page.get_by_role("alert"), f"{option}: no error banner").to_have_count(0)
+
+
 def test_a_range_with_no_runs_says_so(next_page: Page, own_server: Server, evidence: Evidence) -> None:
+    for seeded in ("runs", "stories"):  # the shared seed may hold recent steps
+        shutil.rmtree(own_server.state / seeded, ignore_errors=True)
     next_page.goto(own_server.url + "/next/metrics")
     next_page.locator("[data-range='4h']").click()
     evidence.expect(next_page.get_by_text("No runs in this range"), "nothing ran in 4 hours").to_be_visible()

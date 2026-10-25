@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useElementSize, useMediaQuery } from "@vueuse/core";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { SeriesRow } from "@/api/metrics";
 import EmptyState from "@/components/EmptyState.vue";
 import { activityWindow, formatRate, niceTicks } from "./math";
@@ -8,6 +8,10 @@ import type { Window } from "./math";
 
 /** The four series colours, in order; the only colour literals in the app besides the work-type colours. */
 const SERIES_COLOURS = ["#34d399", "#38bdf8", "#fb923c", "#a78bfa"];
+/** Past four slices the colours repeat with a different dash, so lines stay apart. */
+const DASHES = ["", "7 4", "2 4", "9 3 2 3"];
+/** The slices the mockup names come first, in its order; any others follow alphabetically. */
+const FIRST = ["coder", "tester", "reviewer", "chief"];
 
 const props = defineProps<{ rows: SeriesRow[]; slice: string; window: Window; bucket: number; title: string }>();
 const emit = defineEmits<{ open: [window: { active_from: string; active_to: string }] }>();
@@ -30,8 +34,23 @@ const name = (r: SeriesRow): string => {
 };
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
-const slices = computed(() => [...new Set(props.rows.map(name))].sort());
-const colour = (s: string) => SERIES_COLOURS[slices.value.indexOf(s) % SERIES_COLOURS.length];
+const bySlice = computed(() => {
+  const m = new Map<string, SeriesRow[]>();
+  for (const r of props.rows) {
+    const n = name(r);
+    const list = m.get(n);
+    if (list) list.push(r);
+    else m.set(n, [r]);
+  }
+  return m;
+});
+const rank = (n: string) => (FIRST.includes(n) ? FIRST.indexOf(n) : FIRST.length);
+const slices = computed(() => [...bySlice.value.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)));
+const look = (s: string) => {
+  const i = slices.value.indexOf(s);
+  return { colour: SERIES_COLOURS[i % SERIES_COLOURS.length], dash: DASHES[Math.floor(i / SERIES_COLOURS.length) % DASHES.length] };
+};
+const colour = (s: string) => look(s).colour;
 const times = computed(() => [...new Set(props.rows.filter((r) => finite(r.t)).map((r) => r.t))].sort((a, b) => a - b));
 
 // All time starts at the epoch: the line starts at the first bucket instead
@@ -45,11 +64,18 @@ const y = (v: number) => TOP + (height.value - TOP - BOTTOM) * (1 - v / top.valu
 
 const lines = computed(() =>
   slices.value.map((s) => {
-    const points = props.rows
-      .filter((r) => name(r) === s && finite(r.t) && finite(r.p50))
-      .sort((a, b) => a.t - b.t)
-      .map((r) => [x(r.t), y(r.p50)] as const);
-    return { name: s, colour: colour(s), points, d: points.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)} ${py.toFixed(1)}`).join(" ") };
+    const points = (bySlice.value.get(s) ?? [])
+      .filter((r) => finite(r.t) && finite(r.p50))
+      .sort((a, b) => a.t - b.t);
+    // a bucket with no value breaks the line: it is not drawn across the gap
+    let d = "";
+    let prev: number | null = null;
+    for (const r of points) {
+      const joined = prev !== null && r.t - prev <= props.bucket * 1.5;
+      d += `${joined ? "L" : d ? " M" : "M"}${x(r.t).toFixed(1)} ${y(r.p50).toFixed(1)}`;
+      prev = r.t;
+    }
+    return { name: s, ...look(s), points: points.map((r) => [x(r.t), y(r.p50)] as const), d };
   }),
 );
 
@@ -70,11 +96,22 @@ const xLabels = computed(() => {
 });
 
 const active = ref<number | null>(null);
+// a refresh can move the buckets: stay on the nearest one that is still there, or let go
+watch(times, (ts) => {
+  const a = active.value;
+  if (a === null || ts.includes(a)) return;
+  active.value = ts.length ? ts.reduce((best, t) => (Math.abs(t - a) < Math.abs(best - a) ? t : best)) : null;
+});
+const marks = computed(() => {
+  const a = active.value;
+  if (a === null) return [];
+  return slices.value.flatMap((s) => (bySlice.value.get(s) ?? []).filter((r) => r.t === a && finite(r.p50)).map((r) => ({ name: s, colour: colour(s), cx: x(a), cy: y(r.p50) })));
+});
 const tipRows = computed(() =>
   active.value === null
     ? []
     : slices.value.map((s) => {
-        const hit = props.rows.find((r) => name(r) === s && r.t === active.value && finite(r.p50));
+        const hit = bySlice.value.get(s)?.find((r) => r.t === active.value && finite(r.p50));
         return { name: s, colour: colour(s), value: hit ? formatRate(hit.p50) : "unknown" };
       }),
 );
@@ -117,7 +154,7 @@ function key(e: KeyboardEvent) {
     <EmptyState v-if="!rows.length" text="No runs in this range" />
     <template v-else>
       <div data-legend class="flex flex-wrap gap-3.5 px-[18px] pt-3 text-xs text-muted-foreground">
-        <span v-for="l in lines" :key="l.name"><i class="mr-1.5 inline-block h-[3px] w-2.5 rounded-sm align-middle" :style="{ background: l.colour }" />{{ l.name }}</span>
+        <span v-for="l in lines" :key="l.name"><svg width="16" height="4" class="mr-1.5 inline-block align-middle" aria-hidden="true"><line x1="0" x2="16" y1="2" y2="2" :stroke="l.colour" :stroke-dasharray="l.dash || undefined" stroke-width="3" /></svg>{{ l.name }}</span>
       </div>
       <div class="relative px-[18px] pt-2 pb-4 max-[640px]:px-2">
         <div
@@ -140,14 +177,12 @@ function key(e: KeyboardEvent) {
             <text v-for="t in ticks" :key="`y${t}`" x="0" :y="y(t) + 4" class="fill-muted-foreground" stroke="none" font-size="11">{{ formatRate(t) }}</text>
             <text v-for="l in xLabels" :key="l.text + l.px" :x="l.px" :y="height - 6" :text-anchor="l.anchor" class="fill-muted-foreground" stroke="none" font-size="11">{{ l.text }}</text>
             <g v-for="l in lines" :key="l.name">
-              <path v-if="l.d" :data-line="l.name" :d="l.d" :stroke="l.colour" fill="none" stroke-linejoin="round" />
+              <path v-if="l.d" :data-line="l.name" :d="l.d" :stroke="l.colour" :stroke-dasharray="l.dash || undefined" fill="none" stroke-linejoin="round" />
               <circle v-for="([px, py], i) in l.points" :key="i" :cx="px" :cy="py" r="2.5" :fill="l.colour" stroke="none" />
             </g>
             <template v-if="active !== null">
               <line :x1="x(active)" :x2="x(active)" :y1="TOP" :y2="height - BOTTOM" class="stroke-muted-foreground" stroke-width="1" stroke-dasharray="3 4" />
-              <template v-for="l in lines" :key="l.name">
-                <circle v-for="r in rows.filter((r) => name(r) === l.name && r.t === active && finite(r.p50))" :key="r.t" :cx="x(r.t)" :cy="y(r.p50)" r="5" :fill="l.colour" class="stroke-card" stroke-width="2" />
-              </template>
+              <circle v-for="m in marks" :key="m.name" :cx="m.cx" :cy="m.cy" r="5" :fill="m.colour" class="stroke-card" stroke-width="2" />
             </template>
           </svg>
           <div v-if="active !== null" data-tip role="status" class="pointer-events-none absolute rounded-lg border border-border bg-card px-2.5 py-2 text-xs shadow-lg max-[640px]:hidden" :style="tipStyle">

@@ -67,3 +67,41 @@ test("a value that is not a number is skipped, not drawn as 0 or NaN", () => {
   const w = mount(SeriesChart, { props: { ...props, rows } });
   expect(w.html()).not.toMatch(/NaN/);
 });
+
+test("colours follow the slice's name, not the order the rows came in", () => {
+  const w = mount(SeriesChart, { props: { ...props, rows: [...ROWS].reverse() } });
+  expect(w.get("[data-line=coder]").attributes("stroke")).toBe("#34d399");
+  expect(w.get("[data-line=tester]").attributes("stroke")).toBe("#38bdf8");
+});
+
+test("past four slices the colours repeat with a dash, so no two lines look alike", () => {
+  const names = ["coder", "tester", "reviewer", "chief", "zeta"];
+  const rows = names.map((n, i) => ({ t: 0, role: n, p10: 1, p50: i + 1, p90: 9 }));
+  const w = mount(SeriesChart, { props: { ...props, rows } });
+  const look = (n: string) => `${w.get(`[data-line=${n}]`).attributes("stroke")}|${w.get(`[data-line=${n}]`).attributes("stroke-dasharray") ?? ""}`;
+  expect(new Set(names.map(look)).size).toBe(5);
+  expect(w.get("[data-line=coder]").attributes("stroke-dasharray")).toBeUndefined();
+});
+
+test("a missing bucket breaks the line instead of joining across the gap", () => {
+  const rows: SeriesRow[] = [
+    { t: 0, role: "coder", p10: 1, p50: 10, p90: 20 },
+    { t: DAY, role: "coder", p10: 1, p50: 12, p90: 20 },
+    { t: 5 * DAY, role: "coder", p10: 1, p50: 14, p90: 20 },
+  ];
+  const w = mount(SeriesChart, { props: { ...props, rows, window: { from: 0, to: 6 * DAY } } });
+  expect(w.get("[data-line=coder]").attributes("d")?.match(/M/g)).toHaveLength(2);
+});
+
+test("when a refresh moves the buckets the pointer stays on the nearest one that is left", async () => {
+  const w = mount(SeriesChart, { props });
+  await w.get("[data-plot]").trigger("keydown", { key: "ArrowRight" });
+  await w.get("[data-plot]").trigger("keydown", { key: "ArrowRight" }); // t = DAY
+  const moved = ROWS.map((r) => ({ ...r, t: r.t + 600 }));
+  await w.setProps({ rows: moved });
+  expect(w.get("[data-tip]").text()).toContain("29.6");
+  await w.get("[data-plot]").trigger("keydown", { key: "Enter" });
+  expect(w.emitted("open")?.at(-1)).toEqual([{ active_from: String(DAY + 600), active_to: String(2 * DAY + 600) }]);
+  await w.setProps({ rows: [] });
+  expect(w.find("[data-tip]").exists()).toBe(false);
+});

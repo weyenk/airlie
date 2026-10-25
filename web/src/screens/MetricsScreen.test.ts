@@ -49,6 +49,22 @@ test("it opens on 7 days sliced by role, and asks for the period before as well"
   expect(api.metricsSeries).toHaveBeenCalledWith({ metric: "generation_tps", from: NOW - week, to: NOW, slice: "role" });
 });
 
+test("the Stories tile counts and breaks down the stories active in the window, and only those", async () => {
+  api.listStories.mockResolvedValue({
+    stories: [
+      { key: "A-1", title: null, repo: null, stage: "review", blocked: null, last_activity: NOW - 100 },
+      { key: "A-2", title: null, repo: null, stage: "layers", blocked: "stuck", last_activity: NOW - 200 },
+    ],
+    total: 2,
+    page: 1,
+    size: null,
+  });
+  const { w } = await open();
+  expect(api.listStories).toHaveBeenCalledWith({ active_from: NOW - 7 * 86400, active_to: NOW + 1 });
+  expect(w.get("[data-tile=stories] [data-value]").text()).toBe("2");
+  expect(w.get("[data-tile=stories] [data-delta]").text()).toBe("1 in review · 1 blocked");
+});
+
 test("choosing a range or a slice asks again for that window and slice", async () => {
   const { w } = await open();
   await w.get("[data-range='24h']").trigger("click");
@@ -71,7 +87,7 @@ test("All time asks from the epoch and makes no second summary call", async () =
 test("the tiles show the numbers and the chart opens the Workflows list for the clicked bucket", async () => {
   const { w, router } = await open();
   expect(w.get("[data-tile=generation] [data-value]").text()).toBe("36.4tok/s");
-  expect(w.get("[data-tile=stories] [data-value]").text()).toBe("14");
+  expect(w.get("[data-tile=stories] [data-value]").text()).toBe("0");
   await w.get("[data-plot]").trigger("keydown", { key: "ArrowRight" });
   await w.get("[data-plot]").trigger("keydown", { key: "Enter" });
   await flushPromises();

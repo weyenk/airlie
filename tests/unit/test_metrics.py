@@ -87,3 +87,27 @@ def test_summary_empty_state_dir(tmp_path: Path) -> None:
     assert s["stories"] == 0
     assert s["fix_rounds_per_layer"] is None
     assert s["by"] == {}
+
+
+def test_task_and_agent_slices_group_by_run_and_team(tmp_path: Path) -> None:
+    """A step's task is its run (`run_id`), its agent the team that took it (`team_id`); both fall back to
+    unknown."""
+    import json
+
+    run = tmp_path / "runs" / "r1"
+    run.mkdir(parents=True)
+
+    def step(**f: object) -> str:
+        base = {"ts": 10.0, "kind": "step", "prompt_tokens": 100, "completion_tokens": 100, "gen_ms": 1000.0}
+        return json.dumps({**base, **f}) + "\n"
+
+    (run / "events.jsonl").write_text(
+        step(run_id="r1", team_id="build") + step(run_id="r1", team_id="tests") + step()
+    )
+    assert set(summary(tmp_path, 0.0, 100.0, "task")["by"]) == {"r1", "unknown"}
+    assert set(summary(tmp_path, 0.0, 100.0, "agent")["by"]) == {"build", "tests", "unknown"}
+    assert {r["agent"] for r in series(tmp_path, "generation_tps", "agent", 0.0, 100.0, 50.0)} == {
+        "build",
+        "tests",
+        "unknown",
+    }

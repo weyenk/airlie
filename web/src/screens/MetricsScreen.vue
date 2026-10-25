@@ -20,22 +20,21 @@ const slice = ref<MetricSlice>("role");
 
 // The summary for the window and for the period before it, and the series: one load, so a screen never mixes two ranges.
 // Runs and jobs are what produce metrics; the sums are recomputed from the files on every call.
-const metrics = liveResource(["runs", "jobs"], async () => {
+const metrics = liveResource(["runs", "jobs", "stories"], async () => {
   const r = range.value;
   const s = slice.value;
   const window = windowOf(r, Math.floor(Date.now() / 1000));
   const before = previousWindow(r, window);
-  const [summary, previous, series] = await Promise.all([
+  const [summary, previous, series, active] = await Promise.all([
     metricsSummary({ ...window, slice: s }),
     before ? metricsSummary({ ...before, slice: s }) : Promise.resolve(null),
     metricsSeries({ metric: "generation_tps", ...window, slice: s }),
+    // the Stories tile counts these and breaks the same ones down; the list's window is [from, to), so one past now
+    listStories({ active_from: window.from, active_to: window.to + 1 }),
   ]);
-  return { summary, previous, series, window, bucket: bucketSeconds(window.to - window.from), range: r, slice: s };
+  return { stories: active.stories, summary, previous, series, window, bucket: bucketSeconds(window.to - window.from), range: r, slice: s };
 });
 watch([range, slice], () => void metrics.refresh());
-
-// the Stories tile's breakdown counts every story as it is now
-const stories = liveResource("stories", () => listStories({}));
 
 const shown = computed(() => metrics.data.value);
 const loaded = computed(() => (shown.value ? shown.value.slice : slice.value));
@@ -80,9 +79,8 @@ const selectClass =
     </div>
 
     <ErrorBanner v-if="metrics.error.value" :error="metrics.error.value" />
-    <ErrorBanner v-if="stories.error.value" :error="stories.error.value" />
 
-    <StatTiles :summary="shown?.summary" :previous="shown?.previous" :range="shown?.range ?? range" :stories="stories.data.value?.stories" />
+    <StatTiles :summary="shown?.summary" :previous="shown?.previous" :range="shown?.range ?? range" :stories="shown?.stories" />
 
     <section aria-label="Generation speed" class="rounded-xl border border-border bg-card shadow-sm">
       <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">

@@ -11,7 +11,7 @@ const props = defineProps<{
   /** The period just before: null when the range has none (All time), undefined while it loads. */
   previous: MetricsSummary | null | undefined;
   range: Range;
-  /** Every story, for the Stories tile's breakdown. */
+  /** The stories active in the range: the Stories tile counts them and breaks them down. */
   stories: StoryRow[] | undefined;
 }>();
 
@@ -24,7 +24,7 @@ const tiles = computed<Tile[]>(() => {
   return [
     { name: "generation", label: "Generation tok/s", value: s?.generation_tps, unit: "tok/s", change: against((m) => m.generation_tps), goodWhenUp: true },
     { name: "prefill", label: "Prefill tok/s", value: s?.prefill_tps, unit: "tok/s", change: against((m) => m.prefill_tps), goodWhenUp: true },
-    { name: "stories", label: "Stories", value: s?.stories, unit: "", change: null, goodWhenUp: true },
+    { name: "stories", label: "Stories", value: props.stories?.length, unit: "", change: null, goodWhenUp: true },
     { name: "fix-rounds", label: "Fix rounds per layer", value: s?.fix_rounds_per_layer, unit: "", change: against((m) => m.fix_rounds_per_layer), goodWhenUp: false },
   ];
 });
@@ -65,7 +65,7 @@ function tone(t: Tile): string {
   <div class="grid grid-cols-4 gap-3 max-[640px]:grid-cols-2">
     <section v-for="t in tiles" :key="t.name" :data-tile="t.name" class="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div class="text-[13px] text-muted-foreground">{{ t.label }}</div>
-      <div data-value class="mt-1.5 text-[28px] font-bold tabular-nums tracking-[-0.01em] max-[640px]:text-[22px]">{{ summary ? formatRate(t.value) : "…" }}<small v-if="summary && t.unit && t.value !== null && t.value !== undefined && Number.isFinite(t.value)" class="ml-1 text-sm font-medium text-muted-foreground">{{ t.unit }}</small></div>
+      <div data-value class="mt-1.5 text-[28px] font-bold tabular-nums tracking-[-0.01em] max-[640px]:text-[22px]">{{ (t.name === "stories" ? stories : summary) ? formatRate(t.value) : "…" }}<small v-if="t.unit && summary && t.value !== null && t.value !== undefined && Number.isFinite(t.value)" class="ml-1 text-sm font-medium text-muted-foreground">{{ t.unit }}</small></div>
       <div data-delta :class="['mt-1 min-h-4 text-xs font-semibold', tone(t)]">{{ words(t) }}</div>
     </section>
   </div>
