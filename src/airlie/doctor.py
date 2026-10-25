@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
+import yaml
 
 from airlie.config import AirlieConfig, ConfigError, load_config
 
@@ -37,6 +39,7 @@ class SystemProbe(Protocol):
     def resolve_binary(self, name: str) -> Path | None: ...
     def file_contains(self, path: Path, needle: str) -> bool | None: ...
     def model_file(self, repo: str, revision: str, file: str) -> Path | None: ...
+    def process_args(self, marker: str) -> list[str] | None: ...
 
 
 def systemone_impl_path(binary: Path) -> Path:
@@ -138,6 +141,21 @@ class RealProbe:
             return d
         return None
 
+    def process_args(self, marker: str) -> list[str] | None:
+        """The arguments of the running process whose command line holds `marker` and `serve` (the managed
+        vllm-mlx server), or None when none runs. Read from `ps`; nothing is started or stopped."""
+        try:
+            out = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in out.stdout.splitlines():
+            if marker in line and " serve" in line and "ps -axo" not in line:
+                try:
+                    return shlex.split(line)
+                except ValueError:
+                    return line.split()
+        return None
+
     def tool_version(self, name: str) -> str | None:
         exe = shutil.which(name)
         if not exe:
@@ -187,8 +205,23 @@ def node_check(version: str | None, pin: str) -> CheckResult:
     )
 
 
+def cache_memory_gb(e: Any) -> float:
+    """The prefix cache the engine is told to keep (`--cache-memory-mb N` in its extra_args), in GB; 0 when it
+    is left to the server's own default."""
+    args = list(e.extra_args)
+    for i, arg in enumerate(args[:-1]):
+        if arg == "--cache-memory-mb" and args[i + 1].isdigit():
+            return int(args[i + 1]) / 1024.0
+    return 0.0
+
+
 def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[str]]:
-    """Spec 01 §1 budget: preloaded weights + K × KV at max_kv_size + OS reserve.
+    """Spec 01 §1 budget: preloaded weights + the live KV + the prefix cache + OS reserve.
+
+    The live KV of the single, teams and fork topologies is K × max_kv_size. The studio's is its two lanes'
+    (planning-line P5b, D10): the build lane's one sequence at the coder's `max_context`, plus `line.fanout`
+    short asks at `line.consult_context`, each at its model's KV rate. The prefix cache is what the engine's
+    `--cache-memory-mb` sets aside.
 
     Returns (projected GB, names of preloaded models with no estimated_memory_gb)."""
     e = cfg.engines[engine_name]
@@ -205,9 +238,123 @@ def project_memory_gb(cfg: AirlieConfig, engine_name: str) -> tuple[float, list[
                 unknown.append(mname)
             else:
                 weights += m.estimated_memory_gb
+    return weights + live_kv_gb(cfg, e) + cache_memory_gb(e) + cfg.memory.os_reserve_gb, unknown
+
+
+def live_kv_gb(cfg: AirlieConfig, e: Any) -> float:
+    """The KV the running sequences hold (see `project_memory_gb`)."""
+    if cfg.topology.kind == "studio":
+        build = cfg.roles[cfg.story.build_role]
+        ask = cfg.roles[cfg.story.architect_role]
+        lane = (build.max_context / 1000.0) * cfg.models[build.model].kv_mb_per_1k_tokens / 1024.0
+        asks = (
+            cfg.line.fanout
+            * (cfg.line.consult_context / 1000.0)
+            * cfg.models[ask.model].kv_mb_per_1k_tokens
+            / 1024.0
+        )
+        return lane + asks
     team_model = cfg.models[cfg.roles[cfg.teams.role].model]
-    kv = cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0
-    return weights + kv + cfg.memory.os_reserve_gb, unknown
+    return float(cfg.teams.k * (e.max_kv_size / 1000.0) * team_model.kv_mb_per_1k_tokens / 1024.0)
+
+
+def projection_detail(cfg: AirlieConfig, e: Any) -> str:
+    """What `project_memory_gb` counted, in words for the doctor's row."""
+    cache = cache_memory_gb(e)
+    tail = f" + {cache:.0f} GB prefix cache" if cache else ""
+    if cfg.topology.kind == "studio":
+        build = cfg.roles[cfg.story.build_role]
+        return (
+            f"preloaded weights + the build lane's 1 sequence at {build.max_context} + "
+            f"{cfg.line.fanout} asks at {cfg.line.consult_context}{tail} + "
+            f"{cfg.memory.os_reserve_gb:.0f} GB reserve"
+        )
+    return (
+        f"preloaded weights + {cfg.teams.k} teams × {e.max_kv_size} KV{tail} + "
+        f"{cfg.memory.os_reserve_gb:.0f} GB reserve"
+    )
+
+
+# the flags a running engine must carry to be the one a profile describes (planning-line P5b, D10): the ones
+# that decide whether a long prompt rotates or a rider stalls the build
+_PROFILE_FLAGS = (
+    "--max-kv-size",
+    "--max-num-seqs",
+    "--chunked-prefill-tokens",
+    "--cache-memory-mb",
+)
+_PROFILE_SWITCHES = ("--kv-cache-quantization",)
+
+
+def _flags(argv: list[str]) -> tuple[dict[str, str], set[str]]:
+    values: dict[str, str] = {}
+    switches: set[str] = set()
+    for i, arg in enumerate(argv):
+        if arg in _PROFILE_FLAGS and i + 1 < len(argv):
+            values[arg] = argv[i + 1]
+        elif arg in _PROFILE_SWITCHES:
+            switches.add(arg)
+    return values, switches
+
+
+def _registry_models(argv: list[str]) -> set[str] | None:
+    """The preloaded models of the registry file the running engine was given (`--models-config`), or None
+    when it cannot be read."""
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--models-config":
+            try:
+                data = yaml.safe_load(Path(argv[i + 1]).read_text())
+                return {str(m["name"]) for m in data["models"] if m.get("preload")}
+            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+                return None
+    return None
+
+
+def engine_matches_profile(cfg: AirlieConfig, probe: SystemProbe, profile: str) -> CheckResult:
+    """The running vllm-mlx server's arguments against the profile's engine spec (planning-line P5b, D10): the
+    KV cap, the sequences, chunked prefill, stored-KV quantization, the prefix cache and the preloaded models.
+    `fail` names the flags that differ and the command that restarts it on the profile; a KV smaller than the
+    profile's rotates a long prompt and wastes a layer, so the line starts no build on a mismatch. `warn` when
+    none runs (the engine gate says so), `ok` when the engine is not one airlie manages."""
+    name = f"engine:profile[{profile}]"
+    if profile not in cfg.topology.profiles:
+        return CheckResult(name, "warn", f"the config declares no profile {profile}: nothing to compare")
+    try:
+        target = load_config(cfg.source_path, topology=profile) if cfg.source_path is not None else cfg
+    except ConfigError as e:
+        return CheckResult(name, "fail", f"profile {profile}: {e}")
+    managed = [n for n, e in target.engines.items() if e.kind == "vllm_mlx"]
+    if not managed:
+        return CheckResult(name, "ok", "no engine airlie manages for this profile")
+    running = probe.process_args("airlie.engine.vllm_mlx_serve") or probe.process_args("vllm-mlx")
+    if running is None:
+        return CheckResult(name, "warn", "no vllm-mlx server is running")
+    from airlie.engine.registry import build_serve_command
+
+    wanted_values, wanted_switches = _flags(build_serve_command(target, managed[0], Path("registry.yaml")))
+    have_values, have_switches = _flags(running)
+    differ: list[str] = []
+    for flag in _PROFILE_FLAGS:
+        if wanted_values.get(flag) != have_values.get(flag):
+            differ.append(
+                f"{flag} {have_values.get(flag, '(unset)')} (profile: {wanted_values.get(flag, '(unset)')})"
+            )
+    for flag in _PROFILE_SWITCHES:
+        if (flag in wanted_switches) != (flag in have_switches):
+            running_is = "on" if flag in have_switches else "off"
+            differ.append(f"{flag} {running_is} (profile: {'on' if flag in wanted_switches else 'off'})")
+    loaded = _registry_models(running)
+    expected = {m for m in target.engines[managed[0]].models if target.models[m].preload}
+    if loaded is not None and loaded != expected:
+        differ.append(f"preloaded models {sorted(loaded)} (profile: {sorted(expected)})")
+    if differ:
+        return CheckResult(
+            name,
+            "fail",
+            f"the engine runs other flags than the {profile} profile: {'; '.join(differ)}; restart it: "
+            f"task restart -- --topology {profile}",
+        )
+    return CheckResult(name, "ok", f"the running engine carries the {profile} profile's flags")
 
 
 def _profile_variants(cfg: AirlieConfig) -> dict[str, AirlieConfig | ConfigError]:
@@ -325,8 +472,7 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
             pe = pcfg.engines[ename]
             projected, unknown = project_memory_gb(pcfg, ename)
             detail = (
-                f"projected {projected:.0f} GB (preloaded weights + {pcfg.teams.k} teams × "
-                f"{pe.max_kv_size} KV + {pcfg.memory.os_reserve_gb:.0f} GB reserve) "
+                f"projected {projected:.0f} GB ({projection_detail(pcfg, pe)}) "
                 f"vs wired limit {limit_gb:.0f} GB"
             )
             if unknown:

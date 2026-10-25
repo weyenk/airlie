@@ -240,3 +240,44 @@ def test_the_pause_route_and_tasks(tmp_path: Path) -> None:
     assert out.exit_code == 0 and not paused(c.observability.state_dir) and "resumed" in out.output
     tasks = (Path(__file__).resolve().parents[2] / "Taskfile.yml").read_text()
     assert "line:pause:" in tasks and "line:resume:" in tasks
+
+
+async def test_a_profile_mismatch_is_a_gate_that_starts_no_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine must run the story profile (D10): on a mismatch the beat does its bookkeeping, logs
+    `engine_mismatch` with the restart command, and starts no job in either lane."""
+    from airlie.doctor import CheckResult
+    from airlie.story import line as line_module
+
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    ready = rig.store.create(level="story", title="ready", labels=["repo:o/r"]).key
+    rig.store.update(ready, status="approved")
+    story_record(rig, ready, "layers")
+    epic = rig.epic()
+    waiting = rig.store.create(level="story", title="waits", labels=["repo:o/r"]).key
+    done = rig.store.create(level="story", title="done", labels=["repo:o/r"]).key
+    rig.store.update(done, status="review")
+    rig.store.update(waiting, labels=["repo:o/r", f"after:{done}"])
+    started = started_log(monkeypatch)
+    verdict = CheckResult(
+        "engine:profile[studio]", "fail", "the engine runs other flags than the studio profile: "
+        "--max-kv-size 65536 (profile: 131072); restart it: task restart -- --topology studio",
+    )  # fmt: skip
+    monkeypatch.setattr(line_module, "engine_matches_profile", lambda cfg, probe, profile: verdict)
+    line = await tick(rig.cfg)
+    assert line.startswith("promoted") and "engine mismatch: the engine runs other flags" in line, line
+    assert "task restart -- --topology studio" in line
+    assert started == [] and not rig.engine.requests and rig.status(epic) == "approved"
+    events = [
+        json.loads(x)
+        for x in (rig.cfg.observability.state_dir / "line" / "events.jsonl").read_text().splitlines()
+    ]
+    [mismatch] = [e for e in events if e["kind"] == "engine_mismatch"]
+    assert mismatch["profile"] == "studio" and "--max-kv-size" in mismatch["detail"]
+    assert "lane_start" not in [e["kind"] for e in events]
+    # the mismatch gone (a person restarted the engine), the next beat goes on
+    monkeypatch.setattr(
+        line_module, "engine_matches_profile", lambda cfg, probe, profile: CheckResult("x", "ok", "fine")
+    )
+    assert f"epic {epic} Avatars: planned into 2 stories" in await tick(rig.cfg)

@@ -29,6 +29,7 @@ from typing import Any, Literal
 
 from airlie.board import Item
 from airlie.config import AirlieConfig
+from airlie.doctor import RealProbe, SystemProbe, engine_matches_profile
 from airlie.story import factory
 from airlie.story.board import Board, BoardError, Card, NullBoard
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
@@ -123,7 +124,10 @@ class Line:
         gh: GhRun | None = None,
         now: Callable[[], float] = time.time,
         serve_commit: str | None = None,
+        probe: SystemProbe | None = None,
     ) -> None:
+        self.probe = probe
+        """What the engine gate reads the running engine with (the host's `ps`); tests pass a fake."""
         self.cfg = cfg
         self.board = board
         self.state_dir = state_dir
@@ -194,7 +198,23 @@ class Line:
         down = await factory.github_down(self.cfg)
         if down is not None:
             return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
-        return None
+        return await self._profile_gate()
+
+    async def _profile_gate(self) -> str | None:
+        """The engine must be running the story profile (D10): a KV smaller than the profile's rotates a long
+        prompt and wastes a layer, so a mismatch starts nothing this beat (the bookkeeping has run). The
+        line never restarts the engine: the log line names the command for a person."""
+        profile = self.cfg.story.topology
+        try:
+            probe = self.probe or RealProbe()
+            found = await asyncio.to_thread(engine_matches_profile, self.cfg, probe, profile)
+        except Exception as e:  # noqa: BLE001 - a check that cannot run is no mismatch
+            factory.log.warning("engine profile check failed: %s", e)
+            return None
+        if found.status != "fail":
+            return None
+        line_event(self.state_dir, "engine_mismatch", profile=profile, detail=found.detail)
+        return " ".join(f"engine mismatch: {found.detail}".split())
 
     # ---- the lanes ----
 
