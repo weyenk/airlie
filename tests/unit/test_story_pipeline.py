@@ -2473,6 +2473,7 @@ async def test_an_agreement_that_cannot_be_built_stops_the_story_naming_what_is_
     st = await pipe.run(text_card("avatars"))
     assert st.blocked is not None and "the meeting ended without an agreement that can be built" in st.blocked
     assert "AC2" in st.blocked and st.agreement is None and st.stage == "refine"
+    assert st.meeting is None
 
 
 async def test_a_story_killed_mid_meeting_resumes_the_meeting_from_its_saved_history(tmp_path: Path) -> None:
@@ -2586,6 +2587,7 @@ async def test_a_blocked_reply_from_product_in_the_meeting_stops_the_story(tmp_p
     assert (
         st.blocked is not None and "product says this cannot be built as written: which sizes?" in st.blocked
     )
+    assert st.meeting is None  # the next run holds the meeting afresh
 
 
 async def test_with_amigos_off_the_split_is_the_agreement(tmp_path: Path) -> None:

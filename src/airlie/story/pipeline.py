@@ -750,6 +750,14 @@ class StoryPipeline:
 
         return on_turn
 
+    @staticmethod
+    def _forget_meeting(st: StoryState) -> None:
+        """A meeting that ended in a stop (product said the request cannot be built; the agreement cannot
+        be built) is not resumed from its history: that would end in the same stop. The next run holds it
+        afresh."""
+        st.meeting = None
+        st.save()
+
     async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
         the changes and the proof, then the stored agreement replaces the story and the layers. Skipped, and
@@ -803,6 +811,7 @@ class StoryPipeline:
                 state=st.meeting,
             )
         except NotActionable as e:
+            self._forget_meeting(st)
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
         finally:
             remove_worktree(self.repo, tree)
@@ -816,6 +825,7 @@ class StoryPipeline:
             st.emit("amigos_references_pruned", ids=stale)
         holes = unbuildable(agreement)
         if holes:
+            self._forget_meeting(st)
             raise StoryBlocked(
                 "the meeting ended without an agreement that can be built: "
                 + "; ".join(f"{f.kind} {f.test}: {f.why}" for f in holes)
