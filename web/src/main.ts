@@ -7,8 +7,12 @@ import { createAppRouter } from "./router";
 import "./style.css";
 
 // an old `/#/board/AIR-17` link becomes `/board/AIR-17` before the router reads the address
-const clean = legacyHashPath(location.hash);
-if (clean !== null) history.replaceState(null, "", clean);
+try {
+  const clean = legacyHashPath(location.hash);
+  if (clean !== null) history.replaceState(null, "", clean);
+} catch {
+  // a hash that cannot be turned into a path must never stop the app mounting
+}
 
 applyStoredTheme();
 const pinia = createPinia();

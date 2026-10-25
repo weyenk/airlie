@@ -174,3 +174,13 @@ def test_the_landing_mark_stays_put_over_itself_and_the_gaps(
     keys = [c.get_attribute("data-item") for c in cards.all()]
     evidence.shot("a drop there landed above AIR-2", held=keys == ["AIR-1", "AIR-3", "AIR-2"])
     assert keys == ["AIR-1", "AIR-3", "AIR-2"], keys
+
+
+def test_the_type_filter_shows_only_that_type(app_page: Page, server: Server, evidence: Evidence) -> None:
+    app_page.goto(server.url + "/board")
+    cards = app_page.locator("[data-columns] [data-item]")
+    evidence.expect(cards, "every card, unfiltered").to_have_count(7)
+    app_page.locator("[data-type-filter]").click()
+    app_page.get_by_role("menuitemradio", name="Epic").click()
+    evidence.expect(cards, "Epic leaves one card").to_have_count(1)
+    evidence.expect(cards, "the epic").to_contain_text("Board polish")

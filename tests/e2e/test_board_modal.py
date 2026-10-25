@@ -579,3 +579,14 @@ def test_on_the_phone_criteria_and_workflow_start_folded(
     workflow.get_by_role("button", name="Workflow").click()
     evidence.expect(acceptance.get_by_text("an open panel").first, "a tap opens the criteria").to_be_visible()
     evidence.expect(workflow.get_by_text("Layer 01"), "a tap opens the workflow").to_be_visible()
+
+
+def test_a_card_with_no_story_has_no_criteria_or_workflow_section(
+    app_page: Page, server: Server, evidence: Evidence
+) -> None:
+    dialog = open_card(app_page, server, "AIR-3")
+    evidence.expect(
+        dialog.get_by_role("heading", name="Board: columns fill the page width"), "open"
+    ).to_be_visible()
+    evidence.expect(dialog.locator("[data-acceptance]"), "no criteria section").to_have_count(0)
+    evidence.expect(dialog.locator("[data-workflow]"), "no workflow section").to_have_count(0)

@@ -6,7 +6,7 @@ import { HISTORY, useChatStore } from "./chat";
 const api = vi.hoisted(() => ({ stream: vi.fn() }));
 vi.mock("@/api/chat", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/chat")>()), ...api }));
 
-/** A thread exactly as today's app writes it (src/airlie/serve/web/screens/chat.js). */
+/** A thread exactly as today's app writes it (the retired vanilla-JS app's chat screen). */
 const TODAYS = [
   { role: "user", text: "/story add a button", sent: "add a button" },
   { role: "chat", text: "Add a button\n\nDone when it clicks.", streaming: false, thinking: true, action: "story", storyText: "Edited" },

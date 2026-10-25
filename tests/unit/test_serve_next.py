@@ -39,6 +39,34 @@ def test_every_app_path_serves_the_new_app_and_next_redirects(tmp_path: Path) ->
     assert c.get("/app/app.js").status_code == 404 and c.get("/health").status_code == 200
 
 
+def test_next_never_redirects_off_the_site(tmp_path: Path) -> None:
+    c = client_with(tmp_path, built=True)
+    for path in (
+        "/next//evil.com",
+        "/next/%2Fevil.com",
+        "/next/%2F%2Fevil.com",
+        "/next///evil.com/x?a=1",
+        "/next/%5Cevil.com",
+        "/next/\\evil.com",
+        "/next/%2F%5Cevil.com",
+    ):
+        r = c.get(path, follow_redirects=False)
+        location = r.headers["location"]
+        assert r.status_code == 308, path
+        assert location.startswith("/") and not location.startswith(("//", "/\\")), (path, location)
+        assert "evil.com" in location and "\\" not in location, (path, location)
+    assert c.get("/next///evil.com/x?a=1", follow_redirects=False).headers["location"] == "/evil.com/x?a=1"
+
+
+def test_a_missing_file_is_a_404_not_the_page(tmp_path: Path) -> None:
+    c = client_with(tmp_path, built=True)
+    for path in ("/assets/missing.js", "/favicon.ico", "/robots.txt", "/board/x.map"):
+        r = c.get(path)
+        assert r.status_code == 404 and '<div id="app">' not in r.text, path
+    for path in ("/board/AIR-17", "/workflows"):
+        assert '<div id="app">' in c.get(path).text
+
+
 def test_the_api_keeps_its_guard_and_unknown_api_paths_stay_json_404s(tmp_path: Path) -> None:
     app = create_app(
         cfg(tmp_path),

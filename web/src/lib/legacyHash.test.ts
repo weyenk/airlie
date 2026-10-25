@@ -24,4 +24,12 @@ describe("legacyHashPath", () => {
       expect(legacyHashPath(hash)).toBeNull();
     },
   );
+
+  it("never gives a path that leaves the site", () => {
+    const origin = "http://app.invalid";
+    for (const hash of ["#/\\evil.com", "#//evil.com", "#/%2f%2fevil.com", "#/%5Cevil.com", "#/..//evil.com", "#/a/../..//evil.com", "#/%00", "#/x\tevil"]) {
+      const path = legacyHashPath(hash);
+      if (path !== null) expect(new URL(path, origin).origin).toBe(origin);
+    }
+  });
 });

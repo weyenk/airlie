@@ -765,7 +765,9 @@ def create_app(
     async def next_redirect(request: Request, path: str = "") -> RedirectResponse:
         """The app's old home: the same path without the prefix, the query kept."""
         query = request.url.query
-        return RedirectResponse(f"/{path}" + (f"?{query}" if query else ""), status_code=308)
+        # one leading slash, whatever came after /next ("//host" and "/\\host" would leave the site)
+        tail = path.lstrip("/\\")
+        return RedirectResponse("/" + tail + (f"?{query}" if query else ""), status_code=308)
 
     @app.exception_handler(StarletteHTTPException)
     async def web_app(request: Request, exc: StarletteHTTPException) -> Response:
@@ -790,6 +792,9 @@ def create_app(
         if served is not None and served != index.resolve():
             cache = IMMUTABLE if served.is_relative_to(next_root / "assets") else "no-cache"
             return FileResponse(served, headers={"Cache-Control": cache})
+        if first == "assets" or "." in path.rsplit("/", 1)[-1]:
+            # a file that is not there (an old tab's chunk after a deploy, favicon.ico) is a 404, not the page
+            return await http_exception_handler(request, exc)
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app

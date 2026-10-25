@@ -255,7 +255,7 @@ Each at `/next` plus its clean path, desktop and phone:
 | `#/jobs/{id}` | gone; redirects to the workflow view of the work it ran |
 | `#/start` | not carried over; redirects to `/next/` (Chat) |
 | `#/board/{key}` (with the item modal, comment edit and drag-and-drop) | `/next/board/{key}`, with the changes under "The Board" |
-| `#/topology/{run}` | not carried over; stays in today's app until the switch |
+| `#/topology/{run}` | the run's workflow view, `/workflows/runs/{run}` (the Topology tab itself is not carried over) |
 | `#/metrics` | `/next/metrics` |
 | `#/admin` | `/next/admin` |
 | `#/join/{token}` (public) | `/next/join/{token}` |
