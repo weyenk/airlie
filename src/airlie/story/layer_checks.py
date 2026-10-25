@@ -43,6 +43,14 @@ Kind = Literal[
     "file_missing",
     "covers_missing",
     "import_unresolved",
+    "split_invalid",
+    "over_size",
+    "criterion_unproven",
+    "layer_unproven",
+    "proof_layer_mismatch",
+    "stale_reference",
+    "verdict_missing",
+    "part_invalid",
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
