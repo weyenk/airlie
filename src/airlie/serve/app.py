@@ -16,9 +16,10 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from airlie.auth.api import PUBLIC_PATHS, auth_router
 from airlie.auth.principal import NotInvited, Principal, Resolver
@@ -47,15 +48,11 @@ from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
 
-WEB_DIR = Path(__file__).parent / "web"
-"""The web app's static files: `GET /` is its index.html, `/app/*` the rest. No key: the shell is harmless
-without one, and every call it makes goes to /v1, which keeps the guard."""
-
 NEXT_DIR = Path(__file__).parent / "web_next"
-"""The Vue app's build (`task web:build`, a Vite build with base `/next/`): `GET /next/*` serves it, beside
-the app above. Not in git; without it `/next` answers 503 and says how to build it."""
+"""The Vue app's build (`task web:build`, a Vite build with base `/`): `GET /` and every path that is not the
+API serves it. Not in git; without it the app's paths answer 503 and say how to build it."""
 
-NEXT_NOT_BUILT = "the new web app is not built: run task web:build"
+NEXT_NOT_BUILT = "the web app is not built: run task web:build"
 IMMUTABLE = "public, max-age=31536000, immutable"
 """The cache header of a built file under assets/: Vite hashes their names, so a changed file is a new URL."""
 
@@ -341,44 +338,7 @@ def create_app(
         headers = {"Authorization": f"Bearer {e.api_key}"} if e.api_key else {}
         return (e.base_url or "").rstrip("/"), e.served_name(model), headers, prompt
 
-    @app.get("/", include_in_schema=False)
-    async def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
-
-    app.mount("/app", StaticFiles(directory=WEB_DIR), name="web")
-
     next_root = (next_dir or NEXT_DIR).resolve()
-
-    @app.get("/next", include_in_schema=False)
-    async def next_slash() -> RedirectResponse:
-        return RedirectResponse("/next/")
-
-    @app.get("/next/{path:path}", include_in_schema=False)
-    async def next_app(path: str) -> Response:
-        """The Vue app: a path naming a file inside its build is that file (a hashed one under assets/ is
-        cached for good), anything else is index.html, which the app's router reads. Like `/`, it needs no
-        sign-in: every call the app makes goes to /v1, which keeps the guard."""
-        index = next_root / "index.html"
-        if not index.is_file():
-            return JSONResponse({"error": NEXT_NOT_BUILT}, status_code=503)
-        try:
-            target = (next_root / path).resolve()
-            served = target if target.is_relative_to(next_root) and target.is_file() else None
-        except (OSError, ValueError):  # a NUL byte, or a name too long for the filesystem: no such file
-            served = None
-        if served is not None:
-            cache = IMMUTABLE if served.is_relative_to(next_root / "assets") else "no-cache"
-            return FileResponse(served, headers={"Cache-Control": cache})
-        return FileResponse(index, headers={"Cache-Control": "no-cache"})
-
-    @app.middleware("http")
-    async def _revalidate_static(request: Request, call_next: Callable[..., Any]) -> Any:
-        """The shell's files are revalidated on every load (ETags keep that cheap), so a new airlie never
-        serves an old module next to a new one from a phone's cache."""
-        response = await call_next(request)
-        if request.url.path == "/" or request.url.path.startswith("/app/"):
-            response.headers["Cache-Control"] = "no-cache"
-        return response
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -797,5 +757,39 @@ def create_app(
         await client.aclose()
         board.close()
         store.close()
+
+    api_prefixes = ("v1", "health", "docs", "redoc", "openapi.json")
+
+    @app.get("/next", include_in_schema=False)
+    @app.get("/next/{path:path}", include_in_schema=False)
+    async def next_redirect(request: Request, path: str = "") -> RedirectResponse:
+        """The app's old home: the same path without the prefix, the query kept."""
+        query = request.url.query
+        return RedirectResponse(f"/{path}" + (f"?{query}" if query else ""), status_code=308)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def web_app(request: Request, exc: StarletteHTTPException) -> Response:
+        """The Vue app: a GET that matched no route is a file inside its build (a hashed one under assets/ is
+        cached for good) or else index.html, which the app's router reads. It needs no sign-in: every call the
+        app makes goes to /v1, which keeps the guard. An exception handler rather than a last route, so routes
+        added after this one still win; an unknown API path stays a JSON 404 and `/app/...` (the retired
+        app) is gone."""
+        path = request.url.path.lstrip("/")
+        first = path.split("/", 1)[0]
+        no_page = exc.status_code != 404 or request.method not in ("GET", "HEAD") or exc.detail != "Not Found"
+        if no_page or first in api_prefixes or first == "app":
+            return await http_exception_handler(request, exc)
+        index = next_root / "index.html"
+        if not index.is_file():
+            return JSONResponse({"error": NEXT_NOT_BUILT}, status_code=503)
+        try:
+            target = (next_root / path).resolve()
+            served = target if target.is_relative_to(next_root) and target.is_file() else None
+        except (OSError, ValueError):  # a NUL byte, or a name too long for the filesystem: no such file
+            served = None
+        if served is not None and served != index.resolve():
+            cache = IMMUTABLE if served.is_relative_to(next_root / "assets") else "no-cache"
+            return FileResponse(served, headers={"Cache-Control": cache})
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app

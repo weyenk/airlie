@@ -212,7 +212,7 @@ tasks:
       - npm test
 
   web:build:
-    desc: "Build the Vue app into src/airlie/serve/web_next, which `task serve` serves at /next; skipped while nothing under web/ changed"
+    desc: "Build the Vue app into src/airlie/serve/web_next, which `task serve` serves at /; skipped while nothing under web/ changed"
     dir: web
     deps: [web:install]
     sources:

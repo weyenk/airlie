@@ -11,7 +11,7 @@ export type Me = { user_id: string; name: string; role: Role; via: string };
 /** A person. `credentials` (how many passkeys) comes with the admin's list only. */
 export type User = { id: string; name: string; login: string | null; role: Role; created_at: number; credentials?: number };
 
-/** A link to hand a person (`/#/join/<token>`), when it lapses (epoch seconds), and who it is for. */
+/** A link to hand a person (`/join/<token>`), when it lapses (epoch seconds), and who it is for. */
 export type Invite = { url: string; expires_at: number; user: User };
 
 /** Admin only. */

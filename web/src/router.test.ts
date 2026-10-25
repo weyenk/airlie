@@ -27,7 +27,7 @@ afterEach(() => {
 
 test("a signed-out visit goes to sign in and keeps the page asked for", async () => {
   fakeFetch("signed-out");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/board/AIR-17");
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/signin?next=/board/AIR-17");
@@ -35,7 +35,7 @@ test("a signed-out visit goes to sign in and keeps the page asked for", async ()
 
 test("a signed-in visit loads me once and starts the feed", async () => {
   const f = fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/board");
   await router.push("/metrics");
   await flushPromises();
@@ -47,7 +47,7 @@ test("a signed-in visit loads me once and starts the feed", async () => {
 
 test("the old start and job addresses redirect", async () => {
   fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/start");
   expect(router.currentRoute.value.fullPath).toBe("/");
   await router.push("/jobs/r1");
@@ -56,7 +56,7 @@ test("the old start and job addresses redirect", async () => {
 
 test("a story job address goes to the story, and /jobs to the list", async () => {
   fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/jobs/story-AIR-9");
   expect(router.currentRoute.value.fullPath).toBe("/workflows/AIR-9");
   expect(router.currentRoute.value.name).toBe("story");
@@ -66,7 +66,7 @@ test("a story job address goes to the story, and /jobs to the list", async () =>
 
 test("a run address is never read as a story called runs", async () => {
   fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/workflows/runs/r1/node/job");
   expect(router.currentRoute.value.name).toBe("run");
   await router.push("/workflows/AIR-9/n1");
@@ -76,7 +76,7 @@ test("a run address is never read as a story called runs", async () => {
 
 test("sign in and join are public and bare; unknown addresses are not found", async () => {
   fakeFetch("signed-out");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/signin");
   expect(router.currentRoute.value.meta).toMatchObject({ public: true, bare: true });
   await router.push("/join/abc");
@@ -89,7 +89,7 @@ test("sign in and join are public and bare; unknown addresses are not found", as
 
 test("a 401 from any call stops the feed", async () => {
   fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/board");
   await flushPromises();
   const feed = useFeedStore();
@@ -105,7 +105,7 @@ test("a 401 from any call stops the feed", async () => {
 
 test("signing out posts the logout and goes to sign in", async () => {
   const f = fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/admin");
   await useSessionStore().signOut();
   await flushPromises();
@@ -115,7 +115,7 @@ test("signing out posts the logout and goes to sign in", async () => {
 
 test("the feed stops when a public page is visited after sign-in", async () => {
   fakeFetch("signed-in");
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/board");
   await flushPromises();
   const feed = useFeedStore();
@@ -134,7 +134,7 @@ test("the feed answering 401 signs the session out", async () => {
       return new Response("no", { status: 401 }); // the feed itself
     }),
   );
-  const router = createAppRouter(createMemoryHistory("/next/"));
+  const router = createAppRouter(createMemoryHistory("/"));
   await router.push("/board");
   await flushPromises();
   expect(useSessionStore().me).toBeNull();

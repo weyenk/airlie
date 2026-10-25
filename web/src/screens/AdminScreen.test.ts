@@ -36,8 +36,8 @@ beforeEach(() => {
   vi.setSystemTime(NOW * 1000);
   setActivePinia(createPinia());
   for (const f of Object.values(api)) f.mockReset();
-  api.createInvite.mockResolvedValue({ url: "/#/join/tok123", expires_at: NOW + 86400, user: { ...MARCUS, credentials: undefined } });
-  api.inviteAgain.mockResolvedValue({ url: "/#/join/again", expires_at: NOW + 86400, user: JESS });
+  api.createInvite.mockResolvedValue({ url: "/join/tok123", expires_at: NOW + 86400, user: { ...MARCUS, credentials: undefined } });
+  api.inviteAgain.mockResolvedValue({ url: "/join/again", expires_at: NOW + 86400, user: JESS });
   api.deleteUser.mockResolvedValue(undefined);
   answerConfirm(false);
 });
@@ -105,7 +105,7 @@ test("inviting sends name, role and login, then shows the link in a box with Cop
   expect(api.createInvite).toHaveBeenCalledWith({ name: "Marcus", role: "admin", login: "marcus@github" }, { quiet401: false });
   const box = w.get("[data-link-box]");
   expect(box.text()).toContain("Link for Marcus. It works once, for a day.");
-  expect(w.get("[data-invite-url]").text()).toBe(new URL("/#/join/tok123", location.href).href);
+  expect(w.get("[data-invite-url]").text()).toBe(new URL("/join/tok123", location.href).href);
   expect(box.findAll("button").map((b) => b.text())).toEqual(["Copy link"]);
   expect((w.get("#invite-name").element as HTMLInputElement).value).toBe("");
   expect(w.text()).not.toContain("no longer signed in by itself"); // there were people already
@@ -125,7 +125,7 @@ test("Copy link copies the link", async () => {
   const w = await open();
   await clickButton(row(w, "Jess"), "New link");
   await clickButton(w.get("[data-link-box]"), "Copy link");
-  expect(writeText).toHaveBeenCalledWith(new URL("/#/join/again", location.href).href);
+  expect(writeText).toHaveBeenCalledWith(new URL("/join/again", location.href).href);
   expect(w.get("[data-link-box]").text()).toContain("Copied");
 });
 

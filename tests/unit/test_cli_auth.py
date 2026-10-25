@@ -26,12 +26,12 @@ def test_admin_creates_the_first_admin_and_prints_an_invite_url(tmp_path: Path) 
         cli.app, ["auth", "admin", "--name", "Noah", "--login", "noah@github", *config(tmp_path)]
     )
     assert r.exit_code == 0, r.output
-    assert "http://127.0.0.1:8090/#/join/" in r.output
+    assert "http://127.0.0.1:8090/join/" in r.output
     s = store(tmp_path)
     try:
         (u,) = s.users()
         assert (u.name, u.role, u.login) == ("Noah", "admin", "noah@github")
-        token = r.output.split("/#/join/", 1)[1].split()[0]
+        token = r.output.split("/join/", 1)[1].split()[0]
         assert s.peek_invite(token) == u
     finally:
         s.close()
@@ -62,7 +62,7 @@ def test_invite_creates_a_person_and_prints_the_url_at_the_given_base(tmp_path: 
     ]
     r = runner.invoke(cli.app, [*args, *config(tmp_path)])
     assert r.exit_code == 0, r.output
-    assert "https://studio.ts.net/#/join/" in r.output
+    assert "https://studio.ts.net/join/" in r.output
     assert "24" in r.output  # auth.invite_hours
     s = store(tmp_path)
     try:
@@ -141,11 +141,11 @@ def test_invite_by_id_issues_a_fresh_link_for_an_existing_person(tmp_path: Path)
     s.close()
     r = runner.invoke(cli.app, ["auth", "invite", "--id", noah.id, *config(tmp_path)])
     assert r.exit_code == 0, r.output
-    assert "Noah" in r.output and "/#/join/" in r.output
+    assert "Noah" in r.output and "/join/" in r.output
     s = store(tmp_path)
     try:
         assert [u.name for u in s.users()] == ["Noah"]  # nobody new
-        token = r.output.split("/#/join/", 1)[1].split()[0]
+        token = r.output.split("/join/", 1)[1].split()[0]
         assert s.peek_invite(token) == noah
     finally:
         s.close()

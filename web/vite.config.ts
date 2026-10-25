@@ -2,9 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 
-// The build lands inside the Python package, where `airlie serve` serves it at /next.
+// The build lands inside the Python package, where `airlie serve` serves it at /.
 export default defineConfig({
-  base: "/next/",
+  base: "/",
   plugins: [vue(), tailwindcss()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
