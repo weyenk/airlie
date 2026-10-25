@@ -115,7 +115,7 @@ class Finding:
     before: str = ""
 
 
-def _test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+def test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
     """What pytest collects by default: test* functions, and test* methods of Test* classes."""
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test"):
@@ -198,9 +198,9 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
         before = _parse(_base_text(worktree, base, path))
         base_text = _base_text(worktree, base, path)
         before = _parse(base_text)
-        old = {name: fn for name, fn in _test_functions(before)} if before else {}
+        old = {name: fn for name, fn in test_functions(before)} if before else {}
         helpers = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
-        for name, fn in _test_functions(tree):
+        for name, fn in test_functions(tree):
             was = old.get(name)
             if was is not None and ast.dump(was) == ast.dump(fn):
                 continue
