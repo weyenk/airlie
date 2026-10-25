@@ -37,6 +37,7 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.context import guide_budget, named_paths, repo_guide
+from airlie.story.diagnosis import GATE_TAIL_LINES
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
@@ -843,6 +844,13 @@ class StoryPipeline:
                 failure = (_ending(coder), _gate_detail(orch.gate_output), reason, "gate_fails")
             if failure is not None:
                 ending, detail, reason, kind = failure
+                if kind == "gate_fails":  # on record for the block's diagnosis, which is read from disk
+                    st.emit(
+                        "gate_tail",
+                        layer=nn,
+                        studio_run=orch.run_dir.run_id,
+                        output="\n".join(orch.gate_output.strip().splitlines()[-GATE_TAIL_LINES:]),
+                    )
                 self._lesson(st, nn, layer, package, coder, ending, detail)
                 if last:
                     diagnosis = await self._at_block(
