@@ -1388,3 +1388,49 @@ async def test_check_passes_on_what_the_publisher_notes(
     )
     problems, said = await check(cfg, repo, "./check.sh")
     assert problems == [] and said[-1:] == notes
+
+
+async def test_a_written_request_may_name_its_repository_as_owner_slash_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "git"
+    clone = checkout_of(root, "weyenk/airlie")
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(root)}})
+    ran: list[Path | None] = []
+
+    async def fake_run_one(c: Any, *, board: Any, card: Card, repo: Path | None = None) -> StoryState:
+        ran.append(repo)
+        return StoryState(path=stories_dir(c) / card.key, card=card.to_dict(), repo=str(repo), stage="review")
+
+    monkeypatch.setattr(factory, "run_one", fake_run_one)
+    _, _, work = await story_job(cfg, card=None, text="avatars", repo="weyenk/airlie")
+    await work
+    assert ran == [clone]  # the checkout in story.repos_root, found by name as a repo: label's is
+
+
+async def test_a_written_request_still_takes_a_checkout_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    assert factory.given_repo(cfg, str(repo)) == repo
+    assert factory.given_repo(cfg, "~/code/app") == Path("~/code/app")
+    assert factory.given_repo(cfg, None) is None
+
+
+async def test_a_written_request_naming_a_repository_with_no_checkout_says_to_clone_it(
+    tmp_path: Path,
+) -> None:
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    with pytest.raises(RepositoryError, match="^no checkout of weyenk/airlie in .*clone it there"):
+        await story_job(cfg, card=None, text="avatars", repo="weyenk/airlie")
+
+
+async def test_an_owner_slash_name_never_means_a_directory_under_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "weyenk" / "airlie" / ".git").mkdir(parents=True)  # a decoy where the server runs
+    monkeypatch.chdir(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
+    with pytest.raises(RepositoryError, match="^no checkout of weyenk/airlie in "):
+        factory.given_repo(cfg, "weyenk/airlie")
