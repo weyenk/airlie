@@ -84,3 +84,19 @@ test("a failed stories load keeps the last page and reports the error", async ()
   expect(store.stories?.total).toBe(2);
   expect(store.storiesError?.message).toBe("offline");
 });
+
+test("storiesFor is the query a result was loaded for, not the one asked since", async () => {
+  const store = useWorkflowsStore();
+  store.query = { page: 1, size: 25, stage: "new" };
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 1, size: 25, stage: "new" });
+
+  let finish: (v: unknown) => void = () => {};
+  api.listStories.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+  store.query = { page: 2, size: 25 };
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 1, size: 25, stage: "new" }); // the old result stays until the new lands
+  finish(page(["AIR-9"]));
+  await flush();
+  expect(store.storiesFor).toEqual({ page: 2, size: 25 });
+});

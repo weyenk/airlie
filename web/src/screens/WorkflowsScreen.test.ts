@@ -207,21 +207,38 @@ test("path repositories show their basename and send the full path back", async 
   expect(router.currentRoute.value.query.repo).toBe("/Users/n/git/airlie");
 });
 
-test("a stale shorter result for another query does not clamp the page; its own response does", async () => {
+/** The store holds a one-page (total 2) result for ?stage=new; then ?page=2 is asked for and its response is held. */
+async function holdPageTwo() {
+  api.listStories.mockImplementation(async (q: { size?: number; page?: number }) =>
+    q.size === undefined ? { stories: STORIES, total: 2, page: 1, size: null } : { stories: STORIES, total: 2, page: q.page ?? 1, size: q.size },
+  );
   const { router } = await open("/workflows?stage=new");
-  let release: (v: unknown) => void = () => {};
-  api.listStories.mockImplementation(async (q: { size?: number; page?: number }) => {
-    if (q.size === undefined) return { stories: STORIES, total: 2, page: 1, size: null };
-    await new Promise((r) => (release = r)); // held: the store still has the old one-page result
-    return { stories: STORIES, total: 60, page: q.page ?? 1, size: q.size };
-  });
+  let release: (total: number) => void = () => {};
+  api.listStories.mockImplementation(
+    (q: { size?: number; page?: number }) =>
+      new Promise((resolve) => {
+        release = (total) => resolve({ stories: STORIES, total, page: q.page ?? 1, size: q.size ?? null });
+      }),
+  );
   await router.push("/workflows?page=2");
   await flushPromises();
-  expect(router.currentRoute.value.query.page).toBe("2");
-  release(null);
+  return { router, release: (total: number) => release(total) };
+}
+
+test("a stale shorter result for another query does not clamp the page while the new one loads", async () => {
+  const { router, release } = await holdPageTwo();
+  expect(router.currentRoute.value.query.page).toBe("2"); // the store still holds a one-page result for stage=new
+  release(60);
   await flushPromises();
   expect(router.currentRoute.value.query.page).toBe("2");
   expect(lastPageCall()).toEqual({ page: 2, size: 25 });
+});
+
+test("its own response clamps the page when it is truly past the end", async () => {
+  const { router, release } = await holdPageTwo();
+  release(2); // two stories: page 2 does not exist
+  await flushPromises();
+  expect(router.currentRoute.value.query.page).toBeUndefined(); // back on page 1
 });
 
 test("the Stage filter uses the chips' words and sends the API word", async () => {

@@ -57,6 +57,13 @@ const parsed = computed<StoryQuery>(() => {
 });
 watch(parsed, (q) => (store.query = q), { immediate: true });
 
+/** Whether two queries ask for the same page, whatever order their fields were written in. */
+function sameQuery(a: StoryQuery, b: StoryQuery | undefined): boolean {
+  if (!b) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof StoryQuery>;
+  return [...keys].every((k) => a[k] === b[k]);
+}
+
 /** The address `q` stands for: the defaults (page 1, sorted by activity) and anything invalid are left out. */
 function addressOf(q: StoryQuery): Record<string, string> {
   const out: Record<string, string> = {};
@@ -151,7 +158,7 @@ const windowText = computed(() => {
 // a page past the last one (a stale link, or stories removed) falls back to the last
 // (judged only on a result loaded for this very query: the store keeps the last one until the new one lands)
 watch([total, page, pages, () => store.storiesFor], () => {
-  const current = JSON.stringify(parsed.value) === JSON.stringify(store.storiesFor);
+  const current = sameQuery(parsed.value, store.storiesFor);
   if (store.stories && current && page.value > pages.value) go({ page: String(pages.value) }, true);
 });
 const sortedBy = computed(() => `${SORTS.find((s) => s.value === sort.value)?.label ?? "Last activity"}${sort.value === "activity" ? " ↓" : ""}`);
