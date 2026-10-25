@@ -39,14 +39,19 @@ test("my message is plain text with the names of what I attached", () => {
 });
 
 test("a job card from today's app shows what started and links to it", () => {
-  const w = show({ role: "card", job_id: "story-1", kind: "story", label: "airlie · story" });
+  const w = show({ role: "card", job_id: "story-AIR-30", kind: "story", label: "airlie · story" });
   expect(w.get("[data-card] strong").text()).toBe("Story started");
   expect(w.get("[data-card] span").text()).toBe("airlie · story");
-  expect(w.get("[data-card]").attributes("href")).toBe("/jobs/story-1");
+  expect(w.get("[data-card]").attributes("href")).toBe("/workflows/AIR-30");
 });
 
 test("a card with no label names its job", () => {
   const w = show({ role: "card", job_id: "run-7", kind: "run" });
   expect(w.get("[data-card] strong").text()).toBe("Job started");
   expect(w.get("[data-card] span").text()).toBe("run-7");
+});
+
+test("a plan's or a run's card goes to its run, a story's to its key", () => {
+  expect(show({ role: "card", job_id: "run-7", kind: "run" }).get("[data-card]").attributes("href")).toBe("/workflows/runs/run-7");
+  expect(show({ role: "card", job_id: "plan-3", kind: "plan" }).get("[data-card]").attributes("href")).toBe("/workflows/runs/plan-3");
 });

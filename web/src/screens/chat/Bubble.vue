@@ -4,12 +4,18 @@ import SafeMarkdown from "@/components/SafeMarkdown.vue";
 import type { ChatItem } from "@/stores/chat";
 
 defineProps<{ item: ChatItem }>();
+
+/** Where a card goes: a story's job is `story-<KEY>`, so its workflow view; a plan's or a run's job is its run. */
+function cardHref(item: ChatItem): string {
+  const id = item.job_id ?? "";
+  return id.startsWith("story-") ? `/workflows/${encodeURIComponent(id.slice(6))}` : `/workflows/runs/${encodeURIComponent(id)}`;
+}
 </script>
 
 <template>
   <div v-if="item.role === 'card'" data-msg="card" class="flex items-start gap-2.5 pl-[38px]">
     <!-- a job started from the chat: Task 12 draws the real card; this is its words and where it goes -->
-    <RouterLink :to="`/jobs/${encodeURIComponent(item.job_id ?? '')}`" data-card class="min-w-0 rounded-xl border border-border bg-card px-3.5 py-2.5 text-[13px] break-words hover:bg-muted">
+    <RouterLink :to="cardHref(item)" data-card class="min-w-0 rounded-xl border border-border bg-card px-3.5 py-2.5 text-[13px] [overflow-wrap:anywhere] hover:bg-muted">
       <strong>{{ item.kind === "plan" ? "Planning" : item.kind === "story" ? "Story started" : "Job started" }}</strong>
       <span class="ml-2 font-mono text-muted-foreground">{{ item.label || item.job_id }}</span>
     </RouterLink>

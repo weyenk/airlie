@@ -207,6 +207,8 @@ test("a 401 for a reply whose thread was cleared meanwhile throws nothing and ta
   release();
   await sending;
   expect(chat.thread.map((m) => m.text)).toEqual(["kept"]);
+  expect(chat.draft).toBe(""); // the cleared message does not come back into the box
+  expect(JSON.parse(sessionStorage.getItem("airlie.chat.draft")!)).toBe("");
 });
 
 test("a stopped reply keeps what arrived and is cut, never an empty bubble", async () => {

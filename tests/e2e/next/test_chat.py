@@ -155,7 +155,12 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
     ]
     todays = [
         *filler,
-        {"role": "card", "job_id": "story-1", "kind": "story", "label": "airlie · story"},  # noteJobInChat
+        {
+            "role": "card",
+            "job_id": f"story-{STORY_KEY}",
+            "kind": "story",
+            "label": "airlie · story",
+        },  # noteJobInChat
         {"role": "user", "text": "what is AIR-30", "sent": "what is AIR-30"},
         {
             "role": "chat",
@@ -175,7 +180,7 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
     )
     evidence.expect(
         next_page.locator("[data-card]"), "a job card from today's app renders"
-    ).to_have_attribute("href", "/next/jobs/story-1")
+    ).to_have_attribute("href", f"/next/workflows/{STORY_KEY}")
     evidence.expect(
         next_page.locator("[data-msg=chat]").last, "the thread opens at its end"
     ).to_be_in_viewport()
@@ -201,6 +206,10 @@ def test_a_thread_written_by_todays_app_carries_over_and_shift_enter_is_a_new_li
     evidence.expect(
         next_page.locator("[data-msg=chat]").last, "my own message scrolls to the answer"
     ).to_be_in_viewport()
+    next_page.locator("[data-card]").click()
+    evidence.expect(next_page, "the story card opens the story's workflow view").to_have_url(
+        re.compile(rf"/next/workflows/{STORY_KEY}$")
+    )
 
 
 def test_the_status_strip_counts_what_needs_you_and_follows_what_runs(
@@ -235,9 +244,15 @@ def test_a_long_unbroken_path_and_a_wide_code_block_stay_inside_the_bubble_on_a_
     path = "/Users/someone/git/airlie/" + "very-long-directory-name/" * 12 + "file.py"
     wide = "x = [" + ", ".join(f"'item_number_{i}'" for i in range(40)) + "]"
     server.upstream.reply = f"See {path} and https://example.com/{'a' * 150}\n\n```\n{wide}\n```\n"
+    mine = "m" * 200  # my own message, unbroken
+    card = {"role": "card", "job_id": "run-7", "kind": "run", "label": "l" * 200}
+    next_page.add_init_script(
+        f"if (!sessionStorage.getItem('airlie.chat')) "
+        f"sessionStorage.setItem('airlie.chat', {json.dumps(json.dumps([card]))});"
+    )
     next_page.set_viewport_size({"width": 375, "height": 700})
     open_chat(next_page, server)
-    say(next_page, "where is it?")
+    say(next_page, mine)
     bubble = next_page.locator("[data-msg=chat] [data-bubble]").last
     evidence.expect(bubble, "the reply is shown").to_contain_text("very-long-directory-name")
     evidence.expect(bubble.locator("pre"), "the code block is there").to_be_visible()
@@ -246,8 +261,14 @@ def test_a_long_unbroken_path_and_a_wide_code_block_stay_inside_the_bubble_on_a_
           const doc = document.documentElement;
           const b = [...document.querySelectorAll('[data-msg=chat] [data-bubble]')].pop();
           const scroller = document.querySelector('[data-test=thread-scroll]');
+          const inside = (el) => {
+            const r = el.getBoundingClientRect();
+            return r.right <= window.innerWidth && r.left >= 0 && el.scrollWidth <= el.clientWidth;
+          };
           const r = b.getBoundingClientRect();
           return {
+            mine: inside(document.querySelector('[data-msg=user] > div')),
+            card: inside(document.querySelector('[data-card]')),
             page: doc.scrollWidth <= doc.clientWidth,
             scroller: scroller.scrollWidth <= scroller.clientWidth,
             bubble: r.right <= window.innerWidth && r.left >= 0,
@@ -256,4 +277,4 @@ def test_a_long_unbroken_path_and_a_wide_code_block_stay_inside_the_bubble_on_a_
         }"""
     )
     evidence.shot("nothing overflows sideways", held=all(fits.values()))
-    assert fits == {"page": True, "scroller": True, "bubble": True, "text": True}
+    assert fits == {"mine": True, "card": True, "page": True, "scroller": True, "bubble": True, "text": True}

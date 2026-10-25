@@ -146,7 +146,8 @@ export const useChatStore = defineStore("chat", () => {
       if (e instanceof ApiError && e.status === 401) {
         // signed out: the turn is taken back, and what was typed goes back into the box after sign-in
         const i = thread.value.indexOf(mine);
-        if (i >= 0) thread.value.splice(i, 2);
+        if (i < 0) return; // the thread was cleared meanwhile: nothing to take back, nothing to restore
+        thread.value.splice(i, 2);
         saveThread();
         setDraft(text);
         return;
