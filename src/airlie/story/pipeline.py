@@ -196,6 +196,16 @@ def _kept(wt: Path, branch: str) -> str:
     )
 
 
+def _ending(coder: TeamResult | None) -> str:
+    """How a red layer's coder stopped, as a lesson's `ending`: out of steps or out of context (the layer was
+    more than it could finish), else a gate that was red whatever it did."""
+    if coder is not None and coder.stop_reason == "max_steps":
+        return "out_of_steps"
+    if coder is not None and coder.stop_reason in ("cut_off", "context_full"):
+        return "out_of_context"
+    return "gate_red"
+
+
 def _gate_detail(output: str) -> str:
     """The first line of a red gate's output that says what failed (a pytest FAILED or ERROR line, a ruff or
     mypy error), else the last line, cut: a lesson's `detail`."""
@@ -830,12 +840,7 @@ class StoryPipeline:
                 reason = (
                     f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{stopped}{cut}{kept}"
                 )
-                ending = "gate_red"
-                if coder is not None and coder.stop_reason == "max_steps":
-                    ending = "out_of_steps"
-                elif coder is not None and coder.stop_reason in ("cut_off", "context_full"):
-                    ending = "out_of_context"
-                failure = (ending, _gate_detail(orch.gate_output), reason, "gate_fails")
+                failure = (_ending(coder), _gate_detail(orch.gate_output), reason, "gate_fails")
             if failure is not None:
                 ending, detail, reason, kind = failure
                 self._lesson(st, nn, layer, package, coder, ending, detail)

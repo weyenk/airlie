@@ -22,9 +22,19 @@ from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, Nul
 from airlie.story.briefs import pr_body
 from airlie.story.github_app import GitHubApp
 from airlie.story.model import Layer, Story, StorySetupError
-from airlie.story.pipeline import StoryBlocked, StoryPipeline, _layers_note, _reason, _running, build_commit
+from airlie.story.pipeline import (
+    StoryBlocked,
+    StoryPipeline,
+    _ending,
+    _gate_detail,
+    _layers_note,
+    _reason,
+    _running,
+    build_commit,
+)
 from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
+from airlie.teams.protocol import TeamResult
 from airlie.teams.worktree import add_worktree
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.git_helpers import git
@@ -2173,3 +2183,35 @@ async def test_one_go_planning_asks_the_architect_once_and_never_continues_the_c
 def test_the_build_is_the_commit_of_the_checkout_airlie_runs_from() -> None:
     here = Path(__file__).resolve().parents[2]
     assert build_commit() == git(here, "rev-parse", "--short", "HEAD").strip()
+
+
+def _coder(stop: Any) -> TeamResult:
+    return TeamResult("build", False, stop, "", 3, 10, 5, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("result", "ending"),
+    [
+        (_coder("max_steps"), "out_of_steps"),
+        (_coder("cut_off"), "out_of_context"),
+        (_coder("context_full"), "out_of_context"),
+        (_coder("done"), "gate_red"),
+        (_coder("repeated_action"), "gate_red"),
+        (None, "gate_red"),
+    ],
+)
+def test_a_red_layer_is_recorded_as_how_the_coder_stopped(result: TeamResult | None, ending: str) -> None:
+    """D7 of the planning-line design: a lesson says whether the layer was too big (the coder ran out of steps
+    or context) or merely red."""
+    assert _ending(result) == ending
+
+
+def test_a_lessons_detail_is_the_first_line_that_says_what_failed() -> None:
+    out = "collected 4 items\n\nFAILED tests/test_a.py::test_x - assert 1 == 2\nFAILED tests/test_b.py::t\n"
+    assert _gate_detail(out) == "FAILED tests/test_a.py::test_x - assert 1 == 2"
+    assert _gate_detail("src/a.py:3: error: Name 'x' is not defined  [name-defined]\nFound 1 error") == (
+        "src/a.py:3: error: Name 'x' is not defined  [name-defined]"
+    )
+    assert _gate_detail("all quiet\nexit 1") == "exit 1"
+    assert _gate_detail("") == "the gate failed"
+    assert len(_gate_detail("FAILED " + "x" * 500)) == 200
