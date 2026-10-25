@@ -640,34 +640,53 @@ class StoryPipeline:
         st.attempt = None
         st.save()
 
-    async def restack(self, card: Card) -> str:
+    async def restack(self, card: Card, onto: dict[str, str] | None = None) -> str:
         """Move the stopped story of `card` onto the remote's trunk as it is now (story.restack): its built
         layers replayed in order on the trunk, fetched now, and each held to the story's gate there; then
         their branches move together, the stopped attempt (built on the old layers) goes as a resume would
         remove it, and the state's base becomes the trunk, so the next run builds on today's code. A story
         that has not started or has published, a fetch that fails, a conflict or a red gate is a RestackError,
-        and nothing is changed. Returns the line to print."""
+        and nothing is changed. Returns the line to print.
+
+        `onto` is the tick's (D5 of the plans phase, 2026-10-24): a base to replay onto instead of the trunk,
+        {"ref": a branch, "sha": its commit, "story": the story it stacks on} when the lower story of a
+        dependent moved. The tick has seen that the dependency is not merged, and a dependent that has
+        published is replayed too (its local branches move; the line says its pull requests are to be
+        pushed): `task story:restack` still refuses a story that has published."""
         if not (self.stories_dir / card.key / "state.json").is_file():
             raise RestackError(f"story {card.key} has no base yet (it has not started): run it instead")
         here = self.github_repo or self.publisher.github_repo_of(self.repo)
         st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
         if st.base is None:
             raise RestackError(f"story {card.key} has no base yet (it has not started): run it instead")
-        if st.prs or st.done("publish"):
+        if onto is None and (st.prs or st.done("publish")):
             raise RestackError(
                 f"story {card.key} has published its PRs; moving their branches would rewrite what reviewers "
                 "have, so it is not restacked"
             )
         old = dict(st.base)
         try:
-            ref = await self._trunk_ref(st)
+            ref = await self._trunk_ref(st) if onto is None else onto["ref"]
             self._gate(st, old)  # the story's own gate, the one every layer was held to
         except StoryBlocked as e:
             raise RestackError(str(e)) from None
-        new = rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
+        new = (
+            rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
+            if onto is None
+            else onto["sha"]
+        )
         if new is None:
             raise RestackError(f"the trunk '{ref}' does not exist in {self.repo} after it was fetched")
         if new == old["sha"]:
+            if onto is None and old.get("story"):
+                # the story it stacked on was merged as it stood: its top commit is the trunk's now, so the
+                # layers stay as they are and the trunk is simply what it builds on
+                st.base = {"ref": ref, "sha": new}
+                st.save()
+                st.emit("restacked", base={"from": old["sha"], "to": new}, layers={})
+                line = f"now on {ref} ({new[:12]}): the story it stacked on was merged as it stood"
+                await self.board.comment(card, note(line))
+                return f"story {card.key} {line}"
             return f"story {card.key} is already on {ref} ({new[:12]}): nothing to restack"
         layers = {nn: str(st.built[nn]["sha"]) for nn in sorted(st.built)}
         moved = await replay(
@@ -685,7 +704,7 @@ class StoryPipeline:
         for nn, sha in moved.items():
             st.built[nn]["sha"] = sha
         self._clear_attempt(st)
-        st.base = {"ref": ref, "sha": new}
+        st.base = {"ref": ref, "sha": new, **({"story": onto["story"]} if onto and "story" in onto else {})}
         st.save()
         st.emit(
             "restacked",
@@ -694,6 +713,8 @@ class StoryPipeline:
         )
         what = ", ".join(f"layer {nn}" for nn in moved) or "no built layer"
         line = f"restacked onto {ref} ({new[:12]}): {what} replayed and passing `{self._shown_cmd}`"
+        if st.prs:  # only a dependent the tick moved can have published: GitHub still has the old commits
+            line += "; its pull requests on GitHub still hold the old commits: push the stack to update them"
         await self.board.comment(card, note(line))
         return f"story {card.key} {line}"
 

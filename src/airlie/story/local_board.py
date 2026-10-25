@@ -4,8 +4,13 @@ approve it), the pipeline's columns are the board's statuses, and airlie's notes
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from airlie.board import BoardStore, Item
+from airlie.board.model import Status
 from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
+from airlie.story.epic_plan import after_keys, epic_key_of
+from airlie.story.epic_state import epic_needs_work
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -15,10 +20,20 @@ STATUS_OF: dict[Column, str] = {
 }
 
 
+OPEN_EPIC: tuple[Status, ...] = ("approved", "doing")
+"""The statuses of an epic whose stories the tick may promote and pick. Any other (todo, blocked, review,
+done) holds them: a person moving an epic to blocked or todo pauses it whole."""
+
+
 class LocalBoard:
-    def __init__(self, store: BoardStore, role_names: set[str] | None = None) -> None:
+    def __init__(
+        self, store: BoardStore, role_names: set[str] | None = None, epics_dir: Path | None = None
+    ) -> None:
+        """`epics_dir` is where the epics' records are (observability.state_dir/epics): `next_epic` reads
+        them to tell an epic that still needs its stories from one that has them."""
         self.store = store
         self.role_names = frozenset(role_names or ())
+        self.epics_dir = epics_dir
 
     def _is_note(self, author: str, text: str) -> bool:
         """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
@@ -54,9 +69,75 @@ class LocalBoard:
 
     async def next_card(self) -> Card | None:
         """The oldest story in approved, which only a person moves a story into (a cancelled one goes back to
-        todo, so it waits to be approved again); epics and initiatives are never built."""
-        stories = self.store.list(level="story", status="approved")
-        return self._card(stories[0]) if stories else None
+        todo, so it waits to be approved again); epics and initiatives are never built. A story the line made
+        for an epic (its `epic:` label) is passed over while its epic is held (D10 of the plans phase)."""
+        for story in self.store.list(level="story", status="approved"):
+            if not self._held(story):
+                return self._card(story)
+        return None
+
+    def _held(self, story: Item) -> bool:
+        """The story was made by the line for an epic that a person holds (todo or blocked) or that is not
+        open (review, done). A story with no `epic:` label, or one whose epic is gone, is never held."""
+        key = epic_key_of(story.labels)
+        if key is None:
+            return False
+        try:
+            return self.store.get(key).status not in OPEN_EPIC
+        except KeyError:
+            return False
+
+    def next_epic(self) -> Item | None:
+        """The oldest approved epic that still needs the pipeline (no plan yet, or cards still to make): an
+        epic is planned only once a person has approved it (D1 of the plans phase)."""
+        for epic in self.store.list(level="epic", status="approved"):
+            if self.epics_dir is None or epic_needs_work(self.epics_dir / epic.key):
+                return epic
+        return None
+
+    def waiting_stories(self) -> list[Item]:
+        """The stories the line made that wait on another (todo, with an `after:` label) and whose epic is not
+        held: the tick promotes the ones whose dependencies have reached review."""
+        return [
+            s
+            for s in self.store.list(level="story", status="todo")
+            if after_keys(s.labels) and not self._held(s)
+        ]
+
+    def set_epic_status(self, key: str, status: Status) -> None:
+        """Move the epic `key` to `status`; a BoardError for anything that is not an epic on the board."""
+        item = self._item(key)
+        if item.level != "epic":
+            raise BoardError(f"{item.key} is a {item.level}, not an epic")
+        self.store.update(item.key, status=status)
+
+    def follow_stories(self) -> list[tuple[str, str, str]]:
+        """Move each epic the line planned along with its stories (D10): doing once a story has been picked,
+        review when every story is in review or done, done when every story is done, back to doing when a
+        re-plan adds work. Only an epic that is approved, doing or review moves, so a person's hold is never
+        overridden; an epic with no story of the line's is not followed. Returns (epic, from, to) per move."""
+        moved: list[tuple[str, str, str]] = []
+        for epic in self.store.list(level="epic"):
+            if epic.status not in ("approved", "doing", "review"):
+                continue
+            mine = [
+                s for s in self.store.list(level="story", parent=epic.key) if f"epic:{epic.key}" in s.labels
+            ]
+            if not mine:
+                continue
+            statuses = {s.status for s in mine}
+            if statuses == {"done"}:
+                target: Status = "done"
+            elif statuses <= {"review", "done"}:
+                target = "review"
+            elif statuses & {"doing", "review", "done", "blocked"}:
+                target = "doing"
+            else:
+                continue  # nothing picked yet: the epic stays as it is
+            if target != epic.status:
+                self.store.update(epic.key, status=target)
+                moved.append((epic.key, epic.status, target))
+        return moved
 
     def status_of(self, card: Card) -> str:
         """The column `card` is in now, as the board holds it (todo, approved, doing, …)."""

@@ -1499,3 +1499,38 @@ def test_as_you_your_own_gh_repo_stays_only_while_the_story_names_no_github_repo
     monkeypatch.setenv("GH_REPO", "yours/own")
     assert person_env(PersonGit())["GH_REPO"] == "yours/own"
     assert person_env(PersonGit(), repository="o/r")["GH_REPO"] == "o/r"
+
+
+# ---- reading whether pull requests are merged (P3, 2026-10-24) ----
+
+
+async def test_pull_requests_are_merged_only_when_every_one_says_so(tmp_path: Path) -> None:
+    answers = {
+        "11": {"state": "MERGED", "mergedAt": "2026-10-25T10:00:00Z"},
+        "12": {"state": "MERGED", "mergedAt": "2026-10-25T10:01:00Z"},
+        "13": {"state": "OPEN", "mergedAt": None},
+        "14": {"state": "CLOSED", "mergedAt": None},
+    }
+    calls: list[list[str]] = []
+
+    async def gh(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        calls.append(args)
+        return json.dumps(answers[args[3]])
+
+    p = Publisher(run=gh)
+    assert await p.landed(tmp_path, [11, 12]) is True
+    assert calls == [
+        ["gh", "pr", "view", "11", "--json", "state,mergedAt"],
+        ["gh", "pr", "view", "12", "--json", "state,mergedAt"],
+    ]
+    assert await p.landed(tmp_path, [11, 13]) is False
+    assert await p.landed(tmp_path, [14]) is False  # closed unmerged is not merged
+    assert await p.landed(tmp_path, []) is False  # a story with no pull requests has merged nothing
+
+
+async def test_a_gh_that_fails_reading_a_pull_request_is_a_publish_error(tmp_path: Path) -> None:
+    async def down(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        raise PublishError("`gh pr view` exited 1: HTTP 502")
+
+    with pytest.raises(PublishError, match="502"):
+        await Publisher(run=down).landed(tmp_path, [11])

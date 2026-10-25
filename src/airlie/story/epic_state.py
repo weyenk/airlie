@@ -27,6 +27,18 @@ EPIC_STAGES = ("new", "planned", "building", "review", "done", "blocked")
 the stories. blocked: the plan was never usable, or a person's epic is unusable; `blocked` says why."""
 
 
+def epic_needs_work(path: Path) -> bool:
+    """Whether the epic whose record is in `path` still needs the pipeline: it has no state yet (or one that
+    cannot be read: planning says what is wrong with it), no plan, or a plan some of whose stories have no
+    card. Read lightly, from the file, so the board can ask without opening the state."""
+    try:
+        data = json.loads((path / "state.json").read_text())
+        plan, stories = data.get("plan"), data.get("stories") or {}
+        return not isinstance(plan, dict) or any(s.get("id") not in stories for s in plan.get("stories", []))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return True
+
+
 @dataclass
 class EpicState:
     """epics/<card key>/state.json. `repo` is the first repository of the epic ("owner/name"), the one the
