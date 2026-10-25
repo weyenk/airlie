@@ -463,6 +463,13 @@ layers), and the story's base becomes the trunk: the next `task story -- AIR-7` 
 code. A conflict or a failing gate names the layer and changes nothing. A story that has published its PRs is not
 moved, and the story keeps its test gate.
 
+**See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
+from the story's state and the board: no network, nothing published, so a body can be read before the stack is
+opened. `task story:describe -- AIR-7` rebuilds the title and body of every PR a published story has and edits
+them with `gh pr edit` (as you, or as the bot). It changes PRs on GitHub, so it runs only when you ask; the tick
+never does. A story that has not published is refused. Each layer's commit also carries the story, layer, run,
+airlie build and a test count as git trailers (`git log --format=%(trailers)`), keys and shas only.
+
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and

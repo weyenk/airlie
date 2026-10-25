@@ -201,3 +201,10 @@ def test_a_state_from_before_the_package_renders_a_contract_from_the_tests_field
     q = gather(tmp_path, bare)
     assert q.contract.tests == () and dict(q.contract.by_criterion) == {} and q.checks.red_check is None
     assert q.cost.attempts == 1 and q.cost.minutes == 0.0 and q.build_commit is None
+
+
+def test_a_package_that_does_not_read_back_is_left_out_not_raised(tmp_path: Path) -> None:
+    st = state(tmp_path)
+    st.built["01"]["package"] = {"layer": "x"}
+    p = gather(tmp_path, st)
+    assert p.package is None and p.contract.tests == (TEST_A,)

@@ -194,9 +194,6 @@ def layer_cost(st: StoryState, nn: str) -> Cost:
             if later.get("kind") in _STOPS and later.get("layer", nn) == nn:
                 seconds += max(0.0, float(later.get("ts", 0)) - float(e.get("ts", 0)))
                 break
-            if later.get("kind") in ("blocked", "cancelled"):
-                seconds += max(0.0, float(later.get("ts", 0)) - float(e.get("ts", 0)))
-                break
     tokens_in = tokens_out = 0
     for run in _runs_of(st, nn, mine):
         for step in _events(st.path / "runs" / run / "events.jsonl"):
@@ -251,7 +248,7 @@ def gather_provenance(
     events = _events(st.path / "events.jsonl")
     mine = _mine(events, nn)
     sha = str(built.get("sha") or "")
-    package = Package.from_dict(built["package"]) if isinstance(built.get("package"), dict) else None
+    package = _package_of(built)
     tests = tuple(str(t) for t in built.get("tests") or ())
 
     initiative, epic = chain_items(store, card.key)
@@ -344,6 +341,18 @@ def gather_provenance(
         layer.scope,
         layer.brief,
     )
+
+
+def _package_of(built: Mapping[str, Any]) -> Package | None:
+    """The layer's saved package, None when there is none or it does not read back (a state written by
+    another version): a PR is still written, without the package's sections."""
+    saved = built.get("package")
+    if not isinstance(saved, dict):
+        return None
+    try:
+        return Package.from_dict(saved)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
 
 
 def _model_of(cfg: AirlieConfig, role: str) -> str:

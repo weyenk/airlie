@@ -492,7 +492,8 @@ def _stack(p: Provenance) -> list[str]:
     s = p.stack
     kind, name = s.base
     lines = [
-        f"{j + 1}. #{n} {_model(_line(title, 80))}" + (" (this PR)" if j + 1 == s.position else "")
+        f"{j + 1}. {f'#{n} ' if n else ''}{_model(_line(title, 80))}"
+        + (" (this PR)" if j + 1 == s.position else "")
         for j, (n, _, title) in enumerate(s.prs)
     ]
     out = ["### Stack (review and merge bottom-up)", *lines, ""]
