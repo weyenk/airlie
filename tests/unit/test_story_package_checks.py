@@ -214,3 +214,32 @@ def test_package_feedback_names_each_finding_and_ends_with_package_fix() -> None
     assert "- tests/test_a.py::test_a: it passes" in told
     assert "- tests/test_a.py: calc.divide: not defined" in told
     assert told.endswith(hub_text("package-fix"))
+
+
+async def test_a_package_that_misses_an_agreed_test_or_adds_one_is_a_proof_mismatch(tmp_path: Path) -> None:
+    """D9, D12: a package covers exactly the agreed tests of its layer, by id; none left out, none added."""
+    root, base = calc(tmp_path)
+    agreed = {"tests/test_mul.py::test_mul"}
+    checker = PackageChecker((PYTEST,), timeout_s=120)
+    scratch = tmp_path / "scratch" / "package-01"
+    _, found = await checker.check(package(), root, base, scratch, proof_ids=agreed)
+    assert found == []
+    _, found = await checker.check(
+        package(), root, base, scratch, proof_ids=agreed | {"tests/test_mul.py::test_mul_zero"}
+    )
+    assert [(f.kind, f.test) for f in found] == [("proof_mismatch", "tests/test_mul.py::test_mul_zero")]
+    assert "agreed proof names it, but your package does not cover it" in found[0].why
+    _, found = await checker.check(
+        package(), root, base, scratch, proof_ids={"tests/test_mul.py::test_other"}
+    )
+    assert sorted((f.kind, f.test) for f in found) == [
+        ("proof_mismatch", "tests/test_mul.py::test_mul"),
+        ("proof_mismatch", "tests/test_mul.py::test_other"),
+    ]
+    assert any("your package covers it, but the agreed proof does not name it" in f.why for f in found)
+    # a parametrized test is its function's id, and with no proof there is nothing to match
+    param = package(covers={"AC1": ("tests/test_mul.py::test_mul[2-3]",)})
+    _, found = await checker.check(param, root, base, scratch, proof_ids=agreed)
+    assert [f.kind for f in found if f.kind == "proof_mismatch"] == []
+    _, found = await checker.check(package(), root, base, scratch)
+    assert found == []

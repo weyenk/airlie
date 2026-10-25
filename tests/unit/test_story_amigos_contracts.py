@@ -7,12 +7,14 @@ from typing import Any
 import pytest
 
 from airlie.story.amigos import (
+    CRITIC_CONTRACT,
     OWNER,
     PROOF_CONTRACT,
     VERDICT_CONTRACT,
     Agreement,
     Objection,
     ProofTest,
+    parse_critic_verdict,
     parse_proof,
     parse_verdict,
 )
@@ -208,3 +210,39 @@ def test_an_agreement_round_trips_through_its_dict_and_knows_each_layers_proof()
     assert [t.criterion for t in again.proof_for("storage")] == ["AC1"]
     assert [t.layer for t in again.proof_for("docs")] == ["docs"]
     assert again.proof_for("nowhere") == ()
+
+
+def test_the_package_critics_verdict_is_on_the_proof_alone_and_read_from_the_last_json_fence() -> None:
+    """D9: the tester critic answers one verdict about a layer's package; it may object to no part of its own
+    (the proof is its own), so the verdict is about the package's tests against the proof."""
+    obj = {
+        "type": "verdict",
+        "proof": "object",
+        "objections": [
+            {"about": "tests/unit/test_x.py::test_a", "claim": "asserts nothing", "suggest": "assert 1"}
+        ],
+    }
+    noisy = (
+        "Reading the tests.\n" + _fence(GOOD) + "\n<|channel|>final<|message|>\n" + _fence(obj) + "\n<|end|>"
+    )
+    got = parse_critic_verdict(noisy)
+    assert got == (
+        Objection("proof", "tests/unit/test_x.py::test_a", "asserts nothing", "assert 1", "tester"),
+    )
+    assert parse_critic_verdict(_fence({"type": "verdict", "proof": "agree", "objections": []})) == ()
+    assert '"type": "verdict"' in CRITIC_CONTRACT and "agree" in CRITIC_CONTRACT
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        ("I think it is fine.", "verdict"),
+        (_fence({"type": "story"}), "verdict"),
+        (_fence({"type": "verdict", "proof": "maybe"}), "agree or object"),
+        (_fence({"type": "verdict", "proof": "object", "objections": []}), "objection"),
+        (_fence({"type": "verdict", "proof": "object", "objections": [{"about": "x"}]}), "claim"),
+    ],
+)
+def test_a_critic_reply_without_a_usable_verdict_is_refused(text: str, why: str) -> None:
+    with pytest.raises(StoryError, match=why):
+        parse_critic_verdict(text)

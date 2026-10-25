@@ -39,7 +39,6 @@ from airlie.story.amigos_checks import (
     findings_message,
     split_problems,
 )
-from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, _lesson_line, story_text
 from airlie.story.layer_checks import Finding
 from airlie.story.lessons import Lesson
 from airlie.story.model import (
@@ -224,6 +223,11 @@ class Objection:
         return f"{who}{self.part} ({self.about}): {self.claim} Suggested: {self.suggest}"
 
 
+CRITIC_CONTRACT = """End your reply with one ```json block holding exactly one object:
+{"type": "verdict", "proof": "agree" | "object", "objections": [{"about": "tests/unit/test_x.py::test_name", "claim": "one sentence", "suggest": "one sentence"}]}
+Object only to a test that is missing, weakened, at another level or with other state than the agreed proof names, or to a test the proof does not name."""  # noqa: E501
+
+
 @dataclass(frozen=True)
 class Verdict:
     """A speaker's closing verdict on the three parts, with the objections for the parts it objects to."""
@@ -297,6 +301,41 @@ def parse_verdict(text: str, role: str) -> Verdict:
                 f"verdict: you object to {part} but give no objection for it (part, about, claim, suggest)"
             )
     return Verdict(role, values["requirements"], values["changes"], values["proof"], tuple(objections))
+
+
+def parse_critic_verdict(text: str) -> tuple[Objection, ...]:
+    """The tester critic's verdict on a layer's package (D9): the object under the last ```json fence. The
+    objections it raises (none when it agrees) are about the architect's tests against the agreed proof, so
+    the tester's own-part rule of `parse_verdict` does not apply. A StoryError when there is no usable
+    verdict: the pipeline then goes on to the mechanical checks, the critic being advisory."""
+    obj = extract_json_block(text)
+    if obj is None:
+        raise StoryError("no verdict: end your reply with the verdict JSON object, in one ```json block")
+    if obj.get("type") != "verdict":
+        raise StoryError('the last JSON block of your reply is not your verdict ("type": "verdict")')
+    value = obj.get("proof")
+    if value not in ("agree", "object"):
+        raise StoryError(f"verdict: 'proof' must be agree or object, not {value!r}")
+    if value == "agree":
+        return ()
+    raw = obj.get("objections")
+    if not isinstance(raw, list) or not raw:
+        raise StoryError("verdict: you object but give no objection (about, claim, suggest)")
+    out: list[Objection] = []
+    for n, o in enumerate(raw, 1):
+        where = f"objection {n}"
+        if not isinstance(o, dict):
+            raise StoryError(f"{where} must be an object")
+        out.append(
+            Objection(
+                "proof",
+                _field(o, "about", where),
+                _field(o, "claim", where),
+                _field(o, "suggest", where, required=False),
+                "tester",
+            )
+        )
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -679,6 +718,8 @@ class AgreementReached(TerminationCondition):
 
 
 def _lessons_text(lessons: Sequence[Lesson]) -> str:
+    from airlie.story.briefs import _lesson_line  # briefs imports this module's contracts at its top
+
     return hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))
 
 
@@ -694,6 +735,8 @@ def opening_message(
     """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`), the
     story as product refined it, the architect's split, the repository's testing conventions, the lessons
     recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
+    from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, story_text  # as in _lessons_text
+
     split = json.dumps({"layers": [x.to_dict() for x in layers]}, indent=1)
     parts = [
         hub_text("amigos-opening"),

@@ -2,27 +2,31 @@
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from airlie.story.amigos import ProofTest
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
     GUIDE_HEADING,
     build_brief,
+    critic_brief,
     layer_goal,
     layer_plan,
     layers_brief,
     package_brief,
     pr_body,
     pr_title,
+    proof_revision_brief,
     refine_brief,
     story_text,
     survey_brief,
 )
 from airlie.story.lessons import Lesson
-from airlie.story.model import Criterion, Layer, Story
+from airlie.story.model import Criterion, Layer, ScopedPath, Story
 from airlie.story.package import Interface, Package, PackageFile
 from airlie.topology.studio_plan import schedule
 
@@ -110,6 +114,68 @@ def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_code
     assert "could not be used" not in text
     assert "foundation for later layers" in package_brief(
         STORY, LAYERS, 2, max_steps=40, context_budget=65_536
+    )
+
+
+AGREED = (
+    ProofTest(
+        "AC2",
+        "profile",
+        "tests/unit/test_profile.py",
+        "test_shows",
+        "unit",
+        "unit",
+        "the url shows",
+        "an avatar",
+    ),
+    ProofTest(None, "profile", "tests/unit/test_profile.py", "test_title", "unit", None, "the title", ""),
+)
+
+
+def test_the_package_brief_carries_the_agreed_tests_and_the_layers_files_and_interfaces() -> None:
+    layer = replace(
+        LAYERS[1],
+        files=(ScopedPath("src/profile.py", True), ScopedPath("src/app.py")),
+        interfaces=("def show() -> int",),
+    )
+    layers = (LAYERS[0], layer, LAYERS[2])
+    text = package_brief(STORY, layers, 1, max_steps=40, context_budget=65_536, proof=AGREED)
+    tests = text.split("## The agreed tests")[1].split("##")[0]
+    assert "tests/unit/test_profile.py::test_shows (proves AC2, level unit, guideline unit)" in tests
+    assert "asserts: the url shows" in tests and "needs: an avatar" in tests
+    assert "tests/unit/test_profile.py::test_title (a behaviour of this layer, level unit)" in tests
+    files = text.split("## Files and interfaces")[1].split("##")[0]
+    assert (
+        "src/profile.py (new)" in files and "- src/app.py\n" in files + "\n" and "def show() -> int" in files
+    )
+    assert "names exactly the agreed tests" in text and '"proof_change"' in text
+    assert '"behaviour"' in text  # where a test with no criterion is listed
+    plain = pbrief()
+    for absent in ("## The agreed tests", "## Files and interfaces", "proof_change"):
+        assert absent not in plain
+
+
+def test_the_critic_is_given_the_test_files_the_layers_agreed_proof_and_the_conventions() -> None:
+    files = {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n```\n"}
+    text = critic_brief(LAYERS[1], files, AGREED, "## The repository's test gate\n- uv run pytest")
+    assert "Read these tests against the agreed proof" in text
+    assert "tests/unit/test_profile.py::test_shows" in text and "asserts: the url shows" in text
+    assert "### tests/unit/test_profile.py" in text and "assert show() == 1" in text
+    assert "````python" in text  # a fence longer than any inside the file
+    assert "uv run pytest" in text and '"type": "verdict"' in text and '"proof": "agree" | "object"' in text
+    again = critic_brief(LAYERS[1], files, AGREED, "", feedback="no verdict")
+    assert "could not be used: no verdict" in again
+
+
+def test_the_proof_revision_brief_carries_the_layers_tests_and_the_architects_reasons_as_data() -> None:
+    reasons = (("tests/unit/test_profile.py::test_shows", "the page is not rendered in this layer"),)
+    text = proof_revision_brief(STORY, LAYERS[1], AGREED, reasons, "## conventions")
+    assert "the architect found the proof for this layer wrong" in text
+    assert "> tests/unit/test_profile.py::test_shows: the page is not rendered in this layer" in text
+    assert "asserts: the url shows" in text and "## conventions" in text
+    assert '"type": "proof"' in text and "this layer's tests only" in text
+    assert "could not be used: nope" in proof_revision_brief(
+        STORY, LAYERS[1], AGREED, reasons, "", feedback="nope"
     )
 
 

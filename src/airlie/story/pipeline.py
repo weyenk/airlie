@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import subprocess
 import traceback
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -28,11 +30,14 @@ from airlie.story.amigos import (
     CHECKER,
     Agreement,
     MeetingFactory,
+    ProofTest,
     Turn,
     agreement_note,
     criteria_note,
     default_meeting,
     opening_message,
+    parse_critic_verdict,
+    parse_proof,
     prune_references,
     unbuildable,
     unresolved_note,
@@ -40,21 +45,24 @@ from airlie.story.amigos import (
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
+    critic_brief,
     layer_goal,
     layer_plan,
     layers_brief,
     package_brief,
     pr_body,
     pr_title,
+    proof_revision_brief,
     refine_brief,
     story_text,
     survey_brief,
 )
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
-from airlie.story.layer_checks import Finding, checks_for
+from airlie.story.layer_checks import Finding, Said, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.model import (
+    NO_JSON,
     SURROGATE,
     Layer,
     NotActionable,
@@ -65,7 +73,7 @@ from airlie.story.model import (
     parse_layers,
     parse_story,
 )
-from airlie.story.package import Package, parse_package
+from airlie.story.package import Package, ProofChange, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
@@ -107,6 +115,7 @@ _SHORT = {
     "file_missing": "is modified by the package but is not there",
     "covers_missing": "is covered but is not a new or changed test",
     "import_unresolved": "is an import nothing defines",
+    "proof_mismatch": "differs from the agreed proof",
 }
 """A finding in a stop reason, which is cut to REASON_CHARS: the events say more."""
 BUILT_DIFF_CHARS = 400_000
@@ -124,6 +133,12 @@ _URL_USERINFO = re.compile(r"(?<=://)[^/\s]*@")
 """What follows "://" up to the last "@" before a "/" or a space. Nothing is matched before the "://", so the
 scan stays linear on a long run of letters."""
 
+
+CRITIC_STEPS = 6
+"""Steps the tester gets to read before it answers on a package, and before it revises a layer's proof."""
+PROOF_REVISIONS = 2
+"""How many times one layer's proof may be revised by the tester in one `_ready_package`: the architect that
+keeps finding the proof wrong is not asked for another."""
 
 SURVEY_STEPS = 8
 """Steps the architect gets for the survey: enough to read a handful of files."""
@@ -305,6 +320,7 @@ class StoryPipeline:
         self.meeting = meeting or default_meeting
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
+        self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
         that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
@@ -1149,9 +1165,11 @@ class StoryPipeline:
         built: str,
         guide: str,
         feedback: str | None,
-    ) -> Package:
-        """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed. A reply
-        that cannot be used is a StoryError: its text is the next try's feedback."""
+        proof: tuple[ProofTest, ...] = (),
+    ) -> Package | ProofChange:
+        """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed: the package,
+        or a ProofChange when the architect says the layer's agreed `proof` is wrong. A reply that cannot be
+        used is a StoryError: its text is the next try's feedback."""
         max_steps, context = self._coder_budget()
         brief = package_brief(
             story,
@@ -1163,11 +1181,179 @@ class StoryPipeline:
             max_steps=max_steps,
             context_budget=context,
             feedback=feedback,
+            proof=proof,
         )
         text = await self._ask(
             st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
         )
+        self._package_run = st.runs[-1]
         return parse_package(text, layers[i], story)
+
+    def _layer_proof(self, st: StoryState, layer: Layer) -> tuple[ProofTest, ...]:
+        """The tests the agreement holds for `layer`, as it stands now (a revision changes it)."""
+        return Agreement.from_dict(st.agreement).proof_for(layer.slug) if st.agreement else ()
+
+    def _conventions_text(self, base_sha: str) -> str:
+        """The tester's view of the repository at `base_sha`, for the critic and a proof revision (the
+        guideline the router chose for the meeting is not carried: the summaries are)."""
+        tester = self.cfg.roles.get("tester")
+        found = conventions(self.repo, base_sha, tester.skills if tester is not None else None, None)
+        return conventions_text(found, self.commands)
+
+    async def _critique(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        built: str,
+        guide: str,
+        package: Package,
+        proof: tuple[ProofTest, ...],
+    ) -> Package | ProofChange:
+        """The tester critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
+        of the tester role at the base with the test files, the layer's proof and the conventions. An
+        objection is the architect's one revision (`package-fix` after the objections); a critic that cannot
+        be read, or does not finish, is no objection (an event says so): the mechanical checks follow
+        either way. Events: amigos_critic, and an amigos_objection (source "package") per objection."""
+        nn, layer = f"{i + 1:02d}", layers[i]
+        brief = critic_brief(layer, package.tests, proof, self._conventions_text(base_sha))
+        try:
+            objections = parse_critic_verdict(
+                await self._ask(st, "critic", "tester", brief, at=base_sha, steps=CRITIC_STEPS)
+            )
+        except (StoryError, StoryBlocked) as e:
+            st.emit("amigos_critic_unreadable", layer=nn, reason=_cap(str(e), 300))
+            return package
+        st.emit(
+            "amigos_critic", layer=nn, verdict="object" if objections else "agree", objections=len(objections)
+        )
+        if not objections:
+            return package
+        for o in objections:
+            st.emit(
+                "amigos_objection",
+                role=o.by,
+                part=o.part,
+                about=o.about,
+                claim=o.claim,
+                round=0,
+                layer=nn,
+                source="package",
+            )
+        said = Said()
+        told = "\n".join(
+            [
+                "The tester read your tests against the agreed proof and objects:",
+                *(
+                    f"- {o.about}: {o.claim}" + (f" Suggested: {o.suggest}" if o.suggest else "")
+                    for o in objections
+                ),
+                said("package-fix"),
+            ]
+        )
+        self._steer(st, said.ids, self.s.architect_role, nn)
+        return await self._package(st, story, layers, i, base_sha, built, guide, told, proof)
+
+    async def _revise_proof(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        change: ProofChange,
+        replan: bool,
+    ) -> None:
+        """The architect found layer `i`'s agreed proof wrong (D12): the tester revises that layer's tests in
+        one fresh ask (the contract of the meeting's proof, this layer only, the architect's reasons as data),
+        parsed against the whole agreement; the stored agreement takes the new tests. When the layer is being
+        re-planned after a red gate, a `gate_red` lesson records `proof_revised`. StoryError when there is no
+        agreed proof to change; StoryBlocked when the tester gives no usable revision."""
+        nn, layer = f"{i + 1:02d}", layers[i]
+        if st.agreement is None or not self._layer_proof(st, layer):
+            raise StoryError("this layer has no agreed proof to change: write its package from its criteria")
+        agreement = Agreement.from_dict(st.agreement)
+        mine = agreement.proof_for(layer.slug)
+        others = [t.to_dict() for t in agreement.proof if t.layer != layer.slug]
+        tester = self.cfg.roles["tester"]
+        levels = test_levels(self.repo, base_sha)
+        guidelines = {g.name for g in conventions(self.repo, base_sha, tester.skills, None).guidelines}
+
+        def parse(text: str) -> tuple[ProofTest, ...]:
+            obj = extract_json_block(text)
+            if obj is None:
+                raise StoryError(NO_JSON)
+            tests = obj.get("tests")
+            if not isinstance(tests, list):
+                raise StoryError('the proof needs a non-empty "tests" list')
+            stray = sorted(
+                {str(t.get("layer")) for t in tests if isinstance(t, dict) and t.get("layer") != layer.slug}
+            )
+            if stray:
+                raise StoryError(f"propose the tests of layer '{layer.slug}' only; you named {stray}")
+            return parse_proof({**obj, "tests": [*others, *tests]}, story, layers, levels, guidelines)
+
+        conventions_text_ = self._conventions_text(base_sha)
+        proof = await self._usable(
+            st,
+            "proof",
+            "tester",
+            "proof revision",
+            lambda feedback: proof_revision_brief(
+                story, layer, mine, change.changes, conventions_text_, feedback
+            ),
+            parse,
+            at=base_sha,
+            ask=partial(self._ask, steps=CRITIC_STEPS),
+        )
+        revised = replace(agreement, proof=proof)
+        st.agreement = revised.to_dict()
+        st.save()
+        ids = [t.id for t in revised.proof_for(layer.slug)]
+        st.emit("amigos_proof_revised", layer=nn, tests=ids, why=[why for _, why in change.changes])
+        if replan:
+            self._lesson(
+                st,
+                nn,
+                layer,
+                None,
+                None,
+                "gate_red",
+                "proof_revised: " + ", ".join(t for t, _ in change.changes),
+            )
+
+    @staticmethod
+    def _objected(st: StoryState) -> dict[str, dict[str, Any]]:
+        """The latest objection raised in the story's meeting or by a package critic about each thing (a
+        criterion id, a test id), from the event log."""
+        found: dict[str, dict[str, Any]] = {}
+        events = st.path / "events.jsonl"
+        for line in events.read_text(encoding="utf-8").splitlines() if events.is_file() else ():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("kind") == "amigos_objection" and "about" in e:
+                found[str(e["about"])] = e
+        return found
+
+    def _borne_out(self, st: StoryState, nn: str, found: list[Finding]) -> None:
+        """An `amigos_borne_out` event for each check finding that names a test an earlier objection was
+        about (D10): the objection was right, and the record says so."""
+        objected = self._objected(st)
+        for f in found:
+            o = objected.get(f.test)
+            if o is not None:
+                st.emit(
+                    "amigos_borne_out",
+                    layer=nn,
+                    test=f.test,
+                    finding=f.kind,
+                    part=o.get("part"),
+                    role=o.get("role"),
+                )
 
     async def _ready_package(
         self,
@@ -1199,17 +1385,38 @@ class StoryPipeline:
             )
         kinds: list[str] = []
         package: Package | None = None
-        for attempt in range(1, self.s.package_attempts + 1):
+        attempt = revisions = 0
+        while attempt < self.s.package_attempts:
+            attempt += 1
             st.emit("package_start", layer=nn, attempt=attempt)
+            proof = self._layer_proof(st, layer)
             try:
-                package = await self._package(st, story, layers, i, base_sha, built, guide, feedback)
+                got = await self._package(st, story, layers, i, base_sha, built, guide, feedback, proof)
+                if isinstance(got, Package) and proof:
+                    got = await self._critique(st, story, layers, i, base_sha, built, guide, got, proof)
+                if isinstance(got, ProofChange):
+                    if revisions >= PROOF_REVISIONS:
+                        raise StoryError(
+                            f"the proof for this layer was already revised {revisions} times: write the "
+                            "package for it as it stands"
+                        )
+                    revisions += 1
+                    await self._revise_proof(st, story, layers, i, base_sha, got, feedback is not None)
+                    attempt -= 1  # the attempt the architect used to say so is not charged
+                    continue
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
                 st.emit("retry", stage="package", error=feedback)
                 st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=st.runs[-1])
                 continue
-            package, found = await checker.check(package, self.repo, base_sha, st.path / f"package-{nn}")
-            run = st.runs[-1]
+            package, found = await checker.check(
+                got,
+                self.repo,
+                base_sha,
+                st.path / f"package-{nn}",
+                proof_ids=[t.id for t in proof] if proof else None,
+            )
+            run = self._package_run
             if checker.checks is not None and checker.checks.failing_at_base:
                 # red on the base already: not the architect's to fix, but the gate's to see
                 st.emit(
@@ -1219,6 +1426,7 @@ class StoryPipeline:
                     tests=checker.checks.failing_at_base,
                 )
             self._emit_findings(st, found, nn, attempt, run)
+            self._borne_out(st, nn, found)
             if not found:
                 st.emit(
                     "package_ready",

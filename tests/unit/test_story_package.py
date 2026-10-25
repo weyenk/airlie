@@ -11,7 +11,7 @@ import pytest
 
 from airlie.story import package as package_module
 from airlie.story.model import Criterion, Layer, Story, StoryError
-from airlie.story.package import PACKAGE_CONTRACT, Package, parse_package
+from airlie.story.package import PACKAGE_CONTRACT, Package, ProofChange, parse_package
 
 STORY = Story(
     "Store",
@@ -172,3 +172,54 @@ def test_a_class_test_and_a_parametrized_id_name_a_test_in_the_file() -> None:
 
 def test_the_contract_names_the_heading_and_the_json_shape() -> None:
     assert "### test file:" in PACKAGE_CONTRACT and '"type": "package"' in PACKAGE_CONTRACT
+
+
+def test_a_proof_change_reply_is_a_proof_change_and_not_a_package() -> None:
+    """D12: when the architect finds the proof itself wrong, it says which tests and why, and writes no
+    package."""
+    text = (
+        "The proof names a test this layer cannot make red.\n```json\n"
+        + json.dumps(
+            {"type": "proof_change", "changes": [{"test": f"{PATH}::test_a", "why": "store() has no zero"}]}
+        )
+        + "\n```\n"
+    )
+    got = parse_package(text, LAYER, STORY)
+    assert got == ProofChange(((f"{PATH}::test_a", "store() has no zero"),))
+
+
+@pytest.mark.parametrize(
+    ("changes", "why"),
+    [
+        ([], "at least one"),
+        ("nope", "list"),
+        ([{"test": f"{PATH}::test_a"}], "why"),
+        ([{"why": "x"}], "test"),
+        ([7], "object"),
+    ],
+)
+def test_a_proof_change_without_its_tests_or_reasons_is_refused(changes: Any, why: str) -> None:
+    text = "```json\n" + json.dumps({"type": "proof_change", "changes": changes}) + "\n```"
+    with pytest.raises(StoryError, match=why):
+        parse_package(text, LAYER, STORY)
+
+
+def test_a_test_with_no_criterion_is_covered_under_behaviour() -> None:
+    """A proof test that proves a behaviour of its layer, not a criterion, has no criterion to be listed
+    under: `covers` names it under "behaviour"."""
+    p = parse_package(
+        reply(
+            covers={"AC1": [f"{PATH}::test_a"], "behaviour": [f"{PATH}::test_b"]},
+            tests={PATH: TEST_TEXT + "\n\ndef test_b():\n    assert store() == 1\n"},
+        ),
+        LAYER,
+        STORY,
+    )
+    assert p.covers["behaviour"] == (f"{PATH}::test_b",) and p.test_ids == (
+        f"{PATH}::test_a",
+        f"{PATH}::test_b",
+    )
+    with pytest.raises(StoryError, match="behaviour"):
+        parse_package(
+            reply(covers={"AC1": [f"{PATH}::test_a"], "behaviour": [f"{PATH}::test_zzz"]}), LAYER, STORY
+        )
