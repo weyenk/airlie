@@ -16,7 +16,7 @@ from airlie.story.restack import RestackError
 from airlie.story.state import StoryState
 from tests.unit.git_helpers import git
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
-from tests.unit.test_story_pipeline import B1, B2, LAYERS, NOTE, STORY, kinds, pipeline
+from tests.unit.test_story_pipeline import B1, B2, LAYERS, NOTE, PKG2, PKGS, STORY, kinds, pipeline
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
 
 CARD = text_card("avatars")
@@ -29,8 +29,7 @@ async def stopped_after_layer_01(tmp_path: Path) -> tuple[Path, StoryState]:
     engine = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS],
-            "qa": [DONE, DONE],
+            "architect": [LAYERS, *PKGS],
             "coder": [WRITE_PASS, RUN, DONE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
@@ -65,7 +64,8 @@ async def test_built_layers_move_onto_the_trunk_and_a_resume_builds_on_them(tmp_
     new_01 = st.built["01"]["sha"]
     assert new_01 != old_01 and git(repo, "rev-parse", B1) == new_01
     assert git(repo, "rev-parse", f"{B1}^") == news  # one commit, on the new trunk
-    assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"  # the same change
+    changed = git(repo, "show", "--name-only", "--format=", B1).splitlines()
+    assert changed == ["PASS", "tests/unit/test_storage.py"]  # the same change
     kept = "--format=%an %ae %s"  # its author and message
     assert git(repo, "log", "-1", kept, B1) == git(repo, "log", "-1", kept, old_01)
     # the stopped layer 02 was built on the old layer 01: it goes, as a resume would remove it
@@ -77,7 +77,7 @@ async def test_built_layers_move_onto_the_trunk_and_a_resume_builds_on_them(tmp_
     assert "layer 01" in line and news[:12] in line
     assert "restacked onto" in (st.path / "notes.md").read_text()
     # the next run builds layer 02 on the moved layer 01
-    again = FakeEngine({"qa": [DONE], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again).run(CARD)
     assert st.blocked is None and "02" in st.built
     assert git(repo, "rev-parse", f"{B2}^") == new_01

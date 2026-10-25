@@ -147,6 +147,7 @@ CASES: dict[str, Callable[[], str]] = {
     "plan-unfinished": lambda: text("plan-unfinished"),
     "amend": lambda: text("amend"),
     "package-fix": lambda: text("package-fix"),
+    "package-replan": lambda: text("package-replan"),
     "passes-before-code-choice": lambda: "  " + text("passes-before-code-choice"),
     "loose-match": lambda: "  " + text("loose-match"),  # feedback indents it under its finding
 }

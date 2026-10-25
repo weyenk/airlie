@@ -337,7 +337,13 @@ def build_brief(
     return "\n\n".join(
         [
             _layer_context(story, layers, i, built, guide),
-            "## The tests you make pass (in the worktree, locked)\n" + "\n".join(tests),
+            "## The tests you make pass (in the worktree, locked)\n"
+            + (
+                "The acceptance criteria this layer makes true, each with the tests that prove it:\n"
+                if owned
+                else ""
+            )
+            + "\n".join(tests),
             "## Files\n" + ("\n".join(files) or "- none"),
             "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
             "## Steps\n" + "\n".join(steps),

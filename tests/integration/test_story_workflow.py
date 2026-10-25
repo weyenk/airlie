@@ -1,6 +1,7 @@
 """Story mode end to end through `airlie story run AIR-n`: a story on the local board → product's story →
-architect's one layer → the studio builds it test-first on its own branch → the sandbox's Test gate (pytest,
-from its AGENTS.md) and the layer checks → a gh stack of draft PRs → the story in review.
+architect's one layer → the architect's package for it (its tests as code) → the studio builds it against
+those tests on its own branch → the sandbox's Test gate (pytest, from its AGENTS.md) and the package check →
+a gh stack of draft PRs → the story in review.
 
 The models are scripted behind the real HTTPEngine, and gh is recorded; the rest is the code a person runs.
 This is the baseline: when it fails, story mode is broken for everyone, whatever the models do."""
@@ -32,7 +33,7 @@ from tests.integration.story_harness import (
     wire,
 )
 from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import RecordedGh, fenced
+from tests.unit.test_story_pipeline import RecordedGh, fenced, package_reply
 
 runner = CliRunner()
 
@@ -42,8 +43,9 @@ LAYER = "add-subtract-01-subtract"
 """The layer's branch, after the issue key: AIR-1-add-subtract-01-subtract."""
 MILESTONES = [
     "story_start",
+    "package_start",
+    "package_ready",
     "layer_start",
-    "test_checks_passed",
     "layer_built",
     "published",
     "story_done",
@@ -81,9 +83,17 @@ def scripts() -> dict[str, list[FakeReply]]:
     }
     return {
         "product": [fenced(story)],
-        "architect": [fenced({"layers": [layer]})],
+        "architect": [
+            fenced({"layers": [layer]}),
+            package_reply(
+                {"test_calc.py": TEST_SUBTRACT},
+                {"AC1": ["test_calc.py::test_subtract"]},
+                files=[{"path": "calc.py", "action": "modify"}],
+                interfaces=[{"file": "calc.py", "signature": "def subtract(a, b)", "behaviour": "a - b"}],
+                steps=["add subtract(a, b) to calc.py returning a - b"],
+            ),
+        ],
         "coder": [
-            write("t", "test_calc.py", TEST_SUBTRACT),
             write("c", "calc.py", SUBTRACT),
             FakeReply(tool_calls=[ToolCall("r", "run_tests", "{}")]),
             FakeReply(text="done: subtract added, tests pass"),
@@ -138,11 +148,11 @@ async def test_live_models_build_the_same_story_to_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The same story on the models airlie.yaml (and airlie.local.yaml) configure, with the story settings as
-    they are: survey, planning rounds, tester, done-check. Only the state, the board and the checkouts are
-    this test's own, and gh is recorded, so nothing reaches GitHub and the person's board and stories are
-    untouched. Needs `task up` (and `task restart -- --topology studio`); skipped while an engine does not
-    answer. The models decide the code, so this checks the outcome: the story in review, and its branch passes
-    the gate."""
+    they are: survey, planning rounds, the architect's package, done-check. Only the state, the board and the
+    checkouts are this test's own, and gh is recorded, so nothing reaches GitHub and the person's board and
+    stories are untouched. Needs `task up` (and `task restart -- --topology studio`); skipped while an
+    engine does not answer. The models decide the code, so this checks the outcome: the story in review, and
+    its branch passes the gate."""
     cfg = live_story_config(tmp_path)
     if down := engines_down(cfg):
         pytest.skip(f"engine not answering: {', '.join(down)}; run `task up`")

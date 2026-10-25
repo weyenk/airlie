@@ -1,8 +1,9 @@
-"""The story pipeline: an issue → product's story → architect's layers → each layer built test-first by the
-studio on its own branch (the tester's tests, checked to fail before any code is written, then the coder's
-code that makes them pass), gated by the repository's test gate (its AGENTS.md at the story's base commit, or
-a person's --test-cmd) → a gh stack of draft PRs → the issue in review. Mutation testing is the repository's
-CI's, on each PR: not a stage here.
+"""The story pipeline: an issue → product's story → architect's layers → each layer built from a package the
+architect writes just before it runs (its tests as code, the files, the interfaces, the steps), placed in the
+layer's worktree, checked red on the base and locked, then built by the studio's coder on its own branch,
+gated by the repository's test gate (its AGENTS.md at the story's base commit, or a person's --test-cmd) → a
+gh stack of draft PRs → the issue in review. No tester agent runs. Mutation testing is the repository's CI's,
+on each PR: not a stage here.
 
 Every stage leaves state, an event and a note on the issue; a stop is a note, never silence. Only a human
 merges: nothing here can."""
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from airlie.config import AirlieConfig
+from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
@@ -27,6 +29,7 @@ from airlie.story.briefs import (
     layer_goal,
     layer_plan,
     layers_brief,
+    package_brief,
     pr_body,
     pr_title,
     refine_brief,
@@ -35,18 +38,8 @@ from airlie.story.briefs import (
 )
 from airlie.story.context import guide_budget, named_paths, repo_guide
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
-from airlie.story.layer_checks import (
-    Finding,
-    PytestChecks,
-    amend_feedback_said,
-    checks_for,
-    feedback,
-    feedback_said,
-    findings_text,
-    is_testers_test,
-    static_findings,
-)
-from airlie.story.lessons import LessonsStore
+from airlie.story.layer_checks import Finding, checks_for
+from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -58,16 +51,16 @@ from airlie.story.model import (
     parse_layers,
     parse_story,
 )
+from airlie.story.package import Package, parse_package
+from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import plan_in_rounds, same_layers
 from airlie.story.state import STAGES, StoryState
-from airlie.story.tester_lint import LayerLint, lint_for, lint_round_said, lint_rules
-from airlie.supervisor.advice import with_advice
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
 from airlie.supervisor.triage import triage_for
-from airlie.teams.protocol import cut_off_text
+from airlie.teams.protocol import TeamResult, cut_off_text
 from airlie.teams.worktree import (
     changed_files,
     checkout_worktree,
@@ -75,9 +68,7 @@ from airlie.teams.worktree import (
     delete_branch,
     diff_commits,
     move_branches,
-    put_back,
     remove_worktree,
-    reset_to_head,
     rev_parse,
     squash_since,
 )
@@ -86,24 +77,28 @@ from airlie.topology.studio_plan import Plan, Subtask, extract_json_block
 
 StudioFactory = Callable[[], StudioOrchestrator]
 
-CHECK_ATTEMPTS = 2
-"""How many times a layer's new and changed tests are checked: their author (the tester, or the coder of a
-layer with none) gets one retry with the findings."""
 _SHORT = {
     "passes_before_code": "passes before the code is written",
-    "existing_test_changed": "is an existing test the tests changed (still passing)",
+    "existing_test_changed": "is an existing test the package changed (still passing)",
     "existing_test_fails": "fails with the new tests in place",
     "assertion_free_test": "has no assertion",
     "unparseable_test": "does not parse",
     "no_new_test": "(no new test)",
     "suite_did_not_run": "did not run the tests",
-    "lint_fails": "fails on the tester's files",
+    "lint_fails": "fails the gate's lint",
+    "file_exists": "is created by the package but exists",
+    "file_missing": "is modified by the package but is not there",
+    "covers_missing": "is covered but is not a new or changed test",
+    "import_unresolved": "is an import nothing defines",
     "engine_error": "could not reach the engine",
 }
-"""A finding in a stop reason, which is cut to REASON_CHARS: the coder's feedback and the events say more."""
+"""A finding in a stop reason, which is cut to REASON_CHARS: the events say more."""
 BUILT_DIFF_CHARS = 400_000
 """How much of the stack's diff built_so_far reads for a layer's brief: only names come out of it, so the cap
 is for memory, not for the brief (briefs.BUILT_CHARS caps that)."""
+GATE_TAIL_CHARS = 3_000
+"""How much of the end of a red gate's output, and of the coder's closing account, goes back to the architect
+when a layer is re-planned."""
 REASON_CHARS = 800
 """A stop reason is cut to this many characters before it is stored, logged or posted (`_block`)."""
 CANCEL_NOTE_S = 10.0
@@ -200,6 +195,16 @@ def _kept(wt: Path, branch: str) -> str:
         "The next run removes that worktree and branch before it rebuilds the layer: "
         "copy anything you want to keep first."
     )
+
+
+def _gate_detail(output: str) -> str:
+    """The first line of a red gate's output that says what failed (a pytest FAILED or ERROR line, a ruff or
+    mypy error), else the last line, cut: a lesson's `detail`."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith(("FAILED", "ERROR")) or ": error" in line:
+            return line[:200]
+    return lines[-1][:200] if lines else "the gate failed"
 
 
 def _to_build(st: StoryState) -> bool:
@@ -571,6 +576,8 @@ class StoryPipeline:
         def parse(text: str) -> tuple[Layer, ...]:
             return parse_layers(extract_json_block(text), story, self.s.max_layers)
 
+        coder_steps, coder_context = self._coder_budget()
+
         ask: Callable[..., Awaitable[str]] | None = None
         round_steps = self.s.plan_round_steps
         if round_steps:
@@ -595,6 +602,9 @@ class StoryPipeline:
                 guide=guide,
                 survey=st.survey or "",
                 round_steps=round_steps,
+                lessons=self.lessons.recent(),
+                max_steps=coder_steps,
+                context_budget=coder_context,
             ),
             parse,
             ask=ask,
@@ -687,10 +697,20 @@ class StoryPipeline:
         await self.board.comment(card, note(line))
         return f"story {card.key} {line}"
 
+    def _coder_budget(self) -> tuple[int, int]:
+        """The coder's steps and context (tokens) per layer: what the architect sizes a layer and its package
+        to (`brief-layers-sizing`)."""
+        coder = self.cfg.roles[self.s.build_role]
+        return coder.max_steps or self.cfg.teams.max_steps, coder.max_context
+
     async def _build(
         self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], i: int
     ) -> None:
-        nn, total = f"{i + 1:02d}", f"{len(layers):02d}"
+        """Build layer `i` from its package. The architect writes the package on the branch the layers below
+        produced (`_ready_package`); the studio builds it; a gate still red after the coder's follow-up
+        sends the layer back to the architect with the coder's account and the gate's tail, up to
+        story.layer_attempts builds in all (`_build_once`)."""
+        nn = f"{i + 1:02d}"
         if nn in st.built:
             return
         # who commits the layer, found before it is built: a bot that cannot be found costs no build
@@ -707,6 +727,59 @@ class StoryPipeline:
                 raise StoryBlocked(f"layer {nn}: its base '{base_ref}' does not exist in {self.repo}")
             base_sha = found
         branch = branch_name(card.ref, story.title, nn, layer.slug)
+        guide = repo_guide(  # read for the architect and the coder
+            self.repo,
+            base_sha,
+            f"{layer.scope}\n{layer.brief}",
+            budget_chars=guide_budget(self.cfg, [self.s.architect_role, self.s.build_role]),
+        )
+        # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
+        built = (
+            built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
+            if i > 0 and st.base
+            else ""
+        )
+        package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
+        attempts = self.s.layer_attempts
+        for attempt in range(1, attempts + 1):
+            again = await self._build_once(
+                st,
+                card,
+                story,
+                layers,
+                i,
+                package,
+                (base_ref, base_sha, branch, author),
+                guide,
+                built,
+                attempt,
+            )
+            if again is None:
+                return
+            package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
+
+    async def _build_once(
+        self,
+        st: StoryState,
+        card: Card,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        package: Package,
+        where: tuple[str, str, str, Any],
+        guide: str,
+        built: str,
+        attempt: int,
+    ) -> str | None:
+        """One build of layer `i` from `package`, on a fresh studio run. None when it is built (squashed to
+        one commit, recorded); else, when this was not the last build, what to tell the architect for the
+        next package (the worktree and branch are removed so the layer's branch name is free again); on the
+        last build, StoryBlocked. `where` is the layer's base ref and commit, its branch and its commit's
+        author."""
+        base_ref, base_sha, branch, author = where
+        nn, total = f"{i + 1:02d}", f"{len(layers):02d}"
+        layer = layers[i]
+        last = attempt >= self.s.layer_attempts
         orch = self.studio()
         wt = orch.run_dir.path / "studio"
         st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
@@ -722,52 +795,14 @@ class StoryPipeline:
             base=base_ref,
             base_sha=base_sha,
             studio_run=orch.run_dir.run_id,
+            attempt=attempt,
         )
         sup = self._supervisor(st, card, layer, nn, orch, wt, base_sha)
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
-            findings: list[Finding] = []
-            guide = repo_guide(  # read for the tester and the coder
-                self.repo,
-                base_sha,
-                f"{layer.scope}\n{layer.brief}",
-                budget_chars=guide_budget(
-                    self.cfg, [r for r in (self.s.tester_role, self.s.build_role) if r]
-                ),
-            )
-            # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
-            built = (
-                built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
-                if i > 0 and st.base
-                else ""
-            )
             plan = layer_plan(
-                story,
-                layers,
-                i,
-                build_role=self.s.build_role,
-                tester_role=self.s.tester_role,
-                guide=guide,
-                built=built,
+                story, layers, i, package, build_role=self.s.build_role, guide=guide, built=built
             )
-            tester = any(s.id == "tests" for s in plan.subtasks)
-
-            async def before_code() -> bool:
-                """After the tester, before the coder: the pre-code check, then its files locked to the
-                coder."""
-                nonlocal findings
-                findings = await self._check_tests(st, orch, wt, base_sha, nn, sup)
-                if findings:
-                    return False
-                commit_wip(wt, f"studio: layer {nn} (tests)")  # a skipped check committed nothing
-                orch.lock(changed_files(wt, base_sha), orch.runs["tests"].role)
-                return True
-
-            async def before_gate() -> bool:
-                nonlocal findings
-                findings = await self._check_static(st, orch, wt, base_sha, nn, sup)
-                return not findings
-
             report = await orch.execute_task(
                 layer_goal(story, layers, i),
                 repo=self.repo,
@@ -777,51 +812,46 @@ class StoryPipeline:
                 base=base_sha,
                 branch=branch,
                 synthesise=False,
-                before_gate=None if tester else before_gate,
                 scope_tests=True,
-                checkpoints={"tests": before_code} if tester else None,
                 gate_follow_up="build",
-                map_focus=named_paths(layer.scope),
-                amend_tests=partial(self._amend_tests, st, orch, wt, base_sha, nn, sup) if tester else None,
+                map_focus=[*named_paths(layer.scope), *package.source_files],
+                prepare=self._place(st, orch, package, nn),
             )
             commit_wip(wt, f"studio: {branch} (final)")
             cut, kept = _cut_off(orch), _kept(wt, branch)
-            if findings and all(f.kind == "engine_error" for f in findings):
-                why = findings[0].why
-                raise StoryBlocked(
-                    f"layer {nn} ({layer.title}): the {findings[0].test} could not reach the engine ({why}); "
-                    f"start it (`task up`) and run the story again{kept}"
+            ran = orch.runs.get("build")
+            coder = ran.result if ran is not None else None
+            builds = f"{attempt} build{'' if attempt == 1 else 's'}"
+            stopped = "" if attempt == 1 and last else f" after {builds}"
+            failure: tuple[str, str, str, str] | None = None  # the ending, why, the reason, the evidence kind
+            if not changed_files(wt, orch.lock_commit):
+                reason = f"layer {nn} ({layer.title}) changed nothing{stopped}{cut}{kept}"
+                failure = ("gate_red", "changed nothing", reason, "changed_nothing")
+            elif report.tests.get("studio") is not True:
+                reason = (
+                    f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{stopped}{cut}{kept}"
                 )
-            if findings:
-                listed = "; ".join(f"{f.test} {_SHORT[f.kind]}" for f in findings)
-                whose = (
-                    "the tester's tests do not hold before the code" if tester else "its tests need fixing"
-                )
-                # lint alone is left only after the lint round (_check_tests)
-                linted = tester and all(f.kind == "lint_fails" for f in findings)
-                tries = "one retry and a lint round" if linted else "one retry"
-                reason = f"layer {nn} ({layer.title}): {whose} after {tries} ({listed}){cut}{kept}"
-                diagnosis = await self._at_block(
-                    sup,
-                    orch,
-                    "tests" if tester else "build",
-                    reason,
-                    kinds=[f.kind for f in findings],
-                    evidence=findings_text(findings),
-                )
-                raise StoryBlocked(reason, diagnosis)
-            if not changed_files(wt, base_sha):
-                reason = f"layer {nn} ({layer.title}) changed nothing{cut}{kept}"
-                diagnosis = await self._at_block(
-                    sup, orch, "build", reason, kinds=("changed_nothing",), evidence=reason
-                )
-                raise StoryBlocked(reason, diagnosis)
-            if report.tests.get("studio") is not True:
-                reason = f"layer {nn} ({layer.title}): `{self._shown_cmd}` fails on {branch}{cut}{kept}"
-                diagnosis = await self._at_block(
-                    sup, orch, "build", reason, kinds=("gate_fails",), evidence=reason
-                )
-                raise StoryBlocked(reason, diagnosis)
+                ending = "gate_red"
+                if coder is not None and coder.stop_reason == "max_steps":
+                    ending = "out_of_steps"
+                elif coder is not None and coder.stop_reason in ("cut_off", "context_full"):
+                    ending = "out_of_context"
+                failure = (ending, _gate_detail(orch.gate_output), reason, "gate_fails")
+            if failure is not None:
+                ending, detail, reason, kind = failure
+                self._lesson(st, nn, layer, package, coder, ending, detail)
+                if last:
+                    diagnosis = await self._at_block(
+                        sup, orch, "build", reason, kinds=(kind,), evidence=reason
+                    )
+                    raise StoryBlocked(reason, diagnosis)
+                st.emit("layer_replanned", layer=nn, attempt=attempt, why=ending, detail=detail)
+                told = self._replan_feedback(st, orch, nn, coder)
+                remove_worktree(self.repo, wt)
+                delete_branch(self.repo, branch)
+                st.attempt = None
+                st.save()
+                return told
             sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
             remove_worktree(self.repo, wt)
             st.built[nn] = {
@@ -830,15 +860,177 @@ class StoryPipeline:
                 "run_id": report.run_id,
                 "subtasks": _rows(orch),
                 "gate": self._shown_cmd,  # what this layer passed, for its PR: a resume can pass another
+                "package": package.to_dict(),
+                "tests": list(package.test_ids),
             }
             st.attempt = None
             st.save()
             st.emit("layer_built", layer=nn, branch=branch, sha=sha)
-            built = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
-            await self.board.comment(card, note(built), role=self.s.build_role)
+            note_text = f"layer {nn}/{total} built: {layer.title} (`{self._shown_cmd}` passes)"
+            await self.board.comment(card, note(note_text), role=self.s.build_role)
+            return None
         finally:
             if sup is not None:
                 sup.close()  # after every subtask has finished: an advice in flight is never cut off
+
+    def _replan_feedback(
+        self, st: StoryState, orch: StudioOrchestrator, nn: str, coder: TeamResult | None
+    ) -> str:
+        """What the architect is told when a built layer's gate is still red: the coder's account, the end of
+        the gate's output, then the hub's `package-replan` (decide which it is, and write the package again).
+        A `steer` event for it."""
+        account = (coder.final_text if coder is not None else "").strip()
+        tail = orch.gate_output.strip()[-GATE_TAIL_CHARS:]
+        parts = [
+            "The coder built this layer from your package and the whole gate is still red.",
+            f"What the coder said when it stopped:\n{account[:GATE_TAIL_CHARS] or '(nothing)'}",
+            f"The end of the gate's output:\n```\n{tail or '(none)'}\n```",
+            hub_text("package-replan"),
+        ]
+        self._steer(st, ["package-replan"], self.s.architect_role, nn)
+        return "\n\n".join(parts)
+
+    def _lesson(
+        self,
+        st: StoryState,
+        nn: str,
+        layer: Layer,
+        package: Package | None,
+        result: TeamResult | None,
+        ending: str,
+        detail: str,
+    ) -> None:
+        """Record why layer `nn` came back (D7 of the planning-line design): a package that was never ready,
+        a coder that ran out of steps or context, a gate still red. The architect's next brief for this
+        repository carries it. `result` is the coder's, None when it never ran."""
+        self.lessons.record(
+            Lesson(
+                title=layer.title,
+                acceptance=list(layer.acceptance),
+                source_files=len(package.source_files) if package else 0,
+                test_files=len(package.tests) if package else 0,
+                steps=result.steps if result else 0,
+                context_tokens=result.prompt_tokens if result else 0,
+                ending=ending,
+                detail=detail,
+            )
+        )
+        st.emit("lesson_recorded", layer=nn, ending=ending, detail=detail)
+
+    def _place(
+        self, st: StoryState, orch: StudioOrchestrator, package: Package, nn: str
+    ) -> Callable[[Path], Awaitable[None]]:
+        """The studio's `prepare` hook for layer `nn`: write the package's tests into the worktree, commit
+        them (the studio's `base_sha` is the commit before), and lock them to the coder by definition."""
+
+        async def prepare(wt: Path) -> None:
+            paths = place_package(wt, package)
+            commit_wip(wt, f"studio: layer {nn} (package)")
+            orch.lock(paths, self.s.architect_role)
+            st.emit("package_placed", layer=nn, studio_run=orch.run_dir.run_id, paths=paths)
+
+        return prepare
+
+    async def _package(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        built: str,
+        guide: str,
+        feedback: str | None,
+    ) -> Package:
+        """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed. A reply
+        that cannot be used is a StoryError: its text is the next try's feedback."""
+        max_steps, context = self._coder_budget()
+        brief = package_brief(
+            story,
+            layers,
+            i,
+            guide=guide,
+            built=built,
+            lessons=self.lessons.recent(),
+            max_steps=max_steps,
+            context_budget=context,
+            feedback=feedback,
+        )
+        text = await self._ask(
+            st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
+        )
+        return parse_package(text, layers[i], story)
+
+    async def _ready_package(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        built: str,
+        guide: str,
+        *,
+        feedback: str | None = None,
+    ) -> Package:
+        """A package for layer `i` that passes the readiness check (package_checks): up to
+        story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
+        base; what a try left (a reply that could not be parsed, or the findings) goes back to the architect
+        as the next brief's feedback, with a `steer` event per hub text in it. Events: package_start,
+        package_returned (kinds), package_ready, and each finding. Exhausted: a `package_rejected` lesson and
+        StoryBlocked. A gate that does not run pytest gets no red check, and an event says so."""
+        nn, layer = f"{i + 1:02d}", layers[i]
+        checker = PackageChecker(
+            self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement()
+        )
+        if not checker.runs_red:
+            st.emit(
+                "test_checks_skipped",
+                layer=nn,
+                reason="the gate runs no pytest: the red check is for pytest only",
+            )
+        kinds: list[str] = []
+        package: Package | None = None
+        for attempt in range(1, self.s.package_attempts + 1):
+            st.emit("package_start", layer=nn, attempt=attempt)
+            try:
+                package = await self._package(st, story, layers, i, base_sha, built, guide, feedback)
+            except StoryError as e:
+                feedback, kinds = str(e), ["package_unusable"]
+                st.emit("retry", stage="package", error=feedback)
+                st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=st.runs[-1])
+                continue
+            package, found = await checker.check(package, self.repo, base_sha, st.path / f"package-{nn}")
+            run = st.runs[-1]
+            if checker.checks is not None and checker.checks.failing_at_base:
+                # red on the base already: not the architect's to fix, but the gate's to see
+                st.emit(
+                    "existing_tests_fail_at_base",
+                    layer=nn,
+                    attempt=attempt,
+                    tests=checker.checks.failing_at_base,
+                )
+            self._emit_findings(st, found, nn, attempt, run)
+            if not found:
+                st.emit(
+                    "package_ready",
+                    layer=nn,
+                    attempt=attempt,
+                    studio_run=run,
+                    tests=list(package.test_ids),
+                    files=[f.path for f in package.files],
+                )
+                return package
+            kinds = list(dict.fromkeys(f.kind for f in found))
+            st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run)
+            if attempt < self.s.package_attempts:
+                feedback, ids = package_feedback_said(found)
+                self._steer(st, ids, self.s.architect_role, nn)
+        self._lesson(st, nn, layer, package, None, "package_rejected", ", ".join(kinds))
+        raise StoryBlocked(
+            f"layer {nn} ({layer.title}): its package still fails the readiness check after "
+            f"{self.s.package_attempts} tries ({', '.join(kinds)})"
+        )
 
     def _supervisor(
         self,
@@ -901,256 +1093,6 @@ class StoryPipeline:
             subtask, self._role_of(orch, subtask), reason, kinds=kinds, evidence=evidence
         )
 
-    async def _check_tests(
-        self,
-        st: StoryState,
-        orch: StudioOrchestrator,
-        wt: Path,
-        base_sha: str,
-        nn: str,
-        sup: LayerSupervisor | None = None,
-    ) -> list[Finding]:
-        """The pre-code check (story.layer_checks) on the tests the tester wrote, before the coder builds:
-        findings go back to the tester once (`follow_up`), and what is left after that is returned, for the
-        layer to stop on. Each finding is an event. A gate that does not run pytest gets no check, and an
-        event says so. Before each run, the gate's ruff steps fix what they can in the tester's files and
-        report the rest (tester_lint), so the coder is never left a lint error in files it cannot edit. When
-        lint is all that is left after the retry, the tester gets a lint round (`_lint_round`)."""
-        confinement = self.cfg.tools.confinement()
-        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
-        lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
-        if checks is None:
-            reason = "the gate runs no pytest: the pre-code check is for pytest only"
-            st.emit("test_checks_skipped", layer=nn, reason=reason)
-            return []
-        studio_run = orch.run_dir.run_id
-        found: list[Finding] = []
-        for attempt in range(1, CHECK_ATTEMPTS + 1):
-            ended = orch.runs["tests"].result if "tests" in orch.runs else None
-            if ended is not None and ended.stop_reason == "engine_error":
-                # the tester never got an answer: nothing of its is there to check, and it is not its to fix
-                # (AIR-9 layer 02, 2026-10-21: an engine that was down read as "no new test", twice)
-                found = [Finding("engine_error", orch.runs["tests"].role, ended.final_text, "")]
-                self._emit_findings(st, found, nn, attempt, studio_run)
-                if sup is not None:
-                    sup.settle("precode_retry", "unknown", subtask="tests")
-                return found
-            commit_wip(wt, f"studio: layer {nn} (pre-code check {attempt})")
-            found = await self._tests_found(st, wt, base_sha, nn, attempt, checks, lint)
-            self._emit_findings(st, found, nn, attempt, studio_run)
-            if sup is not None and attempt > 1:
-                sup.settle("precode_retry", "not_helped" if found else "helped", subtask="tests")
-            if not found:
-                st.emit("test_checks_passed", layer=nn, attempt=attempt)
-                return []
-            if attempt < CHECK_ATTEMPTS:
-                st.emit("test_checks_retry", layer=nn, findings=len(found))
-                advice = await self._advise(sup, orch, "precode_retry", "tests", feedback(found), found)
-                sent, ids = feedback_said(found, advice=advice)
-                self._steer(st, ids, self._role_of(orch, "tests"), nn)
-                await orch.follow_up("tests", sent)
-        if lint is not None and all(f.kind == "lint_fails" for f in found):
-            return await self._lint_round(st, orch, wt, base_sha, nn, checks, lint, found)
-        return found
-
-    async def _tests_found(
-        self,
-        st: StoryState,
-        wt: Path,
-        base_sha: str,
-        nn: str,
-        attempt: int,
-        checks: PytestChecks,
-        lint: LayerLint | None,
-    ) -> list[Finding]:
-        """One run of the pre-code check on the committed tests: the gate's ruff fixers on the tester's files
-        (what they change is committed), then what lint is left and the checks' findings."""
-        found: list[Finding] = []
-        if lint is not None:
-            fixed = await lint.fix(wt, base_sha)
-            if fixed:
-                commit_wip(wt, f"studio: layer {nn} (lint fixes {attempt})")
-                st.emit("tester_lint_fixed", layer=nn, attempt=attempt, files=fixed)
-            found = await lint.check(wt, base_sha)
-        found += await checks.run(wt, base_sha)
-        if checks.failing_at_base:  # red on the base already: not the tester's to fix, but the gate's to see
-            st.emit("existing_tests_fail_at_base", layer=nn, attempt=attempt, tests=checks.failing_at_base)
-        return found
-
-    async def _lint_round(
-        self,
-        st: StoryState,
-        orch: StudioOrchestrator,
-        wt: Path,
-        base_sha: str,
-        nn: str,
-        checks: PytestChecks,
-        lint: LayerLint,
-        found: list[Finding],
-    ) -> list[Finding]:
-        """When all that is left after the tester's retry is lint its fixer could not fix (`found`), the
-        tester is sent back once more, told only ruff's output and to change only the lines it names, in at
-        most story.lint_round_steps steps; then the whole pre-code check runs again, since a rename can still
-        break a test, and what is left is returned. A lint error alone used to block the layer: AIR-22 layer
-        03 (2026-10-24) lost about 2.5 hours to E741, a loop variable named `l`. No supervisor advice: the fix
-        is what ruff says."""
-        attempt = CHECK_ATTEMPTS + 1
-        st.emit("tester_lint_round", layer=nn, rules=lint_rules(found))
-        told, ids = lint_round_said(found)
-        self._steer(st, ids, self._role_of(orch, "tests"), nn)
-        await orch.follow_up("tests", told, max_steps=self.s.lint_round_steps)
-        ended = orch.runs["tests"].result
-        if ended is not None and ended.stop_reason == "engine_error":  # as in _check_tests
-            found = [Finding("engine_error", orch.runs["tests"].role, ended.final_text, "")]
-            self._emit_findings(st, found, nn, attempt, orch.run_dir.run_id)
-            return found
-        commit_wip(wt, f"studio: layer {nn} (lint round)")
-        found = await self._tests_found(st, wt, base_sha, nn, attempt, checks, lint)
-        self._emit_findings(st, found, nn, attempt, orch.run_dir.run_id)
-        if not found:
-            st.emit("test_checks_passed", layer=nn, attempt=attempt)
-        return found
-
-    async def _amend_tests(
-        self,
-        st: StoryState,
-        orch: StudioOrchestrator,
-        wt: Path,
-        base_sha: str,
-        nn: str,
-        sup: LayerSupervisor | None = None,
-    ) -> bool:
-        """When the final gate fails after the build and every test that fails is one the tester wrote (in a
-        locked file, or a locked definition), the tester is sent back once to mend its own tests (the hub's
-        `amend`, with what the coder and the reviewer said): the coder cannot change them (AIR-9 layer 02,
-        2026-10-21: a test unpacked one comment from a card with two, the code was right, and the layer
-        blocked). A test that was there before the tester's (an old one failing on a fake) is the coder's. A
-        mend is kept only when it changed nothing but the locked files and every one of the tester's tests
-        still holds before the code: the pre-code check, run with the coder's files put back as they were when
-        the tests were locked. Kept, the files are locked again (what the mend changed joins the tester's
-        definitions); else they are put back. Returns whether a mend was kept."""
-        confinement = self.cfg.tools.confinement()
-        checks = checks_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
-        locked = orch.locked
-        if checks is None or not locked or "tests" not in orch.runs:
-            return False
-        failing = await checks.failing(wt)
-        if not failing or not all(is_testers_test(t, orch.locked_whole, orch.locked_tests) for t in failing):
-            return False  # the suite did not run, it passes, or something besides the tests is red
-        st.emit("locked_tests_fail", layer=nn, tests=failing)
-        build = orch.runs.get("build")
-        account = build.result.final_text if build is not None and build.result is not None else ""
-        review = [f"{f.file}: {f.claim}" for f in build.review.blocking] if build and build.review else []
-        before = commit_wip(wt, f"studio: layer {nn} (before the tests' mend)")
-        told, ids = amend_feedback_said(failing, account, review)
-        advice = None
-        if sup is not None:
-            advice = await sup.advise(
-                "amend",
-                "tests",
-                orch.runs["tests"].role,
-                told,
-                kinds=("locked_tests_fail",),
-                evidence="\n".join(failing),
-            )
-        self._steer(st, ids, self._role_of(orch, "tests"), nn)
-        await orch.follow_up("tests", with_advice(told, advice))
-        commit_wip(wt, f"studio: layer {nn} (the tests' mend)")
-        lint = lint_for(self.commands, timeout_s=self.timeout_s, confinement=confinement)
-        if lint is not None and await lint.fix(wt, before):
-            commit_wip(wt, f"studio: layer {nn} (lint fixes, the tests' mend)")
-        changed = changed_files(wt, before)
-        if not changed:
-            st.emit("tests_not_mended", layer=nn, tests=failing)
-            self._settle_amend(sup, "not_helped")
-            return False
-        outside = [p for p in changed if p not in locked]
-        found: list[Finding] = []
-        if not outside:
-            found = await lint.check(wt, before) if lint is not None else []
-            # the coder's files as they were when the tests were locked: the tests alone, as before the code
-            code = [p for p in changed_files(wt, orch.lock_commit) if p not in locked]
-            put_back(wt, orch.lock_commit, code)
-            try:
-                found += await checks.run(wt, base_sha)
-            finally:
-                reset_to_head(wt)
-        if outside or found:
-            self._emit_findings(st, found, nn, 1, orch.run_dir.run_id)
-            why = f"it changed {', '.join(outside)}" if outside else "; ".join(f.test for f in found)
-            st.emit("tests_mend_undone", layer=nn, why=why)
-            put_back(wt, before, changed)
-            commit_wip(wt, f"studio: layer {nn} (the tests' mend undone)")
-            self._settle_amend(sup, "not_helped")
-            return False
-        orch.lock(sorted(locked), orch.lock_owner, since=before)
-        st.emit("tests_mended", layer=nn, files=changed)
-        self._settle_amend(sup, "helped")
-        return True
-
-    @staticmethod
-    def _settle_amend(sup: LayerSupervisor | None, outcome: str) -> None:
-        if sup is not None:
-            sup.settle("amend", outcome, subtask="tests")
-
-    async def _check_static(
-        self,
-        st: StoryState,
-        orch: StudioOrchestrator,
-        wt: Path,
-        base_sha: str,
-        nn: str,
-        sup: LayerSupervisor | None = None,
-    ) -> list[Finding]:
-        """For a layer with no tester, whose coder writes its tests and code together: the checks that read
-        the tests (layer_checks.static_findings), after the build and before the gate, with one retry for the
-        coder. A gate that does not run pytest gets none."""
-        if checks_for(self.commands, timeout_s=self.timeout_s) is None:
-            reason = "the gate runs no pytest: the test checks are for pytest only"
-            st.emit("test_checks_skipped", layer=nn, reason=reason)
-            return []
-        studio_run = orch.run_dir.run_id
-        found: list[Finding] = []
-        for attempt in range(1, CHECK_ATTEMPTS + 1):
-            commit_wip(wt, f"studio: layer {nn} (checks {attempt})")
-            found = static_findings(wt, base_sha)
-            self._emit_findings(st, found, nn, attempt, studio_run)
-            if sup is not None and attempt > 1:
-                sup.settle("static_retry", "not_helped" if found else "helped", subtask="build")
-            if not found:
-                st.emit("test_checks_passed", layer=nn, attempt=attempt)
-                return []
-            if attempt < CHECK_ATTEMPTS:
-                st.emit("test_checks_retry", layer=nn, findings=len(found))
-                told = feedback(found, before_code=False)
-                advice = await self._advise(sup, orch, "static_retry", "build", told, found)
-                sent, ids = feedback_said(found, before_code=False, advice=advice)
-                self._steer(st, ids, self._role_of(orch, "build"), nn)
-                await orch.follow_up("build", sent)
-        return found
-
-    async def _advise(
-        self,
-        sup: LayerSupervisor | None,
-        orch: StudioOrchestrator,
-        trigger: str,
-        subtask: str,
-        told: str,
-        found: Sequence[Finding],
-    ) -> str | None:
-        """The supervisor's advice for a retry on `found`, to add to `told`; None without one. The role is
-        found as `_at_block` finds it: a subtask with no run never stops the retry."""
-        if sup is None:
-            return None
-        return await sup.advise(
-            trigger,
-            subtask,
-            self._role_of(orch, subtask),
-            told,
-            kinds=[f.kind for f in found],
-            evidence=findings_text(found),
-        )
-
     @staticmethod
     def _steer(st: StoryState, ids: Sequence[str], role: str, nn: str) -> None:
         """A `steer` event for each hub steering text in what the pipeline is about to send a layer's role:
@@ -1160,10 +1102,9 @@ class StoryPipeline:
             st.emit("steer", id=id, role=role, layer=nn)
 
     def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
-        """The subtask's role as it ran, or the configured one when it never ran."""
+        """The subtask's role as it ran, or the build role when it never ran."""
         run = orch.runs.get(subtask)
-        configured = self.s.tester_role if subtask == "tests" else None
-        return run.role if run is not None else configured or self.s.build_role
+        return run.role if run is not None else self.s.build_role
 
     @staticmethod
     def _emit_findings(st: StoryState, found: list[Finding], nn: str, attempt: int, studio_run: str) -> None:

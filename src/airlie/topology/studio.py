@@ -210,6 +210,7 @@ class StudioOrchestrator:
         self.lock_commit = ""
         self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
         self.halted = False  # a checkpoint said no: the subtasks after it did not run
+        self.gate_output = ""  # the last output of the final gate (`_gate`), for a caller that re-plans on it
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
         self.advisor: Advisor | None = None  # the supervisor, in a story run: the gate retry and repeat guard
@@ -954,6 +955,7 @@ class StudioOrchestrator:
         """The final gate (`_tests_pass`); when it fails and `follow_up` names a subtask that finished, that
         subtask is sent its output once (gate-failed) and the gate runs again."""
         passed, output = await self._tests_pass(test_cmd)
+        self.gate_output = output
         run = self.runs.get(follow_up) if follow_up is not None else None
         # only a subtask that finished is sent back: one cut off or broken has its own stop to report
         if passed is not False or run is None or run.result is None or not run.result.ok:
@@ -972,7 +974,7 @@ class StudioOrchestrator:
                 advice = None
             text = with_advice(text, advice)
         await self.follow_up(follow_up, text)
-        passed = (await self._tests_pass(test_cmd))[0]
+        passed, self.gate_output = await self._tests_pass(test_cmd)
         if self.advisor is not None:
             with contextlib.suppress(Exception):  # an outcome it cannot record does not touch the run
                 self.advisor.settle("gate_retry", "helped" if passed else "not_helped", subtask=follow_up)

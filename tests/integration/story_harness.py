@@ -85,7 +85,7 @@ def board_item(state_dir: Path, key: str) -> Any:
 def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
     """An airlie.yaml for the scripted models: the story roles, each on a model of its own (`m-<role>`) so the
     scripted server knows who is asking, the local board, the studio with one review round, and the story
-    settings the unit tests use (no survey, no planning rounds, no tester), so each role's script is short."""
+    settings the unit tests use (no survey, no planning rounds), so each role's script is short."""
     d = tmp_path / "cfg"
     d.mkdir()
     roles: dict[str, dict[str, object]] = {}

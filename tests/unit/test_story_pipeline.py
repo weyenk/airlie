@@ -76,6 +76,45 @@ NOTE = FakeReply(
 B1, B2 = "add-avatar-upload-01-storage", "add-avatar-upload-02-profile"
 
 
+def package_reply(
+    tests: dict[str, str],
+    covers: dict[str, list[str]],
+    *,
+    files: list[dict[str, str]] | None = None,
+    interfaces: list[dict[str, str]] | None = None,
+    steps: list[str] | None = None,
+    prose: str = "I read the code.\n",
+) -> FakeReply:
+    """The architect's reply for a layer's package (P1, 2026-10-24): each test file under its heading in a
+    fenced block, then the package object in a json fence."""
+    parts = [prose]
+    for path, text in tests.items():
+        parts.append(f"### test file: {path}\n```python\n{text}```\n")
+    obj = {
+        "type": "package",
+        "files": files if files is not None else [{"path": "feature.py", "action": "create"}],
+        "interfaces": interfaces or [],
+        "steps": steps or ["write the feature"],
+        "covers": covers,
+        "done_when": "run_tests passes",
+    }
+    parts.append("```json\n" + json.dumps(obj) + "\n```")
+    return FakeReply(text="\n".join(parts))
+
+
+PKG1 = package_reply(
+    {"tests/unit/test_storage.py": "def test_stores_an_avatar():\n    assert True\n"},
+    {"AC1": ["tests/unit/test_storage.py::test_stores_an_avatar"]},
+)
+PKG2 = package_reply(
+    {"tests/unit/test_profile.py": "def test_shows_the_avatar():\n    assert True\n"},
+    {"AC2": ["tests/unit/test_profile.py::test_shows_the_avatar"]},
+)
+PKGS = [PKG1, PKG2]
+"""The packages of LAYERS' two layers. The gate of these tests (./check.sh) runs no pytest, so they are read
+and parsed and not run on the base."""
+
+
 class RecordedGh:
     """Stands in for gh: records every command and its environment and answers `gh pr view` with numbered PRs.
     The trunk fetch (the one git command) is `fetch`: "mirror" (the default) acts as a remote whose trunk is
@@ -134,7 +173,7 @@ def pipeline(
         "trunk": git(repo, "branch", "--show-current"),
         "plan_round_steps": 0,  # one go, no survey: the rounds and the survey have tests of their own
         "survey": False,
-        "tester_role": None,  # the tester is a subtask per layer with scripted replies of its own
+        "layer_attempts": 1,  # a layer that fails stops the story; re-planning has tests of its own
         **(story or {}),
     }
     # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
@@ -158,8 +197,7 @@ def happy_engine(**scripts: list[FakeReply]) -> FakeEngine:
     """The replies of a story whose two layers build first time; a keyword replaces one role's script."""
     base = {
         "product": [STORY],
-        "architect": [LAYERS],
-        "qa": [DONE, DONE],
+        "architect": [LAYERS, *PKGS],
         "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
         "reviewer": [APPROVE, APPROVE],
     }
@@ -174,38 +212,84 @@ async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_re
     engine = happy_engine(coder=[WRITE_PASS, RUN, DONE, tick, NOTE, DONE, tick])
     st = await pipeline(tmp_path, repo, engine, done_check=True).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
-    runs = [kinds(st.path.parents[1] / "runs" / r / "events.jsonl", "done_check") for r in st.runs]
-    assert [len(r) for r in runs][-2:] == [1, 1]  # once per built layer, none in refine
+    built = [e["studio_run"] for e in kinds(st.path / "events.jsonl", "layer_start")]
+    runs = [kinds(st.path.parents[1] / "runs" / r / "events.jsonl", "done_check") for r in built]
+    assert [len(r) for r in runs] == [1, 1]  # once per built layer, none in refine or the packages
 
 
-TESTER_ROLES = {
-    **STORY_ROLES,
-    "tester": (
-        "---\nsummary: Acceptance tests before the code\n---\n# tester",
-        ["read_file", "write_file", "run_tests"],
-    ),
-}
-WRITE_TEST = FakeReply(
-    tool_calls=[ToolCall("t", "write_file", json.dumps({"path": "test_it.txt", "content": "red\n"}))]
-)
-
-
-async def test_with_a_tester_each_layer_gets_its_tests_written_before_the_coder_builds(
+async def test_each_layer_is_built_from_the_architects_package_and_the_coder_sees_its_tests(
     tmp_path: Path,
 ) -> None:
-    """Lever 2 (Noah, 2026-10-19): a tests subtask per layer with criteria, then the build that depends on it;
-    the coder's brief carries the tester's result as the contract."""
+    """P1 (2026-10-24): the architect writes each layer's package just before the layer runs; the pipeline
+    places its tests in the worktree and commits them with the layer, and the coder's goal is the package."""
     repo = repo_with_marker_tests(tmp_path)
-    listed = FakeReply(text="wrote test_it.txt: asserts the avatar is stored")
-    engine = happy_engine(tester=[WRITE_TEST, listed, WRITE_TEST, listed])
-    st = await pipeline(tmp_path, repo, engine, story={"tester_role": "tester"}, roles=TESTER_ROLES).run(
-        text_card("avatars")
-    )
-    assert st.blocked is None and st.stage == "review"
-    assert [row["id"] for row in st.built["01"]["subtasks"]] == ["tests", "build"]
+    engine = happy_engine()
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert [row["id"] for row in st.built["01"]["subtasks"]] == ["build"]
+    assert st.built["01"]["tests"] == ["tests/unit/test_storage.py::test_stores_an_avatar"]
+    assert st.built["01"]["package"]["files"] == [{"path": "feature.py", "action": "create", "why": ""}]
     build_goal = [r for r in engine.requests if r.role == "coder"][0].messages[-1].content
-    assert "They are the contract" in build_goal and "## Result of 'tests' (tester)" in build_goal
-    assert "asserts the avatar is stored" in build_goal
+    assert "## The tests you make pass" in build_goal
+    assert "tests/unit/test_storage.py::test_stores_an_avatar" in build_goal and "## Steps" in build_goal
+    assert "tests/unit/test_storage.py" in git(repo, "show", "--name-only", "--format=", B1)
+    assert "tests/unit/test_profile.py" in git(repo, "show", "--name-only", "--format=", B2)
+    events = st.path / "events.jsonl"
+    assert [e["layer"] for e in kinds(events, "package_start")] == ["01", "02"]
+    assert [e["layer"] for e in kinds(events, "package_ready")] == ["01", "02"]
+    assert [e["paths"] for e in kinds(events, "package_placed")] == [
+        ["tests/unit/test_storage.py"],
+        ["tests/unit/test_profile.py"],
+    ]
+    # the second layer's package was asked on the first layer's branch: its brief names what layer 01 added
+    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
+    assert "Write this layer's package" in asked[1] and "This is layer 1 of 2: Storage" in asked[1]
+    assert "This is layer 2 of 2: Profile" in asked[2] and "What the earlier layers" in asked[2]
+
+
+async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_stops_the_story(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    nonsense = FakeReply(text="Here is my plan, no package.")
+    engine = FakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None
+    assert st.blocked.startswith(
+        "layer 01 (Storage): its package still fails the readiness check after 2 tries"
+    )
+    assert "package_unusable" in st.blocked and "01" not in st.built
+    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
+    assert len(asked) == 3 and "could not be used: no JSON object" in asked[2]
+    assert [e["kinds"] for e in kinds(st.path / "events.jsonl", "package_returned")] == [
+        ["package_unusable"],
+        ["package_unusable"],
+    ]
+    assert not [r for r in engine.requests if r.role == "coder"]  # the coder never started
+    assert worktrees(repo) == 1  # a rejected package costs no branch
+
+
+async def test_a_rejected_package_records_a_lesson_and_the_next_layers_brief_carries_it(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    nonsense = FakeReply(text="no package")
+    pipe = pipeline(
+        tmp_path, repo, FakeEngine({"product": [STORY], "architect": [LAYERS, nonsense, nonsense]})
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is not None
+    [lesson] = pipe.lessons.recent()
+    assert (lesson.title, lesson.ending, lesson.detail) == ("Storage", "package_rejected", "package_unusable")
+    assert lesson.acceptance == ["AC1"]
+    assert [e["ending"] for e in kinds(st.path / "events.jsonl", "lesson_recorded")] == ["package_rejected"]
+    # a later story in the repository: the architect's package brief carries the lesson
+    engine = happy_engine()
+    again = pipeline(tmp_path, repo, engine)
+    await again.run(text_card("avatars again"))
+    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
+    assert "Layers like these blocked" in asked[0]  # the layers brief
+    assert "Storage: 0 source files, 0 test files, 0 steps, 0 tokens, ended package_rejected" in asked[1]
 
 
 def worktrees(repo: Path) -> int:
@@ -379,8 +463,7 @@ async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
     engine = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS],
-            "qa": [DONE, DONE],
+            "architect": [LAYERS, *PKGS],
             "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
@@ -391,7 +474,10 @@ async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
     # one commit per layer, stacked, by airlie
     assert git(repo, "log", "--format=%s", f"{trunk}..{B1}") == "Add avatar upload: Storage (01/02)"
     assert git(repo, "log", "--format=%s", f"{B1}..{B2}") == "Add avatar upload: Profile (02/02)"
-    assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"
+    assert git(repo, "show", "--name-only", "--format=", B1).splitlines() == [
+        "PASS",
+        "tests/unit/test_storage.py",
+    ]
     assert git(repo, "log", "-1", "--format=%an", B2) == "airlie"
     # gh: the stack bottom first on the trunk, drafts, never a merge; the person's checkout untouched
     assert ["gh", "stack", "init", "--base", trunk, B1, B2] in gh.calls
@@ -484,8 +570,7 @@ async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_p
     first = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS],
-            "qa": [DONE],
+            "architect": [LAYERS, PKG1],
             "coder": [NOTE, DONE],  # a change, but not the one the tests need
             "reviewer": [APPROVE],
         }
@@ -494,12 +579,21 @@ async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_p
     assert st.stage == "layers" and st.blocked is not None and "./check.sh` fails" in st.blocked
     assert st.attempt is not None and git(repo, "rev-parse", "--verify", B1)  # kept for inspection
     again = FakeEngine(
-        {"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
+        {
+            "architect": [PKG1, PKG2],  # the failed layer is planned again, as a resume rebuilds it
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
     )
     st = await pipeline(tmp_path, repo, again).run(card)
     assert st.blocked is None and st.stage == "review"
-    assert not [r for r in again.requests if r.role in ("product", "architect")]  # finished stages skipped
-    assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"  # rebuilt from the trunk
+    assert not [r for r in again.requests if r.role == "product"]  # finished stages skipped
+    asked = [r.messages[1].content for r in again.requests if r.role == "architect"]
+    assert len(asked) == 2 and all("Write this layer's package" in a for a in asked)  # no layer plan
+    assert git(repo, "show", "--name-only", "--format=", B1).splitlines() == [
+        "PASS",
+        "tests/unit/test_storage.py",
+    ]  # rebuilt from the trunk
     assert git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
     notes = (st.path / "notes.md").read_text()  # out of blocked while it builds again
     assert "resumed after 'layers'" in notes
@@ -509,7 +603,7 @@ async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_p
 async def test_a_layer_that_changes_nothing_stops_the_story(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
-        {"product": [STORY], "architect": [LAYERS], "qa": [DONE], "coder": [DONE], "reviewer": [APPROVE]}
+        {"product": [STORY], "architect": [LAYERS, PKG1], "coder": [DONE], "reviewer": [APPROVE]}
     )
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and "changed nothing" in st.blocked
@@ -560,7 +654,7 @@ async def test_a_layer_stop_with_no_cut_off_subtask_says_nothing_of_one(tmp_path
 async def test_a_git_failure_stops_the_story_with_gits_own_words(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     git(repo, "branch", B1)  # a leftover branch holds the first layer's name
-    engine = FakeEngine({"product": [STORY], "architect": [LAYERS]})
+    engine = FakeEngine({"product": [STORY], "architect": [LAYERS, PKG1]})
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is not None and f"a branch named '{B1}' already exists" in st.blocked
     assert "CalledProcessError" not in st.blocked
@@ -613,14 +707,16 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert "minor PASS:1: name it better" in first and "minor profile.txt: say more" in second
     assert "| build | coder | done | approve | 0 |" in first
     # every run is on record, and the events follow the stages
-    assert len(st.runs) == 4  # refine, layers, then one run per layer
+    assert len(st.runs) == 6  # refine, layers, then a package and a build per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
     assert [e["kind"] for e in log] == [
         *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
-        # build; ./check.sh runs no pytest, so the checks on a layer's tests say they did not run
-        *("layer_start", "test_checks_skipped", "layer_built"),
-        *("layer_start", "test_checks_skipped", "layer_built"),
+        # build; ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
+        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        *("layer_start", "package_placed", "layer_built"),
+        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        *("layer_start", "package_placed", "layer_built"),
         "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
     ]
@@ -676,13 +772,14 @@ async def test_the_stop_note_tells_a_person_how_to_resume(tmp_path: Path) -> Non
 async def test_a_layer_plan_that_leaves_a_criterion_unowned_is_sent_back_once(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     leaves_ac2 = fenced({"layers": [layer("storage", "Storage", "store.py", "AC1", "Store.")]})
-    engine = happy_engine(architect=[leaves_ac2, LAYERS])
+    engine = happy_engine(architect=[leaves_ac2, LAYERS, *PKGS])
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
     [retry] = kinds(st.path / "events.jsonl", "retry")
     assert retry["stage"] == "layers" and "no layer covers acceptance ['AC2']" in retry["error"]
     asked = [r for r in engine.requests if r.role == "architect"]
-    assert len(asked) == 2 and "could not be used" in asked[1].messages[1].content
+    assert len(asked) == 4  # the layer plan twice, then a package per layer
+    assert "could not be used" in asked[1].messages[1].content
     assert "no layer covers acceptance ['AC2']" in asked[1].messages[1].content
 
 
@@ -694,7 +791,10 @@ async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path, loca
     st = await pipeline(tmp_path, repo, happy_engine(), RecordedGh(fetch="real")).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", news, B1)  # fails unless layer 01 sits on the fetched trunk
-    assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"  # the layer's own change, not NEWS
+    assert git(repo, "show", "--name-only", "--format=", B1).splitlines() == [
+        "PASS",
+        "tests/unit/test_storage.py",
+    ]  # the layer's own change, not NEWS
     assert git(repo, "rev-parse", trunk) == mine  # the person's own trunk is not moved
     assert kinds(st.path / "events.jsonl", "fetch_failed") == []
     assert st.base == {"ref": f"origin/{trunk}", "sha": news}  # resolved once, and kept
@@ -912,7 +1012,8 @@ async def test_a_branch_that_was_already_there_is_never_deleted_by_a_resume(tmp_
     git(repo, "checkout", "-q", trunk)
     mine = git(repo, "rev-parse", B1)
     card = text_card("avatars")
-    for engine in (FakeEngine({"product": [STORY], "architect": [LAYERS]}), FakeEngine()):  # then a resume
+    scripts = ({"product": [STORY], "architect": [LAYERS, PKG1]}, {"architect": [PKG1]})
+    for engine in (FakeEngine(scripts[0]), FakeEngine(scripts[1])):  # then a resume
         st = await pipeline(tmp_path, repo, engine).run(card)
         assert st.blocked is not None and f"a branch named '{B1}' already exists" in st.blocked
         assert st.attempt is None  # the branch was not made by this story, so it is not recorded as its own
@@ -998,8 +1099,7 @@ async def test_a_note_that_cannot_be_posted_is_not_a_reason_to_ask_the_models_ag
     assert st.blocked == "BoardError: jira refused it"
     again = FakeEngine(
         {
-            "architect": [LAYERS],
-            "qa": [DONE, DONE],
+            "architect": [LAYERS, *PKGS],
             "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
             "reviewer": [APPROVE, APPROVE],
         }
@@ -1021,7 +1121,7 @@ async def test_refine_and_layers_read_the_trunk_not_the_persons_checkout(tmp_pat
     git(repo, "add", "feature_only.txt")
     git(repo, "-c", "user.name=me", "-c", "user.email=me@x", "commit", "-q", "-m", "feature")
     look = FakeReply(tool_calls=[ToolCall("l", "list_dir", json.dumps({"path": "."}))])
-    engine = happy_engine(product=[look, STORY], architect=[look, LAYERS])
+    engine = happy_engine(product=[look, STORY], architect=[look, LAYERS, *PKGS])
     st = await pipeline(tmp_path, repo, engine, story={"trunk": trunk}).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
     for role in ("product", "architect"):
@@ -1030,7 +1130,10 @@ async def test_refine_and_layers_read_the_trunk_not_the_persons_checkout(tmp_pat
         )  # what list_dir showed
         assert "README.md" in listing and "check.sh" in listing and "feature_only.txt" not in listing
     assert st.base is not None and st.base["sha"] == git(repo, "rev-parse", trunk)
-    assert {e["base_sha"] for e in kinds(st.path / "events.jsonl", "run")} == {st.base["sha"]}
+    runs = kinds(st.path / "events.jsonl", "run")
+    # refine, layers and layer 01's package read the trunk; layer 02's package reads layer 01's branch
+    assert {e["base_sha"] for e in runs[:3]} == {st.base["sha"]}
+    assert runs[3]["base_sha"] == git(repo, "rev-parse", B1)
     assert "feature_only.txt" not in git(
         repo, "ls-tree", "-r", "--name-only", B2
     )  # nor do the layers build on it
@@ -1044,13 +1147,19 @@ async def test_a_resume_builds_on_the_base_the_story_started_from_not_on_a_newer
     trunk = git(repo, "branch", "--show-current")
     news = advance_origin(tmp_path, repo)
     card = text_card("avatars")
-    broken = happy_engine(qa=[DONE], coder=[NOTE, DONE], reviewer=[APPROVE])  # layer 01's tests stay red
+    broken = happy_engine(
+        architect=[LAYERS, PKG1], coder=[NOTE, DONE], reviewer=[APPROVE]
+    )  # layer 01's tests stay red
     st = await pipeline(tmp_path, repo, broken, RecordedGh(fetch="real")).run(card)
     assert st.stage == "layers" and st.blocked is not None
     assert st.base == {"ref": f"origin/{trunk}", "sha": news}
     later = push_news(tmp_path, trunk, "LATER")  # the remote moves on while the story is stopped
     again = FakeEngine(
-        {"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
+        {
+            "architect": PKGS,
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
     )
     st = await pipeline(tmp_path, repo, again, RecordedGh(fetch="real")).run(card)
     assert st.blocked is None and st.stage == "review"
@@ -1251,7 +1360,7 @@ async def test_a_story_cancelled_while_it_refines_goes_back_to_intake_and_the_ne
     st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
     assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'intake'"))]
     assert st.blocked is None and st.stage == "review"
-    assert len(st.runs) == 5  # the cancelled run is on record with the four that finished
+    assert len(st.runs) == 7  # the cancelled run is on record with the six that finished
 
 
 async def test_a_story_cancelled_while_a_layer_builds_keeps_the_layer_and_resumes_after_the_last_stage(
@@ -1261,7 +1370,9 @@ async def test_a_story_cancelled_while_a_layer_builds_keeps_the_layer_and_resume
     card = text_card("avatars")
     started = asyncio.Event()
     board = RecordingBoard()
-    studio = studio_failing_from(2, hangs(started))  # refine and layers run, the first layer hangs
+    studio = studio_failing_from(
+        3, hangs(started)
+    )  # refine, layers and the package run, the first layer hangs
     task = asyncio.create_task(pipeline(tmp_path, repo, happy_engine(), board=board, studio=studio).run(card))
     await asyncio.wait_for(started.wait(), 60)
     task.cancel()
@@ -1272,10 +1383,13 @@ async def test_a_story_cancelled_while_a_layer_builds_keeps_the_layer_and_resume
         repo, "rev-parse", "--verify", B1
     )  # the layer is kept, as in any stop
     again = RecordingBoard()
-    st = await pipeline(tmp_path, repo, happy_engine(product=[], architect=[]), board=again).run(card)
+    st = await pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS), board=again).run(card)
     assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'layers'"))]
     assert st.blocked is None and st.stage == "review" and worktrees(repo) == 1
-    assert git(repo, "show", "--name-only", "--format=", B1) == "PASS"  # rebuilt from the base
+    assert git(repo, "show", "--name-only", "--format=", B1).splitlines() == [
+        "PASS",
+        "tests/unit/test_storage.py",
+    ]  # rebuilt from the base
 
 
 @pytest.mark.parametrize("trouble", ["slow", "no note", "no move"])
@@ -1399,12 +1513,12 @@ def test_the_stage_a_story_is_in_is_the_one_after_the_last_that_finished() -> No
 
 async def test_a_layer_run_that_crashes_is_on_record_with_the_runs_that_finished(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    st = await pipeline(tmp_path, repo, happy_engine(), studio=studio_failing_from(2, crash)).run(
+    st = await pipeline(tmp_path, repo, happy_engine(), studio=studio_failing_from(3, crash)).run(
         text_card("avatars")
     )
     assert st.blocked == "RuntimeError: the engine fell over" and st.stage == "layers"
-    assert len(st.runs) == 3 and st.attempt is not None  # refine, layers, and the layer that died
-    assert [e["studio_run"] for e in kinds(st.path / "events.jsonl", "layer_start")] == st.runs[2:]
+    assert len(st.runs) == 4 and st.attempt is not None  # refine, layers, the package, the layer that died
+    assert [e["studio_run"] for e in kinds(st.path / "events.jsonl", "layer_start")] == st.runs[3:]
     assert json.loads((st.path / "state.json").read_text())["runs"] == st.runs
 
 
@@ -1807,8 +1921,7 @@ async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
     first = FakeEngine(
         {
             "product": [STORY],
-            "architect": [LAYERS],
-            "qa": [DONE],
+            "architect": [LAYERS, PKG1],
             "coder": [NOTE, DONE],
             "reviewer": [APPROVE],
         }
@@ -1818,7 +1931,11 @@ async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
     assert st.base is not None and reads == [st.base["sha"]]
     commit_file(repo, "AGENTS.md", agents_md("false"), "a stricter gate on the trunk")  # the trunk moves on
     again = FakeEngine(
-        {"qa": [DONE, DONE], "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE], "reviewer": [APPROVE, APPROVE]}
+        {
+            "architect": PKGS,
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
     )
     st = await pipeline(tmp_path, repo, again, test_cmd=None).run(card)
     assert st.blocked is None and st.stage == "review"
@@ -1893,7 +2010,7 @@ async def test_each_pr_body_names_the_gate_its_own_layer_passed(tmp_path: Path) 
     card = text_card("Let users upload an avatar")
     st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(card)
     assert st.stage == "layers" and st.blocked is not None and list(st.built) == ["01"]
-    again = FakeEngine({"qa": [DONE], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again, test_cmd="./check.sh").run(card)
     assert st.blocked is None and st.stage == "review"
     assert [st.built[n]["gate"] for n in ("01", "02")] == [
@@ -1966,11 +2083,11 @@ async def test_a_tag_named_like_a_layers_branch_is_not_the_next_layers_base(tmp_
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     card = text_card("Let users upload an avatar")
-    first = happy_engine(qa=[DONE, DONE], coder=[WRITE_PASS, RUN, DONE, DONE], reviewer=[APPROVE, APPROVE])
+    first = happy_engine(coder=[WRITE_PASS, RUN, DONE, DONE], reviewer=[APPROVE, APPROVE])
     st = await pipeline(tmp_path, repo, first).run(card)
     assert list(st.built) == ["01"] and st.blocked is not None and "changed nothing" in st.blocked
     git(repo, "tag", B1, trunk)
-    again = FakeEngine({"qa": [DONE], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
+    again = FakeEngine({"architect": [PKG2], "coder": [NOTE, DONE], "reviewer": [APPROVE]})
     st = await pipeline(tmp_path, repo, again).run(card)
     assert st.blocked is None and st.stage == "review"
     git(repo, "merge-base", "--is-ancestor", f"refs/heads/{B1}", f"refs/heads/{B2}")  # on layer 01's work
@@ -1994,12 +2111,13 @@ async def test_the_architect_surveys_while_product_refines_and_plans_from_its_no
     (repo / "AGENTS.md").write_text("# rules\nthe gate is ./check.sh\n")
     git(repo, "add", "AGENTS.md")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "agents")
-    engine = happy_engine(architect=[SURVEY_NOTES, LAYERS, LAYERS])
+    engine = happy_engine(architect=[SURVEY_NOTES, LAYERS, LAYERS, *PKGS])
     settings = {"survey": True, "plan_round_steps": 2}
     st = await pipeline(tmp_path, repo, engine, story=settings).run(text_card("Let users upload an avatar"))
     assert st.blocked is None and st.stage == "review"
     arch = architect_requests(engine)
-    assert len(arch) == 3  # the survey, round 1, round 2 (the same plan: converged, no round 3)
+    # the survey, round 1, round 2 (the same plan: converged, no round 3), then a package per layer
+    assert len(arch) == 5
     assert "Do not plan and do not write JSON" in text_of(arch[0])
     layers_ask = text_of(arch[1])
     assert "store.py:10 Store class" in layers_ask  # the survey's notes
@@ -2021,7 +2139,7 @@ async def test_the_architect_surveys_while_product_refines_and_plans_from_its_no
 
 async def test_a_survey_that_fails_is_no_notes_and_the_story_goes_on(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
-    engine = happy_engine(architect=[CUT_THINKING, LAYERS])
+    engine = happy_engine(architect=[CUT_THINKING, LAYERS, *PKGS])
     st = await pipeline(tmp_path, repo, engine, story={"survey": True}).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review"
     assert st.survey == "" and kinds(st.path / "events.jsonl", "survey_failed")
@@ -2034,10 +2152,10 @@ async def test_a_story_that_has_refined_is_not_surveyed_again_on_resume(tmp_path
     first = happy_engine(architect=[SURVEY_NOTES, nonsense, nonsense])  # layers: two unusable replies, a stop
     stopped = await pipeline(tmp_path, repo, first, story={"survey": True}).run(text_card("avatars"))
     assert stopped.stage == "refine" and stopped.blocked and stopped.survey == SURVEY_NOTES.text
-    again = happy_engine(architect=[LAYERS])
+    again = happy_engine(architect=[LAYERS, *PKGS])
     st = await pipeline(tmp_path, repo, again, story={"survey": True}).run(text_card("avatars"))
     arch = architect_requests(again)
-    assert len(arch) == 1 and "Do not plan and do not write JSON" not in text_of(arch[0])  # layers, no survey
+    assert len(arch) == 3 and "Do not plan and do not write JSON" not in text_of(arch[0])  # layers, no survey
     assert "store.py:10 Store class" in text_of(arch[0])  # the notes kept from the first run
     assert st.blocked is None and st.stage == "review"
 
@@ -2048,7 +2166,7 @@ async def test_one_go_planning_asks_the_architect_once_and_never_continues_the_c
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine()
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))  # the helper's default: 0 and off
-    assert st.stage == "review" and len(architect_requests(engine)) == 1
+    assert st.stage == "review" and len(architect_requests(engine)) == 3  # the plan once, a package per layer
     assert not kinds(st.path / "events.jsonl", "plan_round")
 
 
