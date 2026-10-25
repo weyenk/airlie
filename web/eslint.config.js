@@ -16,6 +16,11 @@ export default defineConfig(
     rules: { "vue/multi-word-component-names": "off", "vue/require-default-prop": "off" },
   },
   {
+    // Chat's thread and message bubble, named as the plan names them
+    files: ["src/screens/chat/Thread.vue", "src/screens/chat/Bubble.vue"],
+    rules: { "vue/multi-word-component-names": "off" },
+  },
+  {
     // plain node scripts
     files: ["scripts/**/*.mjs"],
     languageOptions: { globals: { console: "readonly", process: "readonly" } },
