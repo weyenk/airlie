@@ -234,6 +234,42 @@ async def test_a_writers_files_committed_by_a_checkpoint_still_count_as_already_
     assert by_id["t"] == () and by_id["fix"] == ("tests/test_x.py",)
 
 
+async def test_prepare_runs_on_the_worktree_after_the_base_commit_and_before_the_plan(
+    tmp_path: Path,
+) -> None:
+    """P1 (2026-10-24): a story layer's package is placed by a hook, not written by a role. It runs on the
+    worktree once the base is committed and before the repo map, so the map shows what it placed and
+    `base_sha` is the commit before it; the coder starts with the placed files as already written."""
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
+    build = Plan((), (Subtask("build", "make the check pass", "coder"),))
+    engine = FakeEngine({"coder": [WRITE_PASS, RUN, DONE]})
+    orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+    placed: list[str] = []
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    async def prepare(worktree: Path) -> None:
+        assert orch.worktree == worktree and orch.base_sha == head_sha(worktree)
+        (worktree / "tests").mkdir(exist_ok=True)
+        (worktree / "tests" / "test_given.py").write_text("def test_given():\n    assert True\n")
+        placed.append(commit_wip(worktree, "studio: layer 01 (package)"))
+
+    orch.team.run = run  # type: ignore[method-assign]
+    await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=build, synthesise=False, prepare=prepare
+    )
+    assert placed and orch.base_sha != placed[0]
+    assert orch.worktree is not None
+    assert _git(orch.worktree, "rev-parse", f"{placed[0]}^").strip() == orch.base_sha
+    assert seen[0].already_written == ("tests/test_given.py",)
+    assert "tests/test_given.py" in orch.preamble
+
+
 def plan_with_criteria() -> FakeReply:
     d = json.loads(PLAN.text)
     d["subtasks"][0]["brief"] = (
