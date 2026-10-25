@@ -8,7 +8,8 @@ Behaviour is the pipeline's from before the move; nothing here is new."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -21,6 +22,10 @@ from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask
 
 StudioFactory = Callable[[], StudioOrchestrator]
+Say = Callable[[str | None], Awaitable[str]]
+"""One side of a conversation with a specialist: the first call (any argument) runs the opening brief,
+each later call sends its text as a follow-up in the same conversation, and each returns what the
+specialist said."""
 
 
 class StoryBlocked(Exception):
@@ -87,10 +92,12 @@ class Asker:
         brief: str,
         at: str | None = None,
         steps: int | None = None,
+        images: Sequence[Path] = (),
     ) -> str:
         """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
         the record's base, or at commit `at` (removed after, even when the studio raises), no synthesis.
-        `steps` limits its steps (the role's own limit when None)."""
+        `steps` limits its steps (the role's own limit when None); `images` are shown to a role that can see
+        (P4: a picture the person attached to an initiative)."""
         plan = Plan((), (Subtask(stage, brief, role),))
         orch, base = self.start_ask(st, stage, at)
         try:
@@ -102,10 +109,54 @@ class Asker:
                 detach=True,
                 synthesise=False,
                 max_steps=steps,
+                images=images,
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
         return self.answer(report.teams[0] if report.teams else None, role, orch)
+
+    @asynccontextmanager
+    async def conversation(
+        self,
+        st: Recorder,
+        stage: str,
+        role: str,
+        brief: str,
+        *,
+        steps: int,
+        at: str | None = None,
+        images: Sequence[Path] = (),
+    ) -> AsyncIterator[Say]:
+        """A read-only conversation with `role` (P4, 2026-10-25): the first `say(...)` runs `brief` as the
+        subtask (detached worktree at the record's base, or `at`), each later `say(text)` sends `text` as a
+        follow-up in the same conversation (`follow_up`, `steps` steps), and the worktree is removed when the
+        block ends, even when it raises. Product's imagining holds one open across consultations."""
+        plan = Plan((), (Subtask(stage, brief, role),))
+        orch, base = self.start_ask(st, stage, at)
+        started = False
+
+        async def say(nudge: str | None = None) -> str:
+            nonlocal started
+            if not started:
+                started = True
+                report = await orch.execute_task(
+                    f"{stage}: {st.card['title']}",
+                    repo=self.repo,
+                    plan=plan,
+                    base=base.get("sha"),
+                    detach=True,
+                    synthesise=False,
+                    max_steps=steps,
+                    images=images,
+                )
+                return self.answer(report.teams[0] if report.teams else None, role, orch)
+            await orch.follow_up(stage, nudge or "", max_steps=steps)
+            return self.answer(orch.runs[stage].result, role, orch)
+
+        try:
+            yield say
+        finally:
+            remove_worktree(self.repo, orch.run_dir.path / "studio")
 
     async def ask_in_rounds[T](
         self,

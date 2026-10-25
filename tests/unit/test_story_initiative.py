@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from airlie.board import BoardStore, Item
-from airlie.story.initiative import Initiative, answer_ends_questions
+from airlie.story.initiative import (
+    Initiative,
+    answer_ends_questions,
+    parse_question_reply,
+)
 from airlie.story.model import StoryError
 
 
@@ -72,3 +76,22 @@ def test_an_initiative_without_a_repo_label_is_refused_with_a_reason(tmp_path: P
 )
 def test_go_or_skip_alone_ends_the_questions_and_a_sentence_does_not(text: str, ends: bool) -> None:
     assert answer_ends_questions(text) is ends
+
+
+def test_a_question_reply_parses_and_a_flawed_one_says_why() -> None:
+    ok = parse_question_reply({"type": "question", "text": "  What happens first?  "})
+    assert ok.question == "What happens first?" and ok.assumptions == ()
+    done = parse_question_reply({"type": "questions_done", "assumptions": ["one user", "online"]})
+    assert done.question is None and done.assumptions == ("one user", "online")
+    assert parse_question_reply({"type": "questions_done"}).assumptions == ()
+    for obj, why in [
+        (None, "no JSON"),
+        ({"type": "plan"}, "questions_done"),
+        ({"type": "question"}, "non-empty"),
+        ({"type": "question", "text": "  "}, "non-empty"),
+        ({"type": "question", "text": "a" * 601}, "under 600"),
+        ({"type": "question", "text": "Who? And why?"}, "one question at a time"),
+        ({"type": "questions_done", "assumptions": 3}, "list of strings"),
+    ]:
+        with pytest.raises(StoryError, match=why):
+            parse_question_reply(obj)

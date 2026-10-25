@@ -28,6 +28,7 @@ from airlie.story.briefs import (
     layers_brief,
     package_brief,
     plan_brief,
+    questions_brief,
     refine_brief,
     replan_brief,
     survey_brief,
@@ -50,6 +51,7 @@ from tests.unit.test_story_briefs import (
     CARD,
     EPIC,
     EPIC_TEXT,
+    INITIATIVE,
     LAYERS,
     REPLAN_PLAN,
     REPLAN_PROGRESS,
@@ -309,6 +311,20 @@ CASES |= {
     ),
     "package-tests-rules": lambda: text("package-tests-rules"),
     "package-contract": lambda: text("package-contract"),
+}
+CASES |= {
+    "specs-questions": lambda: text("specs-questions", max_questions=5),
+    "fn:briefs.questions_brief:plain": partial(
+        questions_brief, INITIATIVE, {}, [], max_questions=5, feedback=None
+    ),
+    "fn:briefs.questions_brief:full": partial(
+        questions_brief,
+        INITIATIVE,
+        {"o/r": "# R\nreadme text"},
+        [{"q": "What is it for?", "a": "Speed."}, {"q": "Who uses it?", "a": None}],
+        max_questions=5,
+        feedback=BAD_JSON,
+    ),
 }
 
 

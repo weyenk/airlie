@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from airlie.board import Item
 from airlie.story.board import Card
 from airlie.story.checkout import repo_labels
 from airlie.story.epic import REPOSITORY
-from airlie.story.model import StoryError
+from airlie.story.model import NO_JSON, StoryError, _encodable, _strs
 
 BUDGET_LABEL = re.compile(r"budget:(\d+(?:\.\d+)?)h")
 UPLOAD_LINK = re.compile(r"/v1/airlie/uploads/([A-Za-z0-9_-]+)")
@@ -85,3 +86,47 @@ class Initiative:
 def answer_ends_questions(text: str) -> bool:
     """A reply of "go" or "skip" alone, in any case, with trailing punctuation: the person has said enough."""
     return text.strip().strip(".!?,;: ").lower() in _END_WORDS
+
+
+# ---- the question stage (D2) ----
+
+QUESTION_CONTRACT = """End your reply with one ```json block holding exactly one object, either
+{"type": "question", "text": "one open question"}
+or, when everything that matters is in the request,
+{"type": "questions_done", "assumptions": ["what you will work from, one line each"]}"""
+
+MAX_QUESTION_CHARS = 600
+
+
+@dataclass(frozen=True)
+class QuestionReply:
+    """Product's reply in the question stage: one question, or the end of the questions with the assumptions
+    it goes on with."""
+
+    question: str | None
+    assumptions: tuple[str, ...]
+
+
+def parse_question_reply(obj: dict[str, Any] | None) -> QuestionReply:
+    """StoryError (product's next try): no JSON; a type that is neither `question` nor `questions_done`; a
+    question that is empty, over 600 characters or holds two question marks (one question at a time);
+    assumptions that are not strings."""
+    if obj is None:
+        raise StoryError(NO_JSON)
+    kind = obj.get("type")
+    if kind == "questions_done":
+        raw = obj.get("assumptions")
+        if raw is not None and not isinstance(raw, list | str):
+            raise StoryError("'assumptions' must be a list of strings")
+        return QuestionReply(None, _strs(raw, "'assumptions'"))
+    if kind != "question":
+        raise StoryError('reply with {"type": "question", ...} or {"type": "questions_done", ...}')
+    text = obj.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise StoryError("a question needs a non-empty 'text'")
+    text = _encodable(text.strip(), "the question")
+    if len(text) > MAX_QUESTION_CHARS:
+        raise StoryError(f"the question is {len(text)} characters; keep it under {MAX_QUESTION_CHARS}")
+    if text.count("?") > 1:
+        raise StoryError("ask one question at a time: that message holds more than one question mark")
+    return QuestionReply(text, ())
