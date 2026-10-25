@@ -159,24 +159,32 @@ def _runs_of(st: StoryState, nn: str, mine: Sequence[dict[str, Any]]) -> tuple[s
     return tuple(seen)
 
 
-def _diagnoses(st: StoryState, nn: str) -> tuple[tuple[str, str, str], ...]:
-    """(class, kind, released_by) from `diagnosis/*.json` of this story for layer `nn`, oldest first. A
-    file that cannot be read is skipped; a person is the default for who released it."""
+def _diagnoses(st: StoryState, nn: str, events: Sequence[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    """(class, kind, released_by) for each block of layer `nn`, oldest first, from P5a's
+    `diagnosis/<n>.json` (`pack.layer`, `classified.class`, `classified.kind`, `classified.signature`). A
+    file that cannot be read is skipped. Who released it is not in the file: the story's events say. A
+    `fix_filed` or `fix_linked` event with the block's signature names the fix card; a `resumed_after_fix`
+    event naming that fix means it was released by it; a fix linked but not yet resumed reads "<fix> (not
+    yet released)"; no fix event means a person released it."""
+    fixes = {
+        str(e["signature"]): str(e["fix"])
+        for e in events
+        if e.get("kind") in ("fix_filed", "fix_linked") and e.get("signature") and e.get("fix")
+    }
+    resumed = {str(e["fix"]) for e in events if e.get("kind") == "resumed_after_fix" and e.get("fix")}
     out: list[tuple[str, str, str]] = []
     for f in sorted((st.path / "diagnosis").glob("*.json"), key=lambda p: (len(p.stem), p.stem)):
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(d, dict) or str(d.get("layer")) != nn:
+        pack = d.get("pack") if isinstance(d, dict) else None
+        found = d.get("classified") if isinstance(d, dict) else None
+        if not isinstance(pack, dict) or not isinstance(found, dict) or str(pack.get("layer")) != nn:
             continue
-        out.append(
-            (
-                str(d.get("class") or "unclassified"),
-                str(d.get("kind") or "unknown"),
-                str(d.get("released_by") or "a person"),
-            )
-        )
+        fix = fixes.get(str(found.get("signature")))
+        who = "a person" if fix is None else fix if fix in resumed else f"{fix} (not yet released)"
+        out.append((str(found.get("class") or "unclassified"), str(found.get("kind") or "unknown"), who))
     return tuple(out)
 
 
@@ -201,7 +209,7 @@ def layer_cost(st: StoryState, nn: str) -> Cost:
                 tokens_in += int(step.get("prompt_tokens") or 0)
                 tokens_out += int(step.get("completion_tokens") or 0)
     attempts = max(1, sum(1 for e in mine if e.get("kind") == "layer_start"))
-    return Cost(round(seconds / 60, 1), tokens_in, tokens_out, attempts, _diagnoses(st, nn))
+    return Cost(round(seconds / 60, 1), tokens_in, tokens_out, attempts, _diagnoses(st, nn, events))
 
 
 def chain_items(store: BoardStore | None, key: str) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:

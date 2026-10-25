@@ -165,16 +165,35 @@ def test_the_checks_carry_the_red_check_the_package_findings_the_gate_and_the_re
     assert [b.model for b in p.builders] == ["base"]
 
 
+def diagnosis(layer: str, cls: str, kind: str, sig: str) -> str:
+    """A diagnosis file in P5a's shape: pack, classified, muse, next."""
+    classified = {"class": cls, "kind": kind, "where": "w", "signature": sig, "evidence": [], "rule": "r"}
+    return json.dumps({"pack": {"layer": layer, "n": 1}, "classified": classified, "muse": None, "next": ""})
+
+
 def test_a_resumed_layer_lists_its_blocks_with_their_classes(tmp_path: Path) -> None:
     st = state(tmp_path)
     d = st.path / "diagnosis"
     d.mkdir()
-    first = {"layer": "01", "class": "model", "kind": "gate_red", "released_by": "AIR-12"}
-    (d / "1.json").write_text(json.dumps(first))
-    (d / "2.json").write_text(json.dumps({"layer": "02", "class": "other", "kind": "x"}))
-    (d / "3.json").write_text("not json")
+    (d / "1.json").write_text(diagnosis("01", "process", "hold_trap", "sig-a"))
+    (d / "2.json").write_text(diagnosis("01", "config", "max_steps", "sig-b"))
+    (d / "3.json").write_text(diagnosis("01", "model", "gate_red", "sig-c"))
+    (d / "4.json").write_text(diagnosis("02", "process", "other", "sig-d"))
+    (d / "5.json").write_text("not json")
+    (d / "6.json").write_text("[1]")
+    with (st.path / "events.jsonl").open("a", encoding="utf-8") as f:
+        for row in (
+            {"ts": 300, "kind": "fix_filed", "story": "AIR-9", "fix": "AIR-12", "signature": "sig-a"},
+            {"ts": 301, "kind": "fix_linked", "story": "AIR-9", "fix": "AIR-13", "signature": "sig-b"},
+            {"ts": 400, "kind": "resumed_after_fix", "fix": "AIR-12"},
+        ):
+            f.write(json.dumps(row) + "\n")
     cost = layer_cost(st, "01")
-    assert cost.blocks == (("model", "gate_red", "AIR-12"),)
+    assert cost.blocks == (
+        ("process", "hold_trap", "AIR-12"),
+        ("config", "max_steps", "AIR-13 (not yet released)"),
+        ("model", "gate_red", "a person"),
+    )
     assert cost.minutes == 2.0 and cost.tokens_in == 3500 and cost.tokens_out == 125 and cost.attempts == 1
 
 
