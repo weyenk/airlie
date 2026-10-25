@@ -41,7 +41,7 @@ from airlie.story.briefs import (
     revise_brief,
     survey_brief,
 )
-from airlie.story.initiative import Ask, ReadReply
+from airlie.story.initiative import Ask, Attachment, ReadReply
 from airlie.story.layer_checks import (
     ASSERTION_FREE,
     EXISTING_FAILS,
@@ -365,7 +365,10 @@ CASES |= {
         rounds_left=1,
         budget_hours=20.0,
         feedback=BAD_JSON,
-        attachments=["screenshot.png"],
+        attachments=[
+            Attachment("notes.txt", "text", "Make it like Linear.", None),
+            Attachment("screenshot.png", "image", None, Path("/x/shot.png")),
+        ],
     ),
     "fn:briefs.consult_brief": partial(
         consult_brief, INITIATIVE, [{"q": "q", "a": "a"}], Ask("ux", "How would a person move?"), chars=4000
@@ -389,7 +392,7 @@ CASES |= {
         [{"q": "What is it for?", "a": "Speed."}],
         Ask("design", "the board screen", "mockups", "E1"),
         count=3,
-        attachments=["linear.png"],
+        attachments=[Attachment("linear.png", "image", None, Path("/x/linear.png"))],
         feedback=BAD_JSON,
     ),
     "fn:briefs.render_brief": partial(

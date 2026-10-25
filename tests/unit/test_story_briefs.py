@@ -35,6 +35,7 @@ from airlie.story.initiative import (
     EPICS_CONTRACT,
     QUESTION_CONTRACT,
     Ask,
+    Attachment,
     Initiative,
 )
 from airlie.story.lessons import Lesson
@@ -800,14 +801,18 @@ def test_the_imagine_brief_carries_the_qa_the_surveys_the_lessons_the_seats_and_
         rounds_left=3,
         budget_hours=20.0,
         feedback="bad json",
-        attachments=["screenshot.png"],
+        attachments=[Attachment("screenshot.png", "image", None, Path("/x/shot.png"))],
     )
     assert "You may consult these seats: architect, ux." in brief and "at most 4 asks" in brief
     assert "3 round(s) of consultation left" in brief
     assert "> Speed." in brief and "- one user" in brief
     assert "## The architect's notes on o/r" in brief and "> The board lives in web/src/Board.vue" in brief
     assert "o/other" not in brief.split("## The architect's notes")[1].split("##")[0]  # empty notes: left out
-    assert "Layer 01 storage" in brief and "screenshot.png" in brief and "Budget: 20 hours" in brief
+    assert (
+        "Layer 01 storage" in brief
+        and "- screenshot.png (a picture; shown to ux and design)" in brief
+        and "Budget: 20 hours" in brief
+    )
     assert CONSULT_CONTRACT in brief and EPICS_CONTRACT in brief
     assert brief.rstrip().endswith("Your previous reply could not be used: bad json. Reply again.")
     bare = imagine_brief(

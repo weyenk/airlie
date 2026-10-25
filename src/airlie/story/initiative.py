@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from airlie.board import Item
@@ -95,6 +96,19 @@ class Initiative:
     def card(self) -> Card:
         """The initiative as the briefs that take a Card read it (the architect's survey)."""
         return Card(key=self.key, id=self.key, ref=self.key, title=self.title, description=self.text)
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """A file the person linked in the initiative (D12), read for the briefs. `text` is a text file's or a
+    PDF's text as the Chat renders it (clipped to 6,000 characters), or a placeholder saying why there is
+    none; `path` is a picture's file on disk, for the seats that can see. A picture is named in product's
+    brief, not shown."""
+
+    name: str
+    kind: str
+    text: str | None
+    path: Path | None
 
 
 def answer_ends_questions(text: str) -> bool:

@@ -14,12 +14,14 @@ approves an epic or merges anything."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from airlie.board import Comment, Item
 from airlie.config import AirlieConfig
@@ -47,6 +49,7 @@ from airlie.story.epic_state import EpicState
 from airlie.story.initiative import (
     LABEL_INITIATIVE,
     Ask,
+    Attachment,
     EpicDraft,
     EpicsReply,
     Initiative,
@@ -96,11 +99,12 @@ class InitiativePipeline:
         studio: StudioFactory,
         repo_of: Callable[[str], Path | None],
         costs: StoryCosts,
-        uploads: object | None = None,
+        uploads: Any | None = None,
     ) -> None:
         """`repo_of(owner/name)` is the checkout of a repository the line has (None: it has none); it may
         raise StorySetupError (a checkout that cannot be used), which blocks the initiative with its words.
-        `costs` prices the epics; `uploads` resolves the attachments the text links."""
+        `costs` prices the epics; `uploads` (the serve `UploadStore`) resolves the attachments the text
+        links."""
         self.cfg = cfg
         self.s = cfg.story
         self.specs = cfg.story.specs
@@ -109,6 +113,7 @@ class InitiativePipeline:
         self.repo_of = repo_of
         self.costs = costs
         self.uploads = uploads
+        self._attached: dict[str, tuple[Attachment, ...]] = {}
         self.dir = initiatives_dir(cfg)
 
     # ---- the turn ----
@@ -218,6 +223,7 @@ class InitiativePipeline:
                 st.qa,
                 max_questions=self.specs.max_questions,
                 feedback=feedback,
+                attachments=self._attachments(initiative),
             )
 
         def parse(text: str) -> QuestionReply:
@@ -280,6 +286,7 @@ class InitiativePipeline:
             rounds_left=self.specs.max_rounds,
             budget_hours=initiative.budget_hours,
             feedback=None,
+            attachments=self._attachments(initiative),
         )
         try:
             async with asker.conversation(
@@ -496,10 +503,11 @@ class InitiativePipeline:
         epic = ask.epic or ""
         count = self.specs.mockup_options
         pictures = self._pictures(initiative)
+        attached = [a for a in self._attachments(initiative) if a.path is not None]
 
         def brief(feedback: str | None) -> str:
             return directions_brief(
-                initiative, st.qa, ask, count=count, attachments=[p.name for p in pictures], feedback=feedback
+                initiative, st.qa, ask, count=count, attachments=attached, feedback=feedback
             )
 
         directions = await asker.usable(
@@ -514,7 +522,7 @@ class InitiativePipeline:
         )
         look = mockup_look(asker.repo)
         drawn = await asyncio.gather(
-            *(self._draw(st, asker, epic, n, d, look) for n, d in enumerate(directions, 1))
+            *(self._draw(st, asker, epic, n, d, look, pictures) for n, d in enumerate(directions, 1))
         )
         target = mockup_dir(self.cfg.observability.state_dir, initiative.key, epic)
         target.mkdir(parents=True, exist_ok=True)
@@ -535,7 +543,14 @@ class InitiativePipeline:
         return "\n".join(lines)
 
     async def _draw(
-        self, st: InitiativeState, asker: Asker, epic: str, n: int, direction: Direction, look: str
+        self,
+        st: InitiativeState,
+        asker: Asker,
+        epic: str,
+        n: int,
+        direction: Direction,
+        look: str,
+        pictures: Sequence[Path] = (),
     ) -> str | None:
         """One option's page by design, checked; one try more with the findings, then None (dropped)."""
         max_chars = MAX_PAGE_CHARS
@@ -549,7 +564,12 @@ class InitiativePipeline:
             )
             try:
                 reply = await asker.ask(
-                    st, f"render:{epic}:{n}", "design", brief, steps=self.specs.consult_steps
+                    st,
+                    f"render:{epic}:{n}",
+                    "design",
+                    brief,
+                    steps=self.specs.consult_steps,
+                    images=pictures,
                 )
             except Exception as e:  # noqa: BLE001 - a page design could not draw is a dropped option, not a stop
                 findings = [f"design could not draw the page: {_cap(_reason(e))}"]
@@ -564,8 +584,58 @@ class InitiativePipeline:
         return None
 
     def _pictures(self, initiative: Initiative) -> list[Path]:
-        """The pictures the person attached, for the vision seats (Task 8 resolves them)."""
-        return []
+        """The pictures the person attached, for the vision seats (ux and design)."""
+        return [a.path for a in self._attachments(initiative) if a.path is not None]
+
+    def _attachments(self, initiative: Initiative) -> tuple[Attachment, ...]:
+        """The files the initiative's text links (D12), resolved through the upload store: a text file's or
+        a PDF's text (clipped to 6,000 characters), a picture as a file the vision seats are shown. An upload
+        the store no longer has is a placeholder, never a stop. The initiative's uploads are the person's
+        own, so there is no owner check here: the card was theirs to write. None without a store or a
+        link."""
+        if self.uploads is None or not initiative.attachments:
+            return ()
+        if initiative.key in self._attached:
+            return self._attached[initiative.key]
+        from airlie.serve.uploads import as_parts  # here, not at the top: serve imports the story package
+
+        found: list[Attachment] = []
+        for uid in initiative.attachments:
+            upload = self.uploads.get(uid)
+            if upload is None:
+                found.append(Attachment(uid, "missing", "[attachment is no longer available]", None))
+                continue
+            try:
+                if upload.kind == "image":
+                    found.append(
+                        Attachment(upload.name, "image", None, self._picture_file(initiative, upload))
+                    )
+                elif upload.kind in ("text", "pdf"):
+                    parts = as_parts(self.uploads, upload, media=False)
+                    found.append(Attachment(upload.name, upload.kind, str(parts[0].get("text", "")), None))
+                else:
+                    found.append(Attachment(upload.name, upload.kind, None, None))
+            except Exception as e:  # noqa: BLE001 - an attachment that cannot be read is named, not a stop
+                found.append(
+                    Attachment(
+                        upload.name, upload.kind, f"[attachment could not be read: {_cap(_reason(e))}]", None
+                    )
+                )
+        self._attached[initiative.key] = tuple(found)
+        return self._attached[initiative.key]
+
+    def _picture_file(self, initiative: Initiative, upload: Any) -> Path:
+        """A picture as a file with its right suffix and a size the engine takes (the store scales a big photo
+        and turns it upright), under the initiative's own directory: what the vision seats are shown."""
+        assert self.uploads is not None
+        url = self.uploads.picture(upload)  # data:<mime>;base64,<data>
+        header, _, data = url.partition(",")
+        suffix = ".png" if "image/png" in header else ".jpg"
+        target = self.dir / initiative.key / "attachments"
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / f"{upload.id}{suffix}"
+        path.write_bytes(base64.b64decode(data))
+        return path
 
     # ---- the planner's read (D7) and the cards (D8) ----
 
