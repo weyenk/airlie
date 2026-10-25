@@ -4,7 +4,7 @@ import { ApiError, onUnauthorized, request } from "@/api";
 import { activeRouter } from "@/router";
 import { useFeedStore } from "./feed";
 
-export type Me = { name: string; role: "admin" | "member"; via: string };
+export type Me = { user_id?: string; name: string; role: "admin" | "member"; via: string };
 
 /** Who is signed in, and what to do the moment nobody is. */
 export const useSessionStore = defineStore("session", () => {

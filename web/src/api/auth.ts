@@ -2,7 +2,7 @@
 // (bytes as base64url). Current Safari and Chrome convert it themselves (parseCreationOptionsFromJSON, toJSON);
 // the helpers here cover the rest. Sign-in calls are `quiet401`: a refused passkey is not "you were signed out".
 
-import { request } from "./index";
+import { request, setKey } from "./index";
 
 export type Role = "admin" | "member";
 
@@ -19,8 +19,22 @@ export function me(): Promise<Me> {
 }
 
 /** Admin only. */
-export function listUsers(): Promise<User[]> {
-  return request<User[]>("/v1/auth/users");
+export function listUsers(init: { quiet401?: boolean } = {}): Promise<User[]> {
+  return request<User[]>("/v1/auth/users", init);
+}
+
+/** Sign in with the admin key: a call that needs it, answered with the key, then kept. A refused key is an
+ * ApiError with status 401 and is not kept. */
+export async function signInWithKey(key: string): Promise<void> {
+  await request("/v1/models", { key, quiet401: true });
+  setKey(key);
+}
+
+/** Who an invite is for (the registration options name them), without using it up. A used or expired invite is an
+ * ApiError with status 410. */
+export async function peekInvite(invite: string): Promise<string> {
+  const options = await request<Json>("/v1/auth/register/options", { method: "POST", body: { invite }, quiet401: true, key: "" });
+  return String(options.user?.displayName || options.user?.name || "");
 }
 
 export function createInvite(body: { name: string; role: Role; login?: string | null }): Promise<Invite> {
@@ -107,24 +121,26 @@ export function passkeysSupported(): boolean {
 /** Register a passkey from an invite token and sign in; resolves with the person. A used or expired invite is an
  * ApiError with status 410. */
 export async function passkeyRegister(invite: string): Promise<User> {
-  const options = await request<Json>("/v1/auth/register/options", { method: "POST", body: { invite }, quiet401: true });
+  const options = await request<Json>("/v1/auth/register/options", { method: "POST", body: { invite }, quiet401: true, key: "" });
   const cred = (await navigator.credentials.create({ publicKey: creationOptions(options) })) as PublicKeyCredential;
   const out = await request<{ user: User }>("/v1/auth/register/verify", {
     method: "POST",
     body: { invite, credential: credentialToJSON(cred) },
     quiet401: true,
+    key: "",
   });
   return out.user;
 }
 
 /** Sign in with a passkey already on this device (or synced to it); resolves with the person. */
 export async function passkeyLogin(): Promise<User> {
-  const options = await request<Json>("/v1/auth/login/options", { method: "POST", quiet401: true });
+  const options = await request<Json>("/v1/auth/login/options", { method: "POST", quiet401: true, key: "" });
   const cred = (await navigator.credentials.get({ publicKey: requestOptions(options) })) as PublicKeyCredential;
   const out = await request<{ user: User }>("/v1/auth/login/verify", {
     method: "POST",
     body: { credential: credentialToJSON(cred) },
     quiet401: true,
+    key: "",
   });
   return out.user;
 }

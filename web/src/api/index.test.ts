@@ -118,3 +118,14 @@ test("a 401 from a helper-signalled call reaches the unauthorized handler once",
   onUnauthorized(undefined);
   expect(heard).toHaveBeenCalledTimes(1);
 });
+
+test("a key given to a call replaces the stored one; an empty key sends none", async () => {
+  localStorage.setItem("airlie.key", "stored");
+  const fetchMock = vi.fn(async () => Response.json({}));
+  vi.stubGlobal("fetch", fetchMock);
+  await request("/v1/a", { key: "given" });
+  await request("/v1/b", { key: "" });
+  const sent = (n: number) => (fetchMock.mock.calls[n] as unknown as [string, RequestInit])[1].headers;
+  expect(sent(0)).toEqual({ Authorization: "Bearer given" });
+  expect(sent(1)).toEqual({});
+});

@@ -25,3 +25,21 @@ test("Cancel and Escape resolve false", async () => {
   expect(await q).toBe(false);
   w.unmount();
 });
+
+test("a question can bring its own title and confirm label; the next one without goes back to the defaults", async () => {
+  const w = mount(ConfirmDialog, { attachTo: document.body });
+  const p = useConfirm().confirm("Remove Jess?", { title: "Revoke Jess?", confirmLabel: "Revoke" });
+  await flushPromises();
+  expect(document.body.querySelector("[role=dialog] h2")!.textContent).toBe("Revoke Jess?");
+  expect(document.body.querySelector("[data-confirm-ok]")!.textContent).toBe("Revoke");
+  (document.body.querySelector("[data-confirm-cancel]") as HTMLElement).click();
+  expect(await p).toBe(false);
+
+  const q = useConfirm().confirm("Sure?");
+  await flushPromises();
+  expect(document.body.querySelector("[role=dialog] h2")!.textContent).toBe("Are you sure?");
+  expect(document.body.querySelector("[data-confirm-ok]")!.textContent).toBe("Confirm");
+  (document.body.querySelector("[data-confirm-ok]") as HTMLElement).click();
+  await q;
+  w.unmount();
+});
