@@ -119,7 +119,6 @@ def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
             "github_app": {"app_id": None},
             "plan_round_steps": 0,
             "survey": False,
-            "tester_role": None,
         },
     }
     path = d / "airlie.yaml"

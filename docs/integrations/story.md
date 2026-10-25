@@ -102,8 +102,9 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
-| `story.tester_role` | `null` (airlie.yaml: `tester`) | the role that writes every layer's tests before its coder builds it, as the coder's contract: checked to fail before any code is written, then read-only to the coder (a test wrong about a name the brief fixes is named in the coder's reply, not changed); `null`: the coder writes its own tests, one subtask per layer, and they are only read for assertions. The 2026-10-16 qa seat was removed for blowing its context on a fast model; this one is a thinking role with the whole layer brief, 20 steps, and the same checks on what it writes |
-| `story.lint_round_steps` | 6 | steps the tester may spend on its lint round, when lint its fixer could not fix is all that is left after its pre-code retry (*The pre-code check*) |
+| `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings (*The package check*) |
+| `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
+| `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
