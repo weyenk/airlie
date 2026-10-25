@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from airlie.story.model import NO_JSON, StoryError, _encodable, _one_line, _strs
 
@@ -36,6 +36,36 @@ _OPENER = "```json"
 class EpicCriterion:
     id: str
     text: str
+
+
+Size = Literal["S", "M", "L"]
+SIZES: tuple[Size, ...] = ("S", "M", "L")
+
+
+@dataclass(frozen=True)
+class StorySketch:
+    """One story of an epic's sketch (P4): enough to price it, not to build it (P3 plans the real stories)."""
+
+    title: str
+    size: Size
+    scope: str
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A choice the specs phase made for the person, with the reason it can be argued with."""
+
+    what: str
+    why: str
+
+
+@dataclass(frozen=True)
+class Viability:
+    """Whether the epic can be built, with the reasons: a `not_viable` core is written and marked, never
+    hidden."""
+
+    verdict: Literal["viable", "risky", "not_viable"]
+    reasons: tuple[str, ...]
 
 
 @dataclass(frozen=True)

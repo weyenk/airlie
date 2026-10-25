@@ -16,26 +16,40 @@ from __future__ import annotations
 import asyncio
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 
 from airlie.board import Comment, Item
 from airlie.config import AirlieConfig
-from airlie.story.asking import Asker, StoryBlocked, StudioFactory
+from airlie.prompts import text as hub_text
+from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
 from airlie.story.board import note
-from airlie.story.briefs import questions_brief
+from airlie.story.briefs import (
+    consult_brief,
+    consult_round_text,
+    imagine_brief,
+    questions_brief,
+    survey_brief,
+)
 from airlie.story.costs import StoryCosts
 from airlie.story.initiative import (
+    Ask,
+    EpicsReply,
     Initiative,
     QuestionReply,
     answer_ends_questions,
+    check_epics,
+    epics_feedback,
+    parse_epics,
+    parse_imagine_reply,
     parse_question_reply,
 )
 from airlie.story.initiative_state import InitiativeState, initiatives_dir
+from airlie.story.lessons import LessonsStore
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import StoryError, StorySetupError
-from airlie.story.pipeline import _cap, _reason, _redact_urls
+from airlie.story.pipeline import SURVEY_STEPS, _cap, _reason, _redact_urls
 from airlie.topology.studio_plan import extract_json_block
 
 REASON_CHARS = 800
@@ -102,6 +116,8 @@ class InitiativePipeline:
         while st.stage == "questions":
             if not await self._questions(st, initiative, asker):
                 return
+        if st.stage == "imagining":
+            await self._specify(st, initiative, asker)
 
     def _checkout(self, repository: str) -> Path:
         """The checkout of `repository`: StoryBlocked says what is wrong when the line has none."""
@@ -211,6 +227,221 @@ class InitiativePipeline:
         st.emit("questions_done", reason=reason, asked=len(st.qa), assumptions=len(assumptions))
         st.finish("imagining")
         return True
+
+    # ---- the imagining (D3) ----
+
+    async def _specify(self, st: InitiativeState, initiative: Initiative, asker: Asker) -> None:
+        """Product leads the imagining in rounds and ends with the epics. The architect's surveys of the
+        repositories run beside the first round, unasked; they join product's conversation in the first
+        follow-up. The conversation with product stays open until the epics are delivered."""
+        self._doing(initiative.key)
+        lessons = LessonsStore(self.cfg.observability.state_dir, asker.repo).recent()
+        surveys = [asyncio.create_task(self._survey(st, initiative, r)) for r in initiative.repositories]
+        opening = imagine_brief(
+            initiative,
+            st.qa,
+            st.assumptions,
+            surveys={},
+            lessons=lessons,
+            consultable=self.specs.consultable,
+            max_asks=self.specs.max_asks_per_round,
+            rounds_left=self.specs.max_rounds,
+            budget_hours=initiative.budget_hours,
+            feedback=None,
+        )
+        try:
+            async with asker.conversation(
+                st, "imagine", self.specs.product_role, opening, steps=self.specs.product_steps
+            ) as say:
+                reply = await self._rounds(st, initiative, asker, say, surveys)
+                self._drafted(st, reply)
+        finally:
+            for task in surveys:
+                task.cancel()
+            await asyncio.gather(*surveys, return_exceptions=True)
+
+    def _drafted(self, st: InitiativeState, reply: EpicsReply) -> None:
+        """The epics are on record as written; the planner reads them next."""
+        st.epics = [d.to_dict() for d in reply.order()]
+        st.summary = reply.summary
+        st.emit(
+            "epics_drafted",
+            epics=[d.id for d in reply.order()],
+            kinds=[d.kind for d in reply.order()],
+            rounds=len({c["round"] for c in st.consultations}),
+        )
+        st.finish("reading")
+
+    async def _survey(self, st: InitiativeState, initiative: Initiative, repository: str) -> str:
+        """The architect reads `repository` for the initiative and takes notes (as a story's survey does),
+        beside product's first round. Never a reason to stop: a survey that fails is no notes."""
+        try:
+            where = self._checkout(repository)
+            text = await Asker(self.cfg, self.studio, where).ask(
+                st,
+                f"survey:{repository}",
+                self.s.architect_role,
+                survey_brief(initiative.card()),
+                steps=SURVEY_STEPS,
+            )
+        except Exception as e:  # noqa: BLE001 - a survey is a head start: whatever fails, the phase goes on
+            st.emit("survey_failed", repository=repository, reason=_cap(_reason(e)))
+            text = ""
+        st.surveys[repository] = text
+        st.save()
+        st.emit("survey_done", repository=repository, chars=len(text))
+        return text
+
+    async def _reply[T](
+        self,
+        st: InitiativeState,
+        say: Say,
+        text: str,
+        parse: Callable[[str], T],
+        *,
+        what: str,
+    ) -> T:
+        """Product's reply `text` parsed; one that cannot be used goes back to it in the same conversation
+        with the reason (`attempts` tries in all), then StoryBlocked with the last reason."""
+        feedback = ""
+        for attempt in range(self.specs.attempts):
+            try:
+                return parse(text)
+            except StoryError as e:
+                feedback = str(e)
+                st.emit("retry", stage="imagine", error=feedback)
+                if attempt + 1 < self.specs.attempts:
+                    text = await say(hub_text("brief-reply-again", feedback=feedback))
+        raise StoryBlocked(f"{self.specs.product_role} did not produce a usable {what}: {feedback}")
+
+    async def _rounds(
+        self,
+        st: InitiativeState,
+        initiative: Initiative,
+        asker: Asker,
+        say: Say,
+        surveys: list[asyncio.Task[str]],
+    ) -> EpicsReply:
+        """Product's replies until it gives the epics: each consult is a round of asks run side by side,
+        their answers handed back as one follow-up. Bounds are the config's: `max_rounds` rounds,
+        `max_asks_per_round` asks, `max_consultations` in all; a reply that asks past them goes back as
+        feedback."""
+        specs = self.specs
+        text = await say(None)
+        rounds = 0
+        notes_sent = False
+
+        def due() -> bool:
+            return rounds >= specs.max_rounds or len(st.consultations) >= specs.max_consultations
+
+        def parse(t: str) -> tuple[Ask, ...] | EpicsReply:
+            got = parse_imagine_reply(
+                extract_json_block(t),
+                initiative=initiative,
+                consultable=specs.consultable,
+                max_asks=specs.max_asks_per_round,
+            )
+            if isinstance(got, tuple) and due():
+                raise StoryError("the consultations are used up: reply with the epics")
+            return got
+
+        while True:
+            got = await self._reply(st, say, text, parse, what="round")
+            if isinstance(got, EpicsReply):
+                return await self._checked(st, initiative, say, got)
+            rounds += 1
+            room = max(0, specs.max_consultations - len(st.consultations))
+            ran, refused = got[:room], got[room:]
+            results = await self._consult(st, initiative, asker, ran, rounds)
+            late: dict[str, str] = {}
+            if not notes_sent:
+                notes_sent = True
+                await asyncio.gather(*surveys, return_exceptions=True)
+                late = dict(st.surveys)
+            left = 0 if due() else specs.max_rounds - rounds
+            st.emit("consult_round", round=rounds, asked=len(got), ran=len(ran), refused=len(refused))
+            text = await say(
+                consult_round_text(
+                    results,
+                    chars=specs.consult_chars,
+                    rounds_left=left,
+                    refused=refused,
+                    limit=specs.max_consultations,
+                    surveys=late,
+                )
+            )
+
+    async def _checked(
+        self, st: InitiativeState, initiative: Initiative, say: Say, reply: EpicsReply
+    ) -> EpicsReply:
+        """The mechanical checks on the epics: findings go back to product once; its answer stands, with an
+        overrun still named (an event) when it kept one."""
+        found = check_epics(reply, budget_hours=initiative.budget_hours, estimate=self.costs.estimate)
+        if not found:
+            return reply
+        st.emit(
+            "epics_returned", kinds=sorted({f.kind for f in found}), epics=sorted({f.epic for f in found})
+        )
+        text = await say(hub_text("brief-reply-again", feedback=epics_feedback(found)))
+        again = await self._reply(
+            st,
+            say,
+            text,
+            lambda t: parse_epics(extract_json_block(t), initiative=initiative),
+            what="set of epics",
+        )
+        left = check_epics(again, budget_hours=initiative.budget_hours, estimate=self.costs.estimate)
+        if left:
+            st.emit("over_budget_stands", epics=sorted({f.epic for f in left}), why=epics_feedback(left))
+        return again
+
+    async def _consult(
+        self,
+        st: InitiativeState,
+        initiative: Initiative,
+        asker: Asker,
+        asks: Sequence[Ask],
+        round_no: int,
+    ) -> list[tuple[Ask, str]]:
+        """Run `asks` side by side, each a read-only turn of that seat; every answer is a consultation on
+        record. A seat that cannot answer is told so in its place (one seat's failure is no reason to stop
+        the others)."""
+        specs = self.specs
+
+        async def one(ask: Ask) -> tuple[Ask, str]:
+            started = time.monotonic()
+            try:
+                if ask.kind == "mockups":
+                    answer = "[mockups cannot be drawn yet]"
+                else:
+                    answer = await asker.ask(
+                        st,
+                        f"consult:{ask.seat}",
+                        ask.seat,
+                        consult_brief(initiative, st.qa, ask, chars=specs.consult_chars),
+                        steps=specs.consult_steps,
+                    )
+            except Exception as e:  # noqa: BLE001 - a seat that fails is an answer saying so
+                answer = f"[the {ask.seat} could not answer: {_cap(_reason(e))}]"
+            seconds = round(time.monotonic() - started, 1)
+            st.consultations.append(
+                {
+                    "seat": ask.seat,
+                    "kind": ask.kind,
+                    "question": ask.question,
+                    "answer": answer,
+                    "chars": len(answer),
+                    "seconds": seconds,
+                    "round": round_no,
+                }
+            )
+            st.save()
+            st.emit(
+                "consult", seat=ask.seat, ask=ask.kind, chars=len(answer), seconds=seconds, round=round_no
+            )
+            return ask, answer
+
+        return list(await asyncio.gather(*(one(a) for a in asks)))
 
     # ---- stops ----
 

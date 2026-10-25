@@ -20,24 +20,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from airlie.board import BoardStore
-from airlie.story.epic import split_block
+from airlie.story.epic import SIZES, Size, StorySketch, split_block
 
-Size = Literal["S", "M", "L"]
-SIZES: tuple[Size, ...] = ("S", "M", "L")
+__all__ = ["SIZES", "Estimate", "Size", "StoryCosts", "StorySketch", "queue_hours", "read_estimate"]
 CALIBRATION_MIN_EPICS = 3
 """Finished epics with an actual before the calibration is anything but 1.0."""
-
-
-@dataclass(frozen=True)
-class StorySketch:
-    """One story of an epic's sketch: enough to price it, not to build it (P3 plans the real stories)."""
-
-    title: str
-    size: Size
-    scope: str
 
 
 @dataclass(frozen=True)

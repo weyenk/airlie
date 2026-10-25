@@ -57,6 +57,7 @@ class InitiativeState:
     blocked: str | None = None
     resume: str | None = None
     delivered_at: float | None = None
+    summary: str = ""
 
     @classmethod
     def open(cls, path: Path, item: Item, repos: list[str]) -> InitiativeState:

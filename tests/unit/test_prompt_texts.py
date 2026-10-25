@@ -25,6 +25,9 @@ from airlie.story.board import text_card
 from airlie.story.briefs import (
     build_brief,
     built_so_far,
+    consult_brief,
+    consult_round_text,
+    imagine_brief,
     layers_brief,
     package_brief,
     plan_brief,
@@ -33,6 +36,7 @@ from airlie.story.briefs import (
     replan_brief,
     survey_brief,
 )
+from airlie.story.initiative import Ask
 from airlie.story.layer_checks import (
     ASSERTION_FREE,
     EXISTING_FAILS,
@@ -324,6 +328,56 @@ CASES |= {
         [{"q": "What is it for?", "a": "Speed."}, {"q": "Who uses it?", "a": None}],
         max_questions=5,
         feedback=BAD_JSON,
+    ),
+    "specs-imagine": lambda: text("specs-imagine", seats="architect, ux, design", max_asks=4, rounds_left=3),
+    "specs-consult": lambda: text("specs-consult", chars=4000),
+    "specs-round-more": lambda: text("specs-round-more", rounds_left=2),
+    "specs-round-due": lambda: text("specs-round-due"),
+    "specs-round-refused": lambda: text("specs-round-refused", seats="docs, ux", limit=8),
+    "fn:briefs.imagine_brief:plain": partial(
+        imagine_brief,
+        INITIATIVE,
+        [],
+        [],
+        surveys={},
+        lessons=[],
+        consultable=["architect", "ux"],
+        max_asks=4,
+        rounds_left=3,
+        budget_hours=None,
+        feedback=None,
+    ),
+    "fn:briefs.imagine_brief:full": partial(
+        imagine_brief,
+        INITIATIVE,
+        [{"q": "What is it for?", "a": "Speed."}],
+        ["one user"],
+        surveys={"o/r": "The board lives in web/src/Board.vue"},
+        lessons=[Lesson(title="Layer 01 storage", acceptance=["AC1"], ending="out_of_steps")],
+        consultable=["architect", "ux"],
+        max_asks=4,
+        rounds_left=1,
+        budget_hours=20.0,
+        feedback=BAD_JSON,
+        attachments=["screenshot.png"],
+    ),
+    "fn:briefs.consult_brief": partial(
+        consult_brief, INITIATIVE, [{"q": "q", "a": "a"}], Ask("ux", "How would a person move?"), chars=4000
+    ),
+    "fn:briefs.consult_round_text:more": partial(
+        consult_round_text,
+        [(Ask("ux", "How would a person move?"), "- one keystroke"), (Ask("design", "dense?"), "- tight")],
+        chars=4000,
+        rounds_left=2,
+        surveys={"o/r": "late notes"},
+    ),
+    "fn:briefs.consult_round_text:due": partial(
+        consult_round_text,
+        [(Ask("ux", "How?"), "- a")],
+        chars=4000,
+        rounds_left=0,
+        refused=[Ask("docs", "d?")],
+        limit=8,
     ),
 }
 
