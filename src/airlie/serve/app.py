@@ -38,6 +38,7 @@ from airlie.serve.jobs import Job, Jobs
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
+from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
@@ -288,13 +289,16 @@ def create_app(
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
+    tick_s: float | None = None,
+    line_beat: LineFor | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
     `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
-    default NEXT_DIR) are for tests."""
+    default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
+    line's beat, given the function that starts a lane's job) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -304,6 +308,7 @@ def create_app(
     feed = Feed()
     app.state.feed = feed
     jobs = Jobs(feed.publish)
+    ticker = LineTicker(cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, now=now)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
@@ -409,7 +414,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit}
+        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
 
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
@@ -947,8 +952,13 @@ def create_app(
             cfg.observability.state_dir.expanduser(), metric, slice_, f, t, _metric_bucket_s(t - f)
         )
 
+    @app.on_event("startup")
+    async def startup() -> None:
+        ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        await ticker.stop()
         watcher.stop()
         await client.aclose()
         board.close()

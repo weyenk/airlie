@@ -103,7 +103,7 @@ async def test_the_planning_lanes_order_is_initiative_epic_revision_epic_plan_th
     line = Line(rig.cfg, board=board, state_dir=rig.cfg.observability.state_dir)
     order = []
     for _ in range(4):
-        job = await line._pick_plan()
+        job = line._pick_plan()
         assert job is not None
         order.append((job.what, job.key))
         if job.what == "initiative":
@@ -143,3 +143,42 @@ async def test_one_beat_runs_a_job_in_each_lane_and_hands_a_fresh_story_to_the_b
     [first, _] = rig.stories(epic)
     assert await tick(rig.cfg) == f"{first} Do S1: review (taken from approved)"
     assert [c.key for c in started] == [ready, first]
+
+
+async def test_a_beat_that_finds_a_lane_held_by_another_process_logs_busy_and_runs_the_other_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serve ticker and the launchd tick at the same moment (Review Focus 5): the lane one holds is
+    never run twice; the other lane goes on."""
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    ready = rig.store.create(level="story", title="ready", labels=["repo:o/r"]).key
+    rig.store.update(ready, status="approved")
+    story_record(rig, ready, "layers")
+    epic = rig.epic()
+    started = started_log(monkeypatch)
+    stories = factory.stories_dir(rig.cfg)
+    with lane_lock(stories, "plan") as held:  # another process's planning job
+        assert held
+        line = await tick(rig.cfg)
+    assert "busy: the planning lane is in use" in line, line
+    assert f"{ready} ready: review (taken from approved)" in line, line
+    assert [c.key for c in started] == [ready]
+    assert (
+        rig.status(epic) == "approved" and not rig.engine.requests
+    )  # the epic was not planned twice or at all
+    rig.store.update(ready, status="review")
+    with lane_lock(stories, "build") as held:  # and the other way round
+        assert held
+        line = await tick(rig.cfg)
+    assert (
+        "busy: the build lane is in use" in line and f"epic {epic} Avatars: planned into 2 stories" in line
+    ), line
+    both = []
+    with lane_lock(stories, "plan"), lane_lock(stories, "build"):
+        both.append(await tick(rig.cfg))
+    assert both == ["busy: the planning lane is in use; busy: the build lane is in use"]
+    events = [
+        json.loads(x)
+        for x in (rig.cfg.observability.state_dir / "line" / "events.jsonl").read_text().splitlines()
+    ]
+    assert [e["kind"] for e in events].count("lane_start") == 2  # one job per lane that was free, no more

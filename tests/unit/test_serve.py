@@ -598,3 +598,77 @@ def test_a_whole_reply_gives_a_call_without_an_id_or_a_type_both_as_a_stream_doe
     assert [c["id"].startswith("call_") and len(c["id"]) == 29 for c in got[:2]] == [True, True]
     assert got[0]["id"] != got[1]["id"] and got[2]["id"] == "call_kept"
     assert [c["type"] for c in got] == ["function"] * 3
+
+
+# ---- the line's ticker (planning-line P5b, D3, 2026-10-25) ----
+
+
+def test_health_reports_the_line(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
+    with TestClient(app) as c:
+        line = c.get("/health").json()["line"]
+        assert line == {
+            "last_tick": None,
+            "line": None,
+            "paused": False,
+            "lanes": {"build": None, "plan": None},
+        }
+        (tmp_path / "state").mkdir(exist_ok=True)
+        (tmp_path / "state" / "line.paused").write_text("1")
+        assert c.get("/health").json()["line"]["paused"] is True
+
+
+def wait_until(check: Callable[[], bool], seconds: float = 10.0) -> bool:
+    import time
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_serve_ticks_on_its_timer_and_registers_the_lane_jobs(tmp_path: Path) -> None:
+    from airlie.story.line import Job
+
+    ran: list[str] = []
+
+    async def beat(spawn: Callable[[Job], None]) -> str:
+        async def work() -> str:
+            ran.append("AIR-9")
+            return "AIR-9 Avatars: review"
+
+        events = tmp_path / "state" / "stories" / "AIR-9" / "events.jsonl"
+        spawn(Job("build", "AIR-9", "story", events, work))
+        return "started build story AIR-9"
+
+    app = create_app(
+        cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), tick_s=0.05, line_beat=beat
+    )
+    with TestClient(app) as client:
+        assert client.get("/health").json()["line"]["last_tick"] is None  # nothing before the first interval
+        assert wait_until(lambda: client.get("/health").json()["line"]["last_tick"] is not None)
+        assert client.get("/health").json()["line"]["line"] == "started build story AIR-9"
+        assert wait_until(lambda: bool(ran))
+        [job] = [j for j in client.get("/v1/airlie/jobs").json()["jobs"] if j["id"] == "line-build-AIR-9"]
+        assert job["kind"] == "line"
+        done = client.get("/v1/airlie/jobs/line-build-AIR-9", params={"wait": 5}).json()
+        assert done["kind"] == "line" and done["result"] == {"line": "AIR-9 Avatars: review"}
+
+
+def test_a_serve_with_ticks_off_never_ticks(tmp_path: Path) -> None:
+    import time
+
+    beats: list[str] = []
+
+    async def beat(spawn: Callable[..., None]) -> str:
+        beats.append("beat")
+        return "idle"
+
+    c = cfg(tmp_path).model_copy(deep=True)
+    c.line.serve_ticks = False
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), tick_s=0.02, line_beat=beat)
+    with TestClient(app):
+        time.sleep(0.3)
+    assert beats == []

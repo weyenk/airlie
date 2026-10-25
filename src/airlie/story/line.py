@@ -51,6 +51,9 @@ from airlie.story.phase import (
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import Lane, StoryState, lane_lock, lock_held
 
+Spawn = Callable[["Job"], None]
+"""Starts a lane's job in the background and returns at once (the serve process registers it in its jobs)."""
+
 log = logging.getLogger(__name__)
 
 LANES: tuple[Lane, ...] = ("plan", "build")
@@ -135,9 +138,11 @@ class Line:
 
     # ---- the beat ----
 
-    async def beat(self) -> str:
+    async def beat(self, spawn: Spawn | None = None) -> str:
         """One tick: the gates, the bookkeeping, one job per lane. Returns the line for the log, naming what
-        each lane did; both lanes idle is `idle: no issue matches the intake query`."""
+        each lane did; both lanes idle is `idle: no issue matches the intake query`. With `spawn` (the serve
+        process's), a lane's job is handed to it to run in the background and the beat returns at once,
+        saying what it started; without it (the CLI's), the beat runs its jobs to their ends."""
         board = self.board
         if isinstance(board, NullBoard):
             return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
@@ -149,7 +154,7 @@ class Line:
         if refused is not None:
             line_event(self.state_dir, "gate_failed", reason=refused)
             return self._join(notes, [refused])
-        lines = await self._lanes(busy)
+        lines = await self._lanes(busy, spawn)
         return self._join(notes, lines)
 
     @staticmethod
@@ -167,7 +172,7 @@ class Line:
                 notes += await bookkeep(self.cfg, board.store, serve_commit=self.serve_commit, gh=self.gh)
             except Exception as e:  # noqa: BLE001 - the beat goes on whatever the bookkeeping did
                 notes.append(f"bookkeeping failed ({factory._why(e)})")
-            notes += factory._follow(self.cfg, board)
+            notes += await asyncio.to_thread(factory._follow, self.cfg, board)
         elif self.cfg.story.board == "jira":
             factory.log.info(
                 "story.board is jira: the line only reads it, so epics are neither planned nor followed"
@@ -190,7 +195,7 @@ class Line:
 
     # ---- the lanes ----
 
-    async def _lanes(self, busy: list[Lane]) -> list[str]:
+    async def _lanes(self, busy: list[Lane], spawn: Spawn | None = None) -> list[str]:
         """Pick a job for each lane that is free and run them side by side; the line of each. The build lane
         takes the story the planning lane has just planned when it had nothing of its own (the one-shot
         beat's hand-over: a fresh story is built by the beat that planned it, not by the next)."""
@@ -202,13 +207,20 @@ class Line:
             job = await self._pick(lane)
             if job is not None:
                 jobs.append(job)
-        lines += await asyncio.gather(*(self._run(job) for job in jobs))
+        if spawn is not None:  # the next beat, a minute on, takes what this one planned
+            for job in jobs:
+                spawn(job)
+                lines.append(f"started {job.lane} {job.what} {job.key}")
+            if not jobs and not busy:
+                lines.append("idle: no issue matches the intake query")
+            return lines
+        lines += await asyncio.gather(*(self.run_job(job) for job in jobs))
         if not any(job.lane == "build" for job in jobs) and "build" not in busy:
             for job in jobs:
                 follow = self._handover(job)
                 if follow is not None:
                     lines.remove(job.result or "")
-                    lines.append(await self._run(follow))
+                    lines.append(await self.run_job(follow))
         if not jobs and not busy:
             lines.append("idle: no issue matches the intake query")
         return lines
@@ -229,7 +241,7 @@ class Line:
             job.planned, "story", self.stories / job.planned / "events.jsonl", item, taken_from="approved"
         )
 
-    async def _run(self, job: Job) -> str:
+    async def run_job(self, job: Job) -> str:
         """Run a job to its end. A failure is that lane's line, never the other lane's."""
         line_event(self.state_dir, "lane_start", lane=job.lane, key=job.key, what=job.what)
         try:
@@ -241,11 +253,20 @@ class Line:
         return job.result
 
     async def _pick(self, lane: Lane) -> Job | None:
-        return await (self._pick_plan() if lane == "plan" else self._pick_build())
+        """The lane's job. The board reads are SQLite and file reads: they run in a worker thread, so the
+        serve process's loop (the engine proxy, the pages) is never held by a beat."""
+        if lane == "plan":
+            return await asyncio.to_thread(self._pick_plan)
+        if isinstance(self.board, LocalBoard):
+            return await asyncio.to_thread(self._pick_local_build, self.board)
+        card = await self.board.next_card()
+        if card is None:
+            return None
+        return self._building_job(card.key, "story", self.stories / card.key / "events.jsonl", card)
 
     # ---- the planning lane ----
 
-    async def _pick_plan(self) -> Job | None:
+    def _pick_plan(self) -> Job | None:
         """The planning lane's oldest ready job, in a fixed order: a person is waiting on the first two (an
         initiative's turn, an epic's revision), an epic's planning feeds the board, and a story's planning
         feeds the build lane."""
@@ -335,21 +356,15 @@ class Line:
 
     # ---- the build lane ----
 
-    async def _pick_build(self) -> Job | None:
+    def _pick_local_build(self, board: LocalBoard) -> Job | None:
         """The build lane's job: the top planned story. A dependent story whose base moved is replayed onto it
         first, in this lane's lock: the replay moves branches the build would build on."""
-        board = self.board
-        if isinstance(board, LocalBoard):
-            item = board.next_planned_story()
-            if item is None:
-                if not self._replay_due(board):
-                    return None
-                return self._building_job("replay", "replay", self.stories, None)
-            return self._building_job(item.key, "story", self.stories / item.key / "events.jsonl", item)
-        card = await board.next_card()
-        if card is None:
-            return None
-        return self._building_job(card.key, "story", self.stories / card.key / "events.jsonl", card)
+        item = board.next_planned_story()
+        if item is None:
+            if not self._replay_due(board):
+                return None
+            return self._building_job("replay", "replay", self.stories, None)
+        return self._building_job(item.key, "story", self.stories / item.key / "events.jsonl", item)
 
     def _replay_due(self, board: LocalBoard) -> bool:
         """A started story that stacks on another has its base recorded as the other's branch: the replay
