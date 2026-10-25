@@ -208,7 +208,9 @@ def test_a_stage_job_counts_its_retries_its_time_and_its_tokens(state_dir: Path)
     assert job["duration_s"] == pytest.approx(28.0)  # from its run to the stage finishing
 
 
-def test_a_layer_is_a_lane_of_jobs_with_tester_and_coder_stats(state_dir: Path) -> None:
+def test_a_story_recorded_before_the_package_still_renders_its_tests_job(state_dir: Path) -> None:
+    """A story built with a tester (before P1, 2026-10-24) has a `tests` subtask in its layer runs and no
+    package events: its lane is the tester's, as it was recorded."""
     layer = by_id(story_flow(state_dir, KEY)["nodes"], "layer-01")
     assert layer["title"] == "The seam" and layer["acceptance"] == ["AC1"]
     assert [j["id"] for j in layer["jobs"]] == ["tests", "checks", "build"]
@@ -264,3 +266,135 @@ def test_a_layer_run_without_a_tester_shows_its_tests_job_as_skipped(state_dir: 
     )
     tests, _, build = by_id(story_flow(state_dir, KEY)["nodes"], "layer-02")["jobs"]
     assert tests["status"] == "skipped" and build["status"] == "failed"
+
+
+KEY2 = "AIR-2"
+
+
+def write_packaged_story(root: Path) -> Path:
+    """Story KEY2 built after P1: layer 01 got its package at the first try and was built, layer 02's package
+    came back twice (a test that passes before the code) and stopped it. Returns `root`."""
+    story = root / "stories" / KEY2
+    story.mkdir(parents=True)
+    layers = [
+        {"slug": "seam", "title": "The seam", "scope": "src/a.py", "brief": "b", "acceptance": ["AC1"]},
+        {"slug": "wire", "title": "Wire it", "scope": "src/b.py", "brief": "w", "acceptance": ["AC2"]},
+    ]
+    state = {
+        "card": {"key": KEY2, "title": "Do the other thing"},
+        "repo": "/r",
+        "stage": "layers",
+        "story": {"title": "Do the other thing", "summary": "s", "acceptance": []},
+        "layers": layers,
+        "built": {"01": {"branch": "b1", "sha": "abc", "run_id": "run-b1"}},
+        "blocked": "layer 02 (Wire it): its package still fails the readiness check after 2 tries",
+        "runs": ["run-p1", "run-b1", "run-p2a", "run-p2b"],
+    }
+    (story / "state.json").write_text(json.dumps(state))
+    write_events(
+        story / "events.jsonl",
+        [
+            {"ts": 10.0, "kind": "story_start", "stage": "new"},
+            {"ts": 11.0, "kind": "stage", "stage": "layers"},
+            {"ts": 20.0, "kind": "package_start", "layer": "01", "attempt": 1},
+            {"ts": 21.0, "kind": "run", "stage": "package", "studio_run": "run-p1"},
+            {"ts": 80.0, "kind": "package_ready", "layer": "01", "attempt": 1, "studio_run": "run-p1"},
+            {"ts": 81.0, "kind": "layer_start", "layer": "01", "studio_run": "run-b1", "attempt": 1},
+            {"ts": 82.0, "kind": "package_placed", "layer": "01", "paths": ["tests/test_a.py"]},
+            {"ts": 200.0, "kind": "layer_built", "layer": "01", "branch": "b1", "sha": "abc"},
+            {"ts": 201.0, "kind": "package_start", "layer": "02", "attempt": 1},
+            {"ts": 220.0, "kind": "passes_before_code", "layer": "02", "attempt": 1, "test": "t::x"},
+            {
+                "ts": 221.0,
+                "kind": "package_returned",
+                "layer": "02",
+                "attempt": 1,
+                "kinds": ["passes_before_code"],
+                "studio_run": "run-p2a",
+            },
+            {"ts": 222.0, "kind": "package_start", "layer": "02", "attempt": 2},
+            {"ts": 240.0, "kind": "import_unresolved", "layer": "02", "attempt": 2, "test": "t: calc.div"},
+            {
+                "ts": 241.0,
+                "kind": "package_returned",
+                "layer": "02",
+                "attempt": 2,
+                "kinds": ["import_unresolved"],
+                "studio_run": "run-p2b",
+            },
+            {"ts": 242.0, "kind": "blocked", "stage": "layers", "reason": "layer 02 stopped"},
+        ],
+    )
+    runs = root / "runs"
+    write_events(
+        runs / "run-p1" / "events.jsonl", [step("run-p1", "package", 1, completion=300, gen_ms=6000.0)]
+    )
+    write_events(
+        runs / "run-b1" / "events.jsonl",
+        [
+            {"ts": 81.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            step("run-b1", "build", 1),
+            {
+                "ts": 190.0,
+                "kind": "subtask_done",
+                "subtask": "build",
+                "role": "coder",
+                "ok": True,
+                "stop_reason": "done",
+                "steps": 1,
+                "fix_rounds": 0,
+            },
+        ],
+    )
+    trace = runs / "run-p1" / "trace" / "package"
+    trace.mkdir(parents=True)
+    (trace / "prompt.json").write_text(
+        json.dumps({"role": "architect", "attempt": 0, "messages": [{"role": "user", "content": "package"}]})
+    )
+    return root
+
+
+def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path) -> None:
+    write_packaged_story(state_dir)
+    layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-01")
+    assert [j["id"] for j in layer["jobs"]] == ["package", "checks", "build"]
+    package, checks, build = layer["jobs"]
+    assert (package["role"], package["status"], package["attempts"]) == ("architect", "passed", 1)
+    assert package["studio_run"] == "run-p1" and package["tokens"]["tps"] == pytest.approx(50.0)
+    assert package["duration_s"] == pytest.approx(60.0)  # from package_start to package_ready
+    assert checks["status"] == "passed" and checks["retries"] == []
+    assert build["role"] == "coder" and build["status"] == "passed"
+
+
+def test_a_layer_whose_package_came_back_twice_shows_the_package_job_failed(state_dir: Path) -> None:
+    write_packaged_story(state_dir)
+    layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-02")
+    package, checks, build = layer["jobs"]
+    assert (package["status"], package["attempts"]) == ("failed", 2)
+    assert checks["status"] == "failed" and checks["attempts"] == 2
+    assert [r["kind"] for r in checks["retries"]] == [
+        "passes_before_code",
+        "package_returned",
+        "import_unresolved",
+        "package_returned",
+    ]
+    assert build["status"] == "pending"
+    assert layer["status"] == "failed"
+
+
+def test_a_package_that_is_being_written_is_running(state_dir: Path) -> None:
+    write_packaged_story(state_dir)
+    events = state_dir / "stories" / KEY2 / "events.jsonl"
+    lines = events.read_text().splitlines()
+    events.write_text("\n".join(lines[:-3]) + "\n")  # layer 02: attempt 1 returned, attempt 2 started
+    state = json.loads((state_dir / "stories" / KEY2 / "state.json").read_text())
+    state["blocked"] = None
+    (state_dir / "stories" / KEY2 / "state.json").write_text(json.dumps(state))
+    package, *_ = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-02")["jobs"]
+    assert package["status"] == "running"
+
+
+def test_the_package_job_detail_gives_the_architects_prompt(state_dir: Path) -> None:
+    write_packaged_story(state_dir)
+    detail = job_detail(state_dir, KEY2, "layer-01", "package")
+    assert detail["input"]["messages"][0]["content"] == "package"

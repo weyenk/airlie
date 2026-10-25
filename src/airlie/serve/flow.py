@@ -13,12 +13,23 @@ from typing import Any
 from airlie.serve.jobs import read_events
 from airlie.story.state import STAGES
 
-STAGE_ROLES = {"refine": "product", "survey": "architect", "layers": "architect"}
+STAGE_ROLES = {"refine": "product", "survey": "architect", "layers": "architect", "package": "architect"}
 """The role a stage job runs as, when its steps do not say (a run that has not stepped yet)."""
 
 CHECK_KINDS = frozenset(
     {
         "test_checks_passed",
+        "package_returned",
+        "package_ready",
+        "package_placed",
+        "file_exists",
+        "file_missing",
+        "covers_missing",
+        "import_unresolved",
+        "assertion_free_test",
+        "unparseable_test",
+        "existing_test_changed",
+        "suite_did_not_run",
         "test_checks_retry",
         "test_checks_skipped",
         "tester_lint_fixed",
@@ -34,7 +45,11 @@ CHECK_KINDS = frozenset(
         "tests_mended",
     }
 )
-"""What the story's events say about the pre-code check on a layer's tests."""
+"""What the story's events say about the readiness check on a layer's package (and, in a story recorded
+before P1, the pre-code check on the tester's tests)."""
+
+CHECK_DONE = frozenset({"test_checks_passed", "package_ready", "package_placed"})
+"""The check events that are no retry: the outcome."""
 
 BUILD_KINDS = frozenset({"fix_round", "gate_failed", "write_deadline"})
 """What a layer's studio run says about its coder having to be sent back."""
@@ -200,6 +215,44 @@ def _subtask(run_events: list[dict[str, Any]], team: str, kind: str) -> dict[str
     return found[-1] if found else None
 
 
+def _package_job(events: list[dict[str, Any]], built: bool, failed: bool, state_dir: Path) -> dict[str, Any]:
+    """The architect's package for a layer: one attempt per `package_start`, passed on `package_ready`, failed
+    when every attempt came back and the layer stopped, running while one is out; its tokens are the last
+    attempt's ask (the studio run its `package_ready` or `package_returned` names)."""
+    starts = [e for e in events if e["kind"] == "package_start"]
+    ready = [e for e in events if e["kind"] == "package_ready"]
+    returned = [e for e in events if e["kind"] == "package_returned"]
+    ended = (ready or returned)[-1] if ready or returned else None
+    run = ended.get("studio_run") if ended else None
+    if ready or built:
+        status = "passed"
+    elif not starts:
+        status = "pending"
+    elif len(returned) >= len(starts) and failed:
+        status = "failed"
+    else:
+        status = "running"
+    first = starts[0].get("ts") if starts else None
+    last = ready[-1].get("ts") if ready else None
+    took = (
+        round(last - first, 1) if isinstance(first, float | int) and isinstance(last, float | int) else None
+    )
+    tokens = _tokens(_run_events(state_dir, run), "package")
+    return _job(
+        "package",
+        "Package",
+        (tokens or {}).get("role") or STAGE_ROLES["package"],
+        status,
+        attempts=len(starts),
+        studio_run=run,
+        tokens=tokens,
+        started=first,
+        ended=last,
+        duration_s=took,
+        retries=[{"kind": e["kind"], "detail": ", ".join(e.get("kinds") or [])} for e in returned],
+    )
+
+
 def _layer_node(
     i: int,
     layer: dict[str, Any],
@@ -223,28 +276,39 @@ def _layer_node(
     run_events = _run_events(state_dir, run)
     jobs: list[dict[str, Any]] = []
 
-    t_start, t_done = (
-        _subtask(run_events, "tests", "subtask_start"),
-        _subtask(run_events, "tests", "subtask_done"),
-    )
-    tests_status = _status_of(t_start, t_done)
-    if run_events and t_start is None and _subtask(run_events, "build", "subtask_start") is not None:
-        tests_status = "skipped"  # a run with no tester (before story.tester_role): the coder wrote its own
-    jobs.append(
-        _job(
-            "tests",
-            "Tests",
-            "tester",
-            tests_status,
-            studio_run=run,
-            tokens=_tokens(run_events, "tests"),
-            **_timing(t_start, t_done),
+    package_events = [
+        e for e in mine if e.get("kind") in ("package_start", "package_returned", "package_ready")
+    ]
+    legacy = (
+        not package_events and bool(run_events) and any(e.get("kind") == "subtask_start" for e in run_events)
+    )  # a layer run before P1: the tester's `tests` subtask, or none (the coder wrote its own tests)
+    if legacy:
+        t_start, t_done = (
+            _subtask(run_events, "tests", "subtask_start"),
+            _subtask(run_events, "tests", "subtask_done"),
         )
-    )
+        tests_status = _status_of(t_start, t_done)
+        if t_start is None and _subtask(run_events, "build", "subtask_start") is not None:
+            tests_status = (
+                "skipped"  # a run with no tester (before story.tester_role): the coder wrote its own
+            )
+        jobs.append(
+            _job(
+                "tests",
+                "Tests",
+                "tester",
+                tests_status,
+                studio_run=run,
+                tokens=_tokens(run_events, "tests"),
+                **_timing(t_start, t_done),
+            )
+        )
+    else:
+        jobs.append(_package_job(package_events, built, status == "failed", state_dir))
 
     checks = [e for e in mine if e.get("kind") in CHECK_KINDS]
     attempts = max((int(e["attempt"]) for e in checks if isinstance(e.get("attempt"), int)), default=0)
-    passed = any(e["kind"] == "test_checks_passed" for e in checks)
+    passed = any(e["kind"] in ("test_checks_passed", "package_ready") for e in checks)
     checks_status = (
         "passed"
         if passed or built
@@ -262,7 +326,7 @@ def _layer_node(
             checks_status,
             attempts=attempts or (1 if passed else 0),
             retries=[
-                {"kind": e["kind"], "detail": _detail(e)} for e in checks if e["kind"] != "test_checks_passed"
+                {"kind": e["kind"], "detail": _detail(e)} for e in checks if e["kind"] not in CHECK_DONE
             ],
         )
     )
