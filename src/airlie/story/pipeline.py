@@ -21,6 +21,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from airlie.board import Item
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.prompts import text as hub_text
@@ -51,9 +52,11 @@ from airlie.story.diagnosis import (
     next_for,
     write_diagnosis,
 )
+from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import (
     SURROGATE,
     Layer,
@@ -1207,6 +1210,8 @@ class StoryPipeline:
             if muse is not None:
                 classified = classify(pack, muse_category=muse.category)
             d = Diagnosis(pack, classified, muse, next_for(classified))
+            if classified.class_ in ("process", "config"):  # airlie's own: a card for a person, not a resume
+                d = replace(d, next=await self._fix_card(st, card, d))
             write_diagnosis(state_dir, d)
             text = diagnosis_note(d, card.resume)
         except asyncio.CancelledError:
@@ -1223,6 +1228,39 @@ class StoryPipeline:
         if muse is not None:
             fields["diagnosis"] = _cap(_redact_urls(muse_text(muse)))
         return text, fields
+
+    async def _fix_card(self, st: StoryState, card: Card, d: Diagnosis) -> str:
+        """Airlie's own failure becomes a card on airlie's board (airlie.story.fixes), or a link to the open
+        one with the same signature; what happens next, in words. On a board that is not the local one (Jira)
+        the card's text is a note on the issue and no label is written. The line never merges the fix."""
+        sig = d.classified.signature
+        if isinstance(self.board, LocalBoard):
+            store = self.board.store
+            cfg = self.cfg
+
+            def file() -> tuple[Item, bool]:
+                return file_fix(store, d=d, story_key=card.key, home=home_repo(cfg, home_checkout()))
+
+            try:
+                fix, created = await asyncio.to_thread(file)
+            except Exception as e:  # noqa: BLE001 - a card that cannot be filed leaves the stop as it was
+                st.emit(
+                    "fix_failed", signature=sig, error=_cap(_redact_urls(f"{type(e).__name__}: {e}"), 300)
+                )
+                return "waits for a person (the fix card could not be filed)"
+            st.emit("fix_filed" if created else "fix_linked", story=card.key, fix=fix.key, signature=sig)
+            what = "filed" if created else "already open, and now also blocks this story"
+            return (
+                f"fix card {fix.key} ({what}); this story resumes by itself once the fix is in the code "
+                "the line runs"
+            )
+        title, body = render_fix_card(d, card.key)
+        try:
+            await self.board.comment(card, note(f"A fix card for airlie's own board:\n{title}\n\n{body}"))
+        except Exception as e:  # noqa: BLE001
+            _board_error(st, "comment", e)
+        st.emit("fix_noted", story=card.key, signature=sig)
+        return "a fix card, written as a note on this issue (this board files none); a person files it"
 
     async def _muse_at_block(
         self, st: StoryState, card: Card, pack: Pack, classified: Classified

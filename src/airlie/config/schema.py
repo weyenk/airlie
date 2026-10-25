@@ -474,6 +474,22 @@ class SupervisorSpec(Strict):
     recall: int = Field(default=3, ge=0, description="past ledger fixes shown to the supervisor")
 
 
+class LineSpec(Strict):
+    """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
+    these two; the scheduler half adds its own."""
+
+    home_repo: str | None = Field(
+        default=None,
+        description="owner/name of airlie's own repository, where fix cards are built; None: the remote "
+        "of the checkout the line runs from",
+    )
+    transient_retries: int = Field(
+        default=2,
+        ge=0,
+        description="how often a story blocked by a transient failure is retried per signature",
+    )
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -612,6 +628,7 @@ class AirlieConfig(Strict):
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
     board: BoardSpec = Field(default_factory=BoardSpec)
+    line: LineSpec = Field(default_factory=LineSpec)
     web: WebSpec = Field(default_factory=WebSpec)
     chat: ChatSpec = Field(default_factory=ChatSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
