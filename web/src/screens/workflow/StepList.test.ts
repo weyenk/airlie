@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { step } from "./fixtures";
+import { step } from "@/test-utils/workflow-fixtures";
 import StepList from "./StepList.vue";
 
 test("a step shows its number, tool and arguments; a run's retry round prefixes the number", () => {

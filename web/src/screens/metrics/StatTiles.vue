@@ -12,7 +12,9 @@ const props = defineProps<{
   previous: MetricsSummary | null | undefined;
   range: Range;
   /** The stories active in the range: the Stories tile counts them and breaks them down. */
-  stories: StoryRow[] | undefined;
+  stories: StoryRow[] | null | undefined;
+  /** Why the stories could not be listed (then `stories` is null): shown on the Stories tile only. */
+  storiesError?: string;
 }>();
 
 type Tile = { name: string; label: string; value: number | null | undefined; unit: string; change: Change | null; goodWhenUp: boolean };
@@ -43,7 +45,7 @@ const breakdown = computed(() => {
 });
 
 function words(t: Tile): string {
-  if (t.name === "stories") return breakdown.value;
+  if (t.name === "stories") return props.stories === null ? `Can't list stories: ${props.storiesError}` : breakdown.value;
   if (props.previous === null) return "all time";
   const c = t.change;
   if (!c) return "";
@@ -65,7 +67,7 @@ function tone(t: Tile): string {
   <div class="grid grid-cols-4 gap-3 max-[640px]:grid-cols-2">
     <section v-for="t in tiles" :key="t.name" :data-tile="t.name" class="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div class="text-[13px] text-muted-foreground">{{ t.label }}</div>
-      <div data-value class="mt-1.5 text-[28px] font-bold tabular-nums tracking-[-0.01em] max-[640px]:text-[22px]">{{ (t.name === "stories" ? stories : summary) ? formatRate(t.value) : "…" }}<small v-if="t.unit && summary && t.value !== null && t.value !== undefined && Number.isFinite(t.value)" class="ml-1 text-sm font-medium text-muted-foreground">{{ t.unit }}</small></div>
+      <div data-value class="mt-1.5 text-[28px] font-bold tabular-nums tracking-[-0.01em] max-[640px]:text-[22px]">{{ t.name === "stories" && stories === null ? "unknown" : (t.name === "stories" ? stories : summary) ? formatRate(t.value) : "…" }}<small v-if="t.unit && summary && t.value !== null && t.value !== undefined && Number.isFinite(t.value)" class="ml-1 text-sm font-medium text-muted-foreground">{{ t.unit }}</small></div>
       <div data-delta :class="['mt-1 min-h-4 text-xs font-semibold', tone(t)]">{{ words(t) }}</div>
     </section>
   </div>

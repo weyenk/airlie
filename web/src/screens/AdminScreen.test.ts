@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { ApiError } from "@/api";
 import type { User } from "@/api/auth";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
+import { useBootstrapStore } from "@/stores/bootstrap";
 import { useSessionStore } from "@/stores/session";
 import AdminScreen from "./AdminScreen.vue";
 
@@ -101,7 +102,7 @@ test("inviting sends name, role and login, then shows the link in a box with Cop
   await w.get("#invite-login").setValue(" marcus@github ");
   await w.get("form").trigger("submit");
   await flushPromises();
-  expect(api.createInvite).toHaveBeenCalledWith({ name: "Marcus", role: "admin", login: "marcus@github" });
+  expect(api.createInvite).toHaveBeenCalledWith({ name: "Marcus", role: "admin", login: "marcus@github" }, { quiet401: false });
   const box = w.get("[data-link-box]");
   expect(box.text()).toContain("Link for Marcus. It works once, for a day.");
   expect(w.get("[data-invite-url]").text()).toBe(new URL("/#/join/tok123", location.href).href);
@@ -115,7 +116,7 @@ test("an invite without a login leaves the login out", async () => {
   await w.get("#invite-name").setValue("Marcus");
   await w.get("form").trigger("submit");
   await flushPromises();
-  expect(api.createInvite).toHaveBeenCalledWith({ name: "Marcus", role: "member", login: null });
+  expect(api.createInvite).toHaveBeenCalledWith({ name: "Marcus", role: "member", login: null }, { quiet401: false });
 });
 
 test("Copy link copies the link", async () => {
@@ -142,7 +143,7 @@ test("Copy link falls back to the browser's copy command where there is no clipb
 test("New link shows a fresh link for that person", async () => {
   const w = await open();
   await clickButton(row(w, "Jess"), "New link");
-  expect(api.inviteAgain).toHaveBeenCalledWith("u2");
+  expect(api.inviteAgain).toHaveBeenCalledWith("u2", { quiet401: false });
   expect(w.get("[data-link-box]").text()).toContain("Link for Jess.");
 });
 
@@ -165,7 +166,7 @@ test("Revoke, once confirmed, removes the person and reloads the list", async ()
   api.listUsers.mockResolvedValue([NOAH, MARCUS]);
   answerConfirm(true);
   await flushPromises();
-  expect(api.deleteUser).toHaveBeenCalledWith("u2");
+  expect(api.deleteUser).toHaveBeenCalledWith("u2", { quiet401: false });
   expect(w.find('[data-person="Jess"]').exists()).toBe(false);
   expect(w.get("[data-count]").text()).toBe("2");
 });
@@ -259,4 +260,27 @@ test("after the hand-over the list stays quiet: no empty line, no error from the
   expect(w.text()).not.toContain("Nobody yet");
   expect(w.text()).not.toContain("Can't reach airlie");
   expect(api.listUsers).toHaveBeenLastCalledWith({ quiet401: true });
+});
+
+test("during the hand-over window New link, a second Invite and Revoke are quiet about a 401 (outside it they are not)", async () => {
+  const w = await open();
+  useBootstrapStore().open = true; // the window, as the hand-over leaves it
+  await clickButton(row(w, "Jess"), "New link");
+  expect(api.inviteAgain).toHaveBeenLastCalledWith("u2", { quiet401: true });
+  await w.get("#invite-name").setValue("Zed");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(api.createInvite).toHaveBeenLastCalledWith(expect.objectContaining({ name: "Zed" }), { quiet401: true });
+  useBootstrapStore().open = true; // (a list with people closed it again)
+  await clickButton(row(w, "Jess"), "Revoke");
+  answerConfirm(true);
+  await flushPromises();
+  expect(api.deleteUser).toHaveBeenLastCalledWith("u2", { quiet401: true });
+});
+
+test("the window ends with the Admin page and an empty list elsewhere cannot reopen it", async () => {
+  const w = await open([]);
+  expect(useBootstrapStore().open).toBe(true);
+  w.unmount();
+  expect(useBootstrapStore().open).toBe(false);
 });

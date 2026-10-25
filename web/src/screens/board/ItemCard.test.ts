@@ -1,6 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import ItemCard from "./ItemCard.vue";
-import { boardRouter, item } from "./fixtures";
+import { boardRouter, item } from "@/test-utils/board-fixtures";
 import { DRAG_TYPE } from "./statuses";
 
 const make = (props: { item: ReturnType<typeof item>; fresh: boolean }, router = boardRouter()) =>

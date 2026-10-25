@@ -42,6 +42,9 @@
   --color-violet: var(--violet-bg);
   --color-violet-foreground: var(--violet-fg);
   --shadow-card: var(--shadow);
+  --shadow-modal: var(--shadow-modal);
+  --shadow-pop: var(--shadow-pop);
+  --color-overlay: var(--overlay);
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;

@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import type { FlowNode } from "@/api/workflows";
-import { job } from "./fixtures";
+import { job } from "@/test-utils/workflow-fixtures";
 import StageBox from "./StageBox.vue";
 
 const node = (over: Partial<FlowNode> = {}): FlowNode => ({

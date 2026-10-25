@@ -54,6 +54,16 @@ test("the old start and job addresses redirect", async () => {
   expect(router.currentRoute.value.fullPath).toBe("/workflows/runs/r1");
 });
 
+test("a story job address goes to the story, and /jobs to the list", async () => {
+  fakeFetch("signed-in");
+  const router = createAppRouter(createMemoryHistory("/next/"));
+  await router.push("/jobs/story-AIR-9");
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/AIR-9");
+  expect(router.currentRoute.value.name).toBe("story");
+  await router.push("/jobs");
+  expect(router.currentRoute.value.fullPath).toBe("/workflows");
+});
+
 test("a run address is never read as a story called runs", async () => {
   fakeFetch("signed-in");
   const router = createAppRouter(createMemoryHistory("/next/"));

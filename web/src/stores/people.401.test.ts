@@ -34,6 +34,7 @@ test("a 401 on a list that had people is a sign-out", async () => {
 test("a 401 when the first list was empty (the bootstrap window) is not", async () => {
   answers = [Response.json([]), gone()];
   const store = usePeopleStore();
+  store.attach();
   await settle();
   await store.refresh();
   expect(unauthorized).not.toHaveBeenCalled();
@@ -43,6 +44,7 @@ test("a 401 when the first list was empty (the bootstrap window) is not", async 
 test("after the first invite is handed over, a 401 is not a sign-out; once people are listed again it is", async () => {
   answers = [Response.json([{ id: "u1", name: "Ann" }]), gone()];
   const store = usePeopleStore();
+  store.attach();
   await settle();
   store.handOver();
   await store.refresh();
@@ -59,6 +61,7 @@ test("an older list that answers late cannot open the window", async () => {
   const slow = new Promise<Response>((r) => (release = r));
   answers = [Response.json([{ id: "u1", name: "Ann" }])];
   const store = usePeopleStore();
+  store.attach();
   await settle(); // the first load: Ann is listed, window closed
   const queue: (Response | Promise<Response>)[] = [slow, Response.json([{ id: "u1", name: "Ann" }])];
   vi.stubGlobal("fetch", vi.fn(async () => queue.shift()));
@@ -71,4 +74,23 @@ test("an older list that answers late cannot open the window", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => gone()));
   await store.refresh();
   expect(unauthorized).toHaveBeenCalledOnce(); // so a 401 is still a sign-out
+});
+
+test("off the Admin page an empty list does not open the window, and after unmount the listener cannot reopen it", async () => {
+  answers = [Response.json([]), gone()];
+  const store = usePeopleStore(); // never attached: not on the Admin page
+  await settle();
+  expect(useBootstrapStore().open).toBe(false);
+  store.handOver();
+  expect(useBootstrapStore().open).toBe(false);
+
+  store.attach();
+  answers = [Response.json([])];
+  await store.refresh();
+  expect(useBootstrapStore().open).toBe(true);
+  store.closeWindow(); // the Admin page unmounts
+  expect(useBootstrapStore().open).toBe(false);
+  answers = [Response.json([])];
+  await store.refresh(); // a feed event after the page is gone
+  expect(useBootstrapStore().open).toBe(false);
 });

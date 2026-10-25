@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import BoardColumn from "./BoardColumn.vue";
-import { boardRouter, item } from "./fixtures";
+import { boardRouter, item } from "@/test-utils/board-fixtures";
 import { DRAG_TYPE } from "./statuses";
 
 const make = (items = [item("AIR-1"), item("AIR-2"), item("AIR-3")], extra: Record<string, unknown> = {}) =>

@@ -523,6 +523,16 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     yield from _serve(tmp_path_factory.mktemp("airlie"))
 
 
+@pytest.fixture(autouse=True)
+def _fresh_shared_upstream(request: pytest.FixtureRequest) -> None:
+    """The session server's engine stub is shared: a test that scripts a reply or reads the bodies it was sent
+    must not hand its leftovers to the next one."""
+    if "server" in request.fixturenames:
+        upstream = request.getfixturevalue("server").upstream
+        upstream.reply = Upstream.reply
+        upstream.requests.clear()
+
+
 @pytest.fixture
 def own_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     """A server of the test's own, on the same board, for a test that changes the board."""

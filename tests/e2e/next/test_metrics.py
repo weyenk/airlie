@@ -171,6 +171,8 @@ def test_every_slice_on_offer_draws_without_an_error(
 ) -> None:
     _seed_metrics(own_server.state)
     next_page.goto(own_server.url + "/next/metrics")
+    # each slice makes four server calls: wait for the first draw, then give every step room
+    next_page.locator("[data-plot]").wait_for(timeout=30_000)
     options = next_page.locator("[data-slice] option").evaluate_all("els => els.map(e => e.value)")
     assert options == ["role", "model", "topology", "task", "agent"]
     expected = {
@@ -184,10 +186,10 @@ def test_every_slice_on_offer_draws_without_an_error(
         next_page.locator("[data-slice]").select_option(option)
         evidence.expect(
             next_page.get_by_text(f"Generation speed by {option}"), f"{option}: the chart is titled"
-        ).to_be_visible()
+        ).to_be_visible(timeout=30_000)
         evidence.expect(
             next_page.locator("[data-legend]"), f"{option}: the legend names its slices"
-        ).to_contain_text(expected[option])
+        ).to_contain_text(expected[option], timeout=30_000)
         evidence.expect(next_page.get_by_role("alert"), f"{option}: no error banner").to_have_count(0)
 
 

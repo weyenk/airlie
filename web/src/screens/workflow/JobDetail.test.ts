@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { detail, job, step } from "./fixtures";
+import { detail, job, step } from "@/test-utils/workflow-fixtures";
 import JobDetail from "./JobDetail.vue";
 
 const show = (d = detail(), nodeLabel: string | null = "Layer 02") => mount(JobDetail, { props: { detail: d, nodeLabel: nodeLabel ?? undefined } });

@@ -1,5 +1,5 @@
 import { briefSpan, count, span, stats } from "./format";
-import { job } from "./fixtures";
+import { job } from "@/test-utils/workflow-fixtures";
 
 test("span reads seconds, minutes and hours", () => {
   expect(span(3)).toBe("3 s");

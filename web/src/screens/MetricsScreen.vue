@@ -30,9 +30,10 @@ const metrics = liveResource(["runs", "jobs", "stories"], async () => {
     before ? metricsSummary({ ...before, slice: s }) : Promise.resolve(null),
     metricsSeries({ metric: "generation_tps", ...window, slice: s }),
     // the Stories tile counts these and breaks the same ones down; the list's window is [from, to), so one past now
-    listStories({ active_from: window.from, active_to: window.to + 1 }),
+    // a failed list must not take the speed tiles and the chart with it: it fails on its own tile
+    listStories({ active_from: window.from, active_to: window.to + 1 }).catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))),
   ]);
-  return { stories: active.stories, summary, previous, series, window, bucket: bucketSeconds(window.to - window.from), range: r, slice: s };
+  return { stories: active instanceof Error ? null : active.stories, storiesError: active instanceof Error ? active.message : "", summary, previous, series, window, bucket: bucketSeconds(window.to - window.from), range: r, slice: s };
 });
 watch([range, slice], () => void metrics.refresh());
 
@@ -80,7 +81,7 @@ const selectClass =
 
     <ErrorBanner v-if="metrics.error.value" :error="metrics.error.value" />
 
-    <StatTiles :summary="shown?.summary" :previous="shown?.previous" :range="shown?.range ?? range" :stories="shown?.stories" />
+    <StatTiles :summary="shown?.summary" :previous="shown?.previous" :range="shown?.range ?? range" :stories="shown?.stories" :stories-error="shown?.storiesError" />
 
     <section aria-label="Generation speed" class="rounded-xl border border-border bg-card shadow-sm">
       <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">

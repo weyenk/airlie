@@ -97,3 +97,19 @@ def test_the_phone_keeps_its_filters_behind_a_button(
     sideways = next_page.evaluate("document.documentElement.scrollWidth > innerWidth + 1")
     evidence.shot("the phone page does not scroll sideways", held=not sideways)
     assert not sideways
+
+
+def test_a_401_on_workflows_goes_to_sign_in_keeping_the_page(
+    next_page: Page, own_server: Server, evidence: Evidence
+) -> None:
+    next_page.goto(own_server.url + "/next/workflows?stage=refine")
+    _live(next_page, evidence)
+    next_page.evaluate("localStorage.setItem('airlie.key', 'no-longer-valid')")
+    _write_story(own_server.state, RUNNING_KEY)  # a story event: the list reloads, and is refused
+    evidence.expect(next_page, "signed out goes to sign in, keeping the page and its filter").to_have_url(
+        re.compile(r"/next/signin\?next=(%2F|/)workflows(\?|%3F)stage(=|%3D)refine$")
+    )
+    next_page.evaluate("new Promise(requestAnimationFrame)")
+    evidence.expect(next_page, "and the address is not rewritten after the route moved on").to_have_url(
+        re.compile(r"/next/signin\?next=")
+    )

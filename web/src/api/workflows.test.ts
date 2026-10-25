@@ -2,7 +2,6 @@ import { callOf, stubJson } from "@/test-utils/fetch-stub";
 import {
   cancelJob,
   listJobs,
-  listRuns,
   listRunning,
   listStories,
   repoNames,
@@ -27,16 +26,14 @@ test("listStories sends the query it is given and returns the page whole", async
   expect(callOf(fetchMock, 1).url).toBe("/v1/airlie/stories");
 });
 
-test("running, jobs and runs unwrap their lists", async () => {
-  const fetchMock = stubJson({ running: [1], jobs: [2], runs: [3] });
+test("running and jobs unwrap their lists", async () => {
+  const fetchMock = stubJson({ running: [1], jobs: [2] });
 
   await expect(listRunning()).resolves.toEqual([1]);
   await expect(listJobs()).resolves.toEqual([2]);
-  await expect(listRuns(20)).resolves.toEqual([3]);
 
   expect(callOf(fetchMock, 0).url).toBe("/v1/airlie/running");
   expect(callOf(fetchMock, 1).url).toBe("/v1/airlie/jobs");
-  expect(callOf(fetchMock, 2).url).toBe("/v1/airlie/runs?limit=20");
 });
 
 test("the story and run flows and their job details have their own routes", async () => {

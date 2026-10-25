@@ -34,7 +34,15 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/next
       { path: "/signin", name: "signin", component: () => import("./screens/SignInScreen.vue"), meta: { public: true, bare: true } },
       { path: "/join/:token", name: "join", component: () => import("./screens/JoinScreen.vue"), meta: { public: true, bare: true } },
       { path: "/start", redirect: "/" },
-      { path: "/jobs/:id", redirect: (to) => `/workflows/runs/${to.params.id}` },
+      { path: "/jobs", redirect: "/workflows" },
+      // a story's job is "story-<KEY>" (its page is the story); any other id is a run
+      {
+        path: "/jobs/:id",
+        redirect: (to) => {
+          const id = String(to.params.id);
+          return id.startsWith("story-") && id.length > 6 ? `/workflows/${id.slice(6)}` : `/workflows/runs/${id}`;
+        },
+      },
       { path: "/:rest(.*)*", name: "not-found", component: () => import("./screens/NotFound.vue") },
     ],
   });

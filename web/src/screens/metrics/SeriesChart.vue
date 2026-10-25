@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useElementSize, useMediaQuery } from "@vueuse/core";
 import { computed, ref, watch } from "vue";
+import { PHONE_QUERY } from "@/lib/breakpoints";
 import type { SeriesRow } from "@/api/metrics";
 import EmptyState from "@/components/EmptyState.vue";
 import { activityWindow, formatRate, niceTicks } from "./math";
@@ -23,7 +24,7 @@ const BOTTOM = 24;
 
 const plot = ref<HTMLElement>();
 const size = useElementSize(plot);
-const phone = useMediaQuery("(max-width: 640px)");
+const phone = useMediaQuery(PHONE_QUERY);
 const width = computed(() => size.width.value || 800);
 const height = computed(() => (phone.value ? 220 : 300));
 const inner = computed(() => Math.max(1, width.value - LEFT - RIGHT));

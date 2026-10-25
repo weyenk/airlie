@@ -17,6 +17,7 @@ async function open(url = "/workflows") {
     history: createMemoryHistory(),
     routes: [
       { path: "/workflows", name: "workflows", component: WorkflowsScreen },
+      { path: "/signin", name: "signin", component: { template: "<i/>" } },
       { path: "/workflows/:key", component: { template: "<i/>" } },
     ],
   });
@@ -241,10 +242,18 @@ test("its own response clamps the page when it is truly past the end", async () 
   expect(router.currentRoute.value.query.page).toBeUndefined(); // back on page 1
 });
 
+test("the address is left alone once the route has moved on", async () => {
+  const { w, router } = await open();
+  await router.push({ path: "/signin", query: { next: "/workflows?stage=build" } });
+  await flushPromises();
+  expect(router.currentRoute.value.query).toEqual({ next: "/workflows?stage=build" });
+  w.unmount();
+});
+
 test("the Stage filter uses the chips' words and sends the API word", async () => {
   const { w, router } = await open();
   const options = w.get("[data-filter=stage]").findAll("option");
-  expect(options.map((o) => o.text())).toEqual(["All", "new", "refining", "planning layers", "building", "publishing", "in review", "in review"]);
+  expect(options.map((o) => o.text())).toEqual(["All", "new", "refining", "planning layers", "building", "publishing", "in review (publish)", "in review (review)"]);
   await w.get("[data-filter=stage]").setValue("layers");
   await flushPromises();
   expect(router.currentRoute.value.query.stage).toBe("layers");

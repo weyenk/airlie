@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { layer } from "./fixtures";
+import { layer } from "@/test-utils/workflow-fixtures";
 import LayerLane from "./LayerLane.vue";
 
 const lane = (node = layer("01", "Comment id store", "passed", ["passed", "passed", "passed"]), selected: [string, string] | null = null) =>

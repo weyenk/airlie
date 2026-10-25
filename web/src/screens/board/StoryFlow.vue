@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronRight } from "lucide-vue-next";
 import { computed, ref } from "vue";
+import { PHONE_QUERY } from "@/lib/breakpoints";
 import { RouterLink } from "vue-router";
 import { ApiError } from "@/api";
 import type { Flow } from "@/api/workflows";
@@ -26,8 +27,8 @@ const flow = liveResource<Flow | null>(["stories", "jobs"], async () => {
   }
 }).data;
 
-// Below 640px the two sections start folded and open on a tap.
-const phone = typeof matchMedia === "function" && matchMedia("(max-width: 639px)").matches;
+// At 640px and below the two sections start folded and open on a tap.
+const phone = typeof matchMedia === "function" && matchMedia(PHONE_QUERY).matches;
 const acceptanceOpen = ref(!phone);
 const workflowOpen = ref(!phone);
 
