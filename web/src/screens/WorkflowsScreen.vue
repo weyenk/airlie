@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { listStories, STAGES } from "@/api/workflows";
 import type { Stage, StoryQuery } from "@/api/workflows";
+import { chipSpec } from "@/components/statusTable";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { liveResource } from "@/stores/live";
 import { useWorkflowsStore } from "@/stores/workflows";
@@ -148,8 +149,10 @@ const windowText = computed(() => {
   return from !== undefined && to !== undefined ? `Active ${day(from)} – ${day(to)}` : from !== undefined ? `Active since ${day(from)}` : `Active until ${day(to as number)}`;
 });
 // a page past the last one (a stale link, or stories removed) falls back to the last
-watch([total, page, pages], () => {
-  if (store.stories && page.value > pages.value) go({ page: String(pages.value) }, true);
+// (judged only on a result loaded for this very query: the store keeps the last one until the new one lands)
+watch([total, page, pages, () => store.storiesFor], () => {
+  const current = JSON.stringify(parsed.value) === JSON.stringify(store.storiesFor);
+  if (store.stories && current && page.value > pages.value) go({ page: String(pages.value) }, true);
 });
 const sortedBy = computed(() => `${SORTS.find((s) => s.value === sort.value)?.label ?? "Last activity"}${sort.value === "activity" ? " ↓" : ""}`);
 
@@ -193,7 +196,7 @@ const selectClass =
             Stage
             <select data-filter="stage" :value="stage" :class="selectClass" @change="go({ stage: ($event.target as HTMLSelectElement).value || undefined })">
               <option value="">All</option>
-              <option v-for="s in STAGES" :key="s" :value="s">{{ s }}</option>
+              <option v-for="s in STAGES" :key="s" :value="s">{{ chipSpec("stage", s).label }}</option>
             </select>
           </label>
           <label class="flex items-center gap-2 text-[13px] text-muted-foreground">

@@ -10,7 +10,11 @@ export const useWorkflowsStore = defineStore("workflows", () => {
 
   // null until a screen sets it: nothing asks for a page nobody is showing
   const query = ref<StoryQuery | null>(null);
-  const page = liveResource("stories", async () => (query.value ? listStories(query.value) : undefined));
+  // each result keeps the query it was loaded for: the data stays until the next load lands, so it can be stale
+  const page = liveResource("stories", async () => {
+    const asked = query.value;
+    return asked ? { asked: { ...asked }, page: await listStories(asked) } : undefined;
+  });
   // a different query is a different page; the live resource only refetches when the feed says so
   watch(query, () => void page.refresh(), { deep: true });
 
@@ -18,7 +22,9 @@ export const useWorkflowsStore = defineStore("workflows", () => {
     running: computed(() => running.data.value ?? []),
     runningError: running.error,
     query,
-    stories: page.data,
+    stories: computed(() => page.data.value?.page),
+    /** The query `stories` was loaded for (not necessarily the current `query`). */
+    storiesFor: computed(() => page.data.value?.asked),
     storiesError: page.error,
     refresh: () => Promise.all([running.refresh(), page.refresh()]).then(() => undefined),
   };

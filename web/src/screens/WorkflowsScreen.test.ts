@@ -206,3 +206,29 @@ test("path repositories show their basename and send the full path back", async 
   await flushPromises();
   expect(router.currentRoute.value.query.repo).toBe("/Users/n/git/airlie");
 });
+
+test("a stale shorter result for another query does not clamp the page; its own response does", async () => {
+  const { router } = await open("/workflows?stage=new");
+  let release: (v: unknown) => void = () => {};
+  api.listStories.mockImplementation(async (q: { size?: number; page?: number }) => {
+    if (q.size === undefined) return { stories: STORIES, total: 2, page: 1, size: null };
+    await new Promise((r) => (release = r)); // held: the store still has the old one-page result
+    return { stories: STORIES, total: 60, page: q.page ?? 1, size: q.size };
+  });
+  await router.push("/workflows?page=2");
+  await flushPromises();
+  expect(router.currentRoute.value.query.page).toBe("2");
+  release(null);
+  await flushPromises();
+  expect(router.currentRoute.value.query.page).toBe("2");
+  expect(lastPageCall()).toEqual({ page: 2, size: 25 });
+});
+
+test("the Stage filter uses the chips' words and sends the API word", async () => {
+  const { w, router } = await open();
+  const options = w.get("[data-filter=stage]").findAll("option");
+  expect(options.map((o) => o.text())).toEqual(["All", "new", "refining", "planning layers", "building", "publishing", "in review", "in review"]);
+  await w.get("[data-filter=stage]").setValue("layers");
+  await flushPromises();
+  expect(router.currentRoute.value.query.stage).toBe("layers");
+});
