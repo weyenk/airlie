@@ -44,6 +44,25 @@ STORY_PLAN_CONTRACT = """A story is the smallest unit that ends in a pull reques
               "out_of_scope": ["..."], "assumptions": ["..."], "depends_on": ["S0"], "size": "S" or "M"}]}
 List the stories in dependency order. Every epic criterion appears in the epic_criteria of at least one story. Each risk is pinned to the story criterion that would catch it."""  # noqa: E501
 
+PLAN_REFINE_FIELD = (
+    'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
+    'sentence, "check": what you would read next and why}. Say false when more reading would not change the '
+    "stories, which epic criteria each one covers, or what each one depends on; say true only with something "
+    "specific to check."
+)
+"""What the story-plan brief adds when the architect plans in rounds: the plan carries its own verdict (the
+layer plan's is rounds.REFINE_FIELD)."""
+
+
+def same_plans(a: StoryPlan, b: StoryPlan) -> bool:
+    """The same plan for the rounds to stop on: the same stories, in order, each covering the same epic
+    criteria and depending on the same stories. Titles, scopes and prose are what a model rewords between
+    rounds for nothing (as same_layers does not compare them either)."""
+    return [(s.id, s.epic_criteria, s.depends_on) for s in a.stories] == [
+        (s.id, s.epic_criteria, s.depends_on) for s in b.stories
+    ]
+
+
 _ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,19}")
 _PINNED = re.compile(r"(?P<story>[^/\s]+)/(?P<criterion>[^/\s]+)")
 _CONSUMED = re.compile(r"(?P<story>[A-Z]+[0-9]+):")
@@ -432,7 +451,7 @@ def check_story_plan(
                     PlanFinding(
                         "file_missing",
                         s.id,
-                        f"{s.id}: scope path {path.path} is not on the trunk of {s.repository} and no "
+                        f"scope path {path.path} is not on the trunk of {s.repository} and no "
                         "earlier "
                         "story creates it; mark it new, or fix the path",
                     )
@@ -445,7 +464,7 @@ def check_story_plan(
                     PlanFinding(
                         "empty_criterion",
                         s.id,
-                        f"{s.id}: acceptance {c.id} has an empty {' and '.join(blank)}; "
+                        f"acceptance {c.id} has an empty {' and '.join(blank)}; "
                         "write all of Given, When and Then",
                     )
                 )

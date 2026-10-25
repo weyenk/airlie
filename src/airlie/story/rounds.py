@@ -124,5 +124,8 @@ def _done(text: str, emit: Emit, reason: str, rounds: int) -> str:
 
 
 def _shape(plan: Any) -> dict[str, Any]:
+    stories = getattr(plan, "stories", None)  # an epic's story plan (P3), not a story's layers
+    if stories is not None:
+        return {"stories": [s.id for s in stories]}
     layers = plan if isinstance(plan, tuple) else ()
     return {"layers": [getattr(x, "slug", str(x)) for x in layers]}

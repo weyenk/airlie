@@ -27,6 +27,7 @@ from airlie.story.briefs import (
     built_so_far,
     layers_brief,
     package_brief,
+    plan_brief,
     refine_brief,
     survey_brief,
 )
@@ -44,7 +45,7 @@ from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
-from tests.unit.test_story_briefs import CARD, LAYERS, STORY
+from tests.unit.test_story_briefs import CARD, EPIC, EPIC_TEXT, LAYERS, STORY
 
 GOLDEN = Path(__file__).parent / "data" / "prompt_texts.json"
 
@@ -257,6 +258,20 @@ CASES["fn:briefs.build_brief:foundation"] = partial(
 )
 CASES |= {
     "brief-package-task": lambda: text("brief-package-task"),
+    "plan-brief": lambda: text("plan-brief", max_stories=8, max_scope_files=8),
+    "fn:briefs.plan_brief:plain": partial(plan_brief, EPIC_TEXT, EPIC, max_stories=8, max_scope_files=8),
+    "fn:briefs.plan_brief:full": partial(
+        plan_brief,
+        EPIC_TEXT,
+        EPIC,
+        guide=GUIDE,
+        conventions="tests live in tests/unit",
+        lessons=[Lesson(title="Layer 01 storage", acceptance=["AC1"], ending="out_of_steps")],
+        max_stories=6,
+        max_scope_files=4,
+        feedback=BAD_JSON,
+        round_steps=6,
+    ),
     "package-tests-rules": lambda: text("package-tests-rules"),
     "package-contract": lambda: text("package-contract"),
 }
