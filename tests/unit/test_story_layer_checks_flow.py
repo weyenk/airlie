@@ -511,6 +511,18 @@ async def test_a_critic_that_agrees_or_cannot_be_read_costs_the_architect_no_rev
     assert skipped["layer"] == "01" and "verdict" in skipped["reason"]
 
 
+async def test_the_critic_reads_the_packages_test_files_on_disk_as_in_its_brief(tmp_path: Path) -> None:
+    """On the first full real run (airlie-sandbox, 2026-10-26) Muse read the test file from the base, where it
+    was absent or an earlier layer's, and objected that every agreed test was missing; the critic's tree is
+    the base with the package's test files placed, so its tools see what its brief shows."""
+    look = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "tests/test_calc.py"}))])
+    st, engine = await agreed_run(tmp_path, [two()], [look, AGREE_ALL], [FEATURE, DONE])
+    assert st.blocked is None and st.stage == "review", st.blocked
+    second = engine.requests[[r.role for r in engine.requests].index("tester") + 1]
+    [result] = [m.content for m in second.messages if m.role == "tool"]
+    assert "def test_mul_zero" in str(result), result
+
+
 async def test_a_package_covering_a_test_the_proof_lacks_is_a_proof_mismatch(tmp_path: Path) -> None:
     extra = TWO_TESTS + "\n\ndef test_extra():\n    assert mul(1, 1) == 1\n"
     wide = package_reply(

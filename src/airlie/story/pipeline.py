@@ -1390,6 +1390,21 @@ class StoryPipeline:
         found = conventions(self.repo, base_sha, tester.skills if tester is not None else None, None)
         return conventions_text(found, self.commands)
 
+    def _with_tests(self, st: StoryState, base_sha: str, tests: Mapping[str, str]) -> str:
+        """A commit on no branch: `base_sha` with `tests` written over it, for the critic's tools to read
+        the package's test files where its brief says they are (Muse read the base's, absent or an earlier
+        layer's, and objected that the agreed tests were missing: airlie-sandbox, 2026-10-26)."""
+        tree = st.path / "critic-tree"
+        remove_worktree(self.repo, tree)  # one a killed run left behind
+        add_worktree(self.repo, tree, branch=None, start_point=base_sha)
+        try:
+            for path, text in tests.items():
+                (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                (tree / path).write_text(text)
+            return commit_wip(tree, "the package's test files, for the critic")
+        finally:
+            remove_worktree(self.repo, tree)
+
     async def _critique(
         self,
         st: StoryState,
@@ -1410,8 +1425,9 @@ class StoryPipeline:
         nn, layer = f"{i + 1:02d}", layers[i]
         brief = critic_brief(layer, package.tests, proof, self._conventions_text(base_sha))
         try:
+            at = self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(
-                await self._ask(st, "critic", "tester", brief, at=base_sha, steps=CRITIC_STEPS)
+                await self._ask(st, "critic", "tester", brief, at=at, steps=CRITIC_STEPS)
             )
         except (StoryError, StoryBlocked) as e:
             st.emit("amigos_critic_unreadable", layer=nn, reason=_cap(str(e), 300))
