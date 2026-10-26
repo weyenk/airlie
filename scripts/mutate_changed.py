@@ -128,13 +128,21 @@ def changed_lines(merge_base: str, path: str) -> set[int] | None:
 def functions_of(path: str) -> list[tuple[str, str, int, int]]:
     """Each function mutmut mutates in `path`: (its mutant glob, its name as written, first line, last line),
     the first line counting its decorators. Top-level functions are `<module>.x_<name>__mutmut_*`; methods
-    of a top-level class are `<module>.xǁ<Class>ǁ<name>__mutmut_*`."""
+    of a top-level class are `<module>.xǁ<Class>ǁ<name>__mutmut_*`. A decorated function has no mutants, as
+    mutmut decides (file_mutation.py), unless its one decorator is a bare @staticmethod or @classmethod."""
     tree = ast.parse((ROOT / path).read_text())
     mod = module_name(path)
     found: list[tuple[str, str, int, int]] = []
 
     def add(node: ast.FunctionDef | ast.AsyncFunctionDef, glob: str, name: str) -> None:
-        first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        decorators = node.decorator_list
+        if decorators and not (
+            len(decorators) == 1
+            and isinstance(decorators[0], ast.Name)
+            and decorators[0].id in ("staticmethod", "classmethod")
+        ):
+            return
+        first = min([node.lineno, *(d.lineno for d in decorators)])
         found.append((glob, name, first, node.end_lineno or node.lineno))
 
     for node in tree.body:
