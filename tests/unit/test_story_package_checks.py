@@ -243,3 +243,16 @@ async def test_a_package_that_misses_an_agreed_test_or_adds_one_is_a_proof_misma
     assert [f.kind for f in found if f.kind == "proof_mismatch"] == []
     _, found = await checker.check(package(), root, base, scratch)
     assert found == []
+
+
+def test_an_agreed_id_without_its_class_is_the_package_test_it_names() -> None:
+    """The meeting writes `file::name`; a unittest package stores the full `file::Class::name`."""
+    from airlie.story.package_checks import proof_mismatches
+
+    p = package(covers={"AC1": ("tests/test_mul.py::MulTest::test_mul",)})
+    assert proof_mismatches(p, {"tests/test_mul.py::test_mul"}) == []
+    assert proof_mismatches(p, {"tests/test_mul.py::MulTest::test_mul"}) == []
+    assert [f.test for f in proof_mismatches(p, {"tests/test_other.py::test_mul"})] == [
+        "tests/test_other.py::test_mul",  # agreed and not covered, then covered and not agreed
+        "tests/test_mul.py::MulTest::test_mul",
+    ]

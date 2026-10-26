@@ -169,9 +169,16 @@ def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
 def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
     """A `proof_mismatch` for each agreed test the package does not cover and for each test it covers that the
     proof does not name (three-amigos D9, D12): the package is the transcription of the agreed proof. A
-    parametrized test is its function's id."""
+    parametrized test is its function's id; an agreed id without its class (as the meeting writes it) is the
+    covered method it names."""
     covered = {_PARAMS.sub("", t) for t in package.test_ids}
-    agreed = set(proof_ids)
+
+    def as_covered(agreed_id: str) -> str:
+        where, _, name = agreed_id.partition("::")
+        named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(f"::{name}")]
+        return named[0] if agreed_id not in covered and len(named) == 1 else agreed_id
+
+    agreed = {as_covered(t) for t in proof_ids}
     return [
         Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
         for t in sorted(agreed - covered)

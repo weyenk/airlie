@@ -166,14 +166,20 @@ def _normal(path: str, what: str) -> str:
     return p
 
 
-def _has_test(text: str, name: str) -> bool | None:
-    """Whether `text` defines the test `name` ("test_x" or "TestY::test_x"); None when it does not parse
-    (the readiness check reports that, with the line)."""
+def _test_named(text: str, name: str) -> str | bool | None:
+    """The full name of the test `name` ("test_x" or "TestY::test_x") that `text` defines: `name` itself, or
+    the one method of a test class it is the bare name of (the story meeting names tests without their
+    class); False when there is no such test, or more than one; None when the text does not parse (the
+    readiness check reports that, with the line)."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return None
-    return any(n == name for n, _ in test_functions(tree))
+    names = [n for n, _ in test_functions(tree)]
+    if name in names:
+        return name
+    methods = [n for n in names if n.endswith(f"::{name}")]
+    return methods[0] if len(methods) == 1 else False
 
 
 def _proof_change(obj: dict[str, Any]) -> ProofChange:
@@ -257,12 +263,17 @@ def parse_package(text: str, layer: Layer, story: Story) -> Package | ProofChang
                 f"criterion {own} is owned by this layer but no test covers it: add one to covers"
             )
     for cid, ids in covers.items():
+        full: list[str] = []
         for tid in ids:
             where, _, name = tid.partition("::")
             text_of = tests.get(where)
-            found = None if text_of is None or not name else _has_test(text_of, _PARAMS.sub("", name))
+            bare = _PARAMS.sub("", name)
+            found = None if text_of is None or not name else _test_named(text_of, bare)
             if text_of is None or not name or found is False:
                 raise StoryError(f"covers {cid}: {tid} names a test in no test file of this reply")
+            # stored as the test's full id, its parameters kept
+            full.append(f"{where}::{found}{name[len(bare) :]}" if isinstance(found, str) else tid)
+        covers[cid] = tuple(full)
     return Package(
         layer.slug,
         tests,

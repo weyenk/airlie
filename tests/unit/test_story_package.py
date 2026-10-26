@@ -170,6 +170,30 @@ def test_a_class_test_and_a_parametrized_id_name_a_test_in_the_file() -> None:
     assert p.test_ids == (f"{PATH}::TestStore::test_a[x]",)
 
 
+UNITTEST = (
+    "import unittest\n\n\nclass RomanTest(unittest.TestCase):\n"
+    "    def test_a(self) -> None:\n        self.assertEqual(1, 1)\n"
+)
+
+
+def test_a_unittest_case_of_any_name_holds_tests_and_a_bare_name_resolves_to_its_method() -> None:
+    """The first real run on a unittest repository (airlie-sandbox, 2026-10-25): the architect mirrored the
+    repository's `VersionTest(unittest.TestCase)` and covered the agreed ids as the meeting wrote them, with
+    no class; both are the tests of the file, and the id is stored as the test's full id."""
+    p = parse_package(reply(tests={PATH: UNITTEST}, covers={"AC1": [f"{PATH}::test_a"]}), LAYER, STORY)
+    assert p.covers == {"AC1": (f"{PATH}::RomanTest::test_a",)}
+    p = parse_package(
+        reply(tests={PATH: UNITTEST}, covers={"AC1": [f"{PATH}::RomanTest::test_a"]}), LAYER, STORY
+    )
+    assert p.test_ids == (f"{PATH}::RomanTest::test_a",)
+
+
+def test_a_bare_name_two_classes_define_names_no_one_test() -> None:
+    text = UNITTEST + "\n\nclass OtherTest(unittest.TestCase):\n    def test_a(self) -> None:\n        pass\n"
+    with pytest.raises(StoryError, match="names a test in no test file"):
+        parse_package(reply(tests={PATH: text}, covers={"AC1": [f"{PATH}::test_a"]}), LAYER, STORY)
+
+
 def test_the_contract_names_the_heading_and_the_json_shape() -> None:
     assert "### test file:" in PACKAGE_CONTRACT and '"type": "package"' in PACKAGE_CONTRACT
 
