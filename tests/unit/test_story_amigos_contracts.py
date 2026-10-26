@@ -271,3 +271,25 @@ def test_a_criterion_only_the_gate_can_prove_is_a_gate_entry_with_no_test() -> N
     ]
     with pytest.raises(StoryError, match="layer 'profile' has no test"):
         _proof(only)
+
+
+def test_a_proof_with_one_bad_entry_keeps_its_good_ones_and_names_the_bad() -> None:
+    """Lever 1's roman bench run (2026-10-26): three of the tester's proofs were refused whole for one entry
+    each (a level the tree lacks, a gate entry with no criterion, a criterion written as a sentence), and the
+    meeting ended with no proof at all."""
+    from airlie.story.amigos import parse_proof_entries
+
+    obj = copy.deepcopy(GOOD)
+    obj["tests"].append({"criterion": "the suite passes", "layer": "profile", "gate": True})
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert [t.name for t in tests] == [t.name for t in _proof()]
+    assert len(problems) == 1 and problems[0].startswith("proof test 4: criterion 'the suite passes'")
+
+
+def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_level() -> None:
+    flat = {"tests": 1}
+    obj = {"type": "proof", "tests": [{**copy.deepcopy(GOOD["tests"][0]), "file": "tests/test_store.py"}]}
+    obj["tests"].append({**copy.deepcopy(GOOD["tests"][1]), "file": "tests/test_profile.py"})
+    obj["tests"].append({**copy.deepcopy(GOOD["tests"][2]), "file": "tests/test_docs.py"})
+    proof = parse_proof(obj, STORY, LAYERS, flat, GUIDELINES)
+    assert {t.level for t in proof} == {"tests"} and proof[0].file == "tests/test_store.py"

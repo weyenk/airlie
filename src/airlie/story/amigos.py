@@ -149,17 +149,68 @@ def _test_path(path: str, level: str, levels: Mapping[str, int], where: str) -> 
     return clean
 
 
-def parse_proof(
+def _proof_entry(
+    t: Any,
+    where: str,
+    criteria: Collection[str],
+    slugs: Collection[str],
+    levels: Mapping[str, int],
+    guidelines: Collection[str],
+) -> ProofTest:
+    """One entry of a proof plan as a ProofTest, or a StoryError saying what is wrong with it. A level the
+    repository's test tree lacks is its one level when it has only one (a flat tests/ directory)."""
+    if not isinstance(t, dict):
+        raise StoryError(f"{where} must be an object")
+    crit = t.get("criterion")
+    if crit is not None and str(crit) not in criteria:
+        raise StoryError(f"{where}: criterion {crit!r} is not in the story; it has {sorted(criteria)}")
+    layer = _field(t, "layer", where)
+    if layer not in slugs:
+        raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
+    if t.get("gate") is True:
+        if crit is None:
+            raise StoryError(f"{where}: a gate entry names the criterion the gate proves")
+        return ProofTest(str(crit), layer, "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+    level = _field(t, "level", where)
+    if level not in levels and len(levels) == 1:
+        level = next(iter(levels))  # the one level there is
+    if level not in levels:
+        raise StoryError(
+            f"{where}: level {level!r} is no directory of the repository's test tree; "
+            f"its levels are {sorted(levels)}"
+        )
+    file = _test_path(_field(t, "file", where), level, levels, where)
+    name = _one_line(_field(t, "name", where), f"{where}: name", 200)
+    guideline = _field(t, "guideline", where, required=False) or None
+    if guideline is not None and guideline not in guidelines:
+        raise StoryError(
+            f"{where}: guideline {guideline!r} is no file of the guideline library "
+            f"({sorted(guidelines)}); omit it when none fits"
+        )
+    return ProofTest(
+        None if crit is None else str(crit),
+        layer,
+        file,
+        name,
+        level,
+        guideline,
+        _field(t, "asserts", where),
+        _field(t, "needs", where, required=False),
+    )
+
+
+def parse_proof_entries(
     obj: dict[str, Any] | None,
     story: Story,
     layers: tuple[Layer, ...],
     levels: Mapping[str, int],
     guidelines: Collection[str],
-) -> tuple[ProofTest, ...]:
-    """The tester's proof plan as ProofTests. A StoryError (the reason for the next turn) when: there is no
-    JSON, its type is not "proof", a test has a criterion the story lacks, a layer not in the split, a level
-    the repository's test tree lacks, a file outside `tests/<level>/`, a guideline not in the library, or two
-    tests share an id; and, all together, when a criterion of the story or a layer has no test."""
+) -> tuple[tuple[ProofTest, ...], list[str]]:
+    """The proof plan's usable entries and what is wrong with each of the others, entry by entry: one bad
+    entry no longer costs the plan its good ones (the roman bench, 2026-10-26: three proofs refused whole for
+    one entry each, and the meeting ended with none). A StoryError only when there is no plan to read: no
+    JSON, a type that is not "proof", or no tests list. Whether every criterion and layer has a test is the
+    checker's to say."""
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "proof":
@@ -170,59 +221,42 @@ def parse_proof(
     criteria = {c.id for c in story.acceptance}
     slugs = {x.slug for x in layers}
     tests: list[ProofTest] = []
+    problems: list[str] = []
     seen: set[str] = set()
     for n, t in enumerate(raw, 1):
-        where = f"proof test {n}"
-        if not isinstance(t, dict):
-            raise StoryError(f"{where} must be an object")
-        crit = t.get("criterion")
-        if crit is not None and str(crit) not in criteria:
-            raise StoryError(f"{where}: criterion {crit!r} is not in the story; it has {sorted(criteria)}")
-        layer = _field(t, "layer", where)
-        if layer not in slugs:
-            raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
-        if t.get("gate") is True:
-            if crit is None:
-                raise StoryError(f"{where}: a gate entry names the criterion the gate proves")
-            gated = ProofTest(str(crit), layer, "", "", "gate", None, GATE_ASSERTS, "", gate=True)
-            if gated.id in seen:
-                raise StoryError(f"{crit} is left to the gate twice in the proof; once is enough")
-            seen.add(gated.id)
-            tests.append(gated)
+        try:
+            test = _proof_entry(t, f"proof test {n}", criteria, slugs, levels, guidelines)
+        except StoryError as e:
+            problems.append(str(e))
             continue
-        level = _field(t, "level", where)
-        if level not in levels:
-            raise StoryError(
-                f"{where}: level {level!r} is no directory of the repository's test tree; "
-                f"its levels are {sorted(levels)}"
-            )
-        file = _test_path(_field(t, "file", where), level, levels, where)
-        name = _one_line(_field(t, "name", where), f"{where}: name", 200)
-        guideline = _field(t, "guideline", where, required=False) or None
-        if guideline is not None and guideline not in guidelines:
-            raise StoryError(
-                f"{where}: guideline {guideline!r} is no file of the guideline library "
-                f"({sorted(guidelines)}); omit it when none fits"
-            )
-        test = ProofTest(
-            None if crit is None else str(crit),
-            layer,
-            file,
-            name,
-            level,
-            guideline,
-            _field(t, "asserts", where),
-            _field(t, "needs", where, required=False),
-        )
         if test.id in seen:
-            raise StoryError(f"test id {test.id} appears twice in the proof; give each test its own name")
+            problems.append(f"test id {test.id} appears twice in the proof; give each test its own name")
+            continue
         seen.add(test.id)
         tests.append(test)
-    problems = [f"criterion {c} has no test" for c in sorted(criteria - {t.criterion for t in tests})]
-    problems += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests if not t.gate})]
+    return tuple(tests), problems
+
+
+def parse_proof(
+    obj: dict[str, Any] | None,
+    story: Story,
+    layers: tuple[Layer, ...],
+    levels: Mapping[str, int],
+    guidelines: Collection[str],
+) -> tuple[ProofTest, ...]:
+    """The tester's proof plan as ProofTests, all of it or a StoryError (the reason for the next try): every
+    entry must parse (`parse_proof_entries`), and every criterion of the story and every layer needs a
+    test (a gate entry proves its criterion; it is no layer's test)."""
+    tests, problems = parse_proof_entries(obj, story, layers, levels, guidelines)
     if problems:
-        raise StoryError("; ".join(problems) + ": every criterion and every layer needs a test in the proof")
-    return tuple(tests)
+        raise StoryError("; ".join(problems))
+    criteria = {c.id for c in story.acceptance}
+    slugs = {x.slug for x in layers}
+    missing = [f"criterion {c} has no test" for c in sorted(criteria - {t.criterion for t in tests})]
+    missing += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests if not t.gate})]
+    if missing:
+        raise StoryError("; ".join(missing) + ": every criterion and every layer needs a test in the proof")
+    return tests
 
 
 @dataclass(frozen=True)
@@ -579,7 +613,10 @@ def read_turn(role: str, text: str, standing: Standing, rules: ReadRules) -> Tur
                 layers = parse_layers(obj, story, rules.max_layers)
                 parts["changes"] = layers
             else:
-                parts["proof"] = parse_proof(obj, story, layers, rules.levels, rules.guidelines)
+                proof, wrong = parse_proof_entries(obj, story, layers, rules.levels, rules.guidelines)
+                problems += [Finding("part_invalid", role, f"in your proof: {w}", "") for w in wrong]
+                if proof:  # its usable tests stand; the checker names what is still unproven
+                    parts["proof"] = proof
         except StoryError as e:
             problems.append(Finding("part_invalid", role, f"your {part} was not used: {e}", ""))
     return Turn(role, text, verdict, parts, tuple(problems))

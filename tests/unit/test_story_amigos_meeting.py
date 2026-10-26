@@ -223,8 +223,9 @@ async def test_a_turn_without_a_verdict_is_a_finding_not_an_agreement(tmp_path: 
 async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_finding(
     tmp_path: Path,
 ) -> None:
-    """A proof with a level the repository lacks does not replace the plan (there is none yet), and the
-    tester is told why on the next turn; its corrected proof is then read."""
+    """A proof entry with a level the repository lacks is left out, its usable entries stand (one bad entry
+    no longer costs the plan its good ones, 2026-10-26), the tester is told why on the next turn, and its
+    corrected proof is then read."""
     bad = proof_with(level="smoke", file="tests/smoke/test_profile.py")
     script = {
         "product": [say("ok", AGREE)] * 3,
@@ -237,7 +238,9 @@ async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert seen[2].parts == {} and seen[2].problems[0].kind == "part_invalid"
+    kept = seen[2].parts["proof"]
+    assert kept and all(t.level != "smoke" for t in kept)
+    assert seen[2].problems[0].kind == "part_invalid" and "in your proof" in seen[2].problems[0].why
     assert "part_invalid" in seen[3].text and "level" in seen[3].text and "tester" in seen[3].text
     assert out.proof and out.turns == 10
 
