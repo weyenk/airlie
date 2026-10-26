@@ -497,7 +497,7 @@ def critic_brief(
         hub_text("package-critic"),
         f"## The layer\n{layer.title}: {layer.brief}",
         "## The agreed proof for this layer\n" + "\n".join(_proof_lines(proof)),
-        "## The package's test files (data)\n"
+        "## The package's test files (data; not in the repository until the coder writes them)\n"
         + "\n\n".join(f"### {path}\n{_fenced(text, 'python')}" for path, text in files.items()),
         *([conventions_text] if conventions_text else []),
         CRITIC_CONTRACT,

@@ -175,6 +175,9 @@ def test_the_critic_is_given_the_test_files_the_layers_agreed_proof_and_the_conv
     files = {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n```\n"}
     text = critic_brief(LAYERS[1], files, AGREED, "## The repository's test gate\n- uv run pytest")
     assert "Read these tests against the agreed proof" in text
+    # the files are not on disk yet: Muse once looked there and called every agreed test missing
+    assert "not in the repository yet, so never look for them there" in text
+    assert "not in the repository until the coder writes them" in text
     assert "tests/unit/test_profile.py::test_shows" in text and "asserts: the url shows" in text
     assert "### tests/unit/test_profile.py" in text and "assert show() == 1" in text
     assert "````python" in text  # a fence longer than any inside the file
