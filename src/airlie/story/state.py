@@ -82,6 +82,13 @@ class StoryState:
     """The meeting's team state after its latest turn, saved every turn so a killed story resumes it; None
     outside a meeting and once the agreement is stored."""
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
+    drafted: bool = False
+    """Whether the architect's conversation that drafts every layer's package has been held (amendment of
+    2026-10-26 to the planning-line design): it is held once, before the first layer is built."""
+    drafts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Each layer's draft, by layer number, until the layer takes it: `{"package": Package.to_dict(), "run":
+    studio run}`; `{"proof_change": [[test, why], ...], "run": ...}` when the architect found the layer's
+    proof wrong; or `{"unusable": why}` for a reply that could not be used (the layer's first try)."""
     attempt: dict[str, str] | None = None
     base: dict[str, str] | None = None
     gate: dict[str, Any] | None = None

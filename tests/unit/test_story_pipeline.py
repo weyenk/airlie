@@ -205,6 +205,10 @@ def pipeline(
     )
 
 
+def kinds_all(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text().splitlines()]
+
+
 def kinds(path: Path, kind: str) -> list[dict[str, Any]]:
     return [e for e in (json.loads(x) for x in path.read_text().splitlines()) if e["kind"] == kind]
 
@@ -233,11 +237,10 @@ async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_re
     assert [len(r) for r in runs] == [1, 1]  # once per built layer, none in refine or the packages
 
 
-async def test_each_layer_is_built_from_the_architects_package_and_the_coder_sees_its_tests(
-    tmp_path: Path,
-) -> None:
-    """P1 (2026-10-24): the architect writes each layer's package just before the layer runs; the pipeline
-    places its tests in the worktree and commits them with the layer, and the coder's goal is the package."""
+async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_front(tmp_path: Path) -> None:
+    """P1 (2026-10-24), amended 2026-10-26: the architect drafts every layer's package in one conversation
+    before the first layer is built, each checked just before its layer; the pipeline places its tests in the
+    worktree and commits them with the layer, and the coder's goal is the package."""
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine()
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
@@ -251,16 +254,26 @@ async def test_each_layer_is_built_from_the_architects_package_and_the_coder_see
     assert "tests/unit/test_storage.py" in git(repo, "show", "--name-only", "--format=", B1)
     assert "tests/unit/test_profile.py" in git(repo, "show", "--name-only", "--format=", B2)
     events = st.path / "events.jsonl"
+    names = [e["kind"] for e in kinds_all(events)]
+    assert names.index("package_drafted") < names.index("layer_start")  # both drafted before any build
+    assert [e["layer"] for e in kinds(events, "package_drafted")] == ["01", "02"]
     assert [e["layer"] for e in kinds(events, "package_start")] == ["01", "02"]
     assert [e["layer"] for e in kinds(events, "package_ready")] == ["01", "02"]
     assert [e["paths"] for e in kinds(events, "package_placed")] == [
         ["tests/unit/test_storage.py"],
         ["tests/unit/test_profile.py"],
     ]
-    # the second layer's package was asked on the first layer's branch: its brief names what layer 01 added
-    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
-    assert "Write this layer's package" in asked[1] and "This is layer 1 of 2: Storage" in asked[1]
-    assert "This is layer 2 of 2: Profile" in asked[2] and "What the earlier layers" in asked[2]
+    assert st.drafted and st.drafts == {}  # each layer took its draft
+    # one conversation: layer 02 is asked as a follow-up to layer 01's reply, before the coder starts
+    roles = [r.role for r in engine.requests]
+    architect = [r for r in engine.requests if r.role == "architect"]
+    assert roles.index("coder") > [n for n, r in enumerate(roles) if r == "architect"][2]
+    first, second = architect[1], architect[2]
+    assert "packages of all 2 layers" in first.messages[1].content
+    assert "This is layer 1 of 2: Storage" in first.messages[1].content
+    asked = second.messages[-1].content
+    assert "This is layer 2 of 2: Profile" in asked and "Now write the next layer's package" in asked
+    assert len(second.messages) > len(first.messages)  # the same conversation, layer 01's reply in it
 
 
 async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_stops_the_story(
@@ -760,15 +773,17 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert "minor PASS:1: name it better" in first and "minor profile.txt: say more" in second
     assert "| build | coder | done | approve | 0 |" in first
     # every run is on record, and the events follow the stages
-    assert len(st.runs) == 6  # refine, layers, then a package and a build per layer
+    assert len(st.runs) == 5  # refine, layers, the packages drafted together, then a build per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
     assert [e["kind"] for e in log] == [
         *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
-        # build; ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
-        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        # build: every package drafted in one conversation, then each checked just before its layer;
+        # ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
+        *("packages_drafting", "run", "package_drafted", "package_drafted"),
+        *("test_checks_skipped", "package_start", "package_ready"),
         *("layer_start", "package_placed", "layer_built"),
-        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        *("test_checks_skipped", "package_start", "package_ready"),
         *("layer_start", "package_placed", "layer_built"),
         "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
@@ -1191,9 +1206,8 @@ async def test_refine_and_layers_read_the_trunk_not_the_persons_checkout(tmp_pat
         assert "README.md" in listing and "check.sh" in listing and "feature_only.txt" not in listing
     assert st.base is not None and st.base["sha"] == git(repo, "rev-parse", trunk)
     runs = kinds(st.path / "events.jsonl", "run")
-    # refine, layers and layer 01's package read the trunk; layer 02's package reads layer 01's branch
-    assert {e["base_sha"] for e in runs[:3]} == {st.base["sha"]}
-    assert runs[3]["base_sha"] == git(repo, "rev-parse", B1)
+    # refine, layers and the packages, drafted together, read the trunk (each is checked on its real base)
+    assert len(runs) == 3 and {e["base_sha"] for e in runs} == {st.base["sha"]}
     assert "feature_only.txt" not in git(
         repo, "ls-tree", "-r", "--name-only", B2
     )  # nor do the layers build on it
@@ -1420,7 +1434,7 @@ async def test_a_story_cancelled_while_it_refines_goes_back_to_intake_and_the_ne
     st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
     assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'intake'"))]
     assert st.blocked is None and st.stage == "review"
-    assert len(st.runs) == 7  # the cancelled run is on record with the six that finished
+    assert len(st.runs) == 6  # the cancelled run is on record with the five that finished
 
 
 async def test_a_story_cancelled_while_a_layer_builds_keeps_the_layer_and_resumes_after_the_last_stage(
@@ -2926,9 +2940,10 @@ async def test_the_build_writes_decoding_gap_and_idle_at_its_boundaries(
     builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS))
     st = await builder.build(card)
     assert st.stage == "review"
-    # gap on entry; then per layer a package (decoding, gap) and the studio (decoding, gap); idle at the end
+    # gap on entry; the packages, drafted together (decoding, gap); per layer the studio (decoding, gap);
+    # idle at the end
     assert seen[0] == "gap" and seen[-1] == "idle"
-    assert seen[1:-1] == ["decoding", "gap"] * 4 and set(seen) == {"gap", "decoding", "idle"}
+    assert seen[1:-1] == ["decoding", "gap"] * 3 and set(seen) == {"gap", "decoding", "idle"}
     assert phase.read_phase(builder.stories_dir)[0] == "idle"
 
 

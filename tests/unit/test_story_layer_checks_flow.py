@@ -480,6 +480,10 @@ async def test_the_critics_objection_gives_the_architect_one_revision_before_the
         asked[2].rstrip().endswith(hub_text("package-fix").splitlines()[-1])
         or hub_text("package-fix") in asked[2]
     )
+    # the revision is a turn of the drafting conversation, not a cold ask: layer 01's draft is in it
+    drafts = [r for r in engine.requests if r.role == "architect"][1:]
+    assert len(drafts[1].messages) > len(drafts[0].messages)
+    assert "objects" in drafts[1].messages[-1].content
     critic = prompts(engine, "tester")[0]
     assert "Read these tests against the agreed proof" in critic and "def test_mul_zero" in critic
     assert f"{ID_ZERO} (proves AC2" in critic

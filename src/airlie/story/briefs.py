@@ -530,6 +530,39 @@ def proof_revision_brief(
     return "\n\n".join(parts)
 
 
+def _package_layer(story: Story, layers: tuple[Layer, ...], i: int, proof: Sequence[ProofTest]) -> list[str]:
+    """The part of a package brief that is layer `i`'s own: where it stands among the layers, its scope and
+    criteria, what it builds, its files and interfaces, and its agreed tests."""
+    layer = layers[i]
+    owned = [c for c in story.acceptance if c.id in layer.acceptance]
+    criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
+    later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
+    return [
+        f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
+        f"Scope of this layer: {layer.scope}\n"
+        f"The criteria this layer owns:\n{criteria}\n"
+        f"Later layers (not yours; leave their work alone): {later}",
+        f"## What this layer builds\n{layer.brief}",
+        *([_files_section(layer)] if layer.files or layer.interfaces else []),
+        *([_agreed_tests(proof)] if proof else []),
+    ]
+
+
+def drafts_brief(story: Story, layers: tuple[Layer, ...], **kw: Any) -> str:
+    """The first turn of the conversation that drafts every layer's package (amendment of 2026-10-26 to the
+    planning-line design): what the conversation is, then layer 01's package brief (`package_brief`)."""
+    opening = hub_text("brief-package-drafts", layers=len(layers))
+    return opening + "\n\n" + package_brief(story, layers, 0, **kw)
+
+
+def next_package_brief(
+    story: Story, layers: tuple[Layer, ...], i: int, proof: Sequence[ProofTest] = ()
+) -> str:
+    """A later turn of that conversation: layer `i`'s own part (`_package_layer`) and `brief-package-next`;
+    the story, the rules and the contract are the first turn's."""
+    return "\n\n".join([*_package_layer(story, layers, i, proof), hub_text("brief-package-next")])
+
+
 def package_brief(
     story: Story,
     layers: tuple[Layer, ...],
@@ -550,21 +583,11 @@ def package_brief(
     came back. `proof` is the layer's tests as the story meeting agreed them (three-amigos D9, 2026-10-24):
     listed, with the layer's files and interfaces from the split, and the package must cover exactly them
     (or answer with a `proof_change` when they are wrong)."""
-    layer = layers[i]
-    owned = [c for c in story.acceptance if c.id in layer.acceptance]
-    criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
-    later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     parts = [
         hub_text("brief-package-task"),
         story_text(story),
         *epic_section(story),
-        f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
-        f"Scope of this layer: {layer.scope}\n"
-        f"The criteria this layer owns:\n{criteria}\n"
-        f"Later layers (not yours; leave their work alone): {later}",
-        f"## What this layer builds\n{layer.brief}",
-        *([_files_section(layer)] if layer.files or layer.interfaces else []),
-        *([_agreed_tests(proof)] if proof else []),
+        *_package_layer(story, layers, i, proof),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
