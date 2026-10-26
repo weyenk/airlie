@@ -355,6 +355,23 @@ def close_prs(repo: str, prs: Sequence[dict[str, Any]], clone: Path) -> list[str
     return problems
 
 
+def local_branches(clone: Path) -> set[str]:
+    out = subprocess.run(
+        ["git", "-C", str(clone), "branch", "--format=%(refname:short)"], capture_output=True, text=True
+    )
+    return {line.strip() for line in out.stdout.splitlines() if line.strip()}
+
+
+def delete_new_branches(clone: Path, before: set[str]) -> list[str]:
+    """Delete the clone's branches a run made (those not in `before`), built, blocked or published, so the
+    next run can make them again: a written request's branch names are the same every run, and a branch a
+    blocked run left stopped the next one at its first layer (2026-10-26). The names deleted."""
+    made = sorted(local_branches(clone) - before)
+    for branch in made:
+        subprocess.run(["git", "-C", str(clone), "branch", "-D", branch], capture_output=True)
+    return made
+
+
 def save(record: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"story-{record['case']}-{time.strftime('%Y%m%d-%H%M%S')}.json"

@@ -194,3 +194,22 @@ def test_a_record_is_held_to_its_budgets_and_two_records_compare() -> None:
     lines = compare(record(341.0, [18, 18]), record(106.0, [18, 18], gate_replans=1))
     assert lines[0] == "wall min: 341 -> 106 (-69%)"
     assert "gate_replans: 0 -> 1" in lines and "oracle spec: [18, 18] -> [18, 18]" in lines
+
+
+def test_the_branches_a_run_made_are_deleted_and_none_other(tmp_path: Path) -> None:
+    """2026-10-26: a branch a blocked run left in the sandbox stopped the next run at its first layer."""
+    import subprocess
+
+    from airlie.bench.story_bench import delete_new_branches, local_branches
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+    git("branch", "theirs")
+    before = local_branches(tmp_path)
+    git("branch", "story-01-to-roman")
+    git("branch", "story-02-from-roman")
+    assert delete_new_branches(tmp_path, before) == ["story-01-to-roman", "story-02-from-roman"]
+    assert local_branches(tmp_path) == {"main", "theirs"}

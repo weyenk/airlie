@@ -794,9 +794,11 @@ def bench_story(
     from airlie.bench.story_bench import (
         close_prs,
         compare,
+        delete_new_branches,
         find_case,
         fresh_state_dir,
         grade,
+        local_branches,
         measure,
         save,
         verdict,
@@ -825,7 +827,12 @@ def bench_story(
         return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
 
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
-    st = _run_stoppable(go())
+    before = local_branches(clone)
+    try:
+        st = _run_stoppable(go())
+    except BaseException:
+        delete_new_branches(clone, before)  # a stopped run leaves nothing for the next one to trip on
+        raise
     gate = " && ".join((st.gate or {}).get("commands") or [])
     top = st.built[max(st.built)]["sha"] if st.built else None
     built_on = (st.base or {}).get("sha")
@@ -844,6 +851,8 @@ def bench_story(
         "quality": grade(case, clone, top, ["sh", "-c", gate]) if top and gate else None,
     }
     record["closed"] = [] if keep_prs else close_prs(case.repo, st.prs, clone)
+    if not keep_prs:
+        record["branches_deleted"] = delete_new_branches(clone, before)
     path = save(record, out_dir)
     console.print(f"record: {path}")
     if not record["base"]["same"]:
