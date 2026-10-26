@@ -615,6 +615,20 @@ async def test_an_architect_cut_off_at_max_tokens_stops_the_story_at_once_and_is
     assert "no JSON object" not in (st.path / "events.jsonl").read_text()
 
 
+async def test_a_reply_cut_off_in_a_loop_of_repeats_is_asked_again_with_the_reason(tmp_path: Path) -> None:
+    """Run 9 on airlie-sandbox (2026-10-26): product's refine wrote `from_roman("IIII…` until max_tokens. A
+    runaway repeat is not a reply too long for its room, so another try is worth it: it is a StoryError."""
+    repo = repo_with_marker_tests(tmp_path)
+    looped = FakeReply(text='{"acceptance": [{"when": "from_roman(\\"' + "I" * 600, finish_reason="length")
+    engine = FakeEngine({"product": [looped, STORY], "architect": [LAYERS, *PKGS]})
+    st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
+    assert st.blocked is None or "repeated" not in st.blocked, st.blocked
+    asked = [r.messages[1].content for r in engine.requests if r.role == "product"]
+    assert len(asked) == 2 and "repeated 'I'" in asked[1] and "max_tokens" not in asked[1]
+    [retry] = kinds(st.path / "events.jsonl", "retry")
+    assert retry["stage"] == "refine"
+
+
 async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_after_one_stops_the_story(
     tmp_path: Path,
 ) -> None:
