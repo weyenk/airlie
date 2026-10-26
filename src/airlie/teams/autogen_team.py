@@ -30,7 +30,7 @@ from autogen_core.models import ModelInfo, UserMessage
 from autogen_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
@@ -120,6 +120,7 @@ def build_model_client(
     api_key: str | None,
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
+    model: ModelSpec | None = None,
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
@@ -152,6 +153,7 @@ def build_model_client(
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id
+    client.model_spec = model  # its parsers read what the server left as text (Muse's calls)
     return client
 
 

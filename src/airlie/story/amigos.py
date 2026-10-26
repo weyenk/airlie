@@ -1042,7 +1042,13 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
 
     def make(role_name: str, spec: RoleSpec) -> ChatCompletionClient:
         engine = cfg.engines[cfg.engine_for_model(spec.model)]
-        return build_model_client(engine.base_url or "", engine.served_name(spec.model), spec, engine.api_key)
+        return build_model_client(
+            engine.base_url or "",
+            engine.served_name(spec.model),
+            spec,
+            engine.api_key,
+            model=cfg.models.get(spec.model),
+        )
 
     return make
 
