@@ -773,6 +773,103 @@ def bench_compare(a: Path, b: Path) -> None:
     print(render_compare(compare(a, b)))
 
 
+@bench_app.command("story")
+def bench_story(
+    case_id: Annotated[str, typer.Argument(metavar="CASE", help="a case of evals/stories (roman)")],
+    baseline: Annotated[Path | None, typer.Option(help="an earlier record to compare with")] = None,
+    keep_prs: Annotated[bool, typer.Option(help="leave the run's PRs open instead of closing them")] = False,
+    cases_dir: Path = Path("evals/stories"),
+    out_dir: Annotated[Path, typer.Option(help="where the record is written")] = Path("docs/bench"),
+    state_root: Annotated[Path, typer.Option(help="each run's own state directory goes under it")] = Path(
+        "~/.local/state/airlie-bench"
+    ),
+    config: ConfigOpt = None,
+) -> None:
+    """Build a case's story end to end on a state directory of its own, then record what it cost (phases,
+    tokens per second by role, retries) and how good it is (gate, oracle, mutation score, tests), close its
+    PRs, and compare with --baseline. Hours long: it holds the engine the whole time."""
+    import subprocess as sp
+    import time
+
+    from airlie.bench.story_bench import (
+        close_prs,
+        compare,
+        find_case,
+        fresh_state_dir,
+        grade,
+        measure,
+        save,
+        verdict,
+    )
+    from airlie.story import factory
+    from airlie.story.model import StorySetupError
+
+    cfg = _story_cfg(config)
+    try:
+        case = find_case(cases_dir, case_id)
+    except FileNotFoundError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(2) from None
+    state = fresh_state_dir(state_root.expanduser(), case.id)
+    cfg.observability.state_dir = state  # no lessons, board or runs of an earlier run
+    problems = factory.story_problems(cfg)
+    try:
+        clone = factory.written_repo(cfg, cfg.story.repos_root.expanduser() / case.name)
+    except StorySetupError as e:
+        problems.append(str(e))
+    _fail(problems)
+    console.print(f"[bold]{case.id}[/bold]: building in {clone}, state in {state}")
+
+    async def go() -> StoryState:
+        board, card = await factory.card_for(cfg, None, case.request)
+        return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
+
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    st = _run_stoppable(go())
+    gate = " && ".join((st.gate or {}).get("commands") or [])
+    top = st.built[max(st.built)]["sha"] if st.built else None
+    built_on = (st.base or {}).get("sha")
+    record: dict[str, Any] = {
+        "case": case.id,
+        "started": started,
+        "airlie_build": sp.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+        ).stdout.strip(),
+        "base": {"expected": case.base, "built_on": built_on, "same": built_on == case.base},
+        "stage": st.stage,
+        "blocked": st.blocked,
+        "layers_built": len(st.built),
+        "prs": [p.get("url") for p in st.prs],
+        "cost": measure(st.path, state / "runs"),
+        "quality": grade(case, clone, top, ["sh", "-c", gate]) if top and gate else None,
+    }
+    record["closed"] = [] if keep_prs else close_prs(case.repo, st.prs, clone)
+    path = save(record, out_dir)
+    console.print(f"record: {path}")
+    if not record["base"]["same"]:
+        console.print(f"[yellow]built on {built_on}, not the case's {case.base}: compare with care[/yellow]")
+    for line in verdict(case, record) or ["within its budgets"]:
+        console.print(f"verdict: {line}")
+    if baseline is not None:
+        import json
+
+        for line in compare(json.loads(baseline.read_text()), record):
+            console.print(f"vs {baseline.name}: {line}")
+    if st.blocked:
+        raise typer.Exit(1)
+
+
+@bench_app.command("story-compare")
+def bench_story_compare(a: Path, b: Path) -> None:
+    """What changed from story bench record A to record B: wall time, phases, tokens, retries, quality."""
+    import json
+
+    from airlie.bench.story_bench import compare
+
+    for line in compare(json.loads(a.read_text()), json.loads(b.read_text())):
+        print(line)
+
+
 @bench_app.command("models")
 def bench_models(
     config: ConfigOpt = None,

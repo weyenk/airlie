@@ -401,6 +401,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie bench models {{.CLI_ARGS}}'
 
+  bench:story:
+    desc: "A fixed story built end to end, measured and graded, its PRs closed after (task bench:story -- roman [--baseline docs/bench/story-roman-….json]); hours, holds the engine"
+    cmds:
+      - '{{.RUN}} airlie bench story {{.CLI_ARGS}}'
+
+  bench:story-compare:
+    desc: "What changed between two story bench records (task bench:story-compare -- a.json b.json)"
+    cmds:
+      - '{{.RUN}} airlie bench story-compare {{.CLI_ARGS}}'
+
   bench:compare:
     desc: "Per-cell deltas between two saved bench JSON files (task bench:compare -- a.json b.json)"
     cmds:
