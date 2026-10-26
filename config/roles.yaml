@@ -98,7 +98,7 @@ roles:
     max_context: 131072
     max_tokens: 16384
     thinking: true
-    thinking_budget: 8192
+    thinking_budget: 2048            # 8192 until 2026-10-26: the roman bench's architect wrote to the cap on nearly every call (lever 1 of 3, Noah)
     last_turn_thinking: false
     nudge_stuck: true
     max_steps: 20

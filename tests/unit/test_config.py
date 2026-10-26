@@ -323,9 +323,12 @@ def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
 
 def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_with() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
-    for name in ("chief", "architect", "research"):
+    for name in ("chief", "research"):
         role = cfg.roles[name]
         assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
+    # the architect thinks in 2,048 since 2026-10-26 (the roman bench, lever 1): the same room to answer
+    architect = cfg.roles["architect"]
+    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 2048, 16384)
     coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
