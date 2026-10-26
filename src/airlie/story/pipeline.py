@@ -260,6 +260,11 @@ def _ending(coder: TeamResult | None) -> str:
     return "gate_red"
 
 
+def _gated(proof: Sequence[ProofTest]) -> set[str]:
+    """The criteria the agreed proof leaves to the gate: a package needs no test for them."""
+    return {t.criterion for t in proof if t.gate and t.criterion is not None}
+
+
 def _gate_detail(output: str) -> str:
     """The first line of a red gate's output that says what failed (a pytest FAILED or ERROR line, a ruff or
     mypy error), else the last line, cut: a lesson's `detail`."""
@@ -1381,7 +1386,7 @@ class StoryPipeline:
                 st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
             )
         self._package_run = st.runs[-1]
-        return parse_package(text, layers[i], story)
+        return parse_package(text, layers[i], story, gated=_gated(proof))
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
         """Every layer's package drafted in one architect conversation at the story's base, before the first
@@ -1422,11 +1427,11 @@ class StoryPipeline:
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
                 try:
                     asked = None if i == 0 else next_package_brief(story, layers, i, proof)
-                    got = parse_package(await say(asked), layer, story)
+                    got = parse_package(await say(asked), layer, story, gated=_gated(proof))
                     if isinstance(got, Package) and proof:
                         told = await self._objections(st, layers, i, sha, got, proof)
                         if told is not None:
-                            got = parse_package(await say(told), layer, story)
+                            got = parse_package(await say(told), layer, story, gated=_gated(proof))
                 except StoryError as e:
                     st.drafts[nn] = {"unusable": str(e)}
                     st.emit("retry", stage="package", error=str(e))
@@ -1717,7 +1722,7 @@ class StoryPipeline:
                 self.repo,
                 base_sha,
                 st.path / f"package-{nn}",
-                proof_ids=[t.id for t in proof] if proof else None,
+                proof_ids=[t.id for t in proof if not t.gate] if proof else None,
             )
             run = self._package_run
             if checker.checks is not None and checker.checks.failing_at_base:

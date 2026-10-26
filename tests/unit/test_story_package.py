@@ -247,3 +247,10 @@ def test_a_test_with_no_criterion_is_covered_under_behaviour() -> None:
         parse_package(
             reply(covers={"AC1": [f"{PATH}::test_a"], "behaviour": [f"{PATH}::test_zzz"]}), LAYER, STORY
         )
+
+
+def test_a_criterion_the_agreed_proof_leaves_to_the_gate_needs_no_covers() -> None:
+    p = parse_package(reply(covers={}), LAYER, STORY, gated={"AC1"})
+    assert p.covers == {}
+    with pytest.raises(StoryError, match="no test covers it"):
+        parse_package(reply(covers={}), LAYER, STORY)

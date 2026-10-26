@@ -1062,8 +1062,8 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
 
 def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
     """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
-    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model (Muse)
-    it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
+    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
+    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
     assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking

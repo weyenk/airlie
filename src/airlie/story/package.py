@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
@@ -197,9 +197,12 @@ def _proof_change(obj: dict[str, Any]) -> ProofChange:
     return ProofChange(tuple(changes))
 
 
-def parse_package(text: str, layer: Layer, story: Story) -> Package | ProofChange:
+def parse_package(
+    text: str, layer: Layer, story: Story, gated: Collection[str] = ()
+) -> Package | ProofChange:
     """The architect's reply as a Package, or as a ProofChange when it says the agreed proof is wrong and
-    writes no package. A StoryError says what to fix, in words the architect acts on."""
+    writes no package. A StoryError says what to fix, in words the architect acts on. `gated` are the
+    criteria the agreed proof leaves to the gate: they need no covers."""
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
         return _proof_change(obj)
@@ -258,7 +261,7 @@ def parse_package(text: str, layer: Layer, story: Story) -> Package | ProofChang
             )
         covers[str(cid)] = tuple(_normal(t, "a test id") for t in _strs(ids, f"covers {cid}", "test ids"))
     for own in owned:
-        if not covers.get(own):
+        if own not in gated and not covers.get(own):  # a criterion the agreed proof leaves to the gate
             raise StoryError(
                 f"criterion {own} is owned by this layer but no test covers it: add one to covers"
             )

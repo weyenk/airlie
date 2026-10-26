@@ -246,3 +246,28 @@ def test_the_package_critics_verdict_is_on_the_proof_alone_and_read_from_the_las
 def test_a_critic_reply_without_a_usable_verdict_is_refused(text: str, why: str) -> None:
     with pytest.raises(StoryError, match=why):
         parse_critic_verdict(text)
+
+
+def test_a_criterion_only_the_gate_can_prove_is_a_gate_entry_with_no_test() -> None:
+    """Runs 7 and 11 on airlie-sandbox (2026-10-26): product wrote "the full suite passes the gate"; no test
+    can prove it, and the tester's made-up test `gate: python3 -m unittest -q exits 0` stopped the layer. Such
+    a criterion is proven by the gate every layer passes: an entry that says so, with no file and no name."""
+    from airlie.story.amigos_checks import check_proof
+
+    obj = _with()
+    obj["tests"][1]["criterion"] = None
+    obj["tests"].append({"criterion": "AC2", "layer": "profile", "gate": True})
+    proof = _proof(obj)
+    gate = proof[-1]
+    assert gate.gate and gate.id == "gate:AC2" and gate.criterion == "AC2" and gate.layer == "profile"
+    assert gate.file == "" and gate.level == "gate"
+    assert check_proof(proof, STORY, LAYERS) == []
+    assert ProofTest.from_dict(gate.to_dict()) == gate and not ProofTest.from_dict(proof[0].to_dict()).gate
+    assert '"gate": true' in PROOF_CONTRACT
+    # a layer still needs a test of its own: the gate proves every layer alike
+    only = _with()
+    only["tests"] = [t for t in only["tests"] if t["layer"] != "profile"] + [
+        {"criterion": "AC2", "layer": "profile", "gate": True}
+    ]
+    with pytest.raises(StoryError, match="layer 'profile' has no test"):
+        _proof(only)

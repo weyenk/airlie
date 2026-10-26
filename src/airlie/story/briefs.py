@@ -461,6 +461,9 @@ def _proof_lines(proof: Sequence[ProofTest]) -> list[str]:
     """Each agreed test: its id, what it proves and where, and what it asserts and needs."""
     lines: list[str] = []
     for t in proof:
+        if t.gate:
+            lines.append(f"- {t.criterion}: proven by the layer's test gate itself; write no test for it")
+            continue
         what = f"proves {t.criterion}" if t.criterion else "a behaviour of this layer"
         guide = f", guideline {t.guideline}" if t.guideline else ""
         lines.append(f"- {t.id} ({what}, level {t.level}{guide})")

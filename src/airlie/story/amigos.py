@@ -69,12 +69,17 @@ PROOF_CONTRACT = """Post the proof plan as one ```json block holding exactly one
 Each test names the level of the repository's test tree it lives at (a directory under tests/) and a file under
 it; guideline is a file of the guideline library, or omitted when the repository or the level has none. Every
 criterion needs at least one test and every layer at least one. criterion is null for a test that proves a
-behaviour of a layer with no criterion."""  # noqa: E501
+behaviour of a layer with no criterion. A criterion no test can prove because the test gate itself proves it
+(the whole suite passes, the new tests are found) is one entry {"criterion": "AC9", "layer": "<slug>",
+"gate": true}, with no file and no name: never a test that runs the test runner."""  # noqa: E501
 
 VERDICT_CONTRACT = """End every turn with your verdict, one ```json block holding exactly one object:
 {"type": "verdict", "requirements": "agree" | "object", "changes": "agree" | "object", "proof": "agree" | "object",
  "objections": [{"part": "proof", "about": "AC2", "claim": "one sentence", "suggest": "one sentence"}]}
 Object to a part only with an objection for it; never object to your own part."""  # noqa: E501
+
+
+GATE_ASSERTS = "the layer's test gate passes"
 
 
 @dataclass(frozen=True)
@@ -90,11 +95,14 @@ class ProofTest:
     guideline: str | None
     asserts: str
     needs: str
+    gate: bool = False
+    """A criterion only the test gate can prove (the whole suite passes, the new tests are found): no test,
+    no file; the gate every layer passes proves it (airlie-sandbox runs 7 and 11, 2026-10-26)."""
 
     @property
     def id(self) -> str:
-        """Its pytest node id from the repository's root: "file::name"."""
-        return f"{self.file}::{self.name}"
+        """Its pytest node id from the repository's root, "file::name"; a gate entry's, "gate:<criterion>"."""
+        return f"gate:{self.criterion}" if self.gate else f"{self.file}::{self.name}"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -111,6 +119,7 @@ class ProofTest:
             None if guide is None else str(guide),
             str(d["asserts"]),
             str(d.get("needs") or ""),
+            bool(d.get("gate", False)),
         )
 
 
@@ -172,6 +181,15 @@ def parse_proof(
         layer = _field(t, "layer", where)
         if layer not in slugs:
             raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
+        if t.get("gate") is True:
+            if crit is None:
+                raise StoryError(f"{where}: a gate entry names the criterion the gate proves")
+            gated = ProofTest(str(crit), layer, "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+            if gated.id in seen:
+                raise StoryError(f"{crit} is left to the gate twice in the proof; once is enough")
+            seen.add(gated.id)
+            tests.append(gated)
+            continue
         level = _field(t, "level", where)
         if level not in levels:
             raise StoryError(
@@ -201,7 +219,7 @@ def parse_proof(
         seen.add(test.id)
         tests.append(test)
     problems = [f"criterion {c} has no test" for c in sorted(criteria - {t.criterion for t in tests})]
-    problems += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests})]
+    problems += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests if not t.gate})]
     if problems:
         raise StoryError("; ".join(problems) + ": every criterion and every layer needs a test in the proof")
     return tuple(tests)

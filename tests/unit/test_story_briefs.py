@@ -955,3 +955,12 @@ def test_the_planners_brief_questions_and_delivery_note_read_as_they_should() ->
     assert "- AIR-41 (core) Fast board: 12.5 h, risky" in note and "Queued ahead of them: 4 h." in note
     assert "Your budget: 10 h; the core is priced at 12.5 h, over it by 2.5 h." in note
     assert "Your budget" not in delivery_note([("AIR-41", draft, est)], queue_hours=0.0, budget_hours=None)
+
+
+def test_a_criterion_left_to_the_gate_is_said_as_no_test_to_write() -> None:
+    from airlie.story.amigos import GATE_ASSERTS
+
+    gate = ProofTest("AC2", "profile", "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+    text = critic_brief(LAYERS[1], {}, (gate,), "")
+    assert "- AC2: proven by the layer's test gate itself; write no test for it" in text
+    assert "gate:AC2" not in text
