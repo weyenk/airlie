@@ -131,8 +131,8 @@ def test_the_meetings_clients_carry_their_models_parsers() -> None:
     root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
     make = http_clients(cfg)
-    tester = cfg.roles["tester"]
-    built = make("tester", tester)
+    reviewer = cfg.roles["reviewer"]
+    built = make("reviewer", reviewer)
     assert isinstance(built, RepairingOpenAIClient)
     assert built.model_spec is not None and built.model_spec.tool_call_parser == "muse_glimmer"
 

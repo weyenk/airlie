@@ -1060,12 +1060,13 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
         load_config(write(tmp_path, bad))
 
 
-def test_the_tester_is_a_read_only_critic_on_the_reviewer_model() -> None:
-    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, on
-    the reviewer's model so its reading is not the architect's own, with the QA guidelines and read tools."""
+def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
+    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
+    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model (Muse)
+    it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
-    assert tester.model == cfg.roles["reviewer"].model and not tester.thinking
+    assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
     assert tester.tools == ["read_file", "list_dir", "grep"]
     assert tester.skills is not None and tester.skills.name == "qa"
 

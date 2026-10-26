@@ -108,16 +108,14 @@ roles:
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
-  tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the reviewer model (Muse), so its reading of the architect's split and tests is not the architect's own
+  tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
     prompt: prompts/roles/tester.md
-    model: reviewer
+    model: generalist
     tools: [read_file, list_dir, grep]
     skills: skills/qa
     max_context: 131072
     max_tokens: 8192
     thinking: false
-    chat_template_kwargs:
-      reasoning_strength: low
     sampling:
       temperature: 0.2
       top_p: 0.9
