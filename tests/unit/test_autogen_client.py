@@ -135,3 +135,16 @@ def test_the_meetings_clients_carry_their_models_parsers() -> None:
     built = make("tester", tester)
     assert isinstance(built, RepairingOpenAIClient)
     assert built.model_spec is not None and built.model_spec.tool_call_parser == "muse_glimmer"
+
+
+async def test_a_reply_with_no_answer_in_it_is_asked_again_once(served: Any) -> None:
+    """Run 6 (2026-10-26): Muse ended meeting turns with reasoning only, or a bare `to=user`."""
+    verdict = '```json\n{"type": "verdict"}\n```'
+    thinking_only = "to=selfI should check the plan first.<|eom|>to=user"
+    served.answers += [reply(thinking_only), reply("to=user" + verdict)]
+    res = await client(MUSE).create([UserMessage(content="go", source="u")], tools=[TOOL])
+    assert res.content == verdict
+    assert served[1][0][-1].content == entry("empty-reply").body.strip()  # type: ignore[union-attr]
+    served.answers += [reply("to=user"), reply("to=user")]
+    assert (await client(MUSE).create([UserMessage(content="go", source="u")], tools=[])).content == ""
+    assert len(served) == 4  # once only

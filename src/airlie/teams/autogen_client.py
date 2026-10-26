@@ -11,6 +11,7 @@ and a call on a request that offered no tools (AutoGen's reflection) is asked ag
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
@@ -43,6 +44,10 @@ def repair_create_result(result: CreateResult) -> CreateResult:
         fixed.append(FunctionCall(id=call.id, name=call.name, arguments=args))
     result.content = fixed
     return result
+
+
+_BARE_HEADERS = re.compile(r"\bto=\w+")
+"""A channel header with nothing after it (Muse's bare `to=user`, run 6, 2026-10-26) is no answer."""
 
 
 def parsed_text(model: ModelSpec, result: CreateResult) -> GenResult | None:
@@ -110,8 +115,9 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
         gen = parsed_text(self.model_spec, res)
         if gen is None:
             return res
-        if gen.tool_calls and not offered:  # nothing it calls can run: once, ask for the answer
-            retry = entry("last-turn-retry").body.strip()
+        empty = not gen.tool_calls and not _BARE_HEADERS.sub("", gen.text).strip()
+        if (gen.tool_calls and not offered) or empty:  # nothing it calls can run, or no answer: once, ask
+            retry = entry("empty-reply" if empty else "last-turn-retry").body.strip()
             again = await ask(
                 [
                     *messages,
@@ -126,7 +132,7 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
             res.content = [FunctionCall(id=c.id, name=c.name, arguments=c.arguments) for c in gen.tool_calls]
             res.finish_reason = "function_calls"
         else:
-            res.content = gen.text
+            res.content = gen.text if _BARE_HEADERS.sub("", gen.text).strip() else ""
         return res
 
     async def create_stream(
