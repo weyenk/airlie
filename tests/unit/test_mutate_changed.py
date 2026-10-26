@@ -404,6 +404,14 @@ class Tool:
 
     def run(self, a):
         return a * 2
+
+    @classmethod
+    def make(cls):
+        return cls()
+
+    @model_validator(mode="after")
+    def check(self):
+        return self
 """
 
 
@@ -421,10 +429,12 @@ def test_functions_are_named_as_mutmut_names_their_mutants(
     import fnmatch
 
     path = module_root(tmp_path, monkeypatch)
+    # as mutmut 3.8 does: a decorated function has no mutants (PR 168's shard 1 asked for a model_validator's
+    # and mutmut stopped on "nothing matches"), except under a lone @staticmethod or @classmethod
     assert mc.functions_of(path) == [
         ("airlie.m.x_plain__mutmut_*", "plain", 4, 5),
-        ("airlie.m.x_waits__mutmut_*", "waits", 8, 10),  # from its decorator
         ("airlie.m.xǁToolǁrun__mutmut_*", "Tool.run", 16, 17),
+        ("airlie.m.xǁToolǁmake__mutmut_*", "Tool.make", 19, 21),  # from its decorator
     ]
     assert fnmatch.fnmatchcase("airlie.m.xǁToolǁrun__mutmut_9", "airlie.m.xǁToolǁrun__mutmut_*")
     assert not fnmatch.fnmatchcase("airlie.m.x_plain__mutmut_9", "airlie.m.xǁToolǁrun__mutmut_*")
@@ -446,6 +456,6 @@ def test_only_the_functions_a_change_touched_are_selected(
     weights, _ = mc.changed_functions("base", [path])
     assert sorted(weights) == [
         "airlie.m.x_plain__mutmut_*",
-        "airlie.m.x_waits__mutmut_*",
+        "airlie.m.xǁToolǁmake__mutmut_*",
         "airlie.m.xǁToolǁrun__mutmut_*",
     ]
