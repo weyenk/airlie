@@ -16,15 +16,17 @@ from dataclasses import replace
 from functools import partial
 from itertools import product
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from airlie.prompts import text
 from airlie.story.board import text_card
 from airlie.story.briefs import (
+    build_brief,
     built_so_far,
-    layer_plan,
     layers_brief,
+    package_brief,
     refine_brief,
     survey_brief,
 )
@@ -33,11 +35,12 @@ from airlie.story.layer_checks import (
     EXISTING_FAILS,
     PASSES_BEFORE_CODE,
     Finding,
-    amend_feedback,
-    feedback,
     findings_text,
 )
+from airlie.story.lessons import Lesson
 from airlie.story.model import Layer
+from airlie.story.package import Interface, Package, PackageFile
+from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
 from airlie.topology.diversify import nudge_text
 from airlie.topology.studio_plan import Plan
@@ -87,11 +90,19 @@ def _plan_text(plan: Plan) -> str:
     return "\n\n".join(f"[{s.id}]\n{s.brief}" for s in plan.subtasks)
 
 
-def _layer_plan(layers: tuple[Layer, ...], i: int, *, tester: bool, **kwargs: str) -> str:
-    plan = layer_plan(
-        STORY, layers, i, build_role="coder", tester_role="tester" if tester else None, **kwargs
-    )
-    return _plan_text(plan)
+SAMPLE_PACKAGE = Package(
+    "profile",
+    {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n"},
+    (PackageFile("src/profile.py", "create", "the profile view"),),
+    (Interface("src/profile.py", "def show() -> int", "returns 1, the avatar id"),),
+    ("create src/profile.py with show() returning 1", "export show from src/__init__.py"),
+    {"AC2": ("tests/unit/test_profile.py::test_shows",)},
+    "run_tests passes on tests/unit/test_profile.py",
+)
+
+
+def _package_brief(i: int, **kwargs: Any) -> str:
+    return package_brief(STORY, LAYERS, i, max_steps=40, context_budget=65_536, **kwargs)
 
 
 CASES: dict[str, Callable[[], str]] = {
@@ -126,14 +137,11 @@ CASES: dict[str, Callable[[], str]] = {
     "client-bridge": lambda: "\n\n" + text("client-bridge"),
     # --- story/briefs.py, story/rounds.py, story/layer_checks.py
     "test-rules": lambda: text("test-rules"),
-    "pre-code-check": lambda: text("pre-code-check"),
-    "static-check": lambda: text("static-check"),
-    "tests-only": lambda: text("tests-only"),
-    "tests-contract": lambda: text("tests-contract"),
     "plan-round": lambda: text("plan-round"),
     "plan-fix": lambda: text("plan-fix", error="bad json"),
     "plan-unfinished": lambda: text("plan-unfinished"),
-    "amend": lambda: text("amend"),
+    "package-fix": lambda: text("package-fix"),
+    "package-replan": lambda: text("package-replan"),
     "passes-before-code-choice": lambda: "  " + text("passes-before-code-choice"),
     "loose-match": lambda: "  " + text("loose-match"),  # feedback indents it under its finding
 }
@@ -173,16 +181,10 @@ CASES |= {
     ),
 }
 CASES |= {
-    "fn:layer_checks.feedback:tester": partial(feedback, FINDINGS),
-    "fn:layer_checks.feedback:tester-advice": partial(feedback, FINDINGS, advice="Read the fixtures first."),
-    "fn:layer_checks.feedback:coder": partial(feedback, FINDINGS, before_code=False),
-    "fn:layer_checks.feedback:coder-advice": partial(
-        feedback, FINDINGS, before_code=False, advice="Read the fixtures first."
+    "fn:package_checks.package_feedback_said": lambda: package_feedback_said(FINDINGS)[0],
+    "fn:package_checks.package_feedback_said:unsourced": partial(
+        lambda found: package_feedback_said(found)[0], FOUND_AND_UNSOURCED
     ),
-    "fn:layer_checks.amend_feedback:bare": partial(amend_feedback, FAILING, "  "),
-    "fn:layer_checks.amend_feedback:account": partial(amend_feedback, FAILING, ACCOUNT),
-    "fn:layer_checks.amend_feedback:review": partial(amend_feedback, FAILING, "", BLOCKING),
-    "fn:layer_checks.amend_feedback:full": partial(amend_feedback, FAILING, ACCOUNT, BLOCKING),
     "fn:layer_checks.findings_text:two": partial(findings_text, FOUND_AND_UNSOURCED),
 }
 CASES |= {
@@ -194,6 +196,22 @@ CASES |= {
     "fn:briefs.survey_brief:bare": partial(survey_brief, CARD),
     "fn:briefs.survey_brief:described": partial(survey_brief, DESCRIBED),
     "fn:briefs.layers_brief:plain": partial(layers_brief, STORY, 4),
+    "fn:briefs.layers_brief:lessons": partial(
+        layers_brief,
+        STORY,
+        4,
+        lessons=(
+            Lesson(
+                title="Layer 01 storage",
+                acceptance=["AC1: the avatar is stored"],
+                source_files=5,
+                test_files=2,
+                steps=30,
+                context_tokens=88_000,
+                ending="out_of_steps",
+            ),
+        ),
+    ),
     "fn:briefs.layers_brief:rounds": partial(layers_brief, STORY, 4, round_steps=6),
     "fn:briefs.layers_brief:guide-survey": partial(
         layers_brief, STORY, 4, guide=GUIDE, survey="- store.py holds the writes."
@@ -209,27 +227,38 @@ CASES |= {
     ),
     "fn:briefs.built_so_far:diff": partial(built_so_far, DIFF),
 }
-# layer_plan: every layer of the fixtures, solo (the coder writes tests and code) and with a tester first
+# the package brief and the build brief: every layer of the fixtures, plain and with everything optional
+CASES |= {f"fn:briefs.package_brief:{i}": partial(_package_brief, i) for i in range(len(LAYERS))}
+CASES["fn:briefs.package_brief:full"] = partial(
+    _package_brief,
+    1,
+    guide=GUIDE,
+    built=built_so_far(DIFF),
+    feedback=BAD_JSON,
+    lessons=[
+        Lesson(
+            title="Layer 01 storage",
+            acceptance=["AC1: the avatar is stored"],
+            source_files=5,
+            test_files=2,
+            steps=30,
+            context_tokens=88_000,
+            ending="package_rejected",
+            detail="passes_before_code",
+        )
+    ],
+)
+CASES["fn:briefs.build_brief:plain"] = partial(build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE)
+CASES["fn:briefs.build_brief:guide-built"] = partial(
+    build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE, guide=GUIDE, built=built_so_far(DIFF)
+)
+CASES["fn:briefs.build_brief:foundation"] = partial(
+    build_brief, STORY, LAYERS, 2, replace(SAMPLE_PACKAGE, covers={})
+)
 CASES |= {
-    f"fn:briefs.layer_plan:{i}:{'tester' if tester else 'solo'}": partial(
-        _layer_plan, LAYERS, i, tester=tester
-    )
-    for i, tester in product(range(len(LAYERS)), (True, False))
-}
-CASES |= {
-    f"fn:briefs.layer_plan:{name}:{'tester' if tester else 'solo'}": partial(
-        _layer_plan, layers, 0, tester=tester
-    )
-    for (name, layers), tester in product(
-        (("named-test-file", (ONE_TEST_FILE, *LAYERS)), ("named-test-files", (TWO_TEST_FILES, *LAYERS))),
-        (True, False),
-    )
-}
-CASES |= {
-    f"fn:briefs.layer_plan:1:{'tester' if tester else 'solo'}-guide-built": partial(
-        _layer_plan, LAYERS, 1, tester=tester, guide=GUIDE, built=built_so_far(DIFF)
-    )
-    for tester in (True, False)
+    "brief-package-task": lambda: text("brief-package-task"),
+    "package-tests-rules": lambda: text("package-tests-rules"),
+    "package-contract": lambda: text("package-contract"),
 }
 
 

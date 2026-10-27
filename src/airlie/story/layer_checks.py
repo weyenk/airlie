@@ -1,32 +1,30 @@
-"""The pre-code check on a layer's tests, run by the pipeline with no model, after the tester has written
-them and before the coder builds anything. The whole suite runs on the tester's tree: each new test must fail
-there, since the code it tests is not written yet (`passes_before_code`), and every test the layer did not
-touch must still pass (`existing_test_fails`). A test with nothing in it that can fail it but a crash is
-refused without running (`assertion_free_test`), as is a test module that does not parse. Python and pytest
-only, behind `checks_for`: any other gate gets none, and the pipeline logs that they did not run.
+"""The red check on a layer's tests, run by the pipeline with no model, after the architect's package has been
+placed in a scratch worktree and before the coder builds anything. The whole suite runs on that tree: each new
+test must fail there, since the code it tests is not written yet (`passes_before_code`), and every test the
+layer did not touch must still pass (`existing_test_fails`). A test with nothing in it that can fail it but a
+crash is refused without running (`assertion_free_test`), as is a test module that does not parse. Python and
+pytest only, behind `checks_for`: any other gate gets none, and the pipeline logs that they did not run.
 
 The test files are model output, read as data: parsed with `ast`, never imported here. The tests themselves
 run as the gate runs them (tools.shell.run_cmd: the agent environment, killed on a timeout).
 
-What the tests' author is told on a retry, and the tester on a mend, is steering in the prompt hub
-(`checks-found`, `checks-fix-before-code`, `checks-fix-with-code`, `passes-before-code-choice`,
-`loose-match`, `amend`); `feedback_said`
-and `amend_feedback_said` return the ids with the text, and the pipeline, which sends it, emits a `steer`
-event per id. The labels of the findings (PASSES_BEFORE_CODE and the others) stay here, beside the checks
-that find them."""
+What the tests' author is told when its package comes back is steering in the prompt hub (`checks-found`,
+`passes-before-code-choice`, `loose-match`, then `package-fix`); `listed_findings` renders the first three
+with their ids and `package_checks.package_feedback_said` adds the last, and the pipeline, which sends it,
+emits a `steer` event per id. The labels of the findings (PASSES_BEFORE_CODE and the others) stay here,
+beside the checks that find them."""
 
 from __future__ import annotations
 
 import ast
 import re
 import shlex
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from airlie.prompts import text as hub_text
-from airlie.supervisor.advice import with_advice
 from airlie.teams.worktree import add_worktree, changed_files, find_file, read_blob, remove_worktree
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import is_test_module, pytest_runner
@@ -41,10 +39,12 @@ Kind = Literal[
     "no_new_test",
     "suite_did_not_run",
     "lint_fails",
-    "engine_error",
+    "file_exists",
+    "file_missing",
+    "covers_missing",
+    "import_unresolved",
 ]
-"""What a finding is about. `engine_error` is the pipeline's, not a check's: the tester's run ended on an
-engine failure, so there is nothing of its to check and a retry would meet the same engine."""
+"""What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
 EXISTING_CHANGED = (
     "it was already there on the layer's base and still passes, so your edit changed it without testing "
@@ -54,7 +54,7 @@ EXISTING_CHANGED = (
 )
 """Why an existing test the layer changed and that still passes comes back: it is no new red, and the usual
 cause is a split (AIR-9 layer 05, 2026-10-22: reported as passing before the code, it read as a new test to
-make red, and neither the tester nor the supervisor saw that it had been cut in two)."""
+make red, and neither the tests' author nor the supervisor saw that it had been cut in two)."""
 EXISTING_FAILS = (
     "it passes on the layer's base and fails with the new tests in place: a fixture, conftest.py or shared "
     "helper the tests changed broke it"
@@ -68,7 +68,7 @@ PYTEST_FLAGS = "-rA -p no:cacheprovider --continue-on-collection-errors"
 """What the check adds to the gate's pytest step: a line per test with its outcome, no cache written into the
 worktree, and every module run when a new one cannot be imported yet (the name it tests is not there)."""
 NO_BYTECODE = "export PYTHONDONTWRITEBYTECODE=1; "
-"""Before the step: the run writes no __pycache__ into the worktree, where it would be the tester's work
+"""Before the step: the run writes no __pycache__ into the worktree, where it would be the package's work
 (committed, and locked to the coder) in a repository that does not ignore it."""
 _OUTCOME = re.compile(r"^(PASSED|FAILED|ERROR) (\S+)", re.MULTILINE)
 _SUMMARY = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
@@ -115,7 +115,7 @@ class Finding:
     before: str = ""
 
 
-def _test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+def test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
     """What pytest collects by default: test* functions, and test* methods of Test* classes."""
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test"):
@@ -198,9 +198,9 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
         before = _parse(_base_text(worktree, base, path))
         base_text = _base_text(worktree, base, path)
         before = _parse(base_text)
-        old = {name: fn for name, fn in _test_functions(before)} if before else {}
+        old = {name: fn for name, fn in test_functions(before)} if before else {}
         helpers = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
-        for name, fn in _test_functions(tree):
+        for name, fn in test_functions(tree):
             was = old.get(name)
             if was is not None and ast.dump(was) == ast.dump(fn):
                 continue
@@ -241,7 +241,7 @@ class PytestChecks:
 
     async def run(self, worktree: Path, base: str) -> list[Finding]:
         """The findings on the tests the worktree's HEAD added or changed since `base`, with the suite run on
-        that HEAD. The worktree must hold no uncommitted change (the pipeline commits the tester's work)."""
+        that HEAD. The worktree must hold no uncommitted change (the package check commits what it placed)."""
         findings = unparseable_tests(worktree, base)
         tests = changed_tests(worktree, base)
         if not tests:
@@ -317,37 +317,6 @@ class PytestChecks:
         return _outcomes(result.output), result.output
 
 
-def in_files(test_id: str, paths: Collection[str]) -> bool:
-    """Whether pytest's `test_id` (a node id, or a module's path) is a test in one of `paths` (from the
-    repository's root)."""
-    return any(_same(p, test_id.split("::")[0]) for p in paths)
-
-
-def is_testers_test(
-    test_id: str, whole: Collection[str], by_definition: Mapping[str, Collection[str]]
-) -> bool:
-    """Whether pytest's `test_id` is one the tester wrote: in a file locked whole, or under one of the
-    definitions (the function or class named first after `::`, any `[params]` removed) the tester wrote in a
-    file locked by definition."""
-    if in_files(test_id, whole):
-        return True
-    path, _, rest = test_id.partition("::")
-    name = _PARAMS.sub("", rest).split("::")[0]
-    return any(_same(p, path) and name in names for p, names in by_definition.items())
-
-
-def static_findings(worktree: Path, base: str) -> list[Finding]:
-    """The checks that read the tests and run none: a module that does not parse, a test with no check in
-    it. For a layer with no tester, whose tests and code come in one subtask and cannot be run before it."""
-    found = unparseable_tests(worktree, base)
-    found += [
-        Finding("assertion_free_test", t.id, ASSERTION_FREE, t.source)
-        for t in changed_tests(worktree, base)
-        if not t.asserts
-    ]
-    return found
-
-
 def checks_for(
     commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
 ) -> PytestChecks | None:
@@ -357,7 +326,7 @@ def checks_for(
     return PytestChecks(step, timeout_s=timeout_s, confinement=confinement) if step else None
 
 
-class _Said:
+class Said:
     """Hub steering texts rendered for one message, with their ids recorded in the order they are rendered,
     so the ids are exactly the texts the message holds."""
 
@@ -369,18 +338,11 @@ class _Said:
         return hub_text(id)
 
 
-def feedback_said(
-    findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None
-) -> tuple[str, tuple[str, ...]]:
-    """What the tests' author is told on its retry, and the hub ids of the steering in it, in order: the
-    caller that sends it emits a `steer` event for each. Each finding and why, a
-    `passes-before-code-choice` line under a test that passes before the code (delete it or make it fail), a
-    `loose-match` hint under such a test that has a `match=` pattern, an existing test the layer changed as
-    it was on the base, then what to do. `before_code` is the tester's (`checks-fix-before-code`: the code is
-    not written yet); else the coder's, which wrote tests and code together (`checks-fix-with-code`). `advice`
-    is the supervisor's: its section goes after the findings and before the rules, so the rules are the last
-    thing the role reads, whole, whatever the advice says. With none, the text is today's."""
-    said = _Said()
+def listed_findings(findings: Sequence[Finding], said: Said) -> list[str]:
+    """The lines that list `findings` for a role that must fix them: `checks-found`, then each finding and
+    why, a `passes-before-code-choice` line under a test that passes before the code, a `loose-match` hint
+    under such a test that has a `match=` pattern, and an existing test the layer changed as it was on the
+    base. The hub ids are recorded in `said`, in the order they are rendered."""
     listed: list[str] = [said("checks-found")]
     for f in findings:
         listed.append(f"- {f.test}: {f.why}")
@@ -390,15 +352,7 @@ def feedback_said(
                 listed.append("  " + said("loose-match"))
         if f.kind == "existing_test_changed":
             listed.append(f"  as it was on the base:\n```python\n{f.before}\n```")
-    found = "\n".join(listed)
-    what = said("checks-fix-before-code" if before_code else "checks-fix-with-code")
-    told = f"{found}\n{what}" if not advice else f"{with_advice(found, advice)}\n\n{what}"
-    return told, tuple(said.ids)
-
-
-def feedback(findings: Sequence[Finding], *, before_code: bool = True, advice: str | None = None) -> str:
-    """The text of `feedback_said`, for a reader that does not send it (the supervisor's `told`)."""
-    return feedback_said(findings, before_code=before_code, advice=advice)[0]
+    return listed
 
 
 _EVIDENCE_SOURCE_CHARS = 1_500
@@ -418,26 +372,3 @@ def findings_text(found: Sequence[Finding]) -> str:
             block += f"\nsource:\n{f.source[:_EVIDENCE_SOURCE_CHARS]}"
         blocks.append(block)
     return "\n\n".join(blocks)
-
-
-_ACCOUNT_CHARS = 3_000
-"""How much of the coder's closing text the tester is shown."""
-
-
-def amend_feedback_said(
-    failing: Sequence[str], account: str, review: Sequence[str] = ()
-) -> tuple[str, tuple[str, ...]]:
-    """What the tester is told (the hub's `amend`): the failing tests, what the coder said when it stopped,
-    and the reviewer's blocking findings, if any; and the hub ids in it, for the sender's `steer` events."""
-    said = _Said()
-    lines = ["Failing:", *(f"- {t}" for t in failing)]
-    if account.strip():
-        lines += ["", "What the coder said when it stopped:", account.strip()[:_ACCOUNT_CHARS]]
-    if review:
-        lines += ["", "The reviewer's blocking findings:", *(f"- {r}" for r in review)]
-    return "\n".join([said("amend"), "", *lines]), tuple(said.ids)
-
-
-def amend_feedback(failing: Sequence[str], account: str, review: Sequence[str] = ()) -> str:
-    """The text of `amend_feedback_said`."""
-    return amend_feedback_said(failing, account, review)[0]

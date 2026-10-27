@@ -64,7 +64,7 @@ NO_IMPORT = "def test_mul():\n    assert mul(2, 3) == 6\n"  # mul is never impor
 
 
 def calc_repo(tmp_path: Path, test: str) -> tuple[Path, str]:
-    """The calc repository with a test gate at its base commit, and a tester's commit on top holding `test`;
+    """The calc repository with a test gate at its base commit, and a package's commit on top holding `test`;
     returns the repository and the base."""
     import shlex
     import sys
@@ -82,8 +82,8 @@ def try_cfg(tmp_path: Path) -> Path:
     from tests.unit.test_studio_orchestrator import ROLES
 
     roles = {**ROLES, "supervisor": ("You triage.", ["read_file", "list_dir", "grep"])}
-    roles["tester"] = ("# tester", None)
-    extra = {"observability": {"state_dir": str(tmp_path / "state")}, "story": {"tester_role": "tester"}}
+    roles["architect"] = ("# architect", None)
+    extra = {"observability": {"state_dir": str(tmp_path / "state")}}
     cfg = cfg_for(tmp_path, roles=roles, extra=extra)
     assert cfg.source_path is not None
     return cfg.source_path
@@ -98,7 +98,7 @@ def test_try_triages_the_worktree_and_writes_no_ledger_row(tmp_path: Path, monke
 
     root, base = calc_repo(tmp_path, NO_IMPORT)
     source = try_cfg(tmp_path)
-    trace = tmp_path / "state" / "runs" / "R1" / "trace" / "tests"
+    trace = tmp_path / "state" / "runs" / "R1" / "trace" / "package"
     write_step(trace, 1, reasoning="FIRST RUN")
     write_step(trace / "round-1", 1, reasoning="THE RETRY")
     engine = FakeEngine({"supervisor": [FakeReply(text=json.dumps(GOOD))]})
@@ -111,7 +111,7 @@ def test_try_triages_the_worktree_and_writes_no_ledger_row(tmp_path: Path, monke
     assert '"category": "missing_import"' in out and "tokens" in out
     assert out.index("lint_fails") < out.index('"category"') < out.index("tokens")
     asked = engine.requests[0].messages[-1].content
-    assert "precode_retry (role: tester, subtask: tests" in asked and "F821" in asked
+    assert "package_retry (role: architect, subtask: package" in asked and "F821" in asked
     assert "FIRST RUN" in asked and "THE RETRY" not in asked  # the round it was asked for
     assert "tests/test_calc.py" in asked  # the diff from the base
     assert not (tmp_path / "state" / "supervisor.sqlite").exists()  # a try is not an intervention

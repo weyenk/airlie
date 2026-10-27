@@ -516,17 +516,23 @@ class StorySpec(Strict):
     product_role: str = "product"
     architect_role: str = "architect"
     build_role: str = "coder"
-    tester_role: str | None = Field(
-        default=None,
-        description="the role that writes every layer's tests before its coder builds it, as the coder's "
-        "contract: checked to fail before any code is written, then read-only to the coder (airlie.yaml "
-        "seats 'tester'); null: the coder writes its own tests, one subtask per layer",
-    )
-    lint_round_steps: int = Field(
-        default=6,
+    package_attempts: int = Field(
+        default=2,
         ge=1,
-        description="steps the tester may spend on a lint round: when all that is left after its pre-code "
-        "retry is lint its fixer could not fix, it is sent back once more with only ruff's output",
+        description="tries the architect gets at one layer's package before the story stops: a package that "
+        "fails the readiness check (parse, lint, covers, imports, red on the base) goes back to it with the "
+        "findings",
+    )
+    layer_attempts: int = Field(
+        default=2,
+        ge=1,
+        description="builds of one layer, each re-planned from the last gate's output, before the story "
+        "stops: a layer whose gate is still red after the coder's follow-up goes back to the architect",
+    )
+    package_steps: int = Field(
+        default=12,
+        ge=1,
+        description="steps the architect gets to read before it writes a layer's package",
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)

@@ -117,6 +117,12 @@ REMOVED = {
     "story.mutation_timeout_s": "removed on 2026-10-19: airlie no longer runs a story's mutation gate "
     "(mutation testing runs in the repository's CI, on each PR); delete story.mutation_timeout_s from your "
     "config",
+    "story.tester_role": "removed on 2026-10-24: the architect writes every layer's tests as code in the "
+    "layer's package (docs/superpowers/specs/2026-10-24-planning-line-design.md); delete story.tester_role "
+    "from your config",
+    "story.lint_round_steps": "removed on 2026-10-24: there is no tester to send on a lint round; the "
+    "architect gets lint it cannot fix as a finding with the rest of the package check's, and writes the "
+    "package again; delete story.lint_round_steps from your config",
 }
 """Keys a config may still carry from an older airlie, and what to tell its owner instead of "Extra inputs are
 not permitted"."""

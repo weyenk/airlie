@@ -1,70 +1,52 @@
-"""The supervisor in a story run: Muse's advice at the tester's pre-code retry, the coder's static retry and
-the tester's mend, and its diagnosis on the card when a layer blocks. Its section is added to today's text
-and never replaces it; whatever Muse does wrong, the role gets today's text and the run goes on. On the calc
-repository and the scripted replies of test_story_layer_checks_flow, with a `supervisor` role scripted by
-name on FakeEngine."""
+"""The supervisor in a story run (P1, 2026-10-24): Muse's advice at the coder's gate retry and its
+diagnosis on the card when a layer blocks. Its section is added to today's text and never replaces it;
+whatever Muse does wrong, the role gets today's text and the run goes on. The tester's pre-code retry, the
+coder's static retry and the tester's mend it also covered are retired with the tester: a package that
+fails its readiness check goes back to the architect, which the supervisor does not read (its evidence is
+a layer run's trace, and there is none at package time). On the calc repository and the scripted replies
+of test_story_layer_checks_flow, with a `supervisor` role scripted by name on FakeEngine."""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
-
-import pytest
 
 from airlie.engine import FakeEngine, FakeReply
 from airlie.story.board import text_card
-from airlie.story.layer_checks import Finding, feedback
 from airlie.story.state import StoryState
 from airlie.supervisor.advice import SUPERVISOR
 from airlie.supervisor.ledger import Ledger, Row
-from airlie.teams import native_team
-from tests.unit.advisor_doubles import RecordingAdvisor
 from tests.unit.test_story_layer_checks_flow import (
+    BROKEN,
     FEATURE,
+    FIXED,
     LAYERS,
-    LISTED,
-    MENDED,
-    NO_ASSERT,
     PYTEST,
     RED,
+    STILL_BROKEN,
     VACUOUS,
-    WRONG,
-    DownForTester,
     calc_repo,
-    write,
 )
-from tests.unit.test_story_pipeline import STORY, TESTER_ROLES, kinds, pipeline
-from tests.unit.test_studio_orchestrator import APPROVE, DONE
+from tests.unit.test_story_pipeline import STORY, kinds, pipeline
+from tests.unit.test_studio_orchestrator import APPROVE, DONE, ROLES
 
 SUPERVISOR_ROLES = {
-    **TESTER_ROLES,
+    **ROLES,
+    "product": ("---\nsummary: Stories and acceptance criteria\n---\n# product", ["read_file", "list_dir"]),
+    "architect": ("---\nsummary: Layered plans for a change\n---\n# architect", ["read_file", "list_dir"]),
     "supervisor": ("---\nsummary: no\nroutable: false\n---\n# supervisor\nJSON only.", []),
 }
 
 
-def answer(message: str, *, owner: str = "tester") -> FakeReply:
-    """Muse's answer to a retry: a diagnosis and the role's next step."""
+def answer(message: str | None, *, owner: str = "coder", fix: str | None = None) -> FakeReply:
+    """Muse's answer: a diagnosis, the role's next step and, for a block, the fix another try would make."""
     data = {
         "category": "wrong_acceptance_test",
         "owner": owner,
-        "diagnosis": "the test checks something that already exists",
-        "evidence": ["tests/test_calc.py"],
+        "diagnosis": "the code breaks add, which the whole suite checks",
+        "evidence": ["calc.py"],
         "message": message,
-    }
-    return FakeReply(text="```json\n" + json.dumps(data) + "\n```")
-
-
-def block_answer(diagnosis: str, *, fix: str) -> FakeReply:
-    """Muse's reading of a block: no message (no role reads it), and the fix one more attempt would try."""
-    data = {
-        "category": "wrong_acceptance_test",
-        "owner": "tester",
-        "diagnosis": diagnosis,
-        "evidence": [],
-        "message": None,
         "fix_if_attempt": fix,
     }
     return FakeReply(text="```json\n" + json.dumps(data) + "\n```")
@@ -72,31 +54,25 @@ def block_answer(diagnosis: str, *, fix: str) -> FakeReply:
 
 def scripted(
     *,
-    tester: list[FakeReply],
+    coder: list[FakeReply],
     supervisor: list[FakeReply] | None = None,
-    coder: list[FakeReply] | None = None,
-    engine: type[FakeEngine] = FakeEngine,
+    packages: list[FakeReply] | None = None,
 ) -> FakeEngine:
     """The one-layer calc story's replies, by role; no `supervisor` key when `supervisor` is None."""
     scripts = {
         "product": [STORY],
-        "architect": [LAYERS],
-        "tester": tester,
-        "coder": coder if coder is not None else [FEATURE, DONE],
+        "architect": [LAYERS, *(packages or [RED])],
+        "coder": coder,
         "reviewer": [APPROVE, APPROVE],
     }
     if supervisor is not None:
         scripts["supervisor"] = supervisor
-    return engine(scripts)
+    return FakeEngine(scripts)
 
 
-async def run_layer(
-    tmp_path: Path, engine: FakeEngine, *, supervisor: bool = True, tester: bool = True
-) -> StoryState:
+async def run_layer(tmp_path: Path, engine: FakeEngine, *, supervisor: bool = True) -> StoryState:
     repo = calc_repo(tmp_path)
-    story: dict[str, object] = {"tester_role": "tester" if tester else None}
-    if supervisor:
-        story["supervisor"] = {"enabled": True}
+    story: dict[str, object] = {"supervisor": {"enabled": True}} if supervisor else {}
     return await pipeline(tmp_path, repo, engine, test_cmd=PYTEST, story=story, roles=SUPERVISOR_ROLES).run(
         text_card("multiply")
     )
@@ -104,18 +80,6 @@ async def run_layer(
 
 def user_messages(engine: FakeEngine, role: str) -> list[str]:
     return [r.messages[-1].content for r in engine.requests if r.role == role]
-
-
-def last_user_message(engine: FakeEngine, role: str) -> str:
-    """The last message the role was sent by the pipeline (a follow-up), not a tool result."""
-    sent = [
-        m.content
-        for r in engine.requests
-        if r.role == role
-        for m in r.messages
-        if m.role == "user" and "airlie checked the tests" in m.content
-    ]
-    return sent[-1]
 
 
 def ledger(tmp_path: Path) -> Ledger:
@@ -132,186 +96,87 @@ def board_notes(st: StoryState) -> list[str]:
     return [n for n in re.split(r"^- (?=\d{4}-\d\d-\d\d )", text, flags=re.MULTILINE) if n.strip()]
 
 
-# ---- the tester's pre-code retry ----
+# ---- the coder's gate retry ----
 
 
-async def test_the_testers_retry_carries_muses_advice_and_every_rule(tmp_path: Path) -> None:
-    engine = scripted(tester=[VACUOUS, LISTED, RED, LISTED], supervisor=[answer("Assert mul, not add.")])
+async def test_the_gate_retry_carries_muses_advice(tmp_path: Path) -> None:
+    engine = scripted(coder=[BROKEN, DONE, FIXED, DONE], supervisor=[answer("Put add back as it was.")])
     st = await run_layer(tmp_path, engine)
     assert st.blocked is None and "01" in st.built, st.blocked
-    retry = last_user_message(engine, "tester")
-    assert "Assert mul, not add." in retry and SUPERVISOR in retry
-    assert "tests/test_calc.py::test_add_again" in retry  # today's findings, whole
-    assert feedback([]).split("\n")[-1] in retry  # the rule paragraph, whole
-    assert retry.index("test_add_again") < retry.index(SUPERVISOR)
-    assert retry.index(SUPERVISOR) < retry.index("Every test you wrote must fail now")
+    [retry] = [p for p in user_messages(engine, "coder") if "the whole suite fails with your change" in p]
+    assert "Put add back as it was." in retry and SUPERVISOR in retry
     [row] = rows(tmp_path)
-    assert (row.trigger, row.subtask, row.role, row.outcome) == ("precode_retry", "tests", "tester", "helped")
-    assert row.kinds == ("passes_before_code",) and row.layer == "01"
-    [triaged] = kinds(st.path / "events.jsonl", "supervisor_triage")
-    assert (triaged["trigger"], triaged["layer"]) == ("precode_retry", "01")
-    # Muse was shown the findings and asked with its own prompt
-    [asked] = [r for r in engine.requests if r.role == "supervisor"]
-    assert "# supervisor" in asked.messages[0].content
-    assert "test_add_again" in asked.messages[-1].content
+    assert (row.trigger, row.subtask, row.role, row.outcome) == ("gate_retry", "build", "coder", "helped")
+    assert row.kinds == ("gate_fails",) and row.layer == "01"
 
 
-async def test_when_muse_fails_the_tester_gets_exactly_todays_text(tmp_path: Path) -> None:
-    engine = scripted(tester=[VACUOUS, LISTED, RED, LISTED], supervisor=[FakeReply(text="no json")])
+async def test_a_package_that_comes_back_to_the_architect_asks_muse_nothing(tmp_path: Path) -> None:
+    """The supervisor's triggers on the layer's tests (precode_retry, static_retry, amend) are retired."""
+    engine = scripted(coder=[FEATURE, DONE], supervisor=[], packages=[VACUOUS, RED])
     st = await run_layer(tmp_path, engine)
     assert st.blocked is None and "01" in st.built, st.blocked
-    retry = last_user_message(engine, "tester")
-    assert SUPERVISOR not in retry
-    assert retry.endswith(feedback([]).split("\n")[-1])
-    [fallback] = kinds(st.path / "events.jsonl", "supervisor_fallback")
-    assert (fallback["trigger"], fallback["reason"]) == ("precode_retry", "unparsable")
-    [row] = rows(tmp_path)
-    assert row.fallback == "unparsable" and row.outcome == "helped"  # the retry without Muse, counted too
+    assert not [r for r in engine.requests if r.role == "supervisor"]
+    assert rows(tmp_path) == []
 
 
-async def test_a_retry_that_still_fails_is_not_helped_and_the_block_carries_the_diagnosis(
+# ---- the diagnosis on a block ----
+
+
+async def test_a_layer_that_stays_red_is_blocked_with_muses_diagnosis_beside_the_reason(
     tmp_path: Path,
 ) -> None:
     engine = scripted(
-        tester=[VACUOUS, LISTED, VACUOUS, LISTED],
+        coder=[BROKEN, DONE, STILL_BROKEN, DONE],
         supervisor=[
-            answer("Assert mul."),
-            block_answer("Tests assert add, which exists.", fix="assert mul(2,3)"),
+            answer("Put add back."),
+            answer(None, fix="restore add to return a + b"),
         ],
     )
     st = await run_layer(tmp_path, engine)
-    assert st.blocked is not None and "the tester's tests do not hold" in st.blocked
+    assert st.blocked is not None and "fails on" in st.blocked
     assert "Supervisor:" not in st.blocked  # the reason is the reason; the diagnosis is beside it
     found = rows(tmp_path)
-    assert [r.trigger for r in found] == ["block", "precode_retry"]
+    assert [r.trigger for r in found] == ["block", "gate_retry"]
     assert [r.outcome for r in found] == ["blocked", "not_helped"]
-    assert found[0].kinds == ("passes_before_code",) and found[0].subtask == "tests"
+    assert found[0].kinds == ("gate_fails",) and found[0].subtask == "build"
     note = board_notes(st)[-2]  # the stop's note, then the move to blocked
-    assert note.index("stopped after") < note.index("Supervisor: Tests assert add, which exists.")
-    assert "assert mul(2,3)" in note and note.index("assert mul(2,3)") < note.index("Resume:")
+    assert note.index("stopped after") < note.index("Supervisor: the code breaks add")
+    assert "restore add to return a + b" in note and note.index("restore add") < note.index("Resume:")
     [blocked] = kinds(st.path / "events.jsonl", "blocked")
-    assert "Tests assert add, which exists." in blocked["diagnosis"]
-
-
-async def test_an_engine_down_block_asks_muse_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(native_team, "ENGINE_RETRY_S", 0.0)
-    engine = scripted(tester=[], supervisor=[], engine=DownForTester)
-    st = await run_layer(tmp_path, engine)
-    assert st.blocked is not None and "task up" in st.blocked
-    assert not [r for r in engine.requests if r.role == "supervisor"]
-    assert rows(tmp_path) == []
-    [blocked] = kinds(st.path / "events.jsonl", "blocked")
-    assert "diagnosis" not in blocked
-
-
-# ---- the coder's static retry (no tester) ----
-
-
-async def test_the_coders_static_retry_carries_muses_advice(tmp_path: Path) -> None:
-    engine = scripted(
-        tester=[],
-        coder=[FEATURE, NO_ASSERT, DONE, RED, DONE],
-        supervisor=[answer("Assert what mul returns.", owner="coder")],
-    )
-    st = await run_layer(tmp_path, engine, tester=False)
-    assert st.blocked is None and "01" in st.built, st.blocked
-    [retry] = [p for p in user_messages(engine, "coder") if "airlie checked the tests" in p]
-    assert "Assert what mul returns." in retry
-    assert retry.index(SUPERVISOR) < retry.index("Run run_tests until your tests pass")
-    [row] = rows(tmp_path)
-    assert (row.trigger, row.subtask, row.role, row.outcome) == ("static_retry", "build", "coder", "helped")
-
-
-# ---- the tester's mend ----
-
-
-async def test_the_mend_carries_muses_advice(tmp_path: Path) -> None:
-    engine = scripted(tester=[WRONG, LISTED, RED, MENDED], supervisor=[answer("Unpack both values.")])
-    st = await run_layer(tmp_path, engine)
-    assert st.blocked is None and "01" in st.built, st.blocked
-    [asked] = [p for p in user_messages(engine, "tester") if "fails only in your tests" in p]
-    assert "Unpack both values." in asked and asked.index("Failing:") < asked.index(SUPERVISOR)
-    [row] = rows(tmp_path)
-    assert (row.trigger, row.kinds, row.outcome) == ("amend", ("locked_tests_fail",), "helped")
+    assert "the code breaks add" in blocked["diagnosis"]
 
 
 # ---- off, or broken ----
 
 
 async def test_with_the_supervisor_off_nothing_changes(tmp_path: Path) -> None:
-    engine = scripted(tester=[VACUOUS, LISTED, RED, LISTED])  # no supervisor script
+    engine = scripted(coder=[BROKEN, DONE, FIXED, DONE])  # no supervisor script
     st = await run_layer(tmp_path, engine, supervisor=False)
     assert st.blocked is None and "01" in st.built, st.blocked
     assert not (tmp_path / "state" / "supervisor.sqlite").exists()
-    assert SUPERVISOR not in last_user_message(engine, "tester")
+    [retry] = [p for p in user_messages(engine, "coder") if "the whole suite fails with your change" in p]
+    assert SUPERVISOR not in retry
     assert not kinds(st.path / "events.jsonl", "supervisor_fallback")
 
 
+async def test_when_muse_fails_the_coder_gets_exactly_todays_text(tmp_path: Path) -> None:
+    engine = scripted(coder=[BROKEN, DONE, FIXED, DONE], supervisor=[FakeReply(text="no json")])
+    st = await run_layer(tmp_path, engine)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    [retry] = [p for p in user_messages(engine, "coder") if "the whole suite fails with your change" in p]
+    assert SUPERVISOR not in retry
+    [fallback] = kinds(st.path / "events.jsonl", "supervisor_fallback")
+    assert (fallback["trigger"], fallback["reason"]) == ("gate_retry", "unparsable")
+
+
 async def test_a_supervisor_that_cannot_be_set_up_leaves_the_layer_as_today(tmp_path: Path) -> None:
-    engine = scripted(tester=[VACUOUS, LISTED, RED, LISTED], supervisor=[])
+    engine = scripted(coder=[FEATURE, DONE], supervisor=[])
     repo = calc_repo(tmp_path)
-    story: dict[str, Any] = {"tester_role": "tester", "supervisor": {"enabled": True}}
+    story = {"supervisor": {"enabled": True}}
     pipe = pipeline(tmp_path, repo, engine, test_cmd=PYTEST, story=story, roles=SUPERVISOR_ROLES)
     (tmp_path / "cfg" / "supervisor.md").unlink()  # its prompt is gone after the config was read
     st = await pipe.run(text_card("multiply"))
     assert st.blocked is None and "01" in st.built, st.blocked
     [fallback] = kinds(st.path / "events.jsonl", "supervisor_fallback")
     assert fallback["reason"] == "setup: FileNotFoundError" and fallback["layer"] == "01"
-    assert SUPERVISOR not in last_user_message(engine, "tester")
     assert not [r for r in engine.requests if r.role == "supervisor"]
-
-
-async def test_advice_for_a_subtask_that_never_ran_goes_to_the_configured_role(tmp_path: Path) -> None:
-    """Like a block's diagnosis: a retry whose subtask has no run asks Muse for the role the config names,
-    and never raises."""
-    pipe = pipeline(
-        tmp_path, calc_repo(tmp_path), scripted(tester=[]), test_cmd=PYTEST,
-        story={"tester_role": "tester", "supervisor": {"enabled": True}}, roles=SUPERVISOR_ROLES,
-    )  # fmt: skip
-    adv = RecordingAdvisor("advice")
-    orch = SimpleNamespace(runs={})
-    found = [Finding("assertion_free_test", "t::x", "it has no assert", "")]
-    for subtask, role in (("tests", "tester"), ("build", pipe.s.build_role)):
-        told = await pipe._advise(adv, orch, "static_retry", subtask, "TOLD", found)  # type: ignore[arg-type]
-        assert told == "advice" and adv.advised[-1][1:3] == (subtask, role)
-
-
-BASE_TEST = "assert add(1, 2) == 3\n    assert add(0, 0) == 0"
-SPLIT_WRITE = write(
-    "tests/test_base.py",
-    "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n"
-    "def test_mul():\n    from calc import mul\n\n    assert mul(2, 3) == 6\n    assert add(0, 0) == 0\n",
-)
-"""The tester's new test written inside the existing test_add: test_add's last line ends up under it."""
-
-
-async def test_muse_and_the_tester_see_an_existing_test_the_tester_split_as_it_was_on_the_base(
-    tmp_path: Path,
-) -> None:
-    """AIR-9 layer 05, 2026-10-22: the tester split an existing test with an insert. The check said the cut
-    test "passes before the layer's code is written", Muse read its lost lines as stray leftovers, and the
-    tester spent its retry trying to make an existing test red. Both are now told it is an existing test the
-    edit changed, with the test as it was on the base."""
-    engine = scripted(
-        tester=[SPLIT_WRITE, LISTED, SPLIT_WRITE, LISTED],
-        supervisor=[
-            answer("put test_add back as it was"),
-            block_answer("test_add was split", fix="restore it"),
-        ],
-    )
-    repo = calc_repo(tmp_path, base_test=BASE_TEST)
-    story = {"tester_role": "tester", "supervisor": {"enabled": True}}
-    st = await pipeline(tmp_path, repo, engine, test_cmd=PYTEST, story=story, roles=SUPERVISOR_ROLES).run(
-        text_card("multiply")
-    )
-    events = st.path / "events.jsonl"
-    [changed, _] = kinds(events, "existing_test_changed")
-    assert changed["test"] == "tests/test_base.py::test_add" and "add(0, 0)" in changed["before"]
-    assert kinds(events, "passes_before_code") == []
-    asked = "\n".join(str(m.content) for r in engine.requests if r.role == "supervisor" for m in r.messages)
-    assert "on the base:" in asked and "assert add(0, 0) == 0" in asked and "now:" in asked
-    told = last_user_message(engine, "tester")
-    assert "already there on the layer's base" in told and "assert add(0, 0) == 0" in told
-    assert st.blocked is not None and "is an existing test the tests changed" in st.blocked

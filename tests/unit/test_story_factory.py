@@ -63,7 +63,7 @@ def cfg_for(tmp_path: Path, *, extra: dict[str, Any] | None = None, **kw: Any) -
     planning in one go and no survey (the rounds and the survey have tests of their own)."""
     extra = dict(extra or {})
     # no tester: it is a subtask per layer with scripted replies of its own (one test runs with it)
-    extra["story"] = {"plan_round_steps": 0, "survey": False, "tester_role": None, **extra.get("story", {})}
+    extra["story"] = {"plan_round_steps": 0, "survey": False, **extra.get("story", {})}
     kw.setdefault("done_check", False)  # it costs the coder one scripted reply per layer
     return studio_cfg_for(tmp_path, extra=extra, **kw)
 
@@ -119,10 +119,8 @@ def test_story_problems_name_missing_roles(tmp_path: Path) -> None:
     assert any("story.product_role" in p for p in problems)
     assert any("story.architect_role" in p for p in problems)
     assert story_problems(cfg_for(tmp_path, roles=STORY_ROLES)) == []
-    on = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"tester_role": "qa"}})
-    assert story_problems(on) == []  # qa is a specialist in these fixtures
-    missing = story_problems(cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"tester_role": "nobody"}}))
-    assert len(missing) == 1 and "story.tester_role names 'nobody'" in missing[0]
+    missing = story_problems(cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"build_role": "nobody"}}))
+    assert len(missing) == 1 and "story.build_role names 'nobody'" in missing[0]
 
 
 @pytest.mark.parametrize("setting", ["trunk", "remote"])

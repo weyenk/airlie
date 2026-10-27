@@ -64,7 +64,6 @@ def story_problems(cfg: AirlieConfig) -> list[str]:
         ("story.product_role", s.product_role),
         ("story.architect_role", s.architect_role),
         ("story.build_role", s.build_role),
-        *([("story.tester_role", s.tester_role)] if s.tester_role else []),
     ):
         if role not in roles:
             problems.append(f"{label} names '{role}', which is not a specialist (no summary: in its prompt)")

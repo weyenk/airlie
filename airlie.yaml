@@ -154,8 +154,8 @@ observability:
 #   invite_hours: 24
 
 # ---- Stories (task story; docs/integrations/story.md) -------------------------------------------------------------
-# A Jira issue (or --text) → product's story → architect's layers → each layer built test-first by the studio on
-# its own branch → stacked draft PRs (gh stack) → the issue in review. Only a human merges. ATLASSIAN_BASE_URL,
+# A Jira issue (or --text) → product's story → architect's layers → each layer built from the architect's package
+# by the studio on its own branch → stacked draft PRs (gh stack) → the issue in review. Only a human merges. ATLASSIAN_BASE_URL,
 # ATLASSIAN_PROJECT_KEY, ATLASSIAN_EMAIL and ATLASSIAN_API_KEY say which Jira and who. Prefer ~/.config/airlie/.env
 # (one file for every checkout; a git-ignored .env beside this file works too) to exporting them in the shell: airlie
 # reads those files itself and exports nothing, while an exported variable reaches every child process (the coder's
@@ -165,7 +165,6 @@ observability:
 story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
-  tester_role: tester              # lever 2 (2026-10-19): a thinking role writes every layer's tests, checked red before the coder builds; null: the coder writes its own
   max_layers: 5
   supervisor:                      # the trial (spec 2026-10-22); false = today's behaviour exactly
     enabled: true

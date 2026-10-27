@@ -5,6 +5,9 @@
 > layer's base and asserts something, with one retry before the layer stops. See `docs/integrations/story.md`,
 > *Checks on a layer's tests*. This design was judged more trouble than it is worth and was not built; the rest of
 > this document is kept as written.
+>
+> **Taken up again on 2026-10-24** by `2026-10-24-planning-line-design.md` (P1): the architect writes each
+> layer's tests as code in a package just before the layer runs, and the pipeline places and checks them.
 
 Status: approved by Noah on 2026-10-16. It changes how the story pipeline builds a layer.
 

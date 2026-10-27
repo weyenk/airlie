@@ -82,7 +82,7 @@ tasks:
       - '{{.RUN}} airlie studio {{.CLI_ARGS}}'
 
   story:
-    desc: "A Jira issue or --text \"request\" → story → layers → test-first build → stacked draft PRs (task story -- ISSUE [--repo PATH] [--test-cmd CMD]; ISSUE is AIR-7 or its link)"
+    desc: "A Jira issue or --text \"request\" → story → layers → a package per layer, then the build → stacked draft PRs (task story -- ISSUE [--repo PATH] [--test-cmd CMD]; ISSUE is AIR-7 or its link)"
     cmds:
       - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
 

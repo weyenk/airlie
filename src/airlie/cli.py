@@ -1295,7 +1295,7 @@ def supervisor_try(
         Path,
         typer.Option(
             "--worktree",
-            help="a checkout whose HEAD holds the tester's tests over --base: only HEAD's commits are "
+            help="a checkout whose HEAD holds the package's tests over --base: only HEAD's commits are "
             "checked, so uncommitted tests are ignored",
         ),
     ],
@@ -1306,7 +1306,7 @@ def supervisor_try(
         str | None,
         typer.Option("--run", help="a studio run id: Muse reads the role's last steps from its trace"),
     ] = None,
-    subtask: Annotated[str, typer.Option("--subtask", help="the subtask whose trace Muse reads")] = "tests",
+    subtask: Annotated[str, typer.Option("--subtask", help="the subtask whose trace Muse reads")] = "package",
     round_: Annotated[
         int | None,
         typer.Option(
@@ -1327,8 +1327,8 @@ def supervisor_try(
     ] = None,
     config: ConfigOpt = None,
 ) -> None:
-    """Muse's triage of a worktree, as a story's first pre-code retry asks for it, against the configured
-    engine: the pre-code check (the gate's ruff fixers and checks, then pytest's), its findings, Muse's
+    """Muse's triage of a worktree, as a story's package retry asks for it, against the configured
+    engine: the readiness check (the gate's ruff fixers and checks, then pytest's), its findings, Muse's
     answer as JSON, and what it cost. A try is not an intervention: it writes no ledger row. It changes
     nothing either: the check, its fixers and Muse work in a throwaway detached tree at the worktree's HEAD,
     where the fixers' edits are committed as a story commits them, and which is removed after."""
@@ -1339,8 +1339,9 @@ def supervisor_try(
     import tempfile
 
     from airlie.story.gate import read_gate
-    from airlie.story.layer_checks import Finding, checks_for, feedback, findings_text
+    from airlie.story.layer_checks import Finding, checks_for, findings_text
     from airlie.story.model import NoTestGate
+    from airlie.story.package_checks import package_feedback_said
     from airlie.story.tester_lint import lint_for
     from airlie.supervisor.evidence import TriageInput, trace_tail
     from airlie.supervisor.layer import DIFF_CAP
@@ -1361,7 +1362,7 @@ def supervisor_try(
         raise typer.Exit(1)
     lint = lint_for(commands, timeout_s=timeout_s, confinement=confinement)
     spec, s = cfg.story.supervisor, cfg.story
-    role = (s.tester_role if subtask == "tests" else None) or s.build_role
+    role = s.architect_role if subtask == "package" else s.build_role
     trace_dir = cfg.observability.state_dir.expanduser() / "runs" / (run or "") / "trace"
     if run and not (trace_dir / subtask).is_dir():
         err.print(f"no trace for {run}/{subtask} in {trace_dir}: Muse reads no steps", markup=False)
@@ -1377,10 +1378,10 @@ def supervisor_try(
 
     async def ask(tree: Path, found: list[Finding]) -> Triaged:
         inp = TriageInput(
-            trigger="precode_retry",
+            trigger="package_retry",
             role=role,
             subtask=subtask,
-            told=feedback(found),
+            told=package_feedback_said(found)[0],
             evidence=findings_text(found),
             kinds=tuple(f.kind for f in found),
             brief=brief_file.read_text(encoding="utf-8") if brief_file is not None else "",

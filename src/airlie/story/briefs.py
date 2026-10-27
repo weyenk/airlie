@@ -4,19 +4,23 @@ passes them to a shell. The architect's layer brief is the coder's instruction, 
 product quoted as data.
 
 The rules a brief carries are prompt hub files (`airlie/prompts/rules/`, their incident history in `why`):
-`test-rules`, `pre-code-check`, `static-check`, `tests-only`, `tests-contract`, and the `brief-*` paragraphs
-of refine_brief, survey_brief, layers_brief and layer_plan. This module puts them together: the headings
+`test-rules`, `package-tests-rules`, `package-contract`, the `brief-layers-sizing` and
+`brief-layers-lessons` rules, and the `brief-*` paragraphs of refine_brief, survey_brief, layers_brief
+and the package and build briefs. This module puts them together: the headings
 over quoted data, the clipping and the joins stay here, as do the output formats beside their parsers
 (STORY_CONTRACT, LAYERS_CONTRACT, rounds.REFINE_FIELD) and the PR text a person reads."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.board import Card
+from airlie.story.lessons import Lesson
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story
+from airlie.story.package import PACKAGE_CONTRACT, Package
 from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
 
@@ -154,6 +158,16 @@ def survey_brief(card: Card) -> str:
     )
 
 
+def _lesson_line(lesson: Lesson) -> str:
+    """One recorded size-block as a line of the lessons section: what it was, how big it was, how it ran
+    out."""
+    return (
+        f"{lesson.title}: {lesson.source_files} source files, {lesson.test_files} test files, "
+        f"{lesson.steps} steps, {lesson.context_tokens} tokens, ended {lesson.ending}"
+        + (f" ({lesson.detail})" if lesson.detail else "")
+    )
+
+
 def layers_brief(
     story: Story,
     max_layers: int,
@@ -162,6 +176,9 @@ def layers_brief(
     guide: str = "",
     survey: str = "",
     round_steps: int = 0,
+    lessons: Sequence[Lesson] = (),
+    max_steps: int = 40,
+    context_budget: int = 65_536,
 ) -> str:
     parts = [
         hub_text("brief-layers-task"),
@@ -173,6 +190,12 @@ def layers_brief(
             else []
         ),
         hub_text("brief-layers-rules", max_layers=max_layers),
+        hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
+        *(
+            [hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))]
+            if lessons
+            else []
+        ),
         *(
             [hub_text("brief-layers-rounds", round_steps=round_steps) + " " + REFINE_FIELD]
             if round_steps
@@ -186,34 +209,6 @@ def layers_brief(
 
 def layer_goal(story: Story, layers: tuple[Layer, ...], i: int) -> str:
     return f"{story.title}: layer {i + 1}/{len(layers)} {layers[i].title}"
-
-
-_TEST_FILE = re.compile(
-    r"(?<![\w/.-])(?:[\w.-]+/)*(?:tests?/[\w./-]*\.\w+|test_[\w.-]+\.\w+|[\w.-]+_test\.\w+|conftest\.py)"
-)
-
-
-def named_test_files(layer: Layer) -> list[str]:
-    """The test files a layer's scope or brief names, in order of first mention, none twice."""
-    out: list[str] = []
-    for text in (layer.scope, layer.brief):
-        for m in _TEST_FILE.finditer(text):
-            path = m.group(0).rstrip(".")
-            if path not in out:
-                out.append(path)
-    return out
-
-
-def _tests_where(layer: Layer) -> str:
-    """Where the coder puts the layer's tests: the file(s) the layer names, else a new file for the feature
-    (AIR-28, 2026-10-18: a brief naming one file and the rule asking for a NEW one held the coder in a
-    21-step argument with itself). The hub's brief-layer-plan-tests-where wins over
-    brief-layer-plan-tests-new-file (PR 57)."""
-    named = named_test_files(layer)
-    if not named:
-        return hub_text("brief-layer-plan-tests-new-file")
-    noun = "file" if len(named) == 1 else "files"
-    return hub_text("brief-layer-plan-tests-where", files=" and ".join(named), noun=noun)
 
 
 _ADDED_NAME = re.compile(
@@ -255,22 +250,10 @@ def built_so_far(diff: str) -> str:
     return _clip("\n".join(lines), BUILT_CHARS)
 
 
-def layer_plan(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    *,
-    build_role: str,
-    tester_role: str | None = None,
-    guide: str = "",
-    built: str = "",
-) -> Plan:
-    """The layer's subtasks. With a `tester_role`, every layer is two: the tester writes the tests
-    (`tests-only`), for the acceptance criteria the layer owns or, for a foundation, for what its brief adds;
-    then the coder builds against them (`tests-contract`). Without one, one build subtask: the coder writes
-    the tests and the code, test-first for a layer that owns criteria. `built` is built_so_far's digest of
-    the earlier layers. The rules are the hub's (`brief-layer-plan-*` and the others in the module
-    docstring); the layer's own text, the headings over it and the joins are here."""
+def _layer_context(story: Story, layers: tuple[Layer, ...], i: int, built: str, guide: str) -> str:
+    """What a role told about layer `i` reads first: the story, the layer's place in the stack and its
+    scope, the later layers it leaves alone, the digest of the earlier ones (`built`, from built_so_far) and
+    the code guide."""
     layer = layers[i]
     later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     context = (
@@ -283,40 +266,109 @@ def layer_plan(
         context += f"\n\n{built}"
     if guide:
         context += f"\n\n## {GUIDE_HEADING}\n{guide}"
+    return context
 
-    edit = hub_text("brief-layer-plan-edit-file")
-    rules = hub_text("test-rules")
 
-    def build_brief(where: str) -> str:
-        return (
-            f"{context}\n\n{layer.brief}\n\n{hub_text('brief-layer-plan-agents-md')}\n"
-            f"{where}{edit}\n{hub_text('brief-layer-plan-build-stop')}"
-        )
-
-    build = build_brief(f"{_tests_where(layer)} ")
+def package_brief(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    *,
+    guide: str = "",
+    built: str = "",
+    lessons: Sequence[Lesson] = (),
+    max_steps: int,
+    context_budget: int,
+    feedback: str | None = None,
+) -> str:
+    """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
+    2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
+    The coder's step and context budget size the package (`brief-layers-sizing`); the lessons recorded for
+    the repository, the guide and `built` are carried when there are any; `feedback` is why the last try
+    came back."""
+    layer = layers[i]
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
-    if tester_role:
-        tests = (
-            f"{context}\n\n## The layer a coder builds after you (data: its brief, not yours)\n"
-            f"{layer.brief}\n\n"
-            f"{hub_text('tests-only')}\n{_tests_where(layer)} {edit}\nThe criteria:\n{criteria}\n\n"
-            f"{rules}\n{hub_text('pre-code-check')}"
-        )
-        contract = hub_text("tests-contract")
-        return Plan(
-            (),
-            (
-                Subtask("tests", tests, tester_role, pinned=True),
-                Subtask("build", f"{build_brief('')}\n\n{contract}\n{criteria}", build_role, ("tests",)),
-            ),
-        )
-    static = hub_text("static-check")
-    if not owned:
-        add = hub_text("brief-layer-plan-add-tests")
-        return Plan((), (Subtask("build", f"{build}\n{add}\n\n{rules}\n{static}", build_role),))
-    tests_first = hub_text("brief-layer-plan-tests-first", criteria=criteria)
-    return Plan((), (Subtask("build", f"{build}\n\n{tests_first}\n\n{rules}\n{static}", build_role),))
+    later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
+    parts = [
+        hub_text("brief-package-task"),
+        story_text(story),
+        f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
+        f"Scope of this layer: {layer.scope}\n"
+        f"The criteria this layer owns:\n{criteria}\n"
+        f"Later layers (not yours; leave their work alone): {later}",
+        f"## What this layer builds\n{layer.brief}",
+        *([built] if built else []),
+        *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
+        *(
+            [hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))]
+            if lessons
+            else []
+        ),
+        hub_text("package-tests-rules"),
+        hub_text("test-rules"),
+        hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
+        PACKAGE_CONTRACT,
+        *_again(feedback),
+    ]
+    return "\n\n".join(parts)
+
+
+def build_brief(
+    story: Story, layers: tuple[Layer, ...], i: int, package: Package, *, guide: str = "", built: str = ""
+) -> str:
+    """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
+    (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
+    the numbered steps and when it is done. There is no second prose brief (D3, planning-line design)."""
+    layer = layers[i]
+    owned = {c.id: c for c in story.acceptance if c.id in layer.acceptance}
+    tests: list[str] = []
+    for cid, ids in package.covers.items():
+        head = owned[cid].line() if cid in owned else cid
+        tests += [f"- {head}", *(f"  - {t}" for t in ids)]
+    covered = {t for ids in package.covers.values() for t in ids}
+    tests += [f"- also in {t}" for t in package.tests if not any(c.startswith(f"{t}::") for c in covered)]
+    files = [f"- {f.path} ({f.action})" + (f": {f.why}" if f.why else "") for f in package.files]
+    interfaces = [
+        f"- {x.file}: {x.signature}" + (f"\n  {x.behaviour}" if x.behaviour else "")
+        for x in package.interfaces
+    ]
+    steps = [f"{n}. {step}" for n, step in enumerate(package.steps, 1)]
+    return "\n\n".join(
+        [
+            _layer_context(story, layers, i, built, guide),
+            "## The tests you make pass (in the worktree, locked)\n"
+            + (
+                "The acceptance criteria this layer makes true, each with the tests that prove it:\n"
+                if owned
+                else ""
+            )
+            + "\n".join(tests),
+            "## Files\n" + ("\n".join(files) or "- none"),
+            "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
+            "## Steps\n" + "\n".join(steps),
+            f"## Done when\n{package.done_when or 'the tests above pass.'}",
+            hub_text("package-contract"),
+            hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
+            hub_text("brief-layer-plan-build-stop"),
+        ]
+    )
+
+
+def layer_plan(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    package: Package,
+    *,
+    build_role: str,
+    guide: str = "",
+    built: str = "",
+) -> Plan:
+    """The layer's plan: one `build` subtask from its package (`build_brief`). No tester subtask: the
+    tests were written by the architect and are in the worktree before the plan runs (P1, 2026-10-24)."""
+    brief = build_brief(story, layers, i, package, guide=guide, built=built)
+    return Plan((), (Subtask("build", brief, build_role),))
 
 
 def pr_title(story: Story, layers: tuple[Layer, ...], i: int) -> str:

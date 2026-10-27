@@ -1,6 +1,8 @@
 """What each specialist is told, the plan a layer runs, and the PR text a reviewer reads."""
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,16 +10,20 @@ import pytest
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
     GUIDE_HEADING,
+    build_brief,
     layer_goal,
     layer_plan,
     layers_brief,
+    package_brief,
     pr_body,
     pr_title,
     refine_brief,
     story_text,
     survey_brief,
 )
+from airlie.story.lessons import Lesson
 from airlie.story.model import Criterion, Layer, Story
+from airlie.story.package import Interface, Package, PackageFile
 from airlie.topology.studio_plan import schedule
 
 ISSUE_URL = "https://acme.atlassian.net/browse/AIR-7"
@@ -40,6 +46,15 @@ PRS = [(11, "u11"), (12, "u12"), (13, "u13")]
 ROWS = [
     {"id": "build", "role": "coder", "stop": "done", "review": "approve", "fix_rounds": 0, "findings": []}
 ]
+PACKAGE = Package(
+    "profile",
+    {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n"},
+    (PackageFile("src/profile.py", "create", "the profile view"),),
+    (Interface("src/profile.py", "def show() -> int", "returns 1, the avatar id"),),
+    ("create src/profile.py with show() returning 1", "export show from src/__init__.py"),
+    {"AC2": ("tests/unit/test_profile.py::test_shows",)},
+    "run_tests passes on tests/unit/test_profile.py",
+)
 MERGE_LINE = "Built by airlie on local models from the story above; a human reviews and merges."
 ZW = "\N{ZERO WIDTH SPACE}"
 
@@ -57,98 +72,83 @@ def test_layers_brief_states_the_rules_and_the_criteria() -> None:
     assert "at most 4 layers" in text and "AC2" in text and "cropping" in text and '"layers"' in text
 
 
-def test_a_layer_with_criteria_is_one_coder_subtask_that_writes_the_tests_first() -> None:
-    plan = layer_plan(STORY, LAYERS, 1, build_role="coder")
-    [build] = plan.subtasks
-    assert (build.id, build.role_hint, build.depends_on) == ("build", "coder", ())
-    assert "AC2" in build.brief and "AC1" not in build.brief
-    assert "layer 2 of 3" in build.brief and "03 Docs" in build.brief and "Show the avatar." in build.brief
-    first = build.brief.index("Write the tests first")
-    assert build.brief.index("**AC2** Given a stored avatar") > first
-    assert "without weakening them" in build.brief
-    assert len(schedule(plan)) == 1
-
-
-def test_with_a_tester_role_a_layer_with_criteria_is_the_tests_then_the_build_against_them() -> None:
-    """Lever 2 (Noah, 2026-10-19): the tests are the hard part; a thinking role writes them from the brief,
-    pinned, and the coder's subtask depends on it and treats them as the contract."""
-    plan = layer_plan(STORY, LAYERS, 1, build_role="coder", tester_role="tester")
-    tests, build = plan.subtasks
-    assert (tests.id, tests.role_hint, tests.depends_on, tests.pinned) == ("tests", "tester", (), True)
-    assert (build.id, build.role_hint, build.depends_on) == ("build", "coder", ("tests",))
-    assert "Show the avatar." in tests.brief and "AC2" in tests.brief and "AC1" not in tests.brief
-    assert "Do not write the feature" in tests.brief and "the only red" in tests.brief
-    assert "NOT happen" in tests.brief and "Every test asserts" in tests.brief
-    assert "They are the contract" in build.brief and "you cannot change them" in build.brief
-    assert "What else is in their files was there before them" in build.brief
-    assert "Write the tests first" not in build.brief and "AC2" in build.brief
-    assert "once they pass, you are done" in build.brief and "whole suite after review" in build.brief
-    assert len(schedule(plan)) == 2
-
-
-def test_with_a_tester_role_a_foundation_layer_gets_its_tests_from_its_brief_first_too() -> None:
-    """Noah, 2026-10-19: every layer is test-first through the tester; one with no criterion (a foundation)
-    is tested for what its brief adds."""
-    tests, build = layer_plan(STORY, LAYERS, 2, build_role="coder", tester_role="tester").subtasks
-    assert (tests.id, tests.role_hint, build.id, build.depends_on) == ("tests", "tester", "build", ("tests",))
-    assert "Document avatars." in tests.brief and "foundation" in tests.brief
-    assert "per behaviour the brief adds" in tests.brief and "Do not write the feature" in tests.brief
-
-
-def test_the_coder_after_a_tester_is_not_told_to_put_tests_in_the_testers_files() -> None:
-    """The tester's files are locked to the coder: the coder's brief names no test file of its own."""
-    named = Layer("tools", "Tools", "src/a.py; tests/unit/test_x.py", "Offer every schema.", ("AC1",))
-    tests, build = layer_plan(STORY, (named, *LAYERS), 0, build_role="coder", tester_role="tester").subtasks
-    assert "Put new tests in tests/unit/test_x.py" in tests.brief
-    assert "Put new tests in" not in build.brief and "NEW test file" not in build.brief
-    assert "Run run_tests until the layer's tests pass" in build.brief
-
-
-def test_a_layer_with_criteria_tells_the_coder_what_makes_a_test_count() -> None:
-    brief = layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
-    assert "behaviour, not the implementation" in brief
-    assert "Every test asserts" in brief
-    # the check the pipeline runs on the tests, named before anything is written
-    assert "has no assertion, is sent back to you" in brief and "before the layer's code" not in brief
-    tester = layer_plan(STORY, LAYERS, 0, build_role="coder", tester_role="tester").subtasks[0].brief
-    assert "whole suite on your tests before the layer's code is written" in tester
-
-
-def test_the_build_brief_says_new_tests_go_in_a_new_file_and_existing_files_change_with_edit_file() -> None:
-    """HDS-5 2026-10-16: appending to a big test file meant rewriting it, past the coder's token cap."""
-    for i in (0, 2):  # a layer that owns criteria, and an enabling one
-        brief = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks[0].brief
-        assert "NEW test file named for the feature" in brief and "tests/unit/test_<feature>.py" in brief
-        assert "Change an existing file with edit_file" in brief
-
-
-def test_the_build_brief_puts_tests_where_a_layer_names_a_test_file() -> None:
-    """AIR-28 2026-10-18: the architect named tests/unit/test_native_team.py and the rule said a NEW file; the
-    coder argued with itself about which for 21 steps. The layer's own word wins."""
-    named = Layer(
-        "tools", "Tools", "src/a.py; tests/unit/test_native_team.py", "Offer every schema.", ("AC1",)
-    )
-    brief = layer_plan(STORY, (named, *LAYERS), 0, build_role="coder").subtasks[0].brief
-    assert "Put new tests in tests/unit/test_native_team.py, the file this layer names" in brief
-    assert "NEW test file" not in brief and "Change an existing file with edit_file" in brief
-    in_brief = Layer(
-        "tools", "Tools", "src/a.py", "Add the test to tests/unit/test_native_team.py.", ("AC1",)
-    )
-    brief = layer_plan(STORY, (in_brief, *LAYERS), 0, build_role="coder").subtasks[0].brief
-    assert "Put new tests in tests/unit/test_native_team.py, the file this layer names" in brief
-    two = Layer("t", "T", "tests/unit/test_a.py; tests/unit/test_b.py", "Both.", ("AC1",))
-    brief = layer_plan(STORY, (two, *LAYERS), 0, build_role="coder").subtasks[0].brief
-    assert (
-        "Put new tests in tests/unit/test_a.py and tests/unit/test_b.py, the files this layer names" in brief
-    )
-
-
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
     for i in (1, 2):  # a layer that owns criteria, and an enabling one
-        [build] = layer_plan(STORY, LAYERS, i, build_role="coder").subtasks
+        [build] = layer_plan(STORY, LAYERS, i, PACKAGE, build_role="coder").subtasks
         assert build.id == "build"
         [line] = [x for x in build.brief.splitlines() if "AGENTS.md" in x]
         assert line == "Follow AGENTS.md at the repository root, if it has one."
+
+
+def pbrief(**kw: Any) -> str:
+    return package_brief(STORY, LAYERS, 1, max_steps=40, context_budget=65_536, **kw)
+
+
+def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_coders_budget() -> None:
+    text = pbrief()
+    assert text.index("Write this layer's package") < text.index("## Story: Add avatar upload")
+    assert "This is layer 2 of 3: Profile" in text and "**AC2** Given a stored avatar" in text
+    assert (
+        "**AC1** Given a user" not in text.split("The criteria this layer owns:")[1].split("Later layers")[0]
+    )
+    assert "03 Docs" in text and "## What this layer builds\nShow the avatar." in text
+    assert "a test that passes there, an import it cannot resolve" in text
+    assert "NOT happen" in text and "Every test asserts" in text
+    assert "The coder has 40 steps and a context budget of 65536 tokens" in text
+    assert text.rstrip().endswith(
+        "Every criterion this layer owns appears in covers with at least one test; "
+        "every test id names a test in one of your test files."
+    )
+    assert "could not be used" not in text
+    assert "foundation for later layers" in package_brief(
+        STORY, LAYERS, 2, max_steps=40, context_budget=65_536
+    )
+
+
+def test_the_package_brief_carries_the_guide_the_built_digest_and_the_lessons_only_when_given() -> None:
+    plain = pbrief()
+    assert GUIDE_HEADING not in plain and "Layers like these blocked" not in plain
+    assert "What the earlier layers" not in plain
+    lesson = Lesson("Layer 01 storage", ["AC1"], 5, 2, 30, 88_000, "package_rejected", detail="lint_fails")
+    text = pbrief(
+        guide="- src/a.py: def f()",
+        built="## What the earlier layers of this story added\n- a.py: f",
+        lessons=[lesson],
+    )
+    assert f"## {GUIDE_HEADING}\n- src/a.py: def f()" in text
+    assert "## What the earlier layers of this story added" in text
+    assert (
+        "Layer 01 storage: 5 source files, 2 test files, 30 steps, 88000 tokens, "
+        "ended package_rejected (lint_fails)" in text
+    )
+
+
+def test_the_package_brief_carries_the_rejection_feedback_when_asked_again() -> None:
+    text = pbrief(feedback="- tests/unit/test_x.py::test_a: it passes before the code")
+    assert "could not be used: - tests/unit/test_x.py::test_a: it passes before the code" in text
+    assert text.rstrip().endswith("it passes before the code") or "could not be used" in text.splitlines()[-1]
+
+
+def test_the_build_brief_lists_the_tests_per_criterion_the_files_the_interfaces_and_the_steps() -> None:
+    text = build_brief(STORY, LAYERS, 1, PACKAGE, guide="- src/a.py: def f()")
+    assert "layer 2 of 3" in text and "03 Docs" in text and "Show the avatar." not in text
+    tests = text.split("## The tests you make pass")[1].split("## Files")[0]
+    assert "**AC2** Given a stored avatar" in tests and "  - tests/unit/test_profile.py::test_shows" in tests
+    assert "- src/profile.py (create): the profile view" in text
+    assert "- src/profile.py: def show() -> int\n  returns 1, the avatar id" in text
+    assert "1. create src/profile.py with show() returning 1\n2. export show from src/__init__.py" in text
+    assert "## Done when\nrun_tests passes on tests/unit/test_profile.py" in text
+    assert "you cannot change them" in text and "once they pass, you are done" in text
+    assert "Write the tests first" not in text and GUIDE_HEADING in text
+    assert text.index("## Steps") < text.index("you cannot change them")
+
+
+def test_a_layer_plan_is_one_build_subtask_from_its_package() -> None:
+    plan = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder")
+    [build] = plan.subtasks
+    assert (build.id, build.role_hint, build.depends_on, build.pinned) == ("build", "coder", (), False)
+    assert build.brief == build_brief(STORY, LAYERS, 1, PACKAGE)
+    assert len(schedule(plan)) == 1
 
 
 def test_story_text_and_layer_goal_name_the_story_and_its_layer() -> None:
@@ -182,17 +182,11 @@ def test_the_brief_of_a_later_layer_lists_what_the_earlier_layers_added() -> Non
     )
     assert "- tests/unit/test_context.py: test_a_role_has_a_limit" in digest
     assert built_so_far("") == ""
-    plan = layer_plan(STORY, LAYERS, 1, build_role="coder", built=digest)
+    plan = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder", built=digest)
     brief = plan.subtasks[0].brief
-    assert digest in brief and brief.index(digest) < brief.index(LAYERS[1].brief)
-    assert "What the earlier layers" not in layer_plan(STORY, LAYERS, 0, build_role="coder").subtasks[0].brief
-
-
-def test_an_enabling_layer_is_one_build_subtask() -> None:
-    plan = layer_plan(STORY, LAYERS, 2, build_role="coder")
-    assert [s.id for s in plan.subtasks] == ["build"]
-    assert "Add tests for what you change" in plan.subtasks[0].brief
-    assert "Write the tests first" not in plan.subtasks[0].brief
+    assert digest in brief and brief.index(digest) < brief.index("## The tests you make pass")
+    first = layer_plan(STORY, LAYERS, 0, PACKAGE, build_role="coder").subtasks[0].brief
+    assert "What the earlier layers" not in first
 
 
 def test_pr_title_and_body() -> None:
@@ -521,9 +515,76 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
 
 
 def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_there_are_some() -> None:
-    plain = layer_plan(STORY, LAYERS, 1, build_role="coder").subtasks[0].brief
+    plain = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder").subtasks[0].brief
     assert "Read for you:" not in plain
-    full = layer_plan(STORY, LAYERS, 1, build_role="coder", guide="### src/profile.py\n```\nx = 1\n```")
+    guide = "### src/profile.py\n```\nx = 1\n```"
+    full = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder", guide=guide)
     brief = full.subtasks[0].brief
     assert GUIDE_HEADING + "\n### src/profile.py" in brief
-    assert brief.index("Read for you:") < brief.index("Show the avatar.")  # before the layer's own text
+    assert brief.index("Read for you:") < brief.index("## The tests you make pass")  # before the package
+
+
+def _lesson(title: str, **overrides: object) -> Lesson:
+    """A size-blocked layer's lesson with the AC1 fields; `ending` is one of the three size-block endings."""
+    base: dict[str, object] = {
+        "title": title,
+        "acceptance": ["AC1: the avatar is stored", "AC2: the profile shows it"],
+        "source_files": 12,
+        "test_files": 3,
+        "steps": 40,
+        "context_tokens": 111_000,
+        "ending": "out_of_steps",
+    }
+    base.update(overrides)
+    return Lesson(**base)  # type: ignore[arg-type]
+
+
+def test_the_layers_brief_carries_recent_lessons_newest_first() -> None:
+    """AC2: the architect's layer brief carries a 'Layers like these blocked:' section, one line per recent
+    lesson newest-first, each '<title>: <N> source files, <M> test files, <steps> steps, <ctx> tokens,
+    ended <ending>'."""
+    older = _lesson("Layer 01 storage", source_files=5, test_files=2, steps=30, context_tokens=88_000)
+    newer = _lesson(
+        "Layer 02 profile",
+        source_files=12,
+        test_files=3,
+        steps=40,
+        context_tokens=111_000,
+        ending="out_of_context",
+    )
+    text = layers_brief(STORY, 4, lessons=(older, newer))
+    assert "Layers like these blocked:" in text
+    assert (
+        "Layer 01 storage: 5 source files, 2 test files, 30 steps, 88000 tokens, ended out_of_steps" in text
+    )
+    assert (
+        "Layer 02 profile: 12 source files, 3 test files, 40 steps, 111000 tokens, ended out_of_context"
+        in text
+    )
+    # newest first: the newer lesson's line precedes the older one's
+    assert text.index("Layer 02 profile:") < text.index("Layer 01 storage:")
+
+
+def test_the_layers_brief_carries_the_sizing_rule_with_the_coders_budget() -> None:
+    """AC3: the architect's layer brief always carries the sizing rule, rendered with the coder's step and
+    context budget: one concept per layer, about 3 source files and 1 test file."""
+    text = layers_brief(STORY, 4)
+    assert "one concept per layer" in text
+    assert re.search(r"about 3 source files", text) is not None
+    assert re.search(r"1 test file", text) is not None
+    # the coder's step and context budget, rendered from the configured values
+    assert re.search(r"40 steps", text) is not None
+    assert re.search(r"65536 tokens", text) is not None
+
+
+def test_the_layers_brief_without_lessons_is_byte_for_byte_as_before_and_has_no_lesson_section() -> None:
+    """AC4: with no recorded lesson, the brief carries no 'Layers like these blocked:' section and is
+    byte-for-byte the same as before this change (the pre-change golden bytes); the with-lessons render
+    does contain it. The absence is checked in the same test that makes the presence happen."""
+    golden = json.loads((Path(__file__).parent / "data" / "prompt_texts.json").read_text(encoding="utf-8"))
+    pre_change = golden["fn:briefs.layers_brief:plain"]
+    no_lessons = layers_brief(STORY, 4)
+    assert "Layers like these blocked:" not in no_lessons
+    assert no_lessons == pre_change
+    with_lessons = layers_brief(STORY, 4, lessons=(_lesson("Layer 01 storage"),))
+    assert "Layers like these blocked:" in with_lessons

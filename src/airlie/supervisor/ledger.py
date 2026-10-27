@@ -19,7 +19,16 @@ from typing import Literal, cast
 
 from airlie.supervisor.answer import Answer
 
-Trigger = Literal["precode_retry", "static_retry", "gate_retry", "amend", "repeat_guard", "block"]
+Trigger = Literal[
+    "precode_retry",
+    "static_retry",
+    "gate_retry",
+    "amend",
+    "repeat_guard",
+    "block",
+    "package_retry",
+    "replan",
+]
 Outcome = Literal["helped", "not_helped", "blocked", "unknown"]
 Verdict = Literal["right", "wrong"]
 

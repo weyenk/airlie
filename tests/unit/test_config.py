@@ -912,6 +912,38 @@ def test_an_old_local_config_that_sets_the_mutation_timeout_says_where_mutation_
     assert "runs in the repository's CI, on each PR" in str(err.value)
 
 
+def test_story_tester_role_is_a_removed_key_with_the_reason(tmp_path: Path) -> None:
+    base = write(tmp_path, MINIMAL)
+    (tmp_path / "airlie.local.yaml").write_text("story: {tester_role: tester}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert str(err.value) == (
+        "config invalid:\n  story.tester_role: removed on 2026-10-24: the architect writes every layer's "
+        "tests as code in the layer's package (docs/superpowers/specs/2026-10-24-planning-line-design.md); "
+        "delete story.tester_role from your config"
+    )
+
+
+def test_story_lint_round_steps_is_a_removed_key_with_the_reason(tmp_path: Path) -> None:
+    base = write(tmp_path, MINIMAL)
+    (tmp_path / "airlie.local.yaml").write_text("story: {lint_round_steps: 4}\n")
+    with pytest.raises(ConfigError) as err:
+        load_config(base)
+    assert "story.lint_round_steps: removed on 2026-10-24" in str(err.value)
+    assert "the architect gets lint it cannot fix as a finding" in str(err.value)
+
+
+def test_the_package_budgets_have_defaults_and_floors(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert (cfg.story.package_attempts, cfg.story.layer_attempts, cfg.story.package_steps) == (2, 2, 12)
+    for key in ("package_attempts", "layer_attempts", "package_steps"):
+        local = tmp_path / "airlie.local.yaml"
+        local.write_text(f"story: {{{key}: 0}}\n")
+        with pytest.raises(ConfigError) as err:
+            load_config(tmp_path / "airlie.yaml")
+        assert f"story.{key}" in str(err.value) and "greater than or equal to 1" in str(err.value)
+
+
 def test_a_mistyped_key_never_chains_its_value_into_the_traceback(tmp_path: Path) -> None:
     base = write(tmp_path, MINIMAL)
     (tmp_path / "airlie.local.yaml").write_text("story: {jira: {api_key: t0ken-SYNTHETIC}}\n")
