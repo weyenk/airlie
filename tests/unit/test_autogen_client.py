@@ -148,3 +148,26 @@ async def test_a_reply_with_no_answer_in_it_is_asked_again_once(served: Any) -> 
     served.answers += [reply("to=user"), reply("to=user")]
     assert (await client(MUSE).create([UserMessage(content="go", source="u")], tools=[])).content == ""
     assert len(served) == 4  # once only
+
+
+async def test_the_tool_less_request_after_a_tool_round_says_no_tools_are_left(served: Any) -> None:
+    """Wiki run B (2026-10-27): after its tool rounds, AutoGen's reflection request offers no tools, and the
+    role answered "Let me read the files I haven't seen yet" in prose, with no verdict, in 6 of 8 meeting
+    turns. That request now ends by saying no tools are left, so the role answers instead."""
+    from autogen_core import FunctionCall as Call
+    from autogen_core.models import AssistantMessage, FunctionExecutionResult, FunctionExecutionResultMessage
+
+    history = [
+        UserMessage(content="go", source="u"),
+        AssistantMessage(content=[Call(id="1", name="read_file", arguments="{}")], source="a"),
+        FunctionExecutionResultMessage(
+            content=[FunctionExecutionResult(call_id="1", content="x", name="read_file")]
+        ),
+    ]
+    served.answers.append(reply("My verdict."))
+    assert (await client(QWEN).create(history, tools=[])).content == "My verdict."
+    sent, _ = served[0]
+    assert sent[-1].content == entry("last-turn-retry").body.strip()  # type: ignore[union-attr]
+    served.answers.append(reply("fine"))
+    await client(QWEN).create([UserMessage(content="go", source="u")], tools=[])
+    assert served[1][0][-1].content == "go"  # a tool-less request that follows no tool round is left as it is
