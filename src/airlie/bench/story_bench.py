@@ -362,6 +362,13 @@ def local_branches(clone: Path) -> set[str]:
     return {line.strip() for line in out.stdout.splitlines() if line.strip()}
 
 
+def prune_remote_branches(clone: Path) -> None:
+    """Drop the clone's records of remote branches that are gone: a branch a closed PR's run deleted on
+    GitHub stays as a stale remote-tracking ref, and gh stack's push, leased on it, is refused as "stale info"
+    when a later run publishes a branch of the same name (2026-10-26)."""
+    subprocess.run(["git", "-C", str(clone), "fetch", "-q", "--prune", "origin"], capture_output=True)
+
+
 def delete_new_branches(clone: Path, before: set[str]) -> list[str]:
     """Delete the clone's branches a run made (those not in `before`), built, blocked or published, so the
     next run can make them again: a written request's branch names are the same every run, and a branch a

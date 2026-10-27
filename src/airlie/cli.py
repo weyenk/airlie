@@ -800,6 +800,7 @@ def bench_story(
         grade,
         local_branches,
         measure,
+        prune_remote_branches,
         save,
         verdict,
     )
@@ -827,6 +828,7 @@ def bench_story(
         return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
 
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
     before = local_branches(clone)
     try:
         st = _run_stoppable(go())

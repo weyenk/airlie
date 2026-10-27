@@ -213,3 +213,25 @@ def test_the_branches_a_run_made_are_deleted_and_none_other(tmp_path: Path) -> N
     git("branch", "story-02-from-roman")
     assert delete_new_branches(tmp_path, before) == ["story-01-to-roman", "story-02-from-roman"]
     assert local_branches(tmp_path) == {"main", "theirs"}
+
+
+def test_a_record_of_a_remote_branch_deleted_on_the_remote_is_pruned(tmp_path: Path) -> None:
+    """2026-10-26: a stale origin/<branch> made gh stack's leased push fail as "stale info"."""
+    import subprocess
+
+    from airlie.bench.story_bench import prune_remote_branches
+
+    remote, clone = tmp_path / "remote", tmp_path / "clone"
+
+    def git(where: Path, *args: str) -> str:
+        done = subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True, text=True)
+        return done.stdout
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(remote)], check=True)
+    git(remote, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+    git(remote, "branch", "story-01")
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+    git(remote, "branch", "-D", "story-01")
+    assert "origin/story-01" in git(clone, "branch", "-r")
+    prune_remote_branches(clone)
+    assert "origin/story-01" not in git(clone, "branch", "-r")
