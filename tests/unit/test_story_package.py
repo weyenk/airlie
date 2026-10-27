@@ -280,3 +280,14 @@ def test_a_package_carries_a_vitest_file_and_covers_its_tests_by_their_vitest_na
     assert short.test_ids == (f"{WEB}::Wiki screen > lists the topics",)
     with pytest.raises(StoryError, match="names a test in no test file"):
         parse_package(reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::shows a page"]}), LAYER, STORY)
+
+
+def test_a_vitest_file_comes_in_a_ts_fence_and_the_contract_says_which_fence_is_whose() -> None:
+    """Wiki run B (2026-10-27): the architect wrote web/src/router.test.ts in a ```ts block, as it should, and
+    the parser took only ```python blocks: the draft was refused as "never closed"."""
+    from airlie.story.package import PACKAGE_CONTRACT, test_files_in
+
+    for lang in ("ts", "typescript", "tsx", "js", "javascript"):
+        text = f"### test file: {WEB}\n```{lang}\n{WEB_TEXT}```\n\n```json\n{{}}\n```\n"
+        assert test_files_in(text) == {WEB: WEB_TEXT}, lang
+    assert "```ts" in PACKAGE_CONTRACT and "```python" in PACKAGE_CONTRACT

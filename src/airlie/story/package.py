@@ -25,7 +25,7 @@ from airlie.story.model import NO_JSON, Layer, Story, StoryError, _encodable, _s
 from airlie.tools.scope import is_js_test, is_test_file
 from airlie.topology.studio_plan import extract_json_block
 
-PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <path from the repository root>` followed by one fenced ```python block holding that file's whole text (the file as it must be after this layer: new, or the existing file with your tests added). Then end your reply with one ```json block holding exactly one object:
+PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <path from the repository root>` followed by one fenced block (```python for a pytest module, ```ts for a Vitest *.test.ts) holding that file's whole text (the file as it must be after this layer: new, or the existing file with your tests added). Then end your reply with one ```json block holding exactly one object:
 {"type": "package",
  "files": [{"path": "src/pkg/mod.py", "action": "create" | "modify", "why": "one line"}],
  "interfaces": [{"file": "src/pkg/mod.py", "signature": "def name(arg: T) -> R", "behaviour": "one line: what it does, the exact message or value the tests assert"}],
@@ -39,7 +39,8 @@ BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 
 _HEADING = re.compile(r"^### test file: (?P<path>\S+)\s*$")
-_FENCE = re.compile(r"^(?P<fence>`{3,})(?:python|py)?\s*$")
+_FENCE = re.compile(r"^(?P<fence>`{3,})(?:python|py|ts|typescript|tsx|js|javascript|jsx)?\s*$")
+"""A test file's opening fence: ```python for a pytest module, ```ts (and kin) for a Vitest file, or bare."""
 _JSON_OPENER = re.compile(r"^`{3,}json[ \t]*$", re.IGNORECASE)
 _PARAMS = re.compile(r"\[.*\]$")
 _ACTIONS = ("create", "modify")
@@ -147,12 +148,14 @@ def test_files_in(text: str) -> dict[str, str]:
         end = headings[k + 1] if k + 1 < len(headings) else max(last_json, n + 1)
         opener = next((m for m in range(n + 1, end) if _FENCE.match(lines[m])), None)
         if opener is None:
-            raise StoryError(f"test file {path['path']}: no fenced ```python block after its heading")
+            raise StoryError(
+                f"test file {path['path']}: no fenced block (```python or ```ts) after its heading"
+            )
         fence = _FENCE.match(lines[opener])
         assert fence is not None
         closer = next((m for m in range(end - 1, opener, -1) if lines[m].rstrip() == fence["fence"]), None)
         if closer is None:
-            raise StoryError(f"test file {path['path']}: its ```python block is never closed")
+            raise StoryError(f"test file {path['path']}: its fenced block is never closed")
         out[path["path"]] = "\n".join(lines[opener + 1 : closer]) + "\n"
     return out
 
