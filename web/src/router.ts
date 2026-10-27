@@ -3,7 +3,7 @@ import type { Router, RouterHistory } from "vue-router";
 import { useFeedStore } from "./stores/feed";
 import { useSessionStore } from "./stores/session";
 
-export type Tab = "chat" | "workflows" | "board" | "metrics" | "admin";
+export type Tab = "chat" | "workflows" | "board" | "metrics" | "admin" | "wiki";
 
 declare module "vue-router" {
   interface RouteMeta {
@@ -31,6 +31,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/")):
       { path: "/board/:key?", name: "board", component: () => import("./screens/BoardScreen.vue"), meta: { tab: "board" } },
       { path: "/metrics", name: "metrics", component: () => import("./screens/MetricsScreen.vue"), meta: { tab: "metrics" } },
       { path: "/admin", name: "admin", component: () => import("./screens/AdminScreen.vue"), meta: { tab: "admin" } },
+      { path: "/wiki", name: "wiki", component: () => import("./screens/wiki/WikiListScreen.vue"), meta: { tab: "wiki" } },
       { path: "/signin", name: "signin", component: () => import("./screens/SignInScreen.vue"), meta: { public: true, bare: true } },
       { path: "/join/:token", name: "join", component: () => import("./screens/JoinScreen.vue"), meta: { public: true, bare: true } },
       { path: "/start", redirect: "/" },

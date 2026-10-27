@@ -29,13 +29,13 @@ async function open(path: string) {
   return { w, router };
 }
 
-test("the shell has the five tabs, marks the current one, and shows the avatar", async () => {
+test("the shell has the six tabs, marks the current one, and shows the avatar", async () => {
   const { w } = await open("/board");
   const tabs = w.find("[data-test=tabs]");
-  expect(tabs.findAll("a").map((a) => a.text())).toEqual(["Chat", "Workflows", "Board", "Metrics", "Admin"]);
+  expect(tabs.findAll("a").map((a) => a.text())).toEqual(["Chat", "Workflows", "Board", "Metrics", "Admin", "Wiki"]);
   expect(tabs.find("a[aria-current=page]").text()).toBe("Board");
   const bar = w.find("nav[data-test=tabbar]");
-  expect(bar.findAll("a").map((a) => a.text())).toEqual(["Chat", "Workflows", "Board", "Metrics", "Admin"]);
+  expect(bar.findAll("a").map((a) => a.text())).toEqual(["Chat", "Workflows", "Board", "Metrics", "Admin", "Wiki"]);
   expect(w.find("[data-test=avatar]").text()).toBe("NK");
   expect(w.text()).toContain("Board");
   w.unmount();
