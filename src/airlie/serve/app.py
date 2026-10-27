@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -257,7 +259,16 @@ def create_app(
                 raise HTTPException(400, f"image not found: {p}")
         return images
 
-    store = auth_store or AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
+    if auth_store is None:
+        state_dir = cfg.observability.state_dir.expanduser()
+        try:
+            store = AuthStore(state_dir / "auth.sqlite")
+        except sqlite3.OperationalError:
+            # the state dir is not writable (e.g. a read-only home): fall back to a
+            # throwaway store so the app still starts; auth state is simply not persisted.
+            store = AuthStore(Path(tempfile.mkdtemp(prefix="airlie-auth-")) / "auth.sqlite")
+    else:
+        store = auth_store
     resolver = Resolver(store, cfg.auth, api_key)
 
     @app.middleware("http")

@@ -14,6 +14,8 @@ export default defineConfig({
   server: {
     // `task web:dev` serves the app on Vite's port and sends the API to `task serve`.
     proxy: { "/v1": "http://127.0.0.1:8090" },
+    // The wiki glob reaches ../../docs/wiki, outside the web/ root.
+    fs: { allow: [new URL("..", import.meta.url).pathname] },
   },
   test: {
     environment: "jsdom",
