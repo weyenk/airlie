@@ -31,6 +31,10 @@ import yaml
 PHASE_MARKS = ("survey_done", "plan_done", "amigos_agreed", "amigos_owner_decided", "packages_drafting",
                "layer_built", "published", "story_done")  # fmt: skip
 """The story events that end a phase, in the order a story reaches them."""
+READ_TOOLS = frozenset({"read_file", "list_dir", "grep"})
+"""The tools that only look at the repository: the reads a dossier would save (the performance plan's P2)."""
+CONTEXT_BUCKETS = ((16_000, "<16k"), (48_000, "16-48k"), (None, ">48k"))
+"""Decode speed is read per prompt size: it falls as the context grows (the plan's P3)."""
 
 
 @dataclass(frozen=True)
@@ -42,8 +46,12 @@ class StoryCase:
     repo: str
     base: str
     oracle: Path
-    mutate: str
+    mutate: str | None
+    """The Python file the mutation score plants its bugs in; None for a case built in another language (the
+    score's mutants are Python's)."""
     budgets: dict[str, Any] = field(default_factory=dict)
+    gate_timeout_s: float = 300
+    """How long grading waits for the gate: airlie's own (pytest and the web build) takes minutes."""
 
     @property
     def name(self) -> str:
@@ -59,8 +67,9 @@ def load_case(path: Path) -> StoryCase:
         repo=str(data["repo"]),
         base=str(data["base"]),
         oracle=path.parent / str(data["oracle"]),
-        mutate=str(data["mutate"]),
+        mutate=str(data["mutate"]) if data.get("mutate") else None,
         budgets=dict(data.get("budgets") or {}),
+        gate_timeout_s=float(data.get("gate_timeout_s") or 300),
     )
 
 
@@ -92,6 +101,11 @@ class RoleCost:
     prefill_s: float = 0.0
     decode_s: float = 0.0
     wall_s: float = 0.0
+    reads: int = 0
+    """Calls of a READ_TOOLS tool."""
+    thinking_tokens: int = 0
+    """Of tokens_out, the share spent thinking: estimated from the step's reasoning and answer lengths (steps
+    recorded before 2026-10-27 have none, and count as answer)."""
 
     @property
     def decode_tps(self) -> float | None:
@@ -109,7 +123,14 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
     start), each phase's cost by role and its retries."""
     ev = _events(story_dir / "events.jsonl")
     if not ev:
-        return {"wall_min": 0.0, "phases": [], "roles": [], "retries": {}}
+        return {
+            "wall_min": 0.0,
+            "idle_min": 0.0,
+            "decode_tps_by_context": {},
+            "phases": [],
+            "roles": [],
+            "retries": {},
+        }
     t0 = ev[0]["ts"]
     stage_of: dict[str, str] = {}
     for e in ev:
@@ -122,10 +143,13 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
     def cost(phase: str, role: str) -> RoleCost:
         return costs.setdefault((phase, role), RoleCost(phase, role))
 
+    calls: list[tuple[float, float]] = []  # each model call's (start, end), for the idle time
+    buckets: dict[str, list[float]] = {name: [0.0, 0.0] for _, name in CONTEXT_BUCKETS}  # tokens, seconds
     for run, phase in stage_of.items():
         rows = _events(runs_dir / run / "events.jsonl")
         done = [r for r in rows if r["kind"] == "run_done"]
-        steps = [r for r in rows if r["kind"] == "step" and r.get("gen_ms") is not None]
+        # a `reply` is a model call that ran no tool (a package handed in, a verdict): a call all the same
+        steps = [r for r in rows if r["kind"] in ("step", "reply") and r.get("gen_ms") is not None]
         per_role = Counter(str(s.get("role")) for s in steps)
         wall = float(done[0]["wall_ms"]) / 1000 if done else 0.0
         for role, n in per_role.items():  # the run's wall time, shared by its roles by their steps
@@ -137,6 +161,13 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
             c.tokens_out += int(s.get("completion_tokens") or 0)
             c.prefill_s += float(s.get("prefill_ms") or 0) / 1000
             c.decode_s += float(s["gen_ms"]) / 1000
+            c.reads += s.get("tool") in READ_TOOLS
+            c.thinking_tokens += _thinking(s)
+            end = float(s["ts"]) - float(s.get("tool_ms") or 0) / 1000
+            calls.append((end - (float(s.get("prefill_ms") or 0) + float(s["gen_ms"])) / 1000, end))
+            bucket = buckets[_bucket(int(s.get("prompt_tokens") or 0))]
+            bucket[0] += int(s.get("completion_tokens") or 0)
+            bucket[1] += float(s["gen_ms"]) / 1000
     for t in ev:
         if t["kind"] == "amigos_turn" and t["role"] != "airlie":  # the meeting's turns are not studio steps
             c = cost("meeting", str(t["role"]))
@@ -144,6 +175,7 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
             c.tokens_in += int(t["prompt_tokens"])
             c.tokens_out += int(t["completion_tokens"])
             c.wall_s += float(t["wall_ms"]) / 1000
+            calls.append((float(t["ts"]) - float(t["wall_ms"]) / 1000, float(t["ts"])))
     kinds = Counter(e["kind"] for e in ev)
     by_source = Counter(e.get("source") == "package" for e in ev if e["kind"] == "amigos_objection")
     retries = {
@@ -169,12 +201,37 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
         for c in sorted(costs.values(), key=lambda c: -c.wall_s)
         if c.calls or c.wall_s
     ]
+    wall_s = ev[-1]["ts"] - t0
     return {
-        "wall_min": round((ev[-1]["ts"] - t0) / 60, 1),
+        "wall_min": round(wall_s / 60, 1),
+        "idle_min": round(max(wall_s - _covered(calls), 0.0) / 60, 1),
+        "decode_tps_by_context": {
+            name: round(tokens / secs, 1) if secs > 1 else None for name, (tokens, secs) in buckets.items()
+        },
         "phases": phases,
         "roles": roles,
         "retries": retries,
     }
+
+
+def _thinking(step: dict[str, Any]) -> int:
+    """A step's thinking tokens: its completion tokens in the share its reasoning has of what it wrote."""
+    thought, said = int(step.get("reasoning_chars") or 0), int(step.get("answer_chars") or 0)
+    return round(int(step.get("completion_tokens") or 0) * thought / (thought + said)) if thought else 0
+
+
+def _bucket(prompt_tokens: int) -> str:
+    return next(name for top, name in CONTEXT_BUCKETS if top is None or prompt_tokens < top)
+
+
+def _covered(spans: Sequence[tuple[float, float]]) -> float:
+    """The seconds at least one of `spans` covers: model calls made at once count once."""
+    total, reach = 0.0, float("-inf")
+    for start, end in sorted(spans):
+        if end > reach:
+            total += end - max(start, reach)
+            reach = end
+    return total
 
 
 # ---- how good it is, from its top branch ----
@@ -264,12 +321,18 @@ def oracle(script: Path, checkout: Path) -> dict[str, Any]:
 
 
 def count_tests(checkout: Path) -> dict[str, int]:
-    """The test functions and the assertions of the checkout's tests/ (test_*.py)."""
+    """The test functions and the assertions of the checkout's tests/ (test_*.py), and its Vitest tests
+    (`it(` or `test(` calls, and `expect(`s) in *.test.ts files outside node_modules."""
     tests = asserts = 0
     for path in (checkout / "tests").rglob("test_*.py"):
         text = path.read_text()
         tests += len(re.findall(r"^\s*(?:async\s+)?def test_", text, re.MULTILINE))
         asserts += len(re.findall(r"\bassert\w*\b", text))
+    for path in checkout.rglob("*.test.ts"):
+        if "node_modules" not in path.parts:
+            text = path.read_text()
+            tests += len(re.findall(r"(?<![\w.])(?:it|test)(?:\.\w+)*\s*\(", text))
+            asserts += len(re.findall(r"(?<![\w.])expect\s*\(", text))
     return {"tests": tests, "asserts": asserts}
 
 
@@ -279,13 +342,14 @@ def grade(case: StoryCase, clone: Path, sha: str, gate: Sequence[str]) -> dict[s
         checkout = Path(tmp) / case.name
         subprocess.run(["git", "clone", "-q", str(clone), str(checkout)], check=True)
         subprocess.run(["git", "-C", str(checkout), "checkout", "-q", sha], check=True)
-        target = checkout / case.mutate
+        target = checkout / case.mutate if case.mutate else None
+        mutable = target is not None and target.is_file()
         return {
-            "gate_passes": _passes(checkout, gate),
+            "gate_passes": _passes(checkout, gate, timeout_s=case.gate_timeout_s),
             "oracle": oracle(case.oracle, checkout),
-            "mutation": mutation_score(checkout, case.mutate, gate) if target.is_file() else None,
+            "mutation": mutation_score(checkout, case.mutate, gate) if case.mutate and mutable else None,
             **count_tests(checkout),
-            "source_lines": len(target.read_text().splitlines()) if target.is_file() else 0,
+            "source_lines": len(target.read_text().splitlines()) if target is not None and mutable else 0,
         }
 
 
@@ -320,9 +384,16 @@ def compare(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     lines += [
         f"{p['at']} at min: {delta(pa[p['at']], p['min'])}" for p in b["cost"]["phases"] if p["at"] in pa
     ]
-    for key in ("tokens_in", "tokens_out"):
-        before, after = (sum(r[key] for r in x["cost"]["roles"]) for x in (a, b))
-        lines.append(f"{key}: {delta(before, after)}")
+    if "idle_min" in a["cost"] and "idle_min" in b["cost"]:
+        lines.append(f"idle min: {delta(a['cost']['idle_min'], b['cost']['idle_min'])}")
+    for key in ("tokens_in", "tokens_out", "thinking_tokens", "calls", "reads"):
+        if all(key in r for x in (a, b) for r in x["cost"]["roles"]):
+            before, after = (sum(r[key] for r in x["cost"]["roles"]) for x in (a, b))
+            lines.append(f"{key}: {delta(before, after)}")
+    ca, cb = (x["cost"].get("decode_tps_by_context") or {} for x in (a, b))
+    lines += [
+        f"decode tok/s {k}: {ca[k]} -> {cb[k]}" for k in cb if ca.get(k) is not None and cb[k] is not None
+    ]
     for key, value in b["cost"]["retries"].items():
         before = a["cost"]["retries"].get(key, 0)
         if before != value:
