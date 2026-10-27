@@ -20,9 +20,11 @@ from airlie.story.board import NOTE_PREFIX, BoardError, Card, Column, NullBoard,
 from airlie.story.factory import (
     Place,
     StoryBusy,
+    body_one,
     card_for,
     check,
     describe_board,
+    describe_one,
     github_app,
     make_board,
     make_pipeline,
@@ -48,6 +50,8 @@ from tests.unit.test_story_board import FakeJira
 from tests.unit.test_story_board import board as jira_board_for
 from tests.unit.test_story_pipeline import (
     STORY_ROLES,
+    FailingGh,
+    ReadingGh,
     RecordedGh,
     agents_md,
     checkout_of,
@@ -1435,3 +1439,73 @@ async def test_an_owner_slash_name_never_means_a_directory_under_the_working_dir
     cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"repos_root": str(tmp_path / "git")}})
     with pytest.raises(RepositoryError, match="^no checkout of weyenk/airlie in "):
         factory.given_repo(cfg, "weyenk/airlie")
+
+
+async def test_story_describe_re_describes_every_published_pr_and_refuses_an_unpublished_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`describe_one` edits each PR of a published story with the title and body it would get now; a story
+    whose publish failed has no PR to edit (P6, 2026-10-25)."""
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(
+        tmp_path, roles=STORY_ROLES, extra={"story": {"trunk": git(repo, "branch", "--show-current")}}
+    )
+    gh = ReadingGh()
+    monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
+    monkeypatch.setattr(
+        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+    )
+    board = NullBoard(stories_dir(cfg))
+    card = text_card("Let users upload an avatar")
+    st = await run_one(cfg, board=board, card=card, repo=repo, test_cmd="./check.sh")
+    assert st.stage == "review"
+    gh.bodies.clear()
+    (st.path / "pr-01.md").write_text("stale", encoding="utf-8")
+    assert await describe_one(cfg, board=board, card=card, repo=repo) == [11, 12]
+    assert list(gh.bodies) == [p["branch"] for p in st.prs]
+    first = gh.bodies[st.prs[0]["branch"]]
+    assert "### The contract" in first and "stale" not in first
+    assert (st.path / "pr-01.md").read_text(encoding="utf-8") == first
+    with story_lock(stories_dir(cfg)) as held:
+        assert held
+
+    failing = FailingGh("the network fell over")
+    monkeypatch.setattr(
+        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=failing, app=app)
+    )
+    two = tmp_path / "second"  # a repository of its own: the first story's branches are taken in the first
+    two.mkdir()
+    repo2 = repo_with_marker_tests(two)
+    cfg2 = cfg_for(two, roles=STORY_ROLES, extra={"story": {"trunk": git(repo2, "branch", "--show-current")}})
+    board2 = NullBoard(stories_dir(cfg2))
+    other = text_card("Let users upload an avatar")
+    st = await run_one(cfg2, board=board2, card=other, repo=repo2, test_cmd="./check.sh")
+    assert st.blocked is not None and not st.prs and st.built
+    with pytest.raises(StorySetupError, match="published no PRs"):
+        await describe_one(cfg2, board=board2, card=other, repo=repo2)
+    assert not [c for c in failing.calls if c[:3] == ["gh", "pr", "edit"]]
+    with pytest.raises(StorySetupError, match="has not started"):
+        await describe_one(cfg2, board=board2, card=text_card("never run"), repo=repo2)
+
+
+async def test_body_one_reads_a_built_layers_body_without_the_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(
+        tmp_path, roles=STORY_ROLES, extra={"story": {"trunk": git(repo, "branch", "--show-current")}}
+    )
+    gh = RecordedGh()
+    monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
+    monkeypatch.setattr(
+        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+    )
+    board = NullBoard(stories_dir(cfg))
+    card = text_card("Let users upload an avatar")
+    st = await run_one(cfg, board=board, card=card, repo=repo, test_cmd="./check.sh")
+    calls = len(gh.calls)
+    body = await body_one(cfg, board=board, card=card, nn="02", repo=repo)
+    assert body == (st.path / "pr-02.md").read_text(encoding="utf-8")
+    assert len(gh.calls) == calls
+    with pytest.raises(StorySetupError, match="has not built layer 03"):
+        await body_one(cfg, board=board, card=card, nn="03", repo=repo)

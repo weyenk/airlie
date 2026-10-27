@@ -96,6 +96,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  story:pr-body:
+    desc: "Print the PR body a built layer would get now: the chain, the layer's package, its tests as the contract, the checks, the cost and the stack; no network, nothing published (task story:pr-body -- AIR-9 2)"
+    cmds:
+      - '{{.RUN}} airlie story pr-body {{.CLI_ARGS}}'
+
+  story:describe:
+    desc: "Rebuild and edit (gh pr edit) the title and body of every PR a published story has, so an older stack carries the provenance too; changes PRs on GitHub, so only by hand (task story:describe -- AIR-9)"
+    cmds:
+      - '{{.RUN}} airlie story describe {{.CLI_ARGS}}'
+
   line:why:
     desc: "Why a story blocked: its class by rules, Muse's reading, what happens next and the evidence (task line:why -- AIR-9 [--n 2] [--paths])"
     cmds:
