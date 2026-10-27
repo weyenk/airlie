@@ -36,6 +36,7 @@ Kind = Literal[
     "existing_test_fails",
     "assertion_free_test",
     "unparseable_test",
+    "test_type_error",
     "no_new_test",
     "suite_did_not_run",
     "lint_fails",

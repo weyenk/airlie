@@ -45,6 +45,7 @@ CHECK_KINDS = frozenset(
         "import_unresolved",
         "assertion_free_test",
         "unparseable_test",
+        "test_type_error",
         "existing_test_changed",
         "suite_did_not_run",
         "test_checks_retry",

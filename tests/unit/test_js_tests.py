@@ -132,3 +132,24 @@ def test_the_changed_vitest_tests_of_a_layer_are_its_new_and_edited_ones(tmp_pat
         ("added", False, False),
     ]
     assert [f.test for f in unparseable_js_tests(root, base)] == ["web/src/b.test.ts"]
+
+
+def test_only_type_errors_no_layer_code_can_fix_in_the_package_tests_are_findings() -> None:
+    """vue-tsc's plain output (wiki run B, 2026-10-27): an unused import and a name never imported are the
+    test's own; a module the layer will add is the expected red, and another file's error is not the
+    package's."""
+    from airlie.story.js_tests import type_findings
+
+    out = (
+        "src/zz.test.ts(2,1): error TS6133: 'useSessionStore' is declared but its value is never read.\n"
+        "src/zz.test.ts(3,27): error TS2307: Cannot find module '@/wiki' or its type declarations.\n"
+        "src/zz.test.ts(7,12): error TS2304: Cannot find name 'createAppRouter'.\n"
+        "src/zz.test.ts(9,3): error TS1005: ')' expected.\n"
+        "src/other.ts(1,1): error TS2304: Cannot find name 'x'.\n"
+        "Found 5 errors.\n"
+    )
+    found = type_findings(out, "web", {"web/src/zz.test.ts"})
+    assert [(f.kind, f.test) for f in found] == [("test_type_error", "web/src/zz.test.ts")] * 3
+    assert [f.why.split(":")[0] for f in found] == ["line 2", "line 7", "line 9"]
+    assert found[1].why.startswith("line 7: TS2304 Cannot find name 'createAppRouter': the gate's typecheck")
+    assert type_findings(out, "web", {"web/src/other.test.ts"}) == []

@@ -173,12 +173,13 @@ def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Findi
     """A `proof_mismatch` for each agreed test the package does not cover and for each test it covers that the
     proof does not name (three-amigos D9, D12): the package is the transcription of the agreed proof. A
     parametrized test is its function's id; an agreed id without its class (as the meeting writes it) is the
-    covered method it names."""
+    covered method it names, and one without its describe the covered Vitest test ("Wiki > lists topics")."""
     covered = {_PARAMS.sub("", t) for t in package.test_ids}
 
     def as_covered(agreed_id: str) -> str:
         where, _, name = agreed_id.partition("::")
-        named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(f"::{name}")]
+        ends = (f"::{name}", f" > {name}")
+        named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(ends)]
         return named[0] if agreed_id not in covered and len(named) == 1 else agreed_id
 
     agreed = {as_covered(t) for t in proof_ids}

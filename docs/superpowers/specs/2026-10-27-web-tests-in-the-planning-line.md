@@ -31,6 +31,13 @@ rather than prove such layers by the gate alone.
   - the file is new or changed by the package
   - **red before the code:** the package's tests are run with Vitest on the base (`npx vitest run <file> -t
     <title>`) and must fail, and the level's existing tests must still pass
+  - **they type-check (added after run B, 2026-10-27):** Vitest runs a test without type-checking it, so a
+    locked test that was missing an import failed only at the gate. When the level has a `typecheck` script, it
+    runs first. An error in the package's test files that no code can fix is a `test_type_error`: a name never
+    imported, an unused import or local, or a syntax error. A module the layer will add stays the expected red.
+- **D3a. An agreed name without its describe.** The meeting may agree `file::title` for a test the package
+  writes inside `describe("X")`: that is the package's `file::X > title`, as an agreed id without its class is
+  for pytest.
 - **D5. Running Vitest in the scratch worktree.** The red check needs `node_modules`. `npm ci` in every scratch tree
   costs about a minute. When the repository's own `<level>/node_modules` exists and its `package-lock.json` matches
   the base's, it is linked in instead. Node is the one first on PATH, and the doctor says when it is older than the

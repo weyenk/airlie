@@ -256,3 +256,18 @@ def test_an_agreed_id_without_its_class_is_the_package_test_it_names() -> None:
         "tests/test_other.py::test_mul",  # agreed and not covered, then covered and not agreed
         "tests/test_mul.py::MulTest::test_mul",
     ]
+
+
+def test_an_agreed_vitest_id_without_its_describe_is_the_package_test_it_names() -> None:
+    """Wiki run B (2026-10-27): the proof agreed `TopBar.test.ts::the tab bar has a Wiki link`, and the
+    package's file names it `TopBar > the tab bar has a Wiki link`, as Vitest does."""
+    from airlie.story.package_checks import proof_mismatches
+
+    full = "web/src/TopBar.test.ts::TopBar > the tab bar has a Wiki link"
+    p = package(covers={"AC1": (full,)})
+    assert proof_mismatches(p, {"web/src/TopBar.test.ts::the tab bar has a Wiki link"}) == []
+    assert proof_mismatches(p, {full}) == []
+    assert [f.test for f in proof_mismatches(p, {"web/src/TopBar.test.ts::a Wiki link"})] == [
+        "web/src/TopBar.test.ts::a Wiki link",  # only a whole title after the describe is the same test
+        full,
+    ]

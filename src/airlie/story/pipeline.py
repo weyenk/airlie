@@ -133,6 +133,7 @@ _SHORT = {
     "existing_test_fails": "fails with the new tests in place",
     "assertion_free_test": "has no assertion",
     "unparseable_test": "does not parse",
+    "test_type_error": "does not type-check",
     "no_new_test": "(no new test)",
     "suite_did_not_run": "did not run the tests",
     "lint_fails": "fails the gate's lint",

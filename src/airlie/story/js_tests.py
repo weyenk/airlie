@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import subprocess
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -258,6 +260,31 @@ def vitest_findings(outcomes: dict[str, str], changed: list[ChangedTest]) -> lis
     return found
 
 
+TYPE_ERRORS_IN_TESTS = frozenset({2304, 2552, 6133, 6192, 6196, 6198})
+"""TypeScript errors a test file holds whatever code the layer adds: a name it never imports or declares
+(2304, 2552), and an import or local it never uses (6133, 6192, 6196, 6198: the gate's noUnusedLocals).
+Syntax errors (TS1xxx) are such errors too. A module or export that is not there yet (2307, 2305) is the
+red a new test is expected to be, so it is not one. Wiki run B (2026-10-27): Vitest runs a test without
+type-checking it, so a locked test missing an import passed the red check and failed the gate's typecheck."""
+TYPE_ERROR = "the gate's typecheck refuses this test file, and no code the layer adds can fix it"
+_TSC_LINE = re.compile(r"^(?P<path>[^(]+)\((?P<line>\d+),\d+\): error TS(?P<code>\d+): (?P<text>.*)$")
+
+
+def type_findings(output: str, level: str, paths: Collection[str]) -> list[Finding]:
+    """A `test_type_error` for each error tsc's plain `output` (run in `level`/) reports in one of `paths`
+    whose code no layer code can fix (`TYPE_ERRORS_IN_TESTS`, or a syntax error)."""
+    found: list[Finding] = []
+    for line in output.splitlines():
+        m = _TSC_LINE.match(line.strip())
+        if m is None:
+            continue
+        path, code = f"{level}/{m['path']}", int(m["code"])
+        if path in paths and (code in TYPE_ERRORS_IN_TESTS or code < 2000):
+            why = f"line {m['line']}: TS{code} {m['text'].rstrip('.')}: {TYPE_ERROR}"
+            found.append(Finding("test_type_error", path, why, ""))
+    return found
+
+
 def _lock(directory: Path) -> str | None:
     lock = directory / "package-lock.json"
     return hashlib.sha256(lock.read_bytes()).hexdigest() if lock.is_file() else None
@@ -294,12 +321,37 @@ def provide_node_modules(level_dir: Path, cache: Path, *, timeout_s: float) -> s
     return None
 
 
+def _has_typecheck(level_dir: Path) -> bool:
+    try:
+        scripts = json.loads((level_dir / "package.json").read_text()).get("scripts") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(scripts, dict) and "typecheck" in scripts
+
+
+async def _typecheck(level_dir: Path, paths: Collection[str], *, timeout_s: float) -> list[Finding]:
+    """`type_findings` for the level's own `npm run typecheck` (plain output); none when it has no such
+    script. A typecheck that does not finish is `suite_did_not_run`."""
+    if not _has_typecheck(level_dir):
+        return []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "npm", "run", "--silent", "typecheck", "--", "--pretty", "false",
+            cwd=level_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )  # fmt: skip
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except (OSError, TimeoutError) as e:
+        return [Finding("suite_did_not_run", f"{level_dir.name}/ (typecheck)", f"did not finish: {e}", "")]
+    return type_findings(out.decode(errors="replace"), level_dir.name, paths)
+
+
 async def vitest_red(
     worktree: Path, changed: list[ChangedTest], cache: Path, *, timeout_s: float
 ) -> list[Finding]:
     """The red check for the Vitest files of `changed`: each level's suite run once with Vitest's JSON
     reporter in the scratch checkout (the package's tests placed, no code yet); `vitest_findings` on what it
-    reports. A suite that does not run is `suite_did_not_run`, with why."""
+    reports. A suite that does not run is `suite_did_not_run`, with why. A level whose package.json has a
+    `typecheck` script is type-checked first (`type_findings`)."""
     found: list[Finding] = []
     for level in sorted({PurePosixPath(t.path).parts[0] for t in changed}):
         level_dir = worktree / level
@@ -307,6 +359,8 @@ async def vitest_red(
         if why is not None:
             found.append(Finding("suite_did_not_run", f"{level}/ (vitest)", why, ""))
             continue
+        paths = {t.path for t in changed if t.path.startswith(f"{level}/")}
+        found += await _typecheck(level_dir, paths, timeout_s=timeout_s)
         report = level_dir / ".airlie-vitest.json"
         try:
             proc = await asyncio.create_subprocess_exec(
