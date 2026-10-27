@@ -30,10 +30,12 @@ topology:
           # back with the cache when two lanes really overlap), stored KV at 8 bits, and the prefix cache given
           # an explicit size, the doctor's budget minus weights and live KV: 104 GB wired limit - 59.6 GB
           # projected (41.7 GB weights + the coder's 65536-token sequence + 4 asks at 8192 + 12 GB reserve)
-          # = 44.4 GB, 44 GB kept (`task doctor` counts it). They take effect at the next
-          # `task restart -- --topology studio`, which this change never runs.
+          # = 44.4 GB, 44 GB kept (`task doctor` counts it); 24 GB since 2026-10-27 (Noah): the wiki run filled
+          # the 44 GB with long conversations and the machine swapped once the gate's pytest, Node and the
+          # person's own apps ran beside it (a 30k-token conversation is ~2 GB, so 24 GB keeps ~12). They take
+          # effect at the next `task restart -- --topology studio`, which this change never runs.
           kv_cache_quantization: true
-          extra_args: ["--cache-memory-mb", "45056"]
+          extra_args: ["--cache-memory-mb", "24576"]
       models:
         generalist:
           preload: true
