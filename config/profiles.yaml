@@ -25,13 +25,15 @@ topology:
           max_kv_size: 131072
           # The flags the 2026-10-23 performance review named (plan P5b task 7, 2026-10-25), so the
           # planning lane's short asks riding beside the build's decode do not stall it on their prefill:
-          # chunked prefill (2048 tokens a scheduler step), stored KV at 8 bits, and the prefix cache given
+          # no chunked prefill (2026-10-27: on vllm-mlx 0.5.0 it bypasses airlie's hybrid prefix cache, cached=0 on
+          # 660 of 671 prefills, and two asks over airlie's 15-20k-token contexts decoded at ~1 tok/s; bring it
+          # back with the cache when two lanes really overlap), stored KV at 8 bits, and the prefix cache given
           # an explicit size, the doctor's budget minus weights and live KV: 104 GB wired limit - 59.6 GB
           # projected (41.7 GB weights + the coder's 65536-token sequence + 4 asks at 8192 + 12 GB reserve)
           # = 44.4 GB, 44 GB kept (`task doctor` counts it). They take effect at the next
           # `task restart -- --topology studio`, which this change never runs.
           kv_cache_quantization: true
-          extra_args: ["--chunked-prefill-tokens", "2048", "--cache-memory-mb", "45056"]
+          extra_args: ["--cache-memory-mb", "45056"]
       models:
         generalist:
           preload: true
@@ -58,7 +60,7 @@ topology:
           max_kv_size: 65536
           # the prefix cache is what the doctor leaves of the wired limit: 104 GB - 90.9 GB (57.5 GB of
           # resident weights, the build lane's sequence, 4 asks, 12 GB reserve) = 13.1 GB, 13 GB kept
-          extra_args: ["--chunked-prefill-tokens", "2048", "--cache-memory-mb", "13312"]
+          extra_args: ["--cache-memory-mb", "13312"]
       roles:
         coder:
           model: qwen25_32b
@@ -81,7 +83,7 @@ topology:
         main:
           # 104 GB - 94.2 GB (71 GB of resident weights, the build lane's sequence at the coder's 64k, 4
           # asks, 12 GB reserve) = 9.8 GB of prefix cache, 9 GB kept
-          extra_args: ["--chunked-prefill-tokens", "2048", "--cache-memory-mb", "9216"]
+          extra_args: ["--cache-memory-mb", "9216"]
       roles:
         coder:
           model: coder8

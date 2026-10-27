@@ -573,12 +573,11 @@ def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_nami
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     ok = engine_matches_profile(cfg, RunningEngine(serve_argv("studio", tmp_path)), "studio")
     assert ok.status == "ok" and "studio" in ok.detail
-    # the engine the person left running from another profile: a smaller KV, no chunked prefill, no cache
+    # the engine the person left running from another profile: a smaller KV, no cache size, full-width KV
     wrong = engine_matches_profile(cfg, RunningEngine(serve_argv("single", tmp_path)), "studio")
     assert wrong.status == "fail"
     named = (
         "--max-kv-size 65536 (profile: 131072)",
-        "--chunked-prefill-tokens (unset) (profile: 2048)",
         "--cache-memory-mb (unset) (profile: 45056)",
         "--kv-cache-quantization off (profile: on)",
     )
