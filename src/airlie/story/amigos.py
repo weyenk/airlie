@@ -54,7 +54,7 @@ from airlie.story.model import (
 )
 from airlie.teams.autogen_team import build_function_tools, build_model_client
 from airlie.tools import ToolRegistry
-from airlie.tools.scope import is_test_module
+from airlie.tools.scope import is_js_test, is_test_module
 from airlie.topology.studio_plan import extract_json_block
 
 Part = Literal["requirements", "changes", "proof"]
@@ -67,7 +67,10 @@ PROOF_CONTRACT = """Post the proof plan as one ```json block holding exactly one
  "name": "test_what_it_proves", "level": "unit", "guideline": "unit",
  "asserts": "the exact value, message or state users observe", "needs": "fixtures, fakes, state"}]}
 Each test names the level of the repository's test tree it lives at (a directory under tests/) and a file under
-it; guideline is a file of the guideline library, or omitted when the repository or the level has none. Every
+it. A Vitest level (the repository's JS tests, such as web) takes a file under that directory, such as
+web/src/screens/Wiki.test.ts, and the test's it(...) title as its name, "Describe title > it title" when it sits
+in a describe: a Vue layer is proven there. guideline is a file of the guideline library, or omitted when the
+repository or the level has none. Every
 criterion needs at least one test and every layer at least one. criterion is null for a test that proves a
 behaviour of a layer with no criterion. A criterion no test can prove because the test gate itself proves it
 (the whole suite passes, the new tests are found) is one entry {"criterion": "AC9", "layer": "<slug>",
@@ -136,16 +139,23 @@ def _field(d: Mapping[str, Any], key: str, where: str, *, required: bool = True)
 
 def _test_path(path: str, level: str, levels: Mapping[str, int], where: str) -> str:
     """`path` as a repository path under the test tree's `level`, or a StoryError. `tests/<level>/`, or
-    `tests/` when the one level is `tests` itself; never absolute and never climbing out."""
+    `tests/` when the one level is `tests` itself; a Vitest file is under its level's own directory (`web/`,
+    the web-tests design, 2026-10-27); never absolute and never climbing out."""
     clean = path.removeprefix("./")
     parts = PurePosixPath(clean).parts
     if not clean or clean.startswith("/") or ".." in parts:
         raise StoryError(f"{where}: file {path!r} must be a path inside the repository, from its root")
+    if is_js_test(clean):
+        if not clean.startswith(f"{level}/"):
+            raise StoryError(f"{where}: file {path!r} is not under {level}/ (its level is '{level}')")
+        return clean
     prefix = "tests/" if level == "tests" else f"tests/{level}/"
     if not clean.startswith(prefix):
         raise StoryError(f"{where}: file {path!r} is not under {prefix} (its level is '{level}')")
     if not is_test_module(clean):
-        raise StoryError(f"{where}: file {path!r} is not a pytest test module (test_*.py or *_test.py)")
+        raise StoryError(
+            f"{where}: file {path!r} is not a test file (a pytest test_*.py, or a Vitest *.test.ts)"
+        )
     return clean
 
 

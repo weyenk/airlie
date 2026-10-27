@@ -118,7 +118,7 @@ def _twice() -> dict[str, Any]:
         (_only(1, 2), "AC1"),
         (_only(0, 2), "layer 'profile'"),
         (_without("asserts"), "asserts"),
-        (_with(file="tests/unit/helpers.py"), "test module"),
+        (_with(file="tests/unit/helpers.py"), "not a test file"),
     ],
 )
 def test_a_flawed_proof_is_refused_with_a_reason(obj: dict[str, Any] | None, why: str) -> None:
@@ -293,3 +293,27 @@ def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_lev
     obj["tests"].append({**copy.deepcopy(GOOD["tests"][2]), "file": "tests/test_docs.py"})
     proof = parse_proof(obj, STORY, LAYERS, flat, GUIDELINES)
     assert {t.level for t in proof} == {"tests"} and proof[0].file == "tests/test_store.py"
+
+
+def test_a_vitest_test_is_proposed_at_its_web_level_under_that_directory() -> None:
+    """Wiki benchmark run B (2026-10-27): the tester proposed web/src/screens/Wiki.test.ts and the proof
+    refused it as no pytest module under tests/; a Vue layer could have no test."""
+    levels = {**LEVELS, "web": 68}
+    web = {
+        "criterion": "AC2",
+        "layer": "profile",
+        "file": "web/src/screens/Profile.test.ts",
+        "name": "Profile screen > shows the avatar",
+        "level": "web",
+        "asserts": "the avatar img has the stored url",
+        "needs": "a mounted screen with a stored avatar",
+    }
+    obj = copy.deepcopy(GOOD)
+    obj["tests"][1] = web
+    proof = parse_proof(obj, STORY, LAYERS, levels, GUIDELINES)
+    assert proof[1].id == "web/src/screens/Profile.test.ts::Profile screen > shows the avatar"
+    assert proof[1].level == "web"
+    stray = copy.deepcopy(obj)
+    stray["tests"][1]["file"] = "src/Profile.test.ts"
+    with pytest.raises(StoryError, match="is not under web/"):
+        parse_proof(stray, STORY, LAYERS, levels, GUIDELINES)

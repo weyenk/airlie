@@ -19,9 +19,10 @@ from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
+from airlie.story.js_tests import JsParseError, js_tests
 from airlie.story.layer_checks import test_functions
 from airlie.story.model import NO_JSON, Layer, Story, StoryError, _encodable, _strs, _text
-from airlie.tools.scope import is_test_module
+from airlie.tools.scope import is_js_test, is_test_file
 from airlie.topology.studio_plan import extract_json_block
 
 PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <path from the repository root>` followed by one fenced ```python block holding that file's whole text (the file as it must be after this layer: new, or the existing file with your tests added). Then end your reply with one ```json block holding exactly one object:
@@ -120,7 +121,7 @@ class Package:
     @property
     def source_files(self) -> tuple[str, ...]:
         """The paths of `files`, test modules excluded."""
-        return tuple(f.path for f in self.files if not is_test_module(f.path))
+        return tuple(f.path for f in self.files if not is_test_file(f.path))
 
 
 @dataclass(frozen=True)
@@ -166,20 +167,28 @@ def _normal(path: str, what: str) -> str:
     return p
 
 
-def _test_named(text: str, name: str) -> str | bool | None:
-    """The full name of the test `name` ("test_x" or "TestY::test_x") that `text` defines: `name` itself, or
-    the one method of a test class it is the bare name of (the story meeting names tests without their
-    class); False when there is no such test, or more than one; None when the text does not parse (the
-    readiness check reports that, with the line)."""
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return None
-    names = [n for n, _ in test_functions(tree)]
+def _test_named(path: str, text: str, name: str) -> str | bool | None:
+    """The full name of the test `name` that the file `path` (its `text`) defines: `name` itself, or the one
+    test whose name ends with it, after a class (pytest, "TestY::test_x") or a describe (Vitest,
+    "Wiki screen > lists the topics"; the story meeting may name either form); False when there is no such
+    test, or more than one; None when the text does not parse (the readiness check reports that)."""
+    if is_js_test(path):
+        try:
+            names = [t.name for t in js_tests(text)]
+        except JsParseError:
+            return None
+        sep = " > "
+    else:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return None
+        names = [n for n, _ in test_functions(tree)]
+        sep = "::"
     if name in names:
         return name
-    methods = [n for n in names if n.endswith(f"::{name}")]
-    return methods[0] if len(methods) == 1 else False
+    ending = [n for n in names if n.endswith(f"{sep}{name}")]
+    return ending[0] if len(ending) == 1 else False
 
 
 def _proof_change(obj: dict[str, Any]) -> ProofChange:
@@ -216,8 +225,8 @@ def parse_package(
     tests: dict[str, str] = {}
     for raw_path, body in raw_tests.items():
         path = _normal(raw_path, "a test file path")
-        if not is_test_module(path):
-            raise StoryError(f"{path} is not a pytest test module (test_*.py or *_test.py)")
+        if not is_test_file(path):
+            raise StoryError(f"{path} is not a test file (a pytest test_*.py, or a Vitest *.test.ts)")
         tests[path] = body
 
     files: list[PackageFile] = []
@@ -270,8 +279,8 @@ def parse_package(
         for tid in ids:
             where, _, name = tid.partition("::")
             text_of = tests.get(where)
-            bare = _PARAMS.sub("", name)
-            found = None if text_of is None or not name else _test_named(text_of, bare)
+            bare = name if is_js_test(where) else _PARAMS.sub("", name)  # a title may hold brackets
+            found = None if text_of is None or not name else _test_named(where, text_of, bare)
             if text_of is None or not name or found is False:
                 raise StoryError(f"covers {cid}: {tid} names a test in no test file of this reply")
             # stored as the test's full id, its parameters kept

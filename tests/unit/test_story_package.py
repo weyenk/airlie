@@ -133,7 +133,7 @@ def flawed(flaw: str) -> str:
         ("no_json", "no JSON object"),
         ("wrong_type", '"type": "package"'),
         ("no_test_file", "no test file"),
-        ("not_a_test_module", "not a pytest test module"),
+        ("not_a_test_module", "not a test file"),
         ("path_escapes", "inside the repository"),
         ("empty_steps", "steps"),
         ("covers_unknown_criterion", "AC9"),
@@ -254,3 +254,29 @@ def test_a_criterion_the_agreed_proof_leaves_to_the_gate_needs_no_covers() -> No
     assert p.covers == {}
     with pytest.raises(StoryError, match="no test covers it"):
         parse_package(reply(covers={}), LAYER, STORY)
+
+
+WEB = "web/src/screens/Wiki.test.ts"
+WEB_TEXT = """import { describe, it, expect } from "vitest";
+
+describe("Wiki screen", () => {
+  it("lists the topics", () => {
+    expect(1).toBe(1);
+  });
+});
+"""
+
+
+def test_a_package_carries_a_vitest_file_and_covers_its_tests_by_their_vitest_names() -> None:
+    """The web-tests design (2026-10-27): a Vue layer's tests are Vitest tests; the agreed id may be the full
+    name or its last part when that names one test."""
+    p = parse_package(
+        reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::Wiki screen > lists the topics"]}), LAYER, STORY
+    )
+    assert list(p.tests) == [WEB] and p.test_ids == (f"{WEB}::Wiki screen > lists the topics",)
+    short = parse_package(
+        reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::lists the topics"]}), LAYER, STORY
+    )
+    assert short.test_ids == (f"{WEB}::Wiki screen > lists the topics",)
+    with pytest.raises(StoryError, match="names a test in no test file"):
+        parse_package(reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::shows a page"]}), LAYER, STORY)

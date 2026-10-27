@@ -1666,7 +1666,10 @@ class StoryPipeline:
         StoryBlocked. A gate that does not run pytest gets no red check, and an event says so."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
-            self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement()
+            self.commands,
+            timeout_s=self.timeout_s,
+            confinement=self.cfg.tools.confinement(),
+            node_cache=self.stories_dir.parent / "node_modules",  # a Vitest red check's, once per lock file
         )
         if not checker.runs_red:
             st.emit(
