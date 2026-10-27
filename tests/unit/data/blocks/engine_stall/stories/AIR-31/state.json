@@ -1,0 +1,295 @@
+{
+ "card": {
+  "key": "AIR-31",
+  "id": "AIR-31",
+  "ref": "AIR-31",
+  "title": "The team loop enforces a role's max_context: a nudge at 75%, then stop or trim",
+  "description": "A role's max_context (RoleSpec, airlie.yaml: the coder's is 65536) is read by the doctor and by task serve, and by nothing in the team loop: NativeTeam stops a run only at ctx.token_budget (200,000: the largest prompt plus everything generated) or max_steps. AIR-7's layer 01 run on 2026-10-18 (20261018-155119-0cfb) reached 80,670 prompt tokens at step 26, well past the role's limit, because five reads of one capped file added ~25k tokens; the engine accepted it (the studio profile's max_kv_size is 131072), every later step was a long-context decode (15-20 s for a 90-token reply), and nothing said the role was over its context.\n\nScope: the team loop knows the role's max_context and acts before the prompt passes it.\n- A `context` event when a step's prompt_tokens first pass 75% of max_context (team_id, role, step, prompt_tokens, max_context), so the job screen and the metrics page can show it, and the role is told once: \"Your context is at N of M tokens. Stop reading: write from what you have.\" (the same shape as the write-now nudges in native_team.py).\n- At max_context itself, one of two things, chosen in config (RoleSpec.on_context_full: \"stop\" | \"trim\", default \"stop\"): stop the run with stop_reason \"context_full\" and a final text that says so (the layer then blocks with a reason a person can act on, instead of grinding to max_steps); or trim: drop the oldest tool observations (not the assistant's own messages or the goal) by replacing their content with \"[observation dropped: N chars from read_file src/x.py]\" until the prompt fits, and emit `context_trimmed` (team_id, role, step, dropped, chars). Trimming changes the prompt's prefix, so the next turn is a cold prefill: the event says so and AIR-27's cached_tokens shows the cost.\n- The decision uses the prompt_tokens the engine reported for the last request (GenResult.prompt_tokens), not an estimate.\n- Not in scope: summarising dropped observations with a model; changing the output cap (read_file's range, from the read_file PR, is the fix for a file that does not fit).\n\nDone when\n- A FakeEngine run whose reported prompt_tokens cross 75% of max_context gets the one nudge and the `context` event; one that reaches max_context stops with \"context_full\" (default) or, with on_context_full: trim, continues with the oldest observations replaced and `context_trimmed` emitted; a run under the limit is unchanged.\n- The job screen shows the context line for a running subtask (with AIR-29's live line if it is in, else as an event in the list).\n- task check passes.\n",
+  "url": null,
+  "comments": [],
+  "labels": [
+   "repo:weyenk/airlie"
+  ]
+ },
+ "repo": "~/git/airlie",
+ "stage": "review",
+ "story": {
+  "title": "Enforce a role's max_context in the team loop",
+  "summary": "A specialist role (e.g. the coder, max_context 65536) can be pushed past its own context limit by a few large reads, after which every later step is a slow long-context decode and nothing tells the role or the operator it is over. The team loop should know the role's max_context, nudge the role once at 75%, and at the limit either stop with a reason a person can act on or trim the oldest observations, so a run is bounded by the role's context rather than the engine's.",
+  "acceptance": [
+   {
+    "id": "AC1",
+    "given": "a FakeEngine run whose role has max_context 65536 (on_context_full left at its default) and whose reported GenResult.prompt_tokens first cross 75% of max_context (49152) on some step",
+    "when": "the loop processes that step and then makes the next generation request",
+    "then": "exactly one user message is appended to the conversation before the next request, with the text 'Your context is at {prompt_tokens} of {max_context} tokens. Stop reading: write from what you have.' (both numbers the engine's reported values), and ctx.emit is called once with kind 'context' and fields team_id, role, step, prompt_tokens, max_context; a second crossing in the same run emits no further nudge and no further 'context' event"
+   },
+   {
+    "id": "AC2",
+    "given": "a FakeEngine run whose role has on_context_full 'stop' (the default) and whose reported prompt_tokens reach or exceed max_context",
+    "when": "the loop detects the crossing",
+    "then": "the run stops with stop_reason 'context_full' and final_text 'stopped: context full at {max_context} tokens', and no further generation request is made for that role"
+   },
+   {
+    "id": "AC3",
+    "given": "a FakeEngine run whose role has on_context_full 'trim' and whose reported prompt_tokens reach or exceed max_context, with at least one tool observation in the conversation",
+    "when": "the loop trims the oldest tool observations (role 'tool' messages only, never the goal, the assistant's own messages, or the system prompt) by replacing each dropped observation's content with '[observation dropped: {chars} chars from {tool_name}]' until the prompt fits, where {chars} is that observation's original content length and {tool_name} its tool name",
+    "then": "the run continues (does not stop), the next generation request is sent with the trimmed messages, and ctx.emit is called with kind 'context_trimmed' and fields team_id, role, step, dropped (count of observations replaced) and chars (total characters removed)"
+   },
+   {
+    "id": "AC4",
+    "given": "a FakeEngine run whose reported prompt_tokens never reach 75% of the role's max_context",
+    "when": "the run completes as it does today",
+    "then": "no 'context' or 'context_trimmed' event is emitted, no context nudge message is appended, the stop_reason is whatever it was before this change, and the conversation messages are byte-for-byte identical to a run without this feature"
+   },
+   {
+    "id": "AC5",
+    "given": "a role whose on_context_full is set to a value other than 'stop' or 'trim' (e.g. 'pause')",
+    "when": "the configuration is loaded",
+    "then": "loading fails with an error that names the key path and quotes the allowed values, e.g. 'roles.<name>.on_context_full must be one of: stop, trim'"
+   },
+   {
+    "id": "AC6",
+    "given": "the job screen viewing a running studio subtask whose role has emitted a 'context' event",
+    "when": "the subtask's detail panel is drawn",
+    "then": "it shows a context line reading 'Context: {prompt_tokens} / {max_context} tokens' (the values from the event) in the subtask's facts, and the 'context' event also appears in the Events timeline with its fields"
+   }
+  ],
+  "out_of_scope": [
+   "Summarising dropped observations with a model (trim replaces them with a fixed placeholder only)",
+   "Changing read_file's output cap / range (the fix for a single file that does not fit; that is the read_file PR)",
+   "Any change to the engine's max_kv_size or the team-level token_budget stop",
+   "The metrics page rendering (only the job screen is in scope per the request; the 'context'/'context_trimmed' events carry the fields a metrics page would need)"
+  ],
+  "assumptions": [
+   "The 75% nudge and the limit decision both key off the engine-reported GenResult.prompt_tokens for the last request, not an estimate, per the request",
+   "on_context_full is a new field on RoleSpec (schema.py) defaulting to 'stop', so existing airlie.yaml files are unchanged",
+   "'oldest tool observations' means the earliest role='tool' messages in conversation order; the goal, system, and assistant messages are never trimmed",
+   "The nudge text and the 'context'/'context_trimmed' event field names are exactly as specified in the request, so the job screen and any metrics page can rely on them",
+   "The job screen's existing digest()/drawDetail() is extended to read the 'context' event; AIR-29's live line is not assumed to be present, so the line falls back to the event in the list"
+  ]
+ },
+ "survey": "Survey notes for the engineer who will plan the layers.\n\n## 1. Files and symbols the change touches or must follow\n\n**The team loop \u2014 `src/airlie/teams/native_team.py`**\n- `NativeTeam.run` (line 258) is the only place the loop enforces context today: it stops at `ctx.token_budget` (line 527\u2013532) and `ctx.max_steps` (line 574\u2013579). It never reads `ctx.role.max_context`. The new enforcement goes here.\n- The decision must use `res.prompt_tokens` (line 350\u2013351: `prompt_tokens += res.prompt_tokens; max_prompt = max(max_prompt, res.prompt_tokens)`). `res` is a `GenResult` from `self.engine.generate(req)` (line 344). `max_prompt` is the high-water mark of the *last* request's reported prompt tokens \u2014 that is the value to compare against `ctx.role.max_context`.\n- The existing nudge pattern to copy: `WRITE_NOW` (line 104), `WRITE_ONLY` (line 110), `ACT_FIRST` (line 159), `STILL_RED` (line 168) \u2014 each is a module-level constant with a docstring, appended as `Message(role=\"user\", content=...)` and guarded by a one-shot `*_warned` bool. The new \"stop reading\" nudge at 75% should follow this exact shape (a constant + a `context_warned` bool + `ctx.emit(\"context\", ...)`).\n- `ctx.emit` is the event sink (see `TeamContext.emit`, protocol.py line 92). Existing emits in this file: `malformed_call` (line 241), `text_before_action` (line 384), `read_refused` (line 449), `write_deadline` (line 537). New events `context` and `context_trimmed` go through the same `ctx.emit`.\n- `StopReason` is a `Literal` in `src/airlie/teams/protocol.py` line 18\u201329. Adding `\"context_full\"` means adding it there.\n- Trimming operates on the `messages: list[Message]` list (line 263). Tool observations are `Message(role=\"tool\", ...)` (line 461\u2013463); the goal is the first user message; the system prompt is `Message(role=\"system\", ...)` (line 275). Trim = replace the `content` of the oldest `role==\"tool\"` messages with `\"[observation dropped: N chars from read_file src/x.py]\"` (the tool name is in `Message.name`, line 462). Do not touch `role==\"assistant\"` or the goal `role==\"user\"` message.\n\n**The config \u2014 `src/airlie/config/schema.py`**\n- `RoleSpec` (line 135) has `max_context: int = 65536` (line 140). The new field `on_context_full: Literal[\"stop\", \"trim\"] = \"stop\"` goes here, next to the other per-role behaviour flags (`nudge_stuck` line 155, `green_before_done` line 161, `write_schedule` line 166).\n- `RoleSpec` is a `Strict` pydantic model \u2014 a new field with a default is backward-compatible, but the config tests (below) enumerate fields.\n\n**The engine result \u2014 `src/airlie/engine/types.py`**\n- `GenResult.prompt_tokens` is the reported value the decision uses. (I did not read this file; the loop already consumes `res.prompt_tokens` at native_team.py:350, so the field exists. Confirm the exact type before writing the comparison.)\n\n**The job screen \u2014 `src/airlie/serve/web/screens/job.js`**\n- The \"Done when\" requires the job screen to show the context line for a running subtask. This screen renders events; the new `context` / `context_trimmed` events must be rendered there (and the metrics page per the request). I did not read this file \u2014 the planner must, to see how existing events (e.g. `write_deadline`, `read_refused`) are surfaced and whether there is a \"live line\" (AIR-29) to attach to.\n\n**Where max_context is read today (must not be broken)**\n- `src/airlie/doctor.py` and `src/airlie/serve/` (task serve) read `max_context` per the request. The team loop is the third reader. The change is additive; those readers are untouched.\n\n## 2. Where the tests live and how they are named\n\n- **Team loop:** `tests/unit/test_native_team.py` (59 KB \u2014 the big one). It uses a `FakeEngine` (from `src/airlie/engine/fake.py`, tested in `tests/unit/test_fake_engine.py`). The \"Done when\" criteria (FakeEngine crossing 75% \u2192 one nudge + `context` event; reaching max_context \u2192 `context_full` stop or trim + `context_trimmed`; under limit \u2192 unchanged) all belong here. Tests are named `test_*` and drive `NativeTeam.run(ctx, observer)` with a `TeamContext` whose `role` is a `RoleSpec` and whose `emit` captures events.\n- **Config schema:** `tests/unit/test_config.py` (40 KB) and `tests/unit/test_config_messages.py`. A new `RoleSpec` field needs a test that it parses from YAML and that the default is `\"stop\"`.\n- **StopReason / protocol:** covered indirectly by `test_native_team.py`; if `StopReason` is asserted as a set anywhere, that assertion must include `\"context_full\"`.\n- **Job screen:** `tests/unit/test_serve_web.py` (3 KB, small) and `tests/unit/test_serve.py` / `test_serve_jobs.py`. The web-screen test is the one to extend for the context line.\n\n## 3. Conventions and registries a new name must be added to\n\n- **`StopReason` Literal** (`protocol.py:18`): add `\"context_full\"`. This is a closed `Literal`, so any consumer that matches on stop reasons (the studio pipeline, the job screen's status rendering, `docs`/metrics) will need to know it. Grep for `\"token_budget\"` and `\"max_steps\"` to find every place stop reasons are branched on \u2014 those are the registries to extend.\n- **Event kinds:** there is no central registry of event `kind` strings \u2014 `EventSink.emit(kind, **fields)` (events.py:17) is free-form, and `ctx.emit` is `Callable[..., None]`. So `context` and `context_trimmed` need no registration, *but* the job screen and metrics page must be told to render them (they almost certainly have a kind\u2192renderer map or a list of known kinds). That list is the de-facto registry.\n- **`RoleSpec` field** (`schema.py:135`): `on_context_full` is a new `Strict`-model field. `Strict` means unknown fields are rejected, so adding a defaulted field is safe for existing YAML, but `airlie.yaml` (lines 99\u2013146) and `airlie.local.example.yaml` may want it set explicitly, and `test_config.py` likely asserts the full field set or a round-trip.\n- **`airlie.yaml`**: the coder's `max_context: 65536` (line 99) is the value the 75%/100% thresholds key off. No YAML change is strictly required (default `\"stop\"`), but if the team wants trim for the coder, that is a YAML edit.\n\n## 4. Things that could make a test pass for the wrong reason before the change\n\n- **The 75% nudge test can pass on the base by accident** if the FakeEngine's reported `prompt_tokens` happen to also trip the existing `token_budget` check (line 527) or `max_steps` (line 574) at the same step. The test must assert the *specific* new behaviour: exactly one `context` event with `prompt_tokens`/`max_context` fields, and that the run *continues* past 75% (does not stop). A test that only asserts \"the run stopped\" would be satisfied by the pre-existing `token_budget`/`max_steps` stops. The brief must require asserting the `context` event's presence and the run's continuation, not just a stop.\n- **The `context_full` stop test** must set `token_budget` high enough (or the role's `max_context` low enough) that `max_context` is hit *before* `token_budget` and `max_steps`, so the stop is genuinely `context_full` and not the pre-existing `token_budget`/`max_steps`. Otherwise it passes for the wrong reason.\n- **The trim test** must assert the `context_trimmed` event *and* that the next request's prompt actually shrank (the FakeEngine should report a lower `prompt_tokens` on the following turn, or the test inspects the trimmed `messages`). A test that only asserts the event fired, without confirming the oldest tool observation's content was replaced, would not prove trimming works.\n- **The \"under the limit is unchanged\" test** is the guard against over-eager enforcement: it must assert no `context`/`context_trimmed` event and no `context_full` stop when `prompt_tokens` stays below 75%. This one is safe on the base (nothing emits these events yet), so it is a good first layer.\n- **`max_prompt` vs per-step `prompt_tokens`:** the loop tracks `max_prompt` (line 351) as a running max. The 75% nudge should fire when a step's `prompt_tokens` *first* passes 75% \u2014 using `res.prompt_tokens` for that step, and a one-shot flag so it fires once. If the planner instead compares the cumulative `prompt_tokens` (line 350, which *sums* across steps) against `max_context`, the test would pass for the wrong reason (the sum crosses 75% far earlier than any single prompt does). The request explicitly says \"the prompt_tokens the engine reported for the last request\" \u2014 that is the per-step `res.prompt_tokens`, not the running sum.\n\n## Key open questions for the planner\n\n1. **Trim mechanics:** the request says drop oldest tool observations until the prompt fits. The loop only knows `res.prompt_tokens` (a count), not a per-message token breakdown, so \"until the prompt fits\" cannot be computed exactly from tokens alone. The planner must decide the trim trigger (e.g. \"at max_context, drop oldest N observations\" or \"drop until estimated prompt < max_context\" using a char\u2192token heuristic) and whether the trim is re-measured on the next `res.prompt_tokens`. This is the one genuine design decision the request leaves open.\n2. **Job screen \"live line\" (AIR-29):** the request says show the context line \"with AIR-29's live line if it is in, else as an event in the list.\" The planner must check whether AIR-29's live line exists in `job.js` to know which branch to take.\n3. **`GenResult.prompt_tokens` type/semantics** in `engine/types.py` \u2014 confirm it is the per-request prompt token count (it is consumed as such at native_team.py:350, but the planner should read the dataclass to be sure of the field name and that it is the *input* tokens, not total).",
+ "layers": [
+  {
+   "slug": "data-model",
+   "title": "RoleSpec.on_context_full and StopReason 'context_full'",
+   "scope": "src/airlie/config/schema.py, src/airlie/teams/protocol.py, tests/unit/test_config.py",
+   "brief": "Add `on_context_full` to RoleSpec (schema.py, next to nudge_stuck/green_before_done) defaulting to 'stop', allowed values 'stop' and 'trim', with a validator that rejects any other value with an error naming the key path and quoting the allowed values, e.g. 'roles.<name>.on_context_full must be one of: stop, trim' (put the check where the role name is known \u2014 the config-level roles dict \u2014 and read the rest of schema.py to place it; the test must see the substring 'on_context_full must be one of: stop, trim'). Add 'context_full' to the StopReason Literal in protocol.py. Tests in test_config.py: a role YAML with on_context_full: pause fails to load with that message; a role without it parses with default 'stop'; existing airlie.yaml still loads. Fails before (field absent / pydantic default message), passes after. Do not touch the loop or the job screen here.",
+   "acceptance": [
+    "AC5"
+   ]
+  },
+  {
+   "slug": "context-nudge-stop",
+   "title": "Team loop: 75% nudge and stop at the role's max_context",
+   "scope": "src/airlie/teams/native_team.py, tests/unit/test_native_team.py",
+   "brief": "In NativeTeam.run, after a step is fully processed (tool observation appended), compare the last request's reported res.prompt_tokens against ctx.role.max_context. At 75% or more (>= 0.75 * max_context), once per run (a context_warned bool, following the WRITE_NOW/STILL_RED idiom: module-level constant + one-shot bool + ctx.emit), append exactly one user message 'Your context is at {prompt_tokens} of {max_context} tokens. Stop reading: write from what you have.' (both numbers the engine's reported values) and emit kind 'context' with fields team_id, role, step, prompt_tokens, max_context; a second crossing emits nothing more. At max_context or more with on_context_full 'stop' (the default), break with stop_reason 'context_full' and final_text 'stopped: context full at {max_context} tokens' \u2014 no further generation request. Tests in test_native_team.py using FakeEngine (its prompt_tokens is the request's word count, so use a small max_context or a large observation to cross the thresholds): (AC1) first crossing 75% appends exactly one such user message before the next request, one 'context' emit with those five fields, no second nudge on a later crossing; (AC2) reaching max_context stops with 'context_full' and that final_text, and the engine sees no further request for the role; (AC4) a run that never reaches 75% emits no 'context'/'context_trimmed' events, appends no nudge, keeps its old stop_reason, and the messages of every request are byte-for-byte identical to a run without the feature. Prove AC4's no-op by asserting zero new user messages and zero new events, not just the stop_reason.",
+   "acceptance": [
+    "AC1",
+    "AC2",
+    "AC4"
+   ]
+  },
+  {
+   "slug": "context-trim",
+   "title": "Team loop: trim oldest tool observations at the limit",
+   "scope": "src/airlie/teams/native_team.py, tests/unit/test_native_team.py",
+   "brief": "Extend the same check site: when the last request's reported prompt_tokens reaches or exceeds ctx.role.max_context and ctx.role.on_context_full is 'trim', replace the content of the oldest role=='tool' messages (conversation order; never the goal, system, or assistant messages) with '[observation dropped: {chars} chars from {tool_name}]' ({chars} = that observation's original content length, {tool_name} = Message.name), dropping oldest-first until the conversation's estimated prompt (sum of message content chars / 4) fits under max_context; then continue the run (do not stop) and emit kind 'context_trimmed' with fields team_id, role, step, dropped (count replaced) and chars (total characters removed). Test in test_native_team.py: a role with on_context_full 'trim' and a large tool observation that pushes the reported prompt_tokens past max_context \u2014 assert the run continues, the next request's messages contain the placeholder text with the original char count and tool name, the goal/system/assistant messages are untouched, and the 'context_trimmed' emit carries dropped and chars. Fails before (no trim branch: the run stops with 'context_full' instead), passes after.",
+   "acceptance": [
+    "AC3"
+   ]
+  },
+  {
+   "slug": "job-screen-context",
+   "title": "Job screen: context line in the subtask facts",
+   "scope": "src/airlie/serve/web/screens/job.js, tests/unit/test_serve_web.py, and the studio pipeline file that wires TeamContext.emit to the job event log (locate it by grepping for emit= in src/airlie/serve)",
+   "brief": "In job.js digest(), add a case for kind 'context' that records the latest {prompt_tokens, max_context} on the subtask node (keyed by e.team_id, which is the subtask id); in drawDetail()'s facts dl, render a row 'Context: {prompt_tokens} / {max_context} tokens' from it (fall back to the event in the list per the story's assumption \u2014 no AIR-29 live line). The Events timeline needs no kind-specific change: summarize() already prints every non-skipped field, so a 'context' event appears with its fields \u2014 say so in the test. First verify the studio forwards arbitrary event kinds from ctx.emit into the job's event log; if kinds are filtered anywhere, add 'context' and 'context_trimmed' there. Test in test_serve_web.py: feed digest() a 'context' event for a running subtask and assert the node carries the values and the drawn detail contains the exact line; feed the same event list to the timeline path and assert the event renders with its fields. Fails before (no 'context' case in digest: the facts row is absent), passes after.",
+   "acceptance": [
+    "AC6"
+   ]
+  },
+  {
+   "slug": "harden-tests",
+   "title": "Harden the tests",
+   "scope": "tests only: tests/unit/test_config_on_context_full.py",
+   "brief": "Add these test cases. Each one kills mutants of code this story already wrote:\nIn tests/unit/test_config_on_context_full.py:\n- test_on_context_full_validation_truth_table: given a minimal valid AirlieConfig (import MINIMAL from tests/unit/test_config.py) with roles['coder'].on_context_full set to each of 'stop', 'trim', and 'pause'; call cfg.validate_references() for each; expect for 'stop' and 'trim' validate_references() returns no problem mentioning on_context_full (both are accepted); for 'pause' it returns exactly one problem equal to 'roles.coder.on_context_full must be one of: stop, trim'. This three-way truth table fails on any mutant that rejects a valid value (a 'stop'->'mu' or 'trim'->'mu' literal mutation) or that accepts an invalid value (a not-in->in flip), and passes on the code as it is. (kills airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_95, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_96, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_100, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_102)",
+   "acceptance": []
+  }
+ ],
+ "built": {
+  "01": {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-01-data-model",
+   "sha": "58ee761a5a48bfa57a7dfe4fe8ad04bc48e8f24a",
+   "run_id": "20261019-071946-19ab",
+   "subtasks": [
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "02": {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-02-context-nudge-stop",
+   "sha": "11f50146034f16a668e1612551ca94797ddb016c",
+   "run_id": "20261019-095839-7727",
+   "subtasks": [
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "unparsable",
+     "fix_rounds": 1,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "03": {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-03-context-trim",
+   "sha": "13f70ded975bb949e089c2fe7773e87d14592434",
+   "run_id": "20261019-105917-8118",
+   "subtasks": [
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "request_changes",
+     "fix_rounds": 1,
+     "findings": [
+      "blocking src/airlie/teams/native_team.py:520: Trim loop drops all tool messages instead of stopping when prompt fits, because max_prompt is never recomputed after replacing a message",
+      "blocking src/airlie/teams/native_team.py:507: 75% context nudge is not implemented; the layer is required to nudge once at 75% before trimming/stopping",
+      "minor src/airlie/teams/native_team.py:540: Trimming is skipped when ctx.emit is None, so context is not trimmed in runs without an emitter"
+     ]
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "04": {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-04-job-screen-context",
+   "sha": "42f040c779ab59f7413b0ed6db4e270d612ef547",
+   "run_id": "20261019-112010-c564",
+   "subtasks": [
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "unparsable",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "05": {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-05-harden-tests",
+   "sha": "bb750e89a698f72797047a0167ce725b0370b638",
+   "run_id": "20261019-121147-c513",
+   "subtasks": [
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  }
+ },
+ "attempt": null,
+ "base": {
+  "ref": "origin/main",
+  "sha": "0c2a6f5039c7e01d4500c3c6db3911c43ff0b60c"
+ },
+ "gate": {
+  "commands": [
+   "uv sync --frozen",
+   "uv run ruff check .",
+   "uv run ruff format --check .",
+   "uv run mypy",
+   "uv run pytest -q -n auto --maxprocesses 8"
+  ],
+  "agents_md": "cbb887f48914259b99d26cfdd61adc817790646d"
+ },
+ "mutation_gate": {
+  "commands": [
+   "uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}"
+  ],
+  "agents_md": "cbb887f48914259b99d26cfdd61adc817790646d"
+ },
+ "mutation": {
+  "status": "survived",
+  "head": "42f040c779ab59f7413b0ed6db4e270d612ef547",
+  "commands": "uv run python scripts/mutate_changed.py --base {base} --gate-only --max-children 6 --report {report}",
+  "summary": "### Mutation testing (changed)\nbase `0c2a6f5039c7e01d4500c3c6db3911c43ff0b60c`\nchanged but not enrolled (not gated):\n- src/airlie/teams/native_team.py\n- src/airlie/teams/protocol.py\n1 source file(s):\n- src/airlie/config/schema.py\n2 changed test file(s); --gate-only leaves out what they run elsewhere\n\n\n4 mutant(s) of enrolled modules not caught:\n- airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_100: survived\n- airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_102: survived\n- airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_95: survived\n- airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_96: survived"
+ },
+ "mutation_review": {
+  "harden": [
+   {
+    "test_file": "tests/unit/test_config_on_context_full.py",
+    "cases": [
+     {
+      "name": "test_on_context_full_validation_truth_table",
+      "given": "a minimal valid AirlieConfig (import MINIMAL from tests/unit/test_config.py) with roles['coder'].on_context_full set to each of 'stop', 'trim', and 'pause'; call cfg.validate_references() for each",
+      "expect": "for 'stop' and 'trim' validate_references() returns no problem mentioning on_context_full (both are accepted); for 'pause' it returns exactly one problem equal to 'roles.coder.on_context_full must be one of: stop, trim'. This three-way truth table fails on any mutant that rejects a valid value (a 'stop'->'mu' or 'trim'->'mu' literal mutation) or that accepts an invalid value (a not-in->in flip), and passes on the code as it is.",
+      "kills": "airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_95, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_96, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_100, airlie.config.schema.x\u01c1AirlieConfig\u01c1validate_references__mutmut_102"
+     }
+    ]
+   }
+  ],
+  "ignored": [],
+  "layer": "05"
+ },
+ "prs": [
+  {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-01-data-model",
+   "number": 93,
+   "url": "https://github.com/weyenk/airlie/pull/93"
+  },
+  {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-02-context-nudge-stop",
+   "number": 94,
+   "url": "https://github.com/weyenk/airlie/pull/94"
+  },
+  {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-03-context-trim",
+   "number": 95,
+   "url": "https://github.com/weyenk/airlie/pull/95"
+  },
+  {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-04-job-screen-context",
+   "number": 96,
+   "url": "https://github.com/weyenk/airlie/pull/96"
+  },
+  {
+   "branch": "AIR-31-enforce-a-role-s-max-context-i-05-harden-tests",
+   "number": 97,
+   "url": "https://github.com/weyenk/airlie/pull/97"
+  }
+ ],
+ "runs": [
+  "20261019-063614-e8de",
+  "20261019-063615-63b9",
+  "20261019-064245-e4c5",
+  "20261019-071946-19ab",
+  "20261019-072532-f028",
+  "20261019-074342-507d",
+  "20261019-082415-0922",
+  "20261019-084734-c75e",
+  "20261019-094809-ebe2",
+  "20261019-095839-7727",
+  "20261019-103442-c6c4",
+  "20261019-105917-8118",
+  "20261019-112010-c564",
+  "20261019-114840-db63",
+  "20261019-121147-c513"
+ ],
+ "blocked": null,
+ "github_repo": "weyenk/airlie"
+}

@@ -841,7 +841,10 @@ async def test_an_issue_whose_repository_has_no_test_gate_stops_out_of_intake_be
     assert board.column == {"AIR-7": "blocked" if blocked else "building", "AIR-8": "intake"}
     stop = board.notes["AIR-7"][-1]
     on = f"o/poison has no test gate on origin/{trunk} ("
-    assert stop.startswith(f"{NOTE_PREFIX}stopped after 'intake': {on}")
+    assert (
+        stop.startswith(f"{NOTE_PREFIX}content: blocked (intake).")
+        and f"stopped after 'intake': {on}" in stop
+    )
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in stop
     assert await tick(cfg) == "AIR-8 Avatar upload: review"
 

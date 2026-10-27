@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -141,3 +142,40 @@ def test_recent_and_for_layer_are_newest_first(tmp_path: Path) -> None:
     assert [r.id for r in led.recent(limit=2)] == ids[:0:-1]
     assert [r.id for r in led.for_layer("AIR-1", "01")] == ids[::-1]
     assert led.for_layer("AIR-1", "02") == []
+
+
+OLD_SCHEMA = """
+CREATE TABLE interventions (
+    id INTEGER PRIMARY KEY, at REAL NOT NULL, story TEXT NOT NULL, layer TEXT NOT NULL,
+    studio_run TEXT NOT NULL, subtask TEXT NOT NULL, role TEXT NOT NULL, trigger TEXT NOT NULL,
+    kinds_json TEXT NOT NULL, category TEXT, owner TEXT, diagnosis TEXT, evidence_json TEXT,
+    message TEXT, would_route_to TEXT, fix_if_attempt TEXT, fallback TEXT,
+    model TEXT, seconds REAL, tokens INTEGER);
+CREATE TABLE outcomes (id INTEGER PRIMARY KEY, intervention_id INTEGER NOT NULL, at REAL NOT NULL,
+    outcome TEXT NOT NULL, detail TEXT NOT NULL);
+CREATE TABLE verdicts (id INTEGER PRIMARY KEY, intervention_id INTEGER NOT NULL, at REAL NOT NULL,
+    verdict TEXT NOT NULL, note TEXT NOT NULL);
+INSERT INTO interventions (at, story, layer, studio_run, subtask, role, trigger, kinds_json, fallback)
+VALUES (1.0, 'AIR-1', '01', 'r', 'build', 'coder', 'block', '[]', 'cap');
+"""
+
+
+def test_the_ledger_adds_the_class_columns_to_an_old_file_and_old_rows_read_null(tmp_path: Path) -> None:
+    path = tmp_path / "supervisor.sqlite"
+    old = sqlite3.connect(path)
+    old.executescript(OLD_SCHEMA)
+    old.commit()
+    old.close()
+    led = Ledger(path)
+    [before] = led.recent()
+    assert (before.class_, before.signature, before.class_agrees) == (None, None, None)
+    answer = Answer(
+        "wrong_acceptance_test", "tester", "d", (), None, None, "f", class_agrees=False, class_reason="r"
+    )
+    new = led.record(
+        replace(intervention(trigger="block"), answer=answer, class_="content", signature="content:x:y")
+    )
+    row = next(r for r in led.recent() if r.id == new)
+    assert (row.class_, row.signature, row.class_agrees) == ("content", "content:x:y", False)
+    Ledger(path)  # opened again: the columns are there already, and nothing is added twice
+    assert len(led.recent()) == 2

@@ -1,0 +1,15 @@
+{"ts": 1792170716.623262, "run_id": "20261016-131156-01b4", "kind": "run_start", "goal": "refine: Web search and fetch tools for agents (SearXNG behind a seam)", "k": 1, "repo": "~/git/airlie", "orchestrator": "studio", "given_plan": true}
+{"ts": 1792170716.839005, "run_id": "20261016-131156-01b4", "kind": "repo_map", "chars": 6016, "cached": false}
+{"ts": 1792170716.839071, "run_id": "20261016-131156-01b4", "kind": "plan", "assumptions": [], "subtasks": ["refine"], "roles": ["product"], "pinned": true}
+{"ts": 1792170716.839206, "run_id": "20261016-131156-01b4", "kind": "route", "subtask": "refine", "chosen": "product", "decision": "pinned", "confidence": 1.0, "probabilities": {"product": 1.0}, "hint": "product", "criteria": ["architect", "coder", "design", "docs", "product", "qa", "research", "security", "ux"]}
+{"ts": 1792170716.8393202, "run_id": "20261016-131156-01b4", "kind": "subtask_start", "subtask": "refine", "role": "product", "skill": null, "writes": false}
+{"ts": 1792170724.072785, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 1, "tool": "read_file", "ok": true, "prompt_tokens": 3138, "completion_tokens": 103, "gen_ms": 7232.5, "tool_ms": 0.7}
+{"ts": 1792170734.8390641, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 2, "tool": "read_file", "ok": true, "prompt_tokens": 9174, "completion_tokens": 27, "gen_ms": 10764.7, "tool_ms": 0.5}
+{"ts": 1792170752.6194072, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 3, "tool": "read_file", "ok": true, "prompt_tokens": 15323, "completion_tokens": 29, "gen_ms": 17779.0, "tool_ms": 0.5}
+{"ts": 1792170771.013397, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 4, "tool": "list_dir", "ok": true, "prompt_tokens": 15928, "completion_tokens": 28, "gen_ms": 18382.4, "tool_ms": 10.9}
+{"ts": 1792170791.1738932, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 5, "tool": "read_file", "ok": true, "prompt_tokens": 17271, "completion_tokens": 32, "gen_ms": 20159.5, "tool_ms": 0.5}
+{"ts": 1792170812.5276082, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 6, "tool": "read_file", "ok": true, "prompt_tokens": 18290, "completion_tokens": 32, "gen_ms": 21352.4, "tool_ms": 0.5}
+{"ts": 1792170834.2105742, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 7, "tool": "read_file", "ok": true, "prompt_tokens": 18608, "completion_tokens": 32, "gen_ms": 21681.8, "tool_ms": 0.4}
+{"ts": 1792170856.5272892, "run_id": "20261016-131156-01b4", "kind": "step", "team_id": "refine", "step": 8, "tool": "read_file", "ok": true, "prompt_tokens": 19088, "completion_tokens": 31, "gen_ms": 22315.3, "tool_ms": 0.5}
+{"ts": 1792170856.5278451, "run_id": "20261016-131156-01b4", "kind": "subtask_done", "subtask": "refine", "role": "product", "ok": false, "stop_reason": "max_steps", "steps": 8, "fix_rounds": 0}
+{"ts": 1792170856.528238, "run_id": "20261016-131156-01b4", "kind": "run_done", "ok": false, "wall_ms": 139903.9, "subtasks": 1, "tests": null}
