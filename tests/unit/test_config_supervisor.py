@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def test_the_shipped_config_turns_the_supervisor_on_with_muse_and_read_only_tools() -> None:
-    cfg = load_config(REPO / "airlie.yaml")
+    cfg = load_config(REPO / "airlie.yaml", REPO / "no-local-overrides.yaml")
     assert cfg.story.supervisor.enabled and cfg.story.supervisor.per_layer == 6
     role = cfg.roles["supervisor"]
     assert role.model == "reviewer" and role.tools == ["read_file", "list_dir", "grep"]

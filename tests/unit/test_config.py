@@ -1091,7 +1091,8 @@ def test_a_negative_carried_reasoning_chars_is_a_config_error_at_load(tmp_path: 
 
 
 def test_every_thinking_role_in_airlie_yaml_carries_cut_reasoning() -> None:
-    cfg = load_config(Path(__file__).parents[2] / "airlie.yaml")
+    root = Path(__file__).parents[2]
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
     thinking = {n: r.carried_reasoning_chars for n, r in cfg.roles.items() if r.thinking}
     assert {"architect"} <= thinking.keys() and all(thinking.values())
 

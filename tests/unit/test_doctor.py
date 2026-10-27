@@ -567,10 +567,12 @@ def serve_argv(profile: str, tmp_path: Path) -> list[str]:
 
 
 def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_naming_the_restart(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from airlie.doctor import engine_matches_profile
 
+    # the check reloads the config from its file for the profile, local overrides and all: never the person's
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     ok = engine_matches_profile(cfg, RunningEngine(serve_argv("studio", tmp_path)), "studio")
     assert ok.status == "ok" and "studio" in ok.detail
