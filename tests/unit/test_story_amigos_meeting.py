@@ -175,6 +175,20 @@ async def test_a_meeting_that_agrees_in_one_round_ends_with_the_agreement_and_no
     assert len(seen[2].parts["proof"]) == 2 and seen[0].verdict is not None
 
 
+async def test_a_part_posted_again_unchanged_is_no_revision_and_costs_no_round(tmp_path: Path) -> None:
+    """Lever 3 of the roman bench (2026-10-26): a part its owner posts again as it stands is not a revision,
+    so the verdicts given on it still count. Here the architect posts its split, unchanged, in both rounds,
+    and the meeting still ends at six turns, as it does when the architect only says it agrees."""
+    split = fence({"layers": [x.to_dict() for x in LAYERS]})
+    again = {
+        "product": [say("The criteria read fine.", AGREE)] * 4,
+        "architect": [say("The split holds.", split, AGREE)] * 4,
+        "tester": [say("Here is the proof.", fence(PROOF), AGREE)] + [say("Still good.", AGREE)] * 3,
+    }
+    out = await agree(meeting(again), tmp_path)
+    assert out.turns == 6 and out.layers == LAYERS
+
+
 async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_objector_agrees(
     tmp_path: Path,
 ) -> None:

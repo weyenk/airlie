@@ -718,14 +718,17 @@ class OneTurn(TerminationCondition):
 
 class AgreementReached(TerminationCondition):
     """The meeting's end by agreement: the latest message of each of the three roles carries a verdict that
-    agrees to every part, none of them was written before the last part was posted (a verdict on a plan its
-    speaker has not seen is no agreement), and the checker's latest message, after that, is "no findings".
+    agrees to every part, none of them was written before the last part was changed (a verdict on a plan its
+    speaker has not seen is no agreement; a part posted again unchanged changes nothing, lever 3 of the roman
+    bench, 2026-10-26), and the checker's latest message, after that, is "no findings".
     It keeps the history it sees across the one-turn runs, and `observe` feeds it a saved thread."""
 
     def __init__(self) -> None:
         self._seq = 0
         self._verdicts: dict[str, tuple[int, Verdict | None]] = {}
         self._revised = 0
+        self._posted: dict[Part, str] = {}
+        """Each part as its owner last posted it, as canonical JSON: posted again unchanged, no revision."""
         self._checker: tuple[int, bool] | None = None
         self._stopped = False
 
@@ -747,9 +750,14 @@ class AgreementReached(TerminationCondition):
             except StoryError:
                 verdict = None
             self._verdicts[m.source] = (self._seq, verdict)
-            owned = [part_of(o) for o in json_blocks(m.content)]
-            if any(p is not None and OWNER[p] == m.source for p in owned):
-                self._revised = self._seq
+            for obj in json_blocks(m.content):
+                part = part_of(obj)
+                if part is None or OWNER[part] != m.source:
+                    continue
+                text = json.dumps(obj, sort_keys=True)
+                if self._posted.get(part) != text:  # a part posted again as it stands leaves the verdicts
+                    self._posted[part] = text
+                    self._revised = self._seq
 
     def agreed(self) -> bool:
         """Whether the meeting as observed so far has reached agreement."""
