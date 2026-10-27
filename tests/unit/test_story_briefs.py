@@ -964,3 +964,37 @@ def test_a_criterion_left_to_the_gate_is_said_as_no_test_to_write() -> None:
     text = critic_brief(LAYERS[1], {}, (gate,), "")
     assert "- AC2: proven by the layer's test gate itself; write no test for it" in text
     assert "gate:AC2" not in text
+
+
+def test_a_package_brief_carries_the_layers_existing_files_so_the_architect_need_not_read_them() -> None:
+    """Lever 2 (2026-10-27): on the wiki task the architect spent ~20 minutes of tool calls re-reading the
+    files its layer changes, each step thinking to its cap; the brief now carries them, as they are on its
+    base, each clipped at the cap, all of them within the total cap."""
+    from airlie.story.briefs import next_package_brief
+
+    sources = {"src/profile.py": "def profile() -> str:\n    return 'x'\n", "src/big.py": "y" * 20_000}
+    text = pbrief(sources=sources)
+    head = "## The files this layer changes, as they are on its base"
+    assert head in text and "def profile() -> str:" in text
+    assert "### src/big.py" in text and "[clipped]" in text and "y" * 12_001 not in text
+    assert "read others only when you need them" in text
+    assert head not in pbrief()  # a layer with only new files gets no section
+    later = next_package_brief(STORY, LAYERS, 1, sources={"src/profile.py": "P = 1\n"})
+    assert head in later and "P = 1" in later
+
+
+def test_the_layer_sources_are_its_existing_files_read_at_a_commit(tmp_path: Path) -> None:
+    from airlie.story.briefs import layer_sources
+    from airlie.story.model import Layer, ScopedPath
+    from tests.unit.test_story_layer_checks import repo
+
+    root, sha = repo(tmp_path, {"src/a.py": "A = 1\n", "src/b.py": "B = 2\n"})
+    layer = Layer(
+        "x",
+        "X",
+        "src",
+        "brief",
+        (),
+        (ScopedPath("src/a.py"), ScopedPath("src/new.py", True), ScopedPath("src/gone.py")),
+    )
+    assert layer_sources(root, sha, layer) == {"src/a.py": "A = 1\n"}

@@ -53,6 +53,7 @@ from airlie.story.briefs import (
     drafts_brief,
     layer_goal,
     layer_plan,
+    layer_sources,
     layers_brief,
     next_package_brief,
     package_brief,
@@ -1380,6 +1381,7 @@ class StoryPipeline:
             context_budget=context,
             feedback=feedback,
             proof=proof,
+            sources=layer_sources(self.repo, base_sha, layers[i]),  # lever 2, on the layer's real base
         )
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await self._ask(
@@ -1414,6 +1416,7 @@ class StoryPipeline:
             max_steps=max_steps,
             context_budget=context,
             proof=self._layer_proof(st, layers[0]),
+            sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
         )
         st.emit("packages_drafting", layers=len(layers))
         async with (
@@ -1426,7 +1429,8 @@ class StoryPipeline:
             for i, layer in enumerate(layers):
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
                 try:
-                    asked = None if i == 0 else next_package_brief(story, layers, i, proof)
+                    sources = layer_sources(self.repo, sha, layer)
+                    asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
                     got = parse_package(await say(asked), layer, story, gated=_gated(proof))
                     if isinstance(got, Package) and proof:
                         told = await self._objections(st, layers, i, sha, got, proof)

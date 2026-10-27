@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from airlie.prompts import text as hub_text
@@ -39,6 +40,7 @@ from airlie.story.mockups import DIRECTIONS_CONTRACT, Direction
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story
 from airlie.story.package import AGREED_PROOF_CONTRACT, PACKAGE_CONTRACT, Package
 from airlie.story.rounds import REFINE_FIELD
+from airlie.teams.worktree import find_file, read_blob
 from airlie.topology.studio_plan import Plan, Subtask
 
 if TYPE_CHECKING:  # amigos imports this module's contracts lazily; only the type of a proof test is needed
@@ -533,9 +535,52 @@ def proof_revision_brief(
     return "\n\n".join(parts)
 
 
-def _package_layer(story: Story, layers: tuple[Layer, ...], i: int, proof: Sequence[ProofTest]) -> list[str]:
+SOURCE_CHARS = 12_000
+"""The most of one file a package brief carries (lever 2): clipped with "[clipped]" past it."""
+SOURCES_CHARS = 40_000
+"""The most of all a layer's files together a package brief carries."""
+
+
+def layer_sources(repo: Path, commit: str, layer: Layer) -> dict[str, str]:
+    """The files `layer` changes that exist at `commit` (not the ones it creates), read from git's objects,
+    for its package brief (lever 2 of the wiki benchmark, 2026-10-27)."""
+    out: dict[str, str] = {}
+    for f in layer.files:
+        if f.new:
+            continue
+        kind, sha = find_file(repo, commit, f.path)
+        if kind == "blob":
+            out[f.path] = read_blob(repo, sha)
+    return out
+
+
+def _sources_section(sources: Mapping[str, str]) -> list[str]:
+    """The layer's existing files, each fenced, each clipped at SOURCE_CHARS, all within SOURCES_CHARS."""
+    if not sources:
+        return []
+    parts = [hub_text("brief-package-sources")]
+    left = SOURCES_CHARS
+    for path, text in sources.items():
+        cap = min(SOURCE_CHARS, left)
+        if cap <= 0:
+            parts.append(f"### {path}\n[clipped: read it with read_file]")
+            continue
+        shown = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
+        left -= len(shown)
+        parts.append(f"### {path}\n{_fenced(shown, PurePosixPath(path).suffix.lstrip('.'))}")
+    return ["\n\n".join(parts)]
+
+
+def _package_layer(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    proof: Sequence[ProofTest],
+    sources: Mapping[str, str] | None = None,
+) -> list[str]:
     """The part of a package brief that is layer `i`'s own: where it stands among the layers, its scope and
-    criteria, what it builds, its files and interfaces, and its agreed tests."""
+    criteria, what it builds, its files and interfaces, its existing files' text (`sources`, lever 2) and its
+    agreed tests."""
     layer = layers[i]
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
@@ -547,6 +592,7 @@ def _package_layer(story: Story, layers: tuple[Layer, ...], i: int, proof: Seque
         f"Later layers (not yours; leave their work alone): {later}",
         f"## What this layer builds\n{layer.brief}",
         *([_files_section(layer)] if layer.files or layer.interfaces else []),
+        *_sources_section(sources or {}),
         *([_agreed_tests(proof)] if proof else []),
     ]
 
@@ -559,11 +605,15 @@ def drafts_brief(story: Story, layers: tuple[Layer, ...], **kw: Any) -> str:
 
 
 def next_package_brief(
-    story: Story, layers: tuple[Layer, ...], i: int, proof: Sequence[ProofTest] = ()
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    proof: Sequence[ProofTest] = (),
+    sources: Mapping[str, str] | None = None,
 ) -> str:
     """A later turn of that conversation: layer `i`'s own part (`_package_layer`) and `brief-package-next`;
     the story, the rules and the contract are the first turn's."""
-    return "\n\n".join([*_package_layer(story, layers, i, proof), hub_text("brief-package-next")])
+    return "\n\n".join([*_package_layer(story, layers, i, proof, sources), hub_text("brief-package-next")])
 
 
 def package_brief(
@@ -578,6 +628,7 @@ def package_brief(
     context_budget: int,
     feedback: str | None = None,
     proof: Sequence[ProofTest] = (),
+    sources: Mapping[str, str] | None = None,
 ) -> str:
     """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
     2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
@@ -590,7 +641,7 @@ def package_brief(
         hub_text("brief-package-task"),
         story_text(story),
         *epic_section(story),
-        *_package_layer(story, layers, i, proof),
+        *_package_layer(story, layers, i, proof, sources),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(

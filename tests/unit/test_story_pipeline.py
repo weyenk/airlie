@@ -2986,3 +2986,21 @@ async def test_an_overrun_stage_is_an_event_and_one_note_and_never_a_stop(
     notes = [text for call, text in board.calls if call == "comment" and "stage cost" in text]
     assert len(notes) == 1 and "the layer stage cost 167 min" in notes[0]  # two layers ran, one note
     assert json.loads((st.path / "stages" / "layer.json").read_text())["state"] == "exceeded"
+
+
+async def test_the_architects_package_brief_carries_the_files_its_layer_changes(tmp_path: Path) -> None:
+    """Lever 2 (2026-10-27): the drafting conversation's turn for a layer carries the existing files that
+    layer names, read at the base, so the architect writes from them instead of reading them by tool."""
+    repo = repo_with_marker_tests(tmp_path)
+    split = {
+        "layers": [
+            {**layer("storage", "Storage", "README.md", "AC1", "Store."), "files": [{"path": "README.md"}]},
+            layer("profile", "Profile", "profile.py", "AC2", "Show."),
+        ]
+    }
+    engine = happy_engine(architect=[fenced(split), *PKGS])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is None, st.blocked
+    first = [r for r in engine.requests if r.role == "architect"][1].messages[1].content
+    assert "## The files this layer changes, as they are on its base" in first and "### README.md" in first
+    assert "hi" in first.split("### README.md")[1][:40]
