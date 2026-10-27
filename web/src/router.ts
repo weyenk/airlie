@@ -32,6 +32,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/")):
       { path: "/metrics", name: "metrics", component: () => import("./screens/MetricsScreen.vue"), meta: { tab: "metrics" } },
       { path: "/admin", name: "admin", component: () => import("./screens/AdminScreen.vue"), meta: { tab: "admin" } },
       { path: "/wiki", name: "wiki", component: () => import("./screens/wiki/WikiListScreen.vue"), meta: { tab: "wiki" } },
+      { path: "/wiki/:folder/:page", name: "wiki-page", component: () => import("./screens/wiki/WikiDetailScreen.vue"), meta: { tab: "wiki" } },
       { path: "/signin", name: "signin", component: () => import("./screens/SignInScreen.vue"), meta: { public: true, bare: true } },
       { path: "/join/:token", name: "join", component: () => import("./screens/JoinScreen.vue"), meta: { public: true, bare: true } },
       { path: "/start", redirect: "/" },
