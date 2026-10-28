@@ -64,7 +64,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.budgets import StageMeter, check
+from airlie.story.budgets import StageMeter, check, run_dir_of
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
@@ -78,6 +78,7 @@ from airlie.story.diagnosis import (
     next_for,
     write_diagnosis,
 )
+from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
@@ -782,6 +783,7 @@ class StoryPipeline:
                 lessons=self.lessons.recent(),
                 max_steps=coder_steps,
                 context_budget=coder_context,
+                dossier=self._dossier(st, (st.base or {}).get("sha")),
             ),
             parse,
             ask=ask,
@@ -947,7 +949,11 @@ class StoryPipeline:
         routed = await self._routed_guideline(st, story)
         found = conventions(self.repo, sha, tester.skills, routed)
         opening = opening_message(
-            story, layers, conventions_text(found, self.commands), self.lessons.recent()
+            story,
+            layers,
+            conventions_text(found, self.commands),
+            self.lessons.recent(),
+            self._dossier(st, sha),
         )
         tree = st.path / "meeting-tree"
         remove_worktree(self.repo, tree)  # one a killed run left behind
@@ -1221,7 +1227,14 @@ class StoryPipeline:
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
             plan = layer_plan(
-                story, layers, i, package, build_role=self.s.build_role, guide=guide, built=built
+                story,
+                layers,
+                i,
+                package,
+                build_role=self.s.build_role,
+                guide=guide,
+                built=built,
+                dossier=self._dossier(st, base_sha),
             )
             async with decoding(
                 self.stories_dir, orch.run_dir.path
@@ -1383,6 +1396,7 @@ class StoryPipeline:
             feedback=feedback,
             proof=proof,
             sources=layer_sources(self.repo, base_sha, layers[i]),  # lever 2, on the layer's real base
+            dossier=self._dossier(st, base_sha),
         )
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await self._ask(
@@ -1390,6 +1404,15 @@ class StoryPipeline:
             )
         self._package_run = st.runs[-1]
         return parse_package(text, layers[i], story, gated=_gated(proof))
+
+    def _dossier(self, st: StoryState, commit: str | None) -> Mapping[str, str]:
+        """The story's dossier for a step reading `commit` (story.dossier, P2 of the performance plan): the
+        files its studio runs so far read, at that commit; empty with the flag off, or with no commit."""
+        if not self.s.dossier or not commit:
+            return {}
+        state = self.cfg.observability.state_dir.expanduser()
+        runs = [d for r in st.runs if (d := run_dir_of(state, st.path.name, r)) is not None]
+        return story_dossier(self.repo, commit, runs)
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
         """Every layer's package drafted in one architect conversation at the story's base, before the first
@@ -1418,6 +1441,7 @@ class StoryPipeline:
             context_budget=context,
             proof=self._layer_proof(st, layers[0]),
             sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
+            dossier=self._dossier(st, sha),
         )
         st.emit("packages_drafting", layers=len(layers))
         async with (
@@ -1513,7 +1537,9 @@ class StoryPipeline:
         """The critic's read of `package` (see `_critique`): what to tell the architect, ending with
         `package-fix`, or None when it agrees or cannot be read."""
         nn, layer = f"{i + 1:02d}", layers[i]
-        brief = critic_brief(layer, package.tests, proof, self._conventions_text(base_sha))
+        brief = critic_brief(
+            layer, package.tests, proof, self._conventions_text(base_sha), dossier=self._dossier(st, base_sha)
+        )
         try:
             at = self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(

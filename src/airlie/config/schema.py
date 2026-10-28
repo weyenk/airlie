@@ -684,6 +684,11 @@ class StorySpec(Strict):
         description="while product refines the request, the architect reads the code it touches and takes "
         "notes the layer planning starts from",
     )
+    dossier: bool = Field(
+        default=False,
+        description="each step's brief carries the files the story's earlier steps read (at the commit it "
+        "reads), so it does not read them again: lever P2 of the performance plan, off until it is measured",
+    )
     product_role: str = "product"
     architect_role: str = "architect"
     build_role: str = "coder"

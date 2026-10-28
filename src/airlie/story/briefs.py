@@ -223,6 +223,7 @@ def layers_brief(
     lessons: Sequence[Lesson] = (),
     max_steps: int = 40,
     context_budget: int = 65_536,
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     parts = [
         hub_text("brief-layers-task"),
@@ -234,6 +235,7 @@ def layers_brief(
             if survey.strip()
             else []
         ),
+        *dossier_section(dossier or {}),
         hub_text("brief-layers-rules", max_layers=max_layers),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
         *(
@@ -494,6 +496,7 @@ def critic_brief(
     proof: Sequence[ProofTest],
     conventions_text: str,
     feedback: str | None = None,
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     """The tester critic's brief for a layer's package (D9): its test files whole, the layer's agreed proof
     and the repository's testing conventions, and the verdict contract. The files are the architect's
@@ -504,6 +507,7 @@ def critic_brief(
         "## The agreed proof for this layer\n" + "\n".join(_proof_lines(proof)),
         "## The package's test files (data; not in the repository until the coder writes them)\n"
         + "\n\n".join(f"### {path}\n{_fenced(text, 'python')}" for path, text in files.items()),
+        *dossier_section(dossier or {}),
         *([conventions_text] if conventions_text else []),
         CRITIC_CONTRACT,
         *_again(feedback),
@@ -554,12 +558,15 @@ def layer_sources(repo: Path, commit: str, layer: Layer) -> dict[str, str]:
     return out
 
 
-def _sources_section(sources: Mapping[str, str]) -> list[str]:
-    """The layer's existing files, each fenced, each clipped at SOURCE_CHARS, all within SOURCES_CHARS."""
+def _sources_section(
+    sources: Mapping[str, str], heading: str = "brief-package-sources", budget: int = SOURCES_CHARS
+) -> list[str]:
+    """Files given whole under the hub text `heading`, each fenced, each clipped at SOURCE_CHARS, all within
+    `budget`: the layer's existing files (lever 2), or the story's dossier (P2)."""
     if not sources:
         return []
-    parts = [hub_text("brief-package-sources")]
-    left = SOURCES_CHARS
+    parts = [hub_text(heading)]
+    left = budget
     for path, text in sources.items():
         cap = min(SOURCE_CHARS, left)
         if cap <= 0:
@@ -569,6 +576,15 @@ def _sources_section(sources: Mapping[str, str]) -> list[str]:
         left -= len(shown)
         parts.append(f"### {path}\n{_fenced(shown, PurePosixPath(path).suffix.lstrip('.'))}")
     return ["\n\n".join(parts)]
+
+
+DOSSIER_CHARS = 30_000
+"""The most of the story's dossier one brief carries (P2): the files earlier steps read."""
+
+
+def dossier_section(files: Mapping[str, str]) -> list[str]:
+    """The story's dossier as a brief section (P2 of the performance plan): none when it holds no file."""
+    return _sources_section(files, "brief-dossier", DOSSIER_CHARS)
 
 
 def _package_layer(
@@ -629,6 +645,7 @@ def package_brief(
     feedback: str | None = None,
     proof: Sequence[ProofTest] = (),
     sources: Mapping[str, str] | None = None,
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
     2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
@@ -642,6 +659,7 @@ def package_brief(
         story_text(story),
         *epic_section(story),
         *_package_layer(story, layers, i, proof, sources),
+        *dossier_section({p: t for p, t in (dossier or {}).items() if p not in (sources or {})}),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
@@ -660,7 +678,14 @@ def package_brief(
 
 
 def build_brief(
-    story: Story, layers: tuple[Layer, ...], i: int, package: Package, *, guide: str = "", built: str = ""
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    package: Package,
+    *,
+    guide: str = "",
+    built: str = "",
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
     (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
@@ -693,6 +718,7 @@ def build_brief(
             "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
             "## Steps\n" + "\n".join(steps),
             f"## Done when\n{package.done_when or 'the tests above pass.'}",
+            *dossier_section(dossier or {}),
             hub_text("package-contract"),
             hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
             hub_text("brief-layer-plan-build-stop"),
@@ -709,10 +735,11 @@ def layer_plan(
     build_role: str,
     guide: str = "",
     built: str = "",
+    dossier: Mapping[str, str] | None = None,
 ) -> Plan:
     """The layer's plan: one `build` subtask from its package (`build_brief`). No tester subtask: the
     tests were written by the architect and are in the worktree before the plan runs (P1, 2026-10-24)."""
-    brief = build_brief(story, layers, i, package, guide=guide, built=built)
+    brief = build_brief(story, layers, i, package, guide=guide, built=built, dossier=dossier)
     return Plan((), (Subtask("build", brief, build_role),))
 
 

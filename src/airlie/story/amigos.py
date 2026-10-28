@@ -824,12 +824,21 @@ def _as_turn_part(contract: str) -> str:
 
 
 def opening_message(
-    story: Story, layers: Sequence[Layer], conventions_text: str, lessons: Sequence[Lesson]
+    story: Story,
+    layers: Sequence[Layer],
+    conventions_text: str,
+    lessons: Sequence[Lesson],
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`), the
     story as product refined it, the architect's split, the repository's testing conventions, the lessons
     recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
-    from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, story_text  # as in _lessons_text
+    from airlie.story.briefs import (  # as in _lessons_text
+        LAYERS_CONTRACT,
+        STORY_CONTRACT,
+        dossier_section,
+        story_text,
+    )
 
     split = json.dumps({"layers": [x.to_dict() for x in layers]}, indent=1)
     parts = [
@@ -838,6 +847,7 @@ def opening_message(
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
         "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan.",
         conventions_text,
+        *dossier_section(dossier or {}),
         *([_lessons_text(lessons)] if lessons else []),
         "## How each part and your verdict travel\n"
         + "\n\n".join(
