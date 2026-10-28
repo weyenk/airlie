@@ -7,7 +7,8 @@ P2 `specs/2026-10-24-three-amigos-design.md` + `plans/2026-10-24-three-amigos.md
 `specs/2026-10-24-specs-phase-design.md` + `plans/2026-10-25-specs-phase.md`; P5
 `specs/2026-10-25-line-scheduler-design.md` + `plans/2026-10-25-line-scheduler.md`; P6
 `plans/2026-10-25-pr-provenance.md`. Build order: P1, then P2 and P3, then P4; P5a after P1 and P5b after P3
-and P4; P6 after P1. P1 (the layer package) is built in the branch `claude/p1-layer-package` (2026-10-25); nothing else is built yet.
+and P4; P6 after P1. P1 (the layer package) is built in the branch `claude/p1-layer-package` (2026-10-25); P3 (the plans phase) is built in
+the branch `claude/p3-plans-phase`, stacked on it (2026-10-25).
 
 ## Why
 

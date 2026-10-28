@@ -21,7 +21,7 @@ import json
 import os
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -440,15 +440,16 @@ class Publisher:
         except (PublishError, ValueError, KeyError, TypeError):
             return None  # not a stack yet
 
-    async def stack(self, wt: Path, trunk: str, branches: list[str]) -> None:
-        """Adopt `branches` (bottom first) as a stack on `trunk`; a stack that already holds exactly them on
-        that trunk (an interrupted publish) is left alone. Any other stack is not: init runs, and gh-stack's
-        refusal is the error."""
+    async def stack(self, wt: Path, base: str, branches: list[str]) -> None:
+        """Adopt `branches` (bottom first) as a stack on `base`, the trunk or, for a story that stacks on
+        another, that story's top branch; a stack that already holds exactly them on that base (an
+        interrupted publish) is left alone. Any other stack is not: init runs, and gh-stack's refusal is the
+        error."""
         _refuse_option_like(*branches)
         async with self._step(wt) as env:
-            if await self._stacked(wt, env) == (trunk, branches):
+            if await self._stacked(wt, env) == (base, branches):
                 return
-            await self.run(["gh", "stack", "init", "--base", trunk, *branches], wt, env)
+            await self.run(["gh", "stack", "init", "--base", base, *branches], wt, env)
 
     async def submit(self, wt: Path) -> None:
         """Push every layer and open the missing PRs as drafts (`--auto`: no editor; never `--open`)."""
@@ -460,6 +461,19 @@ class Publisher:
         async with self._step(wt) as env:
             j = json.loads(await self.run(["gh", "pr", "view", branch, "--json", "number,url"], wt, env))
         return int(j["number"]), str(j["url"])
+
+    async def landed(self, repo: Path, numbers: Sequence[int]) -> bool:
+        """Whether every pull request of `numbers` is merged (`gh pr view --json state,mergedAt`); False for
+        none. A person merges; this only reads. A gh that fails is a PublishError."""
+        if not numbers:
+            return False
+        async with self._step(repo) as env:
+            for n in numbers:
+                out = await self.run(["gh", "pr", "view", str(int(n)), "--json", "state,mergedAt"], repo, env)
+                view = json.loads(out)
+                if view.get("state") != "MERGED" or not view.get("mergedAt"):
+                    return False
+        return True
 
     async def describe(self, wt: Path, branch: str, title: str, body: Path) -> None:
         _refuse_option_like(branch)

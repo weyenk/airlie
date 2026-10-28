@@ -98,6 +98,44 @@ def stories(state_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+def epics(state_dir: Path) -> list[dict[str, Any]]:
+    """Every epic directory under `state_dir/epics`, by key, with its stage, blocked reason, repository, the
+    number of stories made and of re-plans, from epic state.json: a damaged one says so in `blocked`.
+    `last_activity` is as for a story (the newer of state.json and events.jsonl)."""
+    root = state_dir / "epics"
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        row: dict[str, Any] = {
+            "key": d.name,
+            "title": None,
+            "repo": None,
+            "stage": None,
+            "blocked": None,
+            "stories": 0,
+            "replans": 0,
+        }
+        f = d / "state.json"
+        if f.is_file():
+            try:
+                st = json.loads(f.read_text())
+                if not isinstance(st, dict):
+                    raise ValueError("not an object")
+            except (ValueError, OSError):
+                row["blocked"] = "state.json is damaged"
+            else:
+                card: dict[str, Any] = st["card"] if isinstance(st.get("card"), dict) else {}
+                row["title"] = card.get("title")
+                row["repo"], row["stage"], row["blocked"] = st.get("repo"), st.get("stage"), st.get("blocked")
+                row["stories"] = len(st["stories"]) if isinstance(st.get("stories"), dict) else 0
+                row["replans"] = len(st["replans"]) if isinstance(st.get("replans"), list) else 0
+        times = [t for t in (_mtime(d / "state.json"), _mtime(d / "events.jsonl")) if t is not None]
+        row["last_activity"] = max(times, default=0.0)
+        out.append(row)
+    return out
+
+
 def _natural(key: str) -> list[str | int]:
     """`key` as the pieces to compare it by: text (any case) and numbers, so AIR-9 comes before AIR-17. The
     pieces alternate text, number, text, ...: two keys always compare text with text, number with number."""

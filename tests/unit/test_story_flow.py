@@ -10,7 +10,9 @@ from typing import Any
 
 import pytest
 
-from airlie.serve.flow import StoryNotFound, job_detail, story_flow
+from airlie.serve.flow import StoryNotFound, epic_flow, job_detail, story_flow
+from tests.unit.test_story_epic import fenced
+from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
 
 KEY = "AIR-1"
 
@@ -398,3 +400,91 @@ def test_the_package_job_detail_gives_the_architects_prompt(state_dir: Path) -> 
     write_packaged_story(state_dir)
     detail = job_detail(state_dir, KEY2, "layer-01", "package")
     assert detail["input"]["messages"][0]["content"] == "package"
+
+
+# ---- an epic (P3, 2026-10-24) ----
+
+
+def write_epic(root: Path, key: str = "AIR-1", *, damaged: bool = False) -> Path:
+    """Epic `key` under `root`: planned into S1 (AIR-2, in review) and S2 (AIR-3, not started), with one
+    re-plan on record and a story it left out (AIR-9)."""
+    d = root / "epics" / key
+    d.mkdir(parents=True)
+    if damaged:
+        (d / "state.json").write_text("{ not json")
+        return root
+    state = {
+        "card": {"key": key, "title": "Avatars", "description": EPIC_TEXT + fenced(SPEC.to_dict())},
+        "repo": "o/r",
+        "stage": "building",
+        "plan": plan_obj(),
+        "attempts": 2,
+        "stories": {"S1": "AIR-2", "S2": "AIR-3", "S0": "AIR-9"},
+        "replans": [{"reason": "AIR-9 stopped again", "created": ["AIR-3"], "retired": ["AIR-9"]}],
+        "blocked": None,
+        "runs": [],
+        "base": {"ref": "origin/main", "sha": "a" * 40},
+        "seen_comments": 0,
+    }
+    (d / "state.json").write_text(json.dumps(state))
+    (d / "events.jsonl").write_text("")
+    story = root / "stories" / "AIR-2"
+    story.mkdir(parents=True)
+    (story / "state.json").write_text(
+        json.dumps({"card": {"key": "AIR-2"}, "stage": "review", "blocked": None})
+    )
+    return root
+
+
+def test_the_epic_flow_lists_its_plan_its_stories_and_where_each_stands(tmp_path: Path) -> None:
+    write_epic(tmp_path)
+    flow = epic_flow(tmp_path, "AIR-1", statuses={"AIR-2": "review", "AIR-3": "todo"})
+    assert (flow["key"], flow["title"], flow["stage"], flow["blocked"]) == (
+        "AIR-1",
+        "Avatars",
+        "building",
+        None,
+    )
+    assert flow["summary"] == "Avatars, in two stories." and flow["constraints"] == ["PNG only"]
+    assert [c["id"] for c in flow["criteria"]] == ["EC1", "EC2"]
+    first, second = flow["stories"]
+    assert (first["id"], first["key"], first["status"], first["stage"], first["size"]) == (
+        "S1",
+        "AIR-2",
+        "review",
+        "review",
+        "S",
+    )
+    assert (second["id"], second["depends_on"], second["epic_criteria"]) == ("S2", ["S1"], ["EC2"])
+    assert (second["status"], second["stage"]) == ("todo", None)  # no state yet: it has not started
+    assert flow["left_out"] == ["AIR-9"] and flow["replans"][0]["reason"] == "AIR-9 stopped again"
+    assert flow["risks"] == [{"risk": "a huge file", "pinned": "S2/AC1"}]
+
+
+def test_an_epic_flow_without_board_statuses_says_none(tmp_path: Path) -> None:
+    write_epic(tmp_path)
+    assert [s["status"] for s in epic_flow(tmp_path, "AIR-1")["stories"]] == [None, None]
+
+
+def test_an_epic_that_is_not_there_or_has_no_safe_key_is_not_found(tmp_path: Path) -> None:
+    write_epic(tmp_path)
+    for key in ("NOPE-1", "../stories", "a/b"):
+        with pytest.raises(StoryNotFound):
+            epic_flow(tmp_path, key)
+
+
+def test_an_epic_with_a_damaged_record_is_not_found_with_the_reason(tmp_path: Path) -> None:
+    write_epic(tmp_path, damaged=True)
+    with pytest.raises(StoryNotFound, match="damaged"):
+        epic_flow(tmp_path, "AIR-1")
+
+
+def test_an_epic_not_planned_yet_has_no_stories(tmp_path: Path) -> None:
+    write_epic(tmp_path)
+    path = tmp_path / "epics" / "AIR-1" / "state.json"
+    state = json.loads(path.read_text())
+    state.update(plan=None, stories={}, stage="blocked", blocked="the epic has no closing JSON block")
+    path.write_text(json.dumps(state))
+    flow = epic_flow(tmp_path, "AIR-1")
+    assert flow["stories"] == [] and flow["blocked"] == "the epic has no closing JSON block"
+    assert flow["summary"] is None

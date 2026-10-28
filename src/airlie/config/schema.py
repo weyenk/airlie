@@ -474,6 +474,30 @@ class SupervisorSpec(Strict):
     recall: int = Field(default=3, ge=0, description="past ledger fixes shown to the supervisor")
 
 
+class PlanSpec(Strict):
+    """How the architect plans an epic into stories (P3 of the planning line, 2026-10-24)."""
+
+    max_stories: int = Field(
+        default=8, ge=1, description="the most stories a plan may hold; more goes back to the architect"
+    )
+    max_scope_files: int = Field(
+        default=8,
+        ge=1,
+        description="the most files one story's scope may name: a story that touches more is split",
+    )
+    round_steps: int = Field(
+        default=5,
+        ge=0,
+        description="the architect plans an epic in rounds of this many steps (a plan after each, the next "
+        "round refines it); 0 plans in one go",
+    )
+    max_rounds: int = Field(
+        default=3,
+        ge=1,
+        description="the most rounds an epic is planned in, whatever the architect's steps would give",
+    )
+
+
 class LineSpec(Strict):
     """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
     these two; the scheduler half adds its own."""
@@ -551,6 +575,13 @@ class StorySpec(Strict):
         description="steps the architect gets to read before it writes a layer's package",
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
+    plan: PlanSpec = Field(default_factory=PlanSpec)
+    resume_attempts: int = Field(
+        default=1,
+        ge=0,
+        description="how many times the tick moves a story the line blocked back to approved (a rebuild, not "
+        "a person's morning) before the epic it belongs to is re-planned; 0 re-plans at once",
+    )
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(

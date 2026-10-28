@@ -658,6 +658,29 @@ def test_story_defaults(tmp_path: Path) -> None:
     assert statuses == ("To Do", "In Progress", "In Review", "Blocked")
 
 
+def test_story_plan_has_defaults_and_floors(tmp_path: Path) -> None:
+    """P3 (2026-10-24): how the architect plans an epic into stories."""
+    plan = load_config(write(tmp_path, MINIMAL)).story.plan
+    assert (plan.max_stories, plan.max_scope_files, plan.round_steps, plan.max_rounds) == (8, 8, 5, 3)
+    for field in ("max_stories", "max_scope_files", "max_rounds"):
+        with pytest.raises(ConfigError, match=f"story.plan.{field}"):
+            load_config(write(tmp_path, {**MINIMAL, "story": {"plan": {field: 0}}}))
+    with pytest.raises(ConfigError, match="story.plan.round_steps"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"plan": {"round_steps": -1}}}))
+    zero = load_config(write(tmp_path, {**MINIMAL, "story": {"plan": {"round_steps": 0}}})).story.plan
+    assert zero.round_steps == 0  # 0 plans in one go
+
+
+def test_resume_attempts_defaults_to_one_and_may_be_zero(tmp_path: Path) -> None:
+    """D8 of the plans phase: the tick moves a story the line blocked back to approved this many times before
+    it re-plans the epic."""
+    assert load_config(write(tmp_path, MINIMAL)).story.resume_attempts == 1
+    zero = load_config(write(tmp_path, {**MINIMAL, "story": {"resume_attempts": 0}}))
+    assert zero.story.resume_attempts == 0
+    with pytest.raises(ConfigError, match="story.resume_attempts"):
+        load_config(write(tmp_path, {**MINIMAL, "story": {"resume_attempts": -1}}))
+
+
 def test_github_app_defaults_to_your_own_login_and_takes_an_app_id(tmp_path: Path) -> None:
     app = load_config(write(tmp_path, MINIMAL)).story.github_app
     assert (app.app_id, app.key_file, app.api_url) == (

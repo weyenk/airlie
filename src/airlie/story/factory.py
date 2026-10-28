@@ -5,23 +5,30 @@ gh, the pipeline and the one-story lock."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
-from airlie.board import BoardStore
+from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig, ConfigError, load_config
+from airlie.obs import EventSink
 from airlie.story.board import Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.checkout import check_checkout, find_checkout, held_label
+from airlie.story.epic import epic_of
+from airlie.story.epic_pipeline import EpicPipeline, epics_dir
+from airlie.story.epic_plan import LABEL_REPLANNED, LABEL_RESUMED, after_keys, epic_key_of
+from airlie.story.epic_state import EpicState
 from airlie.story.fixes import bookkeep
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
 from airlie.story.local_board import LocalBoard
-from airlie.story.model import NoTestGate, RepositoryError, StoryRunning, StorySetupError
+from airlie.story.model import NoTestGate, RepositoryError, StoryError, StoryRunning, StorySetupError
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
-from airlie.story.publish import Checked, Publisher
+from airlie.story.publish import Checked, Publisher, PublishError
+from airlie.story.restack import RestackError
 from airlie.story.state import STAGES, StoryState, story_lock
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
@@ -155,7 +162,11 @@ def make_board(cfg: AirlieConfig) -> Board:
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
     if cfg.story.board == "local":
-        return LocalBoard(BoardStore(_board_path(cfg), prefix=cfg.board.prefix), role_names=set(cfg.roles))
+        return LocalBoard(
+            BoardStore(_board_path(cfg), prefix=cfg.board.prefix),
+            role_names=set(cfg.roles),
+            epics_dir=epics_dir(cfg),
+        )
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))
 
@@ -344,6 +355,275 @@ async def _already_in_review(board: Board, card: Card, st: StoryState) -> str:
     )
 
 
+log = logging.getLogger(__name__)
+
+
+def epic_checkout(cfg: AirlieConfig, repository: str) -> Path:
+    """The checkout in story.repos_root of the GitHub repository `repository` ("owner/name"), whose remote
+    must name it (as an issue's repo: label is held to, `place`). A RepositoryError in words when it cannot be
+    used; the epic pipeline blocks the epic with it."""
+    path = find_checkout(cfg.story.repos_root, repository)
+    check_checkout(path, cfg.story.remote, repository)
+    return path.resolve()
+
+
+def make_epic_pipeline(cfg: AirlieConfig, board: LocalBoard) -> EpicPipeline:
+    """The pipeline that plans an approved epic into stories (D3): the architect through the studio over the
+    HTTP engine, the checkouts of story.repos_root, and the publisher that fetches the trunk."""
+    engine = _engine(cfg)
+    return EpicPipeline(
+        cfg,
+        board=board,
+        studio=lambda: StudioOrchestrator(cfg, engine),
+        repo_of=lambda repository: epic_checkout(cfg, repository),
+        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg)),
+    )
+
+
+def _saved(cfg: AirlieConfig, key: str) -> dict[str, Any] | None:
+    """The state.json of the story `key` as a dict, or None when there is none or it cannot be read."""
+    try:
+        data = json.loads((stories_dir(cfg) / key / "state.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _follow(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
+    """The tick's board-only bookkeeping (D10): each planned epic's status follows its stories (and its record
+    follows its status), then every waiting story whose dependencies have all reached review (or been
+    merged: done) is promoted to approved, with a `story_promoted` event on its epic. Returns what it did,
+    for the log line. A board that fails here is no reason to fail the beat."""
+    notes: list[str] = []
+    stages = {"doing": "building", "review": "review", "done": "done"}
+    try:
+        for key, _, to in board.follow_stories():
+            notes.append(f"epic {key} is {to}")
+            _record_stage(cfg, board.store.get(key), stages.get(to))
+        for story in board.waiting_stories():
+            deps = after_keys(story.labels)
+            if not all(_status(board, dep) in ("review", "done") for dep in deps):
+                continue
+            board.store.update(story.key, status="approved")
+            notes.append(f"promoted {story.key}")
+            epic = epic_key_of(story.labels)
+            if epic is not None:
+                EventSink(epics_dir(cfg) / epic / "events.jsonl", epic).emit(
+                    "story_promoted", story=story.key, after=deps
+                )
+        notes += _resume_blocked(cfg, board)
+    except Exception as e:  # noqa: BLE001 - bookkeeping is best effort: the beat goes on
+        log.warning("tick bookkeeping failed: %s", _why(e))
+        notes.append(f"bookkeeping failed ({_why(e)})")
+    return notes
+
+
+def _line_stopped(cfg: AirlieConfig, board: LocalBoard) -> list[Item]:
+    """The stories the line made for an epic (an `epic:` label) that the line itself stopped: in blocked on
+    the board and with a stop recorded in their state, under an epic a person has not held. A story a person
+    parked, or one with no epic, is not among them."""
+    out: list[Item] = []
+    for story in board.store.list(level="story", status="blocked"):
+        if epic_key_of(story.labels) is None or board.is_held(story):
+            continue
+        saved = _saved(cfg, story.key)
+        if saved is not None and saved.get("blocked"):
+            out.append(story)
+    return out
+
+
+def _resume_blocked(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
+    """A story the line blocked is moved back to approved, once (story.resume_attempts), with the next
+    `resumed:N` label (D8): the common stop is a model's bad day, and a rebuild costs less than a person's
+    morning. The pipeline resumes it from its last finished stage when the tick next picks it."""
+    notes: list[str] = []
+    for story in _line_stopped(cfg, board):
+        n = sum(1 for label in story.labels if label.startswith(LABEL_RESUMED))
+        if n < cfg.story.resume_attempts:
+            board.store.update(
+                story.key, status="approved", labels=[*story.labels, f"{LABEL_RESUMED}{n + 1}"]
+            )
+            notes.append(f"resumed {story.key}")
+    return notes
+
+
+def _replan_target(cfg: AirlieConfig, board: LocalBoard) -> tuple[Item, Item] | None:
+    """The first story the line stopped again after its resumes (_resume_blocked) whose epic has not been
+    re-planned for that stop: (the epic, the story). One automatic re-plan per stop (`replanned_for:<story>`
+    on the epic)."""
+    for story in _line_stopped(cfg, board):
+        if sum(1 for label in story.labels if label.startswith(LABEL_RESUMED)) < cfg.story.resume_attempts:
+            continue
+        epic_key = epic_key_of(story.labels)
+        try:
+            epic = board.store.get(epic_key or "")
+        except KeyError:
+            continue
+        if f"{LABEL_REPLANNED}{story.key}" not in epic.labels:
+            return epic, story
+    return None
+
+
+async def _replan_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item, story: Item) -> str:
+    """Re-plan `epic` because `story` stopped again (D8). The epic is marked first (a re-plan that fails is
+    not tried again for the same stop); the line says what the architect did."""
+    board.store.update(epic.key, labels=[*epic.labels, f"{LABEL_REPLANNED}{story.key}"])
+    head = f"epic {epic.key} {epic.title}"
+    why = f"{story.key} stopped again after its resume"
+    try:
+        st = await make_epic_pipeline(cfg, board).replan(board.store.get(epic.key), reason=why)
+    except StorySetupError as e:
+        return f"{head}: re-plan failed ({_cap(_redact_urls(str(e)))})"
+    done = st.replans[-1] if st.replans and st.replans[-1]["reason"] == why else None
+    if done is None:
+        return f"{head}: re-plan failed after {story.key} stopped again (the plan stands)"
+    counts = [
+        f"{len(done[k])} {word}"
+        for k, word in (
+            ("created", "new"),
+            ("changed", "changed"),
+            ("retired", "retired"),
+            ("dropped", "dropped"),
+        )
+        if done[k]
+    ]
+    return f"{head}: re-planned after {story.key} stopped again ({', '.join(counts) or 'nothing changed'})"
+
+
+async def replan_one(cfg: AirlieConfig, key: str, reason: str) -> str:
+    """Re-plan the epic `key` now (`task epic:replan`), holding the one-story lock. Returns the line to print;
+    a BoardError for a key that is not an epic of the local board, StoryBusy while a story is in flight."""
+    board = make_board(cfg)
+    if not isinstance(board, LocalBoard):
+        raise BoardError("epics are on airlie's own board (story.board: local); the line only reads Jira")
+    item = board._item(key)
+    if item.level != "epic":
+        raise BoardError(f"{item.key} is a {item.level}, not an epic")
+    with story_lock(stories_dir(cfg)) as held:
+        if not held:
+            raise StoryBusy("another story is in flight (one at a time); try again when it finishes")
+        st = await make_epic_pipeline(cfg, board).replan(item, reason=reason)
+    done = st.replans[-1] if st.replans and st.replans[-1]["reason"] == reason else None
+    if done is None:
+        return f"epic {item.key}: the re-plan changed nothing (see {st.path / 'events.jsonl'})"
+    return (
+        f"epic {item.key} re-planned: {len(done['created'])} new, {len(done['changed'])} changed, "
+        f"{len(done['retired'])} retired, {len(done['dropped'])} dropped"
+    )
+
+
+def _status(board: LocalBoard, key: str) -> str | None:
+    try:
+        return board.store.get(key).status
+    except KeyError:
+        return None
+
+
+def _record_stage(cfg: AirlieConfig, epic: Item, stage: str | None) -> None:
+    """The epic's record follows its status (building, review, done); an epic with no record is left."""
+    if stage is None or not (epics_dir(cfg) / epic.key / "state.json").is_file():
+        return
+    try:
+        st = EpicState.open(epics_dir(cfg) / epic.key, epic, "")
+        if st.stage != stage:
+            st.finish(stage)
+    except StorySetupError as e:
+        log.warning("epic %s: %s", epic.key, _why(e))
+
+
+async def _replay_dependents(cfg: AirlieConfig, board: LocalBoard) -> list[str]:
+    """Replay a dependent story onto its base when the base moved (D5): a story that stacks on another and
+    has started has its base recorded as the other's top layer branch at a commit. When that branch has
+    moved (a reviewer changed the lower story), or the lower story's pull requests are merged (its base then
+    becomes the trunk), its built layers are replayed on the new base, each held to the story's gate
+    (`StoryPipeline.restack`), before it builds anything more. A replay that cannot be done (a conflict, a
+    red gate) puts the story in blocked with the reason, for a person. Returns what it did, for the line."""
+    notes: list[str] = []
+    merged: dict[str, bool] = {}
+    for item in board.store.list(level="story"):
+        if item.status not in ("approved", "doing") or board.is_held(item) or not after_keys(item.labels):
+            continue
+        saved = _saved(cfg, item.key)
+        base = (saved or {}).get("base") or {}
+        dep = base.get("story")
+        if saved is None or not dep:  # not started, or already on the trunk
+            continue
+        try:
+            card = await board.card(item.key)
+            where = place(cfg, card)
+            onto = await _moved_base(cfg, where.repo, dep, base, merged)
+            if onto == "stay":
+                continue
+            pipe = make_pipeline(
+                cfg, board=board, repo=where.repo, test_cmd=None, github_repo=where.github_repo
+            )
+            await pipe.restack(card, onto=None if onto == "trunk" else onto)
+            notes.append(f"replayed {item.key} onto {'the trunk' if onto == 'trunk' else dep}")
+        except (RestackError, StorySetupError, PublishError, BoardError) as e:
+            notes.append(f"{item.key} not replayed ({_why(e)})")
+            text = f"cannot be replayed onto the story it stacks on: {_why(e)}\nNeeds a person."
+            try:
+                await _note_and_move(board, await board.card(item.key), text, "blocked")
+            except Exception as err:  # noqa: BLE001 - a board that fails is named, not raised
+                notes.append(f"the note on {item.key} failed ({_why(err)})")
+    return notes
+
+
+async def _moved_base(
+    cfg: AirlieConfig, repo: Path, dep: str, base: dict[str, Any], merged: dict[str, bool]
+) -> dict[str, str] | Literal["stay", "trunk"]:
+    """What a dependent story is to be replayed onto: "stay" when nothing moved, "trunk" when the story it
+    stacks on is merged, else the lower story's top branch at its commit now. `merged` caches the answer per
+    dependency for the beat."""
+    saved = _saved(cfg, dep) or {}
+    if dep not in merged:
+        numbers = [int(p["number"]) for p in saved.get("prs") or () if isinstance(p, dict) and "number" in p]
+        publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg))
+        try:
+            merged[dep] = await publisher.landed(repo, numbers)
+        except (PublishError, ValueError, KeyError, TypeError):
+            merged[dep] = False  # gh does not say: the branch is the evidence
+    if merged[dep]:
+        return "trunk"
+    ref = str(base.get("ref"))
+    sha = rev_parse(repo, f"refs/heads/{ref}")
+    if sha is None or sha == base.get("sha"):
+        return "stay"
+    return {"ref": ref, "sha": sha, "story": dep}
+
+
+async def _plan_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item) -> str:
+    """Plan the top approved epic into stories (D3, D10). An epic with no usable closing block (a Jira
+    import, a card typed in the app) is never planned from prose: it is set aside with a note, in blocked,
+    until a person gives it one and approves it again. Returns the line for the log."""
+    head = f"epic {epic.key} {epic.title}"
+    why = ""
+    try:
+        if epic_of(epic.description) is None:
+            why = "it has no closing epic JSON block (task epic:add writes one)"
+    except StoryError as e:
+        why = f"its closing epic JSON block is flawed: {e}"
+    pipe = make_epic_pipeline(cfg, board) if not why else None
+    if pipe is not None:
+        try:
+            st = await pipe.plan(epic)
+        except StorySetupError as e:  # a record that cannot be opened: no later tick would change that
+            why = str(e)
+        else:
+            if st.blocked:
+                return f"{head}: blocked ({st.blocked})"
+            return f"{head}: planned into {len(st.stories)} stories"
+    reason = _cap(_redact_urls(why))
+    try:
+        board.store.comment(
+            epic.key, "airlie", note(f"set aside: {reason}\nApprove the epic again once that is fixed.")
+        )
+        board.set_epic_status(epic.key, "blocked")
+    except Exception as err:  # noqa: BLE001 - a board that fails is named, not raised
+        reason += f" (and the board refused the note: {_why(err)})"
+    return f"{head}: set aside ({reason})"
+
+
 async def tick(cfg: AirlieConfig, *, serve_commit: str | None = None) -> str:
     """One scheduler beat: the bookkeeping (a deployed fix releases the stories it blocked, a transient
     block is retried: `fixes.bookkeep`, on the local board only), then `_tick`. `serve_commit` is the commit
@@ -363,51 +643,73 @@ async def tick(cfg: AirlieConfig, *, serve_commit: str | None = None) -> str:
 
 
 async def _tick(cfg: AirlieConfig, board: Board) -> str:
-    """The beat itself: build the top issue of the intake query, unless a story is in flight, the engine
-    is down or GitHub does not answer (github_down), in the repository its label names, gated by its
-    AGENTS.md. Returns one line for the log. An issue that a run leaves in intake would hold up the ones
-    behind it, so it is moved out: one whose story cannot be placed or opened (_set_aside), or whose story has
-    finished (_already_in_review)."""
+    """The beat itself: bookkeeping on the epics (a planned epic's status follows its stories, waiting
+    stories are promoted, a dependent whose base moved is replayed onto it), then one piece of work: plan the
+    top approved epic into stories, else build the top issue of the intake query. Nothing is picked while a
+    story is in flight, the engine is down or GitHub does not answer (github_down), in the repository its
+    label names, gated by its AGENTS.md. Returns one line for the log, naming what it did. An issue that a
+    run leaves in intake would hold up the ones behind it, so it is moved out: one whose story cannot be
+    placed or opened (_set_aside), or whose story has finished (_already_in_review). With story.board: jira
+    the line only reads the board: it has no epics to plan and no cards to promote, and says so in the log."""
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
     with story_lock(stories_dir(cfg)) as held:
         if not held:
             return "busy: a story is in flight"
-        try:
-            healthy = bool((await _engine(cfg).health()).ok)
-        except Exception:  # noqa: BLE001 - any failure to reach the engine means it is down
-            healthy = False
-        if not healthy:
-            return "engine down: start it with `task restart -- --topology studio`"
-        down = await github_down(cfg)
-        if down is not None:  # an issue taken now would stop at its first publish step: the queue waits
-            return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
-        card = await board.next_card()
-        if card is None:
-            return "idle: no issue matches the intake query"
-        taken = ""
-        if isinstance(board, LocalBoard):  # only a person's approval puts a story up for building
-            column = board.status_of(card)
-            if column != "approved":
-                return f"refused: {card.ref} is {column}, not approved (only approved stories are built)"
-            taken = f" (taken from {column})"
-        finished = _recorded(cfg, card).get("stage") == "review"  # then the run below has nothing to do
-        try:
-            where = place(cfg, card)
-            pipe = make_pipeline(
-                cfg, board=board, repo=where.repo, test_cmd=None, github_repo=where.github_repo
-            )
-            st = await pipe.run(card)
-        except StorySetupError as e:
-            line = await _set_aside(cfg, board, card, e)
+        notes: list[str] = []
+        if isinstance(board, LocalBoard):
+            notes += _follow(cfg, board)
+        elif cfg.story.board == "jira":
+            log.info("story.board is jira: the line only reads it, so epics are neither planned nor followed")
+        line = await _beat(cfg, board, notes)
+    if not notes:
+        return line
+    return " ".join(f"{'; '.join(notes)}; {line}".split())
+
+
+async def _beat(cfg: AirlieConfig, board: Board, notes: list[str]) -> str:
+    """The rest of a tick, inside the story lock: the health checks, the replays, then one piece of work."""
+    try:
+        healthy = bool((await _engine(cfg).health()).ok)
+    except Exception:  # noqa: BLE001 - any failure to reach the engine means it is down
+        healthy = False
+    if not healthy:
+        return "engine down: start it with `task restart -- --topology studio`"
+    down = await github_down(cfg)
+    if down is not None:  # an issue taken now would stop at its first publish step: the queue waits
+        return " ".join(f"github down: {down}".split())  # GitHub's own message may hold a line break
+    if isinstance(board, LocalBoard):
+        notes += await _replay_dependents(cfg, board)
+        epic = board.next_epic()
+        if epic is not None:
+            return " ".join((await _plan_epic(cfg, board, epic)).split())
+        target = _replan_target(cfg, board)
+        if target is not None:
+            return " ".join((await _replan_epic(cfg, board, *target)).split())
+    card = await board.next_card()
+    if card is None:
+        return "idle: no issue matches the intake query"
+    taken = ""
+    if isinstance(board, LocalBoard):  # only a person's approval puts a story up for building
+        column = board.status_of(card)
+        if column != "approved":
+            return f"refused: {card.ref} is {column}, not approved (only approved stories are built)"
+        taken = f" (taken from {column})"
+    finished = _recorded(cfg, card).get("stage") == "review"  # then the run below has nothing to do
+    try:
+        where = place(cfg, card)
+        pipe = make_pipeline(cfg, board=board, repo=where.repo, test_cmd=None, github_repo=where.github_repo)
+        st = await pipe.run(card)
+    except StorySetupError as e:
+        line = await _set_aside(cfg, board, card, e)
+    else:
+        if finished and st.stage == "review":
+            line = await _already_in_review(board, card, st)
         else:
-            if finished and st.stage == "review":
-                line = await _already_in_review(board, card, st)
-            else:
-                outcome = f"blocked ({st.blocked})" if st.blocked else st.stage
-                line = f"{card.ref} {card.title}: {outcome}{taken}"
-        # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
-        return " ".join(line.split())
+            outcome = f"blocked ({st.blocked})" if st.blocked else st.stage
+            line = f"{card.ref} {card.title}: {outcome}{taken}"
+    # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
+    return " ".join(line.split())
 
 
 _OWNER_NAME = re.compile(r"[A-Za-z0-9_][\w.-]*/[\w.-]+")

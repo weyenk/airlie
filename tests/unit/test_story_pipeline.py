@@ -21,9 +21,10 @@ from airlie.router import ChiefRouter
 from airlie.story import pipeline as pipeline_module
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
+from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
 from airlie.story.github_app import GitHubApp
 from airlie.story.local_board import LocalBoard
-from airlie.story.model import Layer, Story, StorySetupError
+from airlie.story.model import Criterion, EpicHeader, Layer, Story, StorySetupError
 from airlie.story.package import Package
 from airlie.story.pipeline import (
     StoryBlocked,
@@ -2331,3 +2332,127 @@ def test_a_lessons_detail_is_the_first_line_that_says_what_failed() -> None:
     assert _gate_detail("all quiet\nexit 1") == "exit 1"
     assert _gate_detail("") == "the gate failed"
     assert len(_gate_detail("FAILED " + "x" * 500)) == 200
+
+
+# ---- stories born from an epic (P3, 2026-10-24) ----
+
+HEADER = EpicHeader("AIR-3", "Avatars, in two stories.", ("PNG only",), "a huge file is accepted")
+
+
+def planned(sid: str, title: str, *, scope: tuple[ScopedPath, ...] = ()) -> PlannedStory:
+    return PlannedStory(
+        sid,
+        title,
+        "The epic needs it.",
+        "o/r",
+        ("EC1",),
+        scope,
+        (),
+        (),
+        (
+            Criterion("AC1", "a user", "they act", "it works"),
+            Criterion("AC2", "a stored avatar", "loaded", "shown"),
+        ),
+        (),
+        (),
+        (),
+        "S",
+    )
+
+
+def card_of_epic(key: str, ps: PlannedStory, after: tuple[str, ...] = ()) -> Card:
+    """A story's board card as the epic pipeline makes it: its description closes with the contract."""
+    labels = ("repo:o/r", "epic:AIR-3", f"plan:{ps.id}", *(f"after:{k}" for k in after))
+    return Card(key, key, key, ps.title, render_story_card(ps, HEADER, after), None, (), labels)
+
+
+async def test_a_story_card_with_a_block_skips_refine_and_carries_the_epic_header_into_its_briefs(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(product=[])
+    card = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+    st = await pipeline(tmp_path, repo, engine).run(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert not [r for r in engine.requests if r.role == "product"]  # product's refine is the meeting's job
+    assert Story.from_dict(st.story or {}).epic == HEADER and st.story is not None
+    assert st.story["title"] == "Add avatar upload"
+    [skipped] = kinds(st.path / "events.jsonl", "refine_skipped")
+    assert skipped["reason"] == "story card"
+    asked = [text_of(r) for r in architect_requests(engine)]
+    for brief in (asked[0], asked[1]):  # the layers brief, then the first package brief
+        assert "## The epic this story serves" in brief and "AIR-3: Avatars, in two stories." in brief
+        assert "- PNG only" in brief and "Risk this story must catch: a huge file is accepted" in brief
+
+
+async def test_a_story_card_whose_block_is_flawed_blocks_the_story_with_the_reason(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    description = '```json\n{"type": "story_card", "story": 3, "epic": {}}\n```\n'
+    card = Card("AIR-4", "AIR-4", "AIR-4", "x", description, None, (), ("repo:o/r",))
+    engine = happy_engine(product=[])
+    st = await pipeline(tmp_path, repo, engine).run(card)
+    assert st.blocked is not None and "story card's closing block is flawed" in st.blocked
+    assert not engine.requests
+
+
+async def test_a_dependent_story_bases_on_its_dependencys_top_branch_and_publishes_a_stack_on_it(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    low = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+    first = await pipeline(tmp_path, repo, happy_engine(product=[])).run(low)
+    top_branch = f"AIR-4-{B2}"
+    assert first.stage == "review" and first.built["02"]["branch"] == top_branch
+    top = git(repo, "rev-parse", f"refs/heads/{top_branch}")
+
+    view = {**layer("view", "View", "view.py", "AC1", "Show it."), "acceptance": ["AC1", "AC2"]}
+    layer_reply = fenced({"layers": [view]})
+    pkg = package_reply(
+        {"tests/unit/test_view.py": "def test_view():\n    assert True\n"},
+        {"AC1": ["tests/unit/test_view.py::test_view"], "AC2": ["tests/unit/test_view.py::test_view"]},
+    )
+    high = card_of_epic("AIR-5", planned("S2", "Show the avatar"), after=("AIR-4",))
+    write_view = FakeReply(
+        tool_calls=[ToolCall("n", "write_file", json.dumps({"path": "view.txt", "content": "view\n"}))]
+    )
+    engine = FakeEngine({"architect": [layer_reply, pkg], "coder": [write_view, DONE], "reviewer": [APPROVE]})
+    gh = RecordedGh()
+    st = await pipeline(tmp_path, repo, engine, gh).run(high)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert st.base == {"ref": top_branch, "sha": top, "story": "AIR-4"}
+    branch = st.built["01"]["branch"]
+    assert branch == "AIR-5-show-the-avatar-01-view"
+    git(repo, "merge-base", "--is-ancestor", f"refs/heads/{top_branch}", f"refs/heads/{branch}")
+    assert [
+        "gh",
+        "stack",
+        "init",
+        "--base",
+        top_branch,
+        branch,
+    ] in gh.calls  # the stack's base is its dependency
+    assert (
+        "Stacks on AIR-4's pull requests; merge those first, then this stack bottom-up."
+        in (st.path / "pr-01.md").read_text()
+    )
+
+
+async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    high = card_of_epic("AIR-5", planned("S2", "Show the avatar"), after=("AIR-4",))
+    engine = FakeEngine({"architect": []})
+    gh = RecordedGh()
+    st = await pipeline(tmp_path, repo, engine, gh).run(high)
+    assert st.stage == "new" and st.blocked is None and st.base is None
+    assert not engine.requests and not gh.calls  # nothing built, nothing fetched or pushed
+    [waiting] = kinds(st.path / "events.jsonl", "waiting")
+    assert "AIR-4" in waiting["reason"]
+    assert "waiting for AIR-4" in (st.path / "notes.md").read_text()
+    # a dependency that has started but is not in review yet is a wait too
+    low = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+    stopped = await pipeline(tmp_path, repo, FakeEngine({"architect": [FakeReply(text="no plan")] * 2})).run(
+        low
+    )
+    assert stopped.blocked is not None and stopped.stage != "review"
+    again = await pipeline(tmp_path, repo, FakeEngine({"architect": []})).run(high)
+    assert again.stage == "new" and again.blocked is None and again.base is None

@@ -8,6 +8,7 @@ import pytest
 
 from airlie.board import BoardStore
 from airlie.story.board import NOTE_PREFIX, BoardError, Card, NullBoard, note
+from airlie.story.epic_state import EpicState
 from airlie.story.factory import _note_and_move, make_board
 from airlie.story.local_board import LocalBoard
 from tests.unit.test_config import MINIMAL, write
@@ -178,3 +179,115 @@ async def test_the_card_omits_airlies_and_roles_notes_but_keeps_noahs(tmp_path: 
     assert card.comments == ("please keep it small",)
     assert "the design is settled" not in card.comments  # the role's note is out of the next brief
     assert (NOTE_PREFIX + "picked this up") not in card.comments  # airlie's note is out of the next brief
+
+
+# ---- epics: what the tick asks the board (P3, 2026-10-24) ----
+
+
+def epic_board(tmp_path: Path) -> tuple[BoardStore, LocalBoard, Path]:
+    s = BoardStore(tmp_path / "board.sqlite")
+    epics = tmp_path / "epics"
+    return s, LocalBoard(s, epics_dir=epics), epics
+
+
+def line_story(s: BoardStore, epic: str, plan_id: str, *after: str, status: str = "approved") -> str:
+    """A story the line made under `epic`: its labels, and `after` the keys it stacks on."""
+    labels = ["repo:o/r", f"epic:{epic}", f"plan:{plan_id}", *(f"after:{k}" for k in after)]
+    key = s.create(level="story", title=plan_id, parent=epic, labels=labels).key
+    s.update(key, status=status)  # type: ignore[arg-type]
+    return key
+
+
+def test_next_epic_is_the_oldest_approved_epic_that_still_needs_its_stories(tmp_path: Path) -> None:
+    s, b, epics = epic_board(tmp_path)
+    one, two, three = (s.create(level="epic", title=t).key for t in ("one", "two", "three"))
+    assert b.next_epic() is None  # nothing approved: an epic waits for a person
+    s.update(two, status="approved")
+    s.update(three, status="approved")
+    first = b.next_epic()
+    assert first is not None and first.key == two
+    planned = EpicState.open(epics / two, s.get(two), "o/r")  # planned, and every story of it made
+    planned.plan = {"stories": [{"id": "S1"}]}
+    planned.stories = {"S1": "AIR-9"}
+    planned.save()
+    second = b.next_epic()
+    assert second is not None and second.key == three
+    planned.stories = {}  # a stop half-way through making the cards: it still needs work
+    planned.save()
+    again = b.next_epic()
+    assert again is not None and again.key == two
+    assert one == "AIR-1"  # the epic nobody approved was never offered
+
+
+async def test_next_card_skips_a_story_of_an_epic_the_line_planned_while_a_person_holds_the_epic(
+    tmp_path: Path,
+) -> None:
+    s, b, _ = epic_board(tmp_path)
+    epic = s.create(level="epic", title="e").key
+    mine = line_story(s, epic, "S1")
+    hand = s.create(level="story", title="by hand", parent=epic).key  # a person's story under the same epic
+    s.update(hand, status="approved")
+    for held in ("todo", "blocked", "done"):
+        s.update(epic, status=held)  # type: ignore[arg-type]
+        found = await b.next_card()
+        assert found is not None and found.key == hand, held  # the line's story waits; a person's does not
+    for open_ in ("approved", "doing"):
+        s.update(epic, status=open_)  # type: ignore[arg-type]
+        found = await b.next_card()
+        assert found is not None and found.key == mine, open_  # the older of the two
+
+
+def test_waiting_stories_are_the_todo_dependents_of_an_epic_that_is_not_held(tmp_path: Path) -> None:
+    s, b, _ = epic_board(tmp_path)
+    epic = s.create(level="epic", title="e").key
+    s.update(epic, status="approved")
+    first = line_story(s, epic, "S1")
+    second = line_story(s, epic, "S2", first, status="todo")
+    line_story(s, epic, "S3", first, status="doing")  # started: not waiting
+    s.create(level="story", title="a person's todo story", parent=epic)  # no after: label
+    assert [i.key for i in b.waiting_stories()] == [second]
+    b.set_epic_status(epic, "blocked")
+    assert b.waiting_stories() == []  # a held epic promotes nothing
+    b.set_epic_status(epic, "doing")
+    assert [i.key for i in b.waiting_stories()] == [second]
+
+
+def test_set_epic_status_moves_an_epic_and_refuses_anything_else(tmp_path: Path) -> None:
+    s, b, _ = epic_board(tmp_path)
+    epic = s.create(level="epic", title="e").key
+    story = s.create(level="story", title="s", parent=epic).key
+    b.set_epic_status(epic, "approved")
+    assert s.get(epic).status == "approved"
+    with pytest.raises(BoardError, match="is a story"):
+        b.set_epic_status(story, "approved")
+    with pytest.raises(BoardError, match="no item AIR-99"):
+        b.set_epic_status("AIR-99", "approved")
+
+
+def test_an_epics_status_follows_the_stories_the_line_made_for_it(tmp_path: Path) -> None:
+    s, b, _ = epic_board(tmp_path)
+    epic = s.create(level="epic", title="e").key
+    s.update(epic, status="approved")
+    a = line_story(s, epic, "S1")
+    c = line_story(s, epic, "S2", a, status="todo")
+    assert b.follow_stories() == []  # nothing picked yet: the epic stays approved
+    s.update(a, status="doing")
+    assert b.follow_stories() == [(epic, "approved", "doing")]
+    s.update(a, status="review")
+    assert b.follow_stories() == []  # a dependent still waits: the epic is not in review
+    s.update(c, status="review")
+    assert b.follow_stories() == [(epic, "doing", "review")]
+    s.update(c, status="approved")  # a re-plan adds work: back to doing
+    assert b.follow_stories() == [(epic, "review", "doing")]
+    s.update(c, status="done")
+    s.update(a, status="done")
+    assert b.follow_stories() == [(epic, "doing", "done")]
+    assert b.follow_stories() == []  # a finished epic is left alone
+    # a person's hold is never overridden, and an epic with no story of the line's is not followed
+    held = s.create(level="epic", title="held").key
+    s.update(held, status="blocked")
+    line_story(s, held, "S1", status="doing")
+    plain = s.create(level="epic", title="plain").key
+    s.update(plain, status="approved")
+    s.update(s.create(level="story", title="x", parent=plain).key, status="doing")
+    assert b.follow_stories() == []
