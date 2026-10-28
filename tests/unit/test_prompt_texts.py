@@ -21,17 +21,20 @@ from typing import Any
 import pytest
 
 from airlie.prompts import text
+from airlie.story.amigos import ProofTest
 from airlie.story.board import text_card
 from airlie.story.briefs import (
     build_brief,
     built_so_far,
     consult_brief,
     consult_round_text,
+    critic_brief,
     directions_brief,
     imagine_brief,
     layers_brief,
     package_brief,
     plan_brief,
+    proof_revision_brief,
     questions_brief,
     read_back_text,
     read_brief,
@@ -51,7 +54,7 @@ from airlie.story.layer_checks import (
 )
 from airlie.story.lessons import Lesson
 from airlie.story.mockups import Direction
-from airlie.story.model import Layer
+from airlie.story.model import Layer, ScopedPath
 from airlie.story.package import Interface, Package, PackageFile
 from airlie.story.package_checks import package_feedback_said
 from airlie.teams.native_team import _goal_message
@@ -163,6 +166,14 @@ CASES: dict[str, Callable[[], str]] = {
     "plan-fix": lambda: text("plan-fix", error="bad json"),
     "plan-unfinished": lambda: text("plan-unfinished"),
     "package-fix": lambda: text("package-fix"),
+    "amigos-findings": lambda: text("amigos-findings"),
+    "amigos-opening": lambda: text("amigos-opening"),
+    "amigos-turn": lambda: text("amigos-turn"),
+    "amigos-product": lambda: text("amigos-product"),
+    "amigos-architect": lambda: text("amigos-architect"),
+    "amigos-tester": lambda: text("amigos-tester"),
+    "amigos-proof-revision": lambda: text("amigos-proof-revision"),
+    "package-critic": lambda: text("package-critic"),
     "package-replan": lambda: text("package-replan"),
     "passes-before-code-choice": lambda: "  " + text("passes-before-code-choice"),
     "loose-match": lambda: "  " + text("loose-match"),  # feedback indents it under its finding
@@ -269,6 +280,40 @@ CASES["fn:briefs.package_brief:full"] = partial(
             detail="passes_before_code",
         )
     ],
+)
+AGREED = (
+    ProofTest(
+        "AC2",
+        "profile",
+        "tests/unit/test_profile.py",
+        "test_shows",
+        "unit",
+        "unit",
+        "the url shows",
+        "an avatar",
+    ),
+    ProofTest(None, "profile", "tests/unit/test_profile.py", "test_title", "unit", None, "the title", ""),
+)
+PROFILE = replace(LAYERS[1], files=(ScopedPath("src/profile.py", True),), interfaces=("def show() -> int",))
+CASES["fn:briefs.package_brief:agreed"] = partial(
+    package_brief,
+    STORY,
+    (LAYERS[0], PROFILE, LAYERS[2]),
+    1,
+    max_steps=40,
+    context_budget=65_536,
+    proof=AGREED,
+)
+CASES["fn:briefs.critic_brief:plain"] = partial(
+    critic_brief, PROFILE, SAMPLE_PACKAGE.tests, AGREED, "## The repository's test gate\n- uv run pytest"
+)
+CASES["fn:briefs.proof_revision_brief:plain"] = partial(
+    proof_revision_brief,
+    STORY,
+    PROFILE,
+    AGREED,
+    (("tests/unit/test_profile.py::test_shows", "the page is not rendered in this layer"),),
+    "## The repository's test gate\n- uv run pytest",
 )
 CASES["fn:briefs.build_brief:plain"] = partial(build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE)
 CASES["fn:briefs.build_brief:guide-built"] = partial(

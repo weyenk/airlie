@@ -20,7 +20,7 @@ from airlie.story import factory
 from airlie.story.epic_state import EpicState
 from airlie.story.factory import stories_dir, tick
 from airlie.story.publish import Publisher
-from airlie.story.state import story_lock
+from airlie.story.state import lane_lock
 from tests.unit.git_helpers import git
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_story_epic import fenced as block
@@ -423,6 +423,41 @@ async def test_a_blocked_story_is_resumed_once_then_its_epic_is_replanned(
     assert len(rig.engine.requests) == 2  # the plan, the re-plan: the third beat asked nobody
 
 
+def diagnosed(rig: TickRig, key: str, class_: str) -> None:
+    """The block's diagnosis (P5a) says it is of class `class_`."""
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    state = rig.cfg.observability.state_dir
+    pack = Pack(
+        key=key, n=1, reason="x", stage="layers", layer="01", attempt=1, run_id=None, subtask=None,
+        role=None, stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0,
+        tokens=0, minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None,
+        base_failing=(), diff_stat="", paths=Paths(state / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        state,
+        Diagnosis(pack, Classified(class_, "k", "layers", f"{class_}:k:layers", ("k",), "k"), None, "n"),  # type: ignore[arg-type]
+    )
+
+
+async def test_only_a_content_block_is_resumed_by_the_plans_phase_not_a_process_or_an_environment_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A story the diagnosis (P5a) blamed on airlie's own code waits for its fix card, and one it blamed on
+    the environment waits for a person: resuming either would meet the same wall. Content blocks (the
+    model's) are the plans phase's resume-once-then-re-plan (D6 of the scheduler design)."""
+    rig, epic, (s1, s2) = await planned(tmp_path, monkeypatch)
+    started = started_log(monkeypatch)
+    stopped(rig, s1)
+    diagnosed(rig, s1, "process")
+    assert "resumed" not in await tick(rig.cfg)
+    assert started == [] and rig.status(s1) == "blocked"
+    diagnosed(rig, s1, "environment")
+    assert "resumed" not in await tick(rig.cfg) and rig.status(s1) == "blocked"
+    diagnosed(rig, s1, "content")  # the diagnosis is rewritten as block 1: the model's bad day
+    assert f"resumed {s1}" in await tick(rig.cfg)
+
+
 async def test_a_story_a_person_blocked_or_the_line_did_not_make_is_not_resumed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -530,6 +565,7 @@ async def test_planning_an_epic_revises_its_estimate_and_finishing_it_closes_it_
 
     rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
     initiative = rig.store.create(level="initiative", title="Faces", labels=["repo:o/r"]).key
+    rig.store.update(initiative, status="doing")  # a live initiative: one in todo would hold its epics (D7)
     priced = Estimate(1.0, "1 S at 1.0 h (default)", "2026-10-25T00:00:00Z")
     epic = rig.store.create(
         level="epic",
@@ -654,7 +690,7 @@ def test_a_busy_line_leaves_the_card_made_and_says_so(
 
     rig = specs_rig(tmp_path, monkeypatch, FakeEngine({"product": []}))
     app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
-    with TestClient(app) as client, story_lock(stories_dir(rig.cfg)) as held:
+    with TestClient(app) as client, lane_lock(stories_dir(rig.cfg), "plan") as held:
         assert held
         r = client.post(
             "/v1/airlie/initiatives", json={"text": "A loose ask", "repos": ["o/r"]}, headers=bearer()
@@ -663,7 +699,7 @@ def test_a_busy_line_leaves_the_card_made_and_says_so(
     assert r.json() == {
         "key": "AIR-1",
         "job_id": None,
-        "waiting": "busy: a story is in flight; the tick picks AIR-1 up within 15 minutes",
+        "waiting": "busy: the planning lane is in use; the tick picks AIR-1 up within 15 minutes",
     }
     assert rig.store.get("AIR-1").status == "approved"  # the tick starts it
 
@@ -683,12 +719,12 @@ async def test_the_turn_route_answers_busy_while_the_lock_is_held_and_the_tick_t
     rig.store.comment(initiative, "noah", "Fast.")  # the person answers
     app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
     with TestClient(app) as client:
-        with story_lock(stories_dir(rig.cfg)) as held:
+        with lane_lock(stories_dir(rig.cfg), "plan") as held:
             assert held
             r = client.post(f"/v1/airlie/initiatives/{initiative}/turn", headers=bearer())
         assert r.status_code == 409
         assert r.json() == {
-            "error": f"busy: a story is in flight; the tick picks {initiative} up within 15 minutes"
+            "error": f"busy: the planning lane is in use; the tick picks {initiative} up within 15 minutes"
         }
         assert client.get("/v1/airlie/jobs", headers=bearer()).json()["jobs"] == []  # no job was started
     assert len(engine.requests) == 1 and rig.store.get(initiative).comments[-1].text == "Fast."  # the record

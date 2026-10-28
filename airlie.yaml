@@ -166,6 +166,9 @@ story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
   max_layers: 5
+  amigos:                          # P2 (2026-10-24): product, the architect and the tester agree requirements, changes and proof before any layer is built
+    enabled: true
+    max_turns: 12                  # at the cap each owner's part stands and the open objections are recorded
   supervisor:                      # the trial (spec 2026-10-22); false = today's behaviour exactly
     enabled: true
     per_layer: 6
@@ -183,6 +186,35 @@ story:
       blocked: "Blocked"
   github_app:                      # publish as a GitHub App's bot, never with your own gh login or SSH key
     app_id: 5332832                # airlie-bot-weyenk; put your own app's id in airlie.local.yaml (null: your login)
+
+# ---- The line (planning-line P5; docs/superpowers/specs/2026-10-25-line-scheduler-design.md) ---------------------------
+line:
+  home_repo: null                  # owner/name where fix cards are built; null = the remote of the checkout the line runs from
+  transient_retries: 2             # a story blocked by a fetch or engine failure is retried this often per signature
+  tick_s: 60                       # task serve runs a beat of the line this often (the launchd agent is the belt, every 15 minutes)
+  serve_ticks: true
+  fanout: 4                        # short asks (consultations, surveys, reads, renders) run this wide beside the build's decode
+  decode_floor_tps: 12.0           # ... and one at a time while the build's last five steps decode under this
+  consult_context: 8192            # the doctor counts each short ask at this context
+  # What a card's stage is expected to cost: recorded in stages/<stage>.json and warned at 80 percent, noted at
+  # 100, never enforced (the stage's own caps stay the only stops). Wall-clock seconds and tokens (prompt plus
+  # completion). The medians doubled over the recorded cards, `uv run python scripts/stage_medians.py`, 2026-10-25:
+  # survey (n=9), refine (15), plan (14: the architect's layer split or an epic's plan), layer (98 builds, one per
+  # attempt of a layer), publish (8). The stages the planning line made have no recorded run yet, so their
+  # budgets are borrowed from the nearest stage by role and tools until the first weeks of `task line:stats`
+  # have samples: questions from refine (product's turn), imagine, amigos and package from plan (the
+  # architect's long turns), review from the performance review's minute-a-layer (docs/bench) doubled.
+  budgets:
+    survey: {wall_s: 682, tokens: 233736}
+    refine: {wall_s: 499, tokens: 267186}
+    questions: {wall_s: 499, tokens: 267186}      # no sample: borrowed from refine
+    imagine: {wall_s: 4575, tokens: 715411}       # no sample: borrowed from plan
+    amigos: {wall_s: 4575, tokens: 715411}        # no sample: borrowed from plan
+    plan: {wall_s: 4575, tokens: 715411}
+    package: {wall_s: 4575, tokens: 715411}       # no sample: borrowed from plan
+    layer: {wall_s: 3208, tokens: 2153432}
+    review: {wall_s: 300, tokens: 400000}         # no sample: the performance review's minute a layer, generously
+    publish: {wall_s: 57, tokens: 1}              # no model runs in it: wall-clock only
 
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
 # airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline

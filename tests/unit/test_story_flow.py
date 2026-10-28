@@ -640,3 +640,131 @@ def test_an_initiative_flow_names_what_the_line_works_on_and_what_is_not_there(t
     for key in ("AIR-99", "../x", ""):
         with pytest.raises(StoryNotFound):
             initiative_flow(tmp_path, store, key)
+
+
+# ---- the story meeting (P2, 2026-10-24) ----
+
+
+def add_events(state_dir: Path, events: list[dict[str, Any]]) -> None:
+    path = state_dir / "stories" / KEY / "events.jsonl"
+    path.write_text(path.read_text() + "".join(json.dumps(e) + "\n" for e in events))
+
+
+def turn(ts: float, role: str, n: int, prompt: int = 1000, completion: int = 100) -> dict[str, Any]:
+    return {
+        "ts": ts,
+        "kind": "amigos_turn",
+        "role": role,
+        "turn": n,
+        "verdict": None,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+    }
+
+
+MEETING_EVENTS = [
+    turn(50.0, "product", 1),
+    turn(60.0, "architect", 2),
+    turn(70.0, "tester", 3),
+    {"ts": 71.0, "kind": "amigos_objection", "role": "product", "part": "proof", "about": "AC1", "round": 2},
+    {
+        "ts": 72.0,
+        "kind": "amigos_objection",
+        "role": "tester",
+        "part": "proof",
+        "about": "t::x",
+        "source": "package",
+    },
+    turn(80.0, "airlie", 4, prompt=0, completion=0),
+]
+
+
+def test_a_story_shows_its_meeting_with_turns_and_objections(state_dir: Path) -> None:
+    add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert [j["id"] for j in layers["jobs"]] == ["layers", "meeting"]
+    meeting = by_id(layers["jobs"], "meeting")
+    assert (meeting["role"], meeting["status"]) == ("amigos", "passed")
+    assert (meeting["turns"], meeting["objections"]) == (
+        4,
+        1,
+    )  # a package critic's objection is not the meeting's
+    assert meeting["tokens"]["prompt"] == 3000 and meeting["tokens"]["completion"] == 300
+    assert meeting["started"] == 50.0 and meeting["ended"] == 85.0 and meeting["duration_s"] == 35.0
+    assert meeting["owner_decided"] == []
+
+
+def test_a_meeting_that_ran_out_of_turns_says_which_parts_their_owners_decided(state_dir: Path) -> None:
+    add_events(
+        state_dir,
+        [
+            *MEETING_EVENTS,
+            {"ts": 85.0, "kind": "amigos_owner_decided", "parts": ["proof"], "turns": 4},
+            {"ts": 85.5, "kind": "amigos_unresolved", "role": "product", "part": "proof", "about": "AC1"},
+        ],
+    )
+    meeting = by_id(by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"], "meeting")
+    assert (
+        meeting["status"] == "passed" and meeting["owner_decided"] == ["proof"] and meeting["unresolved"] == 1
+    )
+
+
+def test_a_meeting_in_progress_is_running_and_one_the_story_stopped_in_is_failed(state_dir: Path) -> None:
+    add_events(state_dir, MEETING_EVENTS)
+    state_file = state_dir / "stories" / KEY / "state.json"
+    state = json.loads(state_file.read_text())
+    state.update(stage="refine", blocked=None, built={})
+    state_file.write_text(json.dumps(state))
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert by_id(layers["jobs"], "meeting")["status"] == "running" and layers["status"] == "running"
+    state["blocked"] = "the engine went away"
+    state_file.write_text(json.dumps(state))
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert by_id(layers["jobs"], "meeting")["status"] == "failed"
+
+
+def test_a_story_without_a_meeting_has_no_meeting_job_and_the_job_has_a_detail(state_dir: Path) -> None:
+    assert [j["id"] for j in by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"]] == ["layers"]
+    add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
+    state_file = state_dir / "stories" / KEY / "state.json"
+    state = json.loads(state_file.read_text())
+    state["agreement"] = {"turns": 4, "proof": []}
+    state_file.write_text(json.dumps(state))
+    detail = job_detail(state_dir, KEY, "layers", "meeting")
+    assert detail["output"]["agreement"] == {"turns": 4, "proof": []} and "meeting" in detail["input_note"]
+
+
+def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> None:
+    """The row the Vue app draws gains the latest block's class and kind, and the per-stage figures the line
+    recorded (planning-line P5b, D11)."""
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    write_story(tmp_path)
+    plain = story_flow(tmp_path, KEY)
+    assert plain["diagnosis"] is None and plain["budgets"] == {}  # never diagnosed, nothing recorded
+    pack = Pack(
+        key=KEY, n=2, reason="x", stage="layers", layer="02", attempt=1, run_id=None, subtask=None, role=None,
+        stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0, tokens=0,
+        minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None, base_failing=(),
+        diff_stat="", paths=Paths(tmp_path / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        tmp_path,
+        Diagnosis(
+            pack,
+            Classified("process", "hold_trap", "layers", "process:hold_trap:tests", ("x",), "r"),
+            None,
+            "n",
+        ),
+    )
+    stages = tmp_path / "stories" / KEY / "stages"
+    stages.mkdir()
+    (stages / "layer.json").write_text(json.dumps({"tokens": 5000, "wall_s": 900.0, "state": "ok"}))
+    flow = story_flow(tmp_path, KEY)
+    assert flow["diagnosis"] == {
+        "class": "process",
+        "kind": "hold_trap",
+        "signature": "process:hold_trap:tests",
+        "n": 2,
+    }
+    assert flow["budgets"] == {"layer": {"tokens": 5000, "wall_s": 900.0, "state": "ok"}}

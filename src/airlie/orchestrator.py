@@ -6,6 +6,7 @@ M3 replaces the observer with the LTS substrate; M4 adds the aggregator."""
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -105,6 +106,8 @@ class LoggingObserver:
             ok=step.ok,
             prompt_tokens=step.prompt_tokens,
             completion_tokens=step.completion_tokens,
+            reasoning_chars=len(step.reasoning),  # the bench splits completion_tokens: thinking, answer
+            answer_chars=len(step.assistant_text) + len(json.dumps(step.u_t.arguments)),
             prefill_ms=round(step.prefill_ms, 1),
             gen_ms=round(step.gen_ms, 1),
             tool_ms=round(step.tool_ms, 1),

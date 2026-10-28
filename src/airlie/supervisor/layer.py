@@ -16,6 +16,7 @@ from typing import cast, get_args
 
 from airlie.config.schema import SupervisorSpec
 from airlie.engine.types import Message
+from airlie.story.diagnosis import Classified, Pack, render_pack
 from airlie.supervisor.answer import Answer
 from airlie.supervisor.evidence import TriageInput, layer_events, trace_tail
 from airlie.supervisor.ledger import Intervention, Ledger, Outcome, Trigger
@@ -98,18 +99,34 @@ class LayerSupervisor:
         return answer.message if answer else None
 
     async def at_block(
-        self, subtask: str, role: str, reason: str, *, kinds: Sequence[str] = (), evidence: str = ""
-    ) -> str | None:
-        """Muse's reading of why the layer blocked, for the card; None on a fallback. The layer is stopping,
-        so the outcome is known at once."""
-        ledger_id, answer = await self._triage("block", subtask, role, reason, tuple(kinds), evidence)
+        self,
+        subtask: str,
+        role: str,
+        reason: str,
+        *,
+        pack: Pack | None = None,
+        classified: Classified | None = None,
+        kinds: Sequence[str] = (),
+        evidence: str = "",
+    ) -> Answer | None:
+        """Muse's reading of why the story blocked; None on a fallback. The story is stopping, so the outcome
+        is known at once. With the block's evidence `pack` and the mechanical `classified` (the diagnosis,
+        P5a), Muse reads the pack beside the class and says whether it agrees with it; the ledger row keeps
+        the class and the signature."""
+        if pack is not None:
+            evidence = render_pack(pack)
+            if classified is not None:
+                evidence += (
+                    f"\n\nMechanical class: {classified.class_} / {classified.kind} (rule {classified.rule}; "
+                    f"signature {classified.signature}). Say whether you agree (class_agrees, class_reason)."
+                )
+                kinds = kinds or (classified.kind,)
+        ledger_id, answer = await self._triage(
+            "block", subtask, role, reason, tuple(kinds), evidence, classified=classified
+        )
         if ledger_id is not None:
             self._write_outcome("block", ledger_id, "blocked", "")
-        if answer is None:
-            return None
-        if answer.fix_if_attempt:
-            return f"{answer.diagnosis}\n\nIf it had one more attempt: {answer.fix_if_attempt}"
-        return answer.diagnosis
+        return answer
 
     # ---- the repeat guard (StuckAdvisor) -------------------------------------------------------------------
 
@@ -145,7 +162,15 @@ class LayerSupervisor:
     # ---- inside --------------------------------------------------------------------------------------------
 
     async def _triage(
-        self, trigger: Trigger, subtask: str, role: str, told: str, kinds: tuple[str, ...], evidence: str
+        self,
+        trigger: Trigger,
+        subtask: str,
+        role: str,
+        told: str,
+        kinds: tuple[str, ...],
+        evidence: str,
+        *,
+        classified: Classified | None = None,
     ) -> tuple[int | None, Answer | None]:
         answer: Answer | None = None
         fallback: str | None = None
@@ -186,6 +211,8 @@ class LayerSupervisor:
                     model=self.triage.model,
                     seconds=seconds,
                     tokens=tokens,
+                    class_=classified.class_ if classified else None,
+                    signature=classified.signature if classified else None,
                 )
             )
         except Exception as e:  # noqa: BLE001  # a ledger that cannot be written never stops the run

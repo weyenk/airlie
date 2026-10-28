@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
+from airlie.story.js_tests import NO_EXPECT, changed_js_tests, unparseable_js_tests, vitest_red
 from airlie.story.layer_checks import (
     ASSERTION_FREE,
     Finding,
@@ -32,6 +34,7 @@ from airlie.story.layer_checks import (
 from airlie.story.package import Package
 from airlie.story.tester_lint import lint_for
 from airlie.teams.worktree import add_worktree, commit_wip, find_file, remove_worktree
+from airlie.tools.scope import is_js_test
 
 ROOTS = ("", "src/")
 """Where this repository's modules are imported from: the worktree's root and its src/ (the layouts the
@@ -166,15 +169,46 @@ def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
     return found
 
 
+def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
+    """A `proof_mismatch` for each agreed test the package does not cover and for each test it covers that the
+    proof does not name (three-amigos D9, D12): the package is the transcription of the agreed proof. A
+    parametrized test is its function's id; an agreed id without its class (as the meeting writes it) is the
+    covered method it names, and one without its describe the covered Vitest test ("Wiki > lists topics")."""
+    covered = {_PARAMS.sub("", t) for t in package.test_ids}
+
+    def as_covered(agreed_id: str) -> str:
+        where, _, name = agreed_id.partition("::")
+        ends = (f"::{name}", f" > {name}")
+        named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(ends)]
+        return named[0] if agreed_id not in covered and len(named) == 1 else agreed_id
+
+    agreed = {as_covered(t) for t in proof_ids}
+    return [
+        Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
+        for t in sorted(agreed - covered)
+    ] + [
+        Finding("proof_mismatch", t, "your package covers it, but the agreed proof does not name it", "")
+        for t in sorted(covered - agreed)
+    ]
+
+
 class PackageChecker:
     """The readiness check for a gate of `commands`: the gate's ruff steps (`lint`) and its pytest step
     (`checks`), each None when the gate has none."""
 
     def __init__(
-        self, commands: Sequence[str], *, timeout_s: float, confinement: dict[str, Any] | None = None
+        self,
+        commands: Sequence[str],
+        *,
+        timeout_s: float,
+        confinement: dict[str, Any] | None = None,
+        node_cache: Path | None = None,
     ) -> None:
         self.lint = lint_for(commands, timeout_s=timeout_s, confinement=confinement)
         self.checks = checks_for(commands, timeout_s=timeout_s, confinement=confinement)
+        self.timeout_s = timeout_s
+        self.node_cache = node_cache or Path(tempfile.gettempdir()) / "airlie-node-modules"
+        """Where a Vitest red check's node_modules are installed once per lock file (js_tests)."""
 
     @property
     def runs_red(self) -> bool:
@@ -182,11 +216,19 @@ class PackageChecker:
         return self.checks is not None
 
     async def check(
-        self, package: Package, repo: Path, base: str, scratch: Path
+        self,
+        package: Package,
+        repo: Path,
+        base: str,
+        scratch: Path,
+        proof_ids: Collection[str] | None = None,
     ) -> tuple[Package, list[Finding]]:
         """The package with ruff's fixes applied to its test text, and the findings. The package is placed
-        and committed in a detached worktree of `repo` at `base` under `scratch`, removed after."""
-        found = [
+        and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
+        `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
+        package must cover exactly them (`proof_mismatch`)."""
+        found = proof_mismatches(package, proof_ids) if proof_ids is not None else []
+        found += [
             Finding("file_exists", f.path, FILE_EXISTS, "")
             for f in package.files
             if f.action == "create" and find_file(repo, base, f.path)[0] != "missing"
@@ -218,10 +260,19 @@ class PackageChecker:
                 for t in tests
                 if not t.asserts
             ]
-            changed = {t.id for t in tests}
+            # a Vue layer's Vitest tests (the web-tests design, 2026-10-27): read, checked, and run red below
+            web = changed_js_tests(scratch, base)
+            found += unparseable_js_tests(scratch, base)
+            found += [
+                Finding("assertion_free_test", t.id, NO_EXPECT, t.source, t.before)
+                for t in web
+                if not t.asserts
+            ]
+            changed = {t.id for t in tests} | {t.id for t in web}
             for tid in package.test_ids:
                 path, _, name = tid.partition("::")
-                if f"{path}::{_PARAMS.sub('', name)}" not in changed:
+                key = tid if is_js_test(path) else f"{path}::{_PARAMS.sub('', name)}"
+                if key not in changed:
                     found.append(Finding("covers_missing", tid, NOT_NEW, ""))
             found += imports_unresolved(scratch, package)
             if self.checks is not None:
@@ -229,7 +280,10 @@ class PackageChecker:
                     f
                     for f in await self.checks.run(scratch, base)
                     if f.kind not in ("assertion_free_test", "unparseable_test")
+                    and not (f.kind == "no_new_test" and web)  # its new tests are Vitest's
                 ]
+            if web:
+                found += await vitest_red(scratch, web, self.node_cache, timeout_s=self.timeout_s)
             return package, found
         finally:
             remove_worktree(repo, scratch)

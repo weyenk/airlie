@@ -1,0 +1,93 @@
+{
+ "case": "roman",
+ "started": "2026-10-27T19:13:46",
+ "airlie_build": "2cebb04",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "refine",
+ "blocked": "architect did not produce a usable layer plan: no JSON object in the reply; end it with one ```json block",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 21.8,
+  "idle_min": 0.9,
+  "decode_tps_by_context": {
+   "<16k": 24.6,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.0
+   },
+   {
+    "at": "story_done",
+    "min": 21.8
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 9,
+    "tokens_in": 44815,
+    "tokens_out": 26966,
+    "prefill_s": 33.2423,
+    "decode_s": 1102.85,
+    "wall_s": 482.10200000000003,
+    "reads": 3,
+    "thinking_tokens": 17237,
+    "decode_tps": 24.5,
+    "prefill_tps": 1348
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12557,
+    "tokens_out": 2632,
+    "prefill_s": 12.455899999999998,
+    "decode_s": 107.0252,
+    "wall_s": 119.60710000000002,
+    "reads": 6,
+    "thinking_tokens": 1463,
+    "decode_tps": 24.6,
+    "prefill_tps": 1008
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 9,
+    "tokens_in": 17471,
+    "tokens_out": 2107,
+    "prefill_s": 22.1168,
+    "decode_s": 78.4755,
+    "wall_s": 100.7806,
+    "reads": 8,
+    "thinking_tokens": 0,
+    "decode_tps": 26.8,
+    "prefill_tps": 790
+   }
+  ],
+  "retries": {
+   "plan_rounds": 0,
+   "plan_fixes": 4,
+   "meeting_turns": 0,
+   "meeting_objections": 0,
+   "critic_objections": 0,
+   "package_attempts": 0,
+   "packages_rejected": 0,
+   "unusable_replies": 2,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

@@ -20,7 +20,7 @@ from airlie.serve.jobs import Jobs, read_events
 from airlie.story import factory
 from airlie.story.board import BoardError, text_card
 from airlie.story.model import StorySetupError
-from airlie.story.state import StoryState, story_lock
+from airlie.story.state import StoryState, lane_lock
 from airlie.topology.studio import StudioOrchestrator
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
@@ -500,14 +500,14 @@ def test_a_second_story_while_one_is_in_flight_ends_as_a_failed_job_that_says_so
     cfg = cfg_for(tmp_path, roles=STORY_ROLES)
     app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()))
     with (
-        story_lock(factory.stories_dir(cfg)) as held,
+        lane_lock(factory.stories_dir(cfg), "plan") as held,
         TestClient(app) as client,
     ):  # another story holds the lock
         assert held
         r = client.post("/v1/airlie/stories", json={"text": "avatars", "repo": str(repo)})
         assert r.status_code == 202  # a different story id: nothing is running under it
         done = finish(client, r.json()["job_id"])
-    assert done["state"] == "failed" and "StoryBusy: another story is in flight" in done["error"]
+    assert done["state"] == "failed" and "StoryBusy: the planning lane is in use" in done["error"]
 
 
 def test_a_story_already_running_is_a_409_before_its_issue_is_touched(

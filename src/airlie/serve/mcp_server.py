@@ -518,8 +518,8 @@ def build_server(
     ) -> str:
         """Give product the person's answer to its question (or their comment on an epic: a mockup pick such
         as "option 2", or one revision). The comment goes on the card, then the line takes its next turn at
-        once. Returns a job id for airlie_status; while a story is in flight the comment stays on the card and
-        the tick runs the turn within its cadence."""
+        once. Returns a job id for airlie_status; while another planning job runs the comment stays on the
+        card and the tick runs the turn within its cadence."""
         key = _given(card)
         if key is None or _given(text) is None:
             raise ToolError("pass the card's key and the person's text")

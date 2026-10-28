@@ -119,6 +119,7 @@ def story_yaml(tmp_path: Path, repos_root: Path) -> Path:
             "github_app": {"app_id": None},
             "plan_round_steps": 0,
             "survey": False,
+            "amigos": {"enabled": False},  # the story meeting has tests of its own
         },
     }
     path = d / "airlie.yaml"

@@ -35,21 +35,31 @@ from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
 from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
+from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
+from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
+from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
+from airlie.story.phase import set_paused
+from airlie.story.pipeline import build_commit
 from airlie.story.state import STAGES
+from airlie.story.stats import line_stats, parse_since
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
+
+_STORY_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+"""A story key as a directory name under stories/: a route that serves a path under the state directory
+matches it by name, so a key never walks out of it."""
 
 NEXT_DIR = Path(__file__).parent / "web_next"
 """The Vue app's build (`task web:build`, a Vite build with base `/`): `GET /` and every path that is not the
@@ -191,6 +201,15 @@ class InitiativeRequest(BaseModel):
         return list(dict.fromkeys(v))
 
 
+class LineRequest(BaseModel):
+    """The line's one switch (planning-line P5b, D7): `paused` true holds every lane's next job (a running
+    one finishes), false lets them go."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paused: bool
+
+
 class PickRequest(BaseModel):
     """A person's pick among an epic's mockup pages (D4): the option's number, 1 to 9."""
 
@@ -282,19 +301,26 @@ def create_app(
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
+    tick_s: float | None = None,
+    line_beat: LineFor | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
     `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
-    default NEXT_DIR) are for tests."""
+    default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
+    line's beat, given the function that starts a lane's job) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
+    started_commit = (
+        build_commit()
+    )  # the code this process runs: a pull after it changes the checkout, not this
     client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600.0, connect=10.0))
     factory = orchestrator_factory or _default_factory
     feed = Feed()
     app.state.feed = feed
     jobs = Jobs(feed.publish)
+    ticker = LineTicker(cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, now=now)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
@@ -400,7 +426,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles)}
+        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
 
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
@@ -654,7 +680,7 @@ def create_app(
             labels=labels,
             created_by=principal.name if principal is not None else "noah",
         )
-        board.update(item.key, status="approved")
+        board.update(item.key, status="approved", by=principal.name if principal is not None else "person")
         feed.publish("board", item.key)
         answer = await start_turn(item.key)
         if answer.status_code == 202:
@@ -769,6 +795,40 @@ def create_app(
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 
+    @app.post("/v1/airlie/line")
+    async def line_switch(req: LineRequest) -> dict[str, Any]:
+        """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
+        set_paused(cfg.observability.state_dir.expanduser(), req.paused)
+        return ticker.row()
+
+    @app.get("/v1/airlie/line")
+    async def line_get() -> dict[str, Any]:
+        """The line as one row (planning-line P5b, D11): paused, the gates, what each lane is doing, the hours
+        queued, the blocked stories with their diagnosis and fix card, and when it last ticked."""
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=ticker.last_tick, now=now())
+
+    @app.get("/v1/airlie/line/events")
+    async def line_events_get(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+        """The tail of the line's own log (`line/events.jsonl`): ticks, gates, lanes, pauses, fixes."""
+        return {"events": line_events_tail(cfg.observability.state_dir.expanduser(), limit)}
+
+    @app.get("/v1/airlie/line/stats")
+    async def line_stats_get(since: str | None = Query(None)) -> dict[str, Any]:
+        """The numbers that judge the line (planning-line P5b, D9): the unattended rate, blocks by class and
+        kind, hours against estimates, the amigos' objections, the budgets' overruns. `since` is a date or
+        epoch seconds."""
+        try:
+            floor = parse_since(since) if since else None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return await asyncio.to_thread(
+            line_stats,
+            cfg.observability.state_dir.expanduser(),
+            board,
+            since=floor,
+            roles=frozenset(cfg.roles),
+        )
+
     @app.get("/v1/airlie/epics")
     async def epic_list() -> dict[str, Any]:
         """The epics the line has planned (or tried to), from their records: key, title, stage, stories."""
@@ -830,6 +890,19 @@ def create_app(
             raise HTTPException(400, str(e)) from e
         feed.publish("board", key)
         return spec.to_dict()
+
+    @app.get("/v1/airlie/stories/{key}/diagnosis")
+    async def story_diagnosis_get(key: str, n: int | None = Query(None, ge=1)) -> dict[str, Any]:
+        """The diagnosis a block wrote (planning-line P5a): the class by rules, Muse's reading, what happens
+        next, its Markdown and the paths of the evidence. 404 when the story has no diagnosis. The key names a
+        directory of the state directory by name and nothing else."""
+        state = cfg.observability.state_dir.expanduser()
+        if not _STORY_DIR.fullmatch(key) or ".." in key:
+            raise HTTPException(404, f"no diagnosis for {key!r}")
+        d = read_diagnosis(state, key, n) if n is not None else latest(state, key)
+        if d is None:
+            raise HTTPException(404, f"{key} has no diagnosis" + (f" for block {n}" if n else ""))
+        return diagnosis_json(d)
 
     @app.get("/v1/airlie/repos")
     async def repo_list() -> dict[str, Any]:
@@ -925,8 +998,13 @@ def create_app(
             cfg.observability.state_dir.expanduser(), metric, slice_, f, t, _metric_bucket_s(t - f)
         )
 
+    @app.on_event("startup")
+    async def startup() -> None:
+        ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        await ticker.stop()
         watcher.stop()
         await client.aclose()
         board.close()

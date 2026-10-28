@@ -1,0 +1,204 @@
+{
+ "case": "roman",
+ "started": "2026-10-26T19:09:12",
+ "airlie_build": "f439df7",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "build",
+ "blocked": "PublishError: `gh stack submit --auto --remote origin` exited 1: Checking stack state...\nPushing to origin...\n\u2717 failed to push add-sandbox-roman-py-with-to-r-01-roman-module: failed to run git: To https://github.com/weyenk/airlie-sandbox.git\n ! [rejected]        add-sandbox-roman-py-with-to-r-01-roman-module -> add-sandbox-roman-py-with-to-r-01-roman-module (stale info)\nerror: failed to push some refs to 'https://github.com/weyenk/airlie-sandbox.git'",
+ "layers_built": 1,
+ "prs": [],
+ "cost": {
+  "wall_min": 59.1,
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.2
+   },
+   {
+    "at": "plan_done",
+    "min": 11.2
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 27.3
+   },
+   {
+    "at": "story_done",
+    "min": 27.3
+   },
+   {
+    "at": "packages_drafting",
+    "min": 27.3
+   },
+   {
+    "at": "layer_built 01",
+    "min": 58.5
+   },
+   {
+    "at": "story_done",
+    "min": 59.1
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layer build",
+    "role": "coder",
+    "calls": 30,
+    "tokens_in": 853278,
+    "tokens_out": 4394,
+    "prefill_s": 1224.8816,
+    "decode_s": 43.94219999999999,
+    "wall_s": 1451.8015,
+    "decode_tps": 100.0,
+    "prefill_tps": 697
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 26908,
+    "tokens_out": 6600,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 526.866,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 1,
+    "tokens_in": 6305,
+    "tokens_out": 2101,
+    "prefill_s": 6.5661000000000005,
+    "decode_s": 96.9783,
+    "wall_s": 334.3559,
+    "decode_tps": 21.7,
+    "prefill_tps": 960
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 2,
+    "tokens_in": 21962,
+    "tokens_out": 4262,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 275.117,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 8283,
+    "tokens_out": 320,
+    "prefill_s": 8.588899999999999,
+    "decode_s": 14.1824,
+    "wall_s": 217.4627,
+    "decode_tps": 22.6,
+    "prefill_tps": 964
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 1,
+    "tokens_in": 11757,
+    "tokens_out": 2393,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 160.948,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 10393,
+    "tokens_out": 580,
+    "prefill_s": 5.4799999999999995,
+    "decode_s": 26.457099999999997,
+    "wall_s": 130.4575,
+    "decode_tps": 21.9,
+    "prefill_tps": 1897
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 7,
+    "tokens_in": 12626,
+    "tokens_out": 379,
+    "prefill_s": 13.099900000000002,
+    "decode_s": 11.111999999999998,
+    "wall_s": 95.0873,
+    "decode_tps": 34.1,
+    "prefill_tps": 964
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 4,
+    "tokens_in": 32999,
+    "tokens_out": 265,
+    "prefill_s": 38.148700000000005,
+    "decode_s": 8.6206,
+    "wall_s": 87.504,
+    "decode_tps": 30.7,
+    "prefill_tps": 865
+   }
+  ],
+  "retries": {
+   "plan_rounds": 3,
+   "plan_fixes": 0,
+   "meeting_turns": 5,
+   "meeting_objections": 0,
+   "critic_objections": 0,
+   "package_attempts": 1,
+   "packages_rejected": 0,
+   "unusable_replies": 0,
+   "layer_builds": 1,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": {
+  "gate_passes": true,
+  "oracle": {
+   "spec": [
+    18,
+    18
+   ],
+   "extra": [
+    8,
+    8
+   ],
+   "failed": []
+  },
+  "mutation": {
+   "total": 86,
+   "killed": 79,
+   "survived": [
+    "Constant line 54",
+    "BinOp line 59",
+    "Constant line 50",
+    "Constant line 57",
+    "Constant line 59",
+    "Constant line 68",
+    "BinOp line 55"
+   ]
+  },
+  "tests": 19,
+  "asserts": 19,
+  "source_lines": 70
+ },
+ "closed": [],
+ "branches_deleted": [
+  "add-sandbox-roman-py-with-to-r-01-roman-module"
+ ]
+}

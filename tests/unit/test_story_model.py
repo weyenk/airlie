@@ -9,6 +9,7 @@ from airlie.story.model import (
     Criterion,
     Layer,
     NotActionable,
+    ScopedPath,
     Story,
     StoryError,
     StorySetupError,
@@ -68,6 +69,57 @@ def test_parse_layers_checks_count_slugs_and_coverage() -> None:
         parse_layers({"layers": [{**one, "acceptance": ["AC9"]}]}, story, 3)
     with pytest.raises(StoryError, match=r"no layer covers acceptance \['AC2'\]"):
         parse_layers({"layers": [{**one, "acceptance": ["AC1"]}]}, story, 3)
+
+
+def _one_layer(**extra: object) -> dict[str, object]:
+    return {
+        "slug": "m",
+        "title": "Model",
+        "scope": "the model in src/pkg/models.py",
+        "brief": "b",
+        "acceptance": ["AC1", "AC2"],
+        **extra,
+    }
+
+
+def test_a_layer_parses_its_files_and_interfaces() -> None:
+    story = parse_story(GOOD)
+    raw = _one_layer(
+        files=[
+            {"path": "./src/pkg/models.py", "new": False},
+            "src/pkg/new.py",
+            {"path": "tests/x.py", "new": True},
+        ],
+        interfaces=["def save(avatar: Avatar) -> int", "class Avatar"],
+    )
+    (layer,) = parse_layers({"layers": [raw]}, story, 3)
+    assert layer.files == (
+        ScopedPath("src/pkg/models.py", False),
+        ScopedPath("src/pkg/new.py", False),
+        ScopedPath("tests/x.py", True),
+    )
+    assert layer.interfaces == ("def save(avatar: Avatar) -> int", "class Avatar")
+    assert layer.paths() == ("src/pkg/models.py", "src/pkg/new.py", "tests/x.py")
+    assert Layer.from_dict(json.loads(json.dumps(layer.to_dict()))) == layer
+
+
+def test_a_layer_without_files_or_interfaces_still_parses_and_paths_fall_back_to_its_scope() -> None:
+    story = parse_story(GOOD)
+    (layer,) = parse_layers({"layers": [_one_layer()]}, story, 3)
+    assert layer.files == () and layer.interfaces == ()
+    assert layer.paths() == ("src/pkg/models.py",)
+    old = Layer.from_dict({"slug": "a", "title": "A", "scope": "src/a/b.py", "brief": "x"})
+    assert old.files == () and old.interfaces == () and old.paths() == ("src/a/b.py",)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["/etc/passwd", "../outside.py", "src/../../x.py", {"path": "/abs.py", "new": True}, {"new": True}, 7],
+)
+def test_a_layer_file_path_that_escapes_the_repository_is_refused(bad: object) -> None:
+    story = parse_story(GOOD)
+    with pytest.raises(StoryError, match="files"):
+        parse_layers({"layers": [_one_layer(files=[bad])]}, story, 3)
 
 
 def test_slugs_and_branch_names() -> None:

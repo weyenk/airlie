@@ -542,6 +542,109 @@ class SpecsSpec(Strict):
     )
 
 
+class AmigosSpec(Strict):
+    """The story meeting (P2 of the planning line, 2026-10-24): product, the architect and the tester agree a
+    story's requirements, changes and proof in one group chat before any layer is built."""
+
+    enabled: bool = Field(
+        default=True,
+        description="hold the meeting; false: the architect's split is the agreement, with no proof plan",
+    )
+    max_turns: int = Field(
+        default=12,
+        ge=4,
+        description="the most turns the meeting takes (the checker's count too); at the cap each owner's "
+        "part stands and the open objections are recorded",
+    )
+    max_scope_files: int = Field(
+        default=5, ge=1, description="the most files a layer may name: the sizing rule as a number"
+    )
+    tool_iterations: int = Field(
+        default=3,
+        ge=0,
+        description="read-only tool rounds an agent may take inside one turn (0: no tools in the meeting)",
+    )
+
+
+BUDGET_STAGES = (
+    "survey",
+    "refine",
+    "questions",
+    "imagine",
+    "amigos",
+    "plan",
+    "package",
+    "layer",
+    "review",
+    "publish",
+)
+"""The stages a card's cost is kept for (planning-line P5b, D8): `story.budgets` has an entry for each."""
+
+
+class BudgetSpec(Strict):
+    """What one stage of one card is expected to cost: recorded, warned at 80 percent and noted at 100, never
+    enforced (the stage's own caps stay the only stops)."""
+
+    wall_s: int = Field(ge=1, description="seconds of wall-clock")
+    tokens: int = Field(ge=1, description="tokens processed, prompt and completion, over the stage's steps")
+
+
+class LineSpec(Strict):
+    """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
+    `home_repo` and `transient_retries`; the scheduler half (P5b) the rest."""
+
+    home_repo: str | None = Field(
+        default=None,
+        description="owner/name of airlie's own repository, where fix cards are built; None: the remote "
+        "of the checkout the line runs from",
+    )
+    transient_retries: int = Field(
+        default=2,
+        ge=0,
+        description="how often a story blocked by a transient failure is retried per signature",
+    )
+    tick_s: int = Field(
+        default=60,
+        ge=5,
+        description="how often `task serve` runs a beat of the line (the launchd agent is the belt, every 15 "
+        "minutes)",
+    )
+    serve_ticks: bool = Field(
+        default=True, description="`task serve` runs the line's beat itself every tick_s seconds"
+    )
+    fanout: int = Field(
+        default=4,
+        ge=1,
+        description="how many short asks (consultations, surveys, reads, renders, the meeting's checks) a "
+        "lane runs at once while the build lane decodes at or above decode_floor_tps",
+    )
+    decode_floor_tps: float = Field(
+        default=12.0,
+        gt=0,
+        description="the build lane's decode rate (tokens a second over its last five steps) under which "
+        "the short asks run one at a time",
+    )
+    budgets: dict[str, BudgetSpec] = Field(
+        default_factory=dict,
+        description="per stage (survey, refine, questions, imagine, amigos, plan, package, layer, review, "
+        "publish): the wall-clock and tokens a card's stage is expected to cost (airlie.yaml has them)",
+    )
+    consult_context: int = Field(
+        default=8192,
+        ge=1024,
+        description="the context a short ask is counted at in the doctor's memory projection",
+    )
+
+    @model_validator(mode="after")
+    def _budgets_name_stages(self) -> LineSpec:
+        unknown = sorted(set(self.budgets) - set(BUDGET_STAGES))
+        if unknown:
+            raise ValueError(
+                f"line.budgets names {', '.join(unknown)}; the stages are {', '.join(BUDGET_STAGES)}"
+            )
+        return self
+
+
 class StorySpec(Strict):
     repo: Path | None = Field(
         default=None,
@@ -611,6 +714,7 @@ class StorySpec(Strict):
         description="how many times the tick moves a story the line blocked back to approved (a rebuild, not "
         "a person's morning) before the epic it belongs to is re-planned; 0 re-plans at once",
     )
+    amigos: AmigosSpec = Field(default_factory=AmigosSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
@@ -688,6 +792,7 @@ class AirlieConfig(Strict):
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
     board: BoardSpec = Field(default_factory=BoardSpec)
+    line: LineSpec = Field(default_factory=LineSpec)
     web: WebSpec = Field(default_factory=WebSpec)
     chat: ChatSpec = Field(default_factory=ChatSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")

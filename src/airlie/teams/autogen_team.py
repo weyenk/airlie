@@ -3,8 +3,9 @@
 One `AssistantAgent` with `max_tool_iterations=1` is driven step by step so the StepObserver can inject
 shared memory keys before each model call and receive each (u_t, o_t) afterwards. The model client is
 AutoGen's OpenAI client pointed at the engine endpoint, so all generation still goes through vllm-mlx.
-Thinking and top_k are server defaults (`--default-chat-template-kwargs`, `--default-top-k`) because
-AutoGen's client has no per-request extra_body."""
+Per-request sampling the OpenAI client has no field for (top_k, min_p, the repetition penalty) and the role's
+thinking settings go in `extra_body` (`build_model_client`); until 2026-10-24 thinking was the server's
+default (`--default-chat-template-kwargs`), and the story meeting needed each role to think as configured."""
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from autogen_core.models import ModelInfo, UserMessage
 from autogen_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
@@ -112,6 +113,18 @@ def build_function_tools(
     return [_RegistryTool(t, registry, scheduler, team_id) for t in registry._tools.values()]  # noqa: SLF001
 
 
+SLOWEST_DECODE_TPS = 8.0
+"""A decode rate below any this machine has shown (17-30 tok/s for the generalist and Muse, 2026-10-26)."""
+
+
+def reply_timeout_s(role: RoleSpec) -> float:
+    """How long the AutoGen client waits for a whole reply: AutoGen does not stream, so the SDK's 600 s is
+    the reply's whole wait, and a thinking role at max_tokens outruns it (run 8 on airlie-sandbox,
+    2026-10-26: the architect's meeting turn timed out). The role's max_tokens at SLOWEST_DECODE_TPS, never
+    under 600 s."""
+    return max(600.0, (role.max_tokens or 0) / SLOWEST_DECODE_TPS + 120.0)
+
+
 def build_model_client(
     base_url: str,
     served_model: str,
@@ -119,6 +132,7 @@ def build_model_client(
     api_key: str | None,
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
+    model: ModelSpec | None = None,
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
@@ -127,6 +141,18 @@ def build_model_client(
         "family": "unknown",
         "structured_output": False,
     }
+    extra: dict[str, Any] = {  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
+        "top_k": role.sampling.top_k,
+        "min_p": role.sampling.min_p,
+        "repetition_penalty": role.sampling.repetition_penalty,
+        # the role's thinking, as HTTPEngine._body sends it (three-amigos D7, 2026-10-24): the top-level
+        # flag vllm-mlx gates its budget processor on, and the template kwarg; before this the server's
+        # defaults decided whether an AutoGen agent thought
+        "enable_thinking": bool(role.thinking),
+        "chat_template_kwargs": {"enable_thinking": bool(role.thinking), **role.chat_template_kwargs},
+    }
+    if role.thinking and role.thinking_budget:
+        extra["thinking_token_budget"] = role.thinking_budget
     client = RepairingOpenAIClient(
         model=served_model,
         base_url=base_url,
@@ -135,14 +161,12 @@ def build_model_client(
         temperature=role.sampling.temperature,
         top_p=role.sampling.top_p,
         max_tokens=role.max_tokens,
-        extra_body={  # sampling the OpenAI client has no field for; vllm-mlx reads these per request
-            "top_k": role.sampling.top_k,
-            "min_p": role.sampling.min_p,
-            "repetition_penalty": role.sampling.repetition_penalty,
-        },  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not in the typed config
+        extra_body=extra,  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not typed
+        timeout=reply_timeout_s(role),
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id
+    client.model_spec = model  # its parsers read what the server left as text (Muse's calls)
     return client
 
 

@@ -14,7 +14,9 @@ from typing import Any
 
 from airlie.board import BoardStore
 from airlie.serve.jobs import read_events
+from airlie.story.budgets import stage_figures
 from airlie.story.costs import queue_hours
+from airlie.story.diagnosis import latest
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import StoryPlan
 from airlie.story.initiative import Initiative
@@ -22,7 +24,13 @@ from airlie.story.initiative_state import waiting_on
 from airlie.story.model import StoryError
 from airlie.story.state import STAGES
 
-STAGE_ROLES = {"refine": "product", "survey": "architect", "layers": "architect", "package": "architect"}
+STAGE_ROLES = {
+    "refine": "product",
+    "survey": "architect",
+    "layers": "architect",
+    "package": "architect",
+    "meeting": "amigos",
+}
 """The role a stage job runs as, when its steps do not say (a run that has not stepped yet)."""
 
 CHECK_KINDS = frozenset(
@@ -37,6 +45,7 @@ CHECK_KINDS = frozenset(
         "import_unresolved",
         "assertion_free_test",
         "unparseable_test",
+        "test_type_error",
         "existing_test_changed",
         "suite_did_not_run",
         "test_checks_retry",
@@ -210,13 +219,57 @@ def _stage_node(
         )
     elif name == "intake" and status == "passed":
         job["attempts"] = 1
+    jobs = [job] if status != "skipped" else []
+    if name == "layers":
+        meeting = _meeting_job(events, blocked)
+        if meeting is not None:
+            jobs.append(meeting)
+            if status == "pending" and not blocked:
+                status = "running"  # the layers are split and the three are agreeing them
     return {
         "id": name,
         "label": label,
         "kind": "stage",
         "status": status,
-        "jobs": [job] if status != "skipped" else [],
+        "jobs": jobs,
     }
+
+
+def _meeting_job(events: list[dict[str, Any]], blocked: bool) -> dict[str, Any] | None:
+    """The story meeting (P2, 2026-10-24) as a job of the `layers` stage, from the story's `amigos_*` events:
+    the turns taken and what they cost, the meeting's own objections (a package critic's, which carry
+    `source: package`, belong to a layer), and how it ended: agreed, or run out of turns with the parts
+    their owners decided and the objections left open. None for a story that held no meeting."""
+    turns = [e for e in events if e.get("kind") == "amigos_turn"]
+    agreed = [e for e in events if e.get("kind") == "amigos_agreed"]
+    decided = [e for e in events if e.get("kind") == "amigos_owner_decided"]
+    if not turns and not agreed and not decided:
+        return None
+    ended = (agreed or decided)[-1] if agreed or decided else None
+    status = "passed" if ended is not None else "failed" if blocked else "running"
+    start = turns[0].get("ts") if turns else None
+    end = ended.get("ts") if ended is not None else None
+    prompt = sum(int(e.get("prompt_tokens") or 0) for e in turns)
+    completion = sum(int(e.get("completion_tokens") or 0) for e in turns)
+    return _job(
+        "meeting",
+        "Three amigos",
+        STAGE_ROLES["meeting"],
+        status,
+        started=start,
+        ended=end,
+        duration_s=round(end - start, 1)
+        if isinstance(start, float | int) and isinstance(end, float | int)
+        else None,
+        tokens={"steps": len(turns), "prompt": prompt, "completion": completion},
+        turns=len(turns),
+        objections=sum(
+            1 for e in events if e.get("kind") == "amigos_objection" and e.get("source") != "package"
+        ),
+        resolved=sum(1 for e in events if e.get("kind") == "amigos_resolved"),
+        unresolved=sum(1 for e in events if e.get("kind") == "amigos_unresolved"),
+        owner_decided=list(decided[-1].get("parts") or []) if decided else [],
+    )
 
 
 def _subtask(run_events: list[dict[str, Any]], team: str, kind: str) -> dict[str, Any] | None:
@@ -412,8 +465,25 @@ def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
         "summary": story.get("summary"),
         "stage": st.get("stage"),
         "blocked": st.get("blocked"),
+        "diagnosis": _diagnosis_row(state_dir, key),
+        "budgets": stage_figures(state_dir / "stories" / key),
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
+    }
+
+
+def _diagnosis_row(state_dir: Path, key: str) -> dict[str, Any] | None:
+    """The latest block's diagnosis for the row (planning-line P5b, D11): its class, kind and signature, and
+    how many blocks the story has had. None for a story that never blocked, or whose diagnosis cannot be
+    read."""
+    d = latest(state_dir, key)
+    if d is None:
+        return None
+    return {
+        "class": d.classified.class_,
+        "kind": d.classified.kind,
+        "signature": d.classified.signature,
+        "n": d.pack.n,
     }
 
 
@@ -644,6 +714,9 @@ def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str
         output["story"] = st.get("story")
     elif node_id == "layers":
         output["layers"] = st.get("layers")
+        if job_id == "meeting":
+            output["agreement"] = st.get("agreement")
+            note = "a meeting of product, the architect and the tester; its turns are in the story's events"
     elif node_id == "survey":
         output["survey"] = st.get("survey")
     return {

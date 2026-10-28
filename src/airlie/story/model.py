@@ -7,6 +7,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from airlie.topology.studio_plan import json_block_problem
+
 
 class StoryError(ValueError):
     """A reply that cannot be used; the message goes back to the role with the next attempt."""
@@ -31,9 +33,16 @@ class StoryRunning(RuntimeError):
     before its issue is told or moved."""
 
 
+PLANNED = "layers"
+"""The stage at which a story is planned (planning-line P5b): the layers are split and, with the story
+meeting on, the agreement is stored (P2: the `layers` stage finishes then). The planning lane ends here; the
+build lane takes a story that has reached it."""
+
+
 class StoryBusy(RuntimeError):
-    """Another story holds the one-story lock: stories are built one at a time. (Defined here so the serve
-    routes can name it without importing the factory; `factory.StoryBusy` is this class.)"""
+    """A lane's lock is held by another job: the build lane builds one story at a time and the planning lane
+    plans one thing at a time; the message names the lane. (Defined here so the serve routes can name it
+    without importing the factory; `factory.StoryBusy` is this class.)"""
 
 
 class NoTestGate(Exception):
@@ -42,6 +51,16 @@ class NoTestGate(Exception):
 
 
 NO_JSON = "no JSON object in the reply; end it with one ```json block"
+
+
+def unusable_why(e: StoryError, reply: str) -> str:
+    """What a role is told when its `reply` was refused with `e`: NO_JSON becomes what is wrong with the
+    ```json block the reply did hold (`json_block_problem`), so the role can mend that block."""
+    if str(e) == NO_JSON:
+        return json_block_problem(reply) or NO_JSON
+    return str(e)
+
+
 ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-\d+", re.ASCII)
 """A Jira issue key (AIR-7); always matched whole (fullmatch), ASCII only (a digit is 0-9, not any script's).
 It names a story's directory, prefixes its branch names and becomes a URL path, so each of those checks it."""
@@ -114,12 +133,26 @@ class Story:
 
 
 @dataclass(frozen=True)
+class ScopedPath:
+    """A file a layer creates (`new`) or changes, by its path from the repository's root."""
+
+    path: str
+    new: bool = False
+
+
+@dataclass(frozen=True)
 class Layer:
+    """One layer of a story. `scope` is prose for people (and for states saved before D14); `files` and
+    `interfaces` are what the architect names for the machine: every file the layer creates or changes and
+    the signatures at its boundary that later layers import (three-amigos D14, 2026-10-24)."""
+
     slug: str
     title: str
     scope: str
     brief: str
     acceptance: tuple[str, ...] = ()
+    files: tuple[ScopedPath, ...] = ()
+    interfaces: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -127,7 +160,24 @@ class Layer:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Layer:
         acceptance = tuple(str(a) for a in d.get("acceptance") or ())
-        return cls(str(d["slug"]), str(d["title"]), str(d["scope"]), str(d["brief"]), acceptance)
+        files = tuple(
+            ScopedPath(str(f["path"]), bool(f.get("new", False)))
+            if isinstance(f, dict)
+            else ScopedPath(str(f))
+            for f in d.get("files") or ()
+        )
+        interfaces = tuple(str(i) for i in d.get("interfaces") or ())
+        return cls(
+            str(d["slug"]), str(d["title"]), str(d["scope"]), str(d["brief"]), acceptance, files, interfaces
+        )
+
+    def paths(self) -> tuple[str, ...]:
+        """The files the layer names, else the paths its prose scope mentions."""
+        if self.files:
+            return tuple(f.path for f in self.files)
+        from airlie.story.context import named_paths  # not at the top: context imports the config
+
+        return tuple(named_paths(self.scope))
 
 
 def slugify(text: str, max_len: int = 40) -> str:
@@ -189,6 +239,28 @@ def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
     if isinstance(v, list):
         return tuple(_encodable(str(x), what) for x in v)
     raise StoryError(f"{what} must be a list of {of}")
+
+
+def _scoped_paths(v: Any, where: str) -> tuple[ScopedPath, ...]:
+    """A layer's `files`: a list of {"path", "new"} objects or of path strings. A path that is absolute or
+    climbs out with ".." is refused: the architect's files become paths the checks read and a package may
+    create."""
+    if v is None:
+        return ()
+    if not isinstance(v, list):
+        raise StoryError(f'{where}: \'files\' must be a list of {{"path", "new"}} objects')
+    out: list[ScopedPath] = []
+    for n, item in enumerate(v, 1):
+        raw = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(raw, str) or not raw.strip():
+            raise StoryError(f"{where}: files item {n} needs a 'path' (a path from the repository's root)")
+        path = _encodable(raw.strip(), f"{where}: files item {n}").removeprefix("./")
+        if path.startswith("/") or ".." in path.split("/"):
+            raise StoryError(
+                f"{where}: files item {n} {raw!r} must be a path inside the repository, from its root"
+            )
+        out.append(ScopedPath(path, bool(item.get("new", False)) if isinstance(item, dict) else False))
+    return tuple(out)
 
 
 def parse_story(obj: dict[str, Any] | None) -> Story:
@@ -255,7 +327,17 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
                 )
             owner[a] = slug
         where = f"layer '{slug}'"
-        layers.append(Layer(slug, title, _text(d, "scope", where), _text(d, "brief", where), acc))
+        layers.append(
+            Layer(
+                slug,
+                title,
+                _text(d, "scope", where),
+                _text(d, "brief", where),
+                acc,
+                _scoped_paths(d.get("files"), where),
+                _strs(d.get("interfaces"), f"{where}: 'interfaces'"),
+            )
+        )
     missing = sorted(known - set(owner))
     if missing:
         raise StoryError(

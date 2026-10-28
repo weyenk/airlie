@@ -53,6 +53,11 @@ supervisor_app = typer.Typer(
     "(docs/integrations/story.md).",
 )
 app.add_typer(supervisor_app, name="supervisor")
+line_app = typer.Typer(
+    no_args_is_help=True,
+    help="The line: why a story blocked, and what the line does about it (planning-line P5).",
+)
+app.add_typer(line_app, name="line")
 prompts_app = typer.Typer(
     no_args_is_help=True,
     help="The prompt hub: the rules and steering airlie sends to models, as files "
@@ -768,6 +773,114 @@ def bench_compare(a: Path, b: Path) -> None:
     print(render_compare(compare(a, b)))
 
 
+@bench_app.command("story")
+def bench_story(
+    case_id: Annotated[str, typer.Argument(metavar="CASE", help="a case of evals/stories (roman)")],
+    baseline: Annotated[Path | None, typer.Option(help="an earlier record to compare with")] = None,
+    keep_prs: Annotated[bool, typer.Option(help="leave the run's PRs open instead of closing them")] = False,
+    cases_dir: Path = Path("evals/stories"),
+    out_dir: Annotated[Path, typer.Option(help="where the record is written")] = Path("docs/bench"),
+    state_root: Annotated[Path, typer.Option(help="each run's own state directory goes under it")] = Path(
+        "~/.local/state/airlie-bench"
+    ),
+    config: ConfigOpt = None,
+) -> None:
+    """Build a case's story end to end on a state directory of its own, then record what it cost (phases,
+    tokens per second by role, retries) and how good it is (gate, oracle, mutation score, tests), close its
+    PRs, and compare with --baseline. Hours long: it holds the engine the whole time."""
+    import subprocess as sp
+    import time
+
+    from airlie.bench.story_bench import (
+        close_prs,
+        compare,
+        delete_new_branches,
+        find_case,
+        fresh_state_dir,
+        grade,
+        local_branches,
+        measure,
+        prune_remote_branches,
+        save,
+        verdict,
+    )
+    from airlie.story import factory
+    from airlie.story.model import StorySetupError
+
+    cfg = _story_cfg(config)
+    try:
+        case = find_case(cases_dir, case_id)
+    except FileNotFoundError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(2) from None
+    state = fresh_state_dir(state_root.expanduser(), case.id)
+    cfg.observability.state_dir = state  # no lessons, board or runs of an earlier run
+    problems = factory.story_problems(cfg)
+    try:
+        clone = factory.written_repo(cfg, cfg.story.repos_root.expanduser() / case.name)
+    except StorySetupError as e:
+        problems.append(str(e))
+    _fail(problems)
+    console.print(f"[bold]{case.id}[/bold]: building in {clone}, state in {state}")
+
+    async def go() -> StoryState:
+        board, card = await factory.card_for(cfg, None, case.request)
+        return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
+
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
+    before = local_branches(clone)
+    try:
+        st = _run_stoppable(go())
+    except BaseException:
+        delete_new_branches(clone, before)  # a stopped run leaves nothing for the next one to trip on
+        raise
+    gate = " && ".join((st.gate or {}).get("commands") or [])
+    top = st.built[max(st.built)]["sha"] if st.built else None
+    built_on = (st.base or {}).get("sha")
+    record: dict[str, Any] = {
+        "case": case.id,
+        "started": started,
+        "airlie_build": sp.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+        ).stdout.strip(),
+        "base": {"expected": case.base, "built_on": built_on, "same": built_on == case.base},
+        "stage": st.stage,
+        "blocked": st.blocked,
+        "layers_built": len(st.built),
+        "prs": [p.get("url") for p in st.prs],
+        "cost": measure(st.path, state / "runs"),
+        "quality": grade(case, clone, top, ["sh", "-c", gate]) if top and gate else None,
+    }
+    record["closed"] = [] if keep_prs else close_prs(case.repo, st.prs, clone)
+    if not keep_prs:
+        record["branches_deleted"] = delete_new_branches(clone, before)
+    path = save(record, out_dir)
+    console.print(f"record: {path}")
+    if not record["base"]["same"]:
+        console.print(f"[yellow]built on {built_on}, not the case's {case.base}: compare with care[/yellow]")
+    for line in verdict(case, record) or ["within its budgets"]:
+        console.print(f"verdict: {line}")
+    if baseline is not None:
+        import json
+
+        for line in compare(json.loads(baseline.read_text()), record):
+            console.print(f"vs {baseline.name}: {line}")
+    if st.blocked:
+        raise typer.Exit(1)
+
+
+@bench_app.command("story-compare")
+def bench_story_compare(a: Path, b: Path) -> None:
+    """What changed from story bench record A to record B: wall time, phases, tokens, retries, quality."""
+    import json
+
+    from airlie.bench.story_bench import compare
+
+    for line in compare(json.loads(a.read_text()), json.loads(b.read_text())):
+        print(line)
+
+
 @bench_app.command("models")
 def bench_models(
     config: ConfigOpt = None,
@@ -1085,10 +1198,8 @@ def story_run(
         raise typer.Exit(1)
 
 
-@story_app.command("tick")
-def story_tick(config: ConfigOpt = None) -> None:
-    """One scheduler beat (launchd runs this): build the top issue of the intake query, unless a story is in
-    flight or the engine is down."""
+def _tick(config: Path | None) -> None:
+    """One beat of the line, printed as one log line with the time (launchd's log, `task line:tick`)."""
     import time
 
     from airlie.story import factory
@@ -1110,6 +1221,66 @@ def story_tick(config: ConfigOpt = None) -> None:
         emoji=False,
         soft_wrap=True,
     )
+
+
+@line_app.command("tick")
+def line_tick(config: ConfigOpt = None) -> None:
+    """One beat of the line (the launchd agent runs this every 15 minutes; `task serve` runs the same beat
+    every minute): the gates, the bookkeeping, then a job in each lane, the planning lane and the build lane,
+    unless a lane is in use or the line is paused."""
+    _tick(config)
+
+
+@line_app.command("stats")
+def line_stats_cmd(
+    since: Annotated[
+        str | None, typer.Option(help="only what happened from this date (2026-10-18) or epoch seconds")
+    ] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and
+    kind (and the fix cards filed), hours against estimates, the amigos' objections and how many were borne
+    out, the budgets' overruns."""
+    from airlie.board import BoardStore
+    from airlie.story.stats import line_stats, parse_since, render_stats
+
+    cfg = _load(config)
+    try:
+        floor = parse_since(since) if since else None
+    except ValueError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    state_dir = cfg.observability.state_dir.expanduser()
+    store = BoardStore(state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    stats = line_stats(state_dir, store, since=floor, roles=frozenset(cfg.roles))
+    console.print(render_stats(stats), markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@line_app.command("pause")
+def line_pause(config: ConfigOpt = None) -> None:
+    """Hold the line: every beat still runs the gates and the bookkeeping but starts no job. A job already
+    running finishes. `airlie line resume` lets it go."""
+    from airlie.story.phase import set_paused
+
+    state_dir = _load(config).observability.state_dir.expanduser()
+    set_paused(state_dir, True)
+    console.print(f"the line is paused ({state_dir / 'line.paused'}); running jobs finish", markup=False)
+
+
+@line_app.command("resume")
+def line_resume(config: ConfigOpt = None) -> None:
+    """Let the line go again after `airlie line pause`."""
+    from airlie.story.phase import set_paused
+
+    set_paused(_load(config).observability.state_dir.expanduser(), False)
+    console.print("the line is resumed", markup=False)
+
+
+@story_app.command("tick")
+def story_tick(config: ConfigOpt = None) -> None:
+    """The old name of `airlie line tick`, kept for a release: says so, then runs the same beat."""
+    err.print("story tick is now `airlie line tick` (task line:tick); running it", emoji=False)
+    _tick(config)
 
 
 @story_app.command("restack")
@@ -1238,7 +1409,100 @@ def supervisor_log(
         when = datetime.fromtimestamp(r.at).strftime("%Y-%m-%d %H:%M")
         what = r.category if r.fallback is None else f"fallback:{r.fallback}"
         line = f"#{r.id}  {when}  {r.story}/{r.layer}  {r.trigger}  {what}  {r.outcome or 'open'}"
+        if r.class_:  # a block's mechanical class and whether Muse agreed (rows before it have none)
+            agreed = {True: "agrees", False: "disagrees", None: "silent"}[r.class_agrees]
+            line += f"  class:{r.class_} (Muse {agreed})"
         console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@line_app.command("why")
+def line_why(
+    key: Annotated[str, typer.Argument(help="the story's key (AIR-9)")],
+    n: Annotated[int | None, typer.Option("--n", min=1, help="the nth block (default the latest)")] = None,
+    paths: Annotated[
+        bool, typer.Option("--paths", help="only the paths of the evidence, one per line")
+    ] = False,
+    config: ConfigOpt = None,
+) -> None:
+    """Why a story blocked: the class by rules, Muse's reading, what happens next, the evidence and its
+    paths. A block with no diagnosis on disk (one from before diagnoses, say) gets one made from its events
+    and run directory. Nothing runs and no model is asked."""
+    from airlie.story.diagnosis import diagnosis_for, render_diagnosis, render_paths
+    from airlie.story.model import StoryError
+
+    state_dir = _load(config).observability.state_dir.expanduser()
+    try:
+        d = diagnosis_for(state_dir, key, n)
+    except StoryError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    text = render_paths(d.pack) if paths else render_diagnosis(d)
+    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@line_app.command("deploy")
+def line_deploy(
+    config: ConfigOpt = None,
+    serve_url: Annotated[
+        str, typer.Option(help="where `task serve` answers /health")
+    ] = "http://127.0.0.1:8090",
+) -> None:
+    """Pull the home checkout's trunk (fast-forward only) so a merged fix is in the code the line runs, then
+    say
+    whether `task serve` must be restarted. The line never pulls its own checkout or restarts serve: this is
+    the person's one step after a fix card merges (airlie.story.fixes)."""
+    import subprocess
+
+    import httpx
+
+    from airlie.story.fixes import home_checkout
+    from airlie.story.pipeline import build_commit
+
+    cfg = _load(config)
+    home = home_checkout()
+    if home is None:
+        err.print("[red]airlie does not run from a git checkout: nothing to pull[/red]")
+        raise typer.Exit(1)
+    remote, trunk = cfg.story.remote, cfg.story.trunk
+    on = subprocess.run(
+        ["git", "-C", str(home), "branch", "--show-current"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    if on != trunk:
+        err.print(
+            f"[red]{escape(str(home))} is on '{escape(on)}', not {escape(trunk)}: "
+            "switch it, then run this again[/red]"
+        )
+        raise typer.Exit(1)
+    pulled = subprocess.run(
+        ["git", "-C", str(home), "pull", "--ff-only", remote, trunk],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if pulled.returncode != 0:
+        err.print(
+            f"[red]git pull --ff-only {escape(remote)} {escape(trunk)} failed:[/red] "
+            f"{escape(pulled.stderr.strip())}"
+        )
+        raise typer.Exit(1)
+    console.print(
+        f"{home}: {pulled.stdout.strip().splitlines()[-1] if pulled.stdout.strip() else 'up to date'}",
+        markup=False,
+    )
+    now = build_commit()
+    try:
+        running = httpx.get(f"{serve_url.rstrip('/')}/health", timeout=3.0).json().get("commit")
+    except (httpx.HTTPError, ValueError):
+        console.print(f"serve does not answer at {serve_url}: nothing to restart", markup=False)
+        return
+    if running == now:
+        console.print(f"serve runs {now}: up to date", markup=False)
+    else:
+        console.print(
+            f"serve runs {running or 'an unknown commit'}, the checkout is at {now}: "
+            "restart serve: task serve",
+            markup=False,
+        )
 
 
 @supervisor_app.command("stats")

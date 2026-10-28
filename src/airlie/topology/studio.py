@@ -961,7 +961,10 @@ class StudioOrchestrator:
         if passed is not False or run is None or run.result is None or not run.result.ok:
             return passed
         assert follow_up is not None
-        self.sink.emit("gate_failed", follow_up=follow_up)
+        # the end of the output is on record: a diagnosis is read from disk, after `gate_output` is gone
+        self.sink.emit(
+            "gate_failed", follow_up=follow_up, output="\n".join(output.strip().splitlines()[-60:])
+        )
         tail = output[-self.cfg.tools.output_cap_chars :]
         text = f"{self._steer('gate-failed', run)}\n\n```\n{tail}\n```"
         if self.advisor is not None:

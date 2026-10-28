@@ -499,15 +499,104 @@ NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.loc
 
 
 def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant() -> None:
-    from airlie.doctor import project_memory_gb
+    from airlie.doctor import cache_memory_gb, project_memory_gb
 
     studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
     projected, unknown = project_memory_gb(studio, "main")
-    # 41.5 GB of weights (small, generalist, reviewer, Kev) + 131.072k × 64 MB/1k = 8.2 GB KV + 12 GB reserve
-    assert (round(projected, 1), unknown) == (61.7, [])
+    # 41.5 GB of weights (small, generalist, reviewer, Kev) + the build lane's one sequence at the coder's
+    # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix cache
+    # the profile sets aside (24576 MB = 24 GB since 2026-10-27; 44 GB filled the machine beside the gate's
+    # own test runs): 20 GB of the wired limit left over for them
+    assert cache_memory_gb(studio.engines["main"]) == 24.0
+    assert (round(projected, 1), unknown) == (83.6, [])
+    assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
     coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
     projected, unknown = project_memory_gb(coder8, "main")
-    # the KV is the coder's model's: + coder8's 32.5 GB of weights, 131.072k × 96 MB/1k = 12.3 GB of KV
+    # the lane's sequence is at the coder model's rate: coder8's 32.5 GB, 65.536k × 96 MB/1k = 6.1 GB
     assert coder8.engines["main"].max_kv_size == 131072
-    assert (round(projected, 1), unknown) == (98.3, [])
-    assert projected < coder8.memory.wired_limit_mb / 1024  # 104 GB: the studio's KV fits this profile
+    assert (round(projected, 1), unknown) == (103.2, [])
+    assert projected < coder8.memory.wired_limit_mb / 1024  # every studio profile's cache fits its own budget
+    qwen = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-qwen25")
+    assert project_memory_gb(qwen, "main")[0] < qwen.memory.wired_limit_mb / 1024
+
+
+def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
+    """Planning-line P5b, D10: the studio's live KV is the build lane's one sequence at the coder's context
+    and line.fanout asks at line.consult_context, not teams.k sequences at the engine's cap."""
+    from airlie.doctor import live_kv_gb, projection_detail
+
+    studio = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
+    e = studio.engines["main"]
+    build = studio.roles["coder"]
+    rate = studio.models[build.model].kv_mb_per_1k_tokens
+    assert round(live_kv_gb(studio, e), 3) == round(
+        build.max_context / 1000 * rate / 1024 + 4 * 8192 / 1000 * rate / 1024, 3
+    )
+    wider = studio.model_copy(deep=True)
+    wider.line.fanout = 8
+    assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
+    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 24 GB prefix cache" in projection_detail(
+        studio, e
+    )
+    teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
+    assert (
+        live_kv_gb(teams, teams.engines["main"]) == 3 * 65.536 * 64 / 1024
+    )  # the other topologies are as they were
+
+
+class RunningEngine(FakeProbe):
+    """A probe whose host runs a vllm-mlx server with `argv` (or none)."""
+
+    def __init__(self, argv: list[str] | None) -> None:
+        super().__init__()
+        self.argv = argv
+
+    def process_args(self, marker: str) -> list[str] | None:
+        return self.argv
+
+
+def serve_argv(profile: str, tmp_path: Path) -> list[str]:
+    """What `task restart -- --topology <profile>` starts, as `ps` shows it."""
+    from airlie.engine.registry import build_registry, build_serve_command, write_registry
+
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology=profile)
+    path = write_registry(
+        build_registry(cfg, "main", lambda m: Path("/models") / m.repo), tmp_path / f"{profile}.yaml"
+    )
+    return build_serve_command(cfg, "main", path)
+
+
+def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_naming_the_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.doctor import engine_matches_profile
+
+    # the check reloads the config from its file for the profile, local overrides and all: never the person's
+    monkeypatch.setattr("airlie.config.load.DEFAULT_LOCAL", NO_LOCAL.name)
+    cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
+    ok = engine_matches_profile(cfg, RunningEngine(serve_argv("studio", tmp_path)), "studio")
+    assert ok.status == "ok" and "studio" in ok.detail
+    # the engine the person left running from another profile: a smaller KV, no cache size, full-width KV
+    wrong = engine_matches_profile(cfg, RunningEngine(serve_argv("single", tmp_path)), "studio")
+    assert wrong.status == "fail"
+    named = (
+        "--max-kv-size 65536 (profile: 131072)",
+        "--cache-memory-mb (unset) (profile: 24576)",
+        "--kv-cache-quantization off (profile: on)",
+    )
+    for flag in named:
+        assert flag in wrong.detail, wrong.detail
+    assert wrong.detail.endswith("restart it: task restart -- --topology studio")
+    # one flag alone is enough
+    argv = serve_argv("studio", tmp_path)
+    argv[argv.index("--max-kv-size") + 1] = "32768"
+    one = engine_matches_profile(cfg, RunningEngine(argv), "studio")
+    assert one.status == "fail" and "--max-kv-size 32768" in one.detail and "--max-num-seqs" not in one.detail
+    # the resident models are compared too: a registry that preloads other models
+    studio_argv = serve_argv("studio-coder8", tmp_path)
+    models = engine_matches_profile(cfg, RunningEngine(studio_argv), "studio")
+    assert models.status == "fail" and "preloaded models" in models.detail
+    # none running is a warning (the engine-down gate says so), an unmanaged engine is fine
+    assert engine_matches_profile(cfg, RunningEngine(None), "studio").status == "warn"
+    assert engine_matches_profile(cfg, RunningEngine(None), "single").status == "warn"
+    assert engine_matches_profile(cfg, RunningEngine(None), "nope").status == "warn"  # a profile not declared

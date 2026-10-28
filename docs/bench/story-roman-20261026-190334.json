@@ -1,0 +1,121 @@
+{
+ "case": "roman",
+ "started": "2026-10-26T18:17:30",
+ "airlie_build": "6fe0f5e",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "refine",
+ "blocked": "the meeting ended without an agreement that can be built: criterion_unproven AC1: no test of the proof plan proves it; criterion_unproven AC2: no test of the proof plan proves it; criterion_unproven AC3: no test of the proof plan proves it; criterion_unproven AC4: no test of the proof plan proves it; criterion_unproven AC5: no test of the proof plan proves it; criterion_unproven AC6: no test of the proof plan proves it; criterion_unproven AC7: no test of the proof plan proves it; criterion_unproven AC8: no test of the proof plan proves it; layer_unproven roman-module: no test of the proof plan belongs to this layer; layer_unproven suite-gate: no test of the proof plan belongs to this layer",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 46.1,
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.1
+   },
+   {
+    "at": "plan_done",
+    "min": 15.8
+   },
+   {
+    "at": "story_done",
+    "min": 46.1
+   }
+  ],
+  "roles": [
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 46579,
+    "tokens_out": 11518,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 1093.946,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 53005,
+    "tokens_out": 5746,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 395.94399999999996,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 43797,
+    "tokens_out": 2970,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 279.617,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 1,
+    "tokens_in": 3934,
+    "tokens_out": 2092,
+    "prefill_s": 4.1636999999999995,
+    "decode_s": 93.9074,
+    "wall_s": 269.4914,
+    "decode_tps": 22.3,
+    "prefill_tps": 945
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 10687,
+    "tokens_out": 701,
+    "prefill_s": 6.1457,
+    "decode_s": 32.0152,
+    "wall_s": 127.0021,
+    "decode_tps": 21.9,
+    "prefill_tps": 1739
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 8,
+    "tokens_in": 15863,
+    "tokens_out": 690,
+    "prefill_s": 15.5844,
+    "decode_s": 23.7464,
+    "wall_s": 102.6066,
+    "decode_tps": 29.1,
+    "prefill_tps": 1018
+   }
+  ],
+  "retries": {
+   "plan_rounds": 1,
+   "plan_fixes": 2,
+   "meeting_turns": 9,
+   "meeting_objections": 6,
+   "critic_objections": 0,
+   "package_attempts": 0,
+   "packages_rejected": 0,
+   "unusable_replies": 0,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

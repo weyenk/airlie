@@ -8,12 +8,14 @@ from typing import Any
 
 import pytest
 
+from airlie.story.amigos import ProofTest
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
     GUIDE_HEADING,
     build_brief,
     consult_brief,
     consult_round_text,
+    critic_brief,
     imagine_brief,
     layer_goal,
     layer_plan,
@@ -22,6 +24,7 @@ from airlie.story.briefs import (
     plan_brief,
     pr_body,
     pr_title,
+    proof_revision_brief,
     questions_brief,
     refine_brief,
     replan_brief,
@@ -39,7 +42,7 @@ from airlie.story.initiative import (
     Initiative,
 )
 from airlie.story.lessons import Lesson
-from airlie.story.model import Criterion, EpicHeader, Layer, Story
+from airlie.story.model import Criterion, EpicHeader, Layer, ScopedPath, Story
 from airlie.story.package import Interface, Package, PackageFile
 from airlie.topology.studio_plan import schedule
 
@@ -89,6 +92,14 @@ def test_layers_brief_states_the_rules_and_the_criteria() -> None:
     assert "at most 4 layers" in text and "AC2" in text and "cropping" in text and '"layers"' in text
 
 
+def test_the_layers_contract_asks_for_files_and_interfaces() -> None:
+    text = layers_brief(STORY, 4)
+    assert '"files": [{"path": "src/pkg/mod.py", "new": false}]' in text
+    assert '"interfaces": ["def name(arg: T) -> R' in text
+    assert "List every file the layer creates or changes under files" in text
+    assert "Name each layer's files and the interfaces at its boundary." in text
+
+
 def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
     for i in (1, 2):  # a layer that owns criteria, and an enabling one
         [build] = layer_plan(STORY, LAYERS, i, PACKAGE, build_role="coder").subtasks
@@ -119,6 +130,71 @@ def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_code
     assert "could not be used" not in text
     assert "foundation for later layers" in package_brief(
         STORY, LAYERS, 2, max_steps=40, context_budget=65_536
+    )
+
+
+AGREED = (
+    ProofTest(
+        "AC2",
+        "profile",
+        "tests/unit/test_profile.py",
+        "test_shows",
+        "unit",
+        "unit",
+        "the url shows",
+        "an avatar",
+    ),
+    ProofTest(None, "profile", "tests/unit/test_profile.py", "test_title", "unit", None, "the title", ""),
+)
+
+
+def test_the_package_brief_carries_the_agreed_tests_and_the_layers_files_and_interfaces() -> None:
+    layer = replace(
+        LAYERS[1],
+        files=(ScopedPath("src/profile.py", True), ScopedPath("src/app.py")),
+        interfaces=("def show() -> int",),
+    )
+    layers = (LAYERS[0], layer, LAYERS[2])
+    text = package_brief(STORY, layers, 1, max_steps=40, context_budget=65_536, proof=AGREED)
+    tests = text.split("## The agreed tests")[1].split("##")[0]
+    assert "tests/unit/test_profile.py::test_shows (proves AC2, level unit, guideline unit)" in tests
+    assert "asserts: the url shows" in tests and "needs: an avatar" in tests
+    assert "tests/unit/test_profile.py::test_title (a behaviour of this layer, level unit)" in tests
+    files = text.split("## Files and interfaces")[1].split("##")[0]
+    assert (
+        "src/profile.py (new)" in files and "- src/app.py\n" in files + "\n" and "def show() -> int" in files
+    )
+    assert "names exactly the agreed tests" in text and '"proof_change"' in text
+    assert '"behaviour"' in text  # where a test with no criterion is listed
+    plain = pbrief()
+    for absent in ("## The agreed tests", "## Files and interfaces", "proof_change"):
+        assert absent not in plain
+
+
+def test_the_critic_is_given_the_test_files_the_layers_agreed_proof_and_the_conventions() -> None:
+    files = {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n```\n"}
+    text = critic_brief(LAYERS[1], files, AGREED, "## The repository's test gate\n- uv run pytest")
+    assert "Read these tests against the agreed proof" in text
+    # the files are not on disk yet: Muse once looked there and called every agreed test missing
+    assert "not in the repository yet, so never look for them there" in text
+    assert "not in the repository until the coder writes them" in text
+    assert "tests/unit/test_profile.py::test_shows" in text and "asserts: the url shows" in text
+    assert "### tests/unit/test_profile.py" in text and "assert show() == 1" in text
+    assert "````python" in text  # a fence longer than any inside the file
+    assert "uv run pytest" in text and '"type": "verdict"' in text and '"proof": "agree" | "object"' in text
+    again = critic_brief(LAYERS[1], files, AGREED, "", feedback="no verdict")
+    assert "could not be used: no verdict" in again
+
+
+def test_the_proof_revision_brief_carries_the_layers_tests_and_the_architects_reasons_as_data() -> None:
+    reasons = (("tests/unit/test_profile.py::test_shows", "the page is not rendered in this layer"),)
+    text = proof_revision_brief(STORY, LAYERS[1], AGREED, reasons, "## conventions")
+    assert "the architect found the proof for this layer wrong" in text
+    assert "> tests/unit/test_profile.py::test_shows: the page is not rendered in this layer" in text
+    assert "asserts: the url shows" in text and "## conventions" in text
+    assert '"type": "proof"' in text and "this layer's tests only" in text
+    assert "could not be used: nope" in proof_revision_brief(
+        STORY, LAYERS[1], AGREED, reasons, "", feedback="nope"
     )
 
 
@@ -879,3 +955,46 @@ def test_the_planners_brief_questions_and_delivery_note_read_as_they_should() ->
     assert "- AIR-41 (core) Fast board: 12.5 h, risky" in note and "Queued ahead of them: 4 h." in note
     assert "Your budget: 10 h; the core is priced at 12.5 h, over it by 2.5 h." in note
     assert "Your budget" not in delivery_note([("AIR-41", draft, est)], queue_hours=0.0, budget_hours=None)
+
+
+def test_a_criterion_left_to_the_gate_is_said_as_no_test_to_write() -> None:
+    from airlie.story.amigos import GATE_ASSERTS
+
+    gate = ProofTest("AC2", "profile", "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+    text = critic_brief(LAYERS[1], {}, (gate,), "")
+    assert "- AC2: proven by the layer's test gate itself; write no test for it" in text
+    assert "gate:AC2" not in text
+
+
+def test_a_package_brief_carries_the_layers_existing_files_so_the_architect_need_not_read_them() -> None:
+    """Lever 2 (2026-10-27): on the wiki task the architect spent ~20 minutes of tool calls re-reading the
+    files its layer changes, each step thinking to its cap; the brief now carries them, as they are on its
+    base, each clipped at the cap, all of them within the total cap."""
+    from airlie.story.briefs import next_package_brief
+
+    sources = {"src/profile.py": "def profile() -> str:\n    return 'x'\n", "src/big.py": "y" * 20_000}
+    text = pbrief(sources=sources)
+    head = "## The files this layer changes, as they are on its base"
+    assert head in text and "def profile() -> str:" in text
+    assert "### src/big.py" in text and "[clipped]" in text and "y" * 12_001 not in text
+    assert "read others only when you need them" in text
+    assert head not in pbrief()  # a layer with only new files gets no section
+    later = next_package_brief(STORY, LAYERS, 1, sources={"src/profile.py": "P = 1\n"})
+    assert head in later and "P = 1" in later
+
+
+def test_the_layer_sources_are_its_existing_files_read_at_a_commit(tmp_path: Path) -> None:
+    from airlie.story.briefs import layer_sources
+    from airlie.story.model import Layer, ScopedPath
+    from tests.unit.test_story_layer_checks import repo
+
+    root, sha = repo(tmp_path, {"src/a.py": "A = 1\n", "src/b.py": "B = 2\n"})
+    layer = Layer(
+        "x",
+        "X",
+        "src",
+        "brief",
+        (),
+        (ScopedPath("src/a.py"), ScopedPath("src/new.py", True), ScopedPath("src/gone.py")),
+    )
+    assert layer_sources(root, sha, layer) == {"src/a.py": "A = 1\n"}

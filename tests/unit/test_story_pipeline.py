@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from autogen_ext.models.replay import ReplayChatCompletionClient
 
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.router import ChiefRouter
 from airlie.story import pipeline as pipeline_module
+from airlie.story.amigos import Agreement, Meeting, ProofTest
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
 from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
@@ -177,6 +179,7 @@ def pipeline(
     roles: dict[str, tuple[str, list[str] | None]] = STORY_ROLES,
     github_repo: str | None = None,
     done_check: bool = False,
+    meeting: Any = None,
 ) -> StoryPipeline:
     """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
     `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
@@ -185,6 +188,7 @@ def pipeline(
         "plan_round_steps": 0,  # one go, no survey: the rounds and the survey have tests of their own
         "survey": False,
         "layer_attempts": 1,  # a layer that fails stops the story; re-planning has tests of its own
+        "amigos": {"enabled": False},  # the meeting has tests of its own (below)
         **(story or {}),
     }
     # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
@@ -197,7 +201,12 @@ def pipeline(
         repo=repo,
         test_cmd=test_cmd,
         github_repo=github_repo,
+        meeting=meeting,
     )
+
+
+def kinds_all(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text().splitlines()]
 
 
 def kinds(path: Path, kind: str) -> list[dict[str, Any]]:
@@ -228,11 +237,10 @@ async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_re
     assert [len(r) for r in runs] == [1, 1]  # once per built layer, none in refine or the packages
 
 
-async def test_each_layer_is_built_from_the_architects_package_and_the_coder_sees_its_tests(
-    tmp_path: Path,
-) -> None:
-    """P1 (2026-10-24): the architect writes each layer's package just before the layer runs; the pipeline
-    places its tests in the worktree and commits them with the layer, and the coder's goal is the package."""
+async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_front(tmp_path: Path) -> None:
+    """P1 (2026-10-24), amended 2026-10-26: the architect drafts every layer's package in one conversation
+    before the first layer is built, each checked just before its layer; the pipeline places its tests in the
+    worktree and commits them with the layer, and the coder's goal is the package."""
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine()
     st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
@@ -246,16 +254,26 @@ async def test_each_layer_is_built_from_the_architects_package_and_the_coder_see
     assert "tests/unit/test_storage.py" in git(repo, "show", "--name-only", "--format=", B1)
     assert "tests/unit/test_profile.py" in git(repo, "show", "--name-only", "--format=", B2)
     events = st.path / "events.jsonl"
+    names = [e["kind"] for e in kinds_all(events)]
+    assert names.index("package_drafted") < names.index("layer_start")  # both drafted before any build
+    assert [e["layer"] for e in kinds(events, "package_drafted")] == ["01", "02"]
     assert [e["layer"] for e in kinds(events, "package_start")] == ["01", "02"]
     assert [e["layer"] for e in kinds(events, "package_ready")] == ["01", "02"]
     assert [e["paths"] for e in kinds(events, "package_placed")] == [
         ["tests/unit/test_storage.py"],
         ["tests/unit/test_profile.py"],
     ]
-    # the second layer's package was asked on the first layer's branch: its brief names what layer 01 added
-    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
-    assert "Write this layer's package" in asked[1] and "This is layer 1 of 2: Storage" in asked[1]
-    assert "This is layer 2 of 2: Profile" in asked[2] and "What the earlier layers" in asked[2]
+    assert st.drafted and st.drafts == {}  # each layer took its draft
+    # one conversation: layer 02 is asked as a follow-up to layer 01's reply, before the coder starts
+    roles = [r.role for r in engine.requests]
+    architect = [r for r in engine.requests if r.role == "architect"]
+    assert roles.index("coder") > [n for n, r in enumerate(roles) if r == "architect"][2]
+    first, second = architect[1], architect[2]
+    assert "packages of all 2 layers" in first.messages[1].content
+    assert "This is layer 1 of 2: Storage" in first.messages[1].content
+    asked = second.messages[-1].content
+    assert "This is layer 2 of 2: Profile" in asked and "Now write the next layer's package" in asked
+    assert len(second.messages) > len(first.messages)  # the same conversation, layer 01's reply in it
 
 
 async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_stops_the_story(
@@ -468,6 +486,43 @@ async def stopped_with(tmp_path: Path, reason: str) -> tuple[StoryState, Recordi
     return st, board
 
 
+async def test_a_pack_that_cannot_be_gathered_is_an_event_and_the_plain_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(pipeline_module, "gather", broken)
+    st, board = await stopped_with(tmp_path, "layer 01 (B) changed nothing")
+    [posted] = board.notes
+    resume = "Resume: the same `task story -- --text ...` command."
+    assert posted == note(f"stopped after 'new': layer 01 (B) changed nothing\n{resume}")
+    [failed] = kinds(st.path / "events.jsonl", "diagnosis_failed")
+    assert failed["error"] == "OSError: disk gone"
+    [blocked] = kinds(st.path / "events.jsonl", "blocked")
+    assert blocked["reason"] == st.blocked and "class" not in blocked  # today's event, nothing more
+    assert board.moves[-1] == "blocked"  # a diagnosis that fails never keeps the issue out of Blocked
+
+
+async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, FakeEngine(), board=board)
+
+    async def cancelled(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(pipe, "_muse_at_block", cancelled)
+    card = text_card("avatars")
+    st = StoryState.open(pipe.stories_dir / card.key, card, pipe.repo)
+    with pytest.raises(asyncio.CancelledError):
+        await pipe._block(st, card, "layer 01 (B) changed nothing")
+    assert board.moves == ["intake"] and "back in To Do" in board.notes[-1]
+    assert kinds(st.path / "events.jsonl", "cancelled") and not kinds(st.path / "events.jsonl", "blocked")
+
+
 async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
@@ -558,6 +613,20 @@ async def test_an_architect_cut_off_at_max_tokens_stops_the_story_at_once_and_is
     assert not kinds(st.path / "events.jsonl", "retry")
     assert "cut off at max_tokens" in (st.path / "notes.md").read_text()  # the person is told on the board
     assert "no JSON object" not in (st.path / "events.jsonl").read_text()
+
+
+async def test_a_reply_cut_off_in_a_loop_of_repeats_is_asked_again_with_the_reason(tmp_path: Path) -> None:
+    """Run 9 on airlie-sandbox (2026-10-26): product's refine wrote `from_roman("IIII…` until max_tokens. A
+    runaway repeat is not a reply too long for its room, so another try is worth it: it is a StoryError."""
+    repo = repo_with_marker_tests(tmp_path)
+    looped = FakeReply(text='{"acceptance": [{"when": "from_roman(\\"' + "I" * 600, finish_reason="length")
+    engine = FakeEngine({"product": [looped, STORY], "architect": [LAYERS, *PKGS]})
+    st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
+    assert st.blocked is None or "repeated" not in st.blocked, st.blocked
+    asked = [r.messages[1].content for r in engine.requests if r.role == "product"]
+    assert len(asked) == 2 and "repeated 'I'" in asked[1] and "max_tokens" not in asked[1]
+    [retry] = kinds(st.path / "events.jsonl", "retry")
+    assert retry["stage"] == "refine"
 
 
 async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_after_one_stops_the_story(
@@ -718,15 +787,17 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     assert "minor PASS:1: name it better" in first and "minor profile.txt: say more" in second
     assert "| build | coder | done | approve | 0 |" in first
     # every run is on record, and the events follow the stages
-    assert len(st.runs) == 6  # refine, layers, then a package and a build per layer
+    assert len(st.runs) == 5  # refine, layers, the packages drafted together, then a build per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
     assert [e["kind"] for e in log] == [
         *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
-        # build; ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
-        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        # build: every package drafted in one conversation, then each checked just before its layer;
+        # ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
+        *("packages_drafting", "run", "package_drafted", "package_drafted"),
+        *("test_checks_skipped", "package_start", "package_ready"),
         *("layer_start", "package_placed", "layer_built"),
-        *("test_checks_skipped", "package_start", "run", "package_ready"),
+        *("test_checks_skipped", "package_start", "package_ready"),
         *("layer_start", "package_placed", "layer_built"),
         "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
@@ -843,8 +914,9 @@ async def test_a_trunk_that_cannot_be_fetched_stops_the_story_before_any_model_a
     assert st.blocked.startswith(f"the trunk {trunk} could not be fetched from origin")
     assert "no network in a unit test" in st.blocked and "run the story again" in st.blocked
     assert board.moves == ["building", "blocked"]
-    stop = f"{NOTE_PREFIX}stopped after 'intake': the trunk {trunk} could not be fetched"
-    assert board.notes[-1].startswith(stop)
+    stop = f"stopped after 'intake': the trunk {trunk} could not be fetched"
+    assert board.notes[-1].startswith(f"{NOTE_PREFIX}transient: fetch_failed")  # the class leads
+    assert stop in board.notes[-1]
 
 
 async def test_a_story_builds_on_the_fetched_remote_trunk_never_on_a_local_one_a_model_moved(
@@ -913,7 +985,7 @@ async def test_a_stop_reason_of_any_kind_is_masked_in_block_once(
 ) -> None:
     # a StoryBlocked message, and a git failure as _reason words it, both reach the board through _block
     st, board = await stopped_with(tmp_path, raw)
-    assert st.blocked == masked and board.notes[0].startswith(note(f"stopped after 'new': {masked}\n"))
+    assert st.blocked == masked and f"stopped after 'new': {masked}\n" in board.notes[0]
     git_said = subprocess.CalledProcessError(128, ["git", "ls-remote", raw], stderr=f"fatal: {raw}")
     st, board = await stopped_with(tmp_path / "again", _reason(git_said))
     assert st.blocked == f"`git ls-remote {masked}` exited 128: fatal: {masked}"
@@ -936,8 +1008,10 @@ async def test_a_stop_reason_is_capped_at_800_characters_keeping_its_start_and_i
     assert st.blocked is not None and len(st.blocked) == 800
     assert st.blocked.startswith("`git x` exited 128: aaa") and st.blocked.endswith("aaa the end of it")
     assert st.blocked[200] == "\u2026"
-    stopped = f"stopped after 'new': {st.blocked}\nResume: the same `task story -- --text ...` command."
-    assert board.notes == [note(stopped)]  # the board is told what the state and the event hold
+    stopped = f"stopped after 'new': {st.blocked}\n"
+    [posted] = board.notes
+    assert stopped in posted and posted.endswith("Resume: the same `task story -- --text ...` command.")
+    # the board is told what the state and the event hold
     [event] = kinds(st.path / "events.jsonl", "blocked")
     assert event["reason"] == st.blocked
     short, _ = await stopped_with(tmp_path / "short", "x" * 800)
@@ -1037,7 +1111,8 @@ async def test_a_board_that_is_down_does_not_hide_the_reason(tmp_path: Path) -> 
     st = await pipeline(tmp_path, repo, FakeEngine(), board=board).run(text_card("avatars"))
     assert st.blocked == "BoardError: jira is unreachable"
     failed = kinds(st.path / "events.jsonl", "board_error")
-    assert [(e["call"], e["error"]) for e in failed] == [  # the note and the move are each tried
+    assert [(e["call"], e["error"]) for e in failed] == [  # the fix card's note, the stop's note, the move
+        ("comment", "BoardError: jira is unreachable"),
         ("comment", "BoardError: jira is unreachable"),
         ("move", "BoardError: jira is unreachable"),
     ]
@@ -1051,7 +1126,10 @@ async def test_a_role_that_cannot_run_a_stage_stops_the_story_with_a_readable_re
     assert st.blocked is not None
     assert st.blocked.startswith("PlanError: subtask 'refine' names role 'nonesuch'; use one of: ")
     notes = (st.path / "notes.md").read_text()
-    assert "nonesuch" in notes and "Traceback" not in notes  # the note is the reason, not the traceback
+    stop = notes[
+        notes.index("stopped after") :
+    ]  # the fix card's note before it holds the traceback as evidence
+    assert "nonesuch" in notes and "Traceback" not in stop  # the stop's note is the reason, not the traceback
     assert "Traceback" in kinds(st.path / "events.jsonl", "error")[0]["traceback"]
     assert worktrees(repo) == 1
 
@@ -1142,9 +1220,8 @@ async def test_refine_and_layers_read_the_trunk_not_the_persons_checkout(tmp_pat
         assert "README.md" in listing and "check.sh" in listing and "feature_only.txt" not in listing
     assert st.base is not None and st.base["sha"] == git(repo, "rev-parse", trunk)
     runs = kinds(st.path / "events.jsonl", "run")
-    # refine, layers and layer 01's package read the trunk; layer 02's package reads layer 01's branch
-    assert {e["base_sha"] for e in runs[:3]} == {st.base["sha"]}
-    assert runs[3]["base_sha"] == git(repo, "rev-parse", B1)
+    # refine, layers and the packages, drafted together, read the trunk (each is checked on its real base)
+    assert len(runs) == 3 and {e["base_sha"] for e in runs} == {st.base["sha"]}
     assert "feature_only.txt" not in git(
         repo, "ls-tree", "-r", "--name-only", B2
     )  # nor do the layers build on it
@@ -1371,7 +1448,7 @@ async def test_a_story_cancelled_while_it_refines_goes_back_to_intake_and_the_ne
     st = await pipeline(tmp_path, repo, happy_engine(), board=again).run(card)
     assert again.calls[:2] == [("move", "building"), ("comment", note("resumed after 'intake'"))]
     assert st.blocked is None and st.stage == "review"
-    assert len(st.runs) == 7  # the cancelled run is on record with the six that finished
+    assert len(st.runs) == 6  # the cancelled run is on record with the five that finished
 
 
 async def test_a_story_cancelled_while_a_layer_builds_keeps_the_layer_and_resumes_after_the_last_stage(
@@ -1912,8 +1989,7 @@ async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in st.blocked
     assert "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```" in st.blocked
     assert board.moves == ["building", "blocked"]  # out of intake, so the queue moves on
-    stop = f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on origin/{trunk}"
-    assert board.notes[-1].startswith(stop)
+    assert f"stopped after 'intake': o/r has no test gate on origin/{trunk}" in board.notes[-1]
 
 
 async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
@@ -2337,3 +2413,594 @@ async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Pa
     assert stopped.blocked is not None and stopped.stage != "review"
     again = await pipeline(tmp_path, repo, FakeEngine({"architect": []})).run(high)
     assert again.stage == "new" and again.blocked is None and again.base is None
+
+
+# ---- the story meeting (P2, 2026-10-24) ------------------------------------------------------------
+
+MEETING_ROLES = {
+    **STORY_ROLES,
+    "tester": ("---\nsummary: Proof planning\n---\n# tester", ["read_file", "list_dir"]),
+}
+MEETING = {"amigos": {"enabled": True}}
+
+
+class FakeMeeting:
+    """A meeting with Meeting.run's signature that holds none and returns the agreement it was given."""
+
+    def __init__(self, agreement: Agreement) -> None:
+        self.agreement = agreement
+
+    async def run(
+        self,
+        opening: str,
+        story: Story,
+        layers: tuple[Layer, ...],
+        levels: Mapping[str, int],
+        guidelines: Any,
+        *,
+        repo: Path,
+        base: str,
+        state: Mapping[str, Any] | None = None,
+    ) -> Agreement:
+        return self.agreement
+
+
+def never(cfg: Any, tools: Any, on_turn: Any) -> Any:
+    raise AssertionError("no meeting is held here")
+
+
+def repo_with_levels(tmp_path: Path) -> Path:
+    """The marker repository with a test tree of two levels, so a proof can name them."""
+    repo = repo_with_marker_tests(tmp_path)
+    for path in ("tests/unit/test_existing.py", "tests/integration/test_wiring.py"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("def test_x():\n    assert True\n")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "tests")
+    return repo
+
+
+def block(obj: Any) -> str:
+    return "```json\n" + json.dumps(obj) + "\n```"
+
+
+def verdict_block(**values: str) -> str:
+    v = {"requirements": "agree", "changes": "agree", "proof": "agree", **values}
+    objections = (
+        [{"part": "proof", "about": "AC2", "claim": "thin", "suggest": "assert the url"}]
+        if v["proof"] == "object"
+        else []
+    )
+    return block({"type": "verdict", **v, "objections": objections})
+
+
+AGREE_V = verdict_block()
+AGREED_PROOF = {
+    "type": "proof",
+    "tests": [
+        {
+            "criterion": "AC1",
+            "layer": "storage",
+            "file": "tests/unit/test_storage.py",
+            "name": "test_stores_an_avatar",
+            "level": "unit",
+            "asserts": "the avatar is stored",
+            "needs": "a tmp_path",
+        },
+        {
+            "criterion": "AC2",
+            "layer": "profile",
+            "file": "tests/unit/test_profile.py",
+            "name": "test_shows_the_avatar",
+            "level": "unit",
+            "asserts": "the profile holds the avatar",
+            "needs": "a stored avatar",
+        },
+    ],
+}
+REWORDED_STORY = {
+    "type": "story",
+    "title": "Add avatar upload",
+    "summary": "Users upload an avatar and see it.",
+    "acceptance": [
+        {"id": "AC1", "given": "a user", "when": "they upload a PNG", "then": "it is stored"},
+        {"id": "AC2", "given": "a stored avatar", "when": "the profile loads", "then": "it is shown"},
+    ],
+}
+AGREED_SPLIT = {
+    "layers": [
+        {
+            **layer("storage", "Storage", "src/store.py", "AC1", "Store avatars as PNG files."),
+            "files": [{"path": "src/store.py", "new": True}],
+            "interfaces": ["def save(avatar: bytes) -> int"],
+        },
+        {
+            **layer("profile", "Profile", "src/profile.py", "AC2", "Show the avatar."),
+            "files": [{"path": "src/profile.py", "new": True}],
+        },
+    ]
+}
+
+
+def spoken(prose: str, *blocks: str) -> str:
+    return "\n".join([prose, *blocks])
+
+
+def replay_meeting(
+    script: Mapping[str, list[str]], *, max_turns: int = 12, hook: Callable[..., Any] | None = None
+) -> Any:
+    """A MeetingFactory over replay clients: each role replays its script, one reply per call."""
+
+    def factory(cfg: Any, tools: Any, on_turn: Callable[..., None]) -> Meeting:
+        def clients(role: str, spec: RoleSpec) -> ReplayChatCompletionClient:
+            return ReplayChatCompletionClient(list(script[role]))
+
+        return Meeting(
+            cfg,
+            clients=clients,
+            tools=None,
+            max_turns=max_turns,
+            tool_iterations=0,
+            on_turn=hook(on_turn) if hook else on_turn,
+        )
+
+    return factory
+
+
+EASY_MEETING = {
+    "product": [spoken("Reworded nothing.", block(REWORDED_STORY), AGREE_V), spoken("ok", AGREE_V)],
+    "architect": [spoken("Files named.", block(AGREED_SPLIT), AGREE_V), spoken("ok", AGREE_V)],
+    "tester": [spoken("The proof.", block(AGREED_PROOF), AGREE_V)],
+}
+
+
+async def test_a_story_is_agreed_between_its_layers_and_its_first_build_and_the_card_hears_it(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_levels(tmp_path)
+    reworded = json.loads(json.dumps(REWORDED_STORY))
+    reworded["acceptance"][1]["then"] = "it is shown with its alt text"
+    script = {
+        **EASY_MEETING,
+        "product": [spoken("Sharper.", block(reworded), AGREE_V), spoken("ok", AGREE_V)],
+    }
+    board = RecordingBoard()
+    engine = happy_engine()
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        engine,
+        board=board,
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(script),
+    )
+    st = await pipe.run(ISSUE)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    events = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
+    names = [e["kind"] for e in events]
+    stage_layers = next(n for n, e in enumerate(events) if e["kind"] == "stage" and e["stage"] == "layers")
+    assert (
+        names.index("amigos_turn") < names.index("amigos_agreed") < stage_layers < names.index("layer_start")
+    )
+    assert [e["role"] for e in events if e["kind"] == "amigos_turn"] == [
+        "product",
+        "architect",
+        "tester",
+        "airlie",
+        "product",
+        "architect",
+    ]
+    assert [e["turns"] for e in events if e["kind"] == "amigos_agreed"] == [6]
+    # the agreement is the state: the story as worded, the layers as split, the proof as planned
+    assert st.agreement is not None and st.meeting is None
+    assert [t["name"] for t in st.agreement["proof"]] == ["test_stores_an_avatar", "test_shows_the_avatar"]
+    assert st.story is not None and st.story["acceptance"][1]["then"] == "it is shown with its alt text"
+    assert st.agreement["layers"][0]["files"] == [{"path": "src/store.py", "new": True}]
+    assert st.layers is not None and st.layers[0]["brief"] == "Store avatars as PNG files."
+    # the card hears it, after the layers and before the first layer is built
+    heads = [n.removeprefix(NOTE_PREFIX).splitlines()[0] for n in board.notes]
+    assert heads[2:5] == [
+        "layers, bottom first:",
+        "agreement of product, the architect and the tester (6 turns)",
+        "the meeting changed the criteria:",
+    ]
+    agreed = board.notes[3]
+    assert (
+        "it is shown with its alt text" in agreed
+        and "| AC1 | storage | unit | tests/unit/test_storage.py" in agreed
+    )
+    assert "reworded: **AC2**" in board.notes[4]
+    # the layers are built from the agreement: the architect's package ask carries the agreed brief
+    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
+    assert "Store avatars as PNG files." in asked[1]
+
+
+async def test_the_agreement_stored_has_no_reference_to_a_dropped_criterion(tmp_path: Path) -> None:
+    """Product dropped AC2 and the turns ran out before the architect and the tester fixed their parts: what
+    is stored (and built from) holds no AC2 anywhere."""
+    repo = repo_with_levels(tmp_path)
+    agreed_story = Story.from_dict(
+        {**json.loads(json.dumps(REWORDED_STORY)), "acceptance": REWORDED_STORY["acceptance"][:1]}
+    )
+    split = (
+        Layer("storage", "Storage", "store.py", "Store.", ("AC1",)),
+        Layer("profile", "Profile", "profile.py", "Show.", ("AC2",)),
+    )
+    proof = tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"])
+    stale = Agreement(agreed_story, split, proof, 12, dropped={"AC2": "shown by another story"})
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(architect=[LAYERS, PKG1]),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=lambda cfg, tools, on_turn: FakeMeeting(stale),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.agreement is not None and st.layers is not None and st.story is not None
+    stored = json.dumps(
+        [st.agreement["story"], st.agreement["layers"], st.agreement["proof"], st.layers, st.story]
+    )
+    assert "AC2" not in stored
+    assert st.agreement["layers"][1]["acceptance"] == []
+    assert [t["criterion"] for t in st.agreement["proof"]] == ["AC1", None]
+    assert [e["ids"] for e in kinds(st.path / "events.jsonl", "amigos_references_pruned")] == [["AC2"]]
+
+
+async def test_an_agreement_that_cannot_be_built_stops_the_story_naming_what_is_missing(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_levels(tmp_path)
+    story = Story.from_dict(REWORDED_STORY)
+    split = (Layer("storage", "Storage", "store.py", "Store.", ("AC1",)),)  # AC2 is nobody's
+    proof = tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"][:1])
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=lambda cfg, tools, on_turn: FakeMeeting(Agreement(story, split, proof, 12)),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is not None and "the meeting ended without an agreement that can be built" in st.blocked
+    assert "AC2" in st.blocked and st.agreement is None and st.stage == "refine"
+    assert st.meeting is None
+
+
+async def test_a_story_killed_mid_meeting_resumes_the_meeting_from_its_saved_history(tmp_path: Path) -> None:
+    """Cancelled right after turn 5: the story keeps the team's state, and a new run goes on from the
+    architect's turn with fresh agents. Product is not asked to refine again, nor the architect to split."""
+    repo = repo_with_levels(tmp_path)
+    seen: list[int] = []
+
+    def kill_after_five(on_turn: Callable[..., None]) -> Callable[..., None]:
+        def hooked(turn: Any, state: Any) -> None:
+            on_turn(turn, state)
+            seen.append(1)
+            if len(seen) == 5:
+                raise asyncio.CancelledError
+
+        return hooked
+
+    first = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(EASY_MEETING, hook=kill_after_five),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await first.run(text_card("avatars"))
+    saved = StoryState.open(first.stories_dir / text_card("avatars").key, text_card("avatars"), first.repo)
+    assert saved.meeting is not None and saved.agreement is None and saved.stage == "refine"
+    thread = saved.meeting["agent_states"]["RoundRobinGroupChatManager"]["message_thread"]
+    assert sum(1 for m in thread if m["source"] != "user") == 5
+    # what each role has left to say: product has spoken twice, the architect once, the tester once
+    left = {"product": [], "architect": EASY_MEETING["architect"][1:], "tester": []}
+    resumed_engine = FakeEngine(
+        {
+            "architect": [PKG1, PKG2],
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
+    second = pipeline(
+        tmp_path,
+        repo,
+        resumed_engine,
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(left),
+    )
+    st = await second.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    turns = kinds(st.path / "events.jsonl", "amigos_turn")
+    assert [e["role"] for e in turns] == ["product", "architect", "tester", "airlie", "product", "architect"]
+    assert st.agreement is not None and st.agreement["turns"] == 6 and st.meeting is None
+    assert not [r for r in resumed_engine.requests if r.role == "product"]
+
+
+async def test_a_meeting_that_ends_by_owner_decides_records_a_lesson_and_the_objections(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_levels(tmp_path)
+    object_ = verdict_block(proof="object")
+    script = {
+        "product": [spoken("The proof is thin.", object_)] * 2,
+        "architect": [spoken("ok", AGREE_V)] * 2,
+        "tester": [spoken("The proof.", block(AGREED_PROOF), AGREE_V), spoken("Same.", AGREE_V)],
+    }
+    board = RecordingBoard()
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        board=board,
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(script, max_turns=8),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked  # the story goes on
+    events = st.path / "events.jsonl"
+    assert [e["parts"] for e in kinds(events, "amigos_owner_decided")] == [["proof"]]
+    assert [(e["role"], e["part"], e["about"]) for e in kinds(events, "amigos_unresolved")] == [
+        ("product", "proof", "AC2")
+    ]
+    assert not kinds(events, "amigos_agreed")
+    [lesson] = [x for x in pipe.lessons.recent() if x.ending == "owner_decided"]
+    assert lesson.detail == "proof" and lesson.title == "Add avatar upload"
+    assert [e["ending"] for e in kinds(events, "lesson_recorded")] == ["owner_decided"]
+    heads = [n.removeprefix(NOTE_PREFIX).splitlines()[0] for n in board.notes]
+    assert "objections still open when the meeting ended (each owner's part stands):" in heads
+    assert any("product on proof (AC2): thin" in n for n in board.notes)
+    assert "decided by their owner at the turn cap: proof" in board.notes[3]
+
+
+async def test_a_blocked_reply_from_product_in_the_meeting_stops_the_story(tmp_path: Path) -> None:
+    repo = repo_with_levels(tmp_path)
+    blocked = block({"type": "blocked", "reason": "which sizes?"})
+    script = {
+        "product": [spoken("Cannot build this.", blocked, AGREE_V)],
+        "architect": [spoken("ok", AGREE_V)],
+        "tester": [spoken("ok", AGREE_V)],
+    }
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(script),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert (
+        st.blocked is not None and "product says this cannot be built as written: which sizes?" in st.blocked
+    )
+    assert st.meeting is None  # the next run holds the meeting afresh
+
+
+async def test_a_meeting_that_stops_the_story_leaves_its_transcript_on_disk(tmp_path: Path) -> None:
+    """The tester never posts a proof (as Muse did on the first real run): the story stops, the saved team
+    state is forgotten, and what each role said, with the problems each turn had, stays readable."""
+    repo = repo_with_levels(tmp_path)
+    script = {
+        "product": [spoken("Fine by me.", AGREE_V)] * 2,
+        "architect": [spoken("ok", AGREE_V)] * 2,
+        "tester": ["I would test the storage first."] * 2,
+    }
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(script, max_turns=8),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is not None and "the meeting ended without an agreement" in st.blocked
+    assert st.meeting is None and not (st.path / "meeting.md").exists()
+    transcript = (st.path / "meetings" / "1.md").read_text()
+    assert transcript.count("## turn ") == 8
+    assert "## turn 3: tester (verdict_missing)" in transcript
+    assert "I would test the storage first." in transcript
+    assert "no proof plan has been posted yet" in transcript  # the checker's findings, as posted
+
+
+async def test_with_amigos_off_the_split_is_the_agreement(tmp_path: Path) -> None:
+    repo = repo_with_levels(tmp_path)
+
+    pipe = pipeline(tmp_path, repo, happy_engine(), meeting=never)  # the helper's default: amigos off
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    assert st.agreement is not None and st.agreement["proof"] == [] and st.agreement["turns"] == 0
+    assert [x["slug"] for x in st.agreement["layers"]] == ["storage", "profile"]
+    assert not kinds(st.path / "events.jsonl", "amigos_turn")
+
+
+async def test_a_story_saved_before_the_meeting_existed_resumes_with_its_split_as_the_agreement(
+    tmp_path: Path,
+) -> None:
+    """A state at stage `layers` or later with no agreement is one from before P2: no meeting is held."""
+    repo = repo_with_levels(tmp_path)
+    first = pipeline(tmp_path, repo, happy_engine(), roles=MEETING_ROLES)
+    card = text_card("avatars")
+    await first.run(card)  # amigos off: it builds and publishes
+    path = first.stories_dir / card.key
+    state = json.loads((path / "state.json").read_text())
+    for key in ("agreement", "meeting"):
+        state.pop(key)
+    (path / "state.json").write_text(json.dumps(state))
+    again = pipeline(
+        tmp_path,
+        repo,
+        FakeEngine({}),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=never,
+    )
+    st = await again.run(card)
+    assert st.agreement is not None and st.agreement["proof"] == [] and st.stage == "review"
+
+
+async def test_a_meeting_without_a_tester_role_stops_the_story_before_any_model_is_asked_to_attend(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_levels(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), story=MEETING, meeting=never)  # STORY_ROLES: no tester
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is not None and "story.amigos is on, but the config has no 'tester' role" in st.blocked
+    assert st.agreement is None and st.stage == "refine"
+
+
+async def test_the_meeting_opens_with_the_repositorys_test_levels_and_the_testers_guidelines(
+    tmp_path: Path,
+) -> None:
+    """The tester's view of the repository (D6) is in the opening message every agent reads; a router with
+    no answer for the guideline (the chief router needs a hint) leaves the meeting going without one."""
+    repo = repo_with_levels(tmp_path)
+    lib = tmp_path / "qa"
+    lib.mkdir()
+    (lib / "unit.md").write_text("---\nsummary: Pure functions in isolation\n---\n# Unit\nKeep it fast.\n")
+    opened: list[str] = []
+
+    class Spy(FakeMeeting):
+        async def run(self, opening: str, *args: Any, **kwargs: Any) -> Agreement:
+            opened.append(opening)
+            return await super().run(opening, *args, **kwargs)
+
+    story = Story.from_dict(REWORDED_STORY)
+    split = (
+        Layer("storage", "Storage", "store.py", "Store.", ("AC1",)),
+        Layer("profile", "Profile", "profile.py", "Show.", ("AC2",)),
+    )
+    proof = tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"])
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=lambda cfg, tools, on_turn: Spy(Agreement(story, split, proof, 4)),
+    )
+    pipe.cfg.roles["tester"].skills = lib
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    [opening] = opened
+    assert "unit: 1 test module" in opening and "integration: 1 test module" in opening
+    assert "unit: Pure functions in isolation" in opening and "./check.sh" in opening
+    assert "Keep it fast." not in opening  # the router had no answer: only the summaries
+    assert kinds(st.path / "events.jsonl", "skill")[0]["chosen"] is None
+
+
+async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path: Path) -> None:
+    """The planning lane's half ends at the stored layers (and agreement); the build lane's half starts there
+    and is no resume (P5b, 2026-10-25)."""
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("avatars")
+    board = RecordingBoard()
+    engine = happy_engine()
+    planner = pipeline(tmp_path, repo, engine, board=board)
+    st = await planner.plan(card)
+    assert st.stage == "layers" and st.blocked is None and not st.built
+    assert {r.role for r in engine.requests} == {"product", "architect"}  # no coder, reviewer or package
+    assert [e["layers"] for e in kinds(st.path / "events.jsonl", "story_planned")] == [2]
+    asked = len(engine.requests)
+    again = await planner.plan(card)  # planned: nothing is asked again
+    assert again.stage == "layers" and len(engine.requests) == asked
+    builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS), board=board)
+    built = await builder.build(card)
+    assert built.stage == "review" and built.blocked is None and [p["number"] for p in built.prs] == [11, 12]
+    texts = [text for call, text in board.calls if call == "comment"]
+    assert not any("resumed after" in text for text in texts)  # the hand-over is no resume
+    assert [c for c in board.calls if c[0] == "move"] == [
+        ("move", "building"),
+        ("move", "building"),
+        ("move", "review"),
+    ]
+    # and `run` is the same two halves in one go
+    elsewhere = tmp_path / "again"
+    elsewhere.mkdir()
+    full = await pipeline(elsewhere, repo_with_marker_tests(elsewhere), happy_engine()).run(
+        text_card("again")
+    )
+    assert full.stage == "review" and full.blocked is None
+
+
+async def test_the_build_writes_decoding_gap_and_idle_at_its_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planning lane reads these (P5b, D2): `gap` at the start and between layers, `decoding` while a
+    layer's studio or an architect package is in flight, `idle` when the build ends; planning writes none."""
+    from airlie.story import phase
+
+    seen: list[str] = []
+    real = phase.write_phase
+
+    def record(stories_dir: Path, value: Any, **kw: Any) -> None:
+        seen.append(value)
+        real(stories_dir, value, **kw)
+
+    monkeypatch.setattr(phase, "write_phase", record)
+    monkeypatch.setattr("airlie.story.pipeline.write_phase", record)
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("avatars")
+    planner = pipeline(tmp_path, repo, happy_engine())
+    await planner.plan(card)
+    assert seen == []  # the planning half never touches the build lane's phase
+    builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS))
+    st = await builder.build(card)
+    assert st.stage == "review"
+    # gap on entry; the packages, drafted together (decoding, gap); per layer the studio (decoding, gap);
+    # idle at the end
+    assert seen[0] == "gap" and seen[-1] == "idle"
+    assert seen[1:-1] == ["decoding", "gap"] * 3 and set(seen) == {"gap", "decoding", "idle"}
+    assert phase.read_phase(builder.stories_dir)[0] == "idle"
+
+
+async def test_an_overrun_stage_is_an_event_and_one_note_and_never_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Budgets are recorded and warned, not enforced (P5b, D8): the layer ran over, the story still reaches
+    review, the events say so once each and the issue is told once."""
+    from airlie.config.schema import BudgetSpec
+    from airlie.story.budgets import Figures, StageMeter
+
+    big = Figures(5000, 500, 9999.0, 40, 1)
+    monkeypatch.setattr(StageMeter, "fold", lambda self, stage: big if stage == "layer" else Figures())
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, happy_engine(), board=board)
+    pipe.cfg.line.budgets["layer"] = BudgetSpec(wall_s=600, tokens=100_000)
+    st = await pipe.run(text_card("avatars"))
+    assert st.stage == "review" and st.blocked is None  # nothing stopped
+    events = st.path / "events.jsonl"
+    assert len(kinds(events, "budget_warning")) == 1 and len(kinds(events, "budget_exceeded")) == 1
+    [exceeded] = kinds(events, "budget_exceeded")
+    assert (
+        exceeded["stage"] == "layer" and exceeded["wall_s"] == 9999.0 and exceeded["budget"]["wall_s"] == 600
+    )
+    notes = [text for call, text in board.calls if call == "comment" and "stage cost" in text]
+    assert len(notes) == 1 and "the layer stage cost 167 min" in notes[0]  # two layers ran, one note
+    assert json.loads((st.path / "stages" / "layer.json").read_text())["state"] == "exceeded"
+
+
+async def test_the_architects_package_brief_carries_the_files_its_layer_changes(tmp_path: Path) -> None:
+    """Lever 2 (2026-10-27): the drafting conversation's turn for a layer carries the existing files that
+    layer names, read at the base, so the architect writes from them instead of reading them by tool."""
+    repo = repo_with_marker_tests(tmp_path)
+    split = {
+        "layers": [
+            {**layer("storage", "Storage", "README.md", "AC1", "Store."), "files": [{"path": "README.md"}]},
+            layer("profile", "Profile", "profile.py", "AC2", "Show."),
+        ]
+    }
+    engine = happy_engine(architect=[fenced(split), *PKGS])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is None, st.blocked
+    first = [r for r in engine.requests if r.role == "architect"][1].messages[1].content
+    assert "## The files this layer changes, as they are on its base" in first and "### README.md" in first
+    assert "hi" in first.split("### README.md")[1][:40]

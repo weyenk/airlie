@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 import traceback
 from collections.abc import Callable, Sequence
@@ -41,6 +42,7 @@ from airlie.story.briefs import (
     revise_brief,
     survey_brief,
 )
+from airlie.story.budgets import StageMeter, check
 from airlie.story.costs import StoryCosts, queue_hours
 from airlie.story.epic import Estimate, epic_of
 from airlie.story.epic_pipeline import epics_dir
@@ -142,6 +144,14 @@ class InitiativePipeline:
         except Exception as e:  # noqa: BLE001 - every failure ends as a note on the card, never a silent stop
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, item, _reason(e))
+        meter = StageMeter(
+            self.cfg.observability.state_dir.expanduser(), item.key, self.cfg.line.budgets, st.emit
+        )
+        for stage in ("questions", "imagine"):  # what the turn cost, against the stage's budget
+            text = check(meter, stage)
+            if text is not None:
+                with contextlib.suppress(Exception):
+                    self.board.store.comment(item.key, "airlie", note(text))
         return st
 
     async def _go(self, st: InitiativeState, initiative: Initiative) -> None:
@@ -187,7 +197,7 @@ class InitiativePipeline:
 
     def _doing(self, key: str) -> None:
         """The initiative is being worked on: `doing` while a turn runs (a question puts it in review)."""
-        self.board.store.update(key, status="doing")
+        self.board.store.update(key, status="doing", by="line")
 
     def _answer_to(self, item: Item, question: dict[str, object]) -> Comment | None:
         """The newest comment of a person on the card that is newer than the question: its answer."""
@@ -256,7 +266,7 @@ class InitiativePipeline:
         st.save()
         text = question if len(st.qa) > 1 else f"{question}\n\n{GO_LINE}"
         self.board.store.comment(item.key, self.specs.product_role, text)
-        self.board.store.update(item.key, status="review")
+        self.board.store.update(item.key, status="review", by="line")
         st.emit("question", n=len(st.qa), chars=len(question))
         return False
 
@@ -470,6 +480,7 @@ class InitiativePipeline:
                         ask.seat,
                         consult_brief(initiative, st.qa, ask, chars=specs.consult_chars),
                         steps=specs.consult_steps,
+                        long=False,
                     )
             except Exception as e:  # noqa: BLE001 - a seat that fails is an answer saying so
                 answer = f"[the {ask.seat} could not answer: {_cap(_reason(e))}]"
@@ -491,7 +502,7 @@ class InitiativePipeline:
             )
             return ask, answer
 
-        return list(await asyncio.gather(*(one(a) for a in asks)))
+        return await asker.gather(*(one(a) for a in asks))
 
     # ---- the mockups (D4, D13) ----
 
@@ -518,10 +529,10 @@ class InitiativePipeline:
             brief,
             lambda t: parse_directions(extract_json_block(t), count=count),
             attempts=self.specs.attempts,
-            ask=partial(asker.ask, steps=self.specs.consult_steps, images=pictures),
+            ask=partial(asker.ask, steps=self.specs.consult_steps, images=pictures, long=False),
         )
         look = mockup_look(asker.repo)
-        drawn = await asyncio.gather(
+        drawn = await asker.gather(
             *(self._draw(st, asker, epic, n, d, look, pictures) for n, d in enumerate(directions, 1))
         )
         target = mockup_dir(self.cfg.observability.state_dir, initiative.key, epic)
@@ -570,6 +581,7 @@ class InitiativePipeline:
                     brief,
                     steps=self.specs.consult_steps,
                     images=pictures,
+                    long=False,
                 )
             except Exception as e:  # noqa: BLE001 - a page design could not draw is a dropped option, not a stop
                 findings = [f"design could not draw the page: {_cap(_reason(e))}"]
@@ -685,6 +697,7 @@ class InitiativePipeline:
                     self.s.architect_role,
                     read_brief(document),
                     steps=self.specs.read_steps,
+                    long=False,
                 )
                 got = parse_read(extract_json_block(text), epic=draft.id)
             except Exception as e:  # noqa: BLE001 - the read is a check: whatever fails, the epic goes on
@@ -693,7 +706,7 @@ class InitiativePipeline:
             st.emit("planner_read", epic=draft.id, ok=got.ok, questions=len(got.questions))
             return got
 
-        reads = await asyncio.gather(*(one(d) for d in drafts))
+        reads = await asker.gather(*(one(d) for d in drafts))
         asked = [r for r in reads if r.questions]
         if not asked:
             return reply
@@ -749,7 +762,7 @@ class InitiativePipeline:
                 labels=labels,
                 created_by=self.specs.product_role,
             )
-            store.update(card.key, status="review")
+            store.update(card.key, status="review", by="line")
             entry["key"], entry["estimate"] = card.key, estimate.to_dict()
             keys[draft.id] = card.key
             st.save()
@@ -761,7 +774,7 @@ class InitiativePipeline:
             budget_hours=initiative.budget_hours,
         )
         store.comment(initiative.key, self.specs.product_role, note_text)
-        store.update(initiative.key, status="review")
+        store.update(initiative.key, status="review", by="line")
         st.delivered_at = time.time()
         st.emit(
             "epics",

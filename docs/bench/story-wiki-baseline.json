@@ -1,0 +1,246 @@
+{
+  "case": "wiki",
+  "started": "2026-10-27T14:00:58",
+  "airlie_build": "ae7dffa (levers 1-3, Vitest support, 24 GB cache; before 209dff5)",
+  "base": {
+    "expected": "b41d8ce3bea98fa097f00e3b191aa06346f03c14",
+    "built_on": "b41d8ce3bea98fa097f00e3b191aa06346f03c14",
+    "same": true
+  },
+  "stage": "review",
+  "blocked": null,
+  "layers_built": 3,
+  "prs": [
+    "https://github.com/weyenk/airlie/pull/171",
+    "https://github.com/weyenk/airlie/pull/172",
+    "https://github.com/weyenk/airlie/pull/173"
+  ],
+  "cost": {
+    "wall_min": 275.1,
+    "idle_min": 107.7,
+    "decode_tps_by_context": {
+      "<16k": 26.9,
+      "16-48k": 20.0,
+      ">48k": null
+    },
+    "phases": [
+      {
+        "at": "survey_done",
+        "min": 4.1
+      },
+      {
+        "at": "plan_done",
+        "min": 28.8
+      },
+      {
+        "at": "amigos_owner_decided",
+        "min": 63.3
+      },
+      {
+        "at": "story_done",
+        "min": 63.3
+      },
+      {
+        "at": "packages_drafting",
+        "min": 63.3
+      },
+      {
+        "at": "layer_built 01",
+        "min": 183.0
+      },
+      {
+        "at": "layer_built 02",
+        "min": 264.6
+      },
+      {
+        "at": "layer_built 03",
+        "min": 274.6
+      },
+      {
+        "at": "published",
+        "min": 275.1
+      },
+      {
+        "at": "story_done",
+        "min": 275.1
+      }
+    ],
+    "roles": [
+      {
+        "phase": "layer build",
+        "role": "coder",
+        "calls": 229,
+        "tokens_in": 4576340,
+        "tokens_out": 19297,
+        "prefill_s": 1055.3311999999996,
+        "decode_s": 180.37019999999998,
+        "wall_s": 4421.0759,
+        "reads": 31,
+        "thinking_tokens": 0,
+        "decode_tps": 107.0,
+        "prefill_tps": 4336
+      },
+      {
+        "phase": "package",
+        "role": "architect",
+        "calls": 56,
+        "tokens_in": 930543,
+        "tokens_out": 60139,
+        "prefill_s": 141.46710000000002,
+        "decode_s": 2930.1659000000004,
+        "wall_s": 4284.2633,
+        "reads": 56,
+        "thinking_tokens": 0,
+        "decode_tps": 20.5,
+        "prefill_tps": 6578
+      },
+      {
+        "phase": "meeting",
+        "role": "architect",
+        "calls": 3,
+        "tokens_in": 74243,
+        "tokens_out": 8825,
+        "prefill_s": 0.0,
+        "decode_s": 0.0,
+        "wall_s": 1486.295,
+        "reads": 0,
+        "thinking_tokens": 0,
+        "decode_tps": null,
+        "prefill_tps": null
+      },
+      {
+        "phase": "critic",
+        "role": "tester",
+        "calls": 42,
+        "tokens_in": 476323,
+        "tokens_out": 2546,
+        "prefill_s": 163.8845,
+        "decode_s": 61.318999999999996,
+        "wall_s": 515.4282999999999,
+        "reads": 42,
+        "thinking_tokens": 0,
+        "decode_tps": 41.5,
+        "prefill_tps": 2906
+      },
+      {
+        "phase": "layers",
+        "role": "architect",
+        "calls": 14,
+        "tokens_in": 263795,
+        "tokens_out": 14168,
+        "prefill_s": 80.4641,
+        "decode_s": 712.122,
+        "wall_s": 443.77529999999996,
+        "reads": 14,
+        "thinking_tokens": 0,
+        "decode_tps": 19.9,
+        "prefill_tps": 3278
+      },
+      {
+        "phase": "packages",
+        "role": "architect",
+        "calls": 47,
+        "tokens_in": 1222341,
+        "tokens_out": 40253,
+        "prefill_s": 169.70010000000002,
+        "decode_s": 2370.3898,
+        "wall_s": 349.6515,
+        "reads": 47,
+        "thinking_tokens": 0,
+        "decode_tps": 17.0,
+        "prefill_tps": 7203
+      },
+      {
+        "phase": "meeting",
+        "role": "product",
+        "calls": 3,
+        "tokens_in": 70437,
+        "tokens_out": 2431,
+        "prefill_s": 0.0,
+        "decode_s": 0.0,
+        "wall_s": 307.921,
+        "reads": 0,
+        "thinking_tokens": 0,
+        "decode_tps": null,
+        "prefill_tps": null
+      },
+      {
+        "phase": "meeting",
+        "role": "tester",
+        "calls": 3,
+        "tokens_in": 45405,
+        "tokens_out": 3311,
+        "prefill_s": 0.0,
+        "decode_s": 0.0,
+        "wall_s": 271.76,
+        "reads": 0,
+        "thinking_tokens": 0,
+        "decode_tps": null,
+        "prefill_tps": null
+      },
+      {
+        "phase": "survey",
+        "role": "architect",
+        "calls": 8,
+        "tokens_in": 73084,
+        "tokens_out": 1298,
+        "prefill_s": 31.039,
+        "decode_s": 84.03739999999999,
+        "wall_s": 243.1252,
+        "reads": 8,
+        "thinking_tokens": 0,
+        "decode_tps": 15.4,
+        "prefill_tps": 2355
+      },
+      {
+        "phase": "refine",
+        "role": "product",
+        "calls": 8,
+        "tokens_in": 71441,
+        "tokens_out": 368,
+        "prefill_s": 30.6784,
+        "decode_s": 11.8599,
+        "wall_s": 161.0217,
+        "reads": 8,
+        "thinking_tokens": 0,
+        "decode_tps": 31.0,
+        "prefill_tps": 2329
+      }
+    ],
+    "retries": {
+      "plan_rounds": 2,
+      "plan_fixes": 1,
+      "meeting_turns": 9,
+      "meeting_objections": 2,
+      "critic_objections": 2,
+      "package_attempts": 7,
+      "packages_rejected": 3,
+      "unusable_replies": 0,
+      "layer_builds": 4,
+      "gate_replans": 1,
+      "supervisor_triages": 4
+    }
+  },
+  "quality": {
+    "gate_passes": true,
+    "oracle": {
+      "spec": [
+        4,
+        6
+      ],
+      "extra": [
+        2,
+        3
+      ],
+      "failed": [
+        "a page has a contents list linking to its own sections (Wikipedia-like)",
+        "a page links on to related pages (see also, or its neighbours in the series; Wikipedia-like)"
+      ]
+    },
+    "mutation": null,
+    "tests": 2957,
+    "asserts": 7515,
+    "source_lines": 0
+  },
+  "note": "recorded after the run from its state (task story, not task bench:story): its tool-less replies were not yet recorded as `reply` events, so calls are undercounted and idle_min overstated; the PRs (#171-#173) are left open for review."
+}

@@ -391,3 +391,25 @@ async def test_run_one_runs_only_the_named_test(tmp_path: Path) -> None:
     )
     out = await PytestChecks(PYTEST, timeout_s=120).run_one(root, "tests/test_a.py::test_bad")
     assert "NameError" in out and "test_good" not in out
+
+
+def test_the_tests_of_a_module_include_a_unittest_case_of_any_name() -> None:
+    """pytest and unittest both collect a TestCase subclass whatever its name (the sandbox's VersionTest)."""
+    import ast
+
+    from airlie.story.layer_checks import test_functions
+
+    tree = ast.parse(
+        "import unittest\nfrom unittest import TestCase, IsolatedAsyncioTestCase\n\n"
+        "class RomanTest(unittest.TestCase):\n    def test_a(self): ...\n    def helper(self): ...\n\n"
+        "class Plain(TestCase):\n    def test_b(self): ...\n\n"
+        "class Waits(IsolatedAsyncioTestCase):\n    async def test_c(self): ...\n\n"
+        "class Helper:\n    def test_d(self): ...\n\n"
+        "class TestStore:\n    def test_e(self): ...\n"
+    )
+    assert [n for n, _ in test_functions(tree)] == [
+        "RomanTest::test_a",
+        "Plain::test_b",
+        "Waits::test_c",
+        "TestStore::test_e",
+    ]

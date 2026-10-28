@@ -1,0 +1,308 @@
+{
+ "card": {
+  "key": "AIR-9",
+  "id": "AIR-9",
+  "ref": "AIR-9",
+  "title": "Give each studio agent its own kanban board identity, and let Noah address them by name",
+  "description": "Today every studio note lands on the board as one voice: the comment author is airlie and the text is prefixed **airlie** \u00b7  (story/board.py, note()), and those comments are dropped from the next brief (LocalBoard._card filters on the prefix). There is no way to tell which role wrote a note, and no way for Noah to talk to a particular one.\n\nThe board is airlie's own now (story/local_board.py over board/store.py), and a board comment already has an author field that the web panel shows (`author \u00b7 time`). So the identity model needs no decision: a role is simply the comment's author. No personas on a shared account, no separate accounts.\n\nGoal\n- Each role speaks as itself. A note from the chief, architect, product, qa, security, reviewer or any other role in airlie.yaml is stored with that role as the comment author, so the board panel shows who wrote it.\n- Noah can address a role. A comment on the story like @architect why a new table instead of a column? reaches that role, and its answer comes back as a comment authored by that role.\n- The chief passing a message through is enough. A role does not run on its own to answer: the chief takes the question, hands it to the role with the story's context, and posts the role's reply under that role's name.\n\nChanges\n- Notes: board.comment / note() take the writing role; the pipeline passes it wherever it posts a note. Keep the visible prefix so a note is still recognisable as airlie's: \"**airlie** \u00b7 \" stays for notes with no role.\n- Brief filter: the next brief leaves out every note written by airlie or by one of its roles (author in {airlie} plus the configured role names, or the prefix), and still includes Noah's questions and comments. Today's filter is the text prefix only, so it must also cover role authors.\n- Addressing: a comment from a person that starts an @role (a configured role name) is a question for that role. Parse it in one place, with the role names from the config.\n- Routing: when a tick starts (and when a story is picked up), airlie reads comments on stories it knows that are new since the last one it handled and are not airlie's own. An @role address goes to the chief; the chief answers or delegates to that role with the story brief plus the question; the reply is posted authored by the role. No address: the chief answers as itself. An unknown @name: a short reply from the chief listing the roles. Keep a per-story marker of the last comment handled so one is answered once.\n- OpenCode door: the same through the chief there (\"ask the architect ...\" is relayed and the reply attributed). Check opencode-door tools before changing them.\n\nDone when\n- Every studio note on a story shows the role that wrote it, in the board panel.\n- A comment addressed to a role gets a reply authored by that role, relayed by the chief, on the next tick; an unaddressed or unknown address gets an answer from the chief; each comment is answered once.\n- Role notes are kept out of the next brief, and Noah's comments still go into it.\n- Tests cover parsing addresses, routing through the chief, and the author/brief filter, against a real BoardStore in tmp_path and a FakeEngine, with no live engine.\n- task check passes.\n",
+  "url": null,
+  "comments": [],
+  "labels": [
+   "repo:weyenk/airlie",
+   "jira:HDS-9"
+  ]
+ },
+ "repo": "~/git/airlie",
+ "stage": "review",
+ "story": {
+  "title": "Give each studio role its own board-comment author and let Noah @-address them",
+  "summary": "Noah (the human) wants to tell which studio role wrote a note on a story and to talk to a specific role. Today every note lands as one voice: author `airlie` with a `**airlie** \u00b7 ` prefix, and the next brief drops notes by that prefix only. This makes each role speak as itself (its name is the comment author), lets Noah @-address a role for a chief-relayed reply, and keeps role/airlie notes out of the brief while Noah's stay in.",
+  "acceptance": [
+   {
+    "id": "AC1",
+    "given": "a role named `architect` is configured in airlie.yaml",
+    "when": "the pipeline posts a note written by that role via board.comment / note()",
+    "then": "the stored comment's author is `architect` (not `airlie`) and its text still begins with the `**airlie** \u00b7 ` prefix, so the board panel shows `architect \u00b7 <time>` and the note is still recognisable as airlie's"
+   },
+   {
+    "id": "AC2",
+    "given": "a note written with no role (a plain pipeline note)",
+    "when": "it is posted",
+    "then": "its author is `airlie` and its text begins with `**airlie** \u00b7 ` exactly as before (the no-role path is unchanged)"
+   },
+   {
+    "id": "AC3",
+    "given": "a story whose comments include one by `airlie`, one by a configured role (e.g. `architect`), and one by `noah`",
+    "when": "the next brief is built from the card's comments",
+    "then": "the brief's comment section omits the `airlie`-authored and the role-authored notes (matched by author in {airlie}+configured role names, or by the `**airlie** \u00b7 ` prefix) and still includes the `noah` comment"
+   },
+   {
+    "id": "AC4",
+    "given": "a comment from a person whose text starts with `@architect` (a configured role name)",
+    "when": "it is parsed for an address",
+    "then": "the parser returns the role `architect` and the remainder of the text as the question"
+   },
+   {
+    "id": "AC5",
+    "given": "a new person comment on a known story that starts with a configured `@role` and has not been handled yet",
+    "when": "a tick runs (or the story is picked up) and the chief relays it",
+    "then": "a reply is posted as a new comment whose author is that role (e.g. `architect`), and the per-story last-handled marker advances so the comment is answered once (a second tick posts no further reply for it)"
+   },
+   {
+    "id": "AC6",
+    "given": "a new person comment on a known story with no `@` address, or one whose `@name` is not a configured role",
+    "when": "a tick runs and the chief handles it",
+    "then": "the reply is posted authored by `chief` (no address) or, for an unknown `@name`, a short chief reply that lists the configured role names"
+   }
+  ],
+  "out_of_scope": [
+   "Routing role notes or the @-address reply through the OpenCode door (docs/integrations/opencode, mcp_server) \u2014 the local-board/pipeline path only; the OpenCode chief relay is a follow-up",
+   "Running a role on its own schedule to answer (the chief relays; roles do not self-schedule)",
+   "Changing the board panel UI beyond the author field it already renders (`author \u00b7 time`)",
+   "Jira-backed boards (story.board: jira) \u2014 the identity/routing behaviour is specified for the local board; Jira author semantics are a separate decision",
+   "New roles or persona accounts \u2014 a role is simply the comment author, no separate identities"
+  ],
+  "assumptions": [
+   "The configured role names come from the roles section of airlie.yaml (chief, architect, product, qa, security, reviewer, \u2026); the parser and the brief filter read that same list so the two agree",
+   "The `**airlie** \u00b7 ` prefix is kept on every note (role or not) so a note stays recognisable as airlie's; the brief filter matches on author OR prefix, so it covers both role-authored and legacy prefix-only notes",
+   "The per-story last-handled marker is persisted in the story state (state.py) keyed by the comment's id/time so a comment is answered exactly once across ticks",
+   "The chief is the single relay: it receives the question plus the story brief and posts the role's reply; no role is invoked directly by Noah",
+   "Tests exercise a real BoardStore in tmp_path and a FakeEngine with no live engine, and `task check` passes"
+  ]
+ },
+ "survey": "# Survey notes: per-role board identity + @role addressing\n\nGround truth I read in full: `src/airlie/story/board.py`, `src/airlie/story/local_board.py`, `src/airlie/board/store.py`, `src/airlie/story/briefs.py`, plus a grep for `NOTE_PREFIX`/`note(`. Everything marked **verify** I have not opened; the planner must read it before planning.\n\n## 1. Files and symbols the change touches or must follow\n\n- `src/airlie/story/board.py:17` \u2014 `NOTE_PREFIX = \"**airlie** \u00b7 \"`; `:24-26` `note(text)` prepends it (docstring: \"the prefix keeps airlie's notes out of the next story brief\"). The role parameter lands here; the prefix rule (\"stays for notes with no role\") is decided here.\n- `board.py:66-73` \u2014 `Board` protocol: `comment(self, card, text)`. A signature change ripples to every implementor: `NullBoard` (`board.py:76-105`, writes `- <ts> <text>` to `notes.md` in `_note`, `:97-105`), `LocalBoard` (`local_board.py:18`), and the Jira board (**verify** `src/airlie/story/jira.py` \u2014 it imports `NOTE_PREFIX` at `:25` and filters its own comments at `:211` via `_OWN = adf_text(adf_doc(NOTE_PREFIX))`).\n- `local_board.py:65-68` \u2014 `LocalBoard.comment` hardcodes the author: `self.store.comment(card.key, \"airlie\", text)`. This is where the role becomes the comment author.\n- `local_board.py:31-42` \u2014 `LocalBoard._card` builds `Card.comments` as `tuple(c.text for c in item.comments if not c.text.startswith(NOTE_PREFIX))` \u2014 text prefix only. The full `Comment` objects (author, text, at) are available here (built in `store.py:274-285`), so the author-based filter can live in `_card` without changing `Card` (`board.py:45`, `comments: tuple[str, ...]`).\n- `board/store.py:232-249` \u2014 `BoardStore.comment(key, author, text, at=None)`: the author column already exists; the web panel already renders `author \u00b7 time` (per request; **verify** `src/airlie/serve/web/screens/board.js` and `src/airlie/board/api.py` pass author through \u2014 likely no change needed). No store change required.\n- `note()` call sites (grep): `src/airlie/story/factory.py:264`; `src/airlie/story/pipeline.py:273` (resumed), `:305` (picked up), `:523` (story), `:564` (layers), `:704` (built), `:815`, `:842`. Note-text builders: `pipeline.py:144` `_story_note`, `:149` `_layers_note`. **Open decision:** which role \"wrote\" each call site (refine\u2192product? layers\u2192architect? built\u2192coder? review\u2192reviewer?) \u2014 the planner must assign these deliberately.\n- Briefs: `briefs.py:111-135` `refine_brief` is the only brief that quotes `card.comments` (\"## Comments on the issue\"); `survey_brief` (`:138`) and `layers_brief` (`:156`) take no comments. So \"the next brief leaves out role notes\" is enforced in the board's `_card`/Jira filter, not in `briefs.py`.\n- Addressing: new one-place parser for `@role` (natural home: `story/board.py` or a small new module); role names must come from config \u2014 **verify** `airlie.yaml` + `src/airlie/config/schema.py` for the role registry (prompt files exist at `prompts/roles/*.md`: architect, chief, coder, design, docs, hypothesizer, judge, product, research, reviewer, security, summarizer, tester, ux).\n- Routing: `src/airlie/story/pipeline.py` (40 KB, **verify** \u2014 tick entry, \"picked up\" at `:305`, how the chief is invoked today via `src/airlie/router/chief.py` (717 B) / `router/protocol.py`). Per-story \"last comment handled\" marker: **verify** `src/airlie/story/state.py` / `model.py` for where per-story state persists (`Card.key` names the story directory, `board.py:35-36`).\n- OpenCode door: **verify** the door tools before touching \u2014 candidates `src/airlie/serve/mcp_server.py`, `docs/integrations/opencode/` (`agent/chief.md`, `command/story.md`, `command/studio.md`), tests in `tests/unit/test_opencode_integration.py` (23 KB).\n\n## 2. Where the tests live and how they are named\n\n- Convention: `tests/unit/test_<module>.py`. Existing: `test_story_board.py` (47 KB), `test_local_board.py` (5.8 KB), `test_story_briefs.py` (25 KB), `test_story_pipeline.py` (105 KB), `test_board_store.py`, `test_config.py`, `test_opencode_integration.py`; e2e `tests/e2e/test_board.py`.\n- The request's \"real BoardStore in tmp_path + FakeEngine, no live engine\" fits `test_local_board.py` (BoardStore) and `test_story_pipeline.py` (FakeEngine from `src/airlie/engine/fake.py`; its contract is in `tests/unit/test_fake_engine.py`).\n- A new feature-named file (e.g. `tests/unit/test_story_roles.py`) is an accepted convention (`briefs.py:248` tells coders to put new tests in a NEW file named for the feature).\n\n## 3. Conventions and registries a new name must be added to\n\n- Role names: `airlie.yaml` + `src/airlie/config/schema.py` (**verify** the exact field) \u2014 the parser, the brief filter, and the unknown-address reply all read from the same configured set.\n- `Board` protocol (`board.py:66`) is the seam: NullBoard, LocalBoard, Jira must all follow the new `comment`/`note` signature.\n- `NOTE_PREFIX` is imported in `jira.py:25` and `local_board.py:8` \u2014 a semantics change must keep both filters consistent.\n- `evals/routing-roles.yaml` + `evals/routing.jsonl` (consumed by **verify** `src/airlie/bench/route_eval.py`) \u2014 if chief routing changes shape, check whether evals need entries.\n- Gate: `task check` (`Taskfile.yml`, **verify** what it runs).\n\n## 4. Things that could make a test pass for the wrong reason\n\n- `BoardStore.comment` accepts any author string today (`store.py:232`) \u2014 a test asserting \"the board shows the role\" passes with zero changes. The new behaviour to prove is in `LocalBoard.comment` (hardcoded `\"airlie\"`) and the pipeline passing the role.\n- Prefix vs author: a role-authored note whose text happens to start with `**airlie** \u00b7 ` would be dropped by the *old* prefix rule. A test proving the author filter must use role-authored text **without** the prefix; conversely, if `note()` keeps prefixing role notes, the brief filter passes on the prefix alone and the author branch is untested \u2014 assert the stored `author`, not just absence from the brief.\n- Noah's comments must *stay* in the brief: assert presence (author `\"noah\"`), not merely absence of role notes.\n- \"Answered once\": the marker is per-story; a test must run **two** ticks and assert exactly one reply comment, or the missing marker is invisible.\n- Unknown `@name` reply: if the chief (LLM) composes it, FakeEngine can't assert the role list \u2014 decide whether the listing reply is composed in code (deterministic) or by the chief.\n- `Card.comments` is text-only (`board.py:45`): if the author filter is moved into `briefs.py` it cannot see authors \u2014 it must stay where `Comment` objects exist (`LocalBoard._card`, Jira's `_OWN`).\n\n## Open decisions the planner must close (forces \u2192 recommendation)\n\n1. **Prefix for role notes** \u2014 recognisability in `notes.md` (NullBoard) and the panel vs. filter coverage. Recommend: `note(text, role)` prefixes `**<role>** \u00b7 ` when a role is given, `**airlie** \u00b7 ` when not; the brief filter then covers both authors *and* both prefixes.\n2. **Where the author filter lives** \u2014 in `_card` (keeps `Card` text-only, smallest) vs. extending `Card` with authors. Recommend `_card`/Jira `_OWN`.\n3. **Jira scope** \u2014 the request says the board is airlie's own, but the protocol change touches `jira.py`; at minimum keep it compiling and its tests green, or explicitly defer.\n4. **Unknown-address reply** \u2014 code-composed list (testable with FakeEngine) vs. chief-composed (nicer, untestable offline). Recommend code-composed.",
+ "layers": [
+  {
+   "slug": "board-seam",
+   "title": "Board seam: a note can carry a role author",
+   "scope": "src/airlie/story/board.py, src/airlie/story/local_board.py, src/airlie/story/jira.py, tests/unit/test_story_board.py, tests/unit/test_local_board.py",
+   "brief": "Add an optional role to the comment seam so a note can be authored by a studio role. In board.py: change note(text) to note(text, role: str | None = None) \u2014 it STILL prepends NOTE_PREFIX for every note (role or not; the prefix is what keeps airlie's notes recognisable and out of the brief), and update its docstring to say the role, when given, becomes the comment's author. Widen the Board protocol to comment(self, card, text, role: str | None = None). Implement it in every implementor: NullBoard.comment ignores role (notes.md keeps its '- <ts> <text>' line); LocalBoard.comment posts self.store.comment(card.key, role or 'airlie', text) \u2014 today it hardcodes 'airlie' (local_board.py:68); the Jira board (jira.py, which imports NOTE_PREFIX at :25 and filters its own comments at :211) takes the role in its signature and keeps posting as it does today (Jira author semantics are out of scope \u2014 do not change what Jira stores). BoardStore.comment already accepts any author (store.py:232) and the web panel already renders 'author \u00b7 time', so the store and panel need no change. TEST (real BoardStore in tmp_path, no engine): post a no-role note via LocalBoard.comment and assert the stored comment's author is 'airlie' AND its text begins with '**airlie** \u00b7 ' exactly as before \u2014 this is AC2, the unchanged no-role path, and it is the backward-compat guarantee that must hold from the bottom. Prove the new capability in the same test file by posting WITH role='architect' and asserting the stored author is 'architect' (not 'airlie') while the text still begins with the prefix \u2014 assert the stored author, not just board-panel text, since BoardStore accepts any author today and a panel-only check would pass with zero changes. This layer adds the 'role' name that later layers use; it owns AC2 (the no-role path) and is the foundation under the pipeline-roles layer that owns AC1.",
+   "acceptance": [
+    "AC2"
+   ]
+  },
+  {
+   "slug": "brief-filter",
+   "title": "Brief filter: drop role- and airlie-authored notes, keep Noah's",
+   "scope": "src/airlie/story/local_board.py, src/airlie/config/schema.py (read-only: role names), tests/unit/test_local_board.py, tests/unit/test_story_briefs.py",
+   "brief": "Make the card the pipeline reads omit airlie's own notes by AUTHOR, not just by prefix, so role-authored notes stay out of the next brief while a person's (noah's) stay in. LocalBoard._card (local_board.py:31-42) today builds Card.comments as tuple(c.text for c in item.comments if not c.text.startswith(NOTE_PREFIX)) \u2014 text prefix only. Give LocalBoard the configured role names (extend its __init__ to take a role-name set, sourced from the roles section of airlie.yaml = the keys of AirlieConfig.roles, schema.py:532; thread it from wherever LocalBoard is constructed \u2014 verify that call site in cli.py/serve/app.py and pass cfg.roles' keys). Change the _card filter to drop a comment when c.author is in {'airlie'} \u222a role_names OR c.text.startswith(NOTE_PREFIX) (author OR prefix, per the story's assumption, so both role-authored and legacy prefix-only notes are covered); keep Card.comments as tuple[str, ...] (do not change the Card shape). briefs.refine_brief (briefs.py:122-124) is the only brief that quotes card.comments, so the filter in _card is what enforces AC3 \u2014 do not edit briefs.py. TEST (real BoardStore in tmp_path): seed one item with a comment by 'airlie', one by a configured role 'architect', and one by 'noah', then assert the built Card.comments contains the noah text and omits the other two. CRITICAL wrong-reason guard (from the survey): because note() keeps prefixing role notes, a role note posted via the seam would be dropped by the prefix branch alone and the AUTHOR branch would go untested \u2014 so seed the role-authored comment directly via store.comment(key, 'architect', text) with text that does NOT start with the prefix, proving the author branch fires; and assert the noah comment (no prefix, author 'noah') is present in the same test so the 'does not happen' (omitted) and 'does happen' (included) are proven together, never as a bare absence check.",
+   "acceptance": [
+    "AC3"
+   ]
+  },
+  {
+   "slug": "address-parser",
+   "title": "@-address parser for role names",
+   "scope": "src/airlie/story/board.py (or a small new src/airlie/story/address.py), tests/unit/test_story_board.py (or tests/unit/test_address.py)",
+   "brief": "Add one place that parses a person's comment for an @-address to a configured role. A function parse_address(text: str, role_names: set[str]) -> tuple[str | None, str]: if the text begins with '@<name>' where <name> is in role_names, return (name, remainder) where remainder is the text after the address (stripped); if it begins with '@<name>' for a name NOT in role_names, return (None, text) (the unknown name is not an address \u2014 the whole text is the question, so the relay can list the valid roles); if there is no leading @, return (None, text). role_names is the same configured set the brief filter reads (keys of AirlieConfig.roles) so the parser and the filter agree. Keep it a pure function (no I/O) so it is trivially testable. TEST: '@architect what is the risk?' with role_names={'architect','chief'} returns ('architect', 'what is the risk?'); '@ghost hello' with that set returns (None, '@ghost hello') (unknown name is not an address); 'hello' returns (None, 'hello'). This is a leaf the chief-relay layer consumes; it adds the parse_address name that layer uses, so it sits below it.",
+   "acceptance": [
+    "AC4"
+   ]
+  },
+  {
+   "slug": "chief-relay",
+   "title": "Chief relay: answer new person comments once, as the addressed role",
+   "scope": "src/airlie/story/state.py, src/airlie/story/pipeline.py (tick / picked-up path), src/airlie/router/chief.py (or a small relay helper), tests/unit/test_story_pipeline.py, tests/unit/test_story_state.py",
+   "brief": "When a tick runs (or a known story is picked up), have the chief relay any NEW person comment on the story and post exactly one reply. Add a per-story last-handled marker to StoryState (state.py): a persisted list of the comment ids/times already answered (a new dataclass field with a default so old state.json files still load \u2014 follow the existing RETIRED/field pattern at state.py:51-82 and the asdict save at :160), keyed by the comment's id/time so a comment is answered exactly once across ticks. In the pipeline's tick/picked-up path (pipeline.py, the 'picked this up' region around :305 and the tick entry): for each person comment on the card that is not yet in the marker, run parse_address(text, role_names) (from the address-parser layer) with role_names = keys of AirlieConfig.roles; then (a) if it addresses a configured role, ask the CHIEF (the single relay \u2014 verify how the chief is invoked today via router/chief.py / router/protocol.py and reuse that seam with the question plus the story brief) and post the reply with board.comment(card, note(reply), role=<that role>) so the reply's author is that role (board-seam layer); (b) if there is no @, post a chief reply authored by 'chief' (role='chief'); (c) if the @name is not a configured role, post a short chief reply that lists the configured role names. In every case advance the marker to include that comment's id/time and save, so a second tick posts no further reply for it. TEST (real BoardStore in tmp_path + FakeEngine from src/airlie/engine/fake.py, no live engine): seed a known story with a new person comment '@architect ...'; run a tick; assert a reply comment was posted whose author is 'architect' AND the marker advanced; run a second tick and assert NO further reply was posted for that same comment (the once-only is proven inside the same test that also makes the first reply happen \u2014 never as a bare 'no reply' test). Add a sibling test for AC6: a new person comment with no @ yields a chief-authored reply, and one with an unknown '@ghost' yields a chief reply whose text lists the configured role names. Note the OpenCode door (serve/mcp_server.py, docs/integrations/opencode) is OUT of scope \u2014 this is the local-board/pipeline path only.",
+   "acceptance": [
+    "AC5",
+    "AC6"
+   ]
+  },
+  {
+   "slug": "pipeline-roles",
+   "title": "Pipeline notes are authored by the role that wrote them",
+   "scope": "src/airlie/story/pipeline.py, src/airlie/story/factory.py, tests/unit/test_story_pipeline.py",
+   "brief": "Make the pipeline actually post each of its notes as the role that wrote it, so AC1 is true end-to-end (the board-seam layer made the mechanism; this layer is the pipeline using it). At each note()/board.comment call site, pass the role that produced the text: the refine/story note (pipeline.py:523, _story_note) \u2192 product (self.s.product_role); the layers note (:564, _layers_note) \u2192 architect (self.s.architect_role); each 'layer built' note (:704) \u2192 the build role (self.s.build_role); the final PR-stack note in _finish (:815) \u2192 the reviewer role; the resume (:273), picked-up (:305), block (_tell :842) and cancel notes are airlie's own narration, not a role's work, so leave them role-less (they post as 'airlie' via the no-role path). factory.py:264 (the written-request path) likewise gets the role for whichever stage it posts. Assign these deliberately and state the mapping in a comment; do not invent new roles. TEST (FakeEngine, real BoardStore): drive a story far enough to post at least one role-written note (e.g. the refine/story note) and assert the stored comment's author is that role (e.g. 'product'/'architect') \u2014 NOT 'airlie' \u2014 while its text still begins with '**airlie** \u00b7 ' (AC1: author is the role, prefix kept, recognisable as airlie's). This is the layer that makes AC1 true: before it, the pipeline posts everything as 'airlie' even though the seam accepts a role, so the assertion on the stored author fails before and passes after.",
+   "acceptance": [
+    "AC1"
+   ]
+  }
+ ],
+ "built": {
+  "01": {
+   "branch": "AIR-9-give-each-studio-role-its-own-01-board-seam",
+   "sha": "f23f480b540ce601bdaadd716fd1a94e92ccfa60",
+   "run_id": "20261021-074716-d667",
+   "subtasks": [
+    {
+     "id": "tests",
+     "role": "tester",
+     "stop": "done",
+     "review": "-",
+     "fix_rounds": 0,
+     "findings": []
+    },
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "02": {
+   "branch": "AIR-9-give-each-studio-role-its-own-02-brief-filter",
+   "sha": "7862c946ff0ac1e53c7f254aa5e9da82e3964bf0",
+   "run_id": "20261022-103805-246d",
+   "subtasks": [
+    {
+     "id": "tests",
+     "role": "tester",
+     "stop": "done",
+     "review": "-",
+     "fix_rounds": 0,
+     "findings": []
+    },
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "03": {
+   "branch": "AIR-9-give-each-studio-role-its-own-03-address-parser",
+   "sha": "9ebb0c7f27fb51b7c9fbde4fe83980e257890ef3",
+   "run_id": "20261022-111652-89b7",
+   "subtasks": [
+    {
+     "id": "tests",
+     "role": "tester",
+     "stop": "done",
+     "review": "-",
+     "fix_rounds": 0,
+     "findings": []
+    },
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "04": {
+   "branch": "AIR-9-give-each-studio-role-its-own-04-chief-relay",
+   "sha": "ab7d702fec8133837c613c82a9203ee8359e15fc",
+   "run_id": "20261022-114417-36bd",
+   "subtasks": [
+    {
+     "id": "tests",
+     "role": "tester",
+     "stop": "done",
+     "review": "-",
+     "fix_rounds": 0,
+     "findings": []
+    },
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "repeated_action",
+     "review": "unparsable",
+     "fix_rounds": 0,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  },
+  "05": {
+   "branch": "AIR-9-give-each-studio-role-its-own-05-pipeline-roles",
+   "sha": "a892f45d1e17de5bb31415a0347875d7e0e74a36",
+   "run_id": "20261023-110009-845a",
+   "subtasks": [
+    {
+     "id": "tests",
+     "role": "tester",
+     "stop": "done",
+     "review": "-",
+     "fix_rounds": 0,
+     "findings": []
+    },
+    {
+     "id": "build",
+     "role": "coder",
+     "stop": "done",
+     "review": "approve",
+     "fix_rounds": 1,
+     "findings": []
+    }
+   ],
+   "gate": "uv sync --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q -n auto --maxprocesses 8"
+  }
+ },
+ "attempt": null,
+ "base": {
+  "ref": "origin/main",
+  "sha": "d850b227ae5bfdf36a963a31b937b3293d181657"
+ },
+ "gate": {
+  "commands": [
+   "uv sync --frozen",
+   "uv run ruff check .",
+   "uv run ruff format --check .",
+   "uv run mypy",
+   "uv run pytest -q -n auto --maxprocesses 8"
+  ],
+  "agents_md": "795c2955593e1bb63dae2c6747bc73a896b8970b"
+ },
+ "prs": [
+  {
+   "branch": "AIR-9-give-each-studio-role-its-own-01-board-seam",
+   "number": 131,
+   "url": "https://github.com/weyenk/airlie/pull/131"
+  },
+  {
+   "branch": "AIR-9-give-each-studio-role-its-own-02-brief-filter",
+   "number": 132,
+   "url": "https://github.com/weyenk/airlie/pull/132"
+  },
+  {
+   "branch": "AIR-9-give-each-studio-role-its-own-03-address-parser",
+   "number": 133,
+   "url": "https://github.com/weyenk/airlie/pull/133"
+  },
+  {
+   "branch": "AIR-9-give-each-studio-role-its-own-04-chief-relay",
+   "number": 134,
+   "url": "https://github.com/weyenk/airlie/pull/134"
+  },
+  {
+   "branch": "AIR-9-give-each-studio-role-its-own-05-pipeline-roles",
+   "number": 135,
+   "url": "https://github.com/weyenk/airlie/pull/135"
+  }
+ ],
+ "runs": [
+  "20261021-063824-b9b8",
+  "20261021-063824-b1ff",
+  "20261021-064855-6c67",
+  "20261021-074716-d667",
+  "20261021-081706-f7a2",
+  "20261021-132205-8733",
+  "20261021-144746-a28e",
+  "20261021-144830-92ca",
+  "20261021-165424-e091",
+  "20261021-175147-bd03",
+  "20261022-103805-246d",
+  "20261022-111652-89b7",
+  "20261022-114417-36bd",
+  "20261022-121832-641a",
+  "20261022-145647-48b8",
+  "20261022-185301-ff0c",
+  "20261023-081549-c197",
+  "20261023-110009-845a"
+ ],
+ "blocked": null,
+ "github_repo": "weyenk/airlie"
+}
