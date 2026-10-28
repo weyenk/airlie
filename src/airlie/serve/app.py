@@ -112,6 +112,74 @@ class ToolCallStreamRepair:
         return f"data: {json.dumps(obj)}".encode() if changed else frame
 
 
+CHAT_SKILL_TOOL_ROLES: dict[str, str] = {"lhr-publish": "lhr"}
+"""Chat slash commands that run the tool loop on another role's tools (model stays chat for the client)."""
+
+
+def _wire_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        lines = [str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+        return "\n".join(lines)
+    return str(content or "")
+
+
+def _messages_from_wire(raw: list[dict[str, Any]]) -> list[Any]:
+    from airlie.engine.types import Message, ToolCall
+
+    out: list[Message] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("system", "user", "assistant", "tool"):
+            continue
+        tcs = m.get("tool_calls")
+        tool_calls = None
+        if tcs:
+            tool_calls = tuple(
+                ToolCall(
+                    str(c.get("id") or ""),
+                    str((c.get("function") or {}).get("name") or ""),
+                    str((c.get("function") or {}).get("arguments") or ""),
+                )
+                for c in tcs
+                if isinstance(c, dict)
+            )
+        out.append(
+            Message(
+                role=role,
+                content=_wire_content(m.get("content")),
+                name=m.get("name"),
+                tool_call_id=m.get("tool_call_id"),
+                tool_calls=tool_calls or None,
+            )
+        )
+    return out
+
+
+def _gen_to_chat_completion(res: Any, model: str) -> dict[str, Any]:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": res.text},
+                "finish_reason": res.finish_reason,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": res.prompt_tokens,
+            "completion_tokens": res.completion_tokens,
+            "total_tokens": res.prompt_tokens + res.completion_tokens,
+        },
+    }
+
+
 def _no_call_stops(reply: Any) -> Any:
     """A whole (not streamed) reply, repaired as ToolCallStreamRepair repairs a stream: a call without an id
     or a type gets one, and the finish_reason "tool_calls" of a choice that holds no call with a name becomes
@@ -471,6 +539,17 @@ def create_app(
             "max_file_mb": a.max_file_mb,
         }
 
+    @app.put("/v1/airlie/lhr/session")
+    async def lhr_set_session(body: dict[str, Any]) -> dict[str, str]:
+        """Store the Supabase access token for LHR authoring tools (state_dir/lhr/supabase_token)."""
+        token = body.get("access_token")
+        if not isinstance(token, str) or not token.strip():
+            raise HTTPException(400, "access_token is required")
+        from airlie.tools.lhr_session import LhrSessionStore
+
+        LhrSessionStore(cfg.observability.state_dir).set_token(token)
+        return {"status": "ok"}
+
     @app.get("/v1/airlie/chat/skills")
     async def chat_skill_list() -> dict[str, Any]:
         return {
@@ -528,6 +607,45 @@ def create_app(
             # as HTTPEngine sends it, under the name vllm-mlx reads: a thinking role's reasoning is capped
             if spec.thinking and spec.thinking_budget:
                 out.setdefault("thinking_token_budget", spec.thinking_budget)
+        tool_role = CHAT_SKILL_TOOL_ROLES.get(str(skill)) if skill is not None and name == "chat" else None
+        if tool_role is not None:
+            if out.get("stream"):
+                raise HTTPException(400, "streaming is not supported for this skill")
+            if tool_role not in cfg.roles:
+                raise HTTPException(500, f"skill role {tool_role!r} is not configured")
+            from airlie.cli import _http_engine
+            from airlie.engine.types import GenRequest
+            from airlie.tools.lhr import lhr_registry
+            from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
+            from airlie.tools.protocol import ToolContext
+
+            role = cfg.roles[tool_role]
+            engine = _http_engine(cfg, cfg.engine_for_role(tool_role), transport=transport)
+            await engine.start()
+            try:
+                ctx = ToolContext(
+                    cfg.observability.state_dir.expanduser(),
+                    cfg.tools.shell_timeout_s,
+                    cfg.tools.output_cap_chars,
+                    role=tool_role,
+                )
+                principal = owner_of(request)
+
+                def can_see_upload(upload: Upload) -> bool:
+                    return may_see(principal, upload)
+
+                tools = lhr_registry(cfg, ctx, uploads, can_see_upload, transport=transport)
+                gen_req = GenRequest(
+                    role=tool_role,
+                    messages=_messages_from_wire(msgs),
+                    sampling=role.sampling,
+                    max_tokens=role.max_tokens,
+                    thinking=role.thinking,
+                )
+                res = await generate_with_tools(engine, gen_req, tools, role.max_steps or DEFAULT_STEPS)
+            finally:
+                await engine.stop()
+            return _no_call_stops(_gen_to_chat_completion(res, name))
         if out.get("stream"):
             req = client.build_request("POST", f"{base}/chat/completions", json=out, headers=headers)
             resp = await client.send(req, stream=True)

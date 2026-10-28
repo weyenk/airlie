@@ -20,6 +20,8 @@ KNOWN_TOOLS = frozenset(
     {
         "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
         "retrieve_value", "decide", "search_knowledge", "web_search", "web_fetch",
+        "lhr_create_draft", "lhr_update_section", "lhr_set_recipe", "lhr_upload_photo",
+        "lhr_preview", "lhr_publish", "lhr_list_drafts",
     }
 )  # fmt: skip
 
@@ -241,6 +243,20 @@ class AttachmentsSpec(Strict):
 
 class ChatSpec(Strict):
     attachments: AttachmentsSpec = Field(default_factory=AttachmentsSpec)
+
+
+class LhrSpec(Strict):
+    """Love Heat Relationship authoring API (lhr-office). Bearer token: state_dir/lhr/supabase_token."""
+
+    office_url: str = Field(
+        default="http://127.0.0.1:3001",
+        description="lhr-office base URL (no trailing path); tools call /api/authoring/*",
+    )
+    site_base_url: str | None = Field(
+        default=None,
+        description="public site origin for preview links (e.g. https://loveheatrelationship.com)",
+    )
+    timeout_s: float = 60.0
 
 
 class ToolsSpec(Strict):
@@ -795,6 +811,7 @@ class AirlieConfig(Strict):
     line: LineSpec = Field(default_factory=LineSpec)
     web: WebSpec = Field(default_factory=WebSpec)
     chat: ChatSpec = Field(default_factory=ChatSpec)
+    lhr: LhrSpec = Field(default_factory=LhrSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
