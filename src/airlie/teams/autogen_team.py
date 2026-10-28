@@ -163,6 +163,10 @@ def build_model_client(
         max_tokens=role.max_tokens,
         extra_body=extra,  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not typed
         timeout=reply_timeout_s(role),
+        # who said each message, in its text: AutoGen sends the speaker only as OpenAI's `name`, which the
+        # generalist's chat template never reads, so in the story meeting every other role's turn was
+        # anonymous user text and the tester took product's proof for its own (roman, 2026-10-27/28)
+        add_name_prefixes=True,
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id

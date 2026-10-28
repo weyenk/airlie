@@ -356,3 +356,17 @@ def test_a_clients_timeout_outlasts_its_roles_longest_reply(tmp_path: Path) -> N
     url = "http://127.0.0.1:1/v1"
     assert build_model_client(url, "base", long, api_key=None)._client.timeout >= 16384 / 8
     assert build_model_client(url, "base", short, api_key=None)._client.timeout == 600
+
+
+def test_each_message_carries_its_speaker_in_its_text(tmp_path: Path) -> None:
+    """The generalist's chat template never reads OpenAI's `name`, so in the story meeting every other role's
+    turn was anonymous text and the tester took product's proof for its own (roman, 2026-10-27/28)."""
+    from autogen_core.models import UserMessage
+    from autogen_ext.models.openai._openai_client import to_oai_type
+
+    (tmp_path / "p.md").write_text("x")
+    role = RoleSpec(prompt=tmp_path / "p.md", model="base", thinking=False, max_tokens=64)
+    client = build_model_client("http://127.0.0.1:8080/v1", "base", role, api_key=None)
+    assert client._add_name_prefixes is True
+    said = to_oai_type(UserMessage(content="I post the proof.", source="product"), prepend_name=True)
+    assert said[0]["content"] == "product said:\nI post the proof."

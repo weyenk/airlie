@@ -845,7 +845,9 @@ def opening_message(
         hub_text("amigos-opening"),
         "## Product's story: the requirements as they stand\n" + story_text(story),
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
-        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan.",
+        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan. Only the "
+        "tester posts it: product and architect never post a proof block, not even to help; they object "
+        "to it once it is posted.",
         conventions_text,
         *dossier_section(dossier or {}),
         *([_lessons_text(lessons)] if lessons else []),
