@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 from airlie.config import AirlieConfig
 from airlie.story.fixes import line_event
-from airlie.story.model import StoryError
+from airlie.story.model import StoryError, unusable_why
 from airlie.story.phase import fanout, wait_for_gap
 from airlie.story.rounds import plan_in_rounds
 from airlie.story.state import Lane
@@ -294,9 +294,11 @@ class Asker:
         reads (default the record's base). `ask` replaces `Asker.ask` (planning in rounds)."""
         feedback: str | None = None
         for _ in range(attempts or self.s.stage_attempts):
+            reply = ""
             try:
-                return parse(await (ask or self.ask)(st, stage, role, brief(feedback), at))
+                reply = await (ask or self.ask)(st, stage, role, brief(feedback), at)
+                return parse(reply)
             except StoryError as e:
-                feedback = str(e)
+                feedback = unusable_why(e, reply)
                 st.emit("retry", stage=stage, error=feedback)
         raise StoryBlocked(f"{role} did not produce a usable {what}: {feedback}")

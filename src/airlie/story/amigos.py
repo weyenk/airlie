@@ -687,11 +687,7 @@ class Checker(BaseChatAgent):
             since.append(turn)
         found = [p for turn in since for p in turn.problems]
         if standing.proof is None:
-            found.append(
-                Finding(
-                    "part_invalid", "tester", "no proof plan has been posted yet: the tester posts it", ""
-                )
-            )
+            found.append(Finding("part_invalid", "tester", no_proof_why(self._turns), ""))
         else:
             found += check_agreement(
                 standing.story, standing.layers, standing.proof, self._repo, self._base, self._max_scope_files
@@ -701,6 +697,23 @@ class Checker(BaseChatAgent):
 
     async def on_reset(self, cancellation_token: CancellationToken) -> None:
         self.last = ()
+
+
+NO_PROOF = (
+    "no proof plan has been posted yet: the tester posts it, whole, in its own ```json block "
+    '{"type": "proof", "tests": [...]} before its verdict; saying a proof "stands as posted" posts nothing'
+)
+
+
+def no_proof_why(turns: Sequence[Turn]) -> str:
+    """What the checker tells the tester while no proof is on record, naming any role that posted one in
+    its place (roman, 2026-10-27: the tester's first turn ended with no part, product posted the proof in
+    the tester's voice, and the tester, taking that post for its own, said for 25 turns that its proof
+    "stands as posted")."""
+    posted = sorted({t.role for t in turns for p in t.problems if p.why.startswith("you posted the proof")})
+    if not posted:
+        return NO_PROOF
+    return f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the tester's and was not used"
 
 
 class OneTurn(TerminationCondition):

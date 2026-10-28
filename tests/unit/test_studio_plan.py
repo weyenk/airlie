@@ -150,3 +150,15 @@ def test_extract_json_block_prefers_the_last_fence() -> None:
     assert extract_json_block('```json\r\n{"a": 1}\r\n```') == {"a": 1}
     # the last fence holds an array, not an object
     assert extract_json_block('```json\n{"a": 1}\n```\n```json\n[1, 2]\n```') is None
+
+
+def test_a_json_block_problem_names_the_error_and_the_text_before_it() -> None:
+    from airlie.topology.studio_plan import json_block_problem
+
+    assert json_block_problem('```json\n{"a": [1, 2}\n```') is not None
+    problem = json_block_problem('think {not this}\n```json\n{"a": [1, 2}\n```')
+    assert problem is not None and problem.startswith("the ```json block is not valid JSON: ")
+    assert "'{\"a\": [1, 2'" in problem  # the text just before where it broke
+    assert json_block_problem('```json\n{"a": [1, 2]}\n```') is None  # it parses
+    assert json_block_problem("no fence {at all") is None  # nothing to mend: NO_JSON stands
+    assert json_block_problem("```json\nplain words\n```") is None

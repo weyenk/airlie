@@ -528,3 +528,20 @@ def test_the_real_meeting_speaks_to_each_roles_engine_with_the_configured_limits
         spec.tool_iterations,
         spec.max_scope_files,
     )
+
+
+def test_while_no_proof_is_on_record_the_checker_names_who_posted_one_in_the_testers_place() -> None:
+    """Roman, 2026-10-27: product posted the proof in the tester's voice, it was refused, and the tester,
+    taking that post for its own, said for 25 turns that its proof "stands as posted"."""
+    from airlie.story.amigos import NO_PROOF, no_proof_why
+    from airlie.story.layer_checks import Finding
+
+    refused = Finding("part_invalid", "product", "you posted the proof, which is tester's part; ...", "")
+    assert no_proof_why([Turn("tester", "I've read the tests.")]) == NO_PROOF
+    told = no_proof_why(
+        [Turn("tester", "x"), Turn("product", "y", None, {}, (refused,)), Turn("airlie", "z")]
+    )
+    assert told.startswith(NO_PROOF) and told.endswith(
+        "The proof product posted is not the tester's and was not used"
+    )
+    assert '"stands as posted" posts nothing' in NO_PROOF
