@@ -1,6 +1,8 @@
 # The line's scheduler and control surface (P5 of the planning line)
 
-Status: agreed with Noah on 2026-10-25 (its decisions N1 to N5 are his). Plan:
+Status: agreed with Noah on 2026-10-25 (its decisions N1 to N5 are his). Built: P5a (D4 to D6, D12) in
+`claude/p5a-diagnosis`, P5b (D1 to D3, D7 to D11) in `claude/p5b-line-scheduler` (2026-10-25); the unattended story
+run on the real engine (plan Task 13, step 4) is the person's. Plan:
 `docs/superpowers/plans/2026-10-25-line-scheduler.md`. Parent: `2026-10-24-planning-line-design.md`
 (D9, D10, and its sub-plan P5). Builds on the supervisor triage design (`2026-10-22-supervisor-triage-design.md`,
 whose layer 3 this absorbs) and on the tick steps P3 and P4 added. Its plan follows once this is agreed.

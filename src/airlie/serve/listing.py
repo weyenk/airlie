@@ -10,8 +10,12 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
+from airlie.board import BoardStore
 from airlie.config import AirlieConfig
 from airlie.serve.jobs import read_events
+from airlie.story.epic import epic_of
+from airlie.story.initiative_state import waiting_on
+from airlie.story.model import StoryError
 from airlie.story.state import STAGES
 from airlie.subproc import NO_HOOKS_ARGS, agent_env
 
@@ -134,6 +138,55 @@ def epics(state_dir: Path) -> list[dict[str, Any]]:
         row["last_activity"] = max(times, default=0.0)
         out.append(row)
     return out
+
+
+def initiatives(state_dir: Path, store: BoardStore) -> list[dict[str, Any]]:
+    """Every initiative the specs phase has a record for, by key: its title, stage, how many epics it made,
+    their hours together (the cards' own prices, read from the board) and what it waits on. A damaged record
+    says so in `blocked`."""
+    root = state_dir / "initiatives"
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        row: dict[str, Any] = {
+            "key": d.name,
+            "title": None,
+            "stage": None,
+            "blocked": None,
+            "epics": 0,
+            "hours": 0.0,
+            "waiting_on": None,
+        }
+        f = d / "state.json"
+        if f.is_file():
+            try:
+                st = json.loads(f.read_text())
+                if not isinstance(st, dict):
+                    raise ValueError("not an object")
+                qa = [q for q in st.get("qa") or () if isinstance(q, dict)]
+                pending = bool(qa) and qa[-1].get("a") is None
+                row["title"] = (st.get("card") or {}).get("title")
+                row["stage"], row["blocked"] = st.get("stage"), st.get("blocked")
+                row["waiting_on"] = waiting_on(str(st.get("stage")), pending)
+                keys = [e["key"] for e in st.get("epics") or () if isinstance(e, dict) and "key" in e]
+                row["epics"] = len(keys)
+                row["hours"] = round(sum(_hours_of(store, k) for k in keys), 1)
+            except (ValueError, OSError, AttributeError, TypeError):
+                row["blocked"] = "state.json is damaged"
+        times = [t for t in (_mtime(d / "state.json"), _mtime(d / "events.jsonl")) if t is not None]
+        row["last_activity"] = max(times, default=0.0)
+        out.append(row)
+    return out
+
+
+def _hours_of(store: BoardStore, key: str) -> float:
+    """The latest price in epic `key`'s card (revised, else first); 0 for a card with none or gone."""
+    try:
+        spec = epic_of(store.get(key).description)
+    except (KeyError, StoryError):
+        return 0.0
+    return spec.estimate.latest if spec is not None and spec.estimate is not None else 0.0
 
 
 def _natural(key: str) -> list[str | int]:

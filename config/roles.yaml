@@ -98,7 +98,7 @@ roles:
     max_context: 131072
     max_tokens: 16384
     thinking: true
-    thinking_budget: 8192
+    thinking_budget: 2048            # 8192 until 2026-10-26: the roman bench's architect wrote to the cap on nearly every call (lever 1 of 3, Noah)
     last_turn_thinking: false
     nudge_stuck: true
     max_steps: 20
@@ -108,29 +108,26 @@ roles:
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
-  tester:                          # lever 2 (2026-10-19): writes a layer's acceptance tests before the coder; thinking on, since the test is the design
+  tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
     prompt: prompts/roles/tester.md
     model: generalist
-    tools: [read_file, list_dir, grep, write_file, edit_file, run_tests]
-    max_context: 65536
-    max_tokens: 16384
-    thinking: true
-    thinking_budget: 4096
-    last_turn_thinking: false
-    nudge_stuck: true
-    max_steps: 20
+    tools: [read_file, list_dir, grep]
+    skills: skills/qa
+    max_context: 131072
+    max_tokens: 8192
+    thinking: false
     sampling:
-      temperature: 0.3
-      top_p: 0.8
+      temperature: 0.2
+      top_p: 0.9
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
-      repetition_penalty: 1.05
   product:
     prompt: prompts/roles/product.md
     model: generalist
     tools: [read_file, list_dir]
-    max_tokens: 4096
+    max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
+    max_context: 131072             # the imagining conversation holds the consultations
     thinking: false
     max_steps: 8
     sampling:

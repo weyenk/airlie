@@ -146,6 +146,17 @@ def test_the_shipped_config_serves_story_and_does_not_route_to_chat() -> None:
     assert by_name["story"]["action"] == "story" and by_name["clear"]["action"] == "clear"
 
 
+def test_the_initiative_skill_loads_with_its_action() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", ROOT / "no-local-overrides.yaml")
+    app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    skills = TestClient(app).get("/v1/airlie/chat/skills", headers={"Authorization": "Bearer k"}).json()
+    by_name = {s["name"]: s for s in skills["skills"]}
+    assert by_name["initiative"]["action"] == "initiative"
+    assert "Turn a loose ask into an initiative" in by_name["initiative"]["summary"]
+    body = (ROOT / "skills/chat/initiative.md").read_text()
+    assert "nothing starts until they do" in body and "Repositories: owner/name" in body
+
+
 def test_the_why_skill_loads_with_its_action() -> None:
     cfg = load_config(ROOT / "airlie.yaml", ROOT / "no-local-overrides.yaml")
     app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")

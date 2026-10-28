@@ -9,6 +9,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
+| meeting | product, the architect and the tester (all on the generalist since 2026-10-26), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
 | build, per layer | the architect writes the layer's package (its tests as code, files, interfaces, steps), airlie places the tests in a scratch worktree and checks them (they fail on the base, lint, imports, covers), then the studio: the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
@@ -77,7 +78,7 @@ as the board (`story.board: jira` in `airlie.local.yaml`), or for the import, wh
    workflow must offer one from where the issue is; a move it does not offer stops the story with the statuses it
    does offer. If your workflow has no *In Review* or *Blocked*, add it, or name a status it has under
    `story.jira.statuses` in `airlie.local.yaml` (`blocked: null` leaves a stopped issue where it is).
-   `story.jira.jql` changes which issues `task story:tick` takes (default: the project's *To Do* issues, in rank
+   `story.jira.jql` changes which issues `task line:tick` takes (default: the project's *To Do* issues, in rank
    order).
 4. **Repositories:** clone each repository stories are built in under `~/git` (`story.repos_root`), give each
    issue a `repo:<owner>/<name>` label (*Which repository*), and give each repository an `AGENTS.md` with a
@@ -116,6 +117,10 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
 | `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
+| `story.amigos.enabled` | true | hold the story meeting before any layer is built; false: the split is the agreement and there is no proof plan |
+| `story.amigos.max_turns` | 12 | the most turns the meeting takes (at least 4); at the cap each owner's part stands |
+| `story.amigos.max_scope_files` | 5 | the most files a layer may name (the sizing rule as a number) |
+| `story.amigos.tool_iterations` | 3 | read-only tool rounds an agent may take inside one turn; 0: no tools in the meeting |
 | `story.jira.statuses` | *To Do*, *In Progress*, *In Review*, *Blocked* | the names behind `intake`, `building`, `review` and `blocked` |
 | `story.github_app.app_id`, `key_file`, `api_url` | `5332832` (this repository owner's app; in a clone, set `null` or your own app's id in `airlie.local.yaml`), `~/.config/airlie/github-app.pem`, `https://api.github.com` | publish as that GitHub App's bot (*Publishing as a bot*); `null`: with your gh login and SSH key |
 
@@ -296,6 +301,65 @@ node scripts/run-impacted-tests.mjs
   the failing ones; a passing command's last line), and a `cd` still carries over. Each command gets
   `tools.shell_timeout_s`. The layer's own gate, after the build, still stops at the first command that fails.
 
+## The three amigos
+
+Before any layer is built, one meeting agrees what the story is, how it is cut and how it will be proven (P2 of the
+planning line, 2026-10-24; `docs/superpowers/specs/2026-10-24-three-amigos-design.md`). It is one AutoGen group chat:
+product, the architect and the tester are three agents in one shared conversation, with airlie's own checker, which
+has no model, as a fourth. They speak in that order, the checker last; every turn ends with the speaker's verdict.
+The meeting is on by default (`story.amigos.enabled`); off, the architect's split is the agreement and carries no
+proof plan, as before.
+
+| part | owner | what it is | where it lives |
+| --- | --- | --- | --- |
+| requirements | product (the generalist) | the story's criteria: reworded under their ids, added with the next id, or dropped with `"dropped": "why"`; never renumbered | `state.agreement.story`, then `state.story` |
+| changes | the architect | the layers, bottom first, each with the `files` it creates or changes (`new: true` for a new one) and the `interfaces` at its boundary | `state.agreement.layers`, then `state.layers` |
+| proof | the tester (the generalist, read-only tools) | per criterion, the tests that prove it: file, name, **level** (a directory of the repository's test tree, never one it lacks), the testing guideline (a file of `roles.tester.skills`, `skills/qa`) that fits, what it asserts and the state it needs | `state.agreement.proof` |
+
+Only the owner changes a part, by posting it whole in its JSON shape; anyone else objects with a claim and a suggestion.
+The tester reads the repository's own testing conventions first: the levels its test tree has (a directory under
+`tests/` holding a test module; `fixtures` and `data` are not levels; a flat `tests/` is the one level `tests`), its
+`docs/testing.md` or the `## Testing` section of its `AGENTS.md` or `CONTRIBUTING.md`, the guideline library's summaries
+and the guideline Kev routes for the story, in full. The meeting reads the repository at the story's base in a detached
+worktree with read-only tools and writes nothing to it.
+
+**The checker** re-reads the parts after every round and posts what a program can find, or `no findings`: a criterion
+under no layer or two (`split_invalid`), a file a layer names that is not at the base and not marked new (`file_missing`),
+a layer over `story.amigos.max_scope_files` files (`over_size`), a criterion or a layer with no test (`criterion_unproven`,
+`layer_unproven`), a test whose layer does not own its criterion (`proof_layer_mismatch`), a reference to a criterion the
+story no longer has (`stale_reference`), and a turn with no usable verdict or a part that does not parse
+(`verdict_missing`, `part_invalid`: never a crash, and never an agreement).
+
+**The end.** The meeting ends when each of the three has agreed to all three parts since the last part was posted and
+the checker, after that, has no findings: `amigos_agreed`. Or at `story.amigos.max_turns` turns (the checker's count
+too): then each owner's part stands, the parts not agreed by all are on record as decided by their owner
+(`amigos_owner_decided`), every objection still open is an `amigos_unresolved` event and a line on the issue, and a
+`owner_decided` lesson is recorded for the repository. Two things stop the story all the same: product replying
+`blocked` (the request cannot be built as written), and an agreement that cannot be built whatever was decided, a
+criterion no layer owns, or a criterion or layer with no test. References to a dropped criterion are pruned
+(`amigos_references_pruned`) so nothing downstream reads a dangling id.
+
+**Resuming.** The team's state is saved in `state.meeting` after every turn (the chat is driven one turn at a time,
+because AutoGen's round robin has already moved on to the next speaker mid-turn). A story killed mid-meeting loads it into
+fresh agents and goes on from the next speaker; the agreement replaces `state.story` and `state.layers` when it is
+stored. A story saved before the meeting existed has no agreement and gets its split as one.
+
+**The package follows the proof.** The architect's package brief lists the layer's agreed tests and its files and
+interfaces, and the package must cover exactly the agreed test ids (`proof_mismatch` otherwise; a test that proves no
+criterion is listed under `covers.behaviour`). The tester then reads the package's tests once against the proof
+(`amigos_critic`): an objection (`amigos_objection` with `source: package`) is the architect's one revision, with the
+objections and the hub's `package-fix`; a critic whose reply cannot be read is no objection (`amigos_critic_unreadable`),
+and the mechanical checks follow either way. When the architect finds the proof itself wrong it replies with
+`{"type": "proof_change", "changes": [{"test": id, "why": ...}]}` instead of a package: the tester revises that layer's
+tests in one ask (`amigos_proof_revised`), the stored agreement changes, and the architect is asked again; that
+attempt is not charged against `story.package_attempts`. A check finding on a test an earlier objection was about is an
+`amigos_borne_out` event.
+
+**Events.** `amigos_turn` (role, turn, verdict, tokens, wall-clock), `amigos_objection`, `amigos_resolved`,
+`amigos_findings`, `amigos_agreed` / `amigos_owner_decided` / `amigos_unresolved`, `amigos_references_pruned`,
+`amigos_critic`, `amigos_critic_unreadable`, `amigos_proof_revised`, `amigos_borne_out`. The flow API shows the meeting
+as a `meeting` job of the `layers` stage with its turns, objections and tokens.
+
 ## The package check
 
 After the architect writes a layer's package and before the coder starts, airlie places its test files in a scratch
@@ -369,7 +433,7 @@ the issue and moves it out of *To Do*, and the tick goes on to the next issue.
 
 The label and checkout problems are found before the story is opened, so nothing has started: the issue gets
 `cannot be picked up: <reason>` and `Needs a person: fix that, then resume with ...`, and moves to *Blocked* (to
-*In Progress* when `story.jira.statuses.blocked` is null, with a note that says so, to keep `task story:tick` from
+*In Progress* when `story.jira.statuses.blocked` is null, with a note that says so, to keep `task line:tick` from
 taking it again). `task story` and `POST /v1/airlie/stories` tell the issue the same way, then say why (exit 1, or a
 400). A missing gate, or a trunk that cannot be fetched, is found once the story has started: the story stops
 after `'intake'` like any other stop, and the issue goes to *Blocked* (with `blocked: null` it stays in *In
@@ -391,6 +455,7 @@ the end:
 | picked up | `picked this up; progress in .../events.jsonl` | *To Do* → *In Progress* |
 | refined | `story: <title>` and one line per acceptance criterion (Given/When/Then) | |
 | layers planned | `layers, bottom first:` and a numbered list: each layer's title and the criteria it owns (`enabling: no criterion` for a foundation) | |
+| agreed | `agreement of product, the architect and the tester (N turns)`: the criteria, the layers with their files, the proof as a table; then `the meeting changed the criteria:` (reworded, added, dropped) and `objections still open when the meeting ended` when there are any | |
 | a layer built | `layer 01/03 built: <title> (<the test gate's commands> passes)`, one comment per layer | |
 | published | `stacked draft PRs, bottom layer first:` and the numbered PR links | → *In Review* |
 
@@ -408,7 +473,7 @@ failure is in the next one:
 | --- | --- |
 | `'new'` | the pick-up itself (Jira refused the move to *In Progress*, or the first comment), or publishing as the bot could not start (its remote, its installation, its key) |
 | `'intake'` | refining the story, or fetching the trunk or reading its test gate |
-| `'refine'` | planning the layers, or posting the story's comment |
+| `'refine'` | planning the layers, the story meeting (`state.meeting` keeps its history for the resume), or posting the layer plan's or the agreement's comment |
 | `'layers'` | building a layer, or posting the layer plan's comment or a built layer's |
 | `'build'` | publishing the PRs |
 | `'publish'` | telling the issue (the PR links or the move to *In Review*): the PRs are open |
@@ -559,15 +624,99 @@ in the `environment` of the `mcp.airlie` entry of its `opencode.json` (for the `
 jobs API and stories existed, so it answers 404 to `/v1/airlie/plans`, `/runs`, `/stories` and `/jobs`. Stop it
 and run `task serve` again from the checkout that has the code (once the branch is merged, your main checkout).
 
+## The line: two lanes, one beat
+
+One scheduler runs every level (initiatives, epics, stories, layers): `task line:tick` is one **beat**, by hand.
+`task serve` runs the same beat every minute while it is up (`line.serve_ticks`, `line.tick_s`) and the launchd
+agent (below) runs it every 15 minutes as the belt; a person's move or answer is acted on within a minute while
+serve is up. A beat runs, in order:
+
+1. **the bookkeeping, no model:** a deployed fix releases the stories it blocked, a transient block is retried
+   (*Why a story stopped*), each planned epic's status follows its stories, waiting stories are promoted, a
+   stopped story is resumed once;
+2. **the gates:** the engine answers, GitHub answers, and **the engine runs the story profile**. The doctor
+   compares the running vllm-mlx server's flags (`--max-kv-size`, `--max-num-seqs`, `--chunked-prefill-tokens`,
+   `--kv-cache-quantization`, `--cache-memory-mb`, the preloaded models) with the profile's (`story.topology`); a
+   KV smaller than the profile's rotates a long prompt and wastes a layer, so on a mismatch the beat starts nothing
+   and logs `engine mismatch: ... restart it: task restart -- --topology studio`. The line never restarts the
+   engine;
+3. **one job in each lane**, side by side:
+   - the **planning lane** (`plan.lock`) takes the oldest ready of an initiative's turn or an epic's revision (a
+     person is waiting), an epic to plan or re-plan, a story to plan (refine, the three amigos, the layer split:
+     `StoryPipeline.plan`, which ends where the agreement is stored);
+   - the **build lane** (`build.lock`, the old story lock) takes the top planned story (`StoryPipeline.build`:
+     each layer from the package the architect writes just before it, the gate, the review, the publish), after a
+     replay of a dependent story whose base moved.
+
+A job holds its lane's lock for its whole run, whoever started it: the tick, a `task serve` route or `task story`
+(which plans under `plan.lock`, then builds under `build.lock`). A beat that finds a lane held (by serve's ticker
+while the launchd tick runs, say) logs `busy: the planning lane is in use` and runs the other lane. Nothing runs
+the same lane twice.
+
+**The gaps.** The two lanes share one engine, and a long prompt prefilled beside a decoding build slows it. The
+build lane writes what it is doing to `stories/build.phase` (`decoding` while a role's turn is in flight, `gap`
+during the gate, the review, the publish and between layers, `idle`), and the planning lane's **long turns**
+(product's and the architect's, the meeting's) start only in a gap or when the build is idle; a turn that has
+started runs to its end. Its **short asks** (consultations, surveys, a planner's reads, mockup renders) ride beside
+the build's decode, `line.fanout` (4) at a time, one at a time while the build's last five steps decode under
+`line.decode_floor_tps` (12 tokens a second). The line's log records `lane_yield`, `lane_wait` (with the seconds
+waited) and `lane_resume`. The studio profile turns on chunked prefill, 8-bit stored KV and an explicit prefix
+cache (`config/profiles.yaml`) so the riders do not stall the build; they take effect at the next
+`task restart -- --topology studio`.
+
+**One switch, and the statuses.** `task line:pause` writes `line.paused` in the state directory (`task line:resume`
+removes it, `POST /v1/airlie/line {"paused": true}` does the same): a paused beat does the gates and the
+bookkeeping, logs `paused`, and starts no job; a running job finishes. The board's statuses are the other
+controls: a card a person moves to *blocked* or *todo* holds itself **and everything under it** (an initiative's
+epics and their stories); *approved* or *doing* lets them go.
+
+**What a stage costs.** Every stage's tokens (prompt plus completion), wall-clock and steps are folded into
+`stages/<stage>.json` in the card's state directory against `line.budgets` (survey, refine, questions, imagine,
+amigos, plan, package, layer, review, publish: `wall_s` and `tokens`; the defaults are the recorded medians doubled,
+`scripts/stage_medians.py`). A stage at 80 percent of either budget logs `budget_warning` and at 100 percent
+`budget_exceeded` (once each per stage per card, and one note on the card at the overrun). Nothing stops: the
+stage's own caps (steps, turns, attempts) are still the only stops. A stage that repeats per layer (package,
+layer, review) is judged by its latest run: a budget is what one layer costs.
+
+**The numbers that judge it.** `task line:stats [-- --since 2026-10-18]` (and `GET /v1/airlie/line/stats`) prints
+the **unattended rate** (of the stories that reached review, how many went from their first approval to review
+with no person's move or comment between; the board records who made each move, `moves`, and the line's own are
+`line`), blocks by class and kind with the fix cards filed and the stories resumed after a fix, each epic's hours
+against its estimate, the amigos' objections by role and part and how many a later check bore out, and the
+budgets' warnings and overruns by stage. Several stories at once wait until the unattended rate says single stories
+go through on their own.
+
+**What you see.** `GET /v1/airlie/line` is the row the app draws: `paused`, the gates (`engine`, `profile_match`,
+`github`), what each lane is doing (`card`, `title`, `stage`, and for the build `layer`, `step`, `tps`,
+`elapsed_s`, `estimate_h`), `queue_hours`, the blocked stories with their class, kind and fix card, and when it last
+ticked; `GET /v1/airlie/line/events?limit=` is the tail of `line/events.jsonl` (`tick`, `gate_failed`,
+`lane_start`, `lane_done`, `lane_yield`, `lane_wait`, `lane_resume`, `paused`, `fix_filed`, `fix_linked`,
+`resumed_after_fix`, `transient_retry`, `engine_mismatch`); `/health` carries the same `line` summary. A story's
+flow row gains its latest `diagnosis` and its `budgets`.
+
+| setting | default | what |
+| --- | --- | --- |
+| `line.tick_s` | 60 | seconds between serve's own beats |
+| `line.serve_ticks` | true | `task serve` runs the beat itself |
+| `line.fanout` | 4 | short asks at once while the build decodes at or above the floor |
+| `line.decode_floor_tps` | 12 | the build's decode rate under which short asks run one at a time |
+| `line.consult_context` | 8192 | the context a short ask is counted at in the doctor's memory projection |
+| `line.budgets.<stage>` | recorded medians doubled | `wall_s` and `tokens` a stage is expected to cost |
+| `line.home_repo` | the checkout's remote | where fix cards are built |
+| `line.transient_retries` | 2 | retries of a transient block per signature |
+
 ## Automatic pickup (launchd)
 
-`task story:tick` is one beat, by hand: it builds the top issue of the intake query (the project's *To Do* issues by
-rank, or `story.jira.jql`), unless a story is already in flight, the engine is down or GitHub does not answer.
-`task story:launchd:install` renders `docs/integrations/story-tick.plist` with this checkout's path and your home,
-writes it to `~/Library/LaunchAgents/dev.airlie.story-tick.plist` and loads it; the agent then runs the beat every
-15 minutes (log: `~/.local/state/airlie/story-tick.log`). `task story:launchd:uninstall` unloads and removes it.
+`task line:tick` is one beat of the line (above), by hand; with a Jira board it builds the top issue of the intake
+query (the project's *To Do* issues by rank, or `story.jira.jql`) in the build lane, unless a story is already in
+flight, the engine is down or GitHub does not answer. `task line:launchd:install` renders
+`docs/integrations/line-tick.plist` with this checkout's path and your home, writes it to
+`~/Library/LaunchAgents/dev.airlie.line-tick.plist` and loads it (taking out the older `dev.airlie.story-tick`
+agent if it is there); the agent then runs the beat every 15 minutes (log: `~/.local/state/airlie/line-tick.log`).
+`task line:launchd:uninstall` unloads and removes it. `task story:tick` still works for a release: it says it is
+`line:tick` now and runs the same beat.
 
-- **What it runs:** `/bin/zsh -lc 'cd "<this checkout>" && exec uv run --quiet airlie story tick'`, not `task`.
+- **What it runs:** `/bin/zsh -lc 'cd "<this checkout>" && exec uv run --quiet airlie line tick'`, not `task`.
   launchd stops a job with SIGTERM, go-task does not pass that signal on, and uv does: `exec` makes uv the process
   launchd owns, so the signal reaches airlie, which stops the story and kills `gh`'s process group. The login shell
   puts `uv`, `gh` and `git` on the PATH, but only from the files a login shell reads (`~/.zshenv`, `~/.zprofile`,
@@ -596,10 +745,14 @@ Each beat appends one line to the log: a timestamp, then one of
 | the line says | meaning |
 | --- | --- |
 | `idle: no issue matches the intake query` | nothing in *To Do* (or nothing `story.jira.jql` returns) |
-| `busy: a story is in flight` | another `task story`, tick or `task serve` story holds the lock |
+| `busy: the build lane is in use` / `busy: the planning lane is in use` | another `task story`, tick or `task serve` job holds that lane's lock; the other lane went on |
+| `paused` | `task line:pause` is on: the gates and the bookkeeping ran, no job started |
+| `engine mismatch: ...` | the running engine does not carry the story profile's flags; the line names the restart |
+| `started build story AIR-7` | a `task serve` beat handed the job to its jobs registry and returned (`/v1/airlie/jobs`) |
 | `engine down: start it with ...` | the engines are not up |
 | `github down: <why>` | GitHub did not answer, or answered with an error (as the bot: the app's key is missing or not the app's, say); no issue was taken |
 | `no board configured (...)` | no Jira site and project in the environment, this checkout's `.env`, `~/.config/airlie/.env` or `story.jira` |
+| `AIR-7 <title>: planned` | the planning lane finished a story's layers and agreement (a one-shot beat then builds it at once) |
 | `AIR-7 <title>: review` | the story finished: PRs open, the issue in *In Review* |
 | `AIR-7 <title>: blocked (<reason>)` | the story stopped; see *When a story stops* |
 | `AIR-7 <title>: cannot start (...)` | the story could not be placed (its label or checkout) or opened; set aside (below) |
@@ -685,7 +838,7 @@ What changes:
   anything but that repository's `https://github.com/` URL, before a token is minted (as you, the pin and the
   check are the same, and any of GitHub's forms of the URL passes: *What stops a merge*). Until the story has
   published, a later run that finds the remote naming another repository, or none, cannot open the story, and
-  `task story:tick` sets the issue aside (*Blocked*, with the reason).
+  `task line:tick` sets the issue aside (*Blocked*, with the reason).
 - **Protect the trunk:** a ruleset on `main` that only you may update keeps the bot, and anything that gets one of
   its tokens, from merging. A private repository on GitHub Free cannot have one: there the bot could merge, and the
   only guard is that airlie has no code that merges.
@@ -740,7 +893,7 @@ What planted repository configuration can still do during a publish step:
   the same checkout, is refused at the next step when it leads anywhere but the story's repository on github.com:
   neither the story's push nor a later story's trunk fetch (and with it that story's base commit and test gate)
   goes to another repository with your credentials. A rewritten `remote.<name>.url` also keeps the next run from
-  opening the story until it has published (`task story:tick` sets the issue aside), and one on this machine is
+  opening the story until it has published (`task line:tick` sets the issue aside), and one on this machine is
   refused by the transports, so no command it names runs. What is left: where the remote of a written request
   that names no github.com repository points is the repository's to say, within those transports; and settings
   for your remote's exact URL (`http.<url>.sslVerify`, `http.<url>.curloptResolve`) outrank the general ones
@@ -876,7 +1029,7 @@ story that has published). A replay that conflicts or fails the gate blocks the 
 A dependency that has not reached review is a wait, not a stop: `task story -- KEY` on such a story says so and leaves
 it in *To Do*.
 
-**The tick** (`task story:tick`), in order: on every beat, each planned epic's status follows its stories (*doing* once
+**The tick** (`task line:tick`, above), in order: on every beat, each planned epic's status follows its stories (*doing* once
 one is picked, *review* when every story is in review or done, *done* when every story is done, back to *doing* when
 a re-plan adds work); waiting stories whose dependencies are in review (or done) are promoted; a story the line
 blocked is resumed once (below). Then the beat's one piece of work: plan the top approved epic, else re-plan an epic
@@ -912,6 +1065,101 @@ pipeline stage.
 | `story.plan.round_steps` | 5 | the architect plans in rounds of this many steps; 0 plans in one go |
 | `story.plan.max_rounds` | 3 | most rounds an epic is planned in |
 | `story.resume_attempts` | 1 | times a stopped story is resumed before its epic is re-planned |
+
+## Initiatives: a loose ask becomes priced epics
+
+One stage above an epic, the line takes a **loose ask** ("I want the board to feel like Linear", "airlie should run
+overnight without me") and, the way `superpowers:brainstorming` does for a person working with Claude, turns it into a
+**core epic and optional extensions**, each a spec a planner can work from, each priced in machine hours from the
+ledger with the arithmetic shown, with a viability verdict and, for web work, three mockup options to pick from (the
+specs phase, P4 of the planning line; the design is `docs/superpowers/specs/2026-10-24-specs-phase-design.md`). Product
+runs it and the specialists are consulted; nothing here approves an epic. The decision is yours: does the compute time
+justify itself over what else is queued. Like epics it is on airlie's own board only (`story.board: jira` logs one
+line and does nothing), and it is **off** until `story.specs.enabled` is true (`airlie.yaml` turns it on).
+
+**The card.** A board item at level `initiative`: your paragraph as the description (Markdown; a file attached in
+the Chat is linked by its `/v1/airlie/uploads/<id>` URL and is read into the briefs: text and PDF as text, pictures
+shown to ux and design), one `repo:<owner>/<name>` label per repository it concerns, and an optional `budget:<hours>h`
+label, the ceiling for the core epic. It is ready when you set it *approved*. Four ways to make one: the Board screen;
+`task initiative -- --text "..." --repo owner/name [--repo ...] [--budget HOURS] [--title TEXT]` (or `--file ask.md`),
+which creates and approves it and runs the first turn; the Chat's `/initiative` skill, which turns the conversation
+into an initiative text you edit and start; and the OpenCode chief's `airlie_initiative` and `airlie_answer` tools.
+Text that says "no questions" (or "skip the questions") gets none.
+
+**The questions.** Product asks you up to five questions (`story.specs.max_questions`), one at a time, as **comments
+on the card** by `product`, only what the code and the READMEs cannot answer; the card sits in *review* between a
+question and your answer. Answer in a comment ("go" or "skip" alone ends the questions). At the cap product states its
+assumptions and goes on.
+
+**Your answer runs the next turn at once**: the app, the chief's `airlie_answer` and `task initiative:turn -- AIR-40`
+post the comment and call `POST /v1/airlie/initiatives/{key}/turn`, a job (`initiative-<key>`) that takes the
+planning lane's lock. While another planning job holds it the route answers **409** `{"error": "busy: the planning
+lane is in use; the tick picks AIR-40 up within 15 minutes"}` (a build in the other lane does not stop it); the comment stays on the card and the **tick** runs that turn on its next beat (in this
+order: an answered question, a comment on an epic, the oldest approved initiative with no record, then the epic and
+story steps). `POST /v1/airlie/initiatives` `{title?, text, repos: [owner/name], budget_hours?}` makes, approves and
+starts a card (`202 {key, job_id}`; a busy line answers `202` with `job_id: null` and `waiting`, and the tick starts it).
+The turn route also takes the key of an epic of the phase: a comment on it, a pick or one revision, now.
+
+**The imagining.** Product leads in rounds (`story.specs.max_rounds`): it asks seats (`story.specs.consultable`:
+architect, ux, design, security, docs, research) up to `max_asks_per_round` questions, the pipeline runs them side by
+side, read-only (`consult_steps` steps, answers clipped to `consult_chars`), and hands the answers back as one
+follow-up; `max_consultations` in all, and the last round demands the epics. The architect's survey of each repository
+runs unasked beside the first round. For a screen, product commissions **mockups**: ux names `mockup_options` (3)
+directions that differ in flow or layout, design draws one self-contained page per direction; a page with a
+`<script>`, `<link>`, `@import`, frame, event handler or any URL that is not `data:` goes back once and is then
+dropped, and the pages that pass are served at
+`GET /v1/airlie/initiatives/{key}/mockups/{epic}/{option-N.html}` with `Content-Security-Policy: default-src 'none';
+style-src 'unsafe-inline'; img-src data:`. A repository with `docs/design/look.md` has mockups drawn in its own look;
+otherwise in airlie's tokens (`specs-mockup-look`).
+
+**The epics.** Product's reply is the epics (`EPICS_CONTRACT` in `story/initiative.py`): exactly one core and zero or
+more extensions that may depend on the core, each with why, goals, non-goals, anti-goals, decisions with their reasons,
+constraints, criteria, a story sketch with sizes S/M/L, risks, a viability verdict (`viable`, `risky`, `not_viable`: a
+not-viable core is written and marked, never hidden) and what is left open. A core priced over your budget goes back
+once, then stands with the overrun named. The architect then reads each epic as the planner it will meet; its
+questions go back to product in one round, the rest land in the epic's *Open for you*. Each epic becomes a card
+under the initiative, **core first, born in review** (the hours decision is yours), with its document, its closing
+JSON block and its price; the initiative moves to *review* with a delivery note (each epic's key, kind, title, hours
+and verdict, the hours queued ahead, your budget).
+
+**The price** (`story/costs.py`): the median wall-clock of the published stories of each size (`S`, `M`, `L`, from the
+card's size or the layers built), at least `min_samples` of a size, else the overall median scaled by `size_scale`,
+else `default_hours`; times the **calibration** (actual over estimated hours of finished epics, 1.0 until three have
+finished). The card shows it as one line you can check, for example `3 S at 1.1 h (median of 7), 2 M at 5.0 h
+(default), x1.2 calibration (4 epics)`. When the epic is planned the price is revised from the real stories
+(`estimate.revised`); when it is done it is closed (`estimate.actual`), and a miss of more than 1.5x or less than
+0.5x is an `estimate_missed` event and a comment on the initiative.
+
+**What you do.** Approve an epic (the tick plans it into stories), pick a mockup (a pick button, or a comment such as
+"option 2"; an approved epic with options and no pick goes back to review with a note and is never planned), park an
+extension in *todo*, or comment: a comment is **one revision** by product (the card is rewritten; new mockup pages are
+drawn when the comment is about the screens), and a second comment waits for the control surface. An extension that
+depends on the core waits, approved, with a note until the core is in *review* or *done*. The initiative is *done*
+when every epic under it is done or parked.
+
+**The record.** `initiatives/<key>/state.json` and `events.jsonl` under the state dir: the stage (`questions`,
+`imagining`, `reading`, `delivered`, `blocked`), the Q&A, every consultation, the surveys, the mockup directions and
+files, the epics as written and priced; events `initiative_start`, `question`, `answer`, `questions_done`, `survey_done`,
+`consult_round`, `consult`, `mockups`, `mockup_dropped`, `epics_drafted`, `epics_returned`, `planner_read`, `epics`,
+`pick`, `revision`, `estimate_missed`, `blocked`. `GET /v1/airlie/initiatives` lists them and
+`GET /v1/airlie/initiatives/{key}/flow` draws one (the dialogue, the consultations, the epics with price, basis,
+verdict, options and pick, the queue's hours, and what it waits on); `POST /v1/airlie/epics/{key}/mockup`
+`{"option": 2}` records a pick.
+
+| setting | default | what |
+| --- | --- | --- |
+| `story.specs.enabled` | false (`airlie.yaml`: true) | the specs phase on |
+| `story.specs.product_role` | `product` | the role that runs it |
+| `story.specs.consultable` | architect, ux, design, security, docs, research | the seats product may ask |
+| `story.specs.max_questions` | 5 | most questions asked of you |
+| `story.specs.max_rounds` / `max_asks_per_round` / `max_consultations` | 3 / 4 / 8 | rounds, asks in a round, consultations in all |
+| `story.specs.consult_steps` / `consult_chars` | 8 / 4000 | a seat's steps; characters of its answer kept |
+| `story.specs.product_steps` / `read_steps` | 12 / 6 | product's steps a turn; the planner's read |
+| `story.specs.mockup_options` | 3 | directions and pages per screen |
+| `story.specs.revisions` | 1 | revisions a comment on an epic gets |
+| `story.specs.attempts` | 2 | tries at a reply that parses |
+| `story.specs.min_samples` | 3 | published stories of a size before their median prices it |
+| `story.specs.default_hours` / `size_scale` | S 1 M 5 L 8 / S 0.6 M 1 L 1.8 | the price with no ledger; a thin size's share of the overall median |
 
 ## The supervisor (trial)
 

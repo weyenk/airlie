@@ -247,3 +247,25 @@ def test_two_plans_are_the_same_when_they_have_the_same_layers_owning_the_same_c
     assert not same_layers(a, (a[0], layer("y", "t.py", ("AC3",))))
     assert not same_layers(a, (a[0], layer("y", "t.py", ("AC1", "AC2"))))
     assert not same_layers(a, (a[1], a[0]))
+
+
+async def test_a_json_block_that_does_not_parse_goes_back_with_what_is_wrong_with_it() -> None:
+    """Roman, 2026-10-27: the architect left its layers list unclosed before "refine", was told three times
+    that there was "no JSON object", and the story blocked."""
+    from airlie.story.model import NO_JSON
+
+    broken = 'Plan:\n```json\n{"layers": [{"slug": "a"}, "refine": {"worth_another_round": false}}\n```'
+
+    def strict(text: str) -> tuple[Layer, ...]:
+        if text == broken:
+            raise StoryError(NO_JSON)
+        return parse(text)
+
+    s = Script(broken, "a", "a")
+    await plan_in_rounds(s.first, s.again, strict, same_layers, rounds=4, emit=s.emit, signal=signal)
+    told = s.events[0][1]["error"]
+    assert told.startswith("the ```json block is not valid JSON: ") and "line 1 column" in told
+    assert s.nudges[0] == hub_text("plan-fix", error=told)
+    s = Script(broken, broken, broken)
+    with pytest.raises(StoryError, match="not valid JSON"):
+        await plan_in_rounds(s.first, s.again, strict, same_layers, rounds=4, emit=s.emit, signal=signal)

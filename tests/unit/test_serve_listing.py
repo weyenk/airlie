@@ -558,6 +558,120 @@ def test_the_epic_routes_list_and_draw_an_epic_with_the_boards_statuses(tmp_path
         assert c.get("/v1/airlie/epics/NOPE-1/flow", headers=auth).status_code == 404
 
 
+# ---- initiatives: the list, the flow, the mockup pages and the pick (P4, 2026-10-25) ----
+
+
+def initiative_app(tmp_path: Path) -> tuple[Any, Any, str, str, str]:
+    """The app over a delivered initiative whose core has option pages 1 and 3 on disk."""
+    from tests.unit.test_story_flow import delivered_initiative
+
+    state = tmp_path / "state"
+    state.mkdir()
+    store, init, core, ext = delivered_initiative(state)
+    folder = state / "initiatives" / init / "mockups" / "E1"
+    folder.mkdir(parents=True)
+    (folder / "option-1.html").write_text("<html><body>one</body></html>")
+    (folder / "option-3.html").write_text("<html><body>three</body></html>")
+    (folder / "option-2.html.bak").write_text("not a page")
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    return app, store, init, core, ext
+
+
+AUTH = {"Authorization": "Bearer k"}
+
+
+def test_initiatives_are_listed(tmp_path: Path) -> None:
+    from airlie.serve.listing import initiatives
+
+    app, store, init, core, ext = initiative_app(tmp_path)
+    [row] = initiatives(tmp_path / "state", store)
+    assert row["key"] == init and row["title"] == "Linear feel" and row["stage"] == "delivered"
+    assert row["epics"] == 2 and row["hours"] == 8.0  # 6 h (revised) + 2 h, the two that have cards
+    assert row["waiting_on"] == "person" and row["blocked"] is None and row["last_activity"] > 0
+    assert initiatives(tmp_path / "nowhere", store) == []
+    (tmp_path / "state" / "initiatives" / "AIR-9").mkdir()  # a directory with no record
+    (tmp_path / "state" / "initiatives" / "AIR-8").mkdir()
+    (tmp_path / "state" / "initiatives" / "AIR-8" / "state.json").write_text("{")
+    rows = {r["key"]: r for r in initiatives(tmp_path / "state", store)}
+    assert rows["AIR-8"]["blocked"] == "state.json is damaged" and rows["AIR-9"]["stage"] is None
+    with TestClient(app) as client:
+        assert client.get("/v1/airlie/initiatives").status_code == 401
+        body = client.get("/v1/airlie/initiatives", headers=AUTH).json()
+        assert [r["key"] for r in body["initiatives"]] == ["AIR-1", "AIR-8", "AIR-9"]
+        flow = client.get(f"/v1/airlie/initiatives/{init}/flow", headers=AUTH)
+        assert flow.status_code == 200 and flow.json()["epics"][0]["key"] == core
+        assert client.get("/v1/airlie/initiatives/AIR-99/flow", headers=AUTH).status_code == 404
+
+
+def test_a_mockup_page_is_served_locked_down_and_an_odd_path_is_not_served(tmp_path: Path) -> None:
+    app, _, init, _, _ = initiative_app(tmp_path)
+    base = f"/v1/airlie/initiatives/{init}/mockups"
+    with TestClient(app) as client:
+        assert client.get(f"{base}/E1/option-1.html").status_code == 401  # a page needs a sign-in too
+        r = client.get(f"{base}/E1/option-3.html", headers=AUTH)
+        assert r.status_code == 200 and r.text == "<html><body>three</body></html>"
+        assert r.headers["content-type"].startswith("text/html")
+        assert (
+            r.headers["content-security-policy"]
+            == "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+        )
+        assert r.headers["x-content-type-options"] == "nosniff"
+        for odd in (
+            f"{base}/E1/option-2.html",  # no such page
+            f"{base}/E1/option-2.html.bak",  # not an option file
+            f"{base}/E1/option-10.html",
+            f"{base}/E1/option-0.html",
+            f"{base}/E1/state.json",
+            f"{base}/E1/..%2F..%2Fstate.json",
+            f"{base}/e1/option-1.html",
+            f"{base}/E9/option-1.html",
+            f"{base}/E1%2F..%2F..%2Foption-1.html/option-1.html",
+            "/v1/airlie/initiatives/..%2F..%2Fx/mockups/E1/option-1.html",
+            "/v1/airlie/initiatives/AIR-99/mockups/E1/option-1.html",
+        ):
+            assert client.get(odd, headers=AUTH).status_code == 404, odd
+        # a link planted in the folder is not followed out of it
+        secret = tmp_path / "secret.html"
+        secret.write_text("<html>secret</html>")
+        (tmp_path / "state" / "initiatives" / init / "mockups" / "E1" / "option-5.html").symlink_to(secret)
+        assert client.get(f"{base}/E1/option-5.html", headers=AUTH).status_code == 404
+
+
+def test_a_pick_is_recorded_through_the_route(tmp_path: Path) -> None:
+    from airlie.story.epic import epic_of
+
+    app, store, init, core, ext = initiative_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.post(f"/v1/airlie/epics/{core}/mockup", json={"option": 1}).status_code == 401
+        r = client.post(f"/v1/airlie/epics/{core}/mockup", json={"option": 1}, headers=AUTH)
+        assert r.status_code == 200 and r.json()["mockups"]["picked"] == 1 and r.json()["kind"] == "core"
+        spec = epic_of(store.get(core).description)
+        assert spec is not None and spec.mockups is not None and spec.mockups.picked == 1
+        assert "mockup:1" in store.get(core).labels
+        events = (tmp_path / "state" / "initiatives" / init / "events.jsonl").read_text()
+        assert '"kind": "pick"' in events and f'"epic": "{core}"' in events
+        # an option the epic has no page for is a 400 that says which it has; nothing changes
+        bad = client.post(f"/v1/airlie/epics/{core}/mockup", json={"option": 2}, headers=AUTH)
+        assert bad.status_code == 400 and "its options are 1, 3" in bad.json()["detail"]
+        assert (
+            client.post(f"/v1/airlie/epics/{core}/mockup", json={"option": 0}, headers=AUTH).status_code
+            == 422
+        )
+        assert (
+            client.post(f"/v1/airlie/epics/{core}/mockup", json={"option": "x"}, headers=AUTH).status_code
+            == 422
+        )
+        none = client.post(f"/v1/airlie/epics/{ext}/mockup", json={"option": 1}, headers=AUTH)
+        assert none.status_code == 400 and "no mockups to pick from" in none.json()["detail"]
+        assert (
+            client.post("/v1/airlie/epics/AIR-99/mockup", json={"option": 1}, headers=AUTH).status_code == 404
+        )
+        assert (
+            client.post(f"/v1/airlie/epics/{init}/mockup", json={"option": 1}, headers=AUTH).status_code
+            == 404
+        )
+
+
 def test_the_diagnosis_route_returns_the_json_and_the_markdown(tmp_path: Path) -> None:
     from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
 

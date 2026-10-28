@@ -10,15 +10,19 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from airlie.board import BoardStore
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.serve.app import create_app
 from airlie.story import factory
 from airlie.story.epic_state import EpicState
 from airlie.story.factory import stories_dir, tick
 from airlie.story.publish import Publisher
+from airlie.story.state import lane_lock
 from tests.unit.git_helpers import git
+from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_story_epic import fenced as block
 from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj, reply
 from tests.unit.test_story_factory import Intake, cfg_for, github_answers, started_log
@@ -419,6 +423,41 @@ async def test_a_blocked_story_is_resumed_once_then_its_epic_is_replanned(
     assert len(rig.engine.requests) == 2  # the plan, the re-plan: the third beat asked nobody
 
 
+def diagnosed(rig: TickRig, key: str, class_: str) -> None:
+    """The block's diagnosis (P5a) says it is of class `class_`."""
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    state = rig.cfg.observability.state_dir
+    pack = Pack(
+        key=key, n=1, reason="x", stage="layers", layer="01", attempt=1, run_id=None, subtask=None,
+        role=None, stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0,
+        tokens=0, minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None,
+        base_failing=(), diff_stat="", paths=Paths(state / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        state,
+        Diagnosis(pack, Classified(class_, "k", "layers", f"{class_}:k:layers", ("k",), "k"), None, "n"),  # type: ignore[arg-type]
+    )
+
+
+async def test_only_a_content_block_is_resumed_by_the_plans_phase_not_a_process_or_an_environment_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A story the diagnosis (P5a) blamed on airlie's own code waits for its fix card, and one it blamed on
+    the environment waits for a person: resuming either would meet the same wall. Content blocks (the
+    model's) are the plans phase's resume-once-then-re-plan (D6 of the scheduler design)."""
+    rig, epic, (s1, s2) = await planned(tmp_path, monkeypatch)
+    started = started_log(monkeypatch)
+    stopped(rig, s1)
+    diagnosed(rig, s1, "process")
+    assert "resumed" not in await tick(rig.cfg)
+    assert started == [] and rig.status(s1) == "blocked"
+    diagnosed(rig, s1, "environment")
+    assert "resumed" not in await tick(rig.cfg) and rig.status(s1) == "blocked"
+    diagnosed(rig, s1, "content")  # the diagnosis is rewritten as block 1: the model's bad day
+    assert f"resumed {s1}" in await tick(rig.cfg)
+
+
 async def test_a_story_a_person_blocked_or_the_line_did_not_make_is_not_resumed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -444,3 +483,429 @@ async def test_resume_attempts_is_a_setting_and_zero_goes_straight_to_the_replan
     line = await tick(rig.cfg)
     assert "resumed" not in line and started == [] and "re-planned" in line
     assert f"replanned_for:{s1}" in rig.store.get(epic).labels
+
+
+# ---- the specs phase on the tick (D4, D6, N7 of the specs phase, P4 of the planning line, 2026-10-25) ----
+
+
+def specs_block(**over: Any) -> str:
+    """A specs-phase epic's closing block: SPEC's repositories and criteria, with P4's fields."""
+    from dataclasses import replace
+
+    return block(replace(SPEC, **over).to_dict())
+
+
+async def test_an_approved_epic_with_options_and_no_pick_is_not_planned_and_stays_in_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story.epic import Mockups
+    from airlie.story.mockups import record_pick
+
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    options = tuple(f"/v1/airlie/initiatives/AIR-1/mockups/E1/option-{n}.html" for n in (1, 2))
+    epic = rig.epic(EPIC_TEXT + specs_block(mockups=Mockups(options, None)))
+    for _ in range(3):  # however many ticks pass
+        await tick(rig.cfg)
+    assert rig.status(epic) == "review" and rig.engine.requests == []  # held, never planned
+    notes = [c.text for c in rig.store.get(epic).comments if "pick a mockup first" in c.text]
+    assert len(notes) == 1 and "option N" in notes[0]  # one note, not one per tick
+    assert not (rig.cfg.observability.state_dir / "epics" / epic / "state.json").exists()
+    # the person approves it again without a pick: bounced once more, with a note
+    rig.store.update(epic, status="approved")
+    await tick(rig.cfg)
+    assert rig.status(epic) == "review" and rig.engine.requests == []
+    # a pick, then approval: planned on the next tick
+    record_pick(rig.store, rig.cfg.observability.state_dir, epic, 2)
+    rig.store.update(epic, status="approved")
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+
+
+async def test_an_approved_epic_without_options_waits_for_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N4: an epic with no screen (needs_mockups false) has no options, so no pick is asked for."""
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    epic = rig.epic(EPIC_TEXT + specs_block(kind="core", initiative="AIR-1"))
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+
+
+async def test_an_approved_extension_waits_with_a_note_until_its_core_is_in_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj()), reply(plan_obj())]}))
+    core = rig.epic(EPIC_TEXT + specs_block(kind="core"))
+    ext = rig.store.create(
+        level="epic",
+        title="Cropping",
+        description=EPIC_TEXT + specs_block(kind="extension", depends_on=(core,)),
+        labels=["repo:o/r", f"after:{core}"],
+    ).key
+    rig.store.update(ext, status="approved")
+    line = await tick(rig.cfg)  # the core first; the extension waits
+    assert line.endswith(f"epic {core} Avatars: planned into 2 stories") and f"epic {ext} held" in line
+    assert rig.status(ext) == "approved"  # held, not moved
+    waiting = [c.text for c in rig.store.get(ext).comments if f"waits for {core}" in c.text]
+    assert len(waiting) == 1
+    stories = rig.stories(core)
+    assert len(rig.engine.requests) == 1  # only the core was planned
+    for key in stories:  # the core's stories are done: nothing is built, and the core's epic is done too
+        rig.store.update(key, status="review")
+    await tick(rig.cfg)  # the core reaches review; the extension is planned on this same beat
+    assert rig.status(core) == "review"
+    state = rig.cfg.observability.state_dir / "epics" / ext / "state.json"
+    assert state.is_file() and EpicState.open(state.parent, rig.store.get(ext), "").plan is not None
+    assert len([c for c in rig.store.get(ext).comments if f"waits for {core}" in c.text]) == 1
+
+
+async def test_planning_an_epic_revises_its_estimate_and_finishing_it_closes_it_and_flags_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story.costs import Estimate
+    from airlie.story.epic import epic_of
+
+    rig = TickRig(tmp_path, monkeypatch, FakeEngine({"architect": [reply(plan_obj())]}))
+    initiative = rig.store.create(level="initiative", title="Faces", labels=["repo:o/r"]).key
+    rig.store.update(initiative, status="doing")  # a live initiative: one in todo would hold its epics (D7)
+    priced = Estimate(1.0, "1 S at 1.0 h (default)", "2026-10-25T00:00:00Z")
+    epic = rig.store.create(
+        level="epic",
+        title="Avatars",
+        parent=initiative,
+        description=EPIC_TEXT + specs_block(estimate=priced, initiative=initiative),
+        labels=["repo:o/r", f"initiative:{initiative}"],
+    ).key
+    rig.store.update(epic, status="approved")
+    assert await tick(rig.cfg) == f"epic {epic} Avatars: planned into 2 stories"
+    spec = epic_of(rig.store.get(epic).description)
+    assert spec is not None and spec.estimate is not None
+    assert (
+        spec.estimate.hours == 1.0 and spec.estimate.revised == 2.0
+    )  # two S stories, 1 h each (the default)
+    record = json.loads((rig.cfg.observability.state_dir / "epics" / epic / "state.json").read_text())
+    assert record["estimate"]["revised"] == 2.0
+    assert [e["kind"] for e in kinds_of(rig.epic_events(epic))].count("estimate_revised") == 1
+    # both stories are finished (each took two hours on its own clock); the epic follows them to done
+    for key in rig.stories(epic):
+        rig.store.update(key, status="done")
+        story_dir = stories_dir(rig.cfg) / key
+        story_dir.mkdir(parents=True, exist_ok=True)
+        (story_dir / "state.json").write_text(json.dumps({"stage": "review", "built": {}}))
+        starts = [{"ts": 0.0, "kind": "story_start"}, {"ts": 7200.0, "kind": "stage"}]
+        (story_dir / "events.jsonl").write_text("\n".join(json.dumps(x) for x in starts) + "\n")
+    await tick(rig.cfg)
+    assert rig.status(epic) == "done"
+    closed = epic_of(rig.store.get(epic).description)
+    assert closed is not None and closed.estimate is not None and closed.estimate.actual == 4.0
+    assert closed.estimate.revised == 2.0
+    assert (
+        json.loads((rig.cfg.observability.state_dir / "epics" / epic / "state.json").read_text())["estimate"][
+            "actual"
+        ]
+        == 4.0
+    )
+    missed = kinds_of(rig.cfg.observability.state_dir / "initiatives" / initiative / "events.jsonl")
+    assert [(e["kind"], e["epic"], e["estimated"], e["actual"]) for e in missed] == [
+        ("estimate_missed", epic, 1.0, 4.0)
+    ]
+    text = rig.store.get(initiative).comments[-1].text
+    assert "priced at 1 h and took 4 h" in text
+    await tick(rig.cfg)  # closing is done once
+    assert len(kinds_of(rig.cfg.observability.state_dir / "initiatives" / initiative / "events.jsonl")) == 1
+
+
+def kinds_of(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text().splitlines()]
+
+
+# ---- the specs phase's routes and tick (D1, D10, D15, N6 of the specs phase, P4, 2026-10-25) ----
+
+
+def question_reply(text: str) -> FakeReply:
+    return FakeReply(text="I read the README.\n" + block({"type": "question", "text": text}))
+
+
+def specs_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: FakeEngine, **specs: Any) -> TickRig:
+    return TickRig(
+        tmp_path,
+        monkeypatch,
+        engine,
+        specs={"enabled": True, "consultable": ["architect"], **specs},
+    )
+
+
+def bearer() -> dict[str, str]:
+    return {"Authorization": "Bearer k"}
+
+
+def test_post_initiatives_makes_an_approved_card_and_starts_its_first_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    engine = FakeEngine({"product": [question_reply("What happens the first time you open it?")]})
+    rig = specs_rig(tmp_path, monkeypatch, engine)
+    app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as client:
+        for bad in (
+            {"text": "x", "repos": []},
+            {"text": "  ", "repos": ["o/r"]},
+            {"text": "x", "repos": ["../etc"]},
+            {"text": "x", "repos": ["o/r"], "budget_hours": 0},
+            {"text": "x", "repos": ["o/r"], "extra": 1},
+        ):
+            assert client.post("/v1/airlie/initiatives", json=bad, headers=bearer()).status_code == 422
+        assert rig.store.list(level="initiative") == []  # nothing was made for a request that was refused
+        r = client.post(
+            "/v1/airlie/initiatives",
+            json={"text": "Make the board feel like Linear.\n\nFast.", "repos": ["o/r"], "budget_hours": 20},
+            headers=bearer(),
+        )
+        assert r.status_code == 202, r.text
+        body = r.json()
+        assert (
+            body["key"] == "AIR-1" and body["job_id"] == "initiative-AIR-1" and body["kind"] == "initiative"
+        )
+        job = f"/v1/airlie/jobs/{body['job_id']}"
+        ended = client.get(job, params={"wait": 20}, headers=bearer()).json()
+        while ended["state"] == "running":
+            ended = client.get(job, params={"wait": 20}, headers=bearer()).json()
+    assert ended["state"] == "done"
+    assert ended["result"] == {
+        "stage": "questions",
+        "waiting_on": "person",
+        "question": "What happens the first time you open it?",
+        "epics": [],
+        "blocked": None,
+    }
+    item = rig.store.get("AIR-1")
+    assert item.level == "initiative" and item.title == "Make the board feel like Linear."
+    assert item.labels == ("repo:o/r", "budget:20h") and item.created_by == "api-key"
+    assert item.status == "review" and item.comments[-1].author == "product"  # approved, then asked
+
+
+def test_a_busy_line_leaves_the_card_made_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    rig = specs_rig(tmp_path, monkeypatch, FakeEngine({"product": []}))
+    app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as client, lane_lock(stories_dir(rig.cfg), "plan") as held:
+        assert held
+        r = client.post(
+            "/v1/airlie/initiatives", json={"text": "A loose ask", "repos": ["o/r"]}, headers=bearer()
+        )
+    assert r.status_code == 202
+    assert r.json() == {
+        "key": "AIR-1",
+        "job_id": None,
+        "waiting": "busy: the planning lane is in use; the tick picks AIR-1 up within 15 minutes",
+    }
+    assert rig.store.get("AIR-1").status == "approved"  # the tick starts it
+
+
+async def test_the_turn_route_answers_busy_while_the_lock_is_held_and_the_tick_then_runs_the_turn_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    engine = FakeEngine({"product": [question_reply("First?"), question_reply("Second?")]})
+    rig = specs_rig(tmp_path, monkeypatch, engine)
+    initiative = rig.store.create(
+        level="initiative", title="Faces", description="Faces.", labels=["repo:o/r"]
+    ).key
+    rig.store.update(initiative, status="approved")
+    assert await tick(rig.cfg) == f"{initiative} asked question 1"
+    rig.store.comment(initiative, "noah", "Fast.")  # the person answers
+    app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as client:
+        with lane_lock(stories_dir(rig.cfg), "plan") as held:
+            assert held
+            r = client.post(f"/v1/airlie/initiatives/{initiative}/turn", headers=bearer())
+        assert r.status_code == 409
+        assert r.json() == {
+            "error": f"busy: the planning lane is in use; the tick picks {initiative} up within 15 minutes"
+        }
+        assert client.get("/v1/airlie/jobs", headers=bearer()).json()["jobs"] == []  # no job was started
+    assert len(engine.requests) == 1 and rig.store.get(initiative).comments[-1].text == "Fast."  # the record
+    assert await tick(rig.cfg) == f"{initiative} asked question 2"  # the tick runs that turn
+    assert len([r for r in engine.requests if r.role == "product"]) == 2
+    line = await tick(rig.cfg)  # and not again: nobody has answered the second question
+    assert line.startswith("idle") and len(engine.requests) == 2
+
+
+def test_the_turn_route_runs_an_answered_question_at_once_and_refuses_what_has_nothing_to_do(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    engine = FakeEngine({"product": [question_reply("First?"), question_reply("Second?")]})
+    rig = specs_rig(tmp_path, monkeypatch, engine)
+    initiative = rig.store.create(
+        level="initiative", title="Faces", description="Faces.", labels=["repo:o/r"]
+    ).key
+    story = rig.store.create(level="story", title="s").key
+    rig.store.update(initiative, status="approved")
+    app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as client:
+        post = f"/v1/airlie/initiatives/{initiative}/turn"
+        assert client.post(post, headers=bearer()).status_code == 202  # a new card: the first question
+        done = client.get(
+            f"/v1/airlie/jobs/initiative-{initiative}", params={"wait": 20}, headers=bearer()
+        ).json()
+        while done["state"] == "running":
+            done = client.get(
+                f"/v1/airlie/jobs/initiative-{initiative}", params={"wait": 20}, headers=bearer()
+            ).json()
+        assert done["result"]["question"] == "First?"
+        nothing = client.post(post, headers=bearer())  # nobody has answered
+        assert nothing.status_code == 400 and "nothing for the line to do" in nothing.json()["detail"]
+        rig.store.comment(initiative, "noah", "Calm.")
+        assert client.post(post, headers=bearer()).status_code == 202
+        done = client.get(
+            f"/v1/airlie/jobs/initiative-{initiative}", params={"wait": 20}, headers=bearer()
+        ).json()
+        while done["state"] == "running":
+            done = client.get(
+                f"/v1/airlie/jobs/initiative-{initiative}", params={"wait": 20}, headers=bearer()
+            ).json()
+        assert done["result"]["question"] == "Second?"
+        assert client.post(f"/v1/airlie/initiatives/{story}/turn", headers=bearer()).status_code == 400
+        assert client.post("/v1/airlie/initiatives/AIR-99/turn", headers=bearer()).status_code == 404
+
+
+async def test_the_tick_resumes_an_answered_question_revises_a_commented_epic_and_starts_a_new_initiative(  # noqa: E501
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story.epic import Estimate, Mockups
+
+    revised = block(
+        {"type": "revision", "epic": epic_for_tick(), "redraw_mockups": False, "changed": "Smaller."}
+    )
+    engine = FakeEngine(
+        {
+            "product": [
+                question_reply("First?"),
+                question_reply("Second?"),
+                FakeReply(text="Revised.\n" + revised),
+                question_reply("Third?"),
+            ]
+        }
+    )
+    rig = specs_rig(tmp_path, monkeypatch, engine)
+    first = rig.store.create(level="initiative", title="One", description="One.", labels=["repo:o/r"]).key
+    rig.store.update(first, status="approved")
+    assert await tick(rig.cfg) == f"{first} asked question 1"
+    # three things now wait: the answer, a comment on an epic, and a new card, in the reverse of the order
+    second = rig.store.create(level="initiative", title="Two", description="Two.", labels=["repo:o/r"]).key
+    rig.store.update(second, status="approved")
+    epic = rig.store.create(
+        level="epic",
+        title="Epic",
+        parent=first,
+        description=EPIC_TEXT
+        + specs_block(
+            initiative=first, kind="core", estimate=Estimate(1.0, "b", "t"), mockups=Mockups((), None)
+        ),
+        labels=["repo:o/r", f"initiative:{first}"],
+    ).key
+    rig.store.update(epic, status="review")
+    rig.store.comment(epic, "noah", "Please make it smaller.")
+    rig.store.comment(first, "noah", "Fast.")
+    record = rig.cfg.observability.state_dir / "initiatives" / first / "state.json"
+    state = json.loads(record.read_text())
+    state["epics"] = [{"id": "E1", "key": epic}]  # the epic is one this initiative delivered
+    record.write_text(json.dumps(state))
+    assert await tick(rig.cfg) == f"{first} asked question 2"  # the answer first
+    assert await tick(rig.cfg) == f"{epic} revised"  # then the comment on the epic
+    assert await tick(rig.cfg) == f"{second} asked question 1"  # then the new card
+    assert rig.store.get(epic).comments[-1].text == "Revised: Smaller."
+    assert [r.role for r in engine.requests].count("product") == 4
+
+
+def epic_for_tick() -> dict[str, Any]:
+    return {
+        "id": "E1",
+        "kind": "core",
+        "title": "A smaller epic",
+        "why": "w",
+        "criteria": [{"id": "EC1", "text": "t"}],
+        "repositories": ["o/r"],
+        "stories": [{"title": "s", "size": "S", "scope": "s"}],
+        "viability": {"verdict": "viable", "reasons": ["r"]},
+    }
+
+
+async def test_the_tick_ignores_a_persons_comment_on_a_delivered_initiative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = specs_rig(tmp_path, monkeypatch, FakeEngine({"product": []}))
+    done = rig.store.create(level="initiative", title="Faces", description="Faces.", labels=["repo:o/r"]).key
+    rig.store.update(done, status="review")
+    path = rig.cfg.observability.state_dir / "initiatives" / done
+    path.mkdir(parents=True)
+    (path / "state.json").write_text(json.dumps({"stage": "delivered", "qa": []}))
+    rig.store.comment(done, "noah", "Thanks, this is great.")
+    assert (await tick(rig.cfg)).startswith("idle") and rig.engine.requests == []
+
+
+async def test_an_initiative_is_done_when_its_epics_are_done_or_parked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = specs_rig(tmp_path, monkeypatch, FakeEngine({"product": []}))
+    keys = {}
+    for name in ("alone", "waiting", "finished"):
+        keys[name] = rig.store.create(level="initiative", title=name, labels=["repo:o/r"]).key
+        rig.store.update(keys[name], status="review")
+        folder = rig.cfg.observability.state_dir / "initiatives" / keys[name]
+        folder.mkdir(parents=True)
+        (folder / "state.json").write_text(json.dumps({"stage": "delivered", "qa": []}))
+    core = rig.store.create(level="epic", title="core", parent=keys["finished"]).key
+    extension = rig.store.create(level="epic", title="ext", parent=keys["finished"]).key
+    still = rig.store.create(level="epic", title="still", parent=keys["waiting"]).key
+    rig.store.update(core, status="done")  # the extension is parked in todo
+    rig.store.update(still, status="doing")
+    assert rig.store.get(extension).status == "todo"
+    line = await tick(rig.cfg)
+    assert f"initiative {keys['finished']} is done" in line
+    assert rig.store.get(keys["finished"]).status == "done"
+    assert rig.store.get(keys["waiting"]).status == "review"  # an epic is still being built
+    assert rig.store.get(keys["alone"]).status == "review"  # no epic yet: left alone
+
+
+def test_the_turn_route_takes_a_comment_on_an_epic_of_the_specs_phase_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D15: the revision, or a pick, after a comment on an epic runs now, not on the next tick."""
+    from fastapi.testclient import TestClient
+
+    from airlie.story.epic import Mockups, epic_of
+
+    rig = specs_rig(tmp_path, monkeypatch, FakeEngine({"product": []}))
+    initiative = rig.store.create(
+        level="initiative", title="Faces", description="Faces.", labels=["repo:o/r"]
+    ).key
+    urls = tuple(f"/v1/airlie/initiatives/{initiative}/mockups/E1/option-{n}.html" for n in (1, 2, 3))
+    epic = rig.store.create(
+        level="epic",
+        title="Epic",
+        parent=initiative,
+        description=EPIC_TEXT + specs_block(initiative=initiative, kind="core", mockups=Mockups(urls, None)),
+        labels=["repo:o/r", f"initiative:{initiative}"],
+    ).key
+    rig.store.update(epic, status="review")
+    app = create_app(rig.cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    with TestClient(app) as client:
+        post = f"/v1/airlie/initiatives/{epic}/turn"
+        nothing = client.post(post, headers=bearer())  # nobody has commented
+        assert nothing.status_code == 400 and "no comment of yours waiting" in nothing.json()["detail"]
+        rig.store.comment(epic, "noah", "Option 2, please.")
+        assert client.post(post, headers=bearer()).status_code == 202
+        job = f"/v1/airlie/jobs/initiative-{epic}"
+        done = client.get(job, params={"wait": 20}, headers=bearer()).json()
+        while done["state"] == "running":
+            done = client.get(job, params={"wait": 20}, headers=bearer()).json()
+    assert done["state"] == "done" and done["result"]["epics"] == [epic]
+    picked = epic_of(rig.store.get(epic).description)
+    assert picked is not None and picked.mockups is not None and picked.mockups.picked == 2
+    assert rig.engine.requests == []  # a pick is a record: product was not asked

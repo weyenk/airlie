@@ -14,10 +14,12 @@ caller found for it (`repo_of`), a scope path only after `parse_story_plan` and 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import traceback
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -27,8 +29,10 @@ from airlie.config import AirlieConfig
 from airlie.story.asking import Asker, StoryBlocked, StudioFactory
 from airlie.story.board import note
 from airlie.story.briefs import plan_brief, replan_brief
+from airlie.story.budgets import StageMeter, check
 from airlie.story.context import guide_budget, repo_guide
-from airlie.story.epic import EpicSpec, epic_of
+from airlie.story.costs import StoryCosts
+from airlie.story.epic import EpicSpec, StorySketch, epic_of, with_block
 from airlie.story.epic_plan import (
     LABEL_AFTER,
     LABEL_EPIC,
@@ -43,11 +47,13 @@ from airlie.story.epic_plan import (
     same_plans,
 )
 from airlie.story.epic_state import EpicState
+from airlie.story.gate import read_gate
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.local_board import LocalBoard
-from airlie.story.model import EpicHeader, StoryError, StorySetupError
+from airlie.story.model import EpicHeader, NoTestGate, StoryError, StorySetupError
 from airlie.story.pipeline import _cap, _reason, _redact_urls
 from airlie.story.publish import Publisher, PublishError
+from airlie.story.testing_conventions import conventions, conventions_text
 from airlie.teams.worktree import delete_branch, remove_worktree, rev_parse
 from airlie.topology.studio_plan import extract_json_block
 
@@ -77,6 +83,7 @@ class EpicPipeline:
         studio: StudioFactory,
         repo_of: Callable[[str], Path | None],
         publisher: Publisher,
+        costs: StoryCosts | None = None,
     ) -> None:
         """`repo_of(owner/name)` is the checkout of a repository the line has (None: it has none, and the
         plan's paths there pass unchecked); it may raise StorySetupError (a checkout that cannot be used),
@@ -87,6 +94,7 @@ class EpicPipeline:
         self.studio = studio
         self.repo_of = repo_of
         self.publisher = publisher
+        self.costs = costs
         self.epics_dir = epics_dir(cfg)
 
     # ---- planning ----
@@ -112,6 +120,7 @@ class EpicPipeline:
         try:
             if st.plan is None:
                 await self._plan(st, card)
+                self._revise_estimate(st, card)
             await self._create_stories(st, card)
         except StoryBlocked as e:
             await self._block(st, card, str(e))
@@ -122,6 +131,30 @@ class EpicPipeline:
             st.emit("error", traceback=_redact_urls(traceback.format_exc()))
             await self._block(st, card, _reason(e))
         return st
+
+    def _revise_estimate(self, st: EpicState, card: Item) -> None:
+        """The specs phase priced this epic from a sketch (D6); now that the real stories are planned it is
+        priced again from their sizes, as `estimate.revised`, in the card's block and the epic's record. An
+        epic with no estimate (written by hand), or a line with no ledger to price from, is left alone; a
+        board or a block that cannot take the write is an event, never a failure of the plan."""
+        if self.costs is None or st.plan is None:
+            return
+        try:
+            spec = epic_of(self.board.item(card.key).description)
+            if spec is None or spec.estimate is None:
+                return
+            plan = StoryPlan.from_dict(st.plan)
+            sketch = [StorySketch(s.title, s.size, s.title) for s in plan.order()]
+            revised = replace(spec.estimate, revised=self.costs.estimate(sketch).hours)
+            fresh = self.board.item(card.key)
+            self.board.store.update(
+                card.key, description=with_block(fresh.description, replace(spec, estimate=revised))
+            )
+            st.estimate = revised.to_dict()
+            st.save()
+            st.emit("estimate_revised", hours=revised.hours, revised=revised.revised)
+        except Exception as e:  # noqa: BLE001 - the price is a note to the person, not part of the plan
+            st.emit("board_error", call="estimate", error=_redact_urls(f"{type(e).__name__}: {e}"))
 
     @staticmethod
     def _made(st: EpicState) -> bool:
@@ -159,7 +192,7 @@ class EpicPipeline:
             st.stories[ps.id] = item.key
             st.save()
             if not ps.depends_on:
-                store.update(item.key, status="approved")
+                store.update(item.key, status="approved", by="line")
             made.append((ps.id, item.key))
         if not made:
             return
@@ -195,6 +228,18 @@ class EpicPipeline:
             self.s.plan.round_steps,
         )
 
+    def _conventions_text(self, repo: Path, sha: str) -> str:
+        """How `repo` is tested at `sha`, the tester's view the story meeting reads (P2), for the plan's
+        brief: the levels its test tree has, its guidelines and its own testing notes, with the gate its
+        AGENTS.md names (none known when it has none: the story that is built reports that, not the plan)."""
+        tester = self.cfg.roles.get("tester")
+        found = conventions(repo, sha, tester.skills if tester is not None else None, None)
+        try:
+            gate = read_gate(repo, sha).commands
+        except NoTestGate:
+            gate = ()
+        return conventions_text(found, gate)
+
     async def _plan(self, st: EpicState, card: Item) -> None:
         spec, repo = await self._spec_and_checkout(st, card)
         assert st.base is not None
@@ -205,12 +250,14 @@ class EpicPipeline:
             budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
         )
         ctx, limits = self._context(repo), self.s.plan
+        tested = self._conventions_text(repo, st.base["sha"])
 
         def brief(feedback: str | None) -> str:
             return plan_brief(
                 f"{card.title}\n\n{card.description}",
                 spec,
                 guide=guide,
+                conventions=tested,
                 lessons=ctx.lessons,
                 max_stories=limits.max_stories,
                 max_scope_files=limits.max_scope_files,
@@ -225,6 +272,19 @@ class EpicPipeline:
         st.seen_comments = len(card.comments)
         st.emit("plan", stories=[s.id for s in plan.order()], attempts=st.attempts)
         st.finish("planned")
+        self._costed(st, card, "plan")
+
+    def _costed(self, st: EpicState, card: Item, *stages: str) -> None:
+        """Record what the planning cost against its budget (planning-line P5b, D8): events on the epic, and
+        one note on its card at an overrun. Never a reason to stop."""
+        meter = StageMeter(
+            self.cfg.observability.state_dir.expanduser(), card.key, self.cfg.line.budgets, st.emit
+        )
+        for stage in stages:
+            text = check(meter, stage)
+            if text is not None:
+                with contextlib.suppress(Exception):
+                    self.board.store.comment(card.key, "airlie", note(text))
 
     async def _ask_plan(
         self,
@@ -468,7 +528,7 @@ class EpicPipeline:
                 st.stories[ps.id] = item.key
                 st.save()
                 if not ps.depends_on:
-                    store.update(item.key, status="approved")
+                    store.update(item.key, status="approved", by="line")
                 created.append(item.key)
         retired: list[str] = []
         for p in progress:
@@ -476,7 +536,7 @@ class EpicPipeline:
                 continue
             self._clear_attempt(p.key)
             replaced = ", ".join(created) or "no new story"
-            store.update(p.key, status="done")
+            store.update(p.key, status="done", by="line")
             store.comment(
                 p.key,
                 "airlie",
@@ -486,7 +546,7 @@ class EpicPipeline:
         dropped: list[str] = []
         for sid in sorted(changeable - {s.id for s in new.stories}):
             key = st.stories[sid]
-            store.update(key, status="done")
+            store.update(key, status="done", by="line")
             store.comment(key, "airlie", note(f"dropped by the re-plan ({reason}); it had not started."))
             dropped.append(key)
         for ps in new.order():  # rank: each listed story at the bottom of its column, in the new order

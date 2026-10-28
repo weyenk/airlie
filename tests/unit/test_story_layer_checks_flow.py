@@ -13,10 +13,23 @@ from pathlib import Path
 
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text
+from airlie.story.amigos import Agreement, Objection, ProofTest, Turn, Verdict
 from airlie.story.board import text_card
+from airlie.story.model import Layer, parse_story
 from airlie.story.state import StoryState
+from airlie.topology.studio_plan import extract_json_block
 from tests.unit.git_helpers import git
-from tests.unit.test_story_pipeline import STORY, agents_md, fenced, kinds, package_reply, pipeline
+from tests.unit.test_story_pipeline import (
+    MEETING,
+    MEETING_ROLES,
+    STORY,
+    FakeMeeting,
+    agents_md,
+    fenced,
+    kinds,
+    package_reply,
+    pipeline,
+)
 from tests.unit.test_studio_orchestrator import APPROVE, DONE
 
 PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q"
@@ -368,3 +381,287 @@ async def test_what_ruff_cannot_fix_goes_back_to_the_architect_with_the_rule(tmp
     assert (found["attempt"], found["test"]) == (1, RUFF_GATE[0])
     [retry] = [p for p in prompts(engine, "architect") if "fix these by hand" in p]
     assert "E501" in retry and "tests/test_calc.py" in retry
+
+
+# ---- the agreed proof (P2, 2026-10-24) ----
+
+TWO_TESTS = (
+    "from calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6\n\n\n"
+    "def test_mul_zero():\n    assert mul(0, 3) == 0\n"
+)
+TWO_REVISED = TWO_TESTS.replace("mul(0, 3) == 0", "mul(0, 3) == 0 and mul(3, 0) == 0")
+NO_ASSERT = TWO_TESTS.replace("    assert mul(0, 3) == 0\n", "    mul(0, 3)\n")
+ID_MUL, ID_ZERO = "tests/test_calc.py::test_mul", "tests/test_calc.py::test_mul_zero"
+ID_ONE = "tests/test_calc.py::test_mul_by_one"
+
+
+def two(text: str = TWO_TESTS, second: str = "test_mul_zero") -> FakeReply:
+    """A package covering AC1 with test_mul and AC2 with `second`, as the agreed proof says."""
+    return package_reply(
+        {"tests/test_calc.py": text},
+        {"AC1": [ID_MUL], "AC2": [f"tests/test_calc.py::{second}"]},
+        files=[{"path": "calc.py", "action": "modify"}],
+        interfaces=[MUL_INTERFACE],
+        steps=STEPS,
+    )
+
+
+def agreement() -> Agreement:
+    """The calc story's agreement: one layer, two criteria, a test each."""
+    story = parse_story(extract_json_block(STORY.text))
+    layer = Layer("mul", "Multiply", "calc.py", "Add mul.", ("AC1", "AC2"))
+    proof = (
+        ProofTest("AC1", "mul", "tests/test_calc.py", "test_mul", "tests", None, "mul(2, 3) is 6", ""),
+        ProofTest("AC2", "mul", "tests/test_calc.py", "test_mul_zero", "tests", None, "mul(0, 3) is 0", ""),
+    )
+    return Agreement(story, (layer,), proof, 6)
+
+
+AGREE_ALL = FakeReply(text='Fine.\n```json\n{"type": "verdict", "proof": "agree", "objections": []}\n```')
+OBJECT = FakeReply(
+    text="Thin.\n```json\n"
+    + json.dumps(
+        {
+            "type": "verdict",
+            "proof": "object",
+            "objections": [
+                {"about": ID_ZERO, "claim": "it checks only one operand order", "suggest": "swap them too"}
+            ],
+        }
+    )
+    + "\n```"
+)
+MEETING_STORY = {**MEETING, "package_attempts": 2}
+
+
+async def agreed_run(
+    tmp_path: Path,
+    packages: list[FakeReply],
+    tester: list[FakeReply],
+    coder: list[FakeReply],
+    *,
+    meeting: object | None = None,
+    story: dict[str, object] | None = None,
+) -> tuple[StoryState, FakeEngine]:
+    """The one-layer calc story with an agreement in hand (the meeting is a double): the architect's
+    `packages` after its layer plan, the tester critic's replies, then the coder's."""
+    engine = FakeEngine(
+        {
+            "product": [STORY],
+            "architect": [LAYERS, *packages],
+            "tester": tester,
+            "coder": coder,
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
+    repo = calc_repo(tmp_path)
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        engine,
+        test_cmd=PYTEST,
+        story={**MEETING_STORY, **(story or {})},
+        roles=MEETING_ROLES,
+        meeting=meeting or (lambda cfg, tools, on_turn: FakeMeeting(agreement())),
+    )
+    return await pipe.run(text_card("multiply")), engine
+
+
+async def test_the_critics_objection_gives_the_architect_one_revision_before_the_checks(
+    tmp_path: Path,
+) -> None:
+    st, engine = await agreed_run(tmp_path, [two(), two(TWO_REVISED)], [OBJECT], [FEATURE, DONE])
+    assert st.blocked is None and st.stage == "review", st.blocked
+    asked = prompts(engine, "architect")
+    assert len(asked) == 3  # the layers, the package, its one revision
+    assert "The tester read your tests against the agreed proof and objects" in asked[2]
+    assert f"- {ID_ZERO}: it checks only one operand order" in asked[2] and "swap them too" in asked[2]
+    assert (
+        asked[2].rstrip().endswith(hub_text("package-fix").splitlines()[-1])
+        or hub_text("package-fix") in asked[2]
+    )
+    # the revision is a turn of the drafting conversation, not a cold ask: layer 01's draft is in it
+    drafts = [r for r in engine.requests if r.role == "architect"][1:]
+    assert len(drafts[1].messages) > len(drafts[0].messages)
+    assert "objects" in drafts[1].messages[-1].content
+    critic = prompts(engine, "tester")[0]
+    assert "Read these tests against the agreed proof" in critic and "def test_mul_zero" in critic
+    assert f"{ID_ZERO} (proves AC2" in critic
+    events = st.path / "events.jsonl"
+    [objection] = kinds(events, "amigos_objection")
+    assert (objection["role"], objection["part"], objection["about"], objection["layer"]) == (
+        "tester",
+        "proof",
+        ID_ZERO,
+        "01",
+    )
+    assert [e["verdict"] for e in kinds(events, "amigos_critic")] == ["object"]
+    assert ("package-fix", "architect", "01") in steers(st)
+    assert (
+        built_file(tmp_path, st, "tests/test_calc.py").strip() == TWO_REVISED.strip()
+    )  # the revision stands
+
+
+async def test_a_critic_that_agrees_or_cannot_be_read_costs_the_architect_no_revision(tmp_path: Path) -> None:
+    st, engine = await agreed_run(tmp_path, [two()], [AGREE_ALL], [FEATURE, DONE])
+    assert st.blocked is None and len(prompts(engine, "architect")) == 2
+    assert [e["verdict"] for e in kinds(st.path / "events.jsonl", "amigos_critic")] == ["agree"]
+    unreadable = FakeReply(text="I think it is fine.")
+    (tmp_path / "b").mkdir()
+    st, engine = await agreed_run(tmp_path / "b", [two()], [unreadable], [FEATURE, DONE])
+    assert st.blocked is None and st.stage == "review", st.blocked  # a critic is advisory: the checks follow
+    assert len(prompts(engine, "architect")) == 2
+    [skipped] = kinds(st.path / "events.jsonl", "amigos_critic_unreadable")
+    assert skipped["layer"] == "01" and "verdict" in skipped["reason"]
+
+
+async def test_the_critic_reads_the_packages_test_files_on_disk_as_in_its_brief(tmp_path: Path) -> None:
+    """On the first full real run (airlie-sandbox, 2026-10-26) Muse read the test file from the base, where it
+    was absent or an earlier layer's, and objected that every agreed test was missing; the critic's tree is
+    the base with the package's test files placed, so its tools see what its brief shows."""
+    look = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "tests/test_calc.py"}))])
+    st, engine = await agreed_run(tmp_path, [two()], [look, AGREE_ALL], [FEATURE, DONE])
+    assert st.blocked is None and st.stage == "review", st.blocked
+    second = engine.requests[[r.role for r in engine.requests].index("tester") + 1]
+    [result] = [m.content for m in second.messages if m.role == "tool"]
+    assert "def test_mul_zero" in str(result), result
+
+
+async def test_a_package_covering_a_test_the_proof_lacks_is_a_proof_mismatch(tmp_path: Path) -> None:
+    extra = TWO_TESTS + "\n\ndef test_extra():\n    assert mul(1, 1) == 1\n"
+    wide = package_reply(
+        {"tests/test_calc.py": extra},
+        {"AC1": [ID_MUL], "AC2": [ID_ZERO, "tests/test_calc.py::test_extra"]},
+        files=[{"path": "calc.py", "action": "modify"}],
+        interfaces=[MUL_INTERFACE],
+        steps=STEPS,
+    )
+    st, engine = await agreed_run(tmp_path, [wide, two()], [AGREE_ALL, AGREE_ALL], [FEATURE, DONE])
+    assert st.blocked is None and st.stage == "review", st.blocked
+    [returned] = kinds(st.path / "events.jsonl", "package_returned")
+    assert returned["kinds"] == ["proof_mismatch"]
+    retry = prompts(engine, "architect")[2]
+    assert (
+        "tests/test_calc.py::test_extra: your package covers it, but the agreed proof does not name it"
+        in retry
+    )
+
+
+PROOF_CHANGE = FakeReply(
+    text="mul(0, 3) is not a case this layer can fail.\n```json\n"
+    + json.dumps(
+        {
+            "type": "proof_change",
+            "changes": [{"test": ID_ZERO, "why": "zero is covered by test_mul's operands"}],
+        }
+    )
+    + "\n```"
+)
+NEW_PROOF = FakeReply(
+    text="Revised for the layer.\n```json\n"
+    + json.dumps(
+        {
+            "type": "proof",
+            "tests": [
+                {
+                    "criterion": "AC2",
+                    "layer": "mul",
+                    "file": "tests/test_calc.py",
+                    "name": "test_mul_by_one",
+                    "level": "tests",
+                    "asserts": "mul(7, 1) is 7",
+                    "needs": "",
+                },
+                {
+                    "criterion": "AC1",
+                    "layer": "mul",
+                    "file": "tests/test_calc.py",
+                    "name": "test_mul",
+                    "level": "tests",
+                    "asserts": "mul(2, 3) is 6",
+                    "needs": "",
+                },
+            ],
+        }
+    )
+    + "\n```"
+)
+BY_ONE = TWO_TESTS.replace("test_mul_zero", "test_mul_by_one").replace("mul(0, 3) == 0", "mul(7, 1) == 7")
+
+
+async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_and_asks_the_architect_again(
+    tmp_path: Path,
+) -> None:
+    """The architect found the proof wrong: the tester revises that layer's tests in one fresh ask, the
+    agreement in the state changes, the architect is asked again, and the attempt it used is not charged
+    (one attempt is all this story allows)."""
+    st, engine = await agreed_run(
+        tmp_path,
+        [PROOF_CHANGE, two(BY_ONE, "test_mul_by_one")],
+        [NEW_PROOF, AGREE_ALL],
+        [FEATURE, DONE],
+        story={"package_attempts": 1},
+    )
+    assert st.blocked is None and st.stage == "review", st.blocked
+    asked = prompts(engine, "architect")
+    assert len(asked) == 3 and ID_ONE in asked[2] and "asserts: mul(7, 1) is 7" in asked[2]
+    revision = prompts(engine, "tester")[0]
+    assert "> " + ID_ZERO + ": zero is covered by test_mul's operands" in revision
+    assert st.agreement is not None
+    assert [t["name"] for t in st.agreement["proof"]] == ["test_mul_by_one", "test_mul"]
+    events = st.path / "events.jsonl"
+    [revised] = kinds(events, "amigos_proof_revised")
+    assert revised["layer"] == "01" and revised["tests"] == [ID_ONE, ID_MUL]
+    [ready] = kinds(events, "package_ready")
+    assert ready["tests"] == [ID_MUL, ID_ONE]
+    assert not kinds(events, "package_returned")
+
+
+async def test_a_proof_revision_that_names_another_layer_or_fails_stops_the_story(tmp_path: Path) -> None:
+    wrong = FakeReply(text=NEW_PROOF.text.replace('"layer": "mul"', '"layer": "elsewhere"'))
+    st, _ = await agreed_run(
+        tmp_path, [PROOF_CHANGE], [wrong, wrong], [], story={"package_attempts": 1, "stage_attempts": 2}
+    )
+    assert st.blocked is not None and "tester did not produce a usable proof revision" in st.blocked
+    assert not kinds(st.path / "events.jsonl", "amigos_proof_revised")
+
+
+class Objecting(FakeMeeting):
+    """A meeting double that, before it ends, lets product object to a test of the proof."""
+
+    def __init__(self, held: Agreement, on_turn: object) -> None:
+        super().__init__(held)
+        self.on_turn = on_turn
+
+    async def run(self, *args: object, **kwargs: object) -> Agreement:
+        verdict = Verdict(
+            "product",
+            "agree",
+            "agree",
+            "object",
+            (Objection("proof", ID_ZERO, "it asserts nothing", "assert", "product"),),
+        )
+        self.on_turn(Turn("product", "The zero test is empty.", verdict), {})  # type: ignore[operator]
+        return await super().run(*args, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_check_finding_on_an_objected_test_is_borne_out(tmp_path: Path) -> None:
+    """D10: product objected to the zero test in the meeting; the package's first try has no assertion in it,
+    and the finding is recorded against the objection."""
+    st, _ = await agreed_run(
+        tmp_path,
+        [two(NO_ASSERT), two()],
+        [AGREE_ALL, AGREE_ALL],
+        [FEATURE, DONE],
+        meeting=lambda cfg, tools, on_turn: Objecting(agreement(), on_turn),
+    )
+    assert st.blocked is None and st.stage == "review", st.blocked
+    events = st.path / "events.jsonl"
+    [borne] = kinds(events, "amigos_borne_out")
+    assert (borne["layer"], borne["test"], borne["finding"], borne["part"], borne["role"]) == (
+        "01",
+        ID_ZERO,
+        "assertion_free_test",
+        "proof",
+        "product",
+    )

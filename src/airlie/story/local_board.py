@@ -4,13 +4,18 @@ approve it), the pipeline's columns are the board's statuses, and airlie's notes
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from airlie.board import BoardStore, Item
-from airlie.board.model import Status
+from airlie.board.model import Comment, Status
 from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
+from airlie.story.epic import epic_of
 from airlie.story.epic_plan import after_keys, epic_key_of
 from airlie.story.epic_state import epic_needs_work
+from airlie.story.initiative import Initiative, initiative_key_of
+from airlie.story.model import PLANNED, StoryError
+from airlie.story.state import STAGES
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -20,6 +25,12 @@ STATUS_OF: dict[Column, str] = {
 }
 
 
+PICK_FIRST = "pick a mockup first"
+"""Why an approved epic with mockup pages and no pick is not planned (D4)."""
+
+HOLDING: tuple[Status, ...] = ("blocked", "todo")
+"""The statuses of a card that hold everything under it (D7): a person parks it or blocks it."""
+
 OPEN_EPIC: tuple[Status, ...] = ("approved", "doing")
 """The statuses of an epic whose stories the tick may promote and pick. Any other (todo, blocked, review,
 done) holds them: a person moving an epic to blocked or todo pauses it whole."""
@@ -27,13 +38,19 @@ done) holds them: a person moving an epic to blocked or todo pauses it whole."""
 
 class LocalBoard:
     def __init__(
-        self, store: BoardStore, role_names: set[str] | None = None, epics_dir: Path | None = None
+        self,
+        store: BoardStore,
+        role_names: set[str] | None = None,
+        epics_dir: Path | None = None,
+        stories_dir: Path | None = None,
     ) -> None:
         """`epics_dir` is where the epics' records are (observability.state_dir/epics): `next_epic` reads
-        them to tell an epic that still needs its stories from one that has them."""
+        them to tell an epic that still needs its stories from one that has them. `stories_dir` is where the
+        stories' are: `next_planned_story` and `next_unplanned_story` read how far each story got."""
         self.store = store
         self.role_names = frozenset(role_names or ())
         self.epics_dir = epics_dir
+        self.stories_dir = stories_dir
 
     def is_note(self, author: str, text: str) -> bool:
         """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
@@ -47,6 +64,51 @@ class LocalBoard:
             return self.store.get(key)
         except KeyError:
             raise BoardError(f"no item {key} on the board") from None
+
+    def item(self, ref: str) -> Item:
+        """The board item `ref` at any level; a BoardError when there is none."""
+        return self._item(ref)
+
+    def initiative(self, ref: str) -> Initiative:
+        """The initiative `ref`, read from its card. A BoardError for an item of another level, or an
+        initiative whose card cannot be read (no repository label, a budget that is no number)."""
+        item = self._item(ref)
+        try:
+            return Initiative.from_item(item)
+        except StoryError as e:
+            raise BoardError(str(e)) from None
+
+    def next_initiative(self) -> Item | None:
+        """The oldest initiative a person has approved (P4): the specs phase takes it next."""
+        found = self.store.list(level="initiative", status="approved")
+        return found[0] if found else None
+
+    def children(self, key: str) -> list[Item]:
+        """The items directly under `key` (an initiative's epics, an epic's stories), oldest first."""
+        return self.store.list(parent=key)
+
+    def latest_person_comment(self, item: Item) -> Comment | None:
+        """The item's newest comment when it is a person's, else None: the line answers a person's comment
+        with one of its own, so a person's comment on top is one the line has not read."""
+        if not item.comments:
+            return None
+        newest = max(item.comments, key=lambda c: (c.at, c.id))
+        return newest if self.is_person(newest) else None
+
+    def epics_awaiting_revision(self) -> list[Item]:
+        """The epics of an initiative, in review, whose newest comment is a person's: each is one pick or one
+        revision for the specs phase (D8). Oldest first."""
+        return [
+            epic
+            for epic in self.store.list(level="epic", status="review")
+            if initiative_key_of(epic.labels) is not None
+            and self.latest_person_comment(epic) is not None
+            and not self.held(epic)
+        ]
+
+    def is_person(self, comment: Comment) -> bool:
+        """A comment whose author is not a role or airlie, and that is no airlie note: a person's."""
+        return not self.is_note(comment.author, comment.text)
 
     def _card(self, item: Item) -> Card:
         return Card(
@@ -76,9 +138,65 @@ class LocalBoard:
                 return self._card(story)
         return None
 
+    def _planned(self, key: str) -> bool:
+        """The story's record has reached the boundary stage (`PLANNED`): its layers are split and agreed. A
+        story with no record, or one that cannot be read, is not planned."""
+        if self.stories_dir is None:
+            return False
+        try:
+            stage = json.loads((self.stories_dir / key / "state.json").read_text()).get("stage")
+        except (OSError, ValueError, AttributeError):
+            return False
+        return stage in STAGES and STAGES.index(stage) >= STAGES.index(PLANNED)
+
+    def _next_story(self, *, planned: bool) -> Item | None:
+        """The oldest approved story that is (or is not) planned. A planned story may also be in doing: the
+        planning lane moved its card to building when it picked it up, and nothing moves it back, so the
+        build lane takes it from there (and takes a story a killed build left, which only a person's
+        approval used to resume)."""
+        for story in self.store.list(level="story", status="approved"):
+            if not self.is_held(story) and self._planned(story.key) == planned:
+                return story
+        if planned:
+            for story in self.store.list(level="story", status="doing"):
+                if not self.is_held(story) and self._planned(story.key):
+                    return story
+        return None
+
+    def next_unplanned_story(self) -> Item | None:
+        """The oldest approved story whose record has not reached the boundary: the planning lane's (P5b)."""
+        return self._next_story(planned=False)
+
+    def next_planned_story(self) -> Item | None:
+        """The oldest approved (or doing) story whose record has: the build lane's (P5b)."""
+        return self._next_story(planned=True)
+
+    def card_of(self, item: Item) -> Card:
+        """`item` as the card a pipeline reads."""
+        return self._card(item)
+
+    def held(self, item: Item) -> bool:
+        """A person holds a card above this one (planning-line P5b, D7): an ancestor, by parent, is blocked or
+        parked (todo). Moving any card to blocked holds it and everything under it, whatever the level;
+        approved or doing releases it. A card's own status is its own: it is not held by itself."""
+        parent, seen = item.parent, set()
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            try:
+                above = self.store.get(parent)
+            except KeyError:
+                return False
+            if above.status in HOLDING:
+                return True
+            parent = above.parent
+        return False
+
     def is_held(self, story: Item) -> bool:
-        """The story was made by the line for an epic that a person holds (todo or blocked) or that is not
-        open (review, done). A story with no `epic:` label, or one whose epic is gone, is never held."""
+        """The story is held (`held`), or it was made by the line for an epic that a person holds (todo or
+        blocked) or that is not open (review, done). A story with no `epic:` label, or one whose epic is gone,
+        is held by an ancestor only."""
+        if self.held(story):
+            return True
         key = epic_key_of(story.labels)
         if key is None:
             return False
@@ -89,10 +207,38 @@ class LocalBoard:
 
     def next_epic(self) -> Item | None:
         """The oldest approved epic that still needs the pipeline (no plan yet, or cards still to make): an
-        epic is planned only once a person has approved it (D1 of the plans phase)."""
+        epic is planned only once a person has approved it (D1 of the plans phase). An epic held for a pick
+        or for its core (`epic_hold`) is passed over, so it never stands in front of the others."""
         for epic in self.store.list(level="epic", status="approved"):
+            if self.epic_hold(epic) is not None or self.held(epic):
+                continue
             if self.epics_dir is None or epic_needs_work(self.epics_dir / epic.key):
                 return epic
+        return None
+
+    def epic_hold(self, epic: Item) -> str | None:
+        """Why an approved epic of the specs phase cannot be planned yet, in words for its card: it has
+        mockup pages and no pick (D4), or it waits for an epic (`after:`) not yet in review or done (N7).
+        None when nothing holds it (an epic written by hand never is). A block that cannot be read is no
+        hold: the planner sets that epic aside with its own reason."""
+        try:
+            spec = epic_of(epic.description)
+        except StoryError:
+            spec = None
+        if (
+            spec is not None
+            and spec.mockups is not None
+            and spec.mockups.options
+            and spec.mockups.picked is None
+        ):
+            return PICK_FIRST
+        for dep in after_keys(epic.labels):
+            try:
+                status = self.store.get(dep).status
+            except KeyError:
+                status = None
+            if status not in ("review", "done"):
+                return f"waits for {dep}, its core epic, to reach review"
         return None
 
     def waiting_stories(self) -> list[Item]:
@@ -109,7 +255,7 @@ class LocalBoard:
         item = self._item(key)
         if item.level != "epic":
             raise BoardError(f"{item.key} is a {item.level}, not an epic")
-        self.store.update(item.key, status=status)
+        self.store.update(item.key, status=status, by="line")
 
     def follow_stories(self) -> list[tuple[str, str, str]]:
         """Move each epic the line planned along with its stories (D10): doing once a story has been picked,
@@ -135,7 +281,7 @@ class LocalBoard:
             else:
                 continue  # nothing picked yet: the epic stays as it is
             if target != epic.status:
-                self.store.update(epic.key, status=target)
+                self.store.update(epic.key, status=target, by="line")
                 moved.append((epic.key, epic.status, target))
         return moved
 
@@ -145,7 +291,7 @@ class LocalBoard:
 
     async def move(self, card: Card, column: Column) -> None:
         self._item(card.key)
-        self.store.update(card.key, status=STATUS_OF[column])  # type: ignore[arg-type]
+        self.store.update(card.key, status=STATUS_OF[column], by="line")  # type: ignore[arg-type]
 
     async def comment(self, card: Card, text: str, role: str | None = None) -> None:
         """`text` as given (the pipeline passes note(text), as it does to every board), by `role` when one is

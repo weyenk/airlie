@@ -319,7 +319,8 @@ def test_a_transient_block_is_retried_twice_then_waits(tmp_path: Path) -> None:
 async def test_the_beat_runs_the_bookkeeping_first_and_adds_its_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from airlie.story import factory
+    from airlie.engine import EngineHealth
+    from airlie.story import factory, line
 
     store = BoardStore(tmp_path / "board.sqlite")
     cfg = cfg_for(tmp_path)
@@ -329,11 +330,12 @@ async def test_the_beat_runs_the_bookkeeping_first_and_adds_its_lines(
         assert s is store
         return ["AIR-3: transient block, retried"]
 
-    async def beat(c: object, b: object) -> str:
-        return "idle: no issue matches the intake query"
+    class Down:
+        async def health(self) -> EngineHealth:
+            return EngineHealth(False, {}, "down")
 
-    monkeypatch.setattr(factory, "bookkeep", bookkeeping)
-    monkeypatch.setattr(factory, "_tick", beat)
-    assert (
-        await factory.tick(cfg) == "idle: no issue matches the intake query; AIR-3: transient block, retried"
-    )
+    monkeypatch.setattr(line, "bookkeep", bookkeeping)
+    monkeypatch.setattr(factory, "_engine", lambda c: Down())
+    # the fix lines come first, ahead of what the gates and the lanes say
+    out = await factory.tick(cfg)
+    assert out.startswith("AIR-3: transient block, retried; engine down: start it with")

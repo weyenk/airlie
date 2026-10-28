@@ -15,9 +15,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ENDINGS = ("out_of_steps", "out_of_context", "gate_red", "package_rejected")
+ENDINGS = ("out_of_steps", "out_of_context", "gate_red", "package_rejected", "owner_decided")
 """How a layer came back: the coder ran out of steps or context, the gate was red after the build (step end
-or not), or the architect's package failed the readiness check every time."""
+or not), or the architect's package failed the readiness check every time; or (P2) how the story's meeting
+ended: at the turn cap, with each owner's part standing (`detail`: the parts)."""
 
 
 @dataclass

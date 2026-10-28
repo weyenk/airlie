@@ -36,6 +36,7 @@ Kind = Literal[
     "existing_test_fails",
     "assertion_free_test",
     "unparseable_test",
+    "test_type_error",
     "no_new_test",
     "suite_did_not_run",
     "lint_fails",
@@ -43,6 +44,15 @@ Kind = Literal[
     "file_missing",
     "covers_missing",
     "import_unresolved",
+    "split_invalid",
+    "over_size",
+    "criterion_unproven",
+    "layer_unproven",
+    "proof_layer_mismatch",
+    "stale_reference",
+    "verdict_missing",
+    "part_invalid",
+    "proof_mismatch",
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
@@ -115,12 +125,23 @@ class Finding:
     before: str = ""
 
 
+def _is_test_case(node: ast.ClassDef) -> bool:
+    """Whether the class derives from unittest's TestCase (or IsolatedAsyncioTestCase), by the name it is
+    written under."""
+    for base in node.bases:
+        name = base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else ""
+        if name.endswith("TestCase"):
+            return True
+    return False
+
+
 def test_functions(tree: ast.Module) -> Iterator[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
-    """What pytest collects by default: test* functions, and test* methods of Test* classes."""
+    """What pytest collects by default: test* functions, and test* methods of Test* classes and of
+    unittest.TestCase subclasses of any name (which unittest collects too)."""
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test"):
             yield node.name, node
-        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+        elif isinstance(node, ast.ClassDef) and (node.name.startswith("Test") or _is_test_case(node)):
             for sub in node.body:
                 if isinstance(sub, ast.FunctionDef | ast.AsyncFunctionDef) and sub.name.startswith("test"):
                     yield f"{node.name}::{sub.name}", sub

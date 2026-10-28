@@ -498,9 +498,100 @@ class PlanSpec(Strict):
     )
 
 
+class SpecsSpec(Strict):
+    """The specs phase: an initiative becomes a core epic and extensions (P4 of the planning line,
+    2026-10-25). Off in the schema, as the supervisor is, so other configs and tests are unchanged;
+    airlie.yaml turns it on."""
+
+    enabled: bool = False
+    product_role: str = "product"
+    consultable: list[str] = Field(
+        default_factory=lambda: ["architect", "ux", "design", "security", "docs", "research"],
+        description="the roles product may ask in a round of the imagining",
+    )
+    max_questions: int = Field(default=5, ge=0, description="the most questions product asks the person")
+    max_rounds: int = Field(
+        default=3, ge=1, description="the most rounds of consultation before the epics are due"
+    )
+    max_asks_per_round: int = Field(default=4, ge=1)
+    max_consultations: int = Field(default=8, ge=0, description="the most consultations in all")
+    consult_steps: int = Field(default=8, ge=1, description="steps a consulted seat gets")
+    consult_chars: int = Field(
+        default=4_000, ge=200, description="characters of a seat's answer that reach product's conversation"
+    )
+    product_steps: int = Field(default=12, ge=1, description="product's steps per turn")
+    read_steps: int = Field(
+        default=6, ge=1, description="steps the architect gets to read one epic as its planner"
+    )
+    mockup_options: int = Field(default=3, ge=2, description="directions ux names, and pages design draws")
+    revisions: int = Field(
+        default=1, ge=0, description="revisions by product a person's comment on an epic gets"
+    )
+    attempts: int = Field(default=2, ge=1, description="tries at a reply that parses before the phase blocks")
+    min_samples: int = Field(
+        default=3, ge=1, description="published stories of one size before their median prices that size"
+    )
+    default_hours: dict[str, float] = Field(
+        default_factory=lambda: {"S": 1.0, "M": 5.0, "L": 8.0},
+        description="the price of a story by size until the ledger has samples (the rough medians of the "
+        "ledger on 2026-10-24: eight published stories)",
+    )
+    size_scale: dict[str, float] = Field(
+        default_factory=lambda: {"S": 0.6, "M": 1.0, "L": 1.8},
+        description="a size's share of the overall median when it has too few samples of its own",
+    )
+
+
+class AmigosSpec(Strict):
+    """The story meeting (P2 of the planning line, 2026-10-24): product, the architect and the tester agree a
+    story's requirements, changes and proof in one group chat before any layer is built."""
+
+    enabled: bool = Field(
+        default=True,
+        description="hold the meeting; false: the architect's split is the agreement, with no proof plan",
+    )
+    max_turns: int = Field(
+        default=12,
+        ge=4,
+        description="the most turns the meeting takes (the checker's count too); at the cap each owner's "
+        "part stands and the open objections are recorded",
+    )
+    max_scope_files: int = Field(
+        default=5, ge=1, description="the most files a layer may name: the sizing rule as a number"
+    )
+    tool_iterations: int = Field(
+        default=3,
+        ge=0,
+        description="read-only tool rounds an agent may take inside one turn (0: no tools in the meeting)",
+    )
+
+
+BUDGET_STAGES = (
+    "survey",
+    "refine",
+    "questions",
+    "imagine",
+    "amigos",
+    "plan",
+    "package",
+    "layer",
+    "review",
+    "publish",
+)
+"""The stages a card's cost is kept for (planning-line P5b, D8): `story.budgets` has an entry for each."""
+
+
+class BudgetSpec(Strict):
+    """What one stage of one card is expected to cost: recorded, warned at 80 percent and noted at 100, never
+    enforced (the stage's own caps stay the only stops)."""
+
+    wall_s: int = Field(ge=1, description="seconds of wall-clock")
+    tokens: int = Field(ge=1, description="tokens processed, prompt and completion, over the stage's steps")
+
+
 class LineSpec(Strict):
     """The line's scheduler and control surface (planning-line P5, 2026-10-25). The diagnosis half (P5a) reads
-    these two; the scheduler half adds its own."""
+    `home_repo` and `transient_retries`; the scheduler half (P5b) the rest."""
 
     home_repo: str | None = Field(
         default=None,
@@ -512,6 +603,46 @@ class LineSpec(Strict):
         ge=0,
         description="how often a story blocked by a transient failure is retried per signature",
     )
+    tick_s: int = Field(
+        default=60,
+        ge=5,
+        description="how often `task serve` runs a beat of the line (the launchd agent is the belt, every 15 "
+        "minutes)",
+    )
+    serve_ticks: bool = Field(
+        default=True, description="`task serve` runs the line's beat itself every tick_s seconds"
+    )
+    fanout: int = Field(
+        default=4,
+        ge=1,
+        description="how many short asks (consultations, surveys, reads, renders, the meeting's checks) a "
+        "lane runs at once while the build lane decodes at or above decode_floor_tps",
+    )
+    decode_floor_tps: float = Field(
+        default=12.0,
+        gt=0,
+        description="the build lane's decode rate (tokens a second over its last five steps) under which "
+        "the short asks run one at a time",
+    )
+    budgets: dict[str, BudgetSpec] = Field(
+        default_factory=dict,
+        description="per stage (survey, refine, questions, imagine, amigos, plan, package, layer, review, "
+        "publish): the wall-clock and tokens a card's stage is expected to cost (airlie.yaml has them)",
+    )
+    consult_context: int = Field(
+        default=8192,
+        ge=1024,
+        description="the context a short ask is counted at in the doctor's memory projection",
+    )
+
+    @model_validator(mode="after")
+    def _budgets_name_stages(self) -> LineSpec:
+        unknown = sorted(set(self.budgets) - set(BUDGET_STAGES))
+        if unknown:
+            raise ValueError(
+                f"line.budgets names {', '.join(unknown)}; the stages are {', '.join(BUDGET_STAGES)}"
+            )
+        return self
 
 
 class StorySpec(Strict):
@@ -576,12 +707,14 @@ class StorySpec(Strict):
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     plan: PlanSpec = Field(default_factory=PlanSpec)
+    specs: SpecsSpec = Field(default_factory=SpecsSpec)
     resume_attempts: int = Field(
         default=1,
         ge=0,
         description="how many times the tick moves a story the line blocked back to approved (a rebuild, not "
         "a person's morning) before the epic it belongs to is re-planned; 0 re-plans at once",
     )
+    amigos: AmigosSpec = Field(default_factory=AmigosSpec)
     jira: JiraSpec = Field(default_factory=JiraSpec)
     github_app: GitHubAppSpec = Field(default_factory=GitHubAppSpec)
     board: Literal["jira", "local"] = Field(
@@ -756,6 +889,22 @@ class AirlieConfig(Strict):
         sup = self.story.supervisor
         if sup.enabled and sup.role not in self.roles:
             problems.append(f"story.supervisor.role '{sup.role}' is not a role ({sorted(self.roles)})")
+        specs = self.story.specs
+        for table, prices in (("default_hours", specs.default_hours), ("size_scale", specs.size_scale)):
+            if set(prices) != {"S", "M", "L"}:
+                problems.append(
+                    f"story.specs.{table} needs exactly the sizes S, M and L (got {sorted(prices)})"
+                )
+        if specs.enabled:
+            if specs.product_role not in self.roles:
+                problems.append(
+                    f"story.specs.product_role '{specs.product_role}' is not a role ({sorted(self.roles)})"
+                )
+            problems += [
+                f"story.specs.consultable names '{name}', which is not in roles ({sorted(self.roles)})"
+                for name in specs.consultable
+                if name not in self.roles
+            ]
         if self.topology.kind == "studio":
             need = [("studio.chief_role", self.studio.chief_role)]
             if self.studio.review.enabled:

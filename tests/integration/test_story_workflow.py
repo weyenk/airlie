@@ -42,7 +42,10 @@ REQUEST = "calc.py has add(a, b). Add subtract(a, b), which returns a minus b, w
 LAYER = "add-subtract-01-subtract"
 """The layer's branch, after the issue key: AIR-1-add-subtract-01-subtract."""
 MILESTONES = [
-    "story_start",
+    "story_start",  # the planning half (`task story` plans under the planning lane's lock, then builds)
+    "story_planned",
+    "story_done",
+    "story_start",  # the building half
     "package_start",
     "package_ready",
     "layer_start",
@@ -50,7 +53,8 @@ MILESTONES = [
     "published",
     "story_done",
 ]
-"""The events a story that builds first time logs, in this order (others come between them). Mutation testing
+"""The events a story that builds first time logs, in this order (others come between them): its planning
+and its building are two runs of the pipeline (planning-line P5b). Mutation testing
 is CI's, on the PR: the story has no stage for it."""
 
 SUBTRACT = "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"

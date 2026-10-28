@@ -488,3 +488,283 @@ def test_an_epic_not_planned_yet_has_no_stories(tmp_path: Path) -> None:
     flow = epic_flow(tmp_path, "AIR-1")
     assert flow["stories"] == [] and flow["blocked"] == "the epic has no closing JSON block"
     assert flow["summary"] is None
+
+
+# ---- an initiative as the app draws it (D9 of the specs phase, P4 of the planning line, 2026-10-25) ----
+
+
+def delivered_initiative(tmp_path: Path) -> tuple[Any, str, str, str]:
+    """A board with an initiative whose core and extension are carded (the core with three mockup pages, one
+    picked) and its record on disk: returns the store, the initiative's key and the two epics' keys."""
+    from airlie.board import BoardStore
+    from airlie.story.costs import Estimate
+    from airlie.story.epic import EpicCriterion, EpicSpec, Mockups, Viability, with_block
+
+    store = BoardStore(tmp_path / "board.sqlite")
+    init = store.create(
+        level="initiative", title="Linear feel", description="Faster.", labels=["repo:o/r", "budget:20h"]
+    ).key
+    urls = tuple(f"/v1/airlie/initiatives/{init}/mockups/E1/option-{n}.html" for n in (1, 3))
+    core_spec = EpicSpec(
+        ("o/r",),
+        (EpicCriterion("EC1", "a card moves"),),
+        (),
+        urls,
+        init,
+        "core",
+        estimate=Estimate(5.0, "1 M at 5.0 h (default)", "2026-10-25T00:00:00Z", revised=6.0),
+        viability=Viability("risky", ("old store",)),
+        mockups=Mockups(urls, 3),
+    )
+    core = store.create(
+        level="epic",
+        title="Fast board",
+        parent=init,
+        description=with_block("# Fast board\n", core_spec),
+        labels=[f"initiative:{init}"],
+    ).key
+    ext_spec = EpicSpec(
+        ("o/r",),
+        (EpicCriterion("EC1", "cards are cropped"),),
+        initiative=init,
+        kind="extension",
+        depends_on=(core,),
+        estimate=Estimate(2.0, "2 S at 1.0 h (default)", "2026-10-25T00:00:00Z"),
+        viability=Viability("viable", ("small",)),
+    )
+    ext = store.create(
+        level="epic",
+        title="Crops",
+        parent=init,
+        description=with_block("# Crops\n", ext_spec),
+        labels=[f"initiative:{init}", f"after:{core}"],
+    ).key
+    store.update(core, status="approved")  # approved and not done: its hours are in the queue
+    store.update(ext, status="review")
+    folder = tmp_path / "initiatives" / init
+    folder.mkdir(parents=True)
+    state = {
+        "card": {"key": init, "title": "Linear feel"},
+        "stage": "delivered",
+        "summary": "Make the board fast.",
+        "assumptions": ["one user"],
+        "qa": [
+            {"q": "What is it for?", "asked_at": 1.0, "a": "Speed.", "answered_at": 2.0},
+            {"q": "Who?", "asked_at": 3.0, "a": None, "answered_at": None},
+        ],
+        "consultations": [
+            {"seat": "ux", "question": "How?", "answer": "- keys", "seconds": 12.3, "round": 1, "chars": 6},
+        ],
+        "epics": [
+            {
+                "id": "E1",
+                "key": core,
+                "kind": "core",
+                "title": "Fast board",
+                "viability": {"verdict": "risky"},
+            },
+            {"id": "E2", "key": ext, "kind": "extension", "title": "Crops"},
+            {"id": "E3", "kind": "extension", "title": "Not carded yet"},
+        ],
+    }
+    (folder / "state.json").write_text(json.dumps(state))
+    epics_dir = tmp_path / "epics" / core
+    epics_dir.mkdir(parents=True)
+    (epics_dir / "state.json").write_text(
+        json.dumps({"estimate": {"hours": 5.0, "basis": "b", "at": "t", "revised": 6.0}})
+    )
+    return store, init, core, ext
+
+
+def test_the_initiative_flow_shows_the_dialogue_the_consultations_the_epics_and_the_queue(
+    tmp_path: Path,
+) -> None:
+    from airlie.serve.flow import initiative_flow
+
+    store, init, core, ext = delivered_initiative(tmp_path)
+    flow = initiative_flow(tmp_path, store, init)
+    assert (flow["key"], flow["title"], flow["stage"], flow["blocked"]) == (
+        init,
+        "Linear feel",
+        "delivered",
+        None,
+    )
+    assert flow["waiting_on"] == "person" and flow["question"] == "Who?" and flow["budget_hours"] == 20.0
+    assert flow["summary"] == "Make the board fast." and flow["assumptions"] == ["one user"]
+    assert flow["qa"][0] == {"q": "What is it for?", "a": "Speed.", "asked_at": 1.0, "answered_at": 2.0}
+    assert flow["qa"][1]["a"] is None
+    assert flow["consultations"] == [
+        {"seat": "ux", "question": "How?", "answer": "- keys", "seconds": 12.3, "round": 1}
+    ]
+    first, second, third = flow["epics"]
+    assert first == {
+        "key": core,
+        "id": "E1",
+        "kind": "core",
+        "title": "Fast board",
+        "status": "approved",
+        "hours": 5.0,
+        "basis": "1 M at 5.0 h (default)",
+        "revised": 6.0,
+        "actual": None,
+        "verdict": "risky",
+        "options": [
+            f"/v1/airlie/initiatives/{init}/mockups/E1/option-1.html",
+            f"/v1/airlie/initiatives/{init}/mockups/E1/option-3.html",
+        ],
+        "picked": 3,
+        "depends_on": [],
+    }
+    assert second["key"] == ext and second["status"] == "review" and second["depends_on"] == [core]
+    assert second["hours"] == 2.0 and second["options"] == [] and second["picked"] is None
+    assert third["key"] is None and third["status"] is None and third["hours"] is None  # drafted, not carded
+    assert flow["queue_hours"] == 6.0  # the approved core, at its revised price, none of it done
+    working = initiative_flow(tmp_path, store, init)
+    assert working["waiting_on"] == "person"
+
+
+def test_an_initiative_flow_names_what_the_line_works_on_and_what_is_not_there(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+    from airlie.serve.flow import initiative_flow
+
+    store = BoardStore(tmp_path / "board.sqlite")
+    folder = tmp_path / "initiatives" / "AIR-7"
+    folder.mkdir(parents=True)
+    (folder / "state.json").write_text(json.dumps({"card": {"title": "t"}, "stage": "imagining", "qa": []}))
+    flow = initiative_flow(tmp_path, store, "AIR-7")
+    assert flow["waiting_on"] == "line" and flow["question"] is None and flow["epics"] == []
+    assert flow["budget_hours"] is None  # the card is not on this board
+    (folder / "state.json").write_text("{")
+    with pytest.raises(StoryNotFound, match="damaged"):
+        initiative_flow(tmp_path, store, "AIR-7")
+    for key in ("AIR-99", "../x", ""):
+        with pytest.raises(StoryNotFound):
+            initiative_flow(tmp_path, store, key)
+
+
+# ---- the story meeting (P2, 2026-10-24) ----
+
+
+def add_events(state_dir: Path, events: list[dict[str, Any]]) -> None:
+    path = state_dir / "stories" / KEY / "events.jsonl"
+    path.write_text(path.read_text() + "".join(json.dumps(e) + "\n" for e in events))
+
+
+def turn(ts: float, role: str, n: int, prompt: int = 1000, completion: int = 100) -> dict[str, Any]:
+    return {
+        "ts": ts,
+        "kind": "amigos_turn",
+        "role": role,
+        "turn": n,
+        "verdict": None,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+    }
+
+
+MEETING_EVENTS = [
+    turn(50.0, "product", 1),
+    turn(60.0, "architect", 2),
+    turn(70.0, "tester", 3),
+    {"ts": 71.0, "kind": "amigos_objection", "role": "product", "part": "proof", "about": "AC1", "round": 2},
+    {
+        "ts": 72.0,
+        "kind": "amigos_objection",
+        "role": "tester",
+        "part": "proof",
+        "about": "t::x",
+        "source": "package",
+    },
+    turn(80.0, "airlie", 4, prompt=0, completion=0),
+]
+
+
+def test_a_story_shows_its_meeting_with_turns_and_objections(state_dir: Path) -> None:
+    add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert [j["id"] for j in layers["jobs"]] == ["layers", "meeting"]
+    meeting = by_id(layers["jobs"], "meeting")
+    assert (meeting["role"], meeting["status"]) == ("amigos", "passed")
+    assert (meeting["turns"], meeting["objections"]) == (
+        4,
+        1,
+    )  # a package critic's objection is not the meeting's
+    assert meeting["tokens"]["prompt"] == 3000 and meeting["tokens"]["completion"] == 300
+    assert meeting["started"] == 50.0 and meeting["ended"] == 85.0 and meeting["duration_s"] == 35.0
+    assert meeting["owner_decided"] == []
+
+
+def test_a_meeting_that_ran_out_of_turns_says_which_parts_their_owners_decided(state_dir: Path) -> None:
+    add_events(
+        state_dir,
+        [
+            *MEETING_EVENTS,
+            {"ts": 85.0, "kind": "amigos_owner_decided", "parts": ["proof"], "turns": 4},
+            {"ts": 85.5, "kind": "amigos_unresolved", "role": "product", "part": "proof", "about": "AC1"},
+        ],
+    )
+    meeting = by_id(by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"], "meeting")
+    assert (
+        meeting["status"] == "passed" and meeting["owner_decided"] == ["proof"] and meeting["unresolved"] == 1
+    )
+
+
+def test_a_meeting_in_progress_is_running_and_one_the_story_stopped_in_is_failed(state_dir: Path) -> None:
+    add_events(state_dir, MEETING_EVENTS)
+    state_file = state_dir / "stories" / KEY / "state.json"
+    state = json.loads(state_file.read_text())
+    state.update(stage="refine", blocked=None, built={})
+    state_file.write_text(json.dumps(state))
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert by_id(layers["jobs"], "meeting")["status"] == "running" and layers["status"] == "running"
+    state["blocked"] = "the engine went away"
+    state_file.write_text(json.dumps(state))
+    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
+    assert by_id(layers["jobs"], "meeting")["status"] == "failed"
+
+
+def test_a_story_without_a_meeting_has_no_meeting_job_and_the_job_has_a_detail(state_dir: Path) -> None:
+    assert [j["id"] for j in by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"]] == ["layers"]
+    add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
+    state_file = state_dir / "stories" / KEY / "state.json"
+    state = json.loads(state_file.read_text())
+    state["agreement"] = {"turns": 4, "proof": []}
+    state_file.write_text(json.dumps(state))
+    detail = job_detail(state_dir, KEY, "layers", "meeting")
+    assert detail["output"]["agreement"] == {"turns": 4, "proof": []} and "meeting" in detail["input_note"]
+
+
+def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> None:
+    """The row the Vue app draws gains the latest block's class and kind, and the per-stage figures the line
+    recorded (planning-line P5b, D11)."""
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+
+    write_story(tmp_path)
+    plain = story_flow(tmp_path, KEY)
+    assert plain["diagnosis"] is None and plain["budgets"] == {}  # never diagnosed, nothing recorded
+    pack = Pack(
+        key=KEY, n=2, reason="x", stage="layers", layer="02", attempt=1, run_id=None, subtask=None, role=None,
+        stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0, tokens=0,
+        minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None, base_failing=(),
+        diff_stat="", paths=Paths(tmp_path / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        tmp_path,
+        Diagnosis(
+            pack,
+            Classified("process", "hold_trap", "layers", "process:hold_trap:tests", ("x",), "r"),
+            None,
+            "n",
+        ),
+    )
+    stages = tmp_path / "stories" / KEY / "stages"
+    stages.mkdir()
+    (stages / "layer.json").write_text(json.dumps({"tokens": 5000, "wall_s": 900.0, "state": "ok"}))
+    flow = story_flow(tmp_path, KEY)
+    assert flow["diagnosis"] == {
+        "class": "process",
+        "kind": "hold_trap",
+        "signature": "process:hold_trap:tests",
+        "n": 2,
+    }
+    assert flow["budgets"] == {"layer": {"tokens": 5000, "wall_s": 900.0, "state": "ok"}}

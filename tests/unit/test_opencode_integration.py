@@ -226,17 +226,23 @@ def test_the_simulated_shell_tool_splits_a_call_into_simple_commands() -> None:
     assert simple_commands("echo ${x} done for > f") == ["echo ${x} done for > f"]  # words, not syntax
 
 
-def test_the_chief_asks_the_person_before_it_starts_a_build_or_a_story() -> None:
+def test_the_chief_asks_the_person_before_it_starts_a_build_a_story_or_an_initiative() -> None:
     # beside the server's own test_cmd check. OpenCode keys an MCP tool's permission by the tool's name,
     # airlie_<tool>, in code mode too: tools.airlie.run inside execute asked as airlie_run (2.0.29, live)
     permission = front(OC / "agent/chief.md")[0]["permission"]
-    assert permission["airlie_run"] == permission["airlie_story"] == "ask"
+    assert permission["airlie_run"] == permission["airlie_story"] == permission["airlie_initiative"] == "ask"
 
 
 def test_the_mcp_server_calls_only_routes_serve_has(tmp_path: Path) -> None:
     src = (ROOT / "src/airlie/serve/mcp_server.py").read_text()
     used = set(re.findall(r'"(/v1/airlie/[a-z]+)', src))
-    assert used == {"/v1/airlie/plans", "/v1/airlie/runs", "/v1/airlie/jobs", "/v1/airlie/stories"}
+    assert used == {
+        "/v1/airlie/plans",
+        "/v1/airlie/runs",
+        "/v1/airlie/jobs",
+        "/v1/airlie/stories",
+        "/v1/airlie/initiatives",
+    }
     # the app opens its auth store under state_dir: the person's own one is outside a confined run's reach
     # (the story pre-code check runs the suite confined; AIR-9 layer 02 blocked on it, 2026-10-21)
     local = tmp_path / "airlie.local.yaml"
@@ -252,7 +258,15 @@ async def test_the_commands_and_the_chief_name_only_tools_the_mcp_server_lists()
     async with airlie_http({}) as http:
         listed = await build_server(http, test_cmds=[], cwd=ROOT).list_tools()
     tools = {f"airlie_{t.name}" for t in listed}  # OpenCode names an MCP tool <server>_<tool>
-    assert tools == {"airlie_plan", "airlie_run", "airlie_status", "airlie_cancel", "airlie_story"}
+    assert tools == {
+        "airlie_plan",
+        "airlie_run",
+        "airlie_status",
+        "airlie_cancel",
+        "airlie_story",
+        "airlie_initiative",
+        "airlie_answer",
+    }
     for p in (OC / "command").glob("*.md"):
         meta, body = front(p)
         assert meta["agent"] == "chief" and "$ARGUMENTS" in body, p.name
@@ -296,7 +310,19 @@ async def test_the_chief_and_the_commands_reach_airlie_through_code_mode_with_th
     for p in (OC / "agent/chief.md", OC / "command/studio.md", OC / "command/story.md"):
         assert code_mode_problems(front(p)[1], schemas) == [], p.name
     chief_reaches = {tool for tool, _ in CODE_MODE_CALL.findall(front(OC / "agent/chief.md")[1])}
-    assert chief_reaches == set(schemas) == {"plan", "run", "status", "cancel", "story"}
+    assert (
+        chief_reaches
+        == set(schemas)
+        == {
+            "plan",
+            "run",
+            "status",
+            "cancel",
+            "story",
+            "initiative",
+            "answer",
+        }
+    )
 
 
 def test_the_code_mode_check_flags_what_a_prompt_can_get_wrong() -> None:

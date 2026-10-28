@@ -598,3 +598,167 @@ def test_a_whole_reply_gives_a_call_without_an_id_or_a_type_both_as_a_stream_doe
     assert [c["id"].startswith("call_") and len(c["id"]) == 29 for c in got[:2]] == [True, True]
     assert got[0]["id"] != got[1]["id"] and got[2]["id"] == "call_kept"
     assert [c["type"] for c in got] == ["function"] * 3
+
+
+# ---- the line's ticker (planning-line P5b, D3, 2026-10-25) ----
+
+
+def test_health_reports_the_line(tmp_path: Path) -> None:
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
+    with TestClient(app) as c:
+        line = c.get("/health").json()["line"]
+        assert line == {
+            "last_tick": None,
+            "line": None,
+            "paused": False,
+            "lanes": {"build": None, "plan": None},
+        }
+        (tmp_path / "state").mkdir(exist_ok=True)
+        (tmp_path / "state" / "line.paused").write_text("1")
+        assert c.get("/health").json()["line"]["paused"] is True
+
+
+def wait_until(check: Callable[[], bool], seconds: float = 10.0) -> bool:
+    import time
+
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_serve_ticks_on_its_timer_and_registers_the_lane_jobs(tmp_path: Path) -> None:
+    from airlie.story.line import Job
+
+    ran: list[str] = []
+
+    async def beat(spawn: Callable[[Job], None]) -> str:
+        async def work() -> str:
+            ran.append("AIR-9")
+            return "AIR-9 Avatars: review"
+
+        events = tmp_path / "state" / "stories" / "AIR-9" / "events.jsonl"
+        spawn(Job("build", "AIR-9", "story", events, work))
+        return "started build story AIR-9"
+
+    app = create_app(
+        cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), tick_s=0.05, line_beat=beat
+    )
+    with TestClient(app) as client:
+        assert client.get("/health").json()["line"]["last_tick"] is None  # nothing before the first interval
+        assert wait_until(lambda: client.get("/health").json()["line"]["last_tick"] is not None)
+        assert client.get("/health").json()["line"]["line"] == "started build story AIR-9"
+        assert wait_until(lambda: bool(ran))
+        [job] = [j for j in client.get("/v1/airlie/jobs").json()["jobs"] if j["id"] == "line-build-AIR-9"]
+        assert job["kind"] == "line"
+        done = client.get("/v1/airlie/jobs/line-build-AIR-9", params={"wait": 5}).json()
+        assert done["kind"] == "line" and done["result"] == {"line": "AIR-9 Avatars: review"}
+
+
+def test_a_serve_with_ticks_off_never_ticks(tmp_path: Path) -> None:
+    import time
+
+    beats: list[str] = []
+
+    async def beat(spawn: Callable[..., None]) -> str:
+        beats.append("beat")
+        return "idle"
+
+    c = cfg(tmp_path).model_copy(deep=True)
+    c.line.serve_ticks = False
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), tick_s=0.02, line_beat=beat)
+    with TestClient(app):
+        time.sleep(0.3)
+    assert beats == []
+
+
+def test_the_line_row_shows_both_lanes_the_gates_and_the_blocked_cards(tmp_path: Path) -> None:
+    """Planning-line P5b, D11: one row for the Vue app, true whichever process ticked."""
+    import json
+    import time
+
+    from airlie.board import BoardStore
+    from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
+    from airlie.story.phase import write_phase
+    from airlie.story.state import lane_lock
+
+    c = cfg(tmp_path)
+    state = c.observability.state_dir
+    store = BoardStore(state / "board.sqlite")
+    blocked = store.create(level="story", title="Stuck", labels=["repo:o/r", "blocked_by:AIR-9"]).key
+    store.update(blocked, status="blocked")
+    building = store.create(level="story", title="Avatars").key
+    pack = Pack(
+        key=blocked, n=1, reason="x", stage="layers", layer="01", attempt=1, run_id=None, subtask=None,
+        role=None, stop_reason=None, refused_calls=0, holds=(), repeats=0, continuations=0, steps=0,
+        tokens=0, minutes=0.0, gate_tail="", tracebacks=(), failures=(), base_gate_failed=None,
+        base_failing=(), diff_stat="", paths=Paths(state / "e", None, None, ()),
+    )  # fmt: skip
+    write_diagnosis(
+        state,
+        Diagnosis(
+            pack, Classified("config", "cut_off", "layers", "config:cut_off:coder", ("x",), "r"), None, "n"
+        ),
+    )
+    story = state / "stories" / building
+    story.mkdir(parents=True)
+    (story / "state.json").write_text(json.dumps({"stage": "layers", "card": {"key": building}}))
+    (story / "events.jsonl").write_text(json.dumps({"kind": "layer_start", "layer": "02"}) + "\n")
+    run = state / "runs" / "R1"
+    run.mkdir(parents=True)
+    steps = [{"kind": "step", "step": n, "completion_tokens": 100, "gen_ms": 4000.0} for n in range(1, 6)]
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in steps))
+    write_phase(state / "stories", "decoding", run_dir=run)
+    (state / "line" / "lanes").mkdir(parents=True)
+    (state / "line" / "lanes" / "build.json").write_text(
+        json.dumps({"key": building, "what": "story", "started": time.time() - 90})
+    )
+    (state / "line" / "status.json").write_text(
+        json.dumps(
+            {"ts": 1700000000.0, "gates": {"engine": "ok", "profile_match": "mismatch", "github": "ok"}}
+        )
+    )
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    auth = {"Authorization": "Bearer k"}
+    with TestClient(app) as client:
+        free = client.get("/v1/airlie/line", headers=auth).json()
+        assert free["lanes"] == {
+            "build": None,
+            "plan": None,
+        }  # nothing holds a lane: a leftover file is not believed
+        with lane_lock(
+            state / "stories", "build"
+        ) as held:  # the build lane is held, as a running job holds it
+            assert held
+            row = client.get("/v1/airlie/line", headers=auth).json()
+        assert row["paused"] is False and row["last_tick"] == 1700000000.0
+        assert row["gates"] == {"engine": "ok", "profile_match": "mismatch", "github": "ok"}
+        build = row["lanes"]["build"]
+        assert (build["card"], build["title"], build["stage"], build["layer"]) == (
+            building,
+            "Avatars",
+            "layers",
+            "02",
+        )
+        assert (build["step"], build["tps"]) == (5, 25.0) and 85 < build["elapsed_s"] < 200
+        assert row["lanes"]["plan"] is None and row["queue_hours"] == 0.0
+        assert row["blocked"] == [{"key": blocked, "class": "config", "kind": "cut_off", "fix": "AIR-9"}]
+        assert client.get("/v1/airlie/line").status_code == 401
+
+
+def test_the_line_events_tail(tmp_path: Path) -> None:
+    import json
+
+    c = cfg(tmp_path)
+    log = c.observability.state_dir / "line" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_text("".join(json.dumps({"kind": "tick", "line": f"beat {i}"}) + "\n" for i in range(10)))
+    app = create_app(c, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    auth = {"Authorization": "Bearer k"}
+    with TestClient(app) as client:
+        got = client.get("/v1/airlie/line/events", params={"limit": 3}, headers=auth).json()["events"]
+        assert [e["line"] for e in got] == ["beat 7", "beat 8", "beat 9"]  # the tail, oldest first
+        assert len(client.get("/v1/airlie/line/events", headers=auth).json()["events"]) == 10
+        assert client.get("/v1/airlie/line/events", params={"limit": 0}, headers=auth).status_code == 422

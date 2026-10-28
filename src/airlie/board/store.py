@@ -4,6 +4,7 @@ allocated and its item inserted in one transaction."""
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 import threading
@@ -12,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from airlie.board.model import LEVELS, STATUSES, Comment, Item, Level, Status, parent_level
+from airlie.board.model import LEVELS, STATUSES, Comment, Item, Level, Move, Status, parent_level
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -23,6 +24,10 @@ CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY, item_key TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL,
     at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS comments_by_item ON comments(item_key, id);
+CREATE TABLE IF NOT EXISTS moves (
+    id INTEGER PRIMARY KEY, item_key TEXT NOT NULL, from_status TEXT NOT NULL, to_status TEXT NOT NULL,
+    by TEXT NOT NULL, at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS moves_by_item ON moves(item_key, id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('next_n', '1');
 """
@@ -162,9 +167,11 @@ class BoardStore:
         status: Status | None = None,
         parent: str | None = None,
         labels: Sequence[str] | None = None,
+        by: str = "person",
     ) -> Item:
         """The item with the fields given changed; a BoardStoreError (a status that is not one, a parent not
-        one level up) changes nothing. Re-parenting keeps the item's level."""
+        one level up) changes nothing. Re-parenting keeps the item's level. A change of status is a row of
+        `moves`, made by `by` (`line` for the tick and the pipeline; a person by default)."""
         if status is not None and status not in STATUSES:
             raise BoardStoreError(f"status must be one of {', '.join(STATUSES)}, not {status!r}")
         sets: list[str] = []
@@ -184,6 +191,8 @@ class BoardStore:
                     self._check_parent(item.level, parent)
                     sets.append("parent = ?")
                     args.append(parent)
+                if status is not None and status != item.status:
+                    self._record_move(key, item.status, status, by)
                 if sets:
                     sets.append("updated_at = ?")
                     args.append(time.time())
@@ -194,10 +203,11 @@ class BoardStore:
                 raise
             return self._get(key)
 
-    def move(self, key: str, status: Status, before: str | None = None) -> Item:
+    def move(self, key: str, status: Status, before: str | None = None, by: str = "person") -> Item:
         """The item set to `status` and placed just above `before` in that column, or at its bottom when
         `before` is None. BoardStoreError for a status that is not one, or a `before` that is the item itself
-        or not in that column; KeyError for an unknown key. Only a change of status counts as an update."""
+        or not in that column; KeyError for an unknown key. Only a change of status counts as an update (and
+        as a move, made by `by`)."""
         if status not in STATUSES:
             raise BoardStoreError(f"status must be one of {', '.join(STATUSES)}, not {status!r}")
         with self._lock:
@@ -219,6 +229,7 @@ class BoardStore:
                 for i, k in enumerate(column, start=1):
                     self._db.execute("UPDATE items SET rank = ? WHERE key = ?", (i, k))
                 if item.status != status:
+                    self._record_move(key, item.status, status, by)
                     self._db.execute(
                         "UPDATE items SET status = ?, updated_at = ? WHERE key = ?",
                         (status, time.time(), key),
@@ -228,6 +239,23 @@ class BoardStore:
                 self._db.execute("ROLLBACK")
                 raise
             return self._get(key)
+
+    def _record_move(self, key: str, before: str, after: str, by: str) -> None:
+        """A row of `moves` for a status that changed, inside the caller's transaction."""
+        self._db.execute(
+            "INSERT INTO moves (item_key, from_status, to_status, by, at) VALUES (?, ?, ?, ?, ?)",
+            (key, before, after, by, time.time()),
+        )
+
+    def moves(self, key: str) -> builtins.list[Move]:
+        """The item's status changes, oldest first: where from, where to, who and when. Empty for a card
+        that never moved (its making is no move) and for a key that is not on the board."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT item_key, from_status, to_status, by, at FROM moves WHERE item_key = ? ORDER BY id",
+                (key,),
+            ).fetchall()
+        return [Move(r["item_key"], r["from_status"], r["to_status"], r["by"], r["at"]) for r in rows]
 
     def comment(self, key: str, author: str, text: str, *, at: float | None = None) -> Item:
         """`text` appended to the item's comments as `author`, written now or `at` (an import keeps Jira's

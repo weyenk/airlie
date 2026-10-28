@@ -189,7 +189,7 @@ async def test_a_failure_still_says_how_long_it_took_and_what_it_spent(tmp_path:
 
 
 def test_the_ledger_names_the_model_muse_runs_on_not_its_seat() -> None:
-    cfg = load_config(REPO / "airlie.yaml")
+    cfg = load_config(REPO / "airlie.yaml", REPO / "no-local-overrides.yaml")
     seat = cfg.roles[cfg.story.supervisor.role].model
     t = triage_for(cfg, FakeEngine({}), None)
     assert t.model == cfg.models[seat].repo and t.model.startswith("mlx-community/")

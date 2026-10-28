@@ -51,8 +51,6 @@ ACCEPTED = (
     Accepted("research", "answer.form", "goal-tools", "role:research", GOAL_CLOSE),
     Accepted("security", "answer.form", "goal-tools", "role:security", GOAL_CLOSE),
     Accepted("security", "repo.edit", "goal-tools", "role:security", GOAL_CLOSE),
-    Accepted("tester", "answer.form", "goal-tools", "role:tester", GOAL_CLOSE),
-    Accepted("tester", "done.when", "goal-tools", "role:tester", GOAL_CLOSE),
     Accepted("ux", "answer.form", "goal-tools", "role:ux", GOAL_CLOSE),
 )
 

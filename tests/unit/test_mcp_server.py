@@ -18,6 +18,7 @@ import httpx
 import pytest
 from mcp import StdioServerParameters
 from mcp.client import Client
+from mcp.client.stdio import stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 from typer.testing import CliRunner
 
@@ -142,7 +143,7 @@ def shape(schema: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-async def test_the_server_lists_five_tools_with_these_arguments(tmp_path: Path) -> None:
+async def test_the_server_lists_seven_tools_with_these_arguments(tmp_path: Path) -> None:
     async with connected(httpx.MockTransport(lambda r: httpx.Response(500)), tmp_path) as client:
         tools = (await client.list_tools()).tools
     assert all(t.description for t in tools)
@@ -152,6 +153,8 @@ async def test_the_server_lists_five_tools_with_these_arguments(tmp_path: Path) 
         "status": {"job_id": "string", "wait": "number=40.0"},
         "cancel": {"job_id": "string"},
         "story": {"card": "string?", "text": "string?", "repo": "string?"},  # its gate is AGENTS.md's
+        "initiative": {"text": "string", "repo": "string", "budget": "number?"},
+        "answer": {"card": "string", "text": "string"},
     }
 
 
@@ -688,11 +691,89 @@ def test_mcp_config_prints_the_entry_and_install_writes_it_under_home(
     assert "Traceback" not in r.output and path.read_text() == "{}"
 
 
-async def test_airlie_mcp_serves_the_five_tools_over_stdio(tmp_path: Path) -> None:
+async def test_airlie_mcp_serves_the_seven_tools_over_stdio(tmp_path: Path) -> None:
     cfg_for(tmp_path)
     args = ["-m", "airlie.cli", "mcp", "--config", str(tmp_path / "cfg/airlie.yaml")]
     params = StdioServerParameters(command=sys.executable, args=args, cwd=str(tmp_path))
-    with anyio.fail_after(60):
-        async with Client(params, mode="legacy") as client:
+    # The server's stderr goes to a file of the test's own. stdio_client's default is the sys.stderr bound
+    # when the mcp package was imported, which mutmut's runner has closed by the time its clean run starts
+    # (ValueError: I/O operation on closed file, PR 167); a test must not depend on that stream.
+    with (tmp_path / "server-stderr.log").open("w") as errlog, anyio.fail_after(60):
+        async with Client(stdio_client(params, errlog=errlog), mode="legacy") as client:
             names = {t.name for t in (await client.list_tools()).tools}
-    assert names == {"plan", "run", "status", "cancel", "story"}
+    assert names == {"plan", "run", "status", "cancel", "story", "initiative", "answer"}
+
+
+def initiative_serve(turn: int = 202) -> tuple[httpx.MockTransport, list[tuple[str, str, Any]]]:
+    """A serve whose initiative routes answer as scripted: the sent requests are recorded."""
+    sent: list[tuple[str, str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content or b"null")
+        sent.append((request.method, request.url.path, body))
+        if request.url.path == "/v1/airlie/initiatives":
+            if turn == 409:
+                return httpx.Response(
+                    202, json={"key": "AIR-40", "job_id": None, "waiting": "busy: a story is in flight"}
+                )
+            return httpx.Response(
+                202, json={"key": "AIR-40", "job_id": "initiative-AIR-40", "kind": "initiative"}
+            )
+        if request.url.path.endswith("/comments"):
+            return httpx.Response(200, json={"id": 1})
+        if turn == 409:
+            return httpx.Response(
+                409, json={"error": "busy: a story is in flight; the tick picks AIR-40 up within 15 minutes"}
+            )
+        return httpx.Response(202, json={"job_id": "initiative-AIR-40", "kind": "initiative"})
+
+    return httpx.MockTransport(handler), sent
+
+
+async def test_initiative_creates_the_card_and_hands_back_the_job_or_the_busy_line(tmp_path: Path) -> None:
+    transport, sent = initiative_serve()
+    async with connected(transport, tmp_path) as client:
+        out = text(
+            await client.call_tool(
+                "initiative", {"text": "Make the board feel like Linear.\nFast.", "repo": "o/r", "budget": 20}
+            )
+        )
+    assert out == "AIR-40: Started initiative-AIR-40. Follow it with airlie_status."
+    assert sent == [
+        (
+            "POST",
+            "/v1/airlie/initiatives",
+            {
+                "title": "Make the board feel like Linear.",
+                "text": "Make the board feel like Linear.\nFast.",
+                "repos": ["o/r"],
+                "budget_hours": 20,
+            },
+        )
+    ]
+    busy, _ = initiative_serve(409)
+    async with connected(busy, tmp_path) as client:
+        out = text(await client.call_tool("initiative", {"text": "A loose ask", "repo": "o/r"}))
+    assert out == "AIR-40 was made and approved. busy: a story is in flight"
+
+
+async def test_answer_posts_the_comment_then_runs_the_turn_and_relays_busy(tmp_path: Path) -> None:
+    transport, sent = initiative_serve()
+    async with connected(transport, tmp_path) as client:
+        out = text(await client.call_tool("answer", {"card": "AIR-40", "text": "Fast, and keyboard first."}))
+    assert out == "Started initiative-AIR-40. Follow it with airlie_status."
+    assert sent == [
+        ("POST", "/v1/board/items/AIR-40/comments", {"text": "Fast, and keyboard first."}),
+        ("POST", "/v1/airlie/initiatives/AIR-40/turn", {}),
+    ]
+    busy, sent_busy = initiative_serve(409)
+    async with connected(busy, tmp_path) as client:
+        out = text(await client.call_tool("answer", {"card": "AIR-40", "text": "go"}))
+    # the comment stays on the card as the record the tick reads, and the 409 line comes back as the text
+    assert out == (
+        "Your comment is on AIR-40. busy: a story is in flight; the tick picks AIR-40 up within 15 minutes"
+    )
+    assert [m for m, path, _ in sent_busy] == ["POST", "POST"] and sent_busy[0][1].endswith("/comments")
+    async with connected(transport, tmp_path) as client:
+        refused = await client.call_tool("answer", {"card": " ", "text": "go"})
+    assert refused.is_error

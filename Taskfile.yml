@@ -86,8 +86,13 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story run {{.CLI_ARGS}}'
 
+  line:tick:
+    desc: "One beat of the line by hand: the gates, the bookkeeping, then a job in the planning lane and one in the build lane unless a lane is in use (task serve runs the same beat every minute, the launchd agent every 15; docs/integrations/story.md)"
+    cmds:
+      - '{{.RUN}} airlie line tick {{.CLI_ARGS}}'
+
   story:tick:
-    desc: "One scheduler beat by hand: build the top issue of the intake query unless a story is in flight (the launchd agent runs the same command; docs/integrations/story.md)"
+    desc: "The old name of line:tick, kept for a release (it says so and runs the same beat)"
     cmds:
       - '{{.RUN}} airlie story tick {{.CLI_ARGS}}'
 
@@ -105,6 +110,21 @@ tasks:
     desc: "Rebuild and edit (gh pr edit) the title and body of every PR a published story has, so an older stack carries the provenance too; changes PRs on GitHub, so only by hand (task story:describe -- AIR-9)"
     cmds:
       - '{{.RUN}} airlie story describe {{.CLI_ARGS}}'
+
+  line:stats:
+    desc: "The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and kind with the fix cards filed, hours against estimates, the amigos' objections and how many were borne out, the budgets' overruns (task line:stats -- [--since 2026-10-18])"
+    cmds:
+      - '{{.RUN}} airlie line stats {{.CLI_ARGS}}'
+
+  line:pause:
+    desc: "Hold the line: every beat does the gates and the bookkeeping and starts no job; a running job finishes (task line:resume lets it go; a card moved to blocked or todo holds itself and everything under it)"
+    cmds:
+      - '{{.RUN}} airlie line pause {{.CLI_ARGS}}'
+
+  line:resume:
+    desc: "Let the line go again after task line:pause"
+    cmds:
+      - '{{.RUN}} airlie line resume {{.CLI_ARGS}}'
 
   line:why:
     desc: "Why a story blocked: its class by rules, Muse's reading, what happens next and the evidence (task line:why -- AIR-9 [--n 2] [--paths])"
@@ -156,21 +176,22 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story check {{.CLI_ARGS}}'
 
-  story:launchd:install:
-    desc: "Load the launchd agent that runs the story tick (airlie story tick) every 15 minutes from this checkout (docs/integrations/story.md)"
+  line:launchd:install:
+    desc: "Load the launchd agent that runs a beat of the line (airlie line tick) every 15 minutes from this checkout, the belt beside task serve's own minute-by-minute beat; it also removes the older dev.airlie.story-tick agent (docs/integrations/story.md)"
     cmds:
       - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
-      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/story-tick.plist > ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - plutil -lint ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
-      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.story-tick.plist
-      - echo "loaded; the log is ~/.local/state/airlie/story-tick.log"
+      - test ! -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist || { launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null; rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist; echo "removed the old dev.airlie.story-tick agent"; }
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/line-tick.plist > ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.line-tick.plist
+      - echo "loaded; the log is ~/.local/state/airlie/line-tick.log"
 
-  story:launchd:uninstall:
-    desc: "Unload the story pickup launchd agent and remove its plist"
+  line:launchd:uninstall:
+    desc: "Unload the line's launchd agent and remove its plist"
     cmds:
-      - launchctl bootout gui/$(id -u)/dev.airlie.story-tick 2>/dev/null || true
-      - rm -f ~/Library/LaunchAgents/dev.airlie.story-tick.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.line-tick 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.line-tick.plist
 
   eval:
     desc: "Run a graded coding task end to end (task eval -- lang_detect --k 1 | --topology fork)"
@@ -196,6 +217,16 @@ tasks:
     desc: "Ask the architect to revise a planned epic's stories now: started, in-review and merged stories are kept; unstarted ones are changed or dropped, new ones made, a stopped story with no layer built retired (task epic:replan -- AIR-3 [--reason TEXT])"
     cmds:
       - '{{.RUN}} airlie epic replan {{.CLI_ARGS}}'
+
+  initiative:
+    desc: "Make an initiative card from a loose ask, approve it and run the specs phase's first turn: product asks you a question as a comment on the card, imagines the work with the specialists, and delivers a core epic and extensions priced in hours (task initiative -- --text \"...\" --repo owner/name [--budget HOURS] [--title TEXT]; or --file ask.md)"
+    cmds:
+      - '{{.RUN}} airlie initiative add {{.CLI_ARGS}}'
+
+  initiative:turn:
+    desc: "Run the specs phase's next turn for an initiative now, after you answered its question on the board or approved it again (task initiative:turn -- AIR-40)"
+    cmds:
+      - '{{.RUN}} airlie initiative turn {{.CLI_ARGS}}'
 
   board:import-jira:
     desc: "Import the Jira project (ATLASSIAN_*) onto the local board, each issue keeping its number under board.prefix; task board:import-jira -- --dry-run first"
@@ -379,6 +410,16 @@ tasks:
     desc: "Bench every catalog model marked bench=true, one table (task bench:models -- --ctx 4k --n 1,4)"
     cmds:
       - '{{.RUN}} airlie bench models {{.CLI_ARGS}}'
+
+  bench:story:
+    desc: "A fixed story built end to end, measured and graded, its PRs closed after (task bench:story -- roman [--baseline docs/bench/story-roman-….json]); hours, holds the engine"
+    cmds:
+      - '{{.RUN}} airlie bench story {{.CLI_ARGS}}'
+
+  bench:story-compare:
+    desc: "What changed between two story bench records (task bench:story-compare -- a.json b.json)"
+    cmds:
+      - '{{.RUN}} airlie bench story-compare {{.CLI_ARGS}}'
 
   bench:compare:
     desc: "Per-cell deltas between two saved bench JSON files (task bench:compare -- a.json b.json)"

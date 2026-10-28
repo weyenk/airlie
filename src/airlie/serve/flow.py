@@ -5,19 +5,32 @@ did not."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from airlie.board import BoardStore
 from airlie.serve.jobs import read_events
+from airlie.story.budgets import stage_figures
+from airlie.story.costs import queue_hours
+from airlie.story.diagnosis import latest
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import StoryPlan
+from airlie.story.initiative import Initiative
+from airlie.story.initiative_state import waiting_on
 from airlie.story.model import StoryError
 from airlie.story.state import STAGES
 
-STAGE_ROLES = {"refine": "product", "survey": "architect", "layers": "architect", "package": "architect"}
+STAGE_ROLES = {
+    "refine": "product",
+    "survey": "architect",
+    "layers": "architect",
+    "package": "architect",
+    "meeting": "amigos",
+}
 """The role a stage job runs as, when its steps do not say (a run that has not stepped yet)."""
 
 CHECK_KINDS = frozenset(
@@ -32,6 +45,7 @@ CHECK_KINDS = frozenset(
         "import_unresolved",
         "assertion_free_test",
         "unparseable_test",
+        "test_type_error",
         "existing_test_changed",
         "suite_did_not_run",
         "test_checks_retry",
@@ -205,13 +219,57 @@ def _stage_node(
         )
     elif name == "intake" and status == "passed":
         job["attempts"] = 1
+    jobs = [job] if status != "skipped" else []
+    if name == "layers":
+        meeting = _meeting_job(events, blocked)
+        if meeting is not None:
+            jobs.append(meeting)
+            if status == "pending" and not blocked:
+                status = "running"  # the layers are split and the three are agreeing them
     return {
         "id": name,
         "label": label,
         "kind": "stage",
         "status": status,
-        "jobs": [job] if status != "skipped" else [],
+        "jobs": jobs,
     }
+
+
+def _meeting_job(events: list[dict[str, Any]], blocked: bool) -> dict[str, Any] | None:
+    """The story meeting (P2, 2026-10-24) as a job of the `layers` stage, from the story's `amigos_*` events:
+    the turns taken and what they cost, the meeting's own objections (a package critic's, which carry
+    `source: package`, belong to a layer), and how it ended: agreed, or run out of turns with the parts
+    their owners decided and the objections left open. None for a story that held no meeting."""
+    turns = [e for e in events if e.get("kind") == "amigos_turn"]
+    agreed = [e for e in events if e.get("kind") == "amigos_agreed"]
+    decided = [e for e in events if e.get("kind") == "amigos_owner_decided"]
+    if not turns and not agreed and not decided:
+        return None
+    ended = (agreed or decided)[-1] if agreed or decided else None
+    status = "passed" if ended is not None else "failed" if blocked else "running"
+    start = turns[0].get("ts") if turns else None
+    end = ended.get("ts") if ended is not None else None
+    prompt = sum(int(e.get("prompt_tokens") or 0) for e in turns)
+    completion = sum(int(e.get("completion_tokens") or 0) for e in turns)
+    return _job(
+        "meeting",
+        "Three amigos",
+        STAGE_ROLES["meeting"],
+        status,
+        started=start,
+        ended=end,
+        duration_s=round(end - start, 1)
+        if isinstance(start, float | int) and isinstance(end, float | int)
+        else None,
+        tokens={"steps": len(turns), "prompt": prompt, "completion": completion},
+        turns=len(turns),
+        objections=sum(
+            1 for e in events if e.get("kind") == "amigos_objection" and e.get("source") != "package"
+        ),
+        resolved=sum(1 for e in events if e.get("kind") == "amigos_resolved"),
+        unresolved=sum(1 for e in events if e.get("kind") == "amigos_unresolved"),
+        owner_decided=list(decided[-1].get("parts") or []) if decided else [],
+    )
 
 
 def _subtask(run_events: list[dict[str, Any]], team: str, kind: str) -> dict[str, Any] | None:
@@ -407,8 +465,25 @@ def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
         "summary": story.get("summary"),
         "stage": st.get("stage"),
         "blocked": st.get("blocked"),
+        "diagnosis": _diagnosis_row(state_dir, key),
+        "budgets": stage_figures(state_dir / "stories" / key),
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
+    }
+
+
+def _diagnosis_row(state_dir: Path, key: str) -> dict[str, Any] | None:
+    """The latest block's diagnosis for the row (planning-line P5b, D11): its class, kind and signature, and
+    how many blocks the story has had. None for a story that never blocked, or whose diagnosis cannot be
+    read."""
+    d = latest(state_dir, key)
+    if d is None:
+        return None
+    return {
+        "class": d.classified.class_,
+        "kind": d.classified.kind,
+        "signature": d.classified.signature,
+        "n": d.pack.n,
     }
 
 
@@ -476,6 +551,90 @@ def epic_flow(state_dir: Path, key: str, statuses: Mapping[str, str] | None = No
         "stories": stories,
         "left_out": [k for sid, k in made.items() if sid not in in_plan],
         "replans": [r for r in st.get("replans") or () if isinstance(r, dict)],
+    }
+
+
+def initiative_epic_row(store: BoardStore, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """One epic of an initiative as the app draws it: its draft's id, kind and title, and, once it is a card,
+    its key and board status with the price, the verdict, the mockup pages and the pick, read from the card's
+    own block (what a person may have changed since). An epic not yet carded has `key` None and no price."""
+    key = entry.get("key")
+    row: dict[str, Any] = {
+        "key": key,
+        "id": entry.get("id"),
+        "kind": entry.get("kind"),
+        "title": entry.get("title"),
+        "status": None,
+        "hours": None,
+        "basis": None,
+        "revised": None,
+        "actual": None,
+        "verdict": (entry.get("viability") or {}).get("verdict"),
+        "options": [],
+        "picked": None,
+        "depends_on": [],
+    }
+    if not isinstance(key, str):
+        return row
+    try:
+        item = store.get(key)
+    except KeyError:
+        return row
+    row["status"], row["title"] = item.status, item.title
+    try:
+        spec = epic_of(item.description)
+    except StoryError:
+        spec = None
+    if spec is not None:
+        row["depends_on"] = list(spec.depends_on)
+        if spec.estimate is not None:
+            est = spec.estimate
+            row.update(hours=est.hours, basis=est.basis, revised=est.revised, actual=est.actual)
+        if spec.viability is not None:
+            row["verdict"] = spec.viability.verdict
+        if spec.mockups is not None:
+            row["options"], row["picked"] = list(spec.mockups.options), spec.mockups.picked
+    return row
+
+
+def initiative_flow(state_dir: Path, store: BoardStore, key: str) -> dict[str, Any]:
+    """An initiative as the web app draws it (D9 of the specs phase): the dialogue with the person, product's
+    assumptions, every consultation, the epics (draft, card, price, verdict, mockup pages, pick) and the
+    hours already queued, with what the initiative waits on (`waiting_on`: the person or the line) and the
+    pending question. The epics' statuses and prices are the board's, read now. StoryNotFound for an
+    initiative with no record or a damaged one."""
+    f = state_dir / "initiatives" / _name(key, "initiative") / "state.json"
+    if not f.is_file():
+        raise StoryNotFound(f"no initiative '{key}'")
+    try:
+        st = json.loads(f.read_text())
+        qa = [q for q in st.get("qa") or () if isinstance(q, dict)]
+        stage = str(st["stage"])
+        epics = [e for e in st.get("epics") or () if isinstance(e, dict)]
+        consultations = [c for c in st.get("consultations") or () if isinstance(c, dict)]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise StoryNotFound(f"initiative '{key}': state.json is damaged") from None
+    pending = qa[-1] if qa and qa[-1].get("a") is None else None
+    budget = None
+    with contextlib.suppress(KeyError, StoryError):
+        budget = Initiative.from_item(store.get(key)).budget_hours
+    card = st["card"] if isinstance(st.get("card"), dict) else {}
+    return {
+        "key": key,
+        "title": card.get("title"),
+        "stage": stage,
+        "blocked": st.get("blocked"),
+        "waiting_on": waiting_on(stage, pending is not None),
+        "question": pending.get("q") if pending else None,
+        "budget_hours": budget,
+        "summary": st.get("summary") or "",
+        "qa": [{k: q.get(k) for k in ("q", "a", "asked_at", "answered_at")} for q in qa],
+        "assumptions": [str(a) for a in st.get("assumptions") or ()],
+        "consultations": [
+            {k: c.get(k) for k in ("seat", "question", "answer", "seconds", "round")} for c in consultations
+        ],
+        "epics": [initiative_epic_row(store, e) for e in epics],
+        "queue_hours": queue_hours(store, state_dir),
     }
 
 
@@ -555,6 +714,9 @@ def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str
         output["story"] = st.get("story")
     elif node_id == "layers":
         output["layers"] = st.get("layers")
+        if job_id == "meeting":
+            output["agreement"] = st.get("agreement")
+            note = "a meeting of product, the architect and the tester; its turns are in the story's events"
     elif node_id == "survey":
         output["survey"] = st.get("survey")
     return {

@@ -19,7 +19,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from airlie.auth.api import PUBLIC_PATHS, auth_router
@@ -33,20 +33,26 @@ from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
-from airlie.serve.flow import StoryNotFound, epic_flow, job_detail, story_flow
+from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
 from airlie.serve.jobs import Job, Jobs
-from airlie.serve.listing import epics, recent_runs, repo_names, repos, stories, story_page
+from airlie.serve.line_rows import line_events_tail, line_row
+from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
 from airlie.serve.run_flow import run_flow, run_job_detail
 from airlie.serve.running import running as in_progress
+from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
-from airlie.story.model import StoryRunning, StorySetupError
+from airlie.story.epic import REPOSITORY
+from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
+from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
+from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
 from airlie.story.state import STAGES
+from airlie.story.stats import line_stats, parse_since
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -166,6 +172,67 @@ class StoryRequest(BaseModel):
     repo: str | None = None
 
 
+class InitiativeRequest(BaseModel):
+    """A new initiative (D1 of the specs phase): the person's paragraph, the repositories it concerns
+    (owner/name), and an optional budget in hours. The card is made, approved and its first turn started."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    text: str
+    repos: list[str]
+    budget_hours: float | None = Field(default=None, gt=0)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("the initiative needs some text")
+        return v
+
+    @field_validator("repos")
+    @classmethod
+    def _repos(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("name at least one repository (owner/name)")
+        for r in v:
+            if not REPOSITORY.fullmatch(r) or ".." in r.split("/"):
+                raise ValueError(f"{r!r} is not owner/name")
+        return list(dict.fromkeys(v))
+
+
+class LineRequest(BaseModel):
+    """The line's one switch (planning-line P5b, D7): `paused` true holds every lane's next job (a running
+    one finishes), false lets them go."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paused: bool
+
+
+class PickRequest(BaseModel):
+    """A person's pick among an epic's mockup pages (D4): the option's number, 1 to 9."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    option: int = Field(ge=1, le=9)
+
+
+MOCKUP_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+    "X-Content-Type-Options": "nosniff",
+}
+"""What a mockup page is served with (D13): a model wrote it and the app shows it in a sandboxed frame, so the
+browser is told to run and fetch nothing, as the page check already holds the page to."""
+_EPIC_ID = re.compile(r"E[0-9]+", re.ASCII)
+
+
+def _initiative_job_factory() -> Callable[..., Any]:
+    from airlie.story.factory import initiative_job
+
+    return initiative_job
+
+
 def _story_job_factory() -> Callable[..., Any]:
     from airlie.story.factory import story_job
 
@@ -230,15 +297,20 @@ def create_app(
     orchestrator_factory: Callable[..., Any] | None = None,
     api_key: str | None = None,
     story_job: Callable[..., Any] | None = None,
+    initiative_job: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
+    tick_s: float | None = None,
+    line_beat: LineFor | None = None,
 ) -> FastAPI:
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
-    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job).
+    `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
+    `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
-    default NEXT_DIR) are for tests."""
+    default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
+    line's beat, given the function that starts a lane's job) are for tests."""
     app = FastAPI(title="airlie", version="0.1.0")
     started_commit = (
         build_commit()
@@ -248,9 +320,11 @@ def create_app(
     feed = Feed()
     app.state.feed = feed
     jobs = Jobs(feed.publish)
+    ticker = LineTicker(cfg, jobs, commit=started_commit, tick_s=tick_s, beat=line_beat, now=now)
     watcher = Watcher(cfg.observability.state_dir.expanduser(), feed)
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
+    make_initiative = initiative_job or _initiative_job_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board, feed.publish))
 
@@ -352,7 +426,7 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit}
+        return {"status": "ok", "roles": list(cfg.roles), "commit": started_commit, "line": ticker.row()}
 
     @app.get("/v1/events")
     async def events() -> StreamingResponse:
@@ -566,6 +640,60 @@ def create_app(
             raise HTTPException(409, str(e)) from e
         return {"job_id": job.id, "kind": job.kind}
 
+    def job_running(job_id: str) -> bool:
+        job = jobs.get(job_id)
+        return job is not None and job.state == "running"
+
+    async def start_turn(key: str) -> Response:
+        """Start the specs phase's next piece for the initiative `key` (D15, N6): 202 with the job, 409 with
+        the busy line while a story holds the lock (the comment stays on the card; the tick runs the turn)."""
+        try:
+            job_id, events, work = await make_initiative(cfg, key=key, running=job_running)
+        except StoryBusy as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+        except StoryRunning as e:
+            raise HTTPException(409, str(e)) from e
+        except BoardError as e:
+            raise HTTPException(404, str(e)) from e
+        except StorySetupError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            job = jobs.start("initiative", job_id, events, work)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return JSONResponse({"job_id": job.id, "kind": job.kind}, status_code=202)
+
+    @app.post("/v1/airlie/initiatives", status_code=202)
+    async def start_initiative(req: InitiativeRequest, request: Request) -> Response:
+        """An initiative from a person's paragraph: the card is made and approved, and its first turn (the
+        first question) starts at once. The card stands whatever the turn does: when a story holds the lock,
+        or the turn cannot start, the answer says so beside the key and the tick takes over."""
+        principal = owner_of(request)
+        labels = [f"repo:{r}" for r in req.repos]
+        if req.budget_hours is not None:
+            labels.append(f"budget:{req.budget_hours:g}h")
+        title = (req.title or req.text.strip().splitlines()[0]).strip()[:200]
+        item = board.create(
+            level="initiative",
+            title=title,
+            description=req.text,
+            labels=labels,
+            created_by=principal.name if principal is not None else "noah",
+        )
+        board.update(item.key, status="approved", by=principal.name if principal is not None else "person")
+        feed.publish("board", item.key)
+        answer = await start_turn(item.key)
+        if answer.status_code == 202:
+            return JSONResponse({"key": item.key, **json.loads(bytes(answer.body))}, status_code=202)
+        if answer.status_code == 409 and isinstance(answer, JSONResponse):
+            waiting = json.loads(bytes(answer.body))["error"]
+            return JSONResponse({"key": item.key, "job_id": None, "waiting": waiting}, status_code=202)
+        return answer
+
+    @app.post("/v1/airlie/initiatives/{key}/turn", status_code=202)
+    async def turn_initiative(key: str) -> Response:
+        return await start_turn(key)
+
     @app.get("/v1/airlie/jobs")
     async def job_list() -> dict[str, Any]:
         return {"jobs": jobs.list()}
@@ -667,6 +795,40 @@ def create_app(
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 
+    @app.post("/v1/airlie/line")
+    async def line_switch(req: LineRequest) -> dict[str, Any]:
+        """Pause or resume the line (`<state_dir>/line.paused`, read at each beat's top): the line row."""
+        set_paused(cfg.observability.state_dir.expanduser(), req.paused)
+        return ticker.row()
+
+    @app.get("/v1/airlie/line")
+    async def line_get() -> dict[str, Any]:
+        """The line as one row (planning-line P5b, D11): paused, the gates, what each lane is doing, the hours
+        queued, the blocked stories with their diagnosis and fix card, and when it last ticked."""
+        return await asyncio.to_thread(line_row, cfg, board, last_tick=ticker.last_tick, now=now())
+
+    @app.get("/v1/airlie/line/events")
+    async def line_events_get(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+        """The tail of the line's own log (`line/events.jsonl`): ticks, gates, lanes, pauses, fixes."""
+        return {"events": line_events_tail(cfg.observability.state_dir.expanduser(), limit)}
+
+    @app.get("/v1/airlie/line/stats")
+    async def line_stats_get(since: str | None = Query(None)) -> dict[str, Any]:
+        """The numbers that judge the line (planning-line P5b, D9): the unattended rate, blocks by class and
+        kind, hours against estimates, the amigos' objections, the budgets' overruns. `since` is a date or
+        epoch seconds."""
+        try:
+            floor = parse_since(since) if since else None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return await asyncio.to_thread(
+            line_stats,
+            cfg.observability.state_dir.expanduser(),
+            board,
+            since=floor,
+            roles=frozenset(cfg.roles),
+        )
+
     @app.get("/v1/airlie/epics")
     async def epic_list() -> dict[str, Any]:
         """The epics the line has planned (or tried to), from their records: key, title, stage, stories."""
@@ -681,6 +843,53 @@ def create_app(
             return epic_flow(state, key, statuses)
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/initiatives")
+    async def initiative_list() -> dict[str, Any]:
+        """The initiatives the specs phase has a record for: stage, epics, hours, what each waits on."""
+        return {"initiatives": initiatives(cfg.observability.state_dir.expanduser(), board)}
+
+    @app.get("/v1/airlie/initiatives/{key}/flow")
+    async def initiative_flow_get(key: str) -> dict[str, Any]:
+        """One initiative: the dialogue, the consultations, the epics with their prices, verdicts and mockup
+        pages, the hours already queued, and what it waits on."""
+        try:
+            return initiative_flow(cfg.observability.state_dir.expanduser(), board, key)
+        except StoryNotFound as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/v1/airlie/initiatives/{key}/mockups/{epic}/{file}")
+    async def mockup_page(key: str, epic: str, file: str) -> Response:
+        """A mockup page, as a file, locked down: only `option-<1-9>.html` of an epic id under the
+        initiative's own directory is ever served (anything else is a 404), with a policy that lets the page
+        run and fetch nothing."""
+        if not OPTION_FILE.fullmatch(file) or not _EPIC_ID.fullmatch(epic):
+            raise HTTPException(404, "no such mockup")
+        try:
+            folder = mockup_dir(cfg.observability.state_dir.expanduser(), key, epic)
+        except ValueError:
+            raise HTTPException(404, "no such mockup") from None
+        page = folder / file
+        if page.is_symlink() or not page.is_file():
+            raise HTTPException(404, "no such mockup")
+        return FileResponse(page, media_type="text/html", headers=MOCKUP_HEADERS)
+
+    @app.post("/v1/airlie/epics/{key}/mockup")
+    async def pick_mockup(key: str, req: PickRequest) -> dict[str, Any]:
+        """A person's pick (D4): written into the epic card's block and label and the initiative's log. 404
+        for an item that is no epic, 400 for an option the epic has no page for."""
+        try:
+            item = board.get(key)
+        except KeyError:
+            raise HTTPException(404, f"no item {key} on the board") from None
+        if item.level != "epic":
+            raise HTTPException(404, f"{key} is not an epic")
+        try:
+            spec = record_pick(board, cfg.observability.state_dir.expanduser(), key, req.option)
+        except StoryError as e:
+            raise HTTPException(400, str(e)) from e
+        feed.publish("board", key)
+        return spec.to_dict()
 
     @app.get("/v1/airlie/stories/{key}/diagnosis")
     async def story_diagnosis_get(key: str, n: int | None = Query(None, ge=1)) -> dict[str, Any]:
@@ -789,8 +998,13 @@ def create_app(
             cfg.observability.state_dir.expanduser(), metric, slice_, f, t, _metric_bucket_s(t - f)
         )
 
+    @app.on_event("startup")
+    async def startup() -> None:
+        ticker.start()  # the line's beat, every line.tick_s while serve is up (line.serve_ticks)
+
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        await ticker.stop()
         watcher.stop()
         await client.aclose()
         board.close()

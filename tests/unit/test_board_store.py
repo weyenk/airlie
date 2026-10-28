@@ -295,3 +295,30 @@ def test_a_board_from_before_ordering_gains_ranks_in_creation_order(tmp_path: Pa
     conn.close()
     s = BoardStore(path)
     assert [i.key for i in s.list()] == ["AIR-1", "AIR-2"]
+
+
+def test_every_status_change_is_recorded_with_who_made_it(tmp_path: Path) -> None:
+    """Planning-line P5b, D9: a person's move is never inferred from labels."""
+    from airlie.board import Move
+
+    s = store(tmp_path)
+    a = s.create(level="story", title="A")
+    assert s.moves(a.key) == []  # a card's making is no move
+    s.update(a.key, status="approved")  # a person's, by default
+    s.update(a.key, title="renamed")  # not a status change
+    s.update(a.key, status="approved")  # the same status again: nothing moved
+    s.update(a.key, status="doing", by="line")
+    s.move(a.key, "doing", by="line")  # to where it is: nothing moved
+    s.move(a.key, "review", by="line")
+    s.move(a.key, "blocked", by="api-key")
+    moves = s.moves(a.key)
+    assert [(m.from_status, m.to_status, m.by) for m in moves] == [
+        ("todo", "approved", "person"),
+        ("approved", "doing", "line"),
+        ("doing", "review", "line"),
+        ("review", "blocked", "api-key"),
+    ]
+    assert isinstance(moves[0], Move) and moves[0].key == a.key and 0 < moves[0].at <= moves[-1].at
+    assert s.moves("AIR-99") == []
+    other = store(tmp_path)  # reopened: the table is there, and an older board gains it on open
+    assert [m.to_status for m in other.moves(a.key)] == ["approved", "doing", "review", "blocked"]

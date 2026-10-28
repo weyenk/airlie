@@ -126,3 +126,16 @@ def test_move_places_a_card_in_a_column(tmp_path: Path) -> None:
         )
         assert c.post("/v1/board/items/AIR-9/move", json={"status": "doing"}).status_code == 404
         assert c.post("/v1/board/items/AIR-2/move", json={"status": "shipped"}).status_code == 422
+
+
+def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) -> None:
+    """The principal's name is who moved it (planning-line P5b, D9); the bootstrap admin on loopback is the
+    one person."""
+    with client(tmp_path) as c:
+        key = c.post("/v1/board/items", json={"level": "story", "title": "S"}).json()["key"]
+        assert c.patch(f"/v1/board/items/{key}", json={"status": "approved"}).status_code == 200
+        assert c.post(f"/v1/board/items/{key}/move", json={"status": "doing"}).status_code == 200
+        assert c.patch(f"/v1/board/items/{key}", json={"title": "renamed"}).status_code == 200  # no move
+    moves = BoardStore(tmp_path / "state" / "board.sqlite").moves(key)
+    assert [(m.from_status, m.to_status) for m in moves] == [("todo", "approved"), ("approved", "doing")]
+    assert {m.by for m in moves} == {moves[0].by} and moves[0].by != "line"

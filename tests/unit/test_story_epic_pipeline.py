@@ -415,3 +415,13 @@ async def test_a_failed_replan_changes_nothing_and_says_so(tmp_path: Path) -> No
     assert before == {k: (rig.store.get(k).title, rig.store.get(k).status) for k in keys}
     assert kinds(out.path / "events.jsonl", "replan_failed")
     assert "re-plan failed" in rig.item().comments[-1].text
+
+
+async def test_the_architect_plans_an_epic_knowing_how_the_repository_is_tested(tmp_path: Path) -> None:
+    """The seam P3 left open and the integration of P2 closes (2026-10-25): the plan's brief carries the
+    testing conventions the story meeting's tester reads, so a story is cut along the test levels."""
+    rig = Rig(tmp_path, FakeEngine({"architect": [reply(plan_obj())]}))
+    await rig.pipeline.plan(rig.item())
+    [first] = rig.architect_asks()
+    assert "How this repository is tested" in first
+    assert "The test levels the repository has" in first
