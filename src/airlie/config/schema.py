@@ -259,6 +259,51 @@ class LhrSpec(Strict):
     timeout_s: float = 60.0
 
 
+_REPO_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+class AllowedRepoSpec(Strict):
+    """Allowlisted git checkout for bridge kinds (repo_key → absolute path)."""
+
+    key: str = Field(min_length=1, max_length=64)
+    path: Path
+    default: bool = False
+
+    @model_validator(mode="after")
+    def _key_shape(self) -> AllowedRepoSpec:
+        if not _REPO_KEY.fullmatch(self.key):
+            raise ValueError("key must be a short lowercase identifier (a-z, digits, _, -)")
+        return self
+
+
+class BridgeSpec(Strict):
+    """Job Bus worker (`task bridge`): outbound HTTPS to the hub, loopback to `task serve`."""
+
+    job_bus_url: str | None = Field(
+        default=None,
+        description="hub base including /api/v1 (e.g. https://hub.example/api/v1)",
+    )
+    worker_secret_env: str = Field(
+        default="BRIDGE_WORKER_SECRET",
+        description="env var holding the shared worker secret (never logged)",
+    )
+    serve_url: str = Field(default="http://127.0.0.1:8090", description="loopback task serve base URL")
+    serve_api_key_env: str = Field(default="AIRLIE_SERVE_API_KEY")
+    worker_id: str | None = Field(
+        default=None,
+        description="stable worker id for claims; default hostname-pid",
+    )
+    claim_poll_s: float = Field(default=5.0, ge=0.0, description="seconds between short-poll claim attempts")
+    job_poll_s: float = Field(default=2.0, ge=0.0, description="seconds between serve job status polls")
+    concurrency: int = Field(default=1, ge=1, description="Phase 1: one job at a time")
+    kinds: list[str] = Field(default_factory=lambda: ["studio"])
+    allowed_repos: list[AllowedRepoSpec] = Field(default_factory=list)
+    test_cmds: list[str] = Field(
+        default_factory=list,
+        description="only these test_cmd values may be sent to serve (first is default when non-empty)",
+    )
+
+
 class ToolsSpec(Strict):
     builtin: list[str] = Field(
         default_factory=lambda: [
@@ -812,6 +857,7 @@ class AirlieConfig(Strict):
     web: WebSpec = Field(default_factory=WebSpec)
     chat: ChatSpec = Field(default_factory=ChatSpec)
     lhr: LhrSpec = Field(default_factory=LhrSpec)
+    bridge: BridgeSpec = Field(default_factory=BridgeSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
@@ -930,6 +976,16 @@ class AirlieConfig(Strict):
             for label, role in need:
                 if role not in self.roles:
                     problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")
+        if self.bridge.job_bus_url:
+            keys = [r.key for r in self.bridge.allowed_repos]
+            if len(keys) != len(set(keys)):
+                problems.append("bridge.allowed_repos keys must be unique")
+            defaults = [r for r in self.bridge.allowed_repos if r.default]
+            if len(defaults) > 1:
+                problems.append("bridge.allowed_repos: at most one default: true")
+            for r in self.bridge.allowed_repos:
+                if not r.path.is_absolute():
+                    problems.append(f"bridge.allowed_repos.{r.key}.path must be an absolute path")
         return problems
 
     def engine_for_model(self, model: str) -> str:

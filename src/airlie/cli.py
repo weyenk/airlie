@@ -576,6 +576,34 @@ def serve(
     run(create_app(cfg, api_key=api_key), host=host, port=port)
 
 
+@app.command()
+def bridge(
+    config: ConfigOpt = None,
+    once: Annotated[
+        bool, typer.Option("--once", help="claim and run at most one job, then exit (for launchd or tests)")
+    ] = False,
+) -> None:
+    """Claim jobs from the Job Bus and run them on loopback `task serve` (outbound HTTPS only)."""
+    import asyncio
+
+    from airlie.serve.bridge import run_bridge
+    from airlie.serve.bridge.errors import BridgeError
+
+    cfg = _load(config)
+    url = cfg.bridge.job_bus_url
+    console.print(
+        f"airlie bridge → {url or '(no job_bus_url)'}  (kinds: {', '.join(cfg.bridge.kinds)}; once: {once})",
+        markup=False,
+    )
+    try:
+        processed = asyncio.run(run_bridge(cfg, once=once))
+    except BridgeError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    if once:
+        console.print(f"bridge: processed {processed} job(s)", markup=False)
+
+
 def _auth_store(cfg: AirlieConfig):  # type: ignore[no-untyped-def]
     from airlie.auth.store import AuthStore
 

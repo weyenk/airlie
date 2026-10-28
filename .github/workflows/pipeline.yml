@@ -36,6 +36,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task static
       - run: task web:gate
+      - run: task hub:gate
 
   # ---- stage 2: the lowest level of the pyramid ----
   unit:

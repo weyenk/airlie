@@ -222,6 +222,24 @@ line:
     review: {wall_s: 300, tokens: 400000}         # no sample: the performance review's minute a layer, generously
     publish: {wall_s: 57, tokens: 1}              # no model runs in it: wall-clock only
 
+# ---- Job Bus bridge (task bridge; docs/bridge-contract.md, src/airlie/serve/bridge/README.md) -------------------
+# Outbound worker on the Mac Studio: HTTPS claim/result to the hub, loopback POST /v1/airlie/runs on task serve.
+# Set bridge.job_bus_url and allowed_repos in airlie.local.yaml; export BRIDGE_WORKER_SECRET (and AIRLIE_SERVE_API_KEY
+# when serve requires it). Phase 1 kind: studio.
+# bridge:
+#   job_bus_url: https://your-hub.vercel.app/api/v1
+#   worker_secret_env: BRIDGE_WORKER_SECRET
+#   serve_url: http://127.0.0.1:8090
+#   claim_poll_s: 5
+#   job_poll_s: 2
+#   concurrency: 1
+#   kinds: [studio]
+#   allowed_repos:
+#     - key: lhr
+#       path: /Users/you/git/lhr-office
+#       default: true
+#   test_cmds: []                    # optional allowlist; first entry is the default test_cmd sent to serve
+
 # ---- The local board (task serve: /v1/board; task board:export) ---------------------------------------------------
 # airlie's own board: initiative → epic → story → subtask, in observability.state_dir/board.sqlite. The story pipeline
 # takes its stories from it (story.board: local, the default; `jira` keeps Jira). Keys are <prefix>-<n>; an import

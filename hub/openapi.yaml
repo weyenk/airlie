@@ -1,0 +1,253 @@
+yeah,.openapi: 3.1.0
+info:
+  title: Airlie Bridge Job Bus
+  version: 0.1.0
+  description: Phase 0 platform queue API (see docs/bridge-contract.md)
+servers:
+  - url: /api/v1
+paths:
+  /jobs:
+    post:
+      summary: Enqueue a job
+      security:
+        - tenantBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnqueueRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      summary: List jobs for created_by
+      security:
+        - tenantBearer: []
+      parameters:
+        - $ref: "#/components/parameters/CreatedByHeader"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Job"
+  /jobs/claim:
+    post:
+      summary: Claim next queued job (short poll)
+      security:
+        - workerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [worker_id]
+              properties:
+                worker_id:
+                  type: string
+      responses:
+        "200":
+          description: Job claimed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: "#/components/schemas/Job"
+        "204":
+          description: Queue empty
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /jobs/{id}:
+    get:
+      summary: Get job by id (owner only)
+      security:
+        - tenantBearer: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/CreatedByHeader"
+      responses:
+        "200":
+          description: OK
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /jobs/{id}/events:
+    get:
+      summary: List job events (owner only)
+      security:
+        - tenantBearer: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/CreatedByHeader"
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Append worker event
+      security:
+        - workerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerEventRequest"
+      responses:
+        "201":
+          description: Created
+  /jobs/{id}/heartbeat:
+    post:
+      summary: Worker heartbeat
+      security:
+        - workerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerIdBody"
+      responses:
+        "200":
+          description: OK
+  /jobs/{id}/result:
+    post:
+      summary: Terminal result from worker
+      security:
+        - workerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResultRequest"
+      responses:
+        "200":
+          description: OK (includes replay no-op)
+components:
+  securitySchemes:
+    tenantBearer:
+      type: http
+      scheme: bearer
+      description: Per-tenant service key (BFF)
+    workerBearer:
+      type: http
+      scheme: bearer
+      description: BRIDGE_WORKER_SECRET
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CreatedByHeader:
+      name: X-Created-By
+      in: header
+      required: true
+      schema:
+        type: string
+  schemas:
+    EnqueueRequest:
+      type: object
+      required: [kind, payload]
+      properties:
+        kind:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        created_by:
+          type: string
+        channel:
+          type: string
+        channel_ref:
+          type: string
+    WorkerIdBody:
+      type: object
+      required: [worker_id]
+      properties:
+        worker_id:
+          type: string
+    WorkerEventRequest:
+      allOf:
+        - $ref: "#/components/schemas/WorkerIdBody"
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              type: string
+            payload:
+              type: object
+    ResultRequest:
+      allOf:
+        - $ref: "#/components/schemas/WorkerIdBody"
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [done, failed, cancelled]
+            result:
+              type: object
+            error_message:
+              type: string
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        kind:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, done, failed, cancelled]
+        payload:
+          type: object
+        result:
+          type: object
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        created_by:
+          type: string
+        worker_id:
+          type: string
+          nullable: true
+  responses:
+    BadRequest:
+      description: Bad request
+    Unauthorized:
+      description: Unauthorized
+    NotFound:
+      description: Not found
