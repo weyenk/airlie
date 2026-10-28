@@ -174,28 +174,37 @@ def test_criterion_line_adds_one_stop_unless_there_is_one() -> None:
     assert Criterion("AC1", "g", "w", "is shown!").line() == "**AC1** Given g, when w, then is shown!"
 
 
-def test_a_story_title_or_criterion_id_is_one_line_of_bounded_length() -> None:
+def test_a_story_title_is_mended_to_one_line_and_a_criterion_id_is_one_line_of_bounded_length() -> None:
+    """A title is a label, mended rather than sent back (8 of 20 roman layer-plan fixes, 2026-10-26/28); an
+    id names a test and a branch, so it still must be right."""
     first, second = GOOD["acceptance"]
-    for patch, named in (
-        ({"title": "Add\navatar upload"}, "the story title"),
-        ({"title": "Add\u2028avatar upload"}, "the story title"),
-        ({"title": "Add avatar\x00upload"}, "the story title"),
-        ({"title": "x" * 81}, "the story title"),
-        ({"acceptance": [{**first, "id": "AC1\n### Stack"}, second]}, "acceptance item 1 id"),
-        ({"acceptance": [{**first, "id": "A" * 21}, second]}, "acceptance item 1 id"),
+    for raw, mended in (
+        ("Add\navatar upload", "Add avatar upload"),
+        ("Add\u2028avatar upload", "Add avatar upload"),
+        ("Add avatar\x00upload", "Add avatar upload"),
+        ("x" * 81, "x" * 80),
+        ("Add " + "avatar " * 20, "Add" + " avatar" * 11),  # clipped after the last word that fits 80
     ):
-        with pytest.raises(StoryError, match=named):
+        assert parse_story({**GOOD, "title": raw}).title == mended
+    for patch in (
+        {"acceptance": [{**first, "id": "AC1\n### Stack"}, second]},
+        {"acceptance": [{**first, "id": "A" * 21}, second]},
+    ):
+        with pytest.raises(StoryError, match="acceptance item 1 id"):
             parse_story({**GOOD, **patch})
     longest = parse_story({**GOOD, "title": "x" * 80, "acceptance": [{**first, "id": "A" * 20}, second]})
     assert longest.title == "x" * 80 and longest.acceptance[0].id == "A" * 20
 
 
-def test_a_layer_title_is_one_line_of_bounded_length() -> None:
+def test_a_layer_title_is_mended_to_one_line_of_bounded_length() -> None:
     story = parse_story(GOOD)
     base = {"slug": "model", "scope": "models.py", "brief": "b", "acceptance": ["AC1", "AC2"]}
-    for title in ("Model\n### Stack", "Model\x00", "x" * 81):
-        with pytest.raises(StoryError, match="layer 1 title"):
-            parse_layers({"layers": [{**base, "title": title}]}, story, 3)
+    for title, mended in (
+        ("Model\n### Stack", "Model ### Stack"),
+        ("Model\x00", "Model"),
+        ("x" * 81, "x" * 80),
+    ):
+        assert parse_layers({"layers": [{**base, "title": title}]}, story, 3)[0].title == mended
     assert parse_layers({"layers": [{**base, "title": "x" * 80}]}, story, 3)[0].title == "x" * 80
 
 

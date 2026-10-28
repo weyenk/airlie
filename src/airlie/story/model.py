@@ -222,6 +222,19 @@ def _one_line(value: str, what: str, limit: int) -> str:
     return value
 
 
+def _title(value: str, what: str, limit: int) -> str:
+    """`value` as a title: its control characters and line breaks made spaces, its runs of spaces one, and
+    clipped at the last word that fits `limit`. A title is a label, so it is mended here rather than sent
+    back: 8 of 20 layer-plan fixes in the roman bench (2026-10-26/28) were a title over 80 characters or with
+    a line break, each a whole architect turn."""
+    _encodable(value, what)
+    flat = " ".join(CONTROL.sub(" ", value).split())
+    if len(flat) <= limit:
+        return flat
+    cut = flat[: limit + 1].rsplit(" ", 1)[0]
+    return (cut if cut and len(cut) <= limit else flat[:limit]).rstrip(" ,;:-")
+
+
 def _text(d: dict[str, Any], key: str, where: str) -> str:
     v = d.get(key)
     if not isinstance(v, str) or not v.strip():
@@ -287,7 +300,7 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
     if len(set(ids)) != len(ids):
         raise StoryError(f"acceptance ids repeat ({ids}); give each criterion its own id")
     return Story(
-        _one_line(_text(obj, "title", "the story"), "the story title", 80),
+        _title(_text(obj, "title", "the story"), "the story title", 80),
         _text(obj, "summary", "the story"),
         tuple(criteria),
         _strs(obj.get("out_of_scope"), "'out_of_scope'"),
@@ -309,7 +322,7 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
     for n, d in enumerate(raw, 1):
         if not isinstance(d, dict):
             raise StoryError(f"layer {n} must be an object")
-        title = _one_line(_text(d, "title", f"layer {n}"), f"layer {n} title", 80)
+        title = _title(_text(d, "title", f"layer {n}"), f"layer {n} title", 80)
         slug = slugify(str(d.get("slug") or title), 30)
         if slug in {x.slug for x in layers}:
             raise StoryError(f"layer slug '{slug}' repeats; give each layer its own slug")

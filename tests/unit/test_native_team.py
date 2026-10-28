@@ -1932,3 +1932,25 @@ async def test_the_opening_messages_are_told_to_on_prompt_without_the_picture_by
     assert [m["role"] for m in opening] == ["system", "user"]
     assert "make it pass" in opening[1]["content"]
     assert "data:image" not in json.dumps(opening) and "<image," in json.dumps(opening)
+
+
+async def test_a_think_when_red_role_thinks_only_while_its_last_test_run_failed(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: the non-thinking coder, red, rewrote the same wrong file three times; its first
+    attempt stays fast and unthinking, and it thinks from a failed run_tests until a run passes."""
+    run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
+    )
+    engine = FakeEngine({"coder": [write, run, write, run, FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10, think_when_red=True, thinking_budget=32)
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")  # every run fails: from step 3 on it thinks
+    await team.run(ctx, Recorder())
+    assert [r.thinking for r in engine.requests] == [False, False, True, True, True]
+    told = [str(m.content) for m in engine.requests[2].messages if m.role == "tool"]
+    assert "do not read a file you wrote in this conversation" in told[-1]  # each red run says what is next
+    assert sum("make the one edit_file" in str(m.content) for m in engine.requests[-1].messages) == 2
+    engine = FakeEngine({"coder": [write, run, write, FakeReply(text="Done.")]})
+    (tmp_path / "green").mkdir()
+    team, ctx = make_team(tmp_path / "green", engine, max_steps=10, think_when_red=True, thinking_budget=32)
+    await team.run(ctx, Recorder())  # `echo ok` passes: never red, never thinking
+    assert [r.thinking for r in engine.requests] == [False, False, False, False]

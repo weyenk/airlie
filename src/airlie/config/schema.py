@@ -166,6 +166,12 @@ class RoleSpec(Strict):
         "instead of being stopped (a second run of repeats stops it); off where a repeat is the fork "
         "topology's signal that a team is stuck",
     )
+    think_when_red: bool = Field(
+        default=False,
+        description="a role that does not think thinks (within thinking_budget) while its last run_tests "
+        "run failed, until a run passes: the coder, whose first attempt is fast without thinking but which "
+        "rewrote the same wrong file three times once red (roman, 2026-10-28)",
+    )
     green_before_done: bool = Field(
         default=False,
         description="a role with run_tests that answers while its last run_tests run failed is told once "
@@ -843,7 +849,8 @@ class AirlieConfig(Strict):
         for rname, r in self.roles.items():
             if r.on_context_full not in ("stop", "trim"):
                 problems.append(f"roles.{rname}.on_context_full must be one of: stop, trim")
-            if r.thinking and r.thinking_budget is not None and r.max_tokens <= r.thinking_budget:
+            thinks = r.thinking or r.think_when_red
+            if thinks and r.thinking_budget is not None and r.max_tokens <= r.thinking_budget:
                 problems.append(
                     f"roles.{rname}.max_tokens ({r.max_tokens}) must be larger than "
                     f"roles.{rname}.thinking_budget ({r.thinking_budget}): max_tokens caps the thinking and "

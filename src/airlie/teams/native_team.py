@@ -370,8 +370,11 @@ class NativeTeam:
                 stop=list(ctx.role.stop),
                 tools=None if last_turn or toolless else _offered(ctx),
                 # the tool-less last turn is cheap by default; its one retry, after a tool call, thinks
-                thinking=ctx.role.thinking
-                and (ctx.role.last_turn_thinking or not last_turn or last_corrected),
+                thinking=(
+                    ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn or last_corrected)
+                )
+                # a fast role thinks once red, until a run passes (think_when_red)
+                or (ctx.role.think_when_red and last_tests_ok is False and not last_turn),
                 draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()
@@ -516,6 +519,9 @@ class NativeTeam:
                         reads_left -= 1
                         left = _steer(ctx, steps, "read-left", k=reads_left)
                         result = replace(result, output=f"{result.output}\n\n{left}")
+                    if ctx.role.think_when_red and call.name == "run_tests" and not result.ok:
+                        fix = _steer(ctx, steps, "red-fix")  # what to do next, exactly: no reads, one edit
+                        result = replace(result, output=f"{result.output}\n\n{fix}")
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
