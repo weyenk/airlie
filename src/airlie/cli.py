@@ -1318,6 +1318,74 @@ def story_restack(
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@story_app.command("pr-body")
+def story_pr_body(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="the story's issue (AIR-7 or its link)")
+    ] = None,
+    layer: Annotated[str | None, typer.Argument(metavar="NN", help="the built layer, 1 or 01")] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Print the pull request body a built layer would get now (the initiative, epic and story, the layer's
+    package, the tests that are its contract, the checks, the cost and the stack), before anything is
+    published. It reads the story's state and the board: no network, no model, nothing changed."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    if ref is None or layer is None or not layer.isdigit():
+        err.print("[red]pass the story's issue and a layer number: story pr-body AIR-7 2[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+
+    async def go() -> str:
+        board, card = await factory.card_for(cfg, ref, None)
+        return await factory.body_one(cfg, board=board, card=card, nn=f"{int(layer):02d}", repo=repo)
+
+    try:
+        text = _run_stoppable(go())
+    except (BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@story_app.command("describe")
+def story_describe(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="the published story's issue (AIR-7 or its link)")
+    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Rebuild the title and body of every pull request a story published and edit them on GitHub (`gh pr
+    edit`), so a stack published earlier carries what a new one does. This changes PRs on GitHub, so it runs
+    only when you ask: never from the tick. A story that has not published is refused."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+    from airlie.story.publish import PublishError
+
+    if ref is None:
+        err.print("[red]pass the published story's issue (AIR-7 or its link)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+
+    async def go() -> list[int]:
+        board, card = await factory.card_for(cfg, ref, None)
+        return await factory.describe_one(cfg, board=board, card=card, repo=repo)
+
+    try:
+        numbers = _run_stoppable(go())
+    except (factory.StoryBusy, BoardError, StorySetupError, PublishError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print("re-described " + ", ".join(f"#{n}" for n in numbers), markup=False, highlight=False)
+
+
 @story_app.command("steps")
 def story_steps(
     keys: Annotated[list[str], typer.Argument(metavar="KEY...", help="story keys (AIR-9 AIR-31)")],

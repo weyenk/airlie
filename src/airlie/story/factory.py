@@ -299,6 +299,26 @@ async def restack_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path
         return await pipe.restack(card)
 
 
+async def body_one(cfg: AirlieConfig, *, board: Board, card: Card, nn: str, repo: Path | None = None) -> str:
+    """The PR body layer `nn` of the story of `card` would get now (`airlie story pr-body`): read from its
+    state and the board, with no network and no change. A story that cannot be read is a StorySetupError."""
+    where = place(cfg, card, repo)
+    pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
+    return pipe.layer_body(card, nn)
+
+
+async def describe_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path | None = None) -> list[int]:
+    """Re-describe every published PR of the story of `card` (StoryPipeline.describe: `gh pr edit` with the
+    title and body it would get now), while holding the one-story lock. Only a person's command runs it,
+    never the tick. Returns the PR numbers; a story that has not published is a StorySetupError."""
+    with lane_lock(stories_dir(cfg), "build") as held:
+        if not held:
+            raise StoryBusy("another story is in flight (one at a time); try again when it finishes")
+        where = await placed(cfg, board, card, repo)
+        pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
+        return await pipe.describe(card)
+
+
 def _why(e: Exception) -> str:
     """What a board said when it refused a call, masked and cut short, for the line a tick logs."""
     return _cap(_redact_urls(f"{type(e).__name__}: {e}"), 200)

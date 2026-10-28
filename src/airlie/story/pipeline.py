@@ -94,6 +94,7 @@ from airlie.story.model import (
     NoTestGate,
     Story,
     StoryError,
+    StorySetupError,
     branch_name,
     parse_layers,
     parse_story,
@@ -101,6 +102,7 @@ from airlie.story.model import (
 from airlie.story.package import Package, ProofChange, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
 from airlie.story.phase import decoding, write_phase
+from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import same_layers
@@ -1276,7 +1278,13 @@ class StoryPipeline:
                 st.attempt = None
                 st.save()
                 return told
-            sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
+            sha = squash_since(
+                wt,
+                base_sha,
+                f"{story.title}: {layer.title} ({nn}/{total})",
+                author=author,
+                trailers=self._trailers(card, nn, total, orch.run_dir.run_id, package),
+            )
             remove_worktree(self.repo, wt)
             st.built[nn] = {
                 "branch": branch,
@@ -1296,6 +1304,25 @@ class StoryPipeline:
         finally:
             if sup is not None:
                 sup.close()  # after every subtask has finished: an advice in flight is never cut off
+
+    def _store(self) -> BoardStore | None:
+        """The local board's store, None for any other board."""
+        return self.board.store if isinstance(self.board, LocalBoard) else None
+
+    def _trailers(self, card: Card, nn: str, total: str, run_id: str, package: Package) -> dict[str, str]:
+        """The provenance a layer's commit carries (P6): the story's key ("request" for a written one), the
+        layer, the epic when the board has one above the story, the run, the airlie build and a count of the
+        package's tests (the ids are in the PR). Keys, numbers and shas only, never model text."""
+        _, epic = chain_items(self._store(), card.key)
+        trailers = {"Airlie-Story": card.ref or "request", "Airlie-Layer": f"{nn}/{total}"}
+        if epic:
+            trailers["Airlie-Epic"] = epic[0]
+        trailers["Airlie-Run"] = run_id
+        build = build_commit()
+        if build:
+            trailers["Airlie-Build"] = build
+        trailers["Airlie-Tests"] = f"{len(package.test_ids)} tests in {len(package.tests)} files"
+        return trailers
 
     def _replan_feedback(
         self, st: StoryState, orch: StudioOrchestrator, nn: str, coder: TeamResult | None
@@ -1847,10 +1874,9 @@ class StoryPipeline:
             prs = [await self.publisher.pr(wt, b) for b in branches]
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
-                rows = st.built[f"{i + 1:02d}"]["subtasks"]
                 # the gate this layer passed: a state from before layers kept theirs has none to name
                 gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(card, story, layers, i, rows, prs, gate, stacks_on=stacks_on)
+                text = pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
@@ -1860,6 +1886,74 @@ class StoryPipeline:
         st.prs = [{"branch": b, "number": n, "url": u} for b, (n, u) in zip(branches, prs, strict=True)]
         st.emit("published", prs=st.prs)
         st.finish("publish")
+
+    def provenance(
+        self,
+        st: StoryState,
+        card: Card,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        prs: Sequence[tuple[int, str]],
+    ) -> Provenance:
+        """Layer `i`'s provenance for its PR (`gather_provenance`): the board's chain when the board is local,
+        nothing above the story otherwise."""
+        return gather_provenance(st, card, story, layers, i, prs=prs, cfg=self.cfg, store=self._store())
+
+    def _published_texts(
+        self, card: Card, nn: str | None = None
+    ) -> tuple[StoryState, list[tuple[str, str, str]]]:
+        """The state of the story of `card` and, for each built layer (just `nn` when given), its number, PR
+        title and the body it would get now (P6): from the state and the board as they are, no model call
+        and no network. A story with no state, no layers yet or no such built layer is a StorySetupError. A
+        story that has not published has no PR numbers: its stack lists the layers without them."""
+        f = self.stories_dir / card.key / "state.json"
+        if not f.is_file():
+            raise StorySetupError(f"story {card.key} has not started: there is no {f} to read")
+        here = self.github_repo or self.publisher.github_repo_of(self.repo)
+        st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
+        if st.story is None or st.layers is None or not st.built:
+            raise StorySetupError(f"story {card.key} has no built layer yet: run it first")
+        story, layers = Story.from_dict(st.story), tuple(Layer.from_dict(d) for d in st.layers)
+        if nn is not None and nn not in st.built:
+            raise StorySetupError(f"story {card.key} has not built layer {nn} (built: {', '.join(st.built)})")
+        prs = [(int(p["number"]), str(p["url"])) for p in st.prs] or [(0, "")] * len(layers)
+        out = []
+        for key in [nn] if nn is not None else sorted(st.built):
+            i = int(key) - 1
+            provenance = self.provenance(st, card, story, layers, i, prs)
+            out.append(
+                (key, pr_title(story, layers, i), pr_body(provenance, test_cmd=st.built[key].get("gate")))
+            )
+        return st, out
+
+    def layer_body(self, card: Card, nn: str) -> str:
+        """The body a built layer's PR would get now (`airlie story pr-body KEY NN`)."""
+        return self._published_texts(card, nn)[1][0][2]
+
+    async def describe(self, card: Card) -> list[int]:
+        """Rebuild the title and body of every PR the story published and edit them on GitHub (`gh pr edit`),
+        so a story published before provenance, or whose state has gained since, tells a reviewer what it
+        tells now. Only by a person's command (`task story:describe`), never from the tick. A story that has
+        not published is a StorySetupError. Returns the PR numbers, bottom first."""
+        st, texts = self._published_texts(card)
+        if not st.prs:
+            raise StorySetupError(f"story {card.key} has published no PRs: nothing to describe")
+        self.publisher.prepare(self.repo, expected=st.github_repo)
+        wt = st.path / "describe"
+        remove_worktree(self.repo, wt)
+        checkout_worktree(self.repo, wt, str(st.prs[-1]["branch"]))
+        numbers = []
+        try:
+            for (nn, title, text), pr in zip(texts, st.prs, strict=True):
+                body = st.path / f"pr-{nn}.md"
+                body.write_text(text, encoding="utf-8")
+                await self.publisher.describe(wt, str(pr["branch"]), title, body)
+                numbers.append(int(pr["number"]))
+        finally:
+            remove_worktree(self.repo, wt)
+        st.emit("described", prs=numbers)
+        return numbers
 
     async def _finish(self, st: StoryState, card: Card) -> None:
         if st.done("review"):

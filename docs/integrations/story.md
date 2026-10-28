@@ -528,6 +528,13 @@ layers), and the story's base becomes the trunk: the next `task story -- AIR-7` 
 code. A conflict or a failing gate names the layer and changes nothing. A story that has published its PRs is not
 moved, and the story keeps its test gate.
 
+**See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
+from the story's state and the board: no network, nothing published, so a body can be read before the stack is
+opened. `task story:describe -- AIR-7` rebuilds the title and body of every PR a published story has and edits
+them with `gh pr edit` (as you, or as the bot). It changes PRs on GitHub, so it runs only when you ask; the tick
+never does. A story that has not published is refused. Each layer's commit also carries the story, layer, run,
+airlie build and a test count as git trailers (`git log --format=%(trailers)`), keys and shas only.
+
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and
@@ -773,8 +780,15 @@ So the tick moves two kinds of issue out of *To Do*:
 - Branches: one per layer, each based on the layer below, named `<ISSUE-KEY>-<story>-<NN>-<layer>` (a written
   request has no key prefix). Your own checkout is never switched: `gh stack` runs in a worktree of its own, because
   `gh stack init` switches the checkout it runs in.
-- PRs: drafts, titled `[n/total] <story>: <layer>`, each with a link to the issue, the layer's criteria, a table of
-  how it was built, the reviewer's findings to check, and the stack. Review and merge bottom-up. Text the models
+- PRs: drafts, titled `[n/total] <story>: <layer>`, each a body a reviewer can judge without opening the board
+  (`airlie.story.provenance` gathers it from the story's state, events and board, with no model call): the
+  initiative, epic and story it serves and why; the layer's package (done when, files, interfaces, steps); the
+  contract, the layer's tests named under the criterion each covers with the shas they failed and passed at, or
+  "owns no criterion" for an enabling layer; the checks that passed (the red check, the package checks, the gate,
+  the review, the supervisor); how it was built (a table with each role's model), what it cost in minutes and
+  tokens, and any blocks; the reviewer's findings to check; and the stack, with the story it stacks on when it
+  depends on another. A section whose source is empty is left out (a story with no epic has no epic line; a layer
+  built before packages shows its scope and brief). Review and merge bottom-up. Text the models
   wrote is defused (a zero-width space goes after `@`, `<` and `&`, and between `#` and the digits after it), so a PR
   notifies no one, links no `#123` reference and renders no HTML from it.
 - Commits: one per layer, authored and committed by `airlie <airlie@local>`, or by the bot when you publish as one,

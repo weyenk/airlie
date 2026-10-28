@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -83,13 +84,41 @@ def delete_branch(repo: Path, branch: str) -> None:
     _git(repo, "branch", "-D", branch)
 
 
+_TRAILER_KEY = re.compile(r"[A-Za-z-]+")
+_TRAILER_VALUE_BAD = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+
+
+def _trailers(trailers: Mapping[str, str]) -> str:
+    """`trailers` as git trailer lines, in order. A key is letters and hyphens; a value is one line with no
+    control character or line separator, so a value can never start a trailer or a paragraph of its own. A
+    ValueError names the trailer, before any git call: a commit message is where provenance must not be
+    forged."""
+    lines = []
+    for key, value in trailers.items():
+        if not _TRAILER_KEY.fullmatch(key):
+            raise ValueError(f"trailer key {key!r} must be letters and hyphens")
+        if _TRAILER_VALUE_BAD.search(value):
+            raise ValueError(f"trailer {key} must be one line with no control characters")
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
 def squash_since(
-    worktree: Path, base_sha: str, message: str, *, author: tuple[str, str] | None = None
+    worktree: Path,
+    base_sha: str,
+    message: str,
+    *,
+    author: tuple[str, str] | None = None,
+    trailers: Mapping[str, str] | None = None,
 ) -> str:
     """Everything since `base_sha`, committed or not, as one commit; returns its sha. A stacked PR then shows
     one reviewable commit instead of the studio's WIP rounds. `author` (name, email), airlie by default (a
     GitHub App's bot when the story publishes as one), is its author and its committer, whatever
-    GIT_AUTHOR_* or GIT_COMMITTER_* in the environment say: they would win over user.name and user.email."""
+    GIT_AUTHOR_* or GIT_COMMITTER_* in the environment say: they would win over user.name and user.email.
+    `trailers` (P6, 2026-10-25) end the message after a blank line, one `Key: value` line each in the order
+    given, for `git interpret-trailers` to read: keys, numbers and shas, never model text (`_trailers`)."""
+    if trailers:
+        message = f"{message}\n\n{_trailers(trailers)}"
     name, email = author or AIRLIE
     who = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email}
     who |= {"GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
