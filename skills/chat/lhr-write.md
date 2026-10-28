@@ -55,7 +55,7 @@ Work in this order, and show her each piece before moving on, so she can say "mo
 
 ## Handing it over
 
-When she's happy, give the whole draft in one block she can copy: title, excerpt, story, then ingredients and steps
-or the sections, then the alt text. Finish by telling her to paste it into Claude.ai with the `lhr-authoring`
-connector and say "start a recipe (or article) with this", add at least one photo, check the preview, and confirm
-to publish. `/lhr-site-help` walks through that last part.
+When she's happy, give the whole draft in one block: title, excerpt, story, then ingredients and steps or the
+sections, then the alt text. Finish by telling her to run **/lhr-publish** in this Chat: attach at least one photo
+with +, let the tools save and preview the post, and say clearly when she wants it to go live. `/lhr-site-help`
+still describes the older Claude.ai connector until that guide is updated.

@@ -91,6 +91,28 @@ roles:
       top_k: 20
       min_p: 0.0
       presence_penalty: 0.0
+  lhr:                             # LHR authoring via lhr-office (Chat /lhr-publish only; not a chat model name)
+    prompt: prompts/roles/lhr.md
+    model: generalist
+    tools:
+      - lhr_create_draft
+      - lhr_update_section
+      - lhr_set_recipe
+      - lhr_upload_photo
+      - lhr_preview
+      - lhr_publish
+      - lhr_list_drafts
+    max_steps: 12
+    max_context: 131072
+    max_tokens: 16384
+    thinking: true
+    thinking_budget: 8192
+    sampling:
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 20
+      min_p: 0.0
+      presence_penalty: 0.0
   architect:
     prompt: prompts/roles/architect.md
     model: generalist
