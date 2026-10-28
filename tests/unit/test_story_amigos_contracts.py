@@ -317,3 +317,15 @@ def test_a_vitest_test_is_proposed_at_its_web_level_under_that_directory() -> No
     stray["tests"][1]["file"] = "src/Profile.test.ts"
     with pytest.raises(StoryError, match="is not under web/"):
         parse_proof(stray, STORY, LAYERS, levels, GUIDELINES)
+
+
+def test_a_unittest_name_written_with_a_dot_is_its_class_and_method_id() -> None:
+    """Roman noise run 6 (2026-10-28): the proof agreed `RomanTest.test_x`, as unittest itself writes it, and
+    the package's `RomanTest::test_x` matched none of them: sent back twice, then blocked."""
+    obj = {"type": "proof", "tests": copy.deepcopy(GOOD["tests"])}
+    obj["tests"][0]["name"] = "StoreTest.test_saves_a_profile"
+    obj["tests"][1]["name"] = "test_plain.with_a_dot"  # not Class.test_x: left as written
+    proof = parse_proof(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert proof[0].name == "StoreTest::test_saves_a_profile"
+    assert proof[0].id.endswith("::StoreTest::test_saves_a_profile")
+    assert proof[1].name == "test_plain.with_a_dot"

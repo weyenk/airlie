@@ -191,6 +191,8 @@ def _proof_entry(
         )
     file = _test_path(_field(t, "file", where), level, levels, where)
     name = _one_line(_field(t, "name", where), f"{where}: name", 200)
+    if not is_js_test(file):  # unittest's own spelling, Class.test_x, is the id's Class::test_x
+        name = _DOTTED_METHOD.sub(r"\1::\2", name)
     guideline = _field(t, "guideline", where, required=False) or None
     if guideline is not None and guideline not in guidelines:
         raise StoryError(
@@ -207,6 +209,12 @@ def _proof_entry(
         _field(t, "asserts", where),
         _field(t, "needs", where, required=False),
     )
+
+
+_DOTTED_METHOD = re.compile(r"^([A-Za-z_]\w*)\.(test\w*)$")
+"""A pytest name written as unittest writes it (RomanTest.test_x): the proof's ids are file::Class::test_x,
+and a package's covers name them that way, so the dotted form matched none (roman, 2026-10-28: a package
+sent back twice for 7 tests it covered, then blocked)."""
 
 
 def parse_proof_entries(
