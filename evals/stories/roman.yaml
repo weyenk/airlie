@@ -1,0 +1,15 @@
+# A story the bench builds end to end (task bench:story -- roman): one small module with an exact answer, so
+# the time, the tokens and the retries of a pipeline change are read against a quality that does not move.
+# First run 2026-10-25/26 on airlie-sandbox (docs/bench/2026-10-26-planning-line.md): today's pipeline built
+# it in 106 minutes, the planning line's first complete run in 341.
+id: roman
+request: >-
+  Add sandbox/roman.py with to_roman(n: int) -> str and from_roman(s: str) -> int for 1 to 3999. Both raise
+  ValueError on input outside that range or a malformed numeral. Cover it with unittest in tests/test_roman.py.
+repo: weyenk/airlie-sandbox     # its clone under story.repos_root; the story publishes there, the bench closes the PRs
+base: 614384df3908fd705bd48a281136a3091c006459   # the trunk the first runs built on; a run on another says so
+oracle: roman_oracle.py         # beside this file; run in its own process against the final branch
+mutate: sandbox/roman.py        # the file the mutation score plants its bugs in
+budgets:                        # what a run is held to; anything over is a regression line, never a stop
+  wall_min: 180
+  oracle: all                   # every case of the written spec passes

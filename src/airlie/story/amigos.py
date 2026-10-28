@@ -54,7 +54,7 @@ from airlie.story.model import (
 )
 from airlie.teams.autogen_team import build_function_tools, build_model_client
 from airlie.tools import ToolRegistry
-from airlie.tools.scope import is_test_module
+from airlie.tools.scope import is_js_test, is_test_module
 from airlie.topology.studio_plan import extract_json_block
 
 Part = Literal["requirements", "changes", "proof"]
@@ -67,14 +67,22 @@ PROOF_CONTRACT = """Post the proof plan as one ```json block holding exactly one
  "name": "test_what_it_proves", "level": "unit", "guideline": "unit",
  "asserts": "the exact value, message or state users observe", "needs": "fixtures, fakes, state"}]}
 Each test names the level of the repository's test tree it lives at (a directory under tests/) and a file under
-it; guideline is a file of the guideline library, or omitted when the repository or the level has none. Every
+it. A Vitest level (the repository's JS tests, such as web) takes a file under that directory, such as
+web/src/screens/Wiki.test.ts, and the test's it(...) title as its name, "Describe title > it title" when it sits
+in a describe: a Vue layer is proven there. guideline is a file of the guideline library, or omitted when the
+repository or the level has none. Every
 criterion needs at least one test and every layer at least one. criterion is null for a test that proves a
-behaviour of a layer with no criterion."""  # noqa: E501
+behaviour of a layer with no criterion. A criterion no test can prove because the test gate itself proves it
+(the whole suite passes, the new tests are found) is one entry {"criterion": "AC9", "layer": "<slug>",
+"gate": true}, with no file and no name: never a test that runs the test runner."""  # noqa: E501
 
 VERDICT_CONTRACT = """End every turn with your verdict, one ```json block holding exactly one object:
 {"type": "verdict", "requirements": "agree" | "object", "changes": "agree" | "object", "proof": "agree" | "object",
  "objections": [{"part": "proof", "about": "AC2", "claim": "one sentence", "suggest": "one sentence"}]}
 Object to a part only with an objection for it; never object to your own part."""  # noqa: E501
+
+
+GATE_ASSERTS = "the layer's test gate passes"
 
 
 @dataclass(frozen=True)
@@ -90,11 +98,14 @@ class ProofTest:
     guideline: str | None
     asserts: str
     needs: str
+    gate: bool = False
+    """A criterion only the test gate can prove (the whole suite passes, the new tests are found): no test,
+    no file; the gate every layer passes proves it (airlie-sandbox runs 7 and 11, 2026-10-26)."""
 
     @property
     def id(self) -> str:
-        """Its pytest node id from the repository's root: "file::name"."""
-        return f"{self.file}::{self.name}"
+        """Its pytest node id from the repository's root, "file::name"; a gate entry's, "gate:<criterion>"."""
+        return f"gate:{self.criterion}" if self.gate else f"{self.file}::{self.name}"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -111,6 +122,7 @@ class ProofTest:
             None if guide is None else str(guide),
             str(d["asserts"]),
             str(d.get("needs") or ""),
+            bool(d.get("gate", False)),
         )
 
 
@@ -127,30 +139,88 @@ def _field(d: Mapping[str, Any], key: str, where: str, *, required: bool = True)
 
 def _test_path(path: str, level: str, levels: Mapping[str, int], where: str) -> str:
     """`path` as a repository path under the test tree's `level`, or a StoryError. `tests/<level>/`, or
-    `tests/` when the one level is `tests` itself; never absolute and never climbing out."""
+    `tests/` when the one level is `tests` itself; a Vitest file is under its level's own directory (`web/`,
+    the web-tests design, 2026-10-27); never absolute and never climbing out."""
     clean = path.removeprefix("./")
     parts = PurePosixPath(clean).parts
     if not clean or clean.startswith("/") or ".." in parts:
         raise StoryError(f"{where}: file {path!r} must be a path inside the repository, from its root")
+    if is_js_test(clean):
+        if not clean.startswith(f"{level}/"):
+            raise StoryError(f"{where}: file {path!r} is not under {level}/ (its level is '{level}')")
+        return clean
     prefix = "tests/" if level == "tests" else f"tests/{level}/"
     if not clean.startswith(prefix):
         raise StoryError(f"{where}: file {path!r} is not under {prefix} (its level is '{level}')")
     if not is_test_module(clean):
-        raise StoryError(f"{where}: file {path!r} is not a pytest test module (test_*.py or *_test.py)")
+        raise StoryError(
+            f"{where}: file {path!r} is not a test file (a pytest test_*.py, or a Vitest *.test.ts)"
+        )
     return clean
 
 
-def parse_proof(
+def _proof_entry(
+    t: Any,
+    where: str,
+    criteria: Collection[str],
+    slugs: Collection[str],
+    levels: Mapping[str, int],
+    guidelines: Collection[str],
+) -> ProofTest:
+    """One entry of a proof plan as a ProofTest, or a StoryError saying what is wrong with it. A level the
+    repository's test tree lacks is its one level when it has only one (a flat tests/ directory)."""
+    if not isinstance(t, dict):
+        raise StoryError(f"{where} must be an object")
+    crit = t.get("criterion")
+    if crit is not None and str(crit) not in criteria:
+        raise StoryError(f"{where}: criterion {crit!r} is not in the story; it has {sorted(criteria)}")
+    layer = _field(t, "layer", where)
+    if layer not in slugs:
+        raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
+    if t.get("gate") is True:
+        if crit is None:
+            raise StoryError(f"{where}: a gate entry names the criterion the gate proves")
+        return ProofTest(str(crit), layer, "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+    level = _field(t, "level", where)
+    if level not in levels and len(levels) == 1:
+        level = next(iter(levels))  # the one level there is
+    if level not in levels:
+        raise StoryError(
+            f"{where}: level {level!r} is no directory of the repository's test tree; "
+            f"its levels are {sorted(levels)}"
+        )
+    file = _test_path(_field(t, "file", where), level, levels, where)
+    name = _one_line(_field(t, "name", where), f"{where}: name", 200)
+    guideline = _field(t, "guideline", where, required=False) or None
+    if guideline is not None and guideline not in guidelines:
+        raise StoryError(
+            f"{where}: guideline {guideline!r} is no file of the guideline library "
+            f"({sorted(guidelines)}); omit it when none fits"
+        )
+    return ProofTest(
+        None if crit is None else str(crit),
+        layer,
+        file,
+        name,
+        level,
+        guideline,
+        _field(t, "asserts", where),
+        _field(t, "needs", where, required=False),
+    )
+
+
+def parse_proof_entries(
     obj: dict[str, Any] | None,
     story: Story,
     layers: tuple[Layer, ...],
     levels: Mapping[str, int],
     guidelines: Collection[str],
-) -> tuple[ProofTest, ...]:
-    """The tester's proof plan as ProofTests. A StoryError (the reason for the next turn) when: there is no
-    JSON, its type is not "proof", a test has a criterion the story lacks, a layer not in the split, a level
-    the repository's test tree lacks, a file outside `tests/<level>/`, a guideline not in the library, or two
-    tests share an id; and, all together, when a criterion of the story or a layer has no test."""
+) -> tuple[tuple[ProofTest, ...], list[str]]:
+    """The proof plan's usable entries and what is wrong with each of the others, entry by entry: one bad
+    entry no longer costs the plan its good ones (the roman bench, 2026-10-26: three proofs refused whole for
+    one entry each, and the meeting ended with none). A StoryError only when there is no plan to read: no
+    JSON, a type that is not "proof", or no tests list. Whether every criterion and layer has a test is the
+    checker's to say."""
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "proof":
@@ -161,50 +231,42 @@ def parse_proof(
     criteria = {c.id for c in story.acceptance}
     slugs = {x.slug for x in layers}
     tests: list[ProofTest] = []
+    problems: list[str] = []
     seen: set[str] = set()
     for n, t in enumerate(raw, 1):
-        where = f"proof test {n}"
-        if not isinstance(t, dict):
-            raise StoryError(f"{where} must be an object")
-        crit = t.get("criterion")
-        if crit is not None and str(crit) not in criteria:
-            raise StoryError(f"{where}: criterion {crit!r} is not in the story; it has {sorted(criteria)}")
-        layer = _field(t, "layer", where)
-        if layer not in slugs:
-            raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
-        level = _field(t, "level", where)
-        if level not in levels:
-            raise StoryError(
-                f"{where}: level {level!r} is no directory of the repository's test tree; "
-                f"its levels are {sorted(levels)}"
-            )
-        file = _test_path(_field(t, "file", where), level, levels, where)
-        name = _one_line(_field(t, "name", where), f"{where}: name", 200)
-        guideline = _field(t, "guideline", where, required=False) or None
-        if guideline is not None and guideline not in guidelines:
-            raise StoryError(
-                f"{where}: guideline {guideline!r} is no file of the guideline library "
-                f"({sorted(guidelines)}); omit it when none fits"
-            )
-        test = ProofTest(
-            None if crit is None else str(crit),
-            layer,
-            file,
-            name,
-            level,
-            guideline,
-            _field(t, "asserts", where),
-            _field(t, "needs", where, required=False),
-        )
+        try:
+            test = _proof_entry(t, f"proof test {n}", criteria, slugs, levels, guidelines)
+        except StoryError as e:
+            problems.append(str(e))
+            continue
         if test.id in seen:
-            raise StoryError(f"test id {test.id} appears twice in the proof; give each test its own name")
+            problems.append(f"test id {test.id} appears twice in the proof; give each test its own name")
+            continue
         seen.add(test.id)
         tests.append(test)
-    problems = [f"criterion {c} has no test" for c in sorted(criteria - {t.criterion for t in tests})]
-    problems += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests})]
+    return tuple(tests), problems
+
+
+def parse_proof(
+    obj: dict[str, Any] | None,
+    story: Story,
+    layers: tuple[Layer, ...],
+    levels: Mapping[str, int],
+    guidelines: Collection[str],
+) -> tuple[ProofTest, ...]:
+    """The tester's proof plan as ProofTests, all of it or a StoryError (the reason for the next try): every
+    entry must parse (`parse_proof_entries`), and every criterion of the story and every layer needs a
+    test (a gate entry proves its criterion; it is no layer's test)."""
+    tests, problems = parse_proof_entries(obj, story, layers, levels, guidelines)
     if problems:
-        raise StoryError("; ".join(problems) + ": every criterion and every layer needs a test in the proof")
-    return tuple(tests)
+        raise StoryError("; ".join(problems))
+    criteria = {c.id for c in story.acceptance}
+    slugs = {x.slug for x in layers}
+    missing = [f"criterion {c} has no test" for c in sorted(criteria - {t.criterion for t in tests})]
+    missing += [f"layer '{s}' has no test" for s in sorted(slugs - {t.layer for t in tests if not t.gate})]
+    if missing:
+        raise StoryError("; ".join(missing) + ": every criterion and every layer needs a test in the proof")
+    return tests
 
 
 @dataclass(frozen=True)
@@ -561,7 +623,10 @@ def read_turn(role: str, text: str, standing: Standing, rules: ReadRules) -> Tur
                 layers = parse_layers(obj, story, rules.max_layers)
                 parts["changes"] = layers
             else:
-                parts["proof"] = parse_proof(obj, story, layers, rules.levels, rules.guidelines)
+                proof, wrong = parse_proof_entries(obj, story, layers, rules.levels, rules.guidelines)
+                problems += [Finding("part_invalid", role, f"in your proof: {w}", "") for w in wrong]
+                if proof:  # its usable tests stand; the checker names what is still unproven
+                    parts["proof"] = proof
         except StoryError as e:
             problems.append(Finding("part_invalid", role, f"your {part} was not used: {e}", ""))
     return Turn(role, text, verdict, parts, tuple(problems))
@@ -622,11 +687,7 @@ class Checker(BaseChatAgent):
             since.append(turn)
         found = [p for turn in since for p in turn.problems]
         if standing.proof is None:
-            found.append(
-                Finding(
-                    "part_invalid", "tester", "no proof plan has been posted yet: the tester posts it", ""
-                )
-            )
+            found.append(Finding("part_invalid", "tester", no_proof_why(self._turns), ""))
         else:
             found += check_agreement(
                 standing.story, standing.layers, standing.proof, self._repo, self._base, self._max_scope_files
@@ -636,6 +697,23 @@ class Checker(BaseChatAgent):
 
     async def on_reset(self, cancellation_token: CancellationToken) -> None:
         self.last = ()
+
+
+NO_PROOF = (
+    "no proof plan has been posted yet: the tester posts it, whole, in its own ```json block "
+    '{"type": "proof", "tests": [...]} before its verdict; saying a proof "stands as posted" posts nothing'
+)
+
+
+def no_proof_why(turns: Sequence[Turn]) -> str:
+    """What the checker tells the tester while no proof is on record, naming any role that posted one in
+    its place (roman, 2026-10-27: the tester's first turn ended with no part, product posted the proof in
+    the tester's voice, and the tester, taking that post for its own, said for 25 turns that its proof
+    "stands as posted")."""
+    posted = sorted({t.role for t in turns for p in t.problems if p.why.startswith("you posted the proof")})
+    if not posted:
+        return NO_PROOF
+    return f"{NO_PROOF}. The proof {' and '.join(posted)} posted is not the tester's and was not used"
 
 
 class OneTurn(TerminationCondition):
@@ -663,14 +741,17 @@ class OneTurn(TerminationCondition):
 
 class AgreementReached(TerminationCondition):
     """The meeting's end by agreement: the latest message of each of the three roles carries a verdict that
-    agrees to every part, none of them was written before the last part was posted (a verdict on a plan its
-    speaker has not seen is no agreement), and the checker's latest message, after that, is "no findings".
+    agrees to every part, none of them was written before the last part was changed (a verdict on a plan its
+    speaker has not seen is no agreement; a part posted again unchanged changes nothing, lever 3 of the roman
+    bench, 2026-10-26), and the checker's latest message, after that, is "no findings".
     It keeps the history it sees across the one-turn runs, and `observe` feeds it a saved thread."""
 
     def __init__(self) -> None:
         self._seq = 0
         self._verdicts: dict[str, tuple[int, Verdict | None]] = {}
         self._revised = 0
+        self._posted: dict[Part, str] = {}
+        """Each part as its owner last posted it, as canonical JSON: posted again unchanged, no revision."""
         self._checker: tuple[int, bool] | None = None
         self._stopped = False
 
@@ -692,9 +773,14 @@ class AgreementReached(TerminationCondition):
             except StoryError:
                 verdict = None
             self._verdicts[m.source] = (self._seq, verdict)
-            owned = [part_of(o) for o in json_blocks(m.content)]
-            if any(p is not None and OWNER[p] == m.source for p in owned):
-                self._revised = self._seq
+            for obj in json_blocks(m.content):
+                part = part_of(obj)
+                if part is None or OWNER[part] != m.source:
+                    continue
+                text = json.dumps(obj, sort_keys=True)
+                if self._posted.get(part) != text:  # a part posted again as it stands leaves the verdicts
+                    self._posted[part] = text
+                    self._revised = self._seq
 
     def agreed(self) -> bool:
         """Whether the meeting as observed so far has reached agreement."""
@@ -1042,7 +1128,13 @@ def http_clients(cfg: AirlieConfig) -> ClientFactory:
 
     def make(role_name: str, spec: RoleSpec) -> ChatCompletionClient:
         engine = cfg.engines[cfg.engine_for_model(spec.model)]
-        return build_model_client(engine.base_url or "", engine.served_name(spec.model), spec, engine.api_key)
+        return build_model_client(
+            engine.base_url or "",
+            engine.served_name(spec.model),
+            spec,
+            engine.api_key,
+            model=cfg.models.get(spec.model),
+        )
 
     return make
 

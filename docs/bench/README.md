@@ -54,6 +54,24 @@ design's original criterion is not met; the per-run analysis and the two defects
 column, not a bar; studio is benched on multi-role tasks (`studio_feature`: 1 of 2 passed, the miss traced to
 the delegate bug fixed the same day), and `single` stays the default topology.
 
+## Story bench (`task bench:story`, from 2026-10-26)
+
+A fixed request built end to end by the story pipeline, on a state directory of its own (no lessons, board or
+runs of an earlier run), so a pipeline change is read against the same work. The cases are in `evals/stories/`;
+`roman` (a 51-line module in weyenk/airlie-sandbox with an exact answer) is the first. A run holds the engine
+for hours, so it runs on demand, never in CI:
+
+```bash
+task bench:story -- roman --baseline docs/bench/story-roman-<earlier>.json
+```
+
+It records `story-<case>-<time>.json` here: what the run cost (the phases, tokens and tokens per second by role
+and phase, the retries: meeting turns and objections, package attempts, critic objections, gate re-plans,
+supervisor triages) and how good its top branch is (its own gate, the case's oracle for the written spec, the
+mutation score of its own tests, its tests and assertions). It closes the PRs it published and deletes their
+branches, and prints the case's budgets as regression lines and, with `--baseline`, the deltas
+(`task bench:story-compare -- a.json b.json` for two saved records).
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported

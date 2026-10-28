@@ -107,6 +107,27 @@ def extract_json_block(text: str) -> dict[str, Any] | None:
     return extract_json(body) if body.startswith("{") else None
 
 
+def json_block_problem(text: str) -> str | None:
+    """Why the object under the last ```json fence of `text` does not parse: json's message, where, and the
+    text just before it; None when there is no such block, or it parses. A role told only that there was
+    "no JSON object" rewrote the same broken object three times (roman, 2026-10-27: a layers list left
+    unclosed before "refine")."""
+    openers = list(_OPENER.finditer(text))
+    body = text[openers[-1].end() :].lstrip() if openers else ""
+    if not body.startswith("{"):
+        return None
+    try:
+        json.JSONDecoder().raw_decode(body)
+    except json.JSONDecodeError as e:
+        before = body[max(0, e.pos - 80) : e.pos]
+        return (
+            f"the ```json block is not valid JSON: {e.msg} at line {e.lineno} column {e.colno}, just after "
+            f"{before!r}. Check that every [ and {{ is closed in order, then write the whole object again in "
+            "one ```json block"
+        )
+    return None
+
+
 def plan_to_dict(plan: Plan) -> dict[str, Any]:
     """The chief's own plan shape, so a person reads and edits what the chief writes."""
     return {

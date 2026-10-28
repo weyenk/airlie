@@ -133,7 +133,7 @@ def flawed(flaw: str) -> str:
         ("no_json", "no JSON object"),
         ("wrong_type", '"type": "package"'),
         ("no_test_file", "no test file"),
-        ("not_a_test_module", "not a pytest test module"),
+        ("not_a_test_module", "not a test file"),
         ("path_escapes", "inside the repository"),
         ("empty_steps", "steps"),
         ("covers_unknown_criterion", "AC9"),
@@ -168,6 +168,30 @@ def test_a_class_test_and_a_parametrized_id_name_a_test_in_the_file() -> None:
         reply(tests={PATH: text}, covers={"AC1": [f"{PATH}::TestStore::test_a[x]"]}), LAYER, STORY
     )
     assert p.test_ids == (f"{PATH}::TestStore::test_a[x]",)
+
+
+UNITTEST = (
+    "import unittest\n\n\nclass RomanTest(unittest.TestCase):\n"
+    "    def test_a(self) -> None:\n        self.assertEqual(1, 1)\n"
+)
+
+
+def test_a_unittest_case_of_any_name_holds_tests_and_a_bare_name_resolves_to_its_method() -> None:
+    """The first real run on a unittest repository (airlie-sandbox, 2026-10-25): the architect mirrored the
+    repository's `VersionTest(unittest.TestCase)` and covered the agreed ids as the meeting wrote them, with
+    no class; both are the tests of the file, and the id is stored as the test's full id."""
+    p = parse_package(reply(tests={PATH: UNITTEST}, covers={"AC1": [f"{PATH}::test_a"]}), LAYER, STORY)
+    assert p.covers == {"AC1": (f"{PATH}::RomanTest::test_a",)}
+    p = parse_package(
+        reply(tests={PATH: UNITTEST}, covers={"AC1": [f"{PATH}::RomanTest::test_a"]}), LAYER, STORY
+    )
+    assert p.test_ids == (f"{PATH}::RomanTest::test_a",)
+
+
+def test_a_bare_name_two_classes_define_names_no_one_test() -> None:
+    text = UNITTEST + "\n\nclass OtherTest(unittest.TestCase):\n    def test_a(self) -> None:\n        pass\n"
+    with pytest.raises(StoryError, match="names a test in no test file"):
+        parse_package(reply(tests={PATH: text}, covers={"AC1": [f"{PATH}::test_a"]}), LAYER, STORY)
 
 
 def test_the_contract_names_the_heading_and_the_json_shape() -> None:
@@ -223,3 +247,47 @@ def test_a_test_with_no_criterion_is_covered_under_behaviour() -> None:
         parse_package(
             reply(covers={"AC1": [f"{PATH}::test_a"], "behaviour": [f"{PATH}::test_zzz"]}), LAYER, STORY
         )
+
+
+def test_a_criterion_the_agreed_proof_leaves_to_the_gate_needs_no_covers() -> None:
+    p = parse_package(reply(covers={}), LAYER, STORY, gated={"AC1"})
+    assert p.covers == {}
+    with pytest.raises(StoryError, match="no test covers it"):
+        parse_package(reply(covers={}), LAYER, STORY)
+
+
+WEB = "web/src/screens/Wiki.test.ts"
+WEB_TEXT = """import { describe, it, expect } from "vitest";
+
+describe("Wiki screen", () => {
+  it("lists the topics", () => {
+    expect(1).toBe(1);
+  });
+});
+"""
+
+
+def test_a_package_carries_a_vitest_file_and_covers_its_tests_by_their_vitest_names() -> None:
+    """The web-tests design (2026-10-27): a Vue layer's tests are Vitest tests; the agreed id may be the full
+    name or its last part when that names one test."""
+    p = parse_package(
+        reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::Wiki screen > lists the topics"]}), LAYER, STORY
+    )
+    assert list(p.tests) == [WEB] and p.test_ids == (f"{WEB}::Wiki screen > lists the topics",)
+    short = parse_package(
+        reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::lists the topics"]}), LAYER, STORY
+    )
+    assert short.test_ids == (f"{WEB}::Wiki screen > lists the topics",)
+    with pytest.raises(StoryError, match="names a test in no test file"):
+        parse_package(reply(tests={WEB: WEB_TEXT}, covers={"AC1": [f"{WEB}::shows a page"]}), LAYER, STORY)
+
+
+def test_a_vitest_file_comes_in_a_ts_fence_and_the_contract_says_which_fence_is_whose() -> None:
+    """Wiki run B (2026-10-27): the architect wrote web/src/router.test.ts in a ```ts block, as it should, and
+    the parser took only ```python blocks: the draft was refused as "never closed"."""
+    from airlie.story.package import PACKAGE_CONTRACT, test_files_in
+
+    for lang in ("ts", "typescript", "tsx", "js", "javascript"):
+        text = f"### test file: {WEB}\n```{lang}\n{WEB_TEXT}```\n\n```json\n{{}}\n```\n"
+        assert test_files_in(text) == {WEB: WEB_TEXT}, lang
+    assert "```ts" in PACKAGE_CONTRACT and "```python" in PACKAGE_CONTRACT

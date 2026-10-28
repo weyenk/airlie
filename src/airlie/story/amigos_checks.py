@@ -84,7 +84,7 @@ def check_proof(proof: Sequence[ProofTest], story: Story, layers: Sequence[Layer
         for c in story.acceptance
         if c.id not in proved
     ]
-    with_tests = {t.layer for t in proof}
+    with_tests = {t.layer for t in proof if not t.gate}  # the gate proves every layer alike
     found += [
         Finding("layer_unproven", x.slug, "no test of the proof plan belongs to this layer", "")
         for x in layers

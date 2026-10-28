@@ -389,6 +389,19 @@ class NativeTeam:
             completion_tokens += res.completion_tokens
             calls = res.tool_calls[:1]  # one action per step: later calls in a "plan" are often argument-less
             content = res.text
+            if not calls and ctx.emit is not None:  # a `step` is a call that ran a tool: this one ran none
+                ctx.emit(
+                    "reply",
+                    team_id=ctx.team_id,
+                    role=ctx.role_name,
+                    model=ctx.role.model,
+                    prompt_tokens=res.prompt_tokens,
+                    completion_tokens=res.completion_tokens,
+                    reasoning_chars=len(res.reasoning),
+                    answer_chars=len(res.text),
+                    prefill_ms=round(prefill_ms, 1),
+                    gen_ms=round(gen_ms, 1),
+                )
             if toolless and res.finish_reason != "length" and (calls or UNPARSED_CALL.search(res.text)):
                 if corrected:
                     final_text = "stopped: two replies in a row called tools, and this role has none"

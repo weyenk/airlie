@@ -9,6 +9,7 @@ Behaviour is the pipeline's from before the move; nothing here is new."""
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any, Protocol
 
 from airlie.config import AirlieConfig
 from airlie.story.fixes import line_event
-from airlie.story.model import StoryError
+from airlie.story.model import StoryError, unusable_why
 from airlie.story.phase import fanout, wait_for_gap
 from airlie.story.rounds import plan_in_rounds
 from airlie.story.state import Lane
@@ -49,6 +50,16 @@ class Recorder(Protocol):
     def save(self) -> None: ...
 
     def emit(self, kind: str, **fields: Any) -> None: ...
+
+
+_RUNAWAY = re.compile(r"(.{1,8}?)\1{60,}$", re.DOTALL)
+
+
+def runaway_repeat(text: str) -> str | None:
+    """The unit a cut-off reply was repeating when it stopped (`"I"`: run 9 on airlie-sandbox, 2026-10-26,
+    product's refine wrote `from_roman("IIII…` to max_tokens); None when its end is no runaway repeat."""
+    found = _RUNAWAY.search(text.rstrip()[-2000:])
+    return found.group(1) if found else None
 
 
 class Asker:
@@ -125,6 +136,12 @@ class Asker:
         with the same config meets the same cap, so it is no StoryError, which is retried with its text in
         the model's prompt)."""
         if team is not None and team.stop_reason == "cut_off":
+            unit = runaway_repeat(str(team.final_text or ""))
+            if unit is not None:  # a loop, not a reply too long for its room: another try is worth it
+                raise StoryError(
+                    f"your reply repeated {unit!r} over and over until it was cut off: write it again, "
+                    "complete, with no run of repeats"
+                )
             raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
         if team is None or not team.ok:
             raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
@@ -277,9 +294,11 @@ class Asker:
         reads (default the record's base). `ask` replaces `Asker.ask` (planning in rounds)."""
         feedback: str | None = None
         for _ in range(attempts or self.s.stage_attempts):
+            reply = ""
             try:
-                return parse(await (ask or self.ask)(st, stage, role, brief(feedback), at))
+                reply = await (ask or self.ask)(st, stage, role, brief(feedback), at)
+                return parse(reply)
             except StoryError as e:
-                feedback = str(e)
+                feedback = unusable_why(e, reply)
                 st.emit("retry", stage=stage, error=feedback)
         raise StoryBlocked(f"{role} did not produce a usable {what}: {feedback}")

@@ -92,3 +92,26 @@ def test_conventions_text_lists_gate_levels_guidelines_and_the_routed_one_in_ful
     plain = conventions_text(conventions(root, sha, None, None), [])
     assert "Keep it fast." not in plain and "no guideline library" in plain
     assert isinstance(skills["unit"], Skill)
+
+
+def test_a_top_level_directory_with_vitest_files_is_a_level_of_its_own(tmp_path: Path) -> None:
+    """The web-tests design (2026-10-27): airlie's 68 Vitest files under web/ are a level, `web`, beside the
+    pytest levels, so the tester can name a Vue layer's tests; node_modules never counts."""
+    root, sha = repo(
+        tmp_path,
+        {
+            "tests/unit/test_a.py": MOD,
+            "web/src/router.test.ts": "it('x', () => { expect(1).toBe(1) })\n",
+            "web/src/stores/a.spec.ts": "it('y', () => { expect(1).toBe(1) })\n",
+            "web/node_modules/pkg/b.test.js": "",
+            "web/src/Wiki.vue": "<template/>",
+        },
+    )
+    assert tc.test_levels(root, sha) == {"unit": 1, "web": 2}
+    c = conventions(root, sha, None, None)
+    assert c.js_levels == {"web": 2}
+    text = conventions_text(c, ["task web:gate"])
+    assert "unit: 1 test module" in text
+    assert (
+        "web: 2 Vitest files (under web/, named it(...) titles, `describe > title` inside a describe)" in text
+    )

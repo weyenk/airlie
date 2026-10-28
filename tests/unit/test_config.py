@@ -323,9 +323,12 @@ def test_the_committed_config_loads_under_every_topology_and_profile() -> None:
 
 def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_with() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio")
-    for name in ("chief", "architect", "research"):
+    for name in ("chief", "research"):
         role = cfg.roles[name]
         assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
+    # the architect thinks in 2,048 since 2026-10-26 (the roman bench, lever 1): the same room to answer
+    architect = cfg.roles["architect"]
+    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 2048, 16384)
     coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 
@@ -1060,12 +1063,13 @@ def test_the_committed_coder_has_a_write_schedule_and_a_schedule_must_put_tests_
         load_config(write(tmp_path, bad))
 
 
-def test_the_tester_is_a_read_only_critic_on_the_reviewer_model() -> None:
-    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, on
-    the reviewer's model so its reading is not the architect's own, with the QA guidelines and read tools."""
+def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
+    """P2 (2026-10-24): the tester no longer writes tests; it is the third amigo and the package critic, with
+    the QA guidelines and read tools. On the generalist since 2026-10-26 (Noah): on the reviewer's model
+    (Muse) it lost the meeting's thread on airlie-sandbox; the layer's reviewer stays on Muse."""
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
-    assert tester.model == cfg.roles["reviewer"].model and not tester.thinking
+    assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
     assert tester.tools == ["read_file", "list_dir", "grep"]
     assert tester.skills is not None and tester.skills.name == "qa"
 
@@ -1087,7 +1091,8 @@ def test_a_negative_carried_reasoning_chars_is_a_config_error_at_load(tmp_path: 
 
 
 def test_every_thinking_role_in_airlie_yaml_carries_cut_reasoning() -> None:
-    cfg = load_config(Path(__file__).parents[2] / "airlie.yaml")
+    root = Path(__file__).parents[2]
+    cfg = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml")
     thinking = {n: r.carried_reasoning_chars for n, r in cfg.roles.items() if r.thinking}
     assert {"architect"} <= thinking.keys() and all(thinking.values())
 

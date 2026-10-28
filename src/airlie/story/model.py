@@ -7,6 +7,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from airlie.topology.studio_plan import json_block_problem
+
 
 class StoryError(ValueError):
     """A reply that cannot be used; the message goes back to the role with the next attempt."""
@@ -49,6 +51,16 @@ class NoTestGate(Exception):
 
 
 NO_JSON = "no JSON object in the reply; end it with one ```json block"
+
+
+def unusable_why(e: StoryError, reply: str) -> str:
+    """What a role is told when its `reply` was refused with `e`: NO_JSON becomes what is wrong with the
+    ```json block the reply did hold (`json_block_problem`), so the role can mend that block."""
+    if str(e) == NO_JSON:
+        return json_block_problem(reply) or NO_JSON
+    return str(e)
+
+
 ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-\d+", re.ASCII)
 """A Jira issue key (AIR-7); always matched whole (fullmatch), ASCII only (a digit is 0-9, not any script's).
 It names a story's directory, prefixes its branch names and becomes a URL path, so each of those checks it."""

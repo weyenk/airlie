@@ -303,8 +303,28 @@ exist.
 3. Mockups for web work are approved by a person, three options side by side, the line's one pause (N4, D6).
 4. P1 first (N3).
 
-Settled by me after the builder check (say so if any should change): the package is written just before
+Settled by me after the builder check (say so if any should change; the package timing was changed on
+2026-10-26, see the amendment below): the package is written just before
 its layer is built, on the real base, and checked twice (D4, D5); the tester seat as an author goes in P1
 and the repair policy is D2a; the local board is the line's board first and Jira's create side is a later
 project (D1); ready keeps its meaning and an imported backlog is never built unasked (D10); the executor
 seat defaults to the generalist without thinking with the MoE as the experiment (D8).
+
+## Amendment, 2026-10-26: the packages are drafted up front, and checked just in time
+
+Noah, after the roman benchmark on airlie-sandbox: the architect should write the whole plan, as superpowers'
+writing-plans does, not one layer at a time. Run 5 there built a 51-line module in 341 minutes against
+today's 106: four cold package asks, each re-reading the same files (27 of its 37 calls were reads), each
+call thinking to its 8,192-token cap. D4's reason for the timing, that a layer-02 import has nothing to
+resolve against until layer 01 is built, is a reason to *check* each package on its real base, not to
+*write* it there: the boundary interfaces the meeting agreed are what a later layer's tests import.
+
+- Once the agreement stands, the architect drafts every layer's package in one conversation at the story's
+  base: the first turn is layer 01's package brief, each later turn asks for the next layer (its scope,
+  criteria, files and interfaces, and its agreed tests), so the repository is read once and the engine's
+  prefix cache serves the rest. Each draft is parsed as it comes, a reply that cannot be used is answered in
+  the same conversation once, and the tester critic reads each draft; its objections are one revision turn
+  in the same conversation. The drafts are kept in the story's state, so a resume does not draft again.
+- Just before a layer is built, its draft goes through D4's mechanical readiness check on the branch the
+  layers below produced. Only a draft that fails it, a layer with no usable draft, or a gate still red
+  after the build goes back to the architect, as before: a per-layer ask with the findings.

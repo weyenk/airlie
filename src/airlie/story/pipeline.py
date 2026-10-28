@@ -50,9 +50,12 @@ from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
     critic_brief,
+    drafts_brief,
     layer_goal,
     layer_plan,
+    layer_sources,
     layers_brief,
+    next_package_brief,
     package_brief,
     pr_body,
     pr_title,
@@ -130,6 +133,7 @@ _SHORT = {
     "existing_test_fails": "fails with the new tests in place",
     "assertion_free_test": "has no assertion",
     "unparseable_test": "does not parse",
+    "test_type_error": "does not type-check",
     "no_new_test": "(no new test)",
     "suite_did_not_run": "did not run the tests",
     "lint_fails": "fails the gate's lint",
@@ -256,6 +260,11 @@ def _ending(coder: TeamResult | None) -> str:
     if coder is not None and coder.stop_reason in ("cut_off", "context_full"):
         return "out_of_context"
     return "gate_red"
+
+
+def _gated(proof: Sequence[ProofTest]) -> set[str]:
+    """The criteria the agreed proof leaves to the gate: a package needs no test for them."""
+    return {t.criterion for t in proof if t.gate and t.criterion is not None}
 
 
 def _gate_detail(output: str) -> str:
@@ -828,6 +837,7 @@ class StoryPipeline:
         def on_turn(turn: Turn, state: Mapping[str, Any]) -> None:
             st.meeting = dict(state)
             st.save()
+            self._transcribe(st, turn)
             thread = (
                 state.get("agent_states", {}).get("RoundRobinGroupChatManager", {}).get("message_thread", [])
             )
@@ -872,12 +882,35 @@ class StoryPipeline:
         return on_turn
 
     @staticmethod
-    def _forget_meeting(st: StoryState) -> None:
+    def _transcribe(st: StoryState, turn: Turn) -> None:
+        """Append `turn` to the meeting's transcript, `meeting.md` in the story's directory: who spoke, the
+        problems the turn had, and what was said in full. The team's saved state is not kept once a meeting
+        ends, so this is what is left to read of it."""
+        path = st.path / "meeting.md"
+        n = (path.read_text().count("\n## turn ") if path.exists() else 0) + 1
+        kinds = ", ".join(dict.fromkeys(p.kind for p in turn.problems))
+        head = f"## turn {n}: {turn.role}" + (f" ({kinds})" if kinds else "")
+        why = "".join(f"- {p.kind}: {p.why}\n" for p in turn.problems)
+        with path.open("a") as f:
+            f.write(f"\n{head}\n\n{why}{chr(10) if why else ''}{turn.text.strip()}\n")
+
+    @staticmethod
+    def _keep_transcript(st: StoryState) -> None:
+        """Move the ended meeting's transcript to `meetings/<n>.md`: a meeting held again starts its own."""
+        path = st.path / "meeting.md"
+        if path.exists():
+            kept = st.path / "meetings"
+            kept.mkdir(exist_ok=True)
+            path.rename(kept / f"{len(list(kept.glob('*.md'))) + 1}.md")
+
+    @classmethod
+    def _forget_meeting(cls, st: StoryState) -> None:
         """A meeting that ended in a stop (product said the request cannot be built; the agreement cannot
         be built) is not resumed from its history: that would end in the same stop. The next run holds it
-        afresh."""
+        afresh; its transcript is kept."""
         st.meeting = None
         st.save()
+        cls._keep_transcript(st)
 
     async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
@@ -968,6 +1001,7 @@ class StoryPipeline:
         st.layers = [x.to_dict() for x in agreement.layers]
         st.meeting = None
         st.finish("layers")
+        self._keep_transcript(st)
         # after the finish, so a note that cannot be posted never has the meeting held again
         role = self.s.product_role
         await self.board.comment(card, note(agreement_note(agreement)), role=role)
@@ -1122,6 +1156,8 @@ class StoryPipeline:
             if i > 0 and st.base
             else ""
         )
+        if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
+            await self._draft_packages(st, story, layers)
         package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
         attempts = self.s.layer_attempts
         for attempt in range(1, attempts + 1):
@@ -1346,13 +1382,76 @@ class StoryPipeline:
             context_budget=context,
             feedback=feedback,
             proof=proof,
+            sources=layer_sources(self.repo, base_sha, layers[i]),  # lever 2, on the layer's real base
         )
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await self._ask(
                 st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
             )
         self._package_run = st.runs[-1]
-        return parse_package(text, layers[i], story)
+        return parse_package(text, layers[i], story, gated=_gated(proof))
+
+    async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
+        """Every layer's package drafted in one architect conversation at the story's base, before the first
+        layer is built (amendment of 2026-10-26 to the planning-line design): layer 01's package brief opens
+        it (`drafts_brief`), each later turn asks for the next layer (`next_package_brief`), and the tester
+        critic reads each draft, its objections one revision turn in the same conversation. Each draft is
+        kept in `st.drafts` for its layer to take, where the readiness check runs on the real base. A reply
+        that cannot be used is that layer's first try (`{"unusable": why}`) and ends the drafting, as does a
+        proof change (`{"proof_change": ...}`, which its layer takes as its first ask's answer): the layers
+        from there on are asked for one by one, as before. Events: packages_drafting,
+        package_drafted, and for an unusable reply retry and package_returned."""
+        sha = (await self._base(st))["sha"]
+        guide = repo_guide(
+            self.repo,
+            sha,
+            "\n".join(f"{x.scope}\n{x.brief}" for x in layers),
+            budget_chars=guide_budget(self.cfg, [self.s.architect_role, self.s.build_role]),
+        )
+        max_steps, context = self._coder_budget()
+        first = drafts_brief(
+            story,
+            layers,
+            guide=guide,
+            lessons=self.lessons.recent(),
+            max_steps=max_steps,
+            context_budget=context,
+            proof=self._layer_proof(st, layers[0]),
+            sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
+        )
+        st.emit("packages_drafting", layers=len(layers))
+        async with (
+            decoding(self.stories_dir, None),  # a long turn of the build lane's own
+            self.asker.conversation(
+                st, "packages", self.s.architect_role, first, steps=self.s.package_steps, at=sha
+            ) as say,
+        ):
+            run = st.runs[-1]
+            for i, layer in enumerate(layers):
+                nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
+                try:
+                    sources = layer_sources(self.repo, sha, layer)
+                    asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
+                    got = parse_package(await say(asked), layer, story, gated=_gated(proof))
+                    if isinstance(got, Package) and proof:
+                        told = await self._objections(st, layers, i, sha, got, proof)
+                        if told is not None:
+                            got = parse_package(await say(told), layer, story, gated=_gated(proof))
+                except StoryError as e:
+                    st.drafts[nn] = {"unusable": str(e)}
+                    st.emit("retry", stage="package", error=str(e))
+                    st.emit(
+                        "package_returned", layer=nn, attempt=1, kinds=["package_unusable"], studio_run=run
+                    )
+                    break
+                if isinstance(got, ProofChange):  # its layer has the proof revised when it comes to it
+                    st.drafts[nn] = {"proof_change": [list(c) for c in got.changes], "run": run}
+                    break
+                st.drafts[nn] = {"package": got.to_dict(), "run": run}
+                st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
+                st.save()
+        st.drafted = True
+        st.save()
 
     def _layer_proof(self, st: StoryState, layer: Layer) -> tuple[ProofTest, ...]:
         """The tests the agreement holds for `layer`, as it stands now (a revision changes it)."""
@@ -1364,6 +1463,21 @@ class StoryPipeline:
         tester = self.cfg.roles.get("tester")
         found = conventions(self.repo, base_sha, tester.skills if tester is not None else None, None)
         return conventions_text(found, self.commands)
+
+    def _with_tests(self, st: StoryState, base_sha: str, tests: Mapping[str, str]) -> str:
+        """A commit on no branch: `base_sha` with `tests` written over it, for the critic's tools to read
+        the package's test files where its brief says they are (Muse read the base's, absent or an earlier
+        layer's, and objected that the agreed tests were missing: airlie-sandbox, 2026-10-26)."""
+        tree = st.path / "critic-tree"
+        remove_worktree(self.repo, tree)  # one a killed run left behind
+        add_worktree(self.repo, tree, branch=None, start_point=base_sha)
+        try:
+            for path, text in tests.items():
+                (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                (tree / path).write_text(text)
+            return commit_wip(tree, "the package's test files, for the critic")
+        finally:
+            remove_worktree(self.repo, tree)
 
     async def _critique(
         self,
@@ -1382,20 +1496,37 @@ class StoryPipeline:
         objection is the architect's one revision (`package-fix` after the objections); a critic that cannot
         be read, or does not finish, is no objection (an event says so): the mechanical checks follow
         either way. Events: amigos_critic, and an amigos_objection (source "package") per objection."""
+        told = await self._objections(st, layers, i, base_sha, package, proof)
+        if told is None:
+            return package
+        return await self._package(st, story, layers, i, base_sha, built, guide, told, proof)
+
+    async def _objections(
+        self,
+        st: StoryState,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        package: Package,
+        proof: tuple[ProofTest, ...],
+    ) -> str | None:
+        """The critic's read of `package` (see `_critique`): what to tell the architect, ending with
+        `package-fix`, or None when it agrees or cannot be read."""
         nn, layer = f"{i + 1:02d}", layers[i]
         brief = critic_brief(layer, package.tests, proof, self._conventions_text(base_sha))
         try:
+            at = self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(
-                await self._ask(st, "critic", "tester", brief, at=base_sha, steps=CRITIC_STEPS)
+                await self._ask(st, "critic", "tester", brief, at=at, steps=CRITIC_STEPS)
             )
         except (StoryError, StoryBlocked) as e:
             st.emit("amigos_critic_unreadable", layer=nn, reason=_cap(str(e), 300))
-            return package
+            return None
         st.emit(
             "amigos_critic", layer=nn, verdict="object" if objections else "agree", objections=len(objections)
         )
         if not objections:
-            return package
+            return None
         for o in objections:
             st.emit(
                 "amigos_objection",
@@ -1419,7 +1550,7 @@ class StoryPipeline:
             ]
         )
         self._steer(st, said.ids, self.s.architect_role, nn)
-        return await self._package(st, story, layers, i, base_sha, built, guide, told, proof)
+        return told
 
     async def _revise_proof(
         self,
@@ -1540,7 +1671,10 @@ class StoryPipeline:
         StoryBlocked. A gate that does not run pytest gets no red check, and an event says so."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
-            self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement()
+            self.commands,
+            timeout_s=self.timeout_s,
+            confinement=self.cfg.tools.confinement(),
+            node_cache=self.stories_dir.parent / "node_modules",  # a Vitest red check's, once per lock file
         )
         if not checker.runs_red:
             st.emit(
@@ -1551,14 +1685,31 @@ class StoryPipeline:
         kinds: list[str] = []
         package: Package | None = None
         attempt = revisions = 0
+        # the layer's draft, taken once (a re-plan after a red gate comes with feedback and asks afresh)
+        draft = st.drafts.pop(nn, None) if feedback is None else None
+        if draft is not None:
+            st.save()
+            if "unusable" in draft:  # its first try, already on record
+                attempt, feedback, kinds = 1, str(draft["unusable"]), ["package_unusable"]
+                draft = None
         while attempt < self.s.package_attempts:
             attempt += 1
             st.emit("package_start", layer=nn, attempt=attempt)
             proof = self._layer_proof(st, layer)
+            got: Package | ProofChange
             try:
-                got = await self._package(st, story, layers, i, base_sha, built, guide, feedback, proof)
-                if isinstance(got, Package) and proof:
-                    got = await self._critique(st, story, layers, i, base_sha, built, guide, got, proof)
+                if draft is not None:  # drafted with the others and read by the critic: the checks follow
+                    self._package_run = str(draft["run"])
+                    got = (
+                        Package.from_dict(draft["package"])
+                        if "package" in draft
+                        else ProofChange(tuple((str(t), str(w)) for t, w in draft["proof_change"]))
+                    )
+                    draft = None
+                else:
+                    got = await self._package(st, story, layers, i, base_sha, built, guide, feedback, proof)
+                    if isinstance(got, Package) and proof:
+                        got = await self._critique(st, story, layers, i, base_sha, built, guide, got, proof)
                 if isinstance(got, ProofChange):
                     if revisions >= PROOF_REVISIONS:
                         raise StoryError(
@@ -1579,7 +1730,7 @@ class StoryPipeline:
                 self.repo,
                 base_sha,
                 st.path / f"package-{nn}",
-                proof_ids=[t.id for t in proof] if proof else None,
+                proof_ids=[t.id for t in proof if not t.gate] if proof else None,
             )
             run = self._package_run
             if checker.checks is not None and checker.checks.failing_at_base:

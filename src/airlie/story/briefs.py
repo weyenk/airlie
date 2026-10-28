@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from airlie.prompts import text as hub_text
@@ -39,6 +40,7 @@ from airlie.story.mockups import DIRECTIONS_CONTRACT, Direction
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story
 from airlie.story.package import AGREED_PROOF_CONTRACT, PACKAGE_CONTRACT, Package
 from airlie.story.rounds import REFINE_FIELD
+from airlie.teams.worktree import find_file, read_blob
 from airlie.topology.studio_plan import Plan, Subtask
 
 if TYPE_CHECKING:  # amigos imports this module's contracts lazily; only the type of a proof test is needed
@@ -461,6 +463,9 @@ def _proof_lines(proof: Sequence[ProofTest]) -> list[str]:
     """Each agreed test: its id, what it proves and where, and what it asserts and needs."""
     lines: list[str] = []
     for t in proof:
+        if t.gate:
+            lines.append(f"- {t.criterion}: proven by the layer's test gate itself; write no test for it")
+            continue
         what = f"proves {t.criterion}" if t.criterion else "a behaviour of this layer"
         guide = f", guideline {t.guideline}" if t.guideline else ""
         lines.append(f"- {t.id} ({what}, level {t.level}{guide})")
@@ -497,7 +502,7 @@ def critic_brief(
         hub_text("package-critic"),
         f"## The layer\n{layer.title}: {layer.brief}",
         "## The agreed proof for this layer\n" + "\n".join(_proof_lines(proof)),
-        "## The package's test files (data)\n"
+        "## The package's test files (data; not in the repository until the coder writes them)\n"
         + "\n\n".join(f"### {path}\n{_fenced(text, 'python')}" for path, text in files.items()),
         *([conventions_text] if conventions_text else []),
         CRITIC_CONTRACT,
@@ -530,6 +535,87 @@ def proof_revision_brief(
     return "\n\n".join(parts)
 
 
+SOURCE_CHARS = 12_000
+"""The most of one file a package brief carries (lever 2): clipped with "[clipped]" past it."""
+SOURCES_CHARS = 40_000
+"""The most of all a layer's files together a package brief carries."""
+
+
+def layer_sources(repo: Path, commit: str, layer: Layer) -> dict[str, str]:
+    """The files `layer` changes that exist at `commit` (not the ones it creates), read from git's objects,
+    for its package brief (lever 2 of the wiki benchmark, 2026-10-27)."""
+    out: dict[str, str] = {}
+    for f in layer.files:
+        if f.new:
+            continue
+        kind, sha = find_file(repo, commit, f.path)
+        if kind == "blob":
+            out[f.path] = read_blob(repo, sha)
+    return out
+
+
+def _sources_section(sources: Mapping[str, str]) -> list[str]:
+    """The layer's existing files, each fenced, each clipped at SOURCE_CHARS, all within SOURCES_CHARS."""
+    if not sources:
+        return []
+    parts = [hub_text("brief-package-sources")]
+    left = SOURCES_CHARS
+    for path, text in sources.items():
+        cap = min(SOURCE_CHARS, left)
+        if cap <= 0:
+            parts.append(f"### {path}\n[clipped: read it with read_file]")
+            continue
+        shown = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
+        left -= len(shown)
+        parts.append(f"### {path}\n{_fenced(shown, PurePosixPath(path).suffix.lstrip('.'))}")
+    return ["\n\n".join(parts)]
+
+
+def _package_layer(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    proof: Sequence[ProofTest],
+    sources: Mapping[str, str] | None = None,
+) -> list[str]:
+    """The part of a package brief that is layer `i`'s own: where it stands among the layers, its scope and
+    criteria, what it builds, its files and interfaces, its existing files' text (`sources`, lever 2) and its
+    agreed tests."""
+    layer = layers[i]
+    owned = [c for c in story.acceptance if c.id in layer.acceptance]
+    criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
+    later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
+    return [
+        f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
+        f"Scope of this layer: {layer.scope}\n"
+        f"The criteria this layer owns:\n{criteria}\n"
+        f"Later layers (not yours; leave their work alone): {later}",
+        f"## What this layer builds\n{layer.brief}",
+        *([_files_section(layer)] if layer.files or layer.interfaces else []),
+        *_sources_section(sources or {}),
+        *([_agreed_tests(proof)] if proof else []),
+    ]
+
+
+def drafts_brief(story: Story, layers: tuple[Layer, ...], **kw: Any) -> str:
+    """The first turn of the conversation that drafts every layer's package (amendment of 2026-10-26 to the
+    planning-line design): what the conversation is, then layer 01's package brief (`package_brief`)."""
+    opening = hub_text("brief-package-drafts", layers=len(layers))
+    return opening + "\n\n" + package_brief(story, layers, 0, **kw)
+
+
+def next_package_brief(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    proof: Sequence[ProofTest] = (),
+    sources: Mapping[str, str] | None = None,
+) -> str:
+    """A later turn of that conversation: layer `i`'s own part (`_package_layer`) and `brief-package-next`;
+    the story, the rules and the contract are the first turn's."""
+    return "\n\n".join([*_package_layer(story, layers, i, proof, sources), hub_text("brief-package-next")])
+
+
 def package_brief(
     story: Story,
     layers: tuple[Layer, ...],
@@ -542,6 +628,7 @@ def package_brief(
     context_budget: int,
     feedback: str | None = None,
     proof: Sequence[ProofTest] = (),
+    sources: Mapping[str, str] | None = None,
 ) -> str:
     """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
     2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
@@ -550,21 +637,11 @@ def package_brief(
     came back. `proof` is the layer's tests as the story meeting agreed them (three-amigos D9, 2026-10-24):
     listed, with the layer's files and interfaces from the split, and the package must cover exactly them
     (or answer with a `proof_change` when they are wrong)."""
-    layer = layers[i]
-    owned = [c for c in story.acceptance if c.id in layer.acceptance]
-    criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
-    later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
     parts = [
         hub_text("brief-package-task"),
         story_text(story),
         *epic_section(story),
-        f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
-        f"Scope of this layer: {layer.scope}\n"
-        f"The criteria this layer owns:\n{criteria}\n"
-        f"Later layers (not yours; leave their work alone): {later}",
-        f"## What this layer builds\n{layer.brief}",
-        *([_files_section(layer)] if layer.files or layer.interfaces else []),
-        *([_agreed_tests(proof)] if proof else []),
+        *_package_layer(story, layers, i, proof, sources),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(

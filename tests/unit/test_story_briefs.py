@@ -175,6 +175,9 @@ def test_the_critic_is_given_the_test_files_the_layers_agreed_proof_and_the_conv
     files = {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n```\n"}
     text = critic_brief(LAYERS[1], files, AGREED, "## The repository's test gate\n- uv run pytest")
     assert "Read these tests against the agreed proof" in text
+    # the files are not on disk yet: Muse once looked there and called every agreed test missing
+    assert "not in the repository yet, so never look for them there" in text
+    assert "not in the repository until the coder writes them" in text
     assert "tests/unit/test_profile.py::test_shows" in text and "asserts: the url shows" in text
     assert "### tests/unit/test_profile.py" in text and "assert show() == 1" in text
     assert "````python" in text  # a fence longer than any inside the file
@@ -952,3 +955,46 @@ def test_the_planners_brief_questions_and_delivery_note_read_as_they_should() ->
     assert "- AIR-41 (core) Fast board: 12.5 h, risky" in note and "Queued ahead of them: 4 h." in note
     assert "Your budget: 10 h; the core is priced at 12.5 h, over it by 2.5 h." in note
     assert "Your budget" not in delivery_note([("AIR-41", draft, est)], queue_hours=0.0, budget_hours=None)
+
+
+def test_a_criterion_left_to_the_gate_is_said_as_no_test_to_write() -> None:
+    from airlie.story.amigos import GATE_ASSERTS
+
+    gate = ProofTest("AC2", "profile", "", "", "gate", None, GATE_ASSERTS, "", gate=True)
+    text = critic_brief(LAYERS[1], {}, (gate,), "")
+    assert "- AC2: proven by the layer's test gate itself; write no test for it" in text
+    assert "gate:AC2" not in text
+
+
+def test_a_package_brief_carries_the_layers_existing_files_so_the_architect_need_not_read_them() -> None:
+    """Lever 2 (2026-10-27): on the wiki task the architect spent ~20 minutes of tool calls re-reading the
+    files its layer changes, each step thinking to its cap; the brief now carries them, as they are on its
+    base, each clipped at the cap, all of them within the total cap."""
+    from airlie.story.briefs import next_package_brief
+
+    sources = {"src/profile.py": "def profile() -> str:\n    return 'x'\n", "src/big.py": "y" * 20_000}
+    text = pbrief(sources=sources)
+    head = "## The files this layer changes, as they are on its base"
+    assert head in text and "def profile() -> str:" in text
+    assert "### src/big.py" in text and "[clipped]" in text and "y" * 12_001 not in text
+    assert "read others only when you need them" in text
+    assert head not in pbrief()  # a layer with only new files gets no section
+    later = next_package_brief(STORY, LAYERS, 1, sources={"src/profile.py": "P = 1\n"})
+    assert head in later and "P = 1" in later
+
+
+def test_the_layer_sources_are_its_existing_files_read_at_a_commit(tmp_path: Path) -> None:
+    from airlie.story.briefs import layer_sources
+    from airlie.story.model import Layer, ScopedPath
+    from tests.unit.test_story_layer_checks import repo
+
+    root, sha = repo(tmp_path, {"src/a.py": "A = 1\n", "src/b.py": "B = 2\n"})
+    layer = Layer(
+        "x",
+        "X",
+        "src",
+        "brief",
+        (),
+        (ScopedPath("src/a.py"), ScopedPath("src/new.py", True), ScopedPath("src/gone.py")),
+    )
+    assert layer_sources(root, sha, layer) == {"src/a.py": "A = 1\n"}

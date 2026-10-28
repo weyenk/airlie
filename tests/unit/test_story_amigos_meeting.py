@@ -175,6 +175,20 @@ async def test_a_meeting_that_agrees_in_one_round_ends_with_the_agreement_and_no
     assert len(seen[2].parts["proof"]) == 2 and seen[0].verdict is not None
 
 
+async def test_a_part_posted_again_unchanged_is_no_revision_and_costs_no_round(tmp_path: Path) -> None:
+    """Lever 3 of the roman bench (2026-10-26): a part its owner posts again as it stands is not a revision,
+    so the verdicts given on it still count. Here the architect posts its split, unchanged, in both rounds,
+    and the meeting still ends at six turns, as it does when the architect only says it agrees."""
+    split = fence({"layers": [x.to_dict() for x in LAYERS]})
+    again = {
+        "product": [say("The criteria read fine.", AGREE)] * 4,
+        "architect": [say("The split holds.", split, AGREE)] * 4,
+        "tester": [say("Here is the proof.", fence(PROOF), AGREE)] + [say("Still good.", AGREE)] * 3,
+    }
+    out = await agree(meeting(again), tmp_path)
+    assert out.turns == 6 and out.layers == LAYERS
+
+
 async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_objector_agrees(
     tmp_path: Path,
 ) -> None:
@@ -223,8 +237,9 @@ async def test_a_turn_without_a_verdict_is_a_finding_not_an_agreement(tmp_path: 
 async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_finding(
     tmp_path: Path,
 ) -> None:
-    """A proof with a level the repository lacks does not replace the plan (there is none yet), and the
-    tester is told why on the next turn; its corrected proof is then read."""
+    """A proof entry with a level the repository lacks is left out, its usable entries stand (one bad entry
+    no longer costs the plan its good ones, 2026-10-26), the tester is told why on the next turn, and its
+    corrected proof is then read."""
     bad = proof_with(level="smoke", file="tests/smoke/test_profile.py")
     script = {
         "product": [say("ok", AGREE)] * 3,
@@ -237,7 +252,9 @@ async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert seen[2].parts == {} and seen[2].problems[0].kind == "part_invalid"
+    kept = seen[2].parts["proof"]
+    assert kept and all(t.level != "smoke" for t in kept)
+    assert seen[2].problems[0].kind == "part_invalid" and "in your proof" in seen[2].problems[0].why
     assert "part_invalid" in seen[3].text and "level" in seen[3].text and "tester" in seen[3].text
     assert out.proof and out.turns == 10
 
@@ -511,3 +528,20 @@ def test_the_real_meeting_speaks_to_each_roles_engine_with_the_configured_limits
         spec.tool_iterations,
         spec.max_scope_files,
     )
+
+
+def test_while_no_proof_is_on_record_the_checker_names_who_posted_one_in_the_testers_place() -> None:
+    """Roman, 2026-10-27: product posted the proof in the tester's voice, it was refused, and the tester,
+    taking that post for its own, said for 25 turns that its proof "stands as posted"."""
+    from airlie.story.amigos import NO_PROOF, no_proof_why
+    from airlie.story.layer_checks import Finding
+
+    refused = Finding("part_invalid", "product", "you posted the proof, which is tester's part; ...", "")
+    assert no_proof_why([Turn("tester", "I've read the tests.")]) == NO_PROOF
+    told = no_proof_why(
+        [Turn("tester", "x"), Turn("product", "y", None, {}, (refused,)), Turn("airlie", "z")]
+    )
+    assert told.startswith(NO_PROOF) and told.endswith(
+        "The proof product posted is not the tester's and was not used"
+    )
+    assert '"stands as posted" posts nothing' in NO_PROOF

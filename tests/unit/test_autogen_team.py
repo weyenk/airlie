@@ -343,3 +343,16 @@ async def test_autogen_the_client_remembers_how_each_reply_ended(
     assert client.last_finish_reason == "stop"
     items = [item async for item in client.create_stream(messages)]
     assert isinstance(items[-1], CreateResult) and client.last_finish_reason == "length"
+
+
+def test_a_clients_timeout_outlasts_its_roles_longest_reply(tmp_path: Path) -> None:
+    """Run 8 on airlie-sandbox (2026-10-26): the architect's meeting turn (max_tokens 16384, thinking, about
+    17 tok/s) outran the OpenAI SDK's 600 s default; AutoGen does not stream, so that is the whole reply's
+    wait. The timeout is sized to the role's max_tokens at a slow decode, never below the SDK's default."""
+    (tmp_path / "p.md").write_text("x")
+    p = tmp_path / "p.md"
+    long = RoleSpec(prompt=p, model="base", thinking=True, thinking_budget=8192, max_tokens=16384)
+    short = RoleSpec(prompt=p, model="base", thinking=False, max_tokens=64)
+    url = "http://127.0.0.1:1/v1"
+    assert build_model_client(url, "base", long, api_key=None)._client.timeout >= 16384 / 8
+    assert build_model_client(url, "base", short, api_key=None)._client.timeout == 600

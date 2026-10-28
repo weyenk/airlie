@@ -118,7 +118,7 @@ def _twice() -> dict[str, Any]:
         (_only(1, 2), "AC1"),
         (_only(0, 2), "layer 'profile'"),
         (_without("asserts"), "asserts"),
-        (_with(file="tests/unit/helpers.py"), "test module"),
+        (_with(file="tests/unit/helpers.py"), "not a test file"),
     ],
 )
 def test_a_flawed_proof_is_refused_with_a_reason(obj: dict[str, Any] | None, why: str) -> None:
@@ -246,3 +246,74 @@ def test_the_package_critics_verdict_is_on_the_proof_alone_and_read_from_the_las
 def test_a_critic_reply_without_a_usable_verdict_is_refused(text: str, why: str) -> None:
     with pytest.raises(StoryError, match=why):
         parse_critic_verdict(text)
+
+
+def test_a_criterion_only_the_gate_can_prove_is_a_gate_entry_with_no_test() -> None:
+    """Runs 7 and 11 on airlie-sandbox (2026-10-26): product wrote "the full suite passes the gate"; no test
+    can prove it, and the tester's made-up test `gate: python3 -m unittest -q exits 0` stopped the layer. Such
+    a criterion is proven by the gate every layer passes: an entry that says so, with no file and no name."""
+    from airlie.story.amigos_checks import check_proof
+
+    obj = _with()
+    obj["tests"][1]["criterion"] = None
+    obj["tests"].append({"criterion": "AC2", "layer": "profile", "gate": True})
+    proof = _proof(obj)
+    gate = proof[-1]
+    assert gate.gate and gate.id == "gate:AC2" and gate.criterion == "AC2" and gate.layer == "profile"
+    assert gate.file == "" and gate.level == "gate"
+    assert check_proof(proof, STORY, LAYERS) == []
+    assert ProofTest.from_dict(gate.to_dict()) == gate and not ProofTest.from_dict(proof[0].to_dict()).gate
+    assert '"gate": true' in PROOF_CONTRACT
+    # a layer still needs a test of its own: the gate proves every layer alike
+    only = _with()
+    only["tests"] = [t for t in only["tests"] if t["layer"] != "profile"] + [
+        {"criterion": "AC2", "layer": "profile", "gate": True}
+    ]
+    with pytest.raises(StoryError, match="layer 'profile' has no test"):
+        _proof(only)
+
+
+def test_a_proof_with_one_bad_entry_keeps_its_good_ones_and_names_the_bad() -> None:
+    """Lever 1's roman bench run (2026-10-26): three of the tester's proofs were refused whole for one entry
+    each (a level the tree lacks, a gate entry with no criterion, a criterion written as a sentence), and the
+    meeting ended with no proof at all."""
+    from airlie.story.amigos import parse_proof_entries
+
+    obj = copy.deepcopy(GOOD)
+    obj["tests"].append({"criterion": "the suite passes", "layer": "profile", "gate": True})
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert [t.name for t in tests] == [t.name for t in _proof()]
+    assert len(problems) == 1 and problems[0].startswith("proof test 4: criterion 'the suite passes'")
+
+
+def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_level() -> None:
+    flat = {"tests": 1}
+    obj = {"type": "proof", "tests": [{**copy.deepcopy(GOOD["tests"][0]), "file": "tests/test_store.py"}]}
+    obj["tests"].append({**copy.deepcopy(GOOD["tests"][1]), "file": "tests/test_profile.py"})
+    obj["tests"].append({**copy.deepcopy(GOOD["tests"][2]), "file": "tests/test_docs.py"})
+    proof = parse_proof(obj, STORY, LAYERS, flat, GUIDELINES)
+    assert {t.level for t in proof} == {"tests"} and proof[0].file == "tests/test_store.py"
+
+
+def test_a_vitest_test_is_proposed_at_its_web_level_under_that_directory() -> None:
+    """Wiki benchmark run B (2026-10-27): the tester proposed web/src/screens/Wiki.test.ts and the proof
+    refused it as no pytest module under tests/; a Vue layer could have no test."""
+    levels = {**LEVELS, "web": 68}
+    web = {
+        "criterion": "AC2",
+        "layer": "profile",
+        "file": "web/src/screens/Profile.test.ts",
+        "name": "Profile screen > shows the avatar",
+        "level": "web",
+        "asserts": "the avatar img has the stored url",
+        "needs": "a mounted screen with a stored avatar",
+    }
+    obj = copy.deepcopy(GOOD)
+    obj["tests"][1] = web
+    proof = parse_proof(obj, STORY, LAYERS, levels, GUIDELINES)
+    assert proof[1].id == "web/src/screens/Profile.test.ts::Profile screen > shows the avatar"
+    assert proof[1].level == "web"
+    stray = copy.deepcopy(obj)
+    stray["tests"][1]["file"] = "src/Profile.test.ts"
+    with pytest.raises(StoryError, match="is not under web/"):
+        parse_proof(stray, STORY, LAYERS, levels, GUIDELINES)

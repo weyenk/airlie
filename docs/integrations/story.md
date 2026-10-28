@@ -9,7 +9,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
 | layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
-| meeting | product, the architect and the tester (Muse), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
+| meeting | product, the architect and the tester (all on the generalist since 2026-10-26), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
 | build, per layer | the architect writes the layer's package (its tests as code, files, interfaces, steps), airlie places the tests in a scratch worktree and checks them (they fail on the base, lint, imports, covers), then the studio: the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
 | review | airlie | a comment with the PR links, the issue → *In Review* |
@@ -314,7 +314,7 @@ proof plan, as before.
 | --- | --- | --- | --- |
 | requirements | product (the generalist) | the story's criteria: reworded under their ids, added with the next id, or dropped with `"dropped": "why"`; never renumbered | `state.agreement.story`, then `state.story` |
 | changes | the architect | the layers, bottom first, each with the `files` it creates or changes (`new: true` for a new one) and the `interfaces` at its boundary | `state.agreement.layers`, then `state.layers` |
-| proof | the tester (Muse, read-only tools) | per criterion, the tests that prove it: file, name, **level** (a directory of the repository's test tree, never one it lacks), the testing guideline (a file of `roles.tester.skills`, `skills/qa`) that fits, what it asserts and the state it needs | `state.agreement.proof` |
+| proof | the tester (the generalist, read-only tools) | per criterion, the tests that prove it: file, name, **level** (a directory of the repository's test tree, never one it lacks), the testing guideline (a file of `roles.tester.skills`, `skills/qa`) that fits, what it asserts and the state it needs | `state.agreement.proof` |
 
 Only the owner changes a part, by posting it whole in its JSON shape; anyone else objects with a claim and a suggestion.
 The tester reads the repository's own testing conventions first: the levels its test tree has (a directory under

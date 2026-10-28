@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from airlie.prompts import text as hub_text
-from airlie.story.model import Layer, StoryError
+from airlie.story.model import Layer, StoryError, unusable_why
 
 REFINE_FIELD = (
     'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
@@ -70,10 +70,11 @@ async def plan_in_rounds[T](
             plan = parse(text)
             break
         except StoryError as e:
+            why = unusable_why(e, text)
             if attempt == fixes:
-                raise
-            emit("plan_fix", attempt=attempt + 1, error=str(e)[:300])
-            nudge = ("plan-fix", {"error": e})
+                raise StoryError(why) from e
+            emit("plan_fix", attempt=attempt + 1, error=why[:300])
+            nudge = ("plan-fix", {"error": why})
     emit("plan_round", round=1, **_shape(plan))
     if _finished(signal, text, 1, emit):
         return _done(text, emit, "architect_done", 1)

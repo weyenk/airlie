@@ -30,7 +30,7 @@ from autogen_core.models import ModelInfo, UserMessage
 from autogen_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
-from airlie.config import RoleSpec
+from airlie.config import ModelSpec, RoleSpec
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
@@ -113,6 +113,18 @@ def build_function_tools(
     return [_RegistryTool(t, registry, scheduler, team_id) for t in registry._tools.values()]  # noqa: SLF001
 
 
+SLOWEST_DECODE_TPS = 8.0
+"""A decode rate below any this machine has shown (17-30 tok/s for the generalist and Muse, 2026-10-26)."""
+
+
+def reply_timeout_s(role: RoleSpec) -> float:
+    """How long the AutoGen client waits for a whole reply: AutoGen does not stream, so the SDK's 600 s is
+    the reply's whole wait, and a thinking role at max_tokens outruns it (run 8 on airlie-sandbox,
+    2026-10-26: the architect's meeting turn timed out). The role's max_tokens at SLOWEST_DECODE_TPS, never
+    under 600 s."""
+    return max(600.0, (role.max_tokens or 0) / SLOWEST_DECODE_TPS + 120.0)
+
+
 def build_model_client(
     base_url: str,
     served_model: str,
@@ -120,6 +132,7 @@ def build_model_client(
     api_key: str | None,
     scheduler: SlotScheduler | None = None,
     team_id: str = "",
+    model: ModelSpec | None = None,
 ) -> RepairingOpenAIClient:
     info: ModelInfo = {
         "vision": False,
@@ -149,9 +162,11 @@ def build_model_client(
         top_p=role.sampling.top_p,
         max_tokens=role.max_tokens,
         extra_body=extra,  # type: ignore[call-arg]  # accepted via create_kwargs ("extra_body"), not typed
+        timeout=reply_timeout_s(role),
     )
     client.slot_scheduler = scheduler
     client.team_id = team_id
+    client.model_spec = model  # its parsers read what the server left as text (Muse's calls)
     return client
 
 

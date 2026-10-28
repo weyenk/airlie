@@ -11,12 +11,12 @@ not have is a level the tester cannot propose (`amigos.parse_proof` checks it be
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from airlie.skills import Skill, load_skills
 from airlie.teams.worktree import find_file, read_blob, tree_paths
-from airlie.tools.scope import is_test_module
+from airlie.tools.scope import is_js_test, is_test_module
 
 NOT_LEVELS = frozenset({"fixtures", "data", "__pycache__"})
 """Directories under the test root that hold support files, never a level."""
@@ -40,7 +40,20 @@ def test_levels(repo: Path, commit: str, root: str = "tests") -> dict[str, int]:
         else:
             levels[rel[0]] = levels.get(rel[0], 0) + 1
     if not levels and flat:
-        return {PurePosixPath(root).name: flat}
+        levels = {PurePosixPath(root).name: flat}
+    if root == "tests":  # a repository's Vitest levels sit beside its pytest ones
+        levels.update({k: n for k, n in js_test_levels(repo, commit).items() if k not in levels})
+    return levels
+
+
+def js_test_levels(repo: Path, commit: str) -> dict[str, int]:
+    """Level -> its count of JS/TS test files (`is_js_test`), at `commit`: a level is the top-level directory
+    holding them (`web` in airlie), node_modules never (the web-tests design, 2026-10-27)."""
+    levels: dict[str, int] = {}
+    for path in tree_paths(repo, commit):
+        parts = PurePosixPath(path).parts
+        if len(parts) > 1 and is_js_test(path):
+            levels[parts[0]] = levels.get(parts[0], 0) + 1
     return levels
 
 
@@ -86,19 +99,29 @@ class Conventions:
     notes: str
     guidelines: tuple[Skill, ...]
     routed: Skill | None
+    js_levels: Mapping[str, int] = field(default_factory=dict)
+    """The levels of `levels` that hold Vitest files (`js_test_levels`)."""
 
 
 def conventions(repo: Path, commit: str, library: Path | None, routed: Skill | None) -> Conventions:
     """The conventions at `commit`; `library` is the tester role's guideline directory (None: it has none)."""
     guidelines = tuple(load_skills(library)) if library is not None and library.is_dir() else ()
-    return Conventions(test_levels(repo, commit), testing_notes(repo, commit), guidelines, routed)
+    levels = test_levels(repo, commit)
+    js = {k: n for k, n in js_test_levels(repo, commit).items() if k in levels}
+    return Conventions(levels, testing_notes(repo, commit), guidelines, routed, js)
 
 
 def conventions_text(c: Conventions, gate: Sequence[str]) -> str:
     """The tester's view of the repository as Markdown sections: the gate's commands, the levels with their
     counts, the guideline summaries, the routed guideline in full and the repository's notes."""
     parts = ["## The repository's test gate\n" + ("\n".join(f"- {x}" for x in gate) or "- (none known)")]
-    levels = [f"- {name}: {n} test module{'' if n == 1 else 's'}" for name, n in c.levels.items()]
+    levels = [
+        f"- {name}: {n} Vitest file{'' if n == 1 else 's'} (under {name}/, named it(...) titles, "
+        "`describe > title` inside a describe)"
+        if name in c.js_levels
+        else f"- {name}: {n} test module{'' if n == 1 else 's'}"
+        for name, n in c.levels.items()
+    ]
     parts.append(
         "## The test levels the repository has (a proof's `level` is one of these directories)\n"
         + ("\n".join(levels) or "- none: the repository has no test directory yet")

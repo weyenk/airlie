@@ -9,6 +9,7 @@ again of the same files does not run again.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import tempfile
@@ -50,6 +51,20 @@ def is_test_module(path: str) -> bool:
     """pytest's default test module: test_*.py or *_test.py."""
     name = PurePosixPath(path).name
     return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
+_JS_TEST = re.compile(r"\.(test|spec)\.(ts|tsx|mts|js|jsx|mjs)$")
+
+
+def is_js_test(path: str) -> bool:
+    """A Vitest (or Jest) test file: *.test.ts, *.spec.ts and their .tsx/.mts/.js/.jsx/.mjs kin, never one
+    under node_modules (the web-tests design, 2026-10-27)."""
+    return bool(_JS_TEST.search(path)) and "node_modules" not in PurePosixPath(path).parts
+
+
+def is_test_file(path: str) -> bool:
+    """A test file of either kind: a pytest module or a JS/TS test file."""
+    return is_test_module(path) or is_js_test(path)
 
 
 def _git(worktree: Path, *args: str, env: dict[str, str] | None = None) -> str:
