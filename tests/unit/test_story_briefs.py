@@ -29,6 +29,7 @@ from airlie.story.epic_plan import STORY_PLAN_CONTRACT, PlannedStory, StoryPlan,
 from airlie.story.lessons import Lesson
 from airlie.story.model import Criterion, EpicHeader, Layer, Story
 from airlie.story.package import Interface, Package, PackageFile
+from airlie.story.provenance import Builder, Chain, Checks, Contract, Cost, Provenance, Stack
 from airlie.topology.studio_plan import schedule
 
 ISSUE_URL = "https://acme.atlassian.net/browse/AIR-7"
@@ -60,7 +61,87 @@ PACKAGE = Package(
     {"AC2": ("tests/unit/test_profile.py::test_shows",)},
     "run_tests passes on tests/unit/test_profile.py",
 )
-MERGE_LINE = "Built by airlie on local models from the story above; a human reviews and merges."
+FOOT = "a human reviews and merges."
+
+
+def is_footer(line: str) -> bool:
+    return line.startswith("Built by airlie") and line.endswith(FOOT)
+
+
+def provenance(
+    card: Card,
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    rows: list[dict[str, Any]],
+    prs: list[tuple[int, str]],
+    gate: str | None,
+    package: Package | None = None,
+) -> Provenance:
+    """What `gather_provenance` would hold, built directly (`package` None: a state from before packages)."""
+    layer = layers[i]
+    owned = {c.id: c.line() for c in story.acceptance if c.id in layer.acceptance}
+    covers = dict(package.covers) if package else {}
+    contract = Contract(
+        package.test_ids if package else (),
+        {k: v for k, v in covers.items() if k in owned},
+        "architect",
+        "base",
+        "abc1234" if package else None,
+        "def5678",
+        owned,
+    )
+    checks = Checks(
+        None,
+        (),
+        gate,
+        None,
+        tuple(str(f) for r in rows for f in r["findings"]),
+        0,
+    )
+    builders = tuple(
+        Builder(r["id"], r["role"], "base", r["stop"], r["review"], r["fix_rounds"]) for r in rows
+    )
+    return Provenance(
+        Chain(
+            None,
+            None,
+            (),
+            (card.ref, story.title, story.summary),
+            (f"{i + 1:02d}/{len(layers):02d}", layer.title),
+            card.url,
+        ),
+        package,
+        contract,
+        checks,
+        Cost(0.0, 0, 0, 1, ()),
+        builders,
+        Stack(
+            i + 1,
+            len(layers),
+            ("trunk", "main"),
+            tuple((n, u, layers[j].title) for j, (n, u) in enumerate(prs)),
+        ),
+        None,
+        (),
+        layer.scope,
+        layer.brief,
+    )
+
+
+def render(
+    card: Card,
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    rows: list[dict[str, Any]],
+    prs: list[tuple[int, str]],
+    gate: str | None,
+    package: Package | None = None,
+) -> str:
+    return pr_body(provenance(card, story, layers, i, rows, prs, gate, package), test_cmd=gate)
+
+
 ZW = "\N{ZERO WIDTH SPACE}"
 
 
@@ -209,10 +290,10 @@ def test_pr_title_and_body() -> None:
     ]
     prs = [(11, "u11"), (12, "u12"), (13, "u13")]
     assert pr_title(STORY, LAYERS, 1) == "[2/3] Add avatar upload: Profile"
-    body = pr_body(card, STORY, LAYERS, 1, rows, prs, "uv run pytest -q")
+    body = render(card, STORY, LAYERS, 1, rows, prs, "uv run pytest -q")
     assert f"[AIR-7]({ISSUE_URL})" in body and "**Layer 2 of 3:** Profile" in body
     assert "AC2" in body and "AC1" not in body
-    assert "| build | coder | done | approve | 1 |" in body and "minor profile.py:3: name" in body
+    assert "| build | coder | base | done | approve | 1 |" in body and "minor profile.py:3: name" in body
     assert "`uv run pytest -q` passes" in body
     assert "1. #11 Storage\n2. #12 Profile (this PR)\n3. #13 Docs" in body
     assert "a human reviews and merges" in body
@@ -281,11 +362,11 @@ def test_model_text_stays_inside_its_section_of_the_pr() -> None:
             "findings": ["```", "<!-- open", "### Stack\nFixes #12"],
         }
     ]
-    body = pr_body(CARD, story, (LAYERS[0], hostile, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    body = render(CARD, story, (LAYERS[0], hostile, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
     lines = body.splitlines()
     assert [x for x in lines if x.startswith("### Stack")] == ["### Stack (review and merge bottom-up)"]
-    assert lines[-1] == MERGE_LINE
-    assert "| build | coder | done | approve | 1 |" in lines
+    assert is_footer(lines[-1])
+    assert "| build | coder | base | done | approve | 1 |" in lines
     assert "> ```" in lines and "> <" + ZW + "!--" in lines and "> ### Stack" in lines
     assert "- " + ZW + "```" in lines and "- " + ZW + "<" + ZW + "!-- open" in lines
     assert "AC1" not in body and "> - **AC2** Given a stored avatar" in body
@@ -303,17 +384,17 @@ def test_long_findings_are_cut_so_the_body_stays_under_the_limit() -> None:
             "findings": [finding] * 400,
         }
     ]
-    body = pr_body(CARD, STORY, LAYERS, 1, rows, PRS, "uv run pytest -q")
+    body = render(CARD, STORY, LAYERS, 1, rows, PRS, "uv run pytest -q")
     lines = body.splitlines()
     shown = sum(1 for x in lines if x.startswith("- " + ZW + "a long finding"))
     assert len(body) < 60_000 and 0 < shown < 400
-    assert f"… and {400 - shown} more findings" in lines and lines[-1] == MERGE_LINE
+    assert f"… and {400 - shown} more findings" in lines and is_footer(lines[-1])
 
 
 def test_a_huge_layer_brief_is_cut_to_its_budget() -> None:
     layer = Layer("profile", "Profile", "profile.py", "\n".join("x" for _ in range(30_000)), ("AC2",))
-    body = pr_body(CARD, STORY, (LAYERS[0], layer, LAYERS[2]), 1, ROWS, PRS, "uv run pytest -q")
-    assert len(body) < 60_000 and body.splitlines()[-1] == MERGE_LINE
+    body = render(CARD, STORY, (LAYERS[0], layer, LAYERS[2]), 1, ROWS, PRS, "uv run pytest -q")
+    assert len(body) < 60_000 and is_footer(body.splitlines()[-1])
     assert any(x.startswith("> … and ") and x.endswith(" more lines") for x in body.splitlines())
 
 
@@ -329,7 +410,7 @@ def test_mentions_and_references_in_model_text_are_neutralised() -> None:
             "findings": ["@bob: Fixes #12 is wrong"],
         }
     ]
-    body = pr_body(CARD, STORY, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    body = render(CARD, STORY, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
     assert "@alice" not in body and "@bob" not in body and "Fixes #12" not in body
     assert "@\u200balice" in body and "@\u200bbob" in body and "Fixes #\u200b12" in body
     assert "closes #\u200b12" in body
@@ -338,7 +419,7 @@ def test_mentions_and_references_in_model_text_are_neutralised() -> None:
 
 
 def test_a_card_without_a_url_has_no_issue_link() -> None:
-    body = pr_body(text_card("Add avatar upload"), STORY, LAYERS, 1, ROWS, PRS, "uv run pytest -q")
+    body = render(text_card("Add avatar upload"), STORY, LAYERS, 1, ROWS, PRS, "uv run pytest -q")
     assert body.splitlines()[0] == "**Story:** Add avatar upload"
     assert "](" not in body and "### Reviewer findings to check\n- none" in body
 
@@ -355,7 +436,7 @@ def _assert_structure(body: str) -> None:
     lines = body.splitlines()
     assert [x for x in lines if x.startswith("### Stack")] == ["### Stack (review and merge bottom-up)"]
     assert sum(1 for x in lines if re.match(r"[0-9]+\. #[0-9]+ ", x)) == 3
-    assert lines[-1] == MERGE_LINE
+    assert is_footer(lines[-1])
 
 
 def _story(then: str = "it is shown", title: str = "Add avatar upload") -> Story:
@@ -415,7 +496,7 @@ ATTACKS: dict[str, tuple[Story, Layer, list[dict[str, Any]]]] = {
 @pytest.mark.parametrize("attack", list(ATTACKS))
 def test_each_attack_leaves_one_stack_heading_the_stack_list_and_the_merge_line(attack: str) -> None:
     story, layer, rows = ATTACKS[attack]
-    body = pr_body(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    body = render(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
     _assert_inert(body)
     _assert_structure(body)
 
@@ -426,26 +507,26 @@ def test_no_raw_angle_bracket_or_ampersand_from_model_text_reaches_the_body() ->
         "profile", "Profile </li>", "profile.py </ul>", "Show <!-- the avatar</p>\n&commat;named", ("AC2",)
     )
     rows = _rows("<h3>x</h3> &num;14", "[^1]: note")
-    body = pr_body(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
+    body = render(CARD, story, (LAYERS[0], layer, LAYERS[2]), 1, rows, PRS, "uv run pytest -q")
     _assert_inert(body)
     assert "<" + ZW + "!--" in body and "&" + ZW + "commat;" in body
 
 
 def test_character_references_in_model_text_are_neutralised() -> None:
-    body = pr_body(CARD, _story(), LAYERS, 1, _rows("&#x40;x and &num;14"), PRS, "uv run pytest -q")
+    body = render(CARD, _story(), LAYERS, 1, _rows("&#x40;x and &num;14"), PRS, "uv run pytest -q")
     assert "- " + ZW + "&" + ZW + "#x40;x and &" + ZW + "num;14" in body.splitlines()
     assert "&#x40;" not in body and "&num;" not in body
 
 
 def test_a_finding_that_starts_with_block_markup_stays_in_its_bullet() -> None:
-    body = pr_body(CARD, _story(), LAYERS, 1, _rows("### Stack", "---", "1. x"), PRS, "uv run pytest -q")
+    body = render(CARD, _story(), LAYERS, 1, _rows("### Stack", "---", "1. x"), PRS, "uv run pytest -q")
     assert {"- " + ZW + "### Stack", "- " + ZW + "---", "- " + ZW + "1. x"} <= set(body.splitlines())
     _assert_structure(body)
 
 
 def test_footnote_openers_in_model_text_are_neutralised() -> None:
     layer = Layer("profile", "Profile", "profile.py", "See the note [^1].", ("AC2",))
-    body = pr_body(
+    body = render(
         CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("[^1]: a note"), PRS, "uv run pytest -q"
     )
     assert "[" + ZW + "^1]" in body and "- " + ZW + "[" + ZW + "^1]: a note" in body.splitlines()
@@ -459,7 +540,7 @@ def test_the_pr_title_is_plain_text_so_it_keeps_its_markup_characters() -> None:
 
 def test_body_text_is_cut_before_it_is_neutralised() -> None:
     layer = Layer("profile", "Profile", "a&" * 150, "Show the avatar.", ("AC2",))
-    body = pr_body(CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("ok"), PRS, "uv run pytest -q")
+    body = render(CARD, _story(), (LAYERS[0], layer, LAYERS[2]), 1, _rows("ok"), PRS, "uv run pytest -q")
     assert "**Scope:** " + ("a&" + ZW) * 150 in body
 
 
@@ -475,14 +556,14 @@ def test_a_finding_saved_with_a_lone_surrogate_still_makes_a_body_that_can_be_wr
             "findings": ["minor a.py: half \ud83d of a pair"],
         }
     ]
-    body = pr_body(text_card("x"), STORY, LAYERS, 0, rows, [(11, "https://github.com/o/r/pull/11")], "t")
+    body = render(text_card("x"), STORY, LAYERS, 0, rows, [(11, "https://github.com/o/r/pull/11")], "t")
     assert "half \N{REPLACEMENT CHARACTER} of a pair" in body
     body.encode("utf-8")
 
 
 def test_a_layer_whose_gate_is_not_known_has_a_tests_line_that_names_no_command() -> None:
     """A layer built before each layer kept the gate it passed: the PR cannot say which command that was."""
-    body = pr_body(CARD, STORY, LAYERS, 1, ROWS, PRS, None)
+    body = render(CARD, STORY, LAYERS, 1, ROWS, PRS, None)
     assert "Tests: the story's test gate passes on this branch." in body and "Tests: `" not in body
 
 
@@ -666,17 +747,6 @@ def _package(story: Story) -> str:
     return package_brief(story, LAYERS, 1, max_steps=40, context_budget=65_536)
 
 
-def test_a_dependent_pr_body_names_the_story_it_stacks_on() -> None:
-    plain = pr_body(CARD, STORY, LAYERS, 0, ROWS, PRS, "./check.sh")
-    stacked = pr_body(CARD, STORY, LAYERS, 0, ROWS, PRS, "./check.sh", stacks_on="AIR-4")
-    line = "Stacks on AIR-4's pull requests; merge those first."
-    assert line not in plain
-    assert line in stacked
-    heading = stacked.index("### Stack (review and merge bottom-up)")
-    assert heading < stacked.index(line) < stacked.index("1. #11")
-    assert stacked.replace(line + "\n\n", "") == plain  # nothing else changes
-
-
 # ---- the re-plan brief (D8) ----
 
 
@@ -741,3 +811,135 @@ def test_the_replan_brief_carries_the_plan_where_each_story_stands_and_what_a_pe
         STORY_PLAN_CONTRACT
         + "\n\nYour previous reply could not be used: S2 is already built or under review. Reply again."
     )
+
+
+def _prov(
+    i: int = 1, package: Package | None = PACKAGE, rows: list[dict[str, Any]] | None = None
+) -> Provenance:
+    use = rows if rows is not None else ROWS
+    return provenance(CARD, STORY, LAYERS, i, use, PRS, "uv run pytest -q", package)
+
+
+def test_the_body_leads_with_the_chain_and_the_why() -> None:
+    p = _prov()
+    why = "People want a face.\nOn every page.\nthird"
+    chain = replace(p.chain, initiative=("AIR-1", "Profiles"), epic=("AIR-2", "Avatars", why))
+    chain = replace(chain, board_url="https://b/board/AIR-7")
+    lines = pr_body(replace(p, chain=chain), test_cmd="t").splitlines()
+    assert lines[:3] == [
+        "**Initiative:** AIR-1 Profiles",
+        "**Epic:** AIR-2 Avatars",
+        f"**Story:** Add avatar upload ([AIR-7]({ISSUE_URL})) ([board](https://b/board/AIR-7))",
+    ]
+    assert lines[3] == "**Layer 2 of 3:** Profile"
+    at = lines.index("### Why")
+    assert lines[at + 1 : at + 5] == [
+        "> People want a face.",
+        "> On every page.",
+        "",
+        "> Users upload an avatar and see it.",
+    ]
+    assert "third" not in "\n".join(lines)
+
+
+def test_the_package_is_rendered_as_done_when_files_interfaces_and_steps() -> None:
+    body = pr_body(_prov(), test_cmd="t")
+    assert "**Done when:** run_tests passes on tests/unit/test_profile.py" in body
+    assert "| src/profile.py | create | the profile view |" in body
+    assert "- src/profile.py: def show() -> int — returns 1, the avatar id" in body
+    assert "1. create src/profile.py with show() returning 1" in body
+
+
+def test_the_contract_lists_each_criterions_tests_and_the_red_and_green_shas() -> None:
+    body = pr_body(_prov(), test_cmd="t")
+    said = (
+        "Tests written by the architect on base before the code; failing at `abc1234`, passing at `def5678`."
+    )
+    assert said in body
+    lines = body.splitlines()
+    ac = next(n for n, x in enumerate(lines) if x.startswith("> - **AC2**"))
+    assert lines[ac + 1] == "  - `tests/unit/test_profile.py::test_shows`"
+    assert "AC1" not in body and "Enabling tests" not in body
+
+
+def test_an_enabling_layer_names_its_tests_and_says_it_owns_no_criterion() -> None:
+    p = _prov(2, replace(PACKAGE, covers={}))
+    tests = ("tests/unit/test_docs.py::test_a",)
+    p = replace(p, contract=replace(p.contract, tests=tests, by_criterion={"": tests}))
+    body = pr_body(p, test_cmd="t")
+    assert "This layer owns no acceptance criterion; its tests are the contract." in body
+    assert "Tests:\n  - `tests/unit/test_docs.py::test_a`" in body
+
+
+def test_a_hostile_oversized_package_renders_neutralised_under_the_limit_with_the_stack_intact() -> None:
+    evil = "### Stack <!-- @bob Fixes #12 &#x40; </table> [^1]"
+    package = Package(
+        "profile",
+        {},
+        tuple(PackageFile(f"src/f{n}.py", "create", evil) for n in range(500)),
+        tuple(Interface("src/x.py", f"def f{n}() -> int  {evil}", evil * 3) for n in range(2_000)),
+        tuple(f"{evil} step {n} " + "y" * 600 for n in range(2_000)),
+        {"AC2": ("tests/unit/test_profile.py::test_shows",)},
+        evil,
+    )
+    p = _prov(1, package, _rows(*[evil + "z" * 400] * 300))
+    body = pr_body(p, test_cmd="t")
+    lines = body.splitlines()
+    assert len(body) < 60_000 and is_footer(lines[-1])
+    assert [x for x in lines if x.startswith("### Stack")] == ["### Stack (review and merge bottom-up)"]
+    assert sum(1 for x in lines if re.match(r"[0-9]+\. #[0-9]+ ", x)) == 3
+    _assert_inert(body)
+    assert "@bob" not in body and "Fixes #12" not in body
+    assert "`tests/unit/test_profile.py::test_shows`" in body
+    assert any(re.match(r"… and [0-9]+ more findings", x) for x in lines)
+    body.encode("utf-8")
+
+
+def test_a_body_without_an_epic_has_no_empty_section_and_no_none() -> None:
+    package = Package("storage", {}, (), (), (), {}, "")
+    body = pr_body(_prov(0, package, []), test_cmd=None)
+    assert "None" not in body and "Initiative" not in body and "Epic" not in body
+    assert "### This layer" not in body and "Interfaces:" not in body and "Steps:" not in body
+    assert "\n\n\n" not in body and "| file |" not in body
+
+
+def test_a_dependent_storys_body_names_its_base_story_and_the_merge_order() -> None:
+    p = _prov()
+    p = replace(p, stack=replace(p.stack, base=("story", "AIR-39")))
+    body = pr_body(p, test_cmd="t")
+    assert "Stacks on AIR-39's pull requests; merge those first, then this stack bottom-up." in body
+    assert "Based on `main`" not in body
+    assert "1. #11 Storage\n2. #12 Profile (this PR)\n3. #13 Docs" in body
+    assert "Based on `main`." in pr_body(_prov(), test_cmd="t")
+
+
+def test_the_cost_line_and_the_blocks_render_when_present() -> None:
+    p = _prov()
+    blocks = (("model", "gate_red", "AIR-12"), ("tool", "stall", "a person"))
+    cost = Cost(12.5, 120_000, 3_400, 2, blocks)
+    body = pr_body(replace(p, cost=cost, build_commit="abc1234", run_ids=("r1", "r2")), test_cmd="t")
+    assert "12.5 min, 120,000/3,400 tokens, 2 attempts" in body
+    assert "Blocked 2 times: model/gate_red, released by AIR-12; tool/stall, released by a person" in body
+    foot = "Built by airlie abc1234 on local models; runs r1, r2; a human reviews and merges."
+    assert body.splitlines()[-1] == foot
+    quiet = pr_body(_prov(), test_cmd="t")
+    assert "Blocked" not in quiet and " min, " not in quiet
+
+
+def test_the_checks_section_names_the_red_check_the_package_findings_and_the_review() -> None:
+    p = _prov()
+    k = replace(
+        p.checks,
+        red_check="the tests failed at `abc1234` before the code",
+        package_findings=("a", "b"),
+        package_attempts=2,
+        review="approve",
+        supervisor_interventions=1,
+    )
+    body = pr_body(replace(p, checks=k), test_cmd="uv run pytest -q")
+    assert "- Red check: the tests failed at `abc1234` before the code" in body
+    assert "- Package checks: 2 findings returned to the architect before the tests were accepted" in body
+    assert "- Tests: `uv run pytest -q` passes on this branch." in body
+    assert "- Review: approve" in body and "- Supervisor: 1 intervention" in body
+    first = replace(p.checks, package_attempts=1)
+    assert "- Package checks: accepted first time" in pr_body(replace(p, checks=first), test_cmd=None)

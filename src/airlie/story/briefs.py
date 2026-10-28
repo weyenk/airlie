@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
-from typing import Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.board import Card
@@ -24,6 +23,7 @@ from airlie.story.epic_plan import PLAN_REFINE_FIELD, STORY_PLAN_CONTRACT, Story
 from airlie.story.lessons import Lesson
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story
 from airlie.story.package import PACKAGE_CONTRACT, Package
+from airlie.story.provenance import Provenance
 from airlie.story.rounds import REFINE_FIELD
 from airlie.topology.studio_plan import Plan, Subtask
 
@@ -111,9 +111,10 @@ def _fit(lines: list[str], budget: int, more: str, gap: str | None = None) -> li
     return [*kept, *tail, more.format(len(lines) - len(kept))]
 
 
-def _cell(value: object) -> str:
-    """A table cell: model text cut to one line, then neutralised, with each pipe escaped to keep one cell."""
-    return _model(_line(str(value), 60)).replace("|", "\\|")
+def _cell(value: object, n: int = 60) -> str:
+    """A table cell: model text cut to one line (`n` characters), then neutralised, with each pipe escaped
+    to keep one cell."""
+    return _model(_line(str(value), n)).replace("|", "\\|")
 
 
 def story_text(story: Story) -> str:
@@ -533,66 +534,234 @@ def pr_title(story: Story, layers: tuple[Layer, ...], i: int) -> str:
     return _line(_mentions(f"[{i + 1}/{len(layers)}] {story.title}: {layers[i].title}"), 255)
 
 
-def pr_body(
-    card: Card,
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    rows: list[dict[str, Any]],
-    prs: list[tuple[int, str]],
-    test_cmd: str | None,
-    stacks_on: str | None = None,
-) -> str:
-    """The PR text a reviewer reads. Model text stays in its section: titles, scope and table cells are one
-    line; the brief and criteria are blockquotes; each finding is one bullet. Each body field is cut, then
-    neutralised by `_model`, so GitHub renders no markup from it. The body stays under BODY_LIMIT: findings
-    are cut first, and the stack and the merge line always close it. `test_cmd` is the gate the layer passed,
-    as shown; None names no command (a layer built before each layer kept its gate). `stacks_on` is the
-    board key of the story whose pull requests this story's are stacked on (a dependent story, D5 of the
-    plans phase): the stack names it, so a reviewer merges that one first."""
-    layer = layers[i]
+TESTS_BUDGET = 25_000
+"""Characters of test ids a body shows. The ids are never cut for the sake of other text; a package that names
+more than this (none has) ends its list with a count, since GitHub refuses the body otherwise."""
+
+_SLACK = 400
+"""Characters kept free under BODY_LIMIT for the "… and n more" lines `_fit` adds."""
+
+
+def _id(test: str) -> str:
+    """A test id (a path and a name) as code: one line, cut, backticks inside it made quotes so it cannot end
+    its own span."""
+    return "`" + _line(test, 200).replace("`", "'") + "`"
+
+
+def _size(lines: Sequence[str]) -> int:
+    return sum(len(x) + 1 for x in lines)
+
+
+def _contract(p: Provenance) -> list[str]:
+    """The `### The contract` section: who wrote the layer's tests and when, each owned criterion with its
+    test ids, the tests that cover none, and the statement for a layer that owns no criterion. A layer with
+    nothing to name (no package, no tests, no criterion) has no section."""
+    c = p.contract
+    owns = dict(c.criteria)
+    if not (c.tests or owns or p.package):
+        return []
+    out = ["### The contract"]
+    if p.package is not None:
+        by = _model(_line(f"{c.author_role} on {c.author_model}", 120))
+        failing = f"failing at `{c.red_at}`, " if c.red_at else ""
+        out += [f"Tests written by the {by} before the code; {failing}passing at `{c.green_at}`.", ""]
+    else:
+        out += ["The tests this layer builds on (built before layers kept their package):", ""]
+    if not owns:
+        tail = "; its tests are the contract" if c.tests else ""
+        out += [f"This layer owns no acceptance criterion{tail}.", ""]
+    used = 0
+
+    def listed(tests: Sequence[str]) -> list[str]:
+        nonlocal used
+        lines: list[str] = []
+        for n, t in enumerate(tests):
+            line = f"  - {_id(t)}"
+            if used + len(line) + 1 > TESTS_BUDGET:
+                lines.append(f"  - … and {len(tests) - n} more tests")
+                used = TESTS_BUDGET
+                break
+            used += len(line) + 1
+            lines.append(line)
+        return lines
+
+    for cid, text in owns.items():
+        out += _quote(f"- {text}", model=True)
+        out += listed(c.by_criterion.get(cid, ())) or ["  - no test named for this criterion"]
+    if c.by_criterion.get(""):
+        out += ["", "Enabling tests:" if owns else "Tests:", *listed(c.by_criterion[""])]
+    return [*out, ""]
+
+
+def _checks(p: Provenance, test_cmd: str | None) -> list[str]:
+    """`### Checks that passed`: the red check, the package checks, the gate, the review verdict and the
+    supervisor's interventions."""
+    k = p.checks
     passed = f"`{test_cmd}`" if test_cmd is not None else "the story's test gate"
-    owned = [c for c in story.acceptance if c.id in layer.acceptance]
-    link = f" ([{card.ref or 'issue'}]({card.url}))" if card.url else ""
-    criteria = [line for c in owned for line in _quote(f"- {c.line()}", model=True)]
-    stack = [
-        f"{j + 1}. #{n} {_model(_line(layers[j].title, 80))}" + (" (this PR)" if j == i else "")
-        for j, (n, _) in enumerate(prs)
-    ]
-    head = [
-        f"**Story:** {_model(_line(story.title, 80))}{link}",
-        f"**Layer {i + 1} of {len(layers)}:** {_model(_line(layer.title, 80))}",
-        "",
-        *_fit(_quote(layer.brief, model=True), 20_000, "> … and {} more lines"),
-        "",
-        f"**Scope:** {_model(_line(layer.scope, 300))}",
-        "",
-        "### Acceptance criteria in this layer",
-        *(_fit(criteria, 10_000, "> … and {} more lines") or ["- none: an enabling layer"]),
-        "",
+    out = ["### Checks that passed"]
+    if k.red_check:
+        out.append(f"- Red check: {k.red_check}")
+    if k.package_attempts:
+        n = len(k.package_findings)
+        said = (
+            f"{n} finding{'' if n == 1 else 's'} returned to the architect before the tests were accepted"
+            if n
+            else "accepted first time"
+        )
+        out.append(f"- Package checks: {said}")
+    out.append(f"- Tests: {passed} passes on this branch.")
+    if k.review:
+        out.append(f"- Review: {_model(_line(k.review, 60))}")
+    n = k.supervisor_interventions
+    out.append(f"- Supervisor: {n} intervention{'' if n == 1 else 's'}")
+    return [*out, ""]
+
+
+def _built(p: Provenance) -> list[str]:
+    """`### How it was built`: the subtask table with its models, then what the layer cost and its blocks."""
+    cost = p.cost
+    out = [
         "### How it was built",
-        "| subtask | role | stop | review | fix rounds |",
-        "| --- | --- | --- | --- | --- |",
+        "| subtask | role | model | stop | review | fix rounds |",
+        "| --- | --- | --- | --- | --- | --- |",
         *(
-            f"| {_cell(r['id'])} | {_cell(r['role'])} | {_cell(r['stop'])} | {_cell(r['review'])} "
-            f"| {_cell(r['fix_rounds'])} |"
-            for r in rows
+            f"| {_cell(b.subtask)} | {_cell(b.role)} | {_cell(b.model)} | {_cell(b.stop)} "
+            f"| {_cell(b.review)} | {_cell(b.fix_rounds)} |"
+            for b in p.builders
         ),
         "",
-        f"Tests: {passed} passes on this branch.",
-        "",
-        "### Reviewer findings to check",
     ]
-    tail = [
-        "",
-        "### Stack (review and merge bottom-up)",
-        *([f"Stacks on {stacks_on}'s pull requests; merge those first.", ""] if stacks_on else []),
-        *stack,
-        "",
-        "Built by airlie on local models from the story above; a human reviews and merges.",
+    if cost.minutes or cost.tokens_in or cost.tokens_out:
+        tries = f"{cost.attempts} attempt{'' if cost.attempts == 1 else 's'}"
+        out += [f"{cost.minutes:g} min, {cost.tokens_in:,}/{cost.tokens_out:,} tokens, {tries}", ""]
+    if cost.blocks:
+        n = len(cost.blocks)
+        why = "; ".join(
+            _model(_line(f"{cls}/{kind}, released by {who}", 120)) for cls, kind, who in cost.blocks
+        )
+        out += [f"Blocked {n} time{'' if n == 1 else 's'}: {why}", ""]
+    return out
+
+
+def _stack(p: Provenance) -> list[str]:
+    """`### Stack`: the layers' PRs in merge order, and the base: trunk, or the story this one stacks on."""
+    s = p.stack
+    kind, name = s.base
+    lines = [
+        f"{j + 1}. {f'#{n} ' if n else ''}{_model(_line(title, 80))}"
+        + (" (this PR)" if j + 1 == s.position else "")
+        for j, (n, _, title) in enumerate(s.prs)
     ]
-    fixed = sum(len(x) + 1 for x in (*head, *tail))
+    out = ["### Stack (review and merge bottom-up)", *lines, ""]
+    if kind == "story":
+        story = _model(_line(name, 60))
+        out.append(f"Stacks on {story}'s pull requests; merge those first, then this stack bottom-up.")
+    else:
+        out.append(f"Based on `{_line(name, 60).replace('`', chr(39))}`.")
+    return [*out, ""]
+
+
+def _footer(p: Provenance) -> str:
+    return (
+        "Built by airlie"
+        + (f" {_model(_line(p.build_commit, 20))}" if p.build_commit else "")
+        + " on local models"
+        + (f"; runs {_model(_line(', '.join(p.run_ids), 300))}" if p.run_ids else "")
+        + "; a human reviews and merges."
+    )
+
+
+def pr_body(p: Provenance, *, test_cmd: str | None) -> str:
+    """The PR text a reviewer reads (P6): the chain the layer serves, the why, the layer's package, the tests
+    that are its contract, the checks that passed, how it was built and what it cost, and the stack. Each
+    section is left out when its source is empty. Model text stays in its section: titles, scope and table
+    cells are one line; the summary, brief and criteria are blockquotes; each finding is one bullet. Each
+    field is cut, then neutralised by `_model`, so GitHub renders no markup from it. The body stays under
+    BODY_LIMIT: findings are cut first, then the steps, then the interfaces, then the why; the header, the
+    contract's test ids, the stack and the footer are kept. `test_cmd` is the gate the layer passed, as
+    shown; None names no command (a layer built before each layer kept its gate)."""
+    ch = p.chain
+    ref, title, summary = ch.story
+    link = f" ([{ref or 'issue'}]({ch.story_url}))" if ch.story_url else ""
+    board = f" ([board]({ch.board_url}))" if ch.board_url else ""
+    number, _, count = ch.layer[0].partition("/")
+    head = []
+    if ch.initiative:
+        head.append(f"**Initiative:** {_model(_line(' '.join(ch.initiative), 100))}")
+    if ch.epic:
+        head.append(f"**Epic:** {_model(_line(' '.join(ch.epic[:2]), 100))}")
+    head += [
+        f"**Story:** {_model(_line(title, 80))}{link}{board}",
+        f"**Layer {int(number)} of {int(count)}:** {_model(_line(ch.layer[1], 80))}",
+        "",
+    ]
+
+    why: list[str] = []
+    epic_why = ch.epic[2].strip() if ch.epic else ""
+    if epic_why:
+        why += [*_quote("\n".join(epic_why.splitlines()[:2]), model=True), ""]
+    why += _quote(summary, model=True)
+
+    pkg = p.package
+    this: list[str] = []
+    steps: list[str] = []
+    interfaces: list[str] = []
+    if pkg is not None:
+        if pkg.done_when:
+            this += [f"**Done when:** {_model(_line(pkg.done_when, 300))}", ""]
+        if pkg.files:
+            rows = [f"| {_cell(f.path, 100)} | {_cell(f.action)} | {_cell(f.why, 100)} |" for f in pkg.files]
+            this += [
+                "| file | action | why |",
+                "| --- | --- | --- |",
+                *_fit(rows, 8_000, "| … and {} more files | | |"),
+                "",
+            ]
+        interfaces = [
+            f"- {_model(_line(f'{i.file}: {i.signature}', 300))}"
+            + (f" — {_model(_line(i.behaviour, 200))}" if i.behaviour else "")
+            for i in pkg.interfaces
+        ]
+        steps = [f"{k}. {_model(_line(s, 500))}" for k, s in enumerate(pkg.steps, 1)]
+    elif p.layer_scope or p.layer_brief:
+        # a layer built before packages: its scope and brief are what it was built from
+        this += [
+            f"**Scope:** {_model(_line(p.layer_scope, 300))}",
+            "",
+            *_fit(_quote(p.layer_brief, model=True), 20_000, "> … and {} more lines"),
+            "",
+        ]
     # The leading zero-width space keeps block markup such as "### ", "---" or "1. " inside its bullet.
-    findings = [f"- {ZWSP}{_model(_line(str(f), 500))}" for r in rows for f in r["findings"]]
-    shown = _fit(findings, BODY_LIMIT - 1 - fixed, "… and {} more findings", gap="")
-    return "\n".join([*head, *(shown or ["- none"]), *tail]) + "\n"
+    findings = [f"- {ZWSP}{_model(_line(str(f), 500))}" for f in p.checks.review_findings]
+
+    def render(why_: list[str], interfaces_: list[str], steps_: list[str], findings_: list[str]) -> list[str]:
+        out = [*head, "### Why", *why_, ""]
+        if this or interfaces_ or steps_:
+            out += ["### This layer", *this]
+            if interfaces_:
+                out += ["Interfaces:", *interfaces_, ""]
+            if steps_:
+                out += ["Steps:", *steps_, ""]
+        return [
+            *out,
+            *_contract(p),
+            *_checks(p, test_cmd),
+            "### Reviewer findings to check",
+            *(findings_ or ["- none"]),
+            "",
+            *_built(p),
+            *_stack(p),
+            _footer(p),
+        ]
+
+    # What gives way, last-cut first: the why, then the interfaces, then the steps, then the findings, each
+    # in the room the ones before it left.
+    room = BODY_LIMIT - 1 - _size(render([], [], [], [])) - _SLACK
+    shown_why = _fit(why, room, "> … and {} more lines")
+    room -= _size(shown_why)
+    shown_interfaces = _fit(interfaces, room, "- … and {} more interfaces")
+    room -= _size(shown_interfaces)
+    shown_steps = _fit(steps, room, "… and {} more steps")
+    room -= _size(shown_steps)
+    shown_findings = _fit(findings, room, "… and {} more findings", gap="")
+    return "\n".join(render(shown_why, shown_interfaces, shown_steps, shown_findings)) + "\n"

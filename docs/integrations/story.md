@@ -463,6 +463,13 @@ layers), and the story's base becomes the trunk: the next `task story -- AIR-7` 
 code. A conflict or a failing gate names the layer and changes nothing. A story that has published its PRs is not
 moved, and the story keeps its test gate.
 
+**See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
+from the story's state and the board: no network, nothing published, so a body can be read before the stack is
+opened. `task story:describe -- AIR-7` rebuilds the title and body of every PR a published story has and edits
+them with `gh pr edit` (as you, or as the bot). It changes PRs on GitHub, so it runs only when you ask; the tick
+never does. A story that has not published is refused. Each layer's commit also carries the story, layer, run,
+airlie build and a test count as git trailers (`git log --format=%(trailers)`), keys and shas only.
+
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and
@@ -470,6 +477,38 @@ exits. The tick takes *To Do* issues, so its next beat resumes the story from it
 
 **A killed airlie** (SIGKILL, a crash, a power cut) cannot say so: the issue stays where the last step left it
 (normally *In Progress*), with no stop comment. Run the same command to resume.
+
+## Why a story stopped: the diagnosis and the fix cards
+
+When a story blocks, the line writes down why before it moves the card (planning-line P5a, design
+`docs/superpowers/specs/2026-10-25-line-scheduler-design.md`). It gathers an evidence pack from disk alone (the
+story's `events.jsonl`, `state.json` and the run directory: counts, the gate's tail, tracebacks, the diff stat and
+the paths of the trace), classes it by rules, asks Muse to read the pack beside the class, and writes
+`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class.
+
+| class | means | what happens |
+| --- | --- | --- |
+| `transient` | a trunk fetch or an engine stall | retried up to `line.transient_retries` (2) times per signature, then waits for you |
+| `environment` | the gate was red on the base already | waits for you |
+| `content` | the model's work | waits for you to resume it |
+| `process` | a bug in airlie's code, or a hold that trapped a role | a fix card on airlie's own board (below) |
+| `config` | a role's token or step cap is too small for its task | a fix card |
+
+Muse's reading never replaces the class: a traceback through airlie's code is `process` even when Muse blames a
+test, and both are shown. `task line:why -- KEY [--n 2] [--paths]` prints the latest diagnosis (or the nth, or only
+the paths of the evidence for a Claude session to read), and makes one for a past block that has none. `/why KEY` in
+Chat answers from it, and `GET /v1/airlie/stories/{key}/diagnosis` returns it.
+
+A `process` or `config` block files a card on the local board (`todo`, labels `fix`, `repo:<line.home_repo>`,
+`signature:...`, `blocks:KEY`) with Why, Evidence, Hypothesis, Reproduce, Acceptance criteria and Out of scope; the
+same bug blocking another story links the open card instead of filing a second, and the blocked story is labelled
+`blocked_by:<fix>`. Approve the card and the line plans and builds it, or open a Claude session on it. The line
+never merges its fix. Once the fix's PRs are merged on GitHub the card gets one note asking you to run
+`task line:deploy` (it pulls the home checkout's trunk, fast-forward only, and says whether to restart
+`task serve`); when the merge is in the code the line runs, the card is `done` and each story it blocked goes back to
+`approved` with `resumed_after:<fix>`. A story that then blocks on the same signature waits for you and the card gets
+a comment: the loop stops at one. With `story.board: jira` the card's text is a note on the issue and no label is
+written.
 
 ## From OpenCode
 
@@ -588,8 +627,15 @@ So the tick moves two kinds of issue out of *To Do*:
 - Branches: one per layer, each based on the layer below, named `<ISSUE-KEY>-<story>-<NN>-<layer>` (a written
   request has no key prefix). Your own checkout is never switched: `gh stack` runs in a worktree of its own, because
   `gh stack init` switches the checkout it runs in.
-- PRs: drafts, titled `[n/total] <story>: <layer>`, each with a link to the issue, the layer's criteria, a table of
-  how it was built, the reviewer's findings to check, and the stack. Review and merge bottom-up. Text the models
+- PRs: drafts, titled `[n/total] <story>: <layer>`, each a body a reviewer can judge without opening the board
+  (`airlie.story.provenance` gathers it from the story's state, events and board, with no model call): the
+  initiative, epic and story it serves and why; the layer's package (done when, files, interfaces, steps); the
+  contract, the layer's tests named under the criterion each covers with the shas they failed and passed at, or
+  "owns no criterion" for an enabling layer; the checks that passed (the red check, the package checks, the gate,
+  the review, the supervisor); how it was built (a table with each role's model), what it cost in minutes and
+  tokens, and any blocks; the reviewer's findings to check; and the stack, with the story it stacks on when it
+  depends on another. A section whose source is empty is left out (a story with no epic has no epic line; a layer
+  built before packages shows its scope and brief). Review and merge bottom-up. Text the models
   wrote is defused (a zero-width space goes after `@`, `<` and `&`, and between `#` and the digits after it), so a PR
   notifies no one, links no `#123` reference and renders no HTML from it.
 - Commits: one per layer, authored and committed by `airlie <airlie@local>`, or by the bot when you publish as one,

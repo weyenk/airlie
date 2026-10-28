@@ -17,11 +17,14 @@ import re
 import subprocess
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
+from airlie.engine.protocol import Engine
 from airlie.prompts import text as hub_text
 from airlie.skills import prompt_text
 from airlie.story.asking import Asker, StoryBlocked, StudioFactory
@@ -39,10 +42,24 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.context import guide_budget, named_paths, repo_guide
+from airlie.story.diagnosis import (
+    GATE_TAIL_LINES,
+    Classified,
+    Diagnosis,
+    Pack,
+    classify,
+    diagnosis_note,
+    gather,
+    muse_text,
+    next_for,
+    write_diagnosis,
+)
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
+from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.layer_checks import Finding, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import (
     _BRANCH,
     SURROGATE,
@@ -51,16 +68,19 @@ from airlie.story.model import (
     NoTestGate,
     Story,
     StoryError,
+    StorySetupError,
     branch_name,
     parse_layers,
     parse_story,
 )
 from airlie.story.package import Package, parse_package
 from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
+from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import same_layers
 from airlie.story.state import STAGES, StoryState
+from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
 from airlie.supervisor.triage import triage_for
@@ -216,6 +236,14 @@ def _gate_detail(output: str) -> str:
     return lines[-1][:200] if lines else "the gate failed"
 
 
+def _evidence_kinds(reason: str) -> tuple[str, ...]:
+    """The ledger's kind of finding for a layer that stopped, as `recall` matches it: what the layer's stop
+    reason says happened (it changed nothing, or its gate was red)."""
+    if "changed nothing" in reason:
+        return ("changed_nothing",)
+    return ("gate_fails",) if " fails on " in reason else ()
+
+
 def _to_build(st: StoryState) -> bool:
     """A layer of the story is still to be built: its layers are not planned yet, or one is not built."""
     return st.layers is None or any(f"{i + 1:02d}" not in st.built for i in range(len(st.layers)))
@@ -285,7 +313,10 @@ class StoryPipeline:
         self.github_repo = github_repo
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
-        self.asker = Asker(cfg, studio, self.repo)
+        self.asker = Asker(cfg, self._studio, self.repo)
+        self._engine: Engine | None = None
+        """The engine of the latest studio run: Muse's reading of a block is asked on it."""
+        self._layer_base: str | None = None
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
         that has a supervisor (`_supervisor`): one that cannot be opened is that layer's fallback, not a
@@ -338,7 +369,7 @@ class StoryPipeline:
         except StoryWaiting as e:
             await self._wait(st, card, str(e))
         except StoryBlocked as e:
-            await self._block(st, card, str(e), e.diagnosis)
+            await self._block(st, card, str(e))
         except asyncio.CancelledError:
             await self._cancelled(st, card)
             raise
@@ -431,6 +462,12 @@ class StoryPipeline:
             self.commands = tuple(commands)
         self.test_cmd = run
         self._shown_cmd = _redact_urls(shown)
+
+    def _studio(self) -> StudioOrchestrator:
+        """A studio for the Asker, its engine kept: Muse's reading of a block is asked on the latest one."""
+        orch = self.studio()
+        self._engine = orch.engine
+        return orch
 
     async def _ask(
         self,
@@ -802,6 +839,8 @@ class StoryPipeline:
         layer = layers[i]
         last = attempt >= self.s.layer_attempts
         orch = self.studio()
+        self._engine = orch.engine  # the block path's supervisor asks it, after this studio is gone
+        self._layer_base = base_sha
         wt = orch.run_dir.path / "studio"
         st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
         if rev_parse(self.repo, f"refs/heads/{branch}") is None:
@@ -855,12 +894,18 @@ class StoryPipeline:
                 failure = (_ending(coder), _gate_detail(orch.gate_output), reason, "gate_fails")
             if failure is not None:
                 ending, detail, reason, kind = failure
+                if kind == "gate_fails":  # on record for the block's diagnosis, which is read from disk
+                    st.emit(
+                        "gate_tail",
+                        layer=nn,
+                        studio_run=orch.run_dir.run_id,
+                        output=_redact_urls(
+                            "\n".join(orch.gate_output.strip().splitlines()[-GATE_TAIL_LINES:])
+                        ),
+                    )
                 self._lesson(st, nn, layer, package, coder, ending, detail)
                 if last:
-                    diagnosis = await self._at_block(
-                        sup, orch, "build", reason, kinds=(kind,), evidence=reason
-                    )
-                    raise StoryBlocked(reason, diagnosis)
+                    raise StoryBlocked(reason)
                 st.emit("layer_replanned", layer=nn, attempt=attempt, why=ending, detail=detail)
                 told = self._replan_feedback(st, orch, nn, coder)
                 remove_worktree(self.repo, wt)
@@ -868,7 +913,13 @@ class StoryPipeline:
                 st.attempt = None
                 st.save()
                 return told
-            sha = squash_since(wt, base_sha, f"{story.title}: {layer.title} ({nn}/{total})", author=author)
+            sha = squash_since(
+                wt,
+                base_sha,
+                f"{story.title}: {layer.title} ({nn}/{total})",
+                author=author,
+                trailers=self._trailers(card, nn, total, orch.run_dir.run_id, package),
+            )
             remove_worktree(self.repo, wt)
             st.built[nn] = {
                 "branch": branch,
@@ -888,6 +939,25 @@ class StoryPipeline:
         finally:
             if sup is not None:
                 sup.close()  # after every subtask has finished: an advice in flight is never cut off
+
+    def _store(self) -> BoardStore | None:
+        """The local board's store, None for any other board."""
+        return self.board.store if isinstance(self.board, LocalBoard) else None
+
+    def _trailers(self, card: Card, nn: str, total: str, run_id: str, package: Package) -> dict[str, str]:
+        """The provenance a layer's commit carries (P6): the story's key ("request" for a written one), the
+        layer, the epic when the board has one above the story, the run, the airlie build and a count of the
+        package's tests (the ids are in the PR). Keys, numbers and shas only, never model text."""
+        _, epic = chain_items(self._store(), card.key)
+        trailers = {"Airlie-Story": card.ref or "request", "Airlie-Layer": f"{nn}/{total}"}
+        if epic:
+            trailers["Airlie-Epic"] = epic[0]
+        trailers["Airlie-Run"] = run_id
+        build = build_commit()
+        if build:
+            trailers["Airlie-Build"] = build
+        trailers["Airlie-Tests"] = f"{len(package.test_ids)} tests in {len(package.tests)} files"
+        return trailers
 
     def _replan_feedback(
         self, st: StoryState, orch: StudioOrchestrator, nn: str, coder: TeamResult | None
@@ -1091,24 +1161,6 @@ class StoryPipeline:
             st.emit("supervisor_fallback", trigger=None, reason=f"setup: {type(e).__name__}", layer=nn)
             return None
 
-    async def _at_block(
-        self,
-        sup: LayerSupervisor | None,
-        orch: StudioOrchestrator,
-        subtask: str,
-        reason: str,
-        *,
-        kinds: Sequence[str],
-        evidence: str,
-    ) -> str | None:
-        """The supervisor's reading of why the layer stopped, for the card; None without one, or on its
-        fallback. The role is the subtask's as it ran, or the configured one when it never ran."""
-        if sup is None:
-            return None
-        return await sup.at_block(
-            subtask, self._role_of(orch, subtask), reason, kinds=kinds, evidence=evidence
-        )
-
     @staticmethod
     def _steer(st: StoryState, ids: Sequence[str], role: str, nn: str) -> None:
         """A `steer` event for each hub steering text in what the pipeline is about to send a layer's role:
@@ -1116,11 +1168,6 @@ class StoryPipeline:
         team loop's own sends are events on the studio run's stream; these are the story's."""
         for id in ids:
             st.emit("steer", id=id, role=role, layer=nn)
-
-    def _role_of(self, orch: StudioOrchestrator, subtask: str) -> str:
-        """The subtask's role as it ran, or the build role when it never ran."""
-        run = orch.runs.get(subtask)
-        return run.role if run is not None else self.s.build_role
 
     @staticmethod
     def _emit_findings(st: StoryState, found: list[Finding], nn: str, attempt: int, studio_run: str) -> None:
@@ -1154,10 +1201,9 @@ class StoryPipeline:
             prs = [await self.publisher.pr(wt, b) for b in branches]
             for i, b in enumerate(branches):
                 body = st.path / f"pr-{i + 1:02d}.md"
-                rows = st.built[f"{i + 1:02d}"]["subtasks"]
                 # the gate this layer passed: a state from before layers kept theirs has none to name
                 gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(card, story, layers, i, rows, prs, gate, stacks_on=stacks_on)
+                text = pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
@@ -1167,6 +1213,74 @@ class StoryPipeline:
         st.prs = [{"branch": b, "number": n, "url": u} for b, (n, u) in zip(branches, prs, strict=True)]
         st.emit("published", prs=st.prs)
         st.finish("publish")
+
+    def provenance(
+        self,
+        st: StoryState,
+        card: Card,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        prs: Sequence[tuple[int, str]],
+    ) -> Provenance:
+        """Layer `i`'s provenance for its PR (`gather_provenance`): the board's chain when the board is local,
+        nothing above the story otherwise."""
+        return gather_provenance(st, card, story, layers, i, prs=prs, cfg=self.cfg, store=self._store())
+
+    def _published_texts(
+        self, card: Card, nn: str | None = None
+    ) -> tuple[StoryState, list[tuple[str, str, str]]]:
+        """The state of the story of `card` and, for each built layer (just `nn` when given), its number, PR
+        title and the body it would get now (P6): from the state and the board as they are, no model call
+        and no network. A story with no state, no layers yet or no such built layer is a StorySetupError. A
+        story that has not published has no PR numbers: its stack lists the layers without them."""
+        f = self.stories_dir / card.key / "state.json"
+        if not f.is_file():
+            raise StorySetupError(f"story {card.key} has not started: there is no {f} to read")
+        here = self.github_repo or self.publisher.github_repo_of(self.repo)
+        st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
+        if st.story is None or st.layers is None or not st.built:
+            raise StorySetupError(f"story {card.key} has no built layer yet: run it first")
+        story, layers = Story.from_dict(st.story), tuple(Layer.from_dict(d) for d in st.layers)
+        if nn is not None and nn not in st.built:
+            raise StorySetupError(f"story {card.key} has not built layer {nn} (built: {', '.join(st.built)})")
+        prs = [(int(p["number"]), str(p["url"])) for p in st.prs] or [(0, "")] * len(layers)
+        out = []
+        for key in [nn] if nn is not None else sorted(st.built):
+            i = int(key) - 1
+            provenance = self.provenance(st, card, story, layers, i, prs)
+            out.append(
+                (key, pr_title(story, layers, i), pr_body(provenance, test_cmd=st.built[key].get("gate")))
+            )
+        return st, out
+
+    def layer_body(self, card: Card, nn: str) -> str:
+        """The body a built layer's PR would get now (`airlie story pr-body KEY NN`)."""
+        return self._published_texts(card, nn)[1][0][2]
+
+    async def describe(self, card: Card) -> list[int]:
+        """Rebuild the title and body of every PR the story published and edit them on GitHub (`gh pr edit`),
+        so a story published before provenance, or whose state has gained since, tells a reviewer what it
+        tells now. Only by a person's command (`task story:describe`), never from the tick. A story that has
+        not published is a StorySetupError. Returns the PR numbers, bottom first."""
+        st, texts = self._published_texts(card)
+        if not st.prs:
+            raise StorySetupError(f"story {card.key} has published no PRs: nothing to describe")
+        self.publisher.prepare(self.repo, expected=st.github_repo)
+        wt = st.path / "describe"
+        remove_worktree(self.repo, wt)
+        checkout_worktree(self.repo, wt, str(st.prs[-1]["branch"]))
+        numbers = []
+        try:
+            for (nn, title, text), pr in zip(texts, st.prs, strict=True):
+                body = st.path / f"pr-{nn}.md"
+                body.write_text(text, encoding="utf-8")
+                await self.publisher.describe(wt, str(pr["branch"]), title, body)
+                numbers.append(int(pr["number"]))
+        finally:
+            remove_worktree(self.repo, wt)
+        st.emit("described", prs=numbers)
+        return numbers
 
     async def _finish(self, st: StoryState, card: Card) -> None:
         if st.done("review"):
@@ -1181,28 +1295,26 @@ class StoryPipeline:
         await self.board.move(card, "review")
         st.finish("review")
 
-    async def _block(self, st: StoryState, card: Card, reason: str, diagnosis: str | None = None) -> None:
+    async def _block(self, st: StoryState, card: Card, reason: str) -> None:
         """Every stop ends here: the reason is masked and then cut (once, for all of them), kept in the state
         and the events, posted as a note, and the issue moved to blocked. The note and the move are separate
         calls, so a note that fails does not keep the issue out of Blocked. A cancel that lands while the
-        board is being told is a cancel like any other (back to intake, with a note), not a stop. A
-        supervisor's `diagnosis` is masked and cut the same way, on its own, and goes in the note and the
-        event beside the reason; the state keeps the reason alone."""
+        board is being told is a cancel like any other (back to intake, with a note), not a stop.
+
+        The note is the block's diagnosis (`_diagnose`): the class by rules, Muse's reading of the evidence
+        and what happens next. The state keeps the reason alone."""
         # masked first: a cut through a password would leave a piece of it
         reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
-        said = ""
-        if diagnosis is None:
-            st.emit("blocked", stage=st.stage, reason=reason)
-        else:
-            diagnosis = _cap(_redact_urls(diagnosis))
-            st.emit("blocked", stage=st.stage, reason=reason, diagnosis=diagnosis)
-            said = f"\nSupervisor: {diagnosis}"
         try:
-            await self._tell(
-                st, card, f"stopped after '{st.stage}': {reason}{said}\nResume: {card.resume}.", "blocked"
-            )
+            text, fields = await self._diagnose(st, card, reason)
+        except asyncio.CancelledError:  # Muse is asked in there, which takes minutes: a cancel can land
+            await self._cancelled(st, card)
+            raise
+        st.emit("blocked", stage=st.stage, reason=reason, **fields)
+        try:
+            await self._tell(st, card, text, "blocked")
         except asyncio.CancelledError:  # run's own handler is behind us: this stop is being handled
             await self._cancelled(st, card)
             raise
@@ -1213,6 +1325,160 @@ class StoryPipeline:
         st.emit("waiting", reason=reason)
         text = f"{reason}. It is back in To Do and is built once that story's pull requests are open."
         await self._tell(st, card, text, "intake")
+
+    async def _diagnose(self, st: StoryState, card: Card, reason: str) -> tuple[str, dict[str, Any]]:
+        """The block's note and the fields its `blocked` event gains. The evidence is gathered from disk, the
+        class read by rules, then Muse reads both (the supervisor's `block` trigger, once, here); the
+        diagnosis is written under the story's directory. Whatever fails in it is a `diagnosis_failed` event
+        and today's plain note: a diagnosis never keeps a story out of Blocked."""
+        plain = f"stopped after '{st.stage}': {reason}\nResume: {card.resume}."
+        state_dir = self.cfg.observability.state_dir
+        try:
+            pack = gather(state_dir, card.key, pending=(st.stage, reason))
+            classified = classify(pack)
+            muse = await self._muse_at_block(st, card, pack, classified)
+            if muse is not None:
+                classified = classify(pack, muse_category=muse.category)
+            d = Diagnosis(pack, classified, muse, next_for(classified))
+            if classified.class_ in ("process", "config"):  # airlie's own: a card for a person, not a resume
+                d = replace(d, next=await self._fix_card(st, card, d))
+            write_diagnosis(state_dir, d)
+            text = diagnosis_note(d, card.resume)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - a diagnosis that fails leaves the stop as it was
+            st.emit("diagnosis_failed", error=_cap(_redact_urls(f"{type(e).__name__}: {e}"), 300))
+            return plain, {}
+        fields: dict[str, Any] = {
+            "n": pack.n,
+            "class": classified.class_,
+            "block_kind": classified.kind,  # not "kind": that is the event's own key
+            "signature": classified.signature,
+        }
+        if muse is not None:
+            fields["diagnosis"] = _cap(_redact_urls(muse_text(muse)))
+        return text, fields
+
+    async def _fix_card(self, st: StoryState, card: Card, d: Diagnosis) -> str:
+        """Airlie's own failure becomes a card on airlie's board (airlie.story.fixes), or a link to the open
+        one with the same signature; what happens next, in words. On a board that is not the local one (Jira)
+        the card's text is a note on the issue and no label is written. The line never merges the fix."""
+        sig = d.classified.signature
+        if isinstance(self.board, LocalBoard):
+            store = self.board.store
+            cfg = self.cfg
+            again = await asyncio.to_thread(self._did_not_take, store, card, d)
+            if again is not None:  # D6: resumed after a fix and blocked on the same signature: it stops here
+                st.emit("fix_did_not_take", story=card.key, fix=again, signature=sig)
+                return (
+                    f"waits for a person: {again} was deployed and this story blocked on the same signature "
+                    "again, so the fix did not take (no new card)"
+                )
+
+            def file() -> tuple[Item, bool]:
+                return file_fix(store, d=d, story_key=card.key, home=home_repo(cfg, home_checkout()))
+
+            try:
+                fix, created = await asyncio.to_thread(file)
+            except Exception as e:  # noqa: BLE001 - a card that cannot be filed leaves the stop as it was
+                st.emit(
+                    "fix_failed", signature=sig, error=_cap(_redact_urls(f"{type(e).__name__}: {e}"), 300)
+                )
+                return "waits for a person (the fix card could not be filed)"
+            st.emit("fix_filed" if created else "fix_linked", story=card.key, fix=fix.key, signature=sig)
+            what = "filed" if created else "already open, and now also blocks this story"
+            return (
+                f"fix card {fix.key} ({what}); this story resumes by itself once the fix is in the code "
+                "the line runs"
+            )
+        title, body = render_fix_card(d, card.key)
+        try:
+            await self.board.comment(card, note(f"A fix card for airlie's own board:\n{title}\n\n{body}"))
+        except Exception as e:  # noqa: BLE001
+            _board_error(st, "comment", e)
+        st.emit("fix_noted", story=card.key, signature=sig)
+        return "a fix card, written as a note on this issue (this board files none); a person files it"
+
+    @staticmethod
+    def _did_not_take(store: BoardStore, card: Card, d: Diagnosis) -> str | None:
+        """The fix card (its key) that this story was resumed after when the block's signature is that card's:
+        the card gets a comment, and the caller files nothing. None when the story was not resumed after a
+        fix, or blocked on something else."""
+        try:
+            labels = store.get(card.key).labels
+        except KeyError:
+            return None
+        for label in labels:
+            if not label.startswith("resumed_after:"):
+                continue
+            fix_key = label.split(":", 1)[1]
+            try:
+                fix = store.get(fix_key)
+            except KeyError:
+                continue
+            if signature_label(d.classified.signature) in fix.labels:
+                store.comment(
+                    fix_key,
+                    "airlie",
+                    f"{card.key} blocked again with the same signature after this fix was deployed: "
+                    f"block {d.pack.n}, {d.pack.reason}",
+                )
+                return fix_key
+        return None
+
+    async def _muse_at_block(
+        self, st: StoryState, card: Card, pack: Pack, classified: Classified
+    ) -> Answer | None:
+        """Muse's reading of the block's evidence beside its class (story.supervisor); None when it is off,
+        no studio ran in this process, or it fell back (a `supervisor_fallback` event says why). Muse's text
+        is masked and cut like every reason. Its own supervisor, since the layer's closed with the layer."""
+        spec = self.s.supervisor
+        if not spec.enabled or self._engine is None:
+            return None
+        try:
+            if self.ledger is None:
+                self.ledger = Ledger(self.cfg.observability.state_dir / "supervisor.sqlite")
+            prompt_text(self.cfg.roles[spec.role].prompt)
+            checks = checks_for(
+                self.commands, timeout_s=self.timeout_s, confinement=self.cfg.tools.confinement()
+            )
+            kept = Path(st.attempt["worktree"]) if st.attempt else None
+            worktree = kept if kept is not None and kept.is_dir() else self.repo
+            run_dir = pack.paths.run_dir
+            sup = LayerSupervisor(
+                ledger=self.ledger,
+                triage=triage_for(self.cfg, self._engine, checks),
+                spec=spec,
+                story=card.key,
+                layer=pack.layer or "",
+                studio_run=pack.run_id or "",
+                trace_dir=run_dir / "trace" if run_dir is not None else worktree / ".no-trace",
+                worktree=worktree,
+                base_sha=self._layer_base if worktree is not self.repo and self._layer_base else "HEAD",
+                brief=pack.reason,
+                events=st.path / "events.jsonl",
+                emit=st.emit,
+            )
+        except Exception as e:  # noqa: BLE001 - a supervisor that cannot be set up leaves the block as it was
+            st.emit(
+                "supervisor_fallback", trigger="block", reason=f"setup: {type(e).__name__}", layer=pack.layer
+            )
+            return None
+        try:
+            answer = await sup.at_block(
+                pack.subtask or self.s.build_role,
+                pack.role or self.s.build_role,
+                pack.reason,
+                pack=pack,
+                classified=classified,
+                kinds=_evidence_kinds(pack.reason),
+            )
+        finally:
+            sup.close()
+        if answer is None:
+            return None
+        fix = _cap(_redact_urls(answer.fix_if_attempt)) if answer.fix_if_attempt else None
+        return replace(answer, diagnosis=_cap(_redact_urls(answer.diagnosis)), fix_if_attempt=fix)
 
     async def _tell(self, st: StoryState, card: Card, text: str, column: Column) -> None:
         """A note on the issue and then a move to `column`, as two calls: a board that is down must not hide

@@ -1,0 +1,199 @@
+{
+ "card": {
+  "key": "HDS-5",
+  "id": "10004",
+  "ref": "HDS-5",
+  "title": "Web search and fetch tools for agents (SearXNG behind a seam)",
+  "description": "Give chosen roles read-only access to the web through two tools, web_search and web_fetch.\nScope\n- Seam: search goes through a tool-agnostic provider seam (like Engine). SearXNG is the first backend; its URL and settings live in airlie.yaml, so changing providers is a config change.\n- SearXNG: a Taskfile task runs it on the Studio, bound to 127.0.0.1 only. Its address comes from config, never from an agent.\n- Access: granted in airlie.yaml to chief, research, ux, design and reviewer. Never to a role that also has shell, write_file, edit_file, run_tests or git: config validation refuses that combination.\n- Fetch guardrails:\n- http(s) only.\n- Refuses loopback, private, link-local and tailnet (100.64.0.0/10) addresses, checked after DNS resolution and again on every redirect.\n- Size and time caps; returns readable text only; sends no cookies or credentials.\n- Content comes back clearly marked as untrusted web text.\n- Logging: every search and fetch (role, query or URL, status) is written to the run directory.\n- Reviewer: gets a bounded tool loop so it can search while reviewing.\nDone when\n- The guardrails are covered by tests, especially address refusals and redirects.\n- The SearXNG backend is tested against a fake; no live network in tests.\n- task check passes.",
+  "url": "https://homenet-dev-shop.atlassian.net/browse/HDS-5",
+  "comments": [],
+  "labels": [
+   "repo:weyenk/airlie"
+  ]
+ },
+ "repo": "~/git/airlie",
+ "stage": "layers",
+ "story": {
+  "title": "Add web_search and web_fetch tools behind a provider seam",
+  "summary": "Read-only roles (chief, research, ux, design, reviewer) need to look things up on the web while working, but no role that can mutate the repo may also reach the network. This adds two tools, web_search and web_fetch, where search goes through a tool-agnostic provider seam (SearXNG is the first backend, configured in airlie.yaml) and fetch is guarded against SSRF, so agents can research safely without gaining a shell.",
+  "acceptance": [
+   {
+    "id": "AC1",
+    "given": "airlie.yaml grants web_search to a read-only role (e.g. research) and the SearXNG backend is configured",
+    "when": "that role calls web_search with a query",
+    "then": "the tool returns search results fetched from the configured SearXNG URL, and a config change of the provider key (not a code change) selects a different backend"
+   },
+   {
+    "id": "AC2",
+    "given": "a role is granted web_search or web_fetch in airlie.yaml",
+    "when": "the same role is also granted any of shell, write_file, edit_file, run_tests or git",
+    "then": "config validation (task doctor / load) fails and names the role and the conflicting combination, refusing to start"
+   },
+   {
+    "id": "AC3",
+    "given": "web_fetch is granted to a role",
+    "when": "it is called with a URL whose host resolves to a loopback, private, link-local or 100.64.0.0/10 (tailnet) address",
+    "then": "the tool refuses (returns an error observation, no network request) and the refusal is checked after DNS resolution"
+   },
+   {
+    "id": "AC4",
+    "given": "web_fetch follows a redirect",
+    "when": "any hop in the redirect chain resolves to a loopback, private, link-local or tailnet address",
+    "then": "the tool refuses at that hop and returns an error naming the blocked address, never fetching it"
+   },
+   {
+    "id": "AC5",
+    "given": "web_fetch is called with a non-http(s) scheme (e.g. file:// or ftp://)",
+    "when": "the tool runs",
+    "then": "it refuses and returns an error; it only ever issues http/https requests"
+   },
+   {
+    "id": "AC6",
+    "given": "web_fetch targets a page larger than the configured size cap or slower than the configured time cap",
+    "when": "the tool runs",
+    "then": "it stops at the cap, returns the readable-text portion (or an error), and sends no cookies or credentials"
+   },
+   {
+    "id": "AC7",
+    "given": "web_fetch succeeds on a public http(s) URL",
+    "when": "the tool returns",
+    "then": "the content is clearly marked as untrusted web text in the observation the role receives"
+   },
+   {
+    "id": "AC8",
+    "given": "any role with web_search or web_fetch performs a search or fetch during a run",
+    "when": "the call completes (success or refusal)",
+    "then": "a record of the role, the query or URL, and the status is written to the run directory"
+   },
+   {
+    "id": "AC9",
+    "given": "the reviewer role is granted web_search and web_fetch",
+    "when": "the reviewer runs during a studio review",
+    "then": "it may call the tools within a bounded loop (capped by its max_steps) and still returns its JSON verdict"
+   },
+   {
+    "id": "AC10",
+    "given": "a Taskfile task for SearXNG exists",
+    "when": "it is run",
+    "then": "SearXNG starts bound to 127.0.0.1 only, and its address is taken from airlie.yaml (never from an agent)"
+   }
+  ],
+  "out_of_scope": [
+   "Any non-SearXNG search backend implementation (only the seam is built; SearXNG is the first and only backend)",
+   "Caching/deduplication of search or fetch results across steps or teams",
+   "Rendering or parsing of non-text content (images, PDFs, HTML-to-markdown beyond readable text extraction)",
+   "Any capability for a mutating role to reach the web (explicitly disallowed by the guardrail)",
+   "A separate SearXNG service manager beyond the single Taskfile task bound to 127.0.0.1",
+   "Live-network integration tests (all tests use a fake SearXNG backend)"
+  ],
+  "assumptions": [
+   "The 'provider seam like Engine' is a web_search provider object selected by a config key (e.g. web_search.provider: searxng); the SearXNG URL and settings live in airlie.yaml so changing backend is a config change",
+   "web_search and web_fetch are added to KNOWN_TOOLS and granted per-role via the existing RoleSpec.tools mechanism, with a new validate_references rule enforcing the no-mutating-tool combination",
+   "The reviewer's 'bounded tool loop' is satisfied by granting it the two tools plus its existing max_steps cap; no new loop primitive is introduced",
+   "Address refusals use Python's ipaddress module (is_loopback/is_private/is_link_local plus an explicit 100.64.0.0/10 tailnet check) applied after DNS resolution and on every redirect hop",
+   "Size and time caps, and the untrusted-web-text marker, are configurable in airlie.yaml with safe defaults",
+   "The SearXNG backend is exercised in tests against a fake; no test touches the live network, and task check (lint + typecheck + unit) is the gate"
+  ]
+ },
+ "layers": [
+  {
+   "slug": "config-guardrail",
+   "title": "Web tool names, web config section, and the no-mutating-role guardrail",
+   "scope": "src/airlie/config/schema.py, src/airlie/config/load.py, airlie.yaml, tests/unit/test_config.py, tests/unit/test_config_load.py, tests/unit/test_doctor.py",
+   "brief": "Add web_search and web_fetch to KNOWN_TOOLS; define WebSearchSpec (provider: searxng, base_url, timeout_s, max_results), WebFetchSpec (max_bytes, timeout_s, max_redirects, user_agent, untrusted_banner) and a web: WebSpec field on AirlieConfig with safe defaults; add MUTATING_TOOLS/WEB_TOOLS sets and a validate_references rule that fails (naming the role and the conflicting tools) when a role is granted any web tool alongside shell/write_file/edit_file/run_tests/git. Enforced by load_config and task doctor. No tool implementation yet.",
+   "acceptance": [
+    "AC2"
+   ]
+  },
+  {
+   "slug": "web-search",
+   "title": "web_search tool behind a config-selected provider seam (SearXNG first backend)",
+   "scope": "src/airlie/web/__init__.py, src/airlie/web/protocol.py, src/airlie/web/searxng.py, src/airlie/tools/web.py, src/airlie/tools/__init__.py, src/airlie/topology/studio.py, src/airlie/orchestrator.py, src/airlie/topology/fork.py, tests/unit/test_web_search.py",
+   "brief": "New airlie/web package: SearchProvider protocol + SearchHit, SearXNG backend over httpx (injectable transport), and build_search_provider(spec) dispatching on spec.provider (the seam, like build_router). Add the WebSearch tool and an attach_web(reg, cfg, names, role, run_dir) helper; in all three wiring call-sites (studio._tools, orchestrator, fork) filter web tools out of ToolRegistry.builtin and attach via attach_web. Changing web.search.provider in airlie.yaml selects a different backend; tests use a fake SearXNG (MockTransport), no live network.",
+   "acceptance": [
+    "AC1"
+   ]
+  },
+  {
+   "slug": "web-fetch",
+   "title": "web_fetch tool with SSRF guard, caps, and untrusted-text marking",
+   "scope": "src/airlie/web/fetch.py, src/airlie/tools/web.py, tests/unit/test_web_fetch.py",
+   "brief": "Add safe_fetch(url, max_bytes, timeout_s, max_redirects, resolver, transport): reject non-http(s) schemes before any request; resolve DNS (injectable) then refuse loopback/private/link-local/100.64.0.0/10 addresses with no request; follow redirects manually (follow_redirects=False) re-checking every hop and refusing with the blocked address named; read to the size cap under the time cap with no cookies/credentials; wrap returned readable text in the configurable untrusted-web banner. Add the WebFetch tool and extend attach_web to include it. All tests offline via fake resolver + httpx.MockTransport.",
+   "acceptance": [
+    "AC3",
+    "AC4",
+    "AC5",
+    "AC6",
+    "AC7"
+   ]
+  },
+  {
+   "slug": "web-audit-and-grants",
+   "title": "Per-call run-dir audit record and role grants (research, reviewer)",
+   "scope": "src/airlie/tools/web.py, src/airlie/topology/studio.py, src/airlie/orchestrator.py, src/airlie/topology/fork.py, airlie.yaml, tests/unit/test_web_audit.py, tests/unit/test_studio_orchestrator.py",
+   "brief": "Make attach_web record role + run_dir; on every web_search/web_fetch completion (success or refusal) append a JSONL line {role, tool, query_or_url, status} to the run directory (best-effort, never fails the call). Grant web_search + web_fetch to research and to reviewer in airlie.yaml, with reviewer bounded by its existing max_steps (no new loop primitive) so it still returns its JSON verdict in a studio review.",
+   "acceptance": [
+    "AC8",
+    "AC9"
+   ]
+  },
+  {
+   "slug": "searxng-task",
+   "title": "SearXNG Taskfile task bound to 127.0.0.1, address from airlie.yaml",
+   "scope": "src/airlie/web/searxng.py, Taskfile.yml, airlie.yaml, docs/integrations/web-tools.md, tests/unit/test_searxng_task.py",
+   "brief": "Add searxng_command(cfg) that renders the SearXNG argv with host forced to 127.0.0.1 and the port/address taken from cfg.web.search.base_url (never from an agent); add a single searxng Taskfile task that runs it; set web.search.base_url to http://127.0.0.1:<port> in airlie.yaml so the task and the tool agree; document the two tools, the guardrail, and the task. Test asserts the rendered command binds 127.0.0.1 and uses the config port (no live SearXNG).",
+   "acceptance": [
+    "AC10"
+   ]
+  }
+ ],
+ "built": {},
+ "attempt": {
+  "layer": "01",
+  "branch": "HDS-5-add-web-search-and-web-fetch-t-01-config-guardrail",
+  "worktree": "~/.local/state/airlie/runs/20261017-113031-4efa/studio"
+ },
+ "base": {
+  "ref": "origin/main",
+  "sha": "646b5e8703973792bedc42ae0daf24ecd32c0067"
+ },
+ "gate": {
+  "commands": [
+   "uv sync --frozen",
+   "uv run ruff check .",
+   "uv run ruff format --check .",
+   "uv run mypy",
+   "uv run pytest -q"
+  ],
+  "agents_md": "64c04fedb029c31c58f57db913ece05e5bf75e13"
+ },
+ "mutation_gate": {
+  "commands": []
+ },
+ "mutation": null,
+ "mutation_review": null,
+ "prs": [],
+ "runs": [
+  "20261016-130924-09ca",
+  "20261016-131156-01b4",
+  "20261016-132615-b818",
+  "20261016-133523-1dc6",
+  "20261016-140543-d93d",
+  "20261016-141020-6ae4",
+  "20261016-144628-5318",
+  "20261016-150202-a779",
+  "20261016-153615-630e",
+  "20261016-161954-74ab",
+  "20261016-201000-3fed",
+  "20261016-204945-b83e",
+  "20261016-224514-f5d4",
+  "20261016-233656-400f",
+  "20261017-004513-ebc0",
+  "20261017-021628-c8db",
+  "20261017-072912-8768",
+  "20261017-105858-9a00",
+  "20261017-113031-4efa"
+ ],
+ "blocked": null,
+ "github_repo": "weyenk/airlie"
+}

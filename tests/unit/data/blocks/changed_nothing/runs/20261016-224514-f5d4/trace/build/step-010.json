@@ -1,0 +1,9 @@
+{
+ "u_t": {
+  "name": "shell",
+  "arguments": "{}"
+ },
+ "o_t": "error: shell requires: cmd",
+ "ok": false,
+ "assistant_text": "Let me look at existing tests to understand the pattern:\n\nSkywalker\n"
+}

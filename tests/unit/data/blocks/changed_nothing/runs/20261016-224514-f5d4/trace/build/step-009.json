@@ -1,0 +1,9 @@
+{
+ "u_t": {
+  "name": "ggrep",
+  "arguments": "{}"
+ },
+ "o_t": "error: unknown tool 'ggrep'; available: read_file, write_file, edit_file, list_dir, grep, shell, run_tests, git",
+ "ok": false,
+ "assistant_text": "Let me first check what tests already exist for web tools:\n\n"
+}

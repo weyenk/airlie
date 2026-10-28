@@ -381,6 +381,17 @@ def test_run_endpoint_accepts_images(tmp_path: Path) -> None:
     assert seen == [[png.resolve()]]
 
 
+def test_health_reports_the_serve_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from airlie.serve import app as serve_app
+
+    monkeypatch.setattr(serve_app, "build_commit", lambda: "abc1234")
+    app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()))
+    monkeypatch.setattr(serve_app, "build_commit", lambda: "def5678")  # a pull after the start
+    with TestClient(app) as c:
+        body = c.get("/health").json()
+    assert body["commit"] == "abc1234" and body["status"] == "ok"
+
+
 def test_api_key_guards_the_v1_routes_but_not_health(tmp_path: Path) -> None:
     app = create_app(cfg(tmp_path), transport=httpx.MockTransport(FakeUpstream()), api_key="s3cret")
     with TestClient(app) as c:

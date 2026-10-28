@@ -26,6 +26,7 @@ from airlie import cli
 from airlie.story import factory
 from airlie.story.board import BoardError
 from airlie.story.jira import JiraBoard
+from airlie.story.model import StorySetupError
 from airlie.story.publish import Checked, Publisher
 from airlie.story.state import StoryState, story_lock
 from tests.unit.git_helpers import git
@@ -672,3 +673,56 @@ def test_a_traceback_never_shows_the_locals_of_the_frames_it_passes(tmp_path: Pa
     crashed = r.returncode != 0 and "RuntimeError" in r.stderr and "the board fell over" in r.stderr
     assert crashed, r.stderr  # a traceback was printed, so its absence of locals means something
     assert "t0ken-SENTINEL" not in r.stderr and "me@example.org" not in r.stderr
+
+
+def test_story_pr_body_prints_the_body_for_a_built_layer_without_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = str(story_cfg(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def fake_body(cfg, *, board, card, nn, repo):  # type: ignore[no-untyped-def]
+        seen.update(card=card.key, nn=nn, repo=repo)
+        return "**Story:** Add avatar upload\n### The contract\n"
+
+    async def refuse(*args: object, **kw: object) -> None:
+        raise AssertionError("pr-body publishes nothing")
+
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(FakeJira()))
+    monkeypatch.setattr(factory, "body_one", fake_body)
+    monkeypatch.setattr(factory, "describe_one", refuse)
+    monkeypatch.setattr(factory, "run_one", refuse)
+    r = runner.invoke(cli.app, ["story", "pr-body", "AIR-7", "2", "--config", p])
+    assert r.exit_code == 0, r.output
+    assert "### The contract" in r.output and seen["nn"] == "02" and seen["card"] == "AIR-7"
+    assert runner.invoke(cli.app, ["story", "pr-body", "AIR-7", "--config", p]).exit_code == 2
+    assert runner.invoke(cli.app, ["story", "pr-body", "AIR-7", "two", "--config", p]).exit_code == 2
+
+    async def unread(cfg, *, board, card, nn, repo):  # type: ignore[no-untyped-def]
+        raise StorySetupError("story AIR-7 has not built layer 03")
+
+    monkeypatch.setattr(factory, "body_one", unread)
+    r = runner.invoke(cli.app, ["story", "pr-body", "AIR-7", "3", "--config", p])
+    assert r.exit_code == 1 and "has not built layer 03" in r.output
+
+
+def test_story_describe_names_the_prs_it_edited_and_says_why_it_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = str(story_cfg(tmp_path))
+
+    async def fake_describe(cfg, *, board, card, repo):  # type: ignore[no-untyped-def]
+        return [11, 12]
+
+    monkeypatch.setattr(factory, "make_board", lambda cfg: jira_board_for(FakeJira()))
+    monkeypatch.setattr(factory, "describe_one", fake_describe)
+    r = runner.invoke(cli.app, ["story", "describe", "AIR-7", "--config", p])
+    assert r.exit_code == 0 and "re-described #11, #12" in r.output
+    assert runner.invoke(cli.app, ["story", "describe", "--config", p]).exit_code == 2
+
+    async def refused(cfg, *, board, card, repo):  # type: ignore[no-untyped-def]
+        raise StorySetupError("story AIR-7 has published no PRs: nothing to describe")
+
+    monkeypatch.setattr(factory, "describe_one", refused)
+    r = runner.invoke(cli.app, ["story", "describe", "AIR-7", "--config", p])
+    assert r.exit_code == 1 and "published no PRs" in r.output

@@ -10,6 +10,7 @@ use a proxy, so nothing else changes."""
 import io
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -54,6 +55,26 @@ def _no_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
         return real(path)
 
     monkeypatch.setattr(load, "_read_yaml", guarded)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_state_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The committed airlie.yaml keeps state in ~/.local/state/airlie, where the person's own auth.sqlite and
+    board.sqlite live: a unit test that loads it writes a state directory of its own instead (a test's own
+    config keeps the state_dir it names). A story's gate runs these tests under the
+    write sandbox (airlie.tools.confine), which refuses that directory, so a test that touched it failed
+    there and passed everywhere else."""
+    from airlie.config import load
+
+    real, shipped = load._read_yaml_with_includes, (ROOT / "airlie.yaml").resolve()
+
+    def own_state(path: Path, *seen: Any) -> dict[str, Any]:  # load recurses into includes with _seen
+        data = real(path, *seen)
+        if path.resolve() == shipped and isinstance(data.get("observability"), dict):
+            data["observability"]["state_dir"] = str(tmp_path / "state")
+        return data
+
+    monkeypatch.setattr(load, "_read_yaml_with_includes", own_state)
 
 
 @pytest.fixture

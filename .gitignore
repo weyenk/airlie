@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 dist/
 runs/
+!tests/unit/data/blocks/**/runs/
 airlie.local.yaml
 .DS_Store
 .env

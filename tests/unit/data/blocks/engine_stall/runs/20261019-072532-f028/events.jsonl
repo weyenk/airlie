@@ -1,0 +1,39 @@
+{"ts": 1792409132.2383769, "run_id": "20261019-072532-f028", "kind": "run_start", "goal": "Enforce a role's max_context in the team loop: layer 2/4 Team loop: 75% nudge and stop at the role's max_context", "k": 1, "repo": "~/git/airlie", "orchestrator": "studio", "given_plan": true}
+{"ts": 1792409132.5225542, "run_id": "20261019-072532-f028", "kind": "repo_map", "chars": 6016, "cached": false}
+{"ts": 1792409132.522618, "run_id": "20261019-072532-f028", "kind": "plan", "assumptions": [], "subtasks": ["build"], "roles": ["coder"], "pinned": true}
+{"ts": 1792409132.5227609, "run_id": "20261019-072532-f028", "kind": "route", "subtask": "build", "chosen": "coder", "decision": "pinned", "confidence": 1.0, "probabilities": {"coder": 1.0}, "hint": "coder", "criteria": ["architect", "coder", "design", "docs", "product", "research", "security", "ux"]}
+{"ts": 1792409132.522871, "run_id": "20261019-072532-f028", "kind": "subtask_start", "subtask": "build", "role": "coder", "skill": null, "writes": true}
+{"ts": 1792409144.0991979, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 1, "tool": "read_file", "ok": true, "prompt_tokens": 7930, "completion_tokens": 63, "gen_ms": 11564.7, "tool_ms": 0.9}
+{"ts": 1792409154.880128, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 2, "tool": "read_file", "ok": true, "prompt_tokens": 14111, "completion_tokens": 47, "gen_ms": 10779.3, "tool_ms": 0.7}
+{"ts": 1792409164.347847, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 3, "tool": "read_file", "ok": true, "prompt_tokens": 17332, "completion_tokens": 78, "gen_ms": 9466.1, "tool_ms": 0.6}
+{"ts": 1792409172.286338, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 4, "tool": "grep", "ok": true, "prompt_tokens": 19273, "completion_tokens": 91, "gen_ms": 7935.5, "tool_ms": 2.2}
+{"ts": 1792409176.50158, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 5, "tool": "read_file", "ok": true, "prompt_tokens": 19475, "completion_tokens": 58, "gen_ms": 4214.1, "tool_ms": 0.5}
+{"ts": 1792409181.979199, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 6, "tool": "grep", "ok": true, "prompt_tokens": 20679, "completion_tokens": 54, "gen_ms": 5471.5, "tool_ms": 5.4}
+{"ts": 1792409184.311899, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 7, "tool": "read_file", "ok": true, "prompt_tokens": 20958, "completion_tokens": 32, "gen_ms": 2331.7, "tool_ms": 0.4}
+{"ts": 1792409188.223247, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 8, "tool": "read_file", "ok": true, "prompt_tokens": 22311, "completion_tokens": 30, "gen_ms": 3909.2, "tool_ms": 1.6}
+{"ts": 1792409201.783492, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 9, "tool": "read_file", "ok": true, "prompt_tokens": 28938, "completion_tokens": 58, "gen_ms": 13558.7, "tool_ms": 0.7}
+{"ts": 1792409210.173714, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 10, "tool": "read_file", "ok": true, "prompt_tokens": 32495, "completion_tokens": 58, "gen_ms": 8388.9, "tool_ms": 0.7}
+{"ts": 1792409210.174315, "run_id": "20261019-072532-f028", "kind": "write_deadline", "team_id": "build", "role": "coder", "kind_of_write": "tests", "step": 10, "met": false}
+{"ts": 1792409221.670084, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 11, "tool": "read_file", "ok": true, "prompt_tokens": 36558, "completion_tokens": 58, "gen_ms": 11494.8, "tool_ms": 0.7}
+{"ts": 1792409231.3690722, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 12, "tool": "read_file", "ok": true, "prompt_tokens": 39204, "completion_tokens": 58, "gen_ms": 9697.6, "tool_ms": 0.7}
+{"ts": 1792409243.976614, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 13, "tool": "shell", "ok": true, "prompt_tokens": 44873, "completion_tokens": 56, "gen_ms": 12591.3, "tool_ms": 15.5}
+{"ts": 1792409250.3676312, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 14, "tool": "grep", "ok": true, "prompt_tokens": 44959, "completion_tokens": 47, "gen_ms": 6389.5, "tool_ms": 0.9}
+{"ts": 1792409256.88289, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 15, "tool": "shell"}
+{"ts": 1792409256.883159, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 15, "tool": "shell", "ok": false, "prompt_tokens": 45099, "completion_tokens": 47, "gen_ms": 6514.7, "tool_ms": 0.0}
+{"ts": 1792409260.4193642, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 16, "tool": "shell"}
+{"ts": 1792409260.419641, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 16, "tool": "shell", "ok": false, "prompt_tokens": 45177, "completion_tokens": 46, "gen_ms": 3535.6, "tool_ms": 0.0}
+{"ts": 1792409264.589911, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 17, "tool": "shell"}
+{"ts": 1792409264.590086, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 17, "tool": "shell", "ok": false, "prompt_tokens": 45254, "completion_tokens": 52, "gen_ms": 4169.6, "tool_ms": 0.0}
+{"ts": 1792409269.629559, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 18, "tool": "shell"}
+{"ts": 1792409269.6299882, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 18, "tool": "shell", "ok": false, "prompt_tokens": 45382, "completion_tokens": 62, "gen_ms": 5038.9, "tool_ms": 0.0}
+{"ts": 1792409273.402549, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 19, "tool": "grep"}
+{"ts": 1792409273.4028249, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 19, "tool": "grep", "ok": false, "prompt_tokens": 45475, "completion_tokens": 41, "gen_ms": 3771.6, "tool_ms": 0.0}
+{"ts": 1792409278.4336681, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 20, "tool": "shell"}
+{"ts": 1792409278.4339461, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 20, "tool": "shell", "ok": false, "prompt_tokens": 45547, "completion_tokens": 58, "gen_ms": 5030.1, "tool_ms": 0.0}
+{"ts": 1792409283.637654, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 21, "tool": "shell"}
+{"ts": 1792409283.637936, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 21, "tool": "shell", "ok": false, "prompt_tokens": 45636, "completion_tokens": 58, "gen_ms": 5203.1, "tool_ms": 0.0}
+{"ts": 1792409289.007881, "run_id": "20261019-072532-f028", "kind": "read_refused", "team_id": "build", "role": "coder", "step": 22, "tool": "shell"}
+{"ts": 1792409289.008157, "run_id": "20261019-072532-f028", "kind": "step", "team_id": "build", "step": 22, "tool": "shell", "ok": false, "prompt_tokens": 45725, "completion_tokens": 58, "gen_ms": 5369.3, "tool_ms": 0.0}
+{"ts": 1792409905.024405, "run_id": "20261019-072532-f028", "kind": "review", "subtask": "build", "verdict": "unparsable", "findings": 0, "blocking": 0, "round": 0}
+{"ts": 1792409905.024599, "run_id": "20261019-072532-f028", "kind": "subtask_done", "subtask": "build", "role": "coder", "ok": false, "stop_reason": "engine_error", "steps": 22, "fix_rounds": 0}
+{"ts": 1792410036.546976, "run_id": "20261019-072532-f028", "kind": "run_done", "ok": false, "wall_ms": 904303.1, "subtasks": 1, "tests": true}

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from airlie.board import BoardStore
 from airlie.config import RoleSpec
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
@@ -22,7 +23,9 @@ from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, Nul
 from airlie.story.briefs import pr_body
 from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
 from airlie.story.github_app import GitHubApp
+from airlie.story.local_board import LocalBoard
 from airlie.story.model import Criterion, EpicHeader, Layer, Story, StorySetupError
+from airlie.story.package import Package
 from airlie.story.pipeline import (
     StoryBlocked,
     StoryPipeline,
@@ -468,6 +471,43 @@ async def stopped_with(tmp_path: Path, reason: str) -> tuple[StoryState, Recordi
     return st, board
 
 
+async def test_a_pack_that_cannot_be_gathered_is_an_event_and_the_plain_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> None:
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(pipeline_module, "gather", broken)
+    st, board = await stopped_with(tmp_path, "layer 01 (B) changed nothing")
+    [posted] = board.notes
+    resume = "Resume: the same `task story -- --text ...` command."
+    assert posted == note(f"stopped after 'new': layer 01 (B) changed nothing\n{resume}")
+    [failed] = kinds(st.path / "events.jsonl", "diagnosis_failed")
+    assert failed["error"] == "OSError: disk gone"
+    [blocked] = kinds(st.path / "events.jsonl", "blocked")
+    assert blocked["reason"] == st.blocked and "class" not in blocked  # today's event, nothing more
+    assert board.moves[-1] == "blocked"  # a diagnosis that fails never keeps the issue out of Blocked
+
+
+async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, FakeEngine(), board=board)
+
+    async def cancelled(*args: object, **kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(pipe, "_muse_at_block", cancelled)
+    card = text_card("avatars")
+    st = StoryState.open(pipe.stories_dir / card.key, card, pipe.repo)
+    with pytest.raises(asyncio.CancelledError):
+        await pipe._block(st, card, "layer 01 (B) changed nothing")
+    assert board.moves == ["intake"] and "back in To Do" in board.notes[-1]
+    assert kinds(st.path / "events.jsonl", "cancelled") and not kinds(st.path / "events.jsonl", "blocked")
+
+
 async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
@@ -504,6 +544,75 @@ async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
     assert "moved to building" in notes and "layer 02/02 built" in notes and "moved to review" in notes
     stages = [e["stage"] for e in kinds(st.path / "events.jsonl", "stage")]
     assert stages == ["intake", "refine", "layers", "build", "publish", "review"]
+
+
+async def test_publish_writes_a_body_with_the_contract_from_the_layers_package(tmp_path: Path) -> None:
+    """The PR of a layer carries what the architect's package named (P6, 2026-10-25): the tests under their
+    criterion, the files, the steps and when it is done, and what the layer's run recorded."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "product": [STORY],
+            "architect": [LAYERS, *PKGS],
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review"
+    body = (st.path / "pr-02.md").read_text(encoding="utf-8")
+    sha = str(st.built["02"]["sha"])[:7]
+    assert "**Layer 2 of 2:** Profile" in body and "**Done when:** run_tests passes" in body
+    assert "| feature.py | create |" in body and "1. write the feature" in body
+    assert "Tests written by the architect on base before the code; passing at `" + sha + "`." in body
+    lines = body.splitlines()
+    ac = next(n for n, x in enumerate(lines) if x.startswith("> - **AC2**"))
+    assert lines[ac + 1] == "  - `tests/unit/test_profile.py::test_shows_the_avatar`"
+    assert (
+        "- Red check: not run: the gate runs no pytest" in body
+        and "- Package checks: accepted first time" in body
+    )
+    assert "Epic" not in body and "None" not in body
+    assert lines[-1].startswith("Built by airlie") and ", ".join(st.runs[4:6]) in lines[-1]
+
+
+async def test_a_layers_commit_carries_the_story_layer_and_run_trailers(tmp_path: Path) -> None:
+    """Each layer's commit ends in trailers (P6, 2026-10-25): keys, numbers and shas, no model text."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine(
+        {
+            "product": [STORY],
+            "architect": [LAYERS, *PKGS],
+            "coder": [WRITE_PASS, RUN, DONE, NOTE, DONE],
+            "reviewer": [APPROVE, APPROVE],
+        }
+    )
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review"
+    for nn, branch in (("01", B1), ("02", B2)):
+        message = git(repo, "log", "-1", "--format=%B", branch)
+        read = ["git", "interpret-trailers", "--parse"]
+        parsed = subprocess.run(read, input=message, capture_output=True, text=True, check=True)
+        got = dict(x.split(": ", 1) for x in parsed.stdout.splitlines())
+        assert list(got)[:2] == ["Airlie-Story", "Airlie-Layer"] and list(got)[-1] == "Airlie-Tests"
+        assert got["Airlie-Story"] == "request" and got["Airlie-Layer"] == f"{nn}/02"
+        assert got["Airlie-Run"] == st.built[nn]["run_id"] and "Airlie-Epic" not in got
+        assert got["Airlie-Tests"] == "1 tests in 1 files"
+
+
+async def test_a_layers_commit_names_its_epic_when_the_local_board_has_one(tmp_path: Path) -> None:
+    """The epic above the story on airlie's own board is a trailer; any other board gives none."""
+    store = BoardStore(tmp_path / "board.sqlite")
+    epic = store.create(level="epic", title="Avatars")
+    story = store.create(level="story", title="Avatars upload", parent=epic.key)
+    pl = pipeline(tmp_path, repo_with_marker_tests(tmp_path), FakeEngine(), board=LocalBoard(store))
+    pkg = Package.from_dict(
+        {"layer": "x", "tests": {"t.py": ""}, "files": [], "interfaces": [], "steps": [], "covers": {}}
+    )
+    card = Card(story.key, story.key, story.key, "x", "")
+    got = pl._trailers(card, "01", "02", "run-1", pkg)
+    assert got["Airlie-Epic"] == epic.key and got["Airlie-Story"] == story.key
+    assert list(got)[:4] == ["Airlie-Story", "Airlie-Layer", "Airlie-Epic", "Airlie-Run"]
 
 
 async def test_product_can_stop_a_request_it_cannot_build(tmp_path: Path) -> None:
@@ -716,7 +825,7 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     second = (st.path / "pr-02.md").read_text(encoding="utf-8")
     assert "[AIR-7](https://example.atlassian.net/browse/AIR-7)" in first
     assert "minor PASS:1: name it better" in first and "minor profile.txt: say more" in second
-    assert "| build | coder | done | approve | 0 |" in first
+    assert "| build | coder | base | done | approve | 0 |" in first
     # every run is on record, and the events follow the stages
     assert len(st.runs) == 6  # refine, layers, then a package and a build per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
@@ -746,7 +855,8 @@ async def test_a_pr_body_is_written_as_utf_8_whatever_the_locale(tmp_path: Path,
     finding = {"severity": "minor", "file": "PASS", "line": 1, "claim": claim, "evidence": "x"}
     wordy = FakeReply(text=json.dumps({"verdict": "approve", "findings": [finding]}))
     gh = ReadingGh()
-    st = await pipeline(tmp_path, repo, happy_engine(reviewer=[wordy, APPROVE]), gh).run(ISSUE)
+    pl = pipeline(tmp_path, repo, happy_engine(reviewer=[wordy, APPROVE]), gh)
+    st = await pl.run(ISSUE)
     assert st.blocked is None and st.stage == "review"  # a body written in ASCII would have stopped it here
     notes = (st.path / "notes.md").read_bytes().decode("utf-8")  # the NullBoard's notes hold airlie's "·"
     assert "\u00b7" in notes and "moved to building" in notes and "moved to review" in notes
@@ -754,7 +864,7 @@ async def test_a_pr_body_is_written_as_utf_8_whatever_the_locale(tmp_path: Path,
     prs = [(p["number"], p["url"]) for p in st.prs]
     for i, pr in enumerate(st.prs):
         nn = f"{i + 1:02d}"
-        body = pr_body(ISSUE, story, layers, i, st.built[nn]["subtasks"], prs, "./check.sh")
+        body = pr_body(pl.provenance(st, ISSUE, story, layers, i, prs), test_cmd="./check.sh")
         assert (st.path / f"pr-{nn}.md").read_bytes().decode("utf-8") == body  # the file, read back as UTF-8
         assert gh.bodies[pr["branch"]] == body  # and what gh reads from --body-file
     first = gh.bodies[st.prs[0]["branch"]]
@@ -843,8 +953,9 @@ async def test_a_trunk_that_cannot_be_fetched_stops_the_story_before_any_model_a
     assert st.blocked.startswith(f"the trunk {trunk} could not be fetched from origin")
     assert "no network in a unit test" in st.blocked and "run the story again" in st.blocked
     assert board.moves == ["building", "blocked"]
-    stop = f"{NOTE_PREFIX}stopped after 'intake': the trunk {trunk} could not be fetched"
-    assert board.notes[-1].startswith(stop)
+    stop = f"stopped after 'intake': the trunk {trunk} could not be fetched"
+    assert board.notes[-1].startswith(f"{NOTE_PREFIX}transient: fetch_failed")  # the class leads
+    assert stop in board.notes[-1]
 
 
 async def test_a_story_builds_on_the_fetched_remote_trunk_never_on_a_local_one_a_model_moved(
@@ -913,7 +1024,7 @@ async def test_a_stop_reason_of_any_kind_is_masked_in_block_once(
 ) -> None:
     # a StoryBlocked message, and a git failure as _reason words it, both reach the board through _block
     st, board = await stopped_with(tmp_path, raw)
-    assert st.blocked == masked and board.notes[0].startswith(note(f"stopped after 'new': {masked}\n"))
+    assert st.blocked == masked and f"stopped after 'new': {masked}\n" in board.notes[0]
     git_said = subprocess.CalledProcessError(128, ["git", "ls-remote", raw], stderr=f"fatal: {raw}")
     st, board = await stopped_with(tmp_path / "again", _reason(git_said))
     assert st.blocked == f"`git ls-remote {masked}` exited 128: fatal: {masked}"
@@ -936,8 +1047,10 @@ async def test_a_stop_reason_is_capped_at_800_characters_keeping_its_start_and_i
     assert st.blocked is not None and len(st.blocked) == 800
     assert st.blocked.startswith("`git x` exited 128: aaa") and st.blocked.endswith("aaa the end of it")
     assert st.blocked[200] == "\u2026"
-    stopped = f"stopped after 'new': {st.blocked}\nResume: the same `task story -- --text ...` command."
-    assert board.notes == [note(stopped)]  # the board is told what the state and the event hold
+    stopped = f"stopped after 'new': {st.blocked}\n"
+    [posted] = board.notes
+    assert stopped in posted and posted.endswith("Resume: the same `task story -- --text ...` command.")
+    # the board is told what the state and the event hold
     [event] = kinds(st.path / "events.jsonl", "blocked")
     assert event["reason"] == st.blocked
     short, _ = await stopped_with(tmp_path / "short", "x" * 800)
@@ -1037,7 +1150,8 @@ async def test_a_board_that_is_down_does_not_hide_the_reason(tmp_path: Path) -> 
     st = await pipeline(tmp_path, repo, FakeEngine(), board=board).run(text_card("avatars"))
     assert st.blocked == "BoardError: jira is unreachable"
     failed = kinds(st.path / "events.jsonl", "board_error")
-    assert [(e["call"], e["error"]) for e in failed] == [  # the note and the move are each tried
+    assert [(e["call"], e["error"]) for e in failed] == [  # the fix card's note, the stop's note, the move
+        ("comment", "BoardError: jira is unreachable"),
         ("comment", "BoardError: jira is unreachable"),
         ("move", "BoardError: jira is unreachable"),
     ]
@@ -1051,7 +1165,10 @@ async def test_a_role_that_cannot_run_a_stage_stops_the_story_with_a_readable_re
     assert st.blocked is not None
     assert st.blocked.startswith("PlanError: subtask 'refine' names role 'nonesuch'; use one of: ")
     notes = (st.path / "notes.md").read_text()
-    assert "nonesuch" in notes and "Traceback" not in notes  # the note is the reason, not the traceback
+    stop = notes[
+        notes.index("stopped after") :
+    ]  # the fix card's note before it holds the traceback as evidence
+    assert "nonesuch" in notes and "Traceback" not in stop  # the stop's note is the reason, not the traceback
     assert "Traceback" in kinds(st.path / "events.jsonl", "error")[0]["traceback"]
     assert worktrees(repo) == 1
 
@@ -1912,8 +2029,7 @@ async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model
     assert "Add a `## Test gate` section to AGENTS.md at the repository root" in st.blocked
     assert "```sh\nuv sync --frozen\nuv run ruff check .\nuv run pytest -q\n```" in st.blocked
     assert board.moves == ["building", "blocked"]  # out of intake, so the queue moves on
-    stop = f"{NOTE_PREFIX}stopped after 'intake': o/r has no test gate on origin/{trunk}"
-    assert board.notes[-1].startswith(stop)
+    assert f"stopped after 'intake': o/r has no test gate on origin/{trunk}" in board.notes[-1]
 
 
 async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
@@ -2315,7 +2431,10 @@ async def test_a_dependent_story_bases_on_its_dependencys_top_branch_and_publish
         top_branch,
         branch,
     ] in gh.calls  # the stack's base is its dependency
-    assert "Stacks on AIR-4's pull requests; merge those first." in (st.path / "pr-01.md").read_text()
+    assert (
+        "Stacks on AIR-4's pull requests; merge those first, then this stack bottom-up."
+        in (st.path / "pr-01.md").read_text()
+    )
 
 
 async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Path) -> None:

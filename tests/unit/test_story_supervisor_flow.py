@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from airlie.engine import FakeEngine, FakeReply
-from airlie.story.board import text_card
+from airlie.story.board import NOTE_PREFIX, text_card
 from airlie.story.state import StoryState
 from airlie.supervisor.advice import SUPERVISOR
 from airlie.supervisor.ledger import Ledger, Row
@@ -39,7 +39,14 @@ SUPERVISOR_ROLES = {
 }
 
 
-def answer(message: str | None, *, owner: str = "coder", fix: str | None = None) -> FakeReply:
+def answer(
+    message: str | None,
+    *,
+    owner: str = "coder",
+    fix: str | None = None,
+    class_agrees: bool | None = None,
+    class_reason: str | None = None,
+) -> FakeReply:
     """Muse's answer: a diagnosis, the role's next step and, for a block, the fix another try would make."""
     data = {
         "category": "wrong_acceptance_test",
@@ -48,6 +55,8 @@ def answer(message: str | None, *, owner: str = "coder", fix: str | None = None)
         "evidence": ["calc.py"],
         "message": message,
         "fix_if_attempt": fix,
+        "class_agrees": class_agrees,
+        "class_reason": class_reason,
     }
     return FakeReply(text="```json\n" + json.dumps(data) + "\n```")
 
@@ -180,3 +189,53 @@ async def test_a_supervisor_that_cannot_be_set_up_leaves_the_layer_as_today(tmp_
     [fallback] = kinds(st.path / "events.jsonl", "supervisor_fallback")
     assert fallback["reason"] == "setup: FileNotFoundError" and fallback["layer"] == "01"
     assert not [r for r in engine.requests if r.role == "supervisor"]
+
+
+# ---- the diagnosis (P5a, 2026-10-25) ----
+
+
+def diagnosis_of(st: StoryState, n: int = 1) -> dict[str, object]:
+    out: dict[str, object] = json.loads((st.path / "diagnosis" / f"{n}.json").read_text())
+    return out
+
+
+async def test_a_block_writes_its_diagnosis_and_the_note_leads_with_the_class(tmp_path: Path) -> None:
+    engine = scripted(coder=[BROKEN, DONE, STILL_BROKEN, DONE])
+    st = await run_layer(tmp_path, engine, supervisor=False)
+    assert st.blocked is not None and "fails on" in st.blocked
+    [blocked] = kinds(st.path / "events.jsonl", "blocked")
+    assert (blocked["class"], blocked["block_kind"], blocked["n"]) == ("content", "gate_failed", 1)
+    assert str(blocked["signature"]).startswith("content:gate_failed:")
+    md = (st.path / "diagnosis" / "1.md").read_text()
+    assert md.startswith(f"# {st.path.name} blocked: content / gate_failed (block 1)")
+    for section in ("## The class", "## Muse's reading", "## What happens next", "## Evidence", "## Paths"):
+        assert section in md
+    assert "The end of the gate's output" in md  # the gate's tail is on record for a diagnosis read from disk
+    note = board_notes(st)[-2]
+    assert f"{NOTE_PREFIX}content: gate_failed" in note and "Next: " in note
+    assert note.index("content: gate_failed") < note.index("stopped after") < note.index("Resume:")
+    assert kinds(st.path / "events.jsonl", "gate_tail")  # the final gate's output, for the diagnosis
+
+
+async def test_muse_reads_the_pack_at_block_and_its_agreement_is_recorded(tmp_path: Path) -> None:
+    engine = scripted(
+        coder=[BROKEN, DONE, STILL_BROKEN, DONE],
+        supervisor=[
+            answer("Put add back."),
+            answer(
+                None, fix="restore add", class_agrees=False, class_reason="the test is wrong, not the model"
+            ),
+        ],
+    )
+    st = await run_layer(tmp_path, engine)
+    asked = user_messages(engine, "supervisor")[-1]
+    assert "Mechanical class: content / gate_failed" in asked and "The end of the gate's output" in asked
+    block = [r for r in rows(tmp_path) if r.trigger == "block"][0]
+    assert (block.class_, block.class_agrees) == ("content", False)
+    assert block.signature is not None and block.signature.startswith("content:gate_failed:")
+    d = diagnosis_of(st)
+    assert d["muse"]["class_agrees"] is False  # type: ignore[index]
+    note = board_notes(st)[-2]
+    assert "Supervisor does not agree with the class: the test is wrong, not the model" in note
+    # the mechanical class is read first; its kind is Muse's category once Muse has one
+    assert note.index("content: wrong_acceptance_test") < note.index("Supervisor:")

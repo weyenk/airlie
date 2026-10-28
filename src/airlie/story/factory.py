@@ -20,6 +20,7 @@ from airlie.story.epic import epic_of
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
 from airlie.story.epic_plan import LABEL_REPLANNED, LABEL_RESUMED, after_keys, epic_key_of
 from airlie.story.epic_state import EpicState
+from airlie.story.fixes import bookkeep
 from airlie.story.gate import missing_gate, read_gate
 from airlie.story.github_app import GitHubApp, GitHubAppError, masked, ping
 from airlie.story.jira import JiraBoard, config_dotenv, jira_board, jira_spec
@@ -271,6 +272,26 @@ async def restack_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path
         where = await placed(cfg, board, card, repo)
         pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
         return await pipe.restack(card)
+
+
+async def body_one(cfg: AirlieConfig, *, board: Board, card: Card, nn: str, repo: Path | None = None) -> str:
+    """The PR body layer `nn` of the story of `card` would get now (`airlie story pr-body`): read from its
+    state and the board, with no network and no change. A story that cannot be read is a StorySetupError."""
+    where = place(cfg, card, repo)
+    pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
+    return pipe.layer_body(card, nn)
+
+
+async def describe_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path | None = None) -> list[int]:
+    """Re-describe every published PR of the story of `card` (StoryPipeline.describe: `gh pr edit` with the
+    title and body it would get now), while holding the one-story lock. Only a person's command runs it,
+    never the tick. Returns the PR numbers; a story that has not published is a StorySetupError."""
+    with story_lock(stories_dir(cfg)) as held:
+        if not held:
+            raise StoryBusy("another story is in flight (one at a time); try again when it finishes")
+        where = await placed(cfg, board, card, repo)
+        pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
+        return await pipe.describe(card)
 
 
 def _why(e: Exception) -> str:
@@ -603,8 +624,26 @@ async def _plan_epic(cfg: AirlieConfig, board: LocalBoard, epic: Item) -> str:
     return f"{head}: set aside ({reason})"
 
 
-async def tick(cfg: AirlieConfig) -> str:
-    """One scheduler beat: bookkeeping on the epics (a planned epic's status follows its stories, waiting
+async def tick(cfg: AirlieConfig, *, serve_commit: str | None = None) -> str:
+    """One scheduler beat: the bookkeeping (a deployed fix releases the stories it blocked, a transient
+    block is retried: `fixes.bookkeep`, on the local board only), then `_tick`. `serve_commit` is the commit
+    the serve process started with, when it is the one ticking; a tick from a new process runs the checkout's
+    code and passes none.
+
+    Bookkeeping is a beat's first act and never its last: its lines are added to the log line."""
+    board = make_board(cfg)
+    notes: list[str] = []
+    if isinstance(board, LocalBoard):
+        try:
+            notes = await bookkeep(cfg, board.store, serve_commit=serve_commit)
+        except Exception as e:  # noqa: BLE001 - the beat goes on whatever the bookkeeping did
+            notes = [f"bookkeeping failed ({_why(e)})"]
+    line = await _tick(cfg, board)
+    return " ".join(f"{line}; {'; '.join(notes)}".split()) if notes else line
+
+
+async def _tick(cfg: AirlieConfig, board: Board) -> str:
+    """The beat itself: bookkeeping on the epics (a planned epic's status follows its stories, waiting
     stories are promoted, a dependent whose base moved is replayed onto it), then one piece of work: plan the
     top approved epic into stories, else build the top issue of the intake query. Nothing is picked while a
     story is in flight, the engine is down or GitHub does not answer (github_down), in the repository its
@@ -612,7 +651,6 @@ async def tick(cfg: AirlieConfig) -> str:
     run leaves in intake would hold up the ones behind it, so it is moved out: one whose story cannot be
     placed or opened (_set_aside), or whose story has finished (_already_in_review). With story.board: jira
     the line only reads the board: it has no epics to plan and no cards to promote, and says so in the log."""
-    board = make_board(cfg)
     if isinstance(board, NullBoard):
         return "no board configured (ATLASSIAN_BASE_URL and ATLASSIAN_PROJECT_KEY): nothing to pick up"
     with story_lock(stories_dir(cfg)) as held:

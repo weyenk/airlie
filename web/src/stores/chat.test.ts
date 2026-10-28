@@ -5,6 +5,8 @@ import { HISTORY, useChatStore } from "./chat";
 
 const api = vi.hoisted(() => ({ stream: vi.fn() }));
 vi.mock("@/api/chat", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/chat")>()), ...api }));
+const wf = vi.hoisted(() => ({ storyDiagnosis: vi.fn() }));
+vi.mock("@/api/workflows", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflows")>()), ...wf }));
 
 /** A thread exactly as today's app writes it (the retired vanilla-JS app's chat screen). */
 const TODAYS = [
@@ -125,6 +127,26 @@ test("a skill sends its name and only its request to the model; the thread keeps
   expect(api.stream.mock.calls[0][1]).toEqual({ model: "chat", messages: [{ role: "user", content: "a button" }], stream: true, skill: "story" });
   expect(chat.thread[0]).toEqual({ role: "user", text: "/story a button", sent: "a button" });
   expect(chat.thread[1]).toMatchObject({ action: "story" });
+});
+
+test("/why puts the line's diagnosis of the named story before the question, as data", async () => {
+  wf.storyDiagnosis.mockResolvedValue({ markdown: "# AIR-9 blocked: process / hold_trap" });
+  const chat = fresh();
+  await chat.send({ text: "/why AIR-9", sent: "AIR-9", skill: { name: "why", action: "why" } });
+  expect(wf.storyDiagnosis).toHaveBeenCalledWith("AIR-9");
+  const sent = api.stream.mock.calls[0][1].messages[0].content as string;
+  expect(sent).toBe("--- diagnosis (data) ---\n# AIR-9 blocked: process / hold_trap\n--- end diagnosis ---\n\nAIR-9");
+  expect(api.stream.mock.calls[0][1].skill).toBe("why");
+});
+
+test("/why says so when the story has no diagnosis, or the question names no story", async () => {
+  wf.storyDiagnosis.mockReset().mockRejectedValue(new ApiError(404, "AIR-9 has no diagnosis"));
+  const chat = fresh();
+  await chat.send({ text: "/why AIR-9", sent: "AIR-9", skill: { name: "why", action: "why" } });
+  expect(api.stream.mock.calls[0][1].messages[0].content).toContain("(AIR-9 has no diagnosis)");
+  await chat.send({ text: "/why it", sent: "it", skill: { name: "why", action: "why" } });
+  expect(api.stream.mock.calls[1][1].messages.at(-1).content).toContain("(no story key in the message)");
+  expect(wf.storyDiagnosis).toHaveBeenCalledTimes(1);
 });
 
 test("attachments go as airlie_upload parts after the text", async () => {

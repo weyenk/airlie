@@ -144,3 +144,13 @@ def test_the_shipped_config_serves_story_and_does_not_route_to_chat() -> None:
     ]
     by_name = {s["name"]: s for s in skills.json()["skills"]}
     assert by_name["story"]["action"] == "story" and by_name["clear"]["action"] == "clear"
+
+
+def test_the_why_skill_loads_with_its_action() -> None:
+    cfg = load_config(ROOT / "airlie.yaml", ROOT / "no-local-overrides.yaml")
+    app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()), api_key="k")
+    skills = TestClient(app).get("/v1/airlie/chat/skills", headers={"Authorization": "Bearer k"})
+    why = {s["name"]: s for s in skills.json()["skills"]}["why"]
+    assert why["action"] == "why" and "diagnosis" in why["summary"]
+    text = (ROOT / "skills/chat/why.md").read_text()
+    assert "--- diagnosis (data) ---" in text  # the markers the Vue app wraps the route's Markdown in

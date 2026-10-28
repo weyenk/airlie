@@ -166,6 +166,26 @@ export function storyJob(key: string, node: string, job: string): Promise<JobDet
   return request<JobDetail>(`/v1/airlie/stories/${seg(key)}/flow/${seg(node)}/${seg(job)}`);
 }
 
+/** What the line wrote when a story blocked (`GET /v1/airlie/stories/{key}/diagnosis`): the class by rules, Muse's
+ * reading, what happens next, the Markdown of it all and the paths of the evidence. */
+export type Diagnosis = {
+  n: number;
+  class: string;
+  kind: string;
+  where: string;
+  signature: string;
+  rule: string;
+  evidence: string[];
+  muse: Record<string, unknown> | null;
+  next: string;
+  markdown: string;
+  paths: string[];
+};
+
+export function storyDiagnosis(key: string): Promise<Diagnosis> {
+  return request<Diagnosis>(`/v1/airlie/stories/${seg(key)}/diagnosis`);
+}
+
 export function runFlow(id: string): Promise<Flow> {
   return request<Flow>(`/v1/airlie/runs/${seg(id)}/flow`);
 }
