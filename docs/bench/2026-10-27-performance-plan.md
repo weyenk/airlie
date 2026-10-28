@@ -53,6 +53,31 @@ it is. It goes back to Noah with what failed, rather than being dropped quietly.
 Gate: the counters appear in `story-*.json`, two roman runs are recorded, and the wiki oracle passes on run B's
 published PRs (or names what they miss).
 
+**P0 results (2026-10-27).**
+
+**Counters:** all in place. Idle time is now 1.8 minutes of 48, so nearly all of a run is model time.
+
+**Wiki baseline:** run B, recorded in `story-wiki-baseline.json`.
+- Gate green; oracle 4/6.
+- Refine narrowed the request to "a read-only Wiki tab", so the two Wikipedia-like checks fail.
+
+**Noise band:** four roman runs on today's build.
+
+| Run | Outcome | Wall time | Notes |
+|---|---|---|---|
+| 1 | Blocked | — | Malformed layer JSON, told only "no JSON object" (fixed in PR 175) |
+| 2 | Blocked | — | Proof posted by the wrong role (fixed in PR 175) |
+| 3 | Clean | 48.0 min | 1 layer |
+| 4 | Clean | 75.0 min | 2 layers, 2 packages sent back on proof mismatches |
+
+Both clean runs had oracle 18/18 and mutation all killed. The spread between them is **56%**. That is far beyond the speed bar's assumed 10%, so a single run per lever can't show a 10–30% gain.
+
+The spread comes from two places:
+- **How many layers the plan makes**, for one small module.
+- **`proof_mismatch` rework**, where a package covers a test the agreed proof does not name: about 11 minutes a time.
+
+Before the levers are screened, the noise has to come down, by cutting those two sources or by running each configuration about 4 times. Noah's call.
+
 ## The levers, in order
 
 Each lever has its own flag and its own measured run (roman to screen it, wiki to confirm it), and passes the quality
