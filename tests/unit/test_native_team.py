@@ -1954,3 +1954,32 @@ async def test_a_think_when_red_role_thinks_only_while_its_last_test_run_failed(
     team, ctx = make_team(tmp_path / "green", engine, max_steps=10, think_when_red=True, thinking_budget=32)
     await team.run(ctx, Recorder())  # `echo ok` passes: never red, never thinking
     assert [r.thinking for r in engine.requests] == [False, False, False, False]
+
+
+async def test_a_think_when_red_role_cannot_read_while_red_and_can_once_green(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: thinking red, the coder still read, grepped, ran git and probed in the shell, each
+    step at its budget for ~90 s. While red only write_file, edit_file and run_tests run."""
+    run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+    read = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "a.py"}))])
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
+    )
+
+    async def refused(test_cmd: str, workdir: Path) -> list[str]:
+        engine = FakeEngine({"coder": [write, run, read, FakeReply(text="Done.")]})
+        team, ctx = make_team(workdir, engine, max_steps=10, think_when_red=True, thinking_budget=32)
+        object.__setattr__(ctx.tools.ctx, "test_cmd", test_cmd)
+        events: list[str] = []
+        object.__setattr__(ctx, "emit", lambda kind, **f: events.append(kind))
+        await team.run(ctx, Recorder())
+        return [str(m.content) for m in engine.requests[3].messages if m.role == "tool"][-1:] + [
+            k for k in events if k == "read_refused"
+        ]
+
+    red = await refused("exit 1", tmp_path)
+    assert red[0].startswith("Your tests are red, so reading is off until they pass") and red[1:] == [
+        "read_refused"
+    ]
+    (tmp_path / "green").mkdir()
+    green = await refused("echo ok", tmp_path / "green")
+    assert green[1:] == [] and not green[0].startswith("Your tests are red")  # green: the read ran

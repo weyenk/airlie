@@ -498,9 +498,13 @@ class NativeTeam:
             messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
-                held = (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY
-                if held and (looped or reads_left == 0):
-                    result = ToolResult(ok=False, output=_steer(ctx, steps, "read-refused"))
+                # while red, a think_when_red role writes: its reads are refused outright (roman, 2026-10-28:
+                # thinking red, it read, grepped, ran git and probed in the shell for 5 steps at ~90 s each)
+                red = ctx.role.think_when_red and last_tests_ok is False
+                held = (reading_off or looped or red) and call.name not in WRITE_TOOLS_ONLY
+                if held and (looped or red or reads_left == 0):
+                    refused = "red-read-refused" if red else "read-refused"
+                    result = ToolResult(ok=False, output=_steer(ctx, steps, refused))
                     tool_ms = 0.0
                     if ctx.emit is not None:
                         ctx.emit(
