@@ -78,6 +78,29 @@ The spread comes from two places:
 
 Before the levers are screened, the noise has to come down, by cutting those two sources or by running each configuration about 4 times. Noah's call.
 
+**Noise band after cutting the rework (2026-10-28).** Noah chose to cut the noise first.
+
+PR 175 now also has these fixes:
+- a test beyond the proof is kept and reported, not sent back
+- a unittest name written `Class.test_x` is read as `Class::test_x`
+
+| Run | Outcome | Wall time | Layers | Oracle | Mutation | What happened |
+|---|---|---|---|---|---|---|
+| 5 | Clean | 51.7 min | 2 | 18/18 | 36/38 | A 27-minute meeting that ended with an owner deciding |
+| 6 | Blocked | — | — | — | — | Dotted test names (now fixed) |
+| 7 | Clean | 57.3 min | 1 | 18/18 | 49/57 | One package sent back |
+| 8 | Clean | 72.3 min | 1 | 18/18 | 91/91 | The coder's first build went red, so the layer was re-planned and built again (about 30 min) |
+
+The three clean runs on the current build average **60.4 minutes**, a spread of ±17%.
+
+Each of the original sources of variance (the meeting's length, a package sent back, a gate re-plan) is now a model's own mistake, not a pipeline rule, so it can't be removed by a check.
+
+**What that means for screening:**
+- A lever that saves under about 20% can't be told apart from noise on 1–2 runs.
+- So either run each configuration 3 times, or bundle the levers (strategy C), whose combined effect should be well past 20%.
+- Quality held on every clean run: the oracle was 18/18 each time.
+- Mutation varied from 64% to 100% of mutants killed. Roman's red check never runs, because its gate is unittest and the check is pytest-only, so a test that would pass without the code is never caught. Fixing that is a quality item, separate from speed.
+
 ## The levers, in order
 
 Each lever has its own flag and its own measured run (roman to screen it, wiki to confirm it), and passes the quality
