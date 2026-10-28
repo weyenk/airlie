@@ -164,7 +164,8 @@ def test_the_package_brief_carries_the_agreed_tests_and_the_layers_files_and_int
     assert (
         "src/profile.py (new)" in files and "- src/app.py\n" in files + "\n" and "def show() -> int" in files
     )
-    assert "names exactly the agreed tests" in text and '"proof_change"' in text
+    assert "names every agreed test" in text and "a test beyond them is kept" in text
+    assert '"proof_change"' in text
     assert '"behaviour"' in text  # where a test with no criterion is listed
     plain = pbrief()
     for absent in ("## The agreed tests", "## Files and interfaces", "proof_change"):

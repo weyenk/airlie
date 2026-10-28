@@ -34,7 +34,7 @@ PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <pa
  "done_when": "one sentence"}
 Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files."""  # noqa: E501
 
-AGREED_PROOF_CONTRACT = """`covers` names exactly the agreed tests, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package."""  # noqa: E501
+AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package."""  # noqa: E501
 BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 

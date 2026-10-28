@@ -99,7 +99,7 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.package import Package, ProofChange, parse_package
-from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
+from airlie.story.package_checks import PackageChecker, beyond_proof, package_feedback_said, place_package
 from airlie.story.phase import decoding, write_phase
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
@@ -1751,6 +1751,7 @@ class StoryPipeline:
                     studio_run=run,
                     tests=list(package.test_ids),
                     files=[f.path for f in package.files],
+                    beyond_proof=beyond_proof(package, [t.id for t in proof if not t.gate]) if proof else [],
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))

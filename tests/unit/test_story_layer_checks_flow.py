@@ -527,7 +527,8 @@ async def test_the_critic_reads_the_packages_test_files_on_disk_as_in_its_brief(
     assert "def test_mul_zero" in str(result), result
 
 
-async def test_a_package_covering_a_test_the_proof_lacks_is_a_proof_mismatch(tmp_path: Path) -> None:
+async def test_a_package_covering_a_test_the_proof_lacks_keeps_it_and_reports_it(tmp_path: Path) -> None:
+    """Roman, 2026-10-27: sending a package back for a test beyond the proof cost ~11 minutes a time."""
     extra = TWO_TESTS + "\n\ndef test_extra():\n    assert mul(1, 1) == 1\n"
     wide = package_reply(
         {"tests/test_calc.py": extra},
@@ -536,15 +537,11 @@ async def test_a_package_covering_a_test_the_proof_lacks_is_a_proof_mismatch(tmp
         interfaces=[MUL_INTERFACE],
         steps=STEPS,
     )
-    st, engine = await agreed_run(tmp_path, [wide, two()], [AGREE_ALL, AGREE_ALL], [FEATURE, DONE])
+    st, _ = await agreed_run(tmp_path, [wide], [AGREE_ALL], [FEATURE, DONE])
     assert st.blocked is None and st.stage == "review", st.blocked
-    [returned] = kinds(st.path / "events.jsonl", "package_returned")
-    assert returned["kinds"] == ["proof_mismatch"]
-    retry = prompts(engine, "architect")[2]
-    assert (
-        "tests/test_calc.py::test_extra: your package covers it, but the agreed proof does not name it"
-        in retry
-    )
+    assert kinds(st.path / "events.jsonl", "package_returned") == []
+    [ready] = kinds(st.path / "events.jsonl", "package_ready")
+    assert ready["beyond_proof"] == ["tests/test_calc.py::test_extra"]
 
 
 PROOF_CHANGE = FakeReply(

@@ -169,11 +169,10 @@ def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
     return found
 
 
-def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
-    """A `proof_mismatch` for each agreed test the package does not cover and for each test it covers that the
-    proof does not name (three-amigos D9, D12): the package is the transcription of the agreed proof. A
-    parametrized test is its function's id; an agreed id without its class (as the meeting writes it) is the
-    covered method it names, and one without its describe the covered Vitest test ("Wiki > lists topics")."""
+def _against_proof(package: Package, proof_ids: Collection[str]) -> tuple[set[str], set[str]]:
+    """The package's covered test ids and the agreed ones as it names them. A parametrized test is its
+    function's id; an agreed id without its class (as the meeting writes it) is the covered method it
+    names, and one without its describe the covered Vitest test ("Wiki > lists topics")."""
     covered = {_PARAMS.sub("", t) for t in package.test_ids}
 
     def as_covered(agreed_id: str) -> str:
@@ -182,14 +181,24 @@ def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Findi
         named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(ends)]
         return named[0] if agreed_id not in covered and len(named) == 1 else agreed_id
 
-    agreed = {as_covered(t) for t in proof_ids}
+    return covered, {as_covered(t) for t in proof_ids}
+
+
+def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
+    """A `proof_mismatch` for each agreed test the package does not cover (three-amigos D9, D12). A test the
+    package adds beyond the proof is not one (`beyond_proof`): it is checked like any other, and sending a
+    package back for it cost about 11 minutes a time without making the layer better (roman, 2026-10-27)."""
+    covered, agreed = _against_proof(package, proof_ids)
     return [
         Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
         for t in sorted(agreed - covered)
-    ] + [
-        Finding("proof_mismatch", t, "your package covers it, but the agreed proof does not name it", "")
-        for t in sorted(covered - agreed)
     ]
+
+
+def beyond_proof(package: Package, proof_ids: Collection[str]) -> list[str]:
+    """The tests the package covers that the agreed proof does not name: kept, and reported."""
+    covered, agreed = _against_proof(package, proof_ids)
+    return sorted(covered - agreed)
 
 
 class PackageChecker:
@@ -226,7 +235,7 @@ class PackageChecker:
         """The package with ruff's fixes applied to its test text, and the findings. The package is placed
         and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
         `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
-        package must cover exactly them (`proof_mismatch`)."""
+        package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`)."""
         found = proof_mismatches(package, proof_ids) if proof_ids is not None else []
         found += [
             Finding("file_exists", f.path, FILE_EXISTS, "")
