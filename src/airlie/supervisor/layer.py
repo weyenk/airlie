@@ -138,6 +138,16 @@ class LayerSupervisor:
     def stuck_settled(self, subtask: str, helped: bool) -> None:
         self.settle("repeat_guard", "helped" if helped else "not_helped", subtask=subtask)
 
+    async def red(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        """A red streak: the role's tests failed several runs in a row, each edit different, so the repeat
+        guard never fired (roman, 2026-10-28: 35 minutes red on one test, the supervisor never asked). Muse
+        reads the same recent messages, the last failure among them."""
+        shown = "\n".join(f"{m.role}: {m.content[:_STUCK_MESSAGE_CAP]}" for m in messages[-_STUCK_MESSAGES:])
+        return await self.advise("red_streak", subtask, role, told, evidence=shown)
+
+    def red_settled(self, subtask: str, helped: bool) -> None:
+        self.settle("red_streak", "helped" if helped else "not_helped", subtask=subtask)
+
     # ---- what came of it -----------------------------------------------------------------------------------
 
     def settle(self, trigger: str, outcome: str, detail: str = "", *, subtask: str | None = None) -> None:

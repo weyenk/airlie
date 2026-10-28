@@ -291,6 +291,17 @@ async def test_stuck_shows_muse_the_last_eight_messages(tmp_path: Path) -> None:
     assert led.recent()[0].outcome == "not_helped"
 
 
+async def test_a_red_streak_is_its_own_trigger_with_its_own_outcome(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: 35 minutes red, every edit different, and the repeat guard never fired."""
+    sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD])
+    failing = [Message(role="tool", content="FAIL: test_from_roman_malformed_raises")]
+    assert await sup.red("build", "coder", "RED-FIX", failing) == GOOD["message"]
+    assert "tool: FAIL: test_from_roman_malformed_raises" in sup.engine.requests[0].messages[1].content
+    assert led.recent()[0].trigger == "red_streak" and led.recent()[0].role == "coder"
+    sup.red_settled("build", True)
+    assert led.recent()[0].outcome == "helped"
+
+
 async def test_an_unknown_trigger_is_refused(tmp_path: Path) -> None:
     sup, led, _ = layer_supervisor(tmp_path, answers=[GOOD])
     with pytest.raises(ValueError):

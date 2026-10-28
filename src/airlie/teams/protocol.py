@@ -56,6 +56,15 @@ class StuckAdvisor(Protocol):
         """Whether the role went on after the advised nudge (its run's result) or repeated again."""
         ...
 
+    async def red(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        """The advice to add to `told` for a role whose tests have failed RED_STREAK runs in a row, from the
+        team's conversation including that last failure; None for none."""
+        ...
+
+    def red_settled(self, subtask: str, helped: bool) -> None:
+        """Whether the role's tests passed before its next red streak (or its run ended green)."""
+        ...
+
 
 @dataclass
 class StepRecord:

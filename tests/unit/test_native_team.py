@@ -1956,30 +1956,56 @@ async def test_a_think_when_red_role_thinks_only_while_its_last_test_run_failed(
     assert [r.thinking for r in engine.requests] == [False, False, False, False]
 
 
-async def test_a_think_when_red_role_cannot_read_while_red_and_can_once_green(tmp_path: Path) -> None:
-    """Roman, 2026-10-28: thinking red, the coder still read, grepped, ran git and probed in the shell, each
-    step at its budget for ~90 s. While red only write_file, edit_file and run_tests run."""
+async def test_a_think_when_red_role_does_not_read_back_its_own_file_while_red(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: the red coder read back what it had written; refusing every read instead left it
+    unable to see which input a looped test failed on (35 minutes red). While red, only a re-read of its own
+    file is refused; another file, or the same one once green, is read."""
     run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
-    read = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "a.py"}))])
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 1\n"}))]
     )
 
-    async def refused(test_cmd: str, workdir: Path) -> list[str]:
+    async def last_tool_output(test_cmd: str, path: str, workdir: Path) -> tuple[str, list[str]]:
+        read = FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": path}))])
         engine = FakeEngine({"coder": [write, run, read, FakeReply(text="Done.")]})
         team, ctx = make_team(workdir, engine, max_steps=10, think_when_red=True, thinking_budget=32)
         object.__setattr__(ctx.tools.ctx, "test_cmd", test_cmd)
         events: list[str] = []
         object.__setattr__(ctx, "emit", lambda kind, **f: events.append(kind))
         await team.run(ctx, Recorder())
-        return [str(m.content) for m in engine.requests[3].messages if m.role == "tool"][-1:] + [
-            k for k in events if k == "read_refused"
-        ]
+        told = [str(m.content) for m in engine.requests[3].messages if m.role == "tool"][-1]
+        return told, [k for k in events if k == "read_refused"]
 
-    red = await refused("exit 1", tmp_path)
-    assert red[0].startswith("Your tests are red, so reading is off until they pass") and red[1:] == [
-        "read_refused"
-    ]
-    (tmp_path / "green").mkdir()
-    green = await refused("echo ok", tmp_path / "green")
-    assert green[1:] == [] and not green[0].startswith("Your tests are red")  # green: the read ran
+    told, refused = await last_tool_output("exit 1", "./a.py", tmp_path)
+    assert told.startswith("This is a file you wrote in this conversation") and refused == ["read_refused"]
+    for n, (cmd, path) in enumerate((("exit 1", "README.md"), ("echo ok", "a.py"))):
+        (tmp_path / str(n)).mkdir()
+        (tmp_path / str(n) / "README.md").write_text("# hi\n")
+        told, refused = await last_tool_output(cmd, path, tmp_path / str(n))
+        assert refused == [] and "wrote in this conversation" not in told  # another file, or green: read
+
+
+async def test_a_red_streak_asks_the_advisor_and_tells_it_what_came_of_it(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: 35 minutes red on one test, each edit different, so the repeat guard never fired
+    and the supervisor never looked. Every RED_STREAK failed runs in a row it is asked; its advice follows
+    the red-fix text."""
+    from airlie.teams.native_team import RED_STREAK
+    from tests.unit.advisor_doubles import RecordingAdvisor
+
+    run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+
+    def edit(n: int) -> FakeReply:
+        content = json.dumps({"path": "a.py", "content": f"x = {n}\n"})
+        return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
+
+    script = [x for n in range(RED_STREAK) for x in (edit(n), run)] + [FakeReply(text="Done.")]
+    engine = FakeEngine({"coder": script})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, think_when_red=True, thinking_budget=32)
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
+    advisor = RecordingAdvisor("from_roman lets IIII through: add a repeat check")
+    object.__setattr__(ctx, "on_stuck", advisor)
+    await team.run(ctx, Recorder())
+    assert len(advisor.red_calls) == 1 and advisor.red_calls[0][1] == "coder"
+    told = [str(m.content) for m in engine.requests[-1].messages if m.role == "tool"][-1]
+    assert told.endswith("from_roman lets IIII through: add a repeat check")  # after red-fix
+    assert [helped for _, helped in advisor.red_settles] == [False]  # the run ended red
