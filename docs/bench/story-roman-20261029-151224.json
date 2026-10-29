@@ -1,0 +1,193 @@
+{
+ "case": "roman",
+ "started": "2026-10-29T13:41:12",
+ "airlie_build": "afaa1f9",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "layers",
+ "blocked": "layer 01 (Add sandbox/roman.py with to_roman and from_roman (1-3999) plus): its package still fails the readiness check after 2 tries (assertion_free_test)",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 91.2,
+  "idle_min": 3.0,
+  "decode_tps_by_context": {
+   "<16k": 23.5,
+   "16-48k": 19.2,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.7
+   },
+   {
+    "at": "plan_done",
+    "min": 11.6
+   },
+   {
+    "at": "amigos_owner_decided",
+    "min": 29.6
+   },
+   {
+    "at": "story_done",
+    "min": 29.6
+   },
+   {
+    "at": "packages_drafting",
+    "min": 29.6
+   },
+   {
+    "at": "story_done",
+    "min": 91.2
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layer build",
+    "role": "coder",
+    "calls": 14,
+    "tokens_in": 140871,
+    "tokens_out": 33713,
+    "prefill_s": 58.29549999999999,
+    "decode_s": 1462.8214,
+    "wall_s": 1615.1093999999998,
+    "reads": 2,
+    "thinking_tokens": 29434,
+    "decode_tps": 23.0,
+    "prefill_tps": 2416
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 12,
+    "tokens_in": 150297,
+    "tokens_out": 37415,
+    "prefill_s": 52.4156,
+    "decode_s": 1752.8689,
+    "wall_s": 687.192,
+    "reads": 9,
+    "thinking_tokens": 25401,
+    "decode_tps": 21.3,
+    "prefill_tps": 2867
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 41755,
+    "tokens_out": 9938,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 568.4069999999999,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 46275,
+    "tokens_out": 6565,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 329.574,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 4,
+    "tokens_in": 18376,
+    "tokens_out": 14522,
+    "prefill_s": 15.131799999999998,
+    "decode_s": 579.5597,
+    "wall_s": 270.05109999999996,
+    "reads": 1,
+    "thinking_tokens": 8543,
+    "decode_tps": 25.1,
+    "prefill_tps": 1214
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 11,
+    "tokens_in": 114396,
+    "tokens_out": 3512,
+    "prefill_s": 39.1037,
+    "decode_s": 156.57950000000002,
+    "wall_s": 200.44510000000002,
+    "reads": 8,
+    "thinking_tokens": 0,
+    "decode_tps": 22.4,
+    "prefill_tps": 2925
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 39690,
+    "tokens_out": 2484,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 177.23000000000002,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 6,
+    "tokens_in": 12040,
+    "tokens_out": 2401,
+    "prefill_s": 10.5948,
+    "decode_s": 91.06920000000001,
+    "wall_s": 101.8487,
+    "reads": 5,
+    "thinking_tokens": 0,
+    "decode_tps": 26.4,
+    "prefill_tps": 1136
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12557,
+    "tokens_out": 2340,
+    "prefill_s": 6.0847,
+    "decode_s": 92.63900000000001,
+    "wall_s": 98.85510000000001,
+    "reads": 6,
+    "thinking_tokens": 1413,
+    "decode_tps": 25.3,
+    "prefill_tps": 2064
+   }
+  ],
+  "retries": {
+   "plan_rounds": 3,
+   "plan_fixes": 0,
+   "meeting_turns": 9,
+   "meeting_objections": 2,
+   "critic_objections": 0,
+   "package_attempts": 3,
+   "packages_rejected": 2,
+   "unusable_replies": 0,
+   "layer_builds": 1,
+   "gate_replans": 1,
+   "supervisor_triages": 2
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

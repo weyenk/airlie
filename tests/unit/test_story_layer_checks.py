@@ -118,6 +118,30 @@ def test_a_test_with_no_assertion_is_a_finding(tmp_path: Path) -> None:
     assert free == ["tests/test_calc.py::test_runs_only", "tests/test_calc.py::TestPrints::test_prints"]
 
 
+def test_a_test_whose_check_is_in_a_method_of_its_class_asserts(tmp_path: Path) -> None:
+    """Roman bundle 2 run 1 (2026-10-29) was blocked on three tests that called self._assert_invalid_roman."""
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    tests = (
+        "import unittest\nfrom calc import add\n\n\n"
+        "class AddTest(unittest.TestCase):\n"
+        "    def _assert_invalid(self, v):\n        with self.assertRaises(TypeError):\n"
+        "            add(v)\n\n"
+        "    def check_sum(self, v):\n        self.verify(v)\n\n"
+        "    def verify(self, v):\n        assert v == 3\n\n"
+        "    def show(self, v):\n        print(v)\n\n"
+        "    def test_private_assert_helper(self):\n        self._assert_invalid(1)\n\n"
+        "    def test_helper_calls_helper(self):\n        self.check_sum(add(1, 2))\n\n"
+        "    def test_helper_without_check(self):\n        self.show(add(1, 2))\n\n"
+        "    def test_recurses(self):\n        self.test_recurses()\n"
+    )
+    commit(root, "layer", {"tests/test_calc.py": tests})
+    free = [t.id for t in changed_tests(root, base) if not t.asserts]
+    assert free == [
+        "tests/test_calc.py::AddTest::test_helper_without_check",
+        "tests/test_calc.py::AddTest::test_recurses",
+    ]
+
+
 async def test_assertion_free_tests_are_reported_with_why(tmp_path: Path) -> None:
     root, base = repo(tmp_path, {"calc.py": CALC})
     commit(
