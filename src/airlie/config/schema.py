@@ -691,9 +691,10 @@ class StorySpec(Strict):
         "notes the layer planning starts from",
     )
     dossier: bool = Field(
-        default=False,
+        default=True,
         description="each step's brief carries the files the story's earlier steps read (at the commit it "
-        "reads), so it does not read them again: lever P2 of the performance plan, off until it is measured",
+        "reads), so it does not read them again: lever P2 of the performance plan; on since its A/B "
+        "(2026-10-29: 31% faster on roman, 38% fewer calls, quality held)",
     )
     product_role: str = "product"
     architect_role: str = "architect"
