@@ -256,6 +256,17 @@ def test_a_criterion_the_agreed_proof_leaves_to_the_gate_needs_no_covers() -> No
         parse_package(reply(covers={}), LAYER, STORY)
 
 
+def test_words_in_the_covers_of_a_criterion_left_to_the_gate_are_dropped() -> None:
+    """Roman bundle 2 (2026-10-29) was blocked on covers AC6: "tests/test_roman.py (whole file: the test gate
+    ... must show all tests ... passing)" for a criterion the agreed proof left to the gate."""
+    said = "tests/test_store.py (whole file: the test gate must pass)"
+    p = parse_package(reply(covers={"AC1": [said, f"{PATH}::test_a"]}), LAYER, STORY, gated={"AC1"})
+    assert p.covers == {"AC1": (f"{PATH}::test_a",)}
+    assert parse_package(reply(covers={"AC1": [said]}), LAYER, STORY, gated={"AC1"}).covers == {}
+    with pytest.raises(StoryError, match="names a test in no test file"):
+        parse_package(reply(covers={"AC1": [said]}), LAYER, STORY)
+
+
 WEB = "web/src/screens/Wiki.test.ts"
 WEB_TEXT = """import { describe, it, expect } from "vitest";
 

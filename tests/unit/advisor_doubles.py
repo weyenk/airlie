@@ -11,10 +11,13 @@ from airlie.engine.types import Message
 class RecordingAdvisor:
     """Answers every question with `reply` and records each call."""
 
-    def __init__(self, reply: str | None) -> None:
+    def __init__(self, reply: str | None, category: str | None = None) -> None:
         self.reply = reply
+        self.last_category = category if reply else None
         self.stuck_calls: list[tuple[str, str, str, int]] = []  # (subtask, role, told, messages seen)
         self.stuck_settles: list[tuple[str, bool]] = []
+        self.red_calls: list[tuple[str, str, str, int]] = []
+        self.red_settles: list[tuple[str, bool]] = []
         self.advised: list[tuple[str, str, str, str, tuple[str, ...], str]] = []
         self.settled: list[tuple[str, str, str | None]] = []  # (trigger, outcome, subtask)
 
@@ -24,6 +27,13 @@ class RecordingAdvisor:
 
     def stuck_settled(self, subtask: str, helped: bool) -> None:
         self.stuck_settles.append((subtask, helped))
+
+    async def red(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        self.red_calls.append((subtask, role, told, len(messages)))
+        return self.reply
+
+    def red_settled(self, subtask: str, helped: bool) -> None:
+        self.red_settles.append((subtask, helped))
 
     async def advise(
         self,
@@ -45,10 +55,18 @@ class RecordingAdvisor:
 class RaisingAdvisor:
     """Fails at every call."""
 
+    last_category: str | None = None
+
     async def stuck(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
         raise RuntimeError("advisor down")
 
     def stuck_settled(self, subtask: str, helped: bool) -> None:
+        raise RuntimeError("advisor down")
+
+    async def red(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        raise RuntimeError("advisor down")
+
+    def red_settled(self, subtask: str, helped: bool) -> None:
         raise RuntimeError("advisor down")
 
     async def advise(

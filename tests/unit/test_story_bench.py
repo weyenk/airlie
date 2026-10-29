@@ -310,3 +310,32 @@ def test_a_record_of_a_remote_branch_deleted_on_the_remote_is_pruned(tmp_path: P
     assert "origin/story-01" in git(clone, "branch", "-r")
     prune_remote_branches(clone)
     assert "origin/story-01" not in git(clone, "branch", "-r")
+
+
+def test_a_stack_whose_branches_are_gone_is_dropped_from_gh_stacks_record(tmp_path: Path) -> None:
+    """A/B run 3 (2026-10-29): the run's branches were deleted but gh stack kept their stack, and the next run
+    with the same branch name was refused at publish as "already part of a stack"."""
+    import json
+    import subprocess
+
+    from airlie.bench.story_bench import prune_stale_stacks
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x")
+    git("branch", "kept-01")
+
+    def stack(*names: str) -> dict[str, object]:
+        return {"trunk": {"branch": "main"}, "branches": [{"branch": n} for n in names]}
+
+    record = tmp_path / ".git" / "gh-stack"
+    record.write_text(
+        json.dumps({"schemaVersion": 1, "stacks": [stack("kept-01"), stack("gone-01", "gone-02")]})
+    )
+    assert prune_stale_stacks(tmp_path) == 1
+    assert [s["branches"][0]["branch"] for s in json.loads(record.read_text())["stacks"]] == ["kept-01"]
+    assert prune_stale_stacks(tmp_path) == 0
+    record.write_text("not json")
+    assert prune_stale_stacks(tmp_path) == 0  # an unreadable record is left alone

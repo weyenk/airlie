@@ -191,6 +191,8 @@ def _proof_entry(
         )
     file = _test_path(_field(t, "file", where), level, levels, where)
     name = _one_line(_field(t, "name", where), f"{where}: name", 200)
+    if not is_js_test(file):  # unittest's own spelling, Class.test_x, is the id's Class::test_x
+        name = _DOTTED_METHOD.sub(r"\1::\2", name)
     guideline = _field(t, "guideline", where, required=False) or None
     if guideline is not None and guideline not in guidelines:
         raise StoryError(
@@ -207,6 +209,12 @@ def _proof_entry(
         _field(t, "asserts", where),
         _field(t, "needs", where, required=False),
     )
+
+
+_DOTTED_METHOD = re.compile(r"^([A-Za-z_]\w*)\.(test\w*)$")
+"""A pytest name written as unittest writes it (RomanTest.test_x): the proof's ids are file::Class::test_x,
+and a package's covers name them that way, so the dotted form matched none (roman, 2026-10-28: a package
+sent back twice for 7 tests it covered, then blocked)."""
 
 
 def parse_proof_entries(
@@ -766,7 +774,8 @@ class AgreementReached(TerminationCondition):
                 continue
             self._seq += 1
             if m.source == CHECKER:
-                self._checker = (self._seq, m.content.strip() == NO_FINDINGS)
+                # its first line: advice may follow "no findings" (ADVISORY), and holds nothing up
+                self._checker = (self._seq, m.content.strip().split("\n", 1)[0] == NO_FINDINGS)
                 continue
             try:
                 verdict: Verdict | None = parse_verdict(m.content, m.source)
@@ -816,20 +825,32 @@ def _as_turn_part(contract: str) -> str:
 
 
 def opening_message(
-    story: Story, layers: Sequence[Layer], conventions_text: str, lessons: Sequence[Lesson]
+    story: Story,
+    layers: Sequence[Layer],
+    conventions_text: str,
+    lessons: Sequence[Lesson],
+    dossier: Mapping[str, str] | None = None,
 ) -> str:
     """The meeting's first message, which every agent reads: its purpose and rules (`amigos-opening`), the
     story as product refined it, the architect's split, the repository's testing conventions, the lessons
     recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
-    from airlie.story.briefs import LAYERS_CONTRACT, STORY_CONTRACT, story_text  # as in _lessons_text
+    from airlie.story.briefs import (  # as in _lessons_text
+        LAYERS_CONTRACT,
+        STORY_CONTRACT,
+        dossier_section,
+        story_text,
+    )
 
     split = json.dumps({"layers": [x.to_dict() for x in layers]}, indent=1)
     parts = [
         hub_text("amigos-opening"),
         "## Product's story: the requirements as they stand\n" + story_text(story),
         "## The architect's split: the changes as they stand\n```json\n" + split + "\n```",
-        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan.",
+        "## The proof\nThe tester has not posted it yet: its first turn proposes the proof plan. Only the "
+        "tester posts it: product and architect never post a proof block, not even to help; they object "
+        "to it once it is posted.",
         conventions_text,
+        *dossier_section(dossier or {}),
         *([_lessons_text(lessons)] if lessons else []),
         "## How each part and your verdict travel\n"
         + "\n\n".join(

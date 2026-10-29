@@ -11,6 +11,8 @@ roles:
                                      # it did not think
     nudge_stuck: true              # told once to do something else when it repeats an action, not stopped
     green_before_done: true        # told once to go on when it answers with run_tests failing (AIR-5 layer 02)
+    think_when_red: true           # thinks only while its last run_tests failed (and may only write then): roman 2026-10-28
+    thinking_budget: 4096          # rewrote the same wrong file three times red; at 2048 every red step was cut and read
     write_schedule:                # a test written by a quarter of its steps, code by three quarters,
       tests: 0.25                  # else told once, then write-only tools (AIR-28: it read 21 of 40 steps)
       code: 0.75

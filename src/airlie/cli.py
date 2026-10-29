@@ -313,12 +313,15 @@ def _http_engine(
     def served(role: str) -> str:
         return e.served_name(model_override or cfg.roles[role].model)
 
+    # only a transport given: passing None would override one HTTPEngine already carries (the story harness
+    # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
+    given: dict[str, Any] = {"transport": transport} if transport is not None else {}
     return HTTPEngine(
         e.base_url or "",
         served,
         lambda role: cfg.roles[role],
         api_key=e.api_key,
-        transport=transport,
+        **given,
         per_request_draft=e.per_request_draft,
         model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
     )
@@ -863,6 +866,7 @@ def bench_story(
         local_branches,
         measure,
         prune_remote_branches,
+        prune_stale_stacks,
         save,
         verdict,
     )
@@ -891,11 +895,13 @@ def bench_story(
 
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
+    prune_stale_stacks(clone)  # nor of a stack whose branches an earlier run deleted
     before = local_branches(clone)
     try:
         st = _run_stoppable(go())
     except BaseException:
         delete_new_branches(clone, before)  # a stopped run leaves nothing for the next one to trip on
+        prune_stale_stacks(clone)
         raise
     gate = " && ".join((st.gate or {}).get("commands") or [])
     top = st.built[max(st.built)]["sha"] if st.built else None
@@ -917,6 +923,7 @@ def bench_story(
     record["closed"] = [] if keep_prs else close_prs(case.repo, st.prs, clone)
     if not keep_prs:
         record["branches_deleted"] = delete_new_branches(clone, before)
+        prune_stale_stacks(clone)
     path = save(record, out_dir)
     console.print(f"record: {path}")
     if not record["base"]["same"]:

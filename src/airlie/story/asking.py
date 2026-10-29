@@ -22,15 +22,20 @@ from airlie.story.phase import fanout, wait_for_gap
 from airlie.story.rounds import plan_in_rounds
 from airlie.story.state import Lane
 from airlie.teams.protocol import cut_off_text
-from airlie.teams.worktree import remove_worktree
+from airlie.teams.worktree import detach_at, remove_worktree
 from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask
 
 StudioFactory = Callable[[], StudioOrchestrator]
-Say = Callable[[str | None], Awaitable[str]]
-"""One side of a conversation with a specialist: the first call (any argument) runs the opening brief,
-each later call sends its text as a follow-up in the same conversation, and each returns what the
-specialist said."""
+
+
+class Say(Protocol):
+    """One side of a conversation with a specialist: the first call (any argument) runs the opening brief,
+    each later call sends its text as a follow-up in the same conversation, and each returns what the
+    specialist said. `at` moves the conversation's read-only checkout to another commit before a later turn
+    (a story's later layer's base, P9)."""
+
+    def __call__(self, nudge: str | None = None, /, *, at: str | None = None) -> Awaitable[str]: ...
 
 
 class StoryBlocked(Exception):
@@ -202,9 +207,11 @@ class Asker:
         orch, base = self.start_ask(st, stage, at)
         started = False
 
-        async def say(nudge: str | None = None) -> str:
+        async def say(nudge: str | None = None, /, *, at: str | None = None) -> str:
             nonlocal started
             await self.wait(st, stage, long)  # every turn of the conversation is a long one
+            if at is not None and started:  # a later turn about another commit (a later layer's base)
+                detach_at(orch.run_dir.path / "studio", at)
             if not started:
                 started = True
                 report = await orch.execute_task(

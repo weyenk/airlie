@@ -184,6 +184,29 @@ def test_remote_url_is_the_first_url_as_written(tmp_path: Path) -> None:
     assert remote_url(repo, "upstream") is None
 
 
+def test_a_read_only_worktree_moves_to_another_commit_detached(tmp_path: Path) -> None:
+    """P9 (2026-10-29): the architect's drafting conversation, held across a story's layers, reads each later
+    layer's real base: its checkout moves there before the turn."""
+    from airlie.teams.worktree import add_worktree, detach_at, head_sha
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "a.py").write_text("x = 1\n")
+    git(repo, "add", "a.py")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+    first = git(repo, "rev-parse", "HEAD").strip()
+    (repo / "b.py").write_text("y = 2\n")
+    git(repo, "add", "b.py")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "two")
+    second = git(repo, "rev-parse", "HEAD").strip()
+    tree = tmp_path / "talk"
+    add_worktree(repo, tree, branch=None, start_point=first)
+    assert not (tree / "b.py").exists()
+    detach_at(tree, second)
+    assert head_sha(tree) == second and (tree / "b.py").read_text() == "y = 2\n"
+
+
 def test_squash_since_appends_trailers_git_can_read(tmp_path: Path) -> None:
     from airlie.teams.worktree import add_worktree, commit_wip, head_sha, squash_since
 

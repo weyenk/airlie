@@ -291,6 +291,12 @@ def remote_url(repo: Path, remote: str) -> str | None:
     return urls[0] if urls else None
 
 
+def detach_at(worktree: Path, commit: str) -> None:
+    """Move a read-only worktree to `commit`, detached: a conversation held across a story's layers reads
+    each later layer's real base (P9 of the performance plan)."""
+    _git(worktree, "checkout", "-q", "--detach", commit)
+
+
 def remove_worktree(repo: Path, path: Path) -> None:
     _git(repo, "worktree", "remove", "--force", str(path), check=False)
     _git(repo, "worktree", "prune", check=False)

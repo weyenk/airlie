@@ -25,6 +25,7 @@ Trigger = Literal[
     "gate_retry",
     "amend",
     "repeat_guard",
+    "red_streak",
     "block",
     "package_retry",
     "replan",

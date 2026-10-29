@@ -53,6 +53,7 @@ Kind = Literal[
     "verdict_missing",
     "part_invalid",
     "proof_mismatch",
+    "proof_sampled",
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
@@ -184,20 +185,29 @@ def _call_name(call: ast.Call) -> str:
     return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
 
 
-def _checks(
-    node: ast.AST, helpers: dict[str, ast.FunctionDef | ast.AsyncFunctionDef], seen: set[str]
-) -> bool:
-    """`node` holds a check: an assert, a raise, a check call, or a call to a module function holding one."""
+Functions = dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+
+
+def _checks(node: ast.AST, helpers: Functions, seen: set[str], methods: Functions | None = None) -> bool:
+    """`node` holds a check: an assert, a raise, a check call (a private `_assert_x` too), or a call to a
+    module function, or to a `self.` method of the test's class, holding one."""
+    methods = methods or {}
     for sub in ast.walk(node):
         if isinstance(sub, ast.Assert | ast.Raise):
             return True
         if isinstance(sub, ast.Call):
             name = _call_name(sub)
-            if name.startswith("assert") or name in CHECK_CALLS:
+            if name.lstrip("_").startswith("assert") or name in CHECK_CALLS:
                 return True
-            if isinstance(sub.func, ast.Name) and name in helpers and name not in seen:
+            f = sub.func
+            if isinstance(f, ast.Name) and name in helpers and name not in seen:
                 seen.add(name)
-                if _checks(helpers[name], helpers, seen):
+                if _checks(helpers[name], helpers, seen, methods):
+                    return True
+            is_self = isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "self"
+            if is_self and name in methods and f"self.{name}" not in seen:
+                seen.add(f"self.{name}")
+                if _checks(methods[name], helpers, seen, methods):
                     return True
     return False
 
@@ -216,18 +226,25 @@ def changed_tests(worktree: Path, base: str) -> list[ChangedTest]:
         tree = _parse(text)
         if tree is None:
             continue
-        before = _parse(_base_text(worktree, base, path))
         base_text = _base_text(worktree, base, path)
         before = _parse(base_text)
         old = {name: fn for name, fn in test_functions(before)} if before else {}
         helpers = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
+        methods = {
+            c.name: {m.name: m for m in c.body if isinstance(m, ast.FunctionDef | ast.AsyncFunctionDef)}
+            for c in tree.body
+            if isinstance(c, ast.ClassDef)
+        }
         for name, fn in test_functions(tree):
             was = old.get(name)
             if was is not None and ast.dump(was) == ast.dump(fn):
                 continue
             source = (ast.get_source_segment(text, fn) or "")[:_SOURCE_CHARS]
             was_source = (ast.get_source_segment(base_text or "", was) or "")[:_SOURCE_CHARS] if was else ""
-            found.append(ChangedTest(path, name, source, _checks(fn, helpers, {fn.name}), was_source))
+            cls, _, _ = name.rpartition("::")
+            mine = methods.get(cls, {})
+            seen = {fn.name, f"self.{fn.name}"} if cls else {fn.name}
+            found.append(ChangedTest(path, name, source, _checks(fn, helpers, seen, mine), was_source))
     return found
 
 

@@ -1,0 +1,193 @@
+{
+ "case": "roman",
+ "started": "2026-10-28T07:29:33",
+ "airlie_build": "0d2091b",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "layers",
+ "blocked": "layer 01 (Add sandbox.roman with to_roman/from_roman (1..3999) and unittest coverage): its package still fails the readiness check after 2 tries (proof_mismatch, import_unresolved)",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 44.6,
+  "idle_min": 0.7,
+  "decode_tps_by_context": {
+   "<16k": 24.6,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.7
+   },
+   {
+    "at": "plan_done",
+    "min": 13.3
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 23.9
+   },
+   {
+    "at": "story_done",
+    "min": 23.9
+   },
+   {
+    "at": "packages_drafting",
+    "min": 23.9
+   },
+   {
+    "at": "story_done",
+    "min": 44.6
+   }
+  ],
+  "roles": [
+   {
+    "phase": "package",
+    "role": "architect",
+    "calls": 8,
+    "tokens_in": 59385,
+    "tokens_out": 19009,
+    "prefill_s": 11.367899999999997,
+    "decode_s": 803.0874999999999,
+    "wall_s": 814.5512,
+    "reads": 7,
+    "thinking_tokens": 16789,
+    "decode_tps": 23.7,
+    "prefill_tps": 5224
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 22756,
+    "tokens_out": 6082,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 393.72700000000003,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 4,
+    "tokens_in": 23400,
+    "tokens_out": 7396,
+    "prefill_s": 7.467499999999999,
+    "decode_s": 298.7348,
+    "wall_s": 306.2979,
+    "reads": 3,
+    "thinking_tokens": 5444,
+    "decode_tps": 24.8,
+    "prefill_tps": 3134
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 26373,
+    "tokens_out": 16729,
+    "prefill_s": 10.813399999999998,
+    "decode_s": 671.1856,
+    "wall_s": 211.8554,
+    "reads": 3,
+    "thinking_tokens": 9485,
+    "decode_tps": 24.9,
+    "prefill_tps": 2439
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 2,
+    "tokens_in": 19774,
+    "tokens_out": 2651,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 143.753,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 8,
+    "tokens_in": 15185,
+    "tokens_out": 2744,
+    "prefill_s": 13.837399999999999,
+    "decode_s": 101.544,
+    "wall_s": 115.55489999999999,
+    "reads": 7,
+    "thinking_tokens": 0,
+    "decode_tps": 27.0,
+    "prefill_tps": 1097
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12850,
+    "tokens_out": 2356,
+    "prefill_s": 6.454300000000001,
+    "decode_s": 92.94930000000001,
+    "wall_s": 99.5253,
+    "reads": 6,
+    "thinking_tokens": 1376,
+    "decode_tps": 25.3,
+    "prefill_tps": 1991
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 2,
+    "tokens_in": 24515,
+    "tokens_out": 1836,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 95.763,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 9,
+    "tokens_in": 69044,
+    "tokens_out": 1449,
+    "prefill_s": 26.1945,
+    "decode_s": 53.106399999999994,
+    "wall_s": 81.2158,
+    "reads": 7,
+    "thinking_tokens": 0,
+    "decode_tps": 27.3,
+    "prefill_tps": 2636
+   }
+  ],
+  "retries": {
+   "plan_rounds": 3,
+   "plan_fixes": 0,
+   "meeting_turns": 6,
+   "meeting_objections": 1,
+   "critic_objections": 0,
+   "package_attempts": 2,
+   "packages_rejected": 2,
+   "unusable_replies": 0,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

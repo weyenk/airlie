@@ -27,10 +27,16 @@ StopReason = Literal[
     "malformed_call",
     "no_tools",
     "context_full",
+    "test_wrong",
+    "red_limit",
 ]
 """cut_off: a reply with no tool call ended at max_tokens: not a finished answer, whatever text it holds.
 malformed_call: two replies in a row held a tool call the server could not parse, left in the text.
-no_tools: a role with no tools called one in two replies in a row, and so gave no answer."""
+no_tools: a role with no tools called one in two replies in a row, and so gave no answer.
+test_wrong: the advisor diagnosed a red streak as a test the role may not change being wrong (WRONG_TEST):
+code cannot fix it, so the role stops and the layer goes back to the architect.
+red_limit: a think_when_red role's tests failed RED_LIMIT runs in a row, two red streaks with the advisor's
+diagnosis between: the layer goes back to the architect rather than spend more of the build red (R1)."""
 
 
 def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> str:
@@ -55,6 +61,18 @@ class StuckAdvisor(Protocol):
     def stuck_settled(self, subtask: str, helped: bool) -> None:
         """Whether the role went on after the advised nudge (its run's result) or repeated again."""
         ...
+
+    async def red(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
+        """The advice to add to `told` for a role whose tests have failed RED_STREAK runs in a row, from the
+        team's conversation including that last failure; None for none."""
+        ...
+
+    def red_settled(self, subtask: str, helped: bool) -> None:
+        """Whether the role's tests passed before its next red streak (or its run ended green)."""
+        ...
+
+    last_category: str | None
+    """The category of its latest advice; WRONG_TEST stops a red role (test_wrong)."""
 
 
 @dataclass

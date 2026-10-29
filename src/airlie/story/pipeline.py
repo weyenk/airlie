@@ -45,7 +45,7 @@ from airlie.story.amigos import (
     unbuildable,
     unresolved_note,
 )
-from airlie.story.asking import Asker, StoryBlocked, StudioFactory
+from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
@@ -64,7 +64,7 @@ from airlie.story.briefs import (
     story_text,
     survey_brief,
 )
-from airlie.story.budgets import StageMeter, check
+from airlie.story.budgets import StageMeter, check, run_dir_of
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
@@ -78,6 +78,7 @@ from airlie.story.diagnosis import (
     next_for,
     write_diagnosis,
 )
+from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
@@ -100,7 +101,7 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.package import Package, ProofChange, parse_package
-from airlie.story.package_checks import PackageChecker, package_feedback_said, place_package
+from airlie.story.package_checks import PackageChecker, beyond_proof, package_feedback_said, place_package
 from airlie.story.phase import decoding, write_phase
 from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
@@ -363,6 +364,11 @@ class StoryPipeline:
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
         self.asker = Asker(cfg, self.studio, self.repo, lane=None)
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
+        self._held: contextlib.AsyncExitStack | None = None
+        """Open while a story's layers are built: the drafting conversation is held in it, for retries."""
+        self._drafting: tuple[Say, str] | None = None
+        """The architect's drafting conversation and its studio run, while it is held (P9 of the performance
+        plan): a retry of a layer's package is a follow-up in it, not a cold ask that reads it all again."""
         self._layer_base: str | None = None
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
@@ -461,9 +467,14 @@ class StoryPipeline:
                 st.emit("story_planned", layers=len(layers))
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)
                 return st
-            for i in range(len(layers)):
-                await self._build(st, card, story, layers, i)
-                await self._costed(st, card, "package", "layer", "review")
+            async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
+                self._held = held
+                try:
+                    for i in range(len(layers)):
+                        await self._build(st, card, story, layers, i)
+                        await self._costed(st, card, "package", "layer", "review")
+                finally:
+                    self._held, self._drafting = None, None
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
                 st.finish("build")
             await self._publish(st, card, story, layers)
@@ -784,6 +795,7 @@ class StoryPipeline:
                 lessons=self.lessons.recent(),
                 max_steps=coder_steps,
                 context_budget=coder_context,
+                dossier=self._dossier(st, (st.base or {}).get("sha")),
             ),
             parse,
             ask=ask,
@@ -949,7 +961,11 @@ class StoryPipeline:
         routed = await self._routed_guideline(st, story)
         found = conventions(self.repo, sha, tester.skills, routed)
         opening = opening_message(
-            story, layers, conventions_text(found, self.commands), self.lessons.recent()
+            story,
+            layers,
+            conventions_text(found, self.commands),
+            self.lessons.recent(),
+            self._dossier(st, sha),
         )
         tree = st.path / "meeting-tree"
         remove_worktree(self.repo, tree)  # one a killed run left behind
@@ -1223,7 +1239,14 @@ class StoryPipeline:
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
             plan = layer_plan(
-                story, layers, i, package, build_role=self.s.build_role, guide=guide, built=built
+                story,
+                layers,
+                i,
+                package,
+                build_role=self.s.build_role,
+                guide=guide,
+                built=built,
+                dossier=self._dossier(st, base_sha),
             )
             async with decoding(
                 self.stories_dir, orch.run_dir.path
@@ -1332,13 +1355,16 @@ class StoryPipeline:
         A `steer` event for it."""
         account = (coder.final_text if coder is not None else "").strip()
         tail = orch.gate_output.strip()[-GATE_TAIL_CHARS:]
+        wrong = orch.test_wrong  # a locked test is wrong, the supervisor says: it is the test to correct
         parts = [
             "The coder built this layer from your package and the whole gate is still red.",
             f"What the coder said when it stopped:\n{account[:GATE_TAIL_CHARS] or '(nothing)'}",
             f"The end of the gate's output:\n```\n{tail or '(none)'}\n```",
+            *([hub_text("package-test-wrong")] if wrong else []),
             hub_text("package-replan"),
         ]
-        self._steer(st, ["package-replan"], self.s.architect_role, nn)
+        said = [*(["package-test-wrong"] if wrong else []), "package-replan"]
+        self._steer(st, said, self.s.architect_role, nn)
         return "\n\n".join(parts)
 
     def _lesson(
@@ -1396,7 +1422,10 @@ class StoryPipeline:
     ) -> Package | ProofChange:
         """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed: the package,
         or a ProofChange when the architect says the layer's agreed `proof` is wrong. A reply that cannot be
-        used is a StoryError: its text is the next try's feedback."""
+        used is a StoryError: its text is the next try's feedback. A retry (`feedback`) while the drafting
+        conversation is held is a turn of it (`_resumed`), not a new ask."""
+        if feedback is not None and self._drafting is not None:
+            return await self._resumed(st, story, layers, i, base_sha, feedback, proof)
         max_steps, context = self._coder_budget()
         brief = package_brief(
             story,
@@ -1410,12 +1439,48 @@ class StoryPipeline:
             feedback=feedback,
             proof=proof,
             sources=layer_sources(self.repo, base_sha, layers[i]),  # lever 2, on the layer's real base
+            dossier=self._dossier(st, base_sha),
         )
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await self._ask(
                 st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
             )
         self._package_run = st.runs[-1]
+        return parse_package(text, layers[i], story, gated=_gated(proof))
+
+    def _dossier(self, st: StoryState, commit: str | None) -> Mapping[str, str]:
+        """The story's dossier for a step reading `commit` (story.dossier, P2 of the performance plan): the
+        files its studio runs so far read, at that commit; empty with the flag off, or with no commit."""
+        if not self.s.dossier or not commit:
+            return {}
+        state = self.cfg.observability.state_dir.expanduser()
+        runs = [d for r in st.runs if (d := run_dir_of(state, st.path.name, r)) is not None]
+        return story_dossier(self.repo, commit, runs)
+
+    async def _resumed(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        feedback: str,
+        proof: tuple[ProofTest, ...],
+    ) -> Package | ProofChange:
+        """A retry of layer `i`'s package as a turn of the architect's drafting conversation (P9 of the
+        performance plan): it still holds the files, the agreement and its drafts, so it does not read them
+        again (2026-10-29: a cold retry spent 60 of its 68 calls reading, ~104 s each; a gate re-plan cost
+        ~47 minutes). The conversation's checkout moves to the layer's real base first. Event:
+        package_resumed."""
+        assert self._drafting is not None
+        say, run = self._drafting
+        sources = layer_sources(self.repo, base_sha, layers[i])
+        again = hub_text("brief-reply-again", feedback=feedback)  # worded as a cold retry's brief words it
+        told = f"{again}\n\n{next_package_brief(story, layers, i, proof, sources)}"
+        st.emit("package_resumed", layer=f"{i + 1:02d}", studio_run=run)
+        async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
+            text = await say(told, at=base_sha)
+        self._package_run = run
         return parse_package(text, layers[i], story, gated=_gated(proof))
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
@@ -1445,15 +1510,27 @@ class StoryPipeline:
             context_budget=context,
             proof=self._layer_proof(st, layers[0]),
             sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
+            dossier=self._dossier(st, sha),
         )
         st.emit("packages_drafting", layers=len(layers))
-        async with (
-            decoding(self.stories_dir, None),  # a long turn of the build lane's own
-            self.asker.conversation(
-                st, "packages", self.s.architect_role, first, steps=self.s.package_steps, at=sha
-            ) as say,
-        ):
+        talk = self.asker.conversation(
+            st, "packages", self.s.architect_role, first, steps=self.s.package_steps, at=sha
+        )
+        async with contextlib.AsyncExitStack() as here:
+            # held for the story's layers when there is a hold (P9), else closed with the drafting
+            say = await (self._held or here).enter_async_context(talk)
             run = st.runs[-1]
+            if self._held is not None:
+                self._drafting = (say, run)
+            await self._draft_each(st, story, layers, sha, say, run)
+        st.drafted = True
+        st.save()
+
+    async def _draft_each(
+        self, st: StoryState, story: Story, layers: tuple[Layer, ...], sha: str, say: Say, run: str
+    ) -> None:
+        """The drafting conversation's turns: each layer's package, the critic's objections to it once."""
+        async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             for i, layer in enumerate(layers):
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
                 try:
@@ -1477,8 +1554,6 @@ class StoryPipeline:
                 st.drafts[nn] = {"package": got.to_dict(), "run": run}
                 st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
                 st.save()
-        st.drafted = True
-        st.save()
 
     def _layer_proof(self, st: StoryState, layer: Layer) -> tuple[ProofTest, ...]:
         """The tests the agreement holds for `layer`, as it stands now (a revision changes it)."""
@@ -1540,7 +1615,9 @@ class StoryPipeline:
         """The critic's read of `package` (see `_critique`): what to tell the architect, ending with
         `package-fix`, or None when it agrees or cannot be read."""
         nn, layer = f"{i + 1:02d}", layers[i]
-        brief = critic_brief(layer, package.tests, proof, self._conventions_text(base_sha))
+        brief = critic_brief(
+            layer, package.tests, proof, self._conventions_text(base_sha), dossier=self._dossier(st, base_sha)
+        )
         try:
             at = self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(
@@ -1778,6 +1855,7 @@ class StoryPipeline:
                     studio_run=run,
                     tests=list(package.test_ids),
                     files=[f.path for f in package.files],
+                    beyond_proof=beyond_proof(package, [t.id for t in proof if not t.gate]) if proof else [],
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))

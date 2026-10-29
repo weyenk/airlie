@@ -32,7 +32,7 @@ from airlie.engine.types import (
 )
 from airlie.prompts import entry, text
 from airlie.skills import prompt_text
-from airlie.supervisor.advice import with_advice
+from airlie.supervisor.advice import WRONG_TEST, with_advice
 from airlie.teams.call_repair import Repair, repair_call
 from airlie.teams.protocol import (
     StepObserver,
@@ -116,6 +116,14 @@ ENGINE_RETRY_S = 5.0
 """The pause before a retried generation: the engine's guard has just cancelled the request on its side."""
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
+RED_LIMIT = 6
+"""Failed run_tests runs in a row after which a think_when_red role stops (red_limit) and its layer goes back
+to the architect: two red streaks, the advisor asked after each (R1 of the performance plan, 2026-10-29: a
+failed build spent ~31 minutes red before its layer was re-planned, and the re-plan is what fixed it)."""
+RED_STREAK = 3
+"""Failed run_tests runs in a row after which a think_when_red role's advisor (the supervisor) is asked for a
+diagnosis, added to that red run's output; again after each further RED_STREAK (roman, 2026-10-28: 35
+minutes red on one test, every edit different, so the repeat guard never fired and nobody looked)."""
 
 MAX_CYCLE = 3
 """The longest cycle of calls the repeat guard looks for: a cycle of up to this many calls, gone round
@@ -185,6 +193,52 @@ def is_test_path(path: str) -> bool:
     x_test.py, x.test.ts, x.spec.js, conftest.py)."""
     parts = PurePosixPath(path.replace("\\", "/")).parts
     return any(p in _TEST_DIRS for p in parts[:-1]) or bool(parts and _TEST_NAME.match(parts[-1]))
+
+
+def _read_key(call: ToolCall) -> str | None:
+    """What a read_file call reads: its path and range, so the same read can be told from another; None for
+    another tool or unreadable arguments."""
+    if call.name != "read_file":
+        return None
+    try:
+        args = json.loads(call.arguments)
+    except ValueError:
+        return None
+    if not isinstance(args, dict) or not isinstance(args.get("path"), str):
+        return None
+    shown = {**args, "path": args["path"].strip().removeprefix("./")}
+    return json.dumps(shown, sort_keys=True)
+
+
+def _read_path(call: ToolCall) -> str | None:
+    """The path a read_file call names, as a write names it (no leading "./"), or None."""
+    if call.name != "read_file":
+        return None
+    try:
+        args = json.loads(call.arguments)
+    except ValueError:
+        return None
+    path = args.get("path") if isinstance(args, dict) else None
+    return path.strip().removeprefix("./") if isinstance(path, str) else None
+
+
+async def _red_advised(
+    advisor: StuckAdvisor, ctx: TeamContext, told: str, messages: list[Message]
+) -> tuple[str, bool]:
+    """`told` with the advisor's red-streak section after it, and whether it was asked (so is owed an
+    outcome). An advisor that fails leaves the fixed text."""
+    try:
+        advice = await advisor.red(ctx.team_id, ctx.role_name, told, list(messages))
+    except Exception:  # noqa: BLE001 - any advisor failure means the fixed text, never a stopped run
+        return told, False
+    return with_advice(told, advice), True
+
+
+def _settled_red(advisor: StuckAdvisor | None, team_id: str, helped: bool) -> None:
+    """Tell the advisor what came of its red-streak advice; a failure there is its own."""
+    if advisor is not None:
+        with contextlib.suppress(Exception):
+            advisor.red_settled(team_id, helped)
 
 
 def _written_path(call: ToolCall) -> str | None:
@@ -355,6 +409,12 @@ class NativeTeam:
         act_warned = False  # the role has been told once that its text-only reply changed nothing
         changed = False  # a write_file or edit_file of this run has landed (a failed one has not)
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
+        red_runs = 0  # failed run_tests runs in a row (think_when_red: a streak asks the advisor)
+        test_wrong = False  # the advisor diagnosed the red streak as a wrong locked test
+        red_out = False  # RED_LIMIT failed runs in a row: the layer goes back to the architect
+        red_advised = False  # the advisor was asked about a red streak and has not heard what came of it
+        wrote_paths: set[str] = set()  # the files this run wrote or edited: not read again while red
+        reads_seen: dict[str, tuple[str, int]] = {}  # a read's key -> (its path, the step that read it)
         has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
@@ -370,8 +430,11 @@ class NativeTeam:
                 stop=list(ctx.role.stop),
                 tools=None if last_turn or toolless else _offered(ctx),
                 # the tool-less last turn is cheap by default; its one retry, after a tool call, thinks
-                thinking=ctx.role.thinking
-                and (ctx.role.last_turn_thinking or not last_turn or last_corrected),
+                thinking=(
+                    ctx.role.thinking and (ctx.role.last_turn_thinking or not last_turn or last_corrected)
+                )
+                # a fast role thinks once red, until a run passes (think_when_red)
+                or (ctx.role.think_when_red and last_tests_ok is False and not last_turn),
                 draft_budget=ctx.draft_budget(),
             )
             g0 = time.monotonic()
@@ -495,9 +558,26 @@ class NativeTeam:
             messages.append(Message(role="assistant", content=content, tool_calls=replay))
             for call in calls:
                 steps += 1
-                held = (reading_off or looped) and call.name not in WRITE_TOOLS_ONLY
-                if held and (looped or reads_left == 0):
-                    result = ToolResult(ok=False, output=_steer(ctx, steps, "read-refused"))
+                # while red, a think_when_red role does not read back a file it wrote: its writes are the
+                # file (roman, 2026-10-28). Other reads and a shell probe still run: refusing all of them
+                # left it unable to learn which input a looped test failed on, for 35 minutes
+                reread = (
+                    ctx.role.think_when_red and last_tests_ok is False and _read_path(call) in wrote_paths
+                )
+                held = ((reading_off or looped) and call.name not in WRITE_TOOLS_ONLY) or reread
+                key = _read_key(call)
+                seen_at = reads_seen.get(key) if key is not None else None
+                if seen_at is not None and not held:
+                    # the same read again, nothing written to it since: its text is in the conversation
+                    # already (roman A/B run 2, 2026-10-29: the architect read one test file six times in a
+                    # row, each step thinking to its budget, until the repeat guard stopped the drafting)
+                    result = ToolResult(ok=True, output=_steer(ctx, steps, "already-read", step=seen_at[1]))
+                    tool_ms = 0.0
+                    if ctx.emit is not None:
+                        ctx.emit("read_repeated", team_id=ctx.team_id, role=ctx.role_name, step=steps)
+                elif held and (looped or reread or reads_left == 0):
+                    refused = "red-read-refused" if reread else "read-refused"
+                    result = ToolResult(ok=False, output=_steer(ctx, steps, refused))
                     tool_ms = 0.0
                     if ctx.emit is not None:
                         ctx.emit(
@@ -512,10 +592,32 @@ class NativeTeam:
                         t1 = time.monotonic()
                         result = await ctx.tools.call(call)
                         tool_ms = (time.monotonic() - t1) * 1000.0
+                    if key is not None and result.ok:
+                        reads_seen[key] = (_read_path(call) or "", steps)
                     if held:  # one of the few reads the hold still serves, and it says how many are left
                         reads_left -= 1
                         left = _steer(ctx, steps, "read-left", k=reads_left)
                         result = replace(result, output=f"{result.output}\n\n{left}")
+                    if ctx.role.think_when_red and call.name == "run_tests":
+                        if result.ok:
+                            red_runs = 0
+                            if red_advised:  # green after the advice
+                                _settled_red(ctx.on_stuck, ctx.team_id, True)
+                                red_advised = False
+                        else:
+                            red_runs += 1
+                            red_out = red_runs >= RED_LIMIT  # R1: the architect's turn, not more red
+                            fix = _steer(ctx, steps, "red-fix")  # what to do next, exactly: one edit
+                            if ctx.on_stuck is not None and red_runs % RED_STREAK == 0:
+                                if red_advised:  # still red a whole streak after the last advice
+                                    _settled_red(ctx.on_stuck, ctx.team_id, False)
+                                shown = [*messages, Message(role="tool", content=result.output)]
+                                fix, red_advised = await _red_advised(ctx.on_stuck, ctx, fix, shown)
+                                # a test it may not change is wrong: no code fixes that, so it stops here
+                                # and the layer goes back to the architect (roman, 2026-10-28: 31 minutes
+                                # of fix round against 'MMMDCCCLXXXIX' for 3999)
+                                test_wrong = red_advised and ctx.on_stuck.last_category == WRONG_TEST
+                            result = replace(result, output=f"{result.output}\n\n{fix}")
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
@@ -634,6 +736,9 @@ class NativeTeam:
                     path = _written_path(call)
                     if path is not None:
                         written["tests" if is_test_path(path) else "code"] = True
+                        wrote_paths.add(path.strip().removeprefix("./"))
+                        changed_path = path.strip().removeprefix("./")
+                        reads_seen = {k: v for k, v in reads_seen.items() if v[0] != changed_path}
                     if continuing:
                         written["code"] = True  # any write is the change this round owes
                 if call.name == "run_tests":
@@ -652,6 +757,17 @@ class NativeTeam:
             if forked:
                 final_text = "fork point: stuck, handing over to branches"
                 stop = "fork_point"
+                break
+            if red_out and not test_wrong:
+                said = str(messages[-1].content) if messages else ""
+                final_text = f"stopped: the tests failed {red_runs} runs in a row.\n{said[-3000:]}"
+                stop = "red_limit"
+                break
+            if test_wrong:
+                # the last observation is the failing run with the supervisor's diagnosis after it
+                said = str(messages[-1].content) if messages else ""
+                final_text = f"stopped: a test I may not change is wrong.\n{said[-3000:]}"
+                stop = "test_wrong"
                 break
             cycle = _loop(recent, ctx.repeat_limit)
             if cycle is not None:
@@ -760,6 +876,8 @@ class NativeTeam:
                 messages.append(Message(role="user", content=_steer(ctx, steps, "one-step-left")))
         if advised:  # the advised nudge was not settled by a repeat after it: the run's result settles it
             _settled_stuck(ctx.on_stuck, ctx.team_id, ok)
+        if red_advised:  # the run ended while the red-streak advice was open: green or not
+            _settled_red(ctx.on_stuck, ctx.team_id, last_tests_ok is True)
         return TeamResult(
             team_id=ctx.team_id,
             ok=ok,

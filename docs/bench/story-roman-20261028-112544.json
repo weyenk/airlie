@@ -1,0 +1,139 @@
+{
+ "case": "roman",
+ "started": "2026-10-28T11:00:30",
+ "airlie_build": "db3b8a0",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "refine",
+ "blocked": "the meeting ended without an agreement that can be built: criterion_unproven AC1: no test of the proof plan proves it; criterion_unproven AC2: no test of the proof plan proves it; criterion_unproven A\u2026 the proof plan proves it; criterion_unproven AC22: no test of the proof plan proves it; criterion_unproven AC23: no test of the proof plan proves it; criterion_unproven AC24: no test of the proof plan proves it; criterion_unproven AC25: no test of the proof plan proves it; criterion_unproven AC26: no test of the proof plan proves it; criterion_unproven AC27: no test of the proof plan proves it; criterion_unproven AC28: no test of the proof plan proves it; criterion_unproven AC29: no test of the proof plan proves it; layer_unproven roman-module: no test of the proof plan belongs to this layer",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 25.2,
+  "idle_min": 1.0,
+  "decode_tps_by_context": {
+   "<16k": 25.1,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.8
+   },
+   {
+    "at": "plan_done",
+    "min": 9.4
+   },
+   {
+    "at": "story_done",
+    "min": 25.2
+   }
+  ],
+  "roles": [
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 53719,
+    "tokens_out": 4441,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 435.15700000000004,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 44366,
+    "tokens_out": 8003,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 405.711,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 15642,
+    "tokens_out": 9302,
+    "prefill_s": 11.535,
+    "decode_s": 379.6739,
+    "wall_s": 241.1114,
+    "reads": 1,
+    "thinking_tokens": 6356,
+    "decode_tps": 24.5,
+    "prefill_tps": 1356
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 11,
+    "tokens_in": 19979,
+    "tokens_out": 4000,
+    "prefill_s": 18.358,
+    "decode_s": 148.8314,
+    "wall_s": 167.4875,
+    "reads": 9,
+    "thinking_tokens": 0,
+    "decode_tps": 26.9,
+    "prefill_tps": 1088
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12850,
+    "tokens_out": 2485,
+    "prefill_s": 7.1896,
+    "decode_s": 100.64750000000001,
+    "wall_s": 107.95689999999999,
+    "reads": 6,
+    "thinking_tokens": 1431,
+    "decode_tps": 24.7,
+    "prefill_tps": 1787
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 54034,
+    "tokens_out": 596,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 52.194,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   }
+  ],
+  "retries": {
+   "plan_rounds": 1,
+   "plan_fixes": 0,
+   "meeting_turns": 9,
+   "meeting_objections": 0,
+   "critic_objections": 0,
+   "package_attempts": 0,
+   "packages_rejected": 0,
+   "unusable_replies": 1,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

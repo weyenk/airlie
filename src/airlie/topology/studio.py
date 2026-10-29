@@ -23,7 +23,7 @@ from airlie.report import RunReport
 from airlie.router import RouteDecision, Router, RoutingLog, build_router
 from airlie.scheduler import SlotScheduler
 from airlie.skills import KnowledgeIndex, load_skills, prompt_text, routable_roles, skill_criteria
-from airlie.supervisor.advice import with_advice
+from airlie.supervisor.advice import WRONG_TEST, with_advice
 from airlie.teams import NativeTeam, TeamContext, TeamOrchestrator, TeamResult
 from airlie.teams.protocol import StuckAdvisor, cut_off_text
 from airlie.teams.worktree import (
@@ -211,6 +211,9 @@ class StudioOrchestrator:
         self.checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] = {}
         self.halted = False  # a checkpoint said no: the subtasks after it did not run
         self.gate_output = ""  # the last output of the final gate (`_gate`), for a caller that re-plans on it
+        self.test_wrong = False
+        """The gate is red because a test the coder may not change is wrong (WRONG_TEST, from the coder's red
+        streak or the gate retry's triage): the caller re-plans on it with no fix round first."""
         self.failed = False  # the chief never produced a runnable plan, or the engine failed on it
         self.criteria = specialists(cfg)
         self.advisor: Advisor | None = None  # the supervisor, in a story run: the gate retry and repeat guard
@@ -957,6 +960,8 @@ class StudioOrchestrator:
         passed, output = await self._tests_pass(test_cmd)
         self.gate_output = output
         run = self.runs.get(follow_up) if follow_up is not None else None
+        ended = run.result.stop_reason if run is not None and run.result is not None else None
+        self.test_wrong = ended == "test_wrong"
         # only a subtask that finished is sent back: one cut off or broken has its own stop to report
         if passed is not False or run is None or run.result is None or not run.result.ok:
             return passed
@@ -975,6 +980,12 @@ class StudioOrchestrator:
                 )
             except Exception:  # noqa: BLE001 - an advisor that fails leaves gate-failed as it is, never a stop
                 advice = None
+            if advice and getattr(self.advisor, "last_category", None) == WRONG_TEST:
+                # no code fixes a wrong test: no fix round (31 minutes on 2026-10-28), the architect's re-plan
+                # gets the diagnosis with the gate's output
+                self.test_wrong = True
+                self.gate_output = with_advice(output, advice)
+                return False
             text = with_advice(text, advice)
         await self.follow_up(follow_up, text)
         passed, self.gate_output = await self._tests_pass(test_cmd)

@@ -13,6 +13,7 @@ criterion product added is not a reference; it shows as unowned by the split and
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,7 +27,14 @@ if TYPE_CHECKING:  # amigos imports this module; only the type of a proof test i
     from airlie.story.amigos import ProofTest
 
 NO_FINDINGS = "no findings"
-"""What the checker says when the parts are sound; the meeting's termination reads it."""
+"""What the checker says when the parts are sound; the meeting's termination reads it (its first line)."""
+ADVISORY = frozenset({"proof_sampled"})
+"""Findings the checker posts as advice: told to the owner, never holding up agreement or standing as an
+objection at the end. A keyword check can be wrong, and a finding that blocks would keep the meeting going
+to its turn cap over it."""
+_REFUSES = re.compile(r"\b(raises?|refused?|rejects?|rejected|error)\b")
+_MALFORMED = re.compile(r"\b(malformed|invalid|ill-formed|not a valid|not valid)\b")
+_EXHAUSTIVE = re.compile(r"\b(every|all)\b[^.;]*\b(strings?|inputs?)\b")
 
 
 def split_problems(layers: Sequence[Layer], story: Story) -> list[Finding]:
@@ -127,6 +135,25 @@ def check_references(story: Story, layers: Sequence[Layer], proof: Sequence[Proo
     return found
 
 
+def check_sampled_refusals(story: Story, proof: Sequence[ProofTest]) -> list[Finding]:
+    """A `proof_sampled` (advice) for each criterion that refuses malformed input but whose tests only list
+    examples of it: no test goes over every short input (roman, 2026-10-28/29: lists of six and of fourteen
+    malformed numerals, 'IIV' and 'MCMC' in neither, passed while the code accepted them)."""
+    found: list[Finding] = []
+    for c in story.acceptance:
+        text = f"{c.given} {c.when} {c.then}".lower()
+        if not (_REFUSES.search(text) and _MALFORMED.search(text)):
+            continue
+        tests = [t for t in proof if t.criterion == c.id]
+        if tests and not any(_EXHAUSTIVE.search((t.asserts or "").lower()) for t in tests):
+            why = (
+                "it refuses malformed input, but its tests list examples: prove it with one exhaustive test, "
+                "every input of one to four characters accepted exactly when it is valid"
+            )
+            found.append(Finding("proof_sampled", c.id, why, ""))
+    return found
+
+
 def check_agreement(
     story: Story,
     layers: Sequence[Layer],
@@ -140,11 +167,15 @@ def check_agreement(
         *check_split(layers, story, repo, base, max_scope_files),
         *check_proof(proof, story, layers),
         *check_references(story, layers, proof),
+        *check_sampled_refusals(story, proof),
     ]
 
 
 def findings_message(findings: Sequence[Finding]) -> str:
     """What the checker posts: the hub's `amigos-findings` and a line per finding; "no findings" when none."""
+    lines = [f"- {f.kind} {f.test}: {f.why}" for f in findings]
     if not findings:
         return NO_FINDINGS
-    return "\n".join([hub_text("amigos-findings"), *(f"- {f.kind} {f.test}: {f.why}" for f in findings)])
+    if all(f.kind in ADVISORY for f in findings):  # advice alone: the parts are sound
+        return "\n".join([NO_FINDINGS, hub_text("amigos-advice"), *lines])
+    return "\n".join([hub_text("amigos-findings"), *lines])

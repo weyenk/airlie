@@ -125,6 +125,24 @@ async def test_an_import_of_a_name_declared_in_the_packages_interfaces_for_a_cre
     assert found == []
 
 
+async def test_a_file_the_packages_interfaces_name_but_its_files_leave_out_is_one_it_creates(
+    tmp_path: Path,
+) -> None:
+    """Roman bundle 2 (2026-10-29): interfaces for sandbox/roman.py, files only the test; the import
+    of sandbox.roman was refused twice and the story blocked."""
+    root, base = calc(tmp_path, {"src/__init__.py": "", "src/old.py": "x = 1\n"})
+    text = "from store import store\n\n\ndef test_it():\n    assert store() == 1\n"
+    interfaces = (Interface("src/store.py", "def store() -> int"), Interface("src/old.py", "def y() -> int"))
+    got, found = await check(
+        tmp_path,
+        root,
+        base,
+        package({"tests/test_store.py": text}, {"AC1": ("tests/test_store.py::test_it",)}, (), interfaces),
+    )
+    assert found == []
+    assert [(f.path, f.action) for f in got.files] == [("src/store.py", "create")]  # src/old.py is there
+
+
 async def test_third_party_imports_are_not_checked(tmp_path: Path) -> None:
     root, base = calc(tmp_path)
     text = "import pytest\nfrom httpx import Client\nfrom calc import mul\n\n\ndef test_x():\n    pass\n"
@@ -216,8 +234,13 @@ def test_package_feedback_names_each_finding_and_ends_with_package_fix() -> None
     assert told.endswith(hub_text("package-fix"))
 
 
-async def test_a_package_that_misses_an_agreed_test_or_adds_one_is_a_proof_mismatch(tmp_path: Path) -> None:
-    """D9, D12: a package covers exactly the agreed tests of its layer, by id; none left out, none added."""
+async def test_a_package_that_misses_an_agreed_test_is_a_proof_mismatch_and_one_it_adds_is_not(
+    tmp_path: Path,
+) -> None:
+    """D9, D12: a package covers every agreed test of its layer, by id; a test it adds is kept and reported
+    (`beyond_proof`), since sending it back cost ~11 minutes a time (roman, 2026-10-27)."""
+    from airlie.story.package_checks import beyond_proof
+
     root, base = calc(tmp_path)
     agreed = {"tests/test_mul.py::test_mul"}
     checker = PackageChecker((PYTEST,), timeout_s=120)
@@ -232,11 +255,9 @@ async def test_a_package_that_misses_an_agreed_test_or_adds_one_is_a_proof_misma
     _, found = await checker.check(
         package(), root, base, scratch, proof_ids={"tests/test_mul.py::test_other"}
     )
-    assert sorted((f.kind, f.test) for f in found) == [
-        ("proof_mismatch", "tests/test_mul.py::test_mul"),
-        ("proof_mismatch", "tests/test_mul.py::test_other"),
-    ]
-    assert any("your package covers it, but the agreed proof does not name it" in f.why for f in found)
+    assert [(f.kind, f.test) for f in found] == [("proof_mismatch", "tests/test_mul.py::test_other")]
+    assert beyond_proof(package(), {"tests/test_mul.py::test_other"}) == ["tests/test_mul.py::test_mul"]
+    assert beyond_proof(package(), agreed) == []
     # a parametrized test is its function's id, and with no proof there is nothing to match
     param = package(covers={"AC1": ("tests/test_mul.py::test_mul[2-3]",)})
     _, found = await checker.check(param, root, base, scratch, proof_ids=agreed)
@@ -253,8 +274,7 @@ def test_an_agreed_id_without_its_class_is_the_package_test_it_names() -> None:
     assert proof_mismatches(p, {"tests/test_mul.py::test_mul"}) == []
     assert proof_mismatches(p, {"tests/test_mul.py::MulTest::test_mul"}) == []
     assert [f.test for f in proof_mismatches(p, {"tests/test_other.py::test_mul"})] == [
-        "tests/test_other.py::test_mul",  # agreed and not covered, then covered and not agreed
-        "tests/test_mul.py::MulTest::test_mul",
+        "tests/test_other.py::test_mul",  # agreed and not covered; the covered one is beyond the proof
     ]
 
 
@@ -269,5 +289,4 @@ def test_an_agreed_vitest_id_without_its_describe_is_the_package_test_it_names()
     assert proof_mismatches(p, {full}) == []
     assert [f.test for f in proof_mismatches(p, {"web/src/TopBar.test.ts::a Wiki link"})] == [
         "web/src/TopBar.test.ts::a Wiki link",  # only a whole title after the describe is the same test
-        full,
     ]
