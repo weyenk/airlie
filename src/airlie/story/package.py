@@ -285,10 +285,13 @@ def parse_package(
             bare = name if is_js_test(where) else _PARAMS.sub("", name)  # a title may hold brackets
             found = None if text_of is None or not name else _test_named(where, text_of, bare)
             if text_of is None or not name or found is False:
+                if cid in gated:  # words about the gate, for a criterion the agreed proof leaves to it
+                    continue
                 raise StoryError(f"covers {cid}: {tid} names a test in no test file of this reply")
             # stored as the test's full id, its parameters kept
             full.append(f"{where}::{found}{name[len(bare) :]}" if isinstance(found, str) else tid)
         covers[cid] = tuple(full)
+    covers = {cid: ids for cid, ids in covers.items() if ids}
     return Package(
         layer.slug,
         tests,

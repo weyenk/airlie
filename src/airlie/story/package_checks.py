@@ -18,6 +18,7 @@ import ast
 import re
 import tempfile
 from collections.abc import Collection, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from airlie.story.layer_checks import (
     listed_findings,
     unparseable_tests,
 )
-from airlie.story.package import Package
+from airlie.story.package import Package, PackageFile
 from airlie.story.tester_lint import lint_for
 from airlie.teams.worktree import add_worktree, commit_wip, find_file, remove_worktree
 from airlie.tools.scope import is_js_test
@@ -235,7 +236,16 @@ class PackageChecker:
         """The package with ruff's fixes applied to its test text, and the findings. The package is placed
         and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
         `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
-        package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`)."""
+        package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`). A file the
+        package's interfaces name that its files leave out, and that is not on the base, is one it creates."""
+        listed = {f.path for f in package.files}
+        unlisted = sorted({i.file for i in package.interfaces} - listed)
+        if made := [p for p in unlisted if find_file(repo, base, p)[0] == "missing"]:
+            files = (
+                *package.files,
+                *(PackageFile(p, "create", "the package's interfaces are in it") for p in made),
+            )
+            package = replace(package, files=files)
         found = proof_mismatches(package, proof_ids) if proof_ids is not None else []
         found += [
             Finding("file_exists", f.path, FILE_EXISTS, "")

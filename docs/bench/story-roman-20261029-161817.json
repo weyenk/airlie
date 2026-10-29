@@ -1,0 +1,179 @@
+{
+ "case": "roman",
+ "started": "2026-10-29T15:23:45",
+ "airlie_build": "d8858a0",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "layers",
+ "blocked": "layer 01 (sandbox/roman.py: to_roman and from_roman for 1..3999): its package still fails the readiness check after 2 tries (package_unusable)",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 54.5,
+  "idle_min": 0.8,
+  "decode_tps_by_context": {
+   "<16k": 23.5,
+   "16-48k": 20.6,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.3
+   },
+   {
+    "at": "plan_done",
+    "min": 12.0
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 28.2
+   },
+   {
+    "at": "story_done",
+    "min": 28.2
+   },
+   {
+    "at": "packages_drafting",
+    "min": 28.2
+   },
+   {
+    "at": "story_done",
+    "min": 54.5
+   }
+  ],
+  "roles": [
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 12,
+    "tokens_in": 133092,
+    "tokens_out": 32154,
+    "prefill_s": 34.112899999999996,
+    "decode_s": 1445.2737,
+    "wall_s": 1021.6881,
+    "reads": 10,
+    "thinking_tokens": 24289,
+    "decode_tps": 22.2,
+    "prefill_tps": 3902
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 43899,
+    "tokens_out": 9637,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 565.63,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 4,
+    "tokens_in": 19002,
+    "tokens_out": 13720,
+    "prefill_s": 15.6766,
+    "decode_s": 565.3626,
+    "wall_s": 266.2756,
+    "reads": 1,
+    "thinking_tokens": 8267,
+    "decode_tps": 24.3,
+    "prefill_tps": 1212
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 39729,
+    "tokens_out": 3845,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 213.52300000000002,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 49119,
+    "tokens_out": 3646,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 196.28900000000002,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12850,
+    "tokens_out": 3191,
+    "prefill_s": 6.199000000000001,
+    "decode_s": 128.13830000000002,
+    "wall_s": 134.4564,
+    "reads": 6,
+    "thinking_tokens": 2053,
+    "decode_tps": 24.9,
+    "prefill_tps": 2073
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 8,
+    "tokens_in": 16475,
+    "tokens_out": 1479,
+    "prefill_s": 13.6592,
+    "decode_s": 53.9416,
+    "wall_s": 67.7697,
+    "reads": 7,
+    "thinking_tokens": 0,
+    "decode_tps": 27.4,
+    "prefill_tps": 1206
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 6,
+    "tokens_in": 52975,
+    "tokens_out": 944,
+    "prefill_s": 14.571,
+    "decode_s": 36.4634,
+    "wall_s": 52.27700000000001,
+    "reads": 5,
+    "thinking_tokens": 0,
+    "decode_tps": 25.9,
+    "prefill_tps": 3636
+   }
+  ],
+  "retries": {
+   "plan_rounds": 2,
+   "plan_fixes": 1,
+   "meeting_turns": 9,
+   "meeting_objections": 6,
+   "critic_objections": 0,
+   "package_attempts": 2,
+   "packages_rejected": 2,
+   "unusable_replies": 1,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

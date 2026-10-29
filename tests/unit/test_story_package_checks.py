@@ -125,6 +125,24 @@ async def test_an_import_of_a_name_declared_in_the_packages_interfaces_for_a_cre
     assert found == []
 
 
+async def test_a_file_the_packages_interfaces_name_but_its_files_leave_out_is_one_it_creates(
+    tmp_path: Path,
+) -> None:
+    """Roman bundle 2 (2026-10-29): interfaces for sandbox/roman.py, files only the test; the import
+    of sandbox.roman was refused twice and the story blocked."""
+    root, base = calc(tmp_path, {"src/__init__.py": "", "src/old.py": "x = 1\n"})
+    text = "from store import store\n\n\ndef test_it():\n    assert store() == 1\n"
+    interfaces = (Interface("src/store.py", "def store() -> int"), Interface("src/old.py", "def y() -> int"))
+    got, found = await check(
+        tmp_path,
+        root,
+        base,
+        package({"tests/test_store.py": text}, {"AC1": ("tests/test_store.py::test_it",)}, (), interfaces),
+    )
+    assert found == []
+    assert [(f.path, f.action) for f in got.files] == [("src/store.py", "create")]  # src/old.py is there
+
+
 async def test_third_party_imports_are_not_checked(tmp_path: Path) -> None:
     root, base = calc(tmp_path)
     text = "import pytest\nfrom httpx import Client\nfrom calc import mul\n\n\ndef test_x():\n    pass\n"
