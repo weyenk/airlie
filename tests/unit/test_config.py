@@ -1243,3 +1243,55 @@ def test_story_specs_has_defaults_and_floors_and_names_only_roles(tmp_path: Path
     for table in ("default_hours", "size_scale"):
         with pytest.raises(ConfigError, match=f"story.specs.{table}"):
             load_config(write(tmp_path, {**MINIMAL, "story": {"specs": {table: {"S": 1.0, "M": 2.0}}}}))
+
+
+def bridge_problems(bridge: dict) -> list[str]:
+    """MINIMAL's bridge problems with `bridge`, validated as given (load_config resolves its paths)."""
+    cfg = AirlieConfig.model_validate({**MINIMAL, "bridge": bridge})
+    return [p for p in cfg.validate_references() if p.startswith("bridge.")]
+
+
+def test_a_bridge_with_unique_keys_one_default_and_absolute_paths_is_valid(tmp_path: Path) -> None:
+    repos = [
+        {"key": "main", "path": str(tmp_path / "a"), "default": True},
+        {"key": "other", "path": str(tmp_path / "b")},
+    ]
+    assert bridge_problems({"job_bus_url": "https://hub/api/v1", "allowed_repos": repos}) == []
+
+
+def test_bridge_repo_keys_must_be_unique(tmp_path: Path) -> None:
+    repos = [{"key": "main", "path": str(tmp_path / "a")}, {"key": "main", "path": str(tmp_path / "b")}]
+    assert bridge_problems({"job_bus_url": "https://hub/api/v1", "allowed_repos": repos}) == [
+        "bridge.allowed_repos keys must be unique"
+    ]
+
+
+def test_bridge_repos_have_at_most_one_default(tmp_path: Path) -> None:
+    repos = [
+        {"key": "a", "path": str(tmp_path / "a"), "default": True},
+        {"key": "b", "path": str(tmp_path / "b"), "default": True},
+    ]
+    assert bridge_problems({"job_bus_url": "https://hub/api/v1", "allowed_repos": repos}) == [
+        "bridge.allowed_repos: at most one default: true"
+    ]
+
+
+def test_a_bridge_repo_path_must_be_absolute() -> None:
+    repos = [{"key": "main", "path": "relative/checkout"}]
+    assert bridge_problems({"job_bus_url": "https://hub/api/v1", "allowed_repos": repos}) == [
+        "bridge.allowed_repos.main.path must be an absolute path"
+    ]
+
+
+def test_bridge_repos_are_not_checked_without_a_job_bus_url() -> None:
+    repos = [
+        {"key": "main", "path": "relative", "default": True},
+        {"key": "main", "path": "r", "default": True},
+    ]
+    assert bridge_problems({"allowed_repos": repos}) == []
+
+
+def test_load_resolves_a_relative_bridge_repo_path_against_the_config(tmp_path: Path) -> None:
+    bridge = {"job_bus_url": "https://hub/api/v1", "allowed_repos": [{"key": "main", "path": "checkout"}]}
+    cfg = load_config(write(tmp_path, {**MINIMAL, "bridge": bridge}))
+    assert cfg.bridge.allowed_repos[0].path == (tmp_path / "checkout").resolve()
