@@ -21,6 +21,15 @@ from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
 from airlie.serve.bridge.runner import run_bridge
 
+ROOT = Path(__file__).resolve().parents[2]
+NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
+
+
+def _cfg_with_bridge(bridge: BridgeSpec) -> Any:
+    cfg = load_config(ROOT / "airlie.yaml", local_path=NO_LOCAL)
+    cfg.bridge = bridge
+    return cfg
+
 
 def bridge_cfg(tmp_path: Path, **over: Any) -> BridgeSpec:
     repo = tmp_path / "proj"
@@ -158,8 +167,7 @@ def test_t11_serve_404_yields_failed_outcome(tmp_path: Path) -> None:
 
 def test_t12_empty_queue_waits_claim_poll_on_fake_clock(tmp_path: Path) -> None:
     bridge = bridge_cfg(tmp_path, claim_poll_s=5.0)
-    cfg = load_config()
-    cfg.bridge = bridge
+    cfg = _cfg_with_bridge(bridge)
     hub_t = FakeHub()
     clock = FakeClock()
 
@@ -180,8 +188,7 @@ def test_t12_empty_queue_waits_claim_poll_on_fake_clock(tmp_path: Path) -> None:
 
 def test_t12_runner_claims_one_job_and_posts_hub_result(tmp_path: Path) -> None:
     bridge = bridge_cfg(tmp_path)
-    cfg = load_config()
-    cfg.bridge = bridge
+    cfg = _cfg_with_bridge(bridge)
     jid = str(uuid.uuid4())
     hub_t = FakeHub(
         jobs=[

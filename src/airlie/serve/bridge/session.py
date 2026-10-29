@@ -1,20 +1,35 @@
-"""Worker credentials from the environment (never logged)."""
+"""Worker credentials from the environment and ~/.config/airlie/.env (never logged)."""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
 
-from airlie.config.schema import BridgeSpec
+from airlie.config.schema import AirlieConfig, BridgeSpec
 from airlie.serve.bridge.errors import BridgeError
 
 
+def credential_env(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> Mapping[str, str]:
+    """Process env (non-empty) wins over ~/.config/airlie/.env and checkout `.env`; tests pass `env` explicitly."""
+    if env is not None:
+        return env
+    from airlie.story.jira import config_dotenv
+
+    merged = dict(config_dotenv(cfg))
+    for key, value in os.environ.items():
+        if value:
+            merged[key] = value
+    return merged
+
+
 def worker_secret(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str:
-    """Shared hub worker secret; missing env → BridgeError."""
+    """Shared hub worker secret; missing → BridgeError."""
     name = spec.worker_secret_env
     raw = (env or os.environ).get(name, "")
     if not raw:
-        raise BridgeError(f"set {name} for the Job Bus worker")
+        raise BridgeError(
+            f"set {name} (export it, or put it in ~/.config/airlie/.env with chmod 600)"
+        )
     return raw
 
 

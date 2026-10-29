@@ -14,7 +14,7 @@ from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
 from airlie.serve.bridge.kinds import handler_for
-from airlie.serve.bridge.session import serve_api_key, worker_id, worker_secret
+from airlie.serve.bridge.session import credential_env, serve_api_key, worker_id, worker_secret
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +97,11 @@ async def run_bridge(
     bridge = cfg.bridge
     if not bridge.job_bus_url:
         raise BridgeError("bridge.job_bus_url is not set")
-    secret = worker_secret(bridge, env)
-    wid = worker_id(bridge, env)
+    creds = credential_env(cfg, env)
+    secret = worker_secret(bridge, creds)
+    wid = worker_id(bridge, creds)
     hub = JobBusClient(bridge.job_bus_url, secret, transport=hub_transport)
-    serve = ServeClient(bridge.serve_url, api_key=serve_api_key(bridge, env), transport=serve_transport)
+    serve = ServeClient(bridge.serve_url, api_key=serve_api_key(bridge, creds), transport=serve_transport)
     runner = BridgeRunner(
         cfg=cfg,
         hub=hub,

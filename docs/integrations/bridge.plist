@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Job Bus bridge: keeps `airlie bridge` running (outbound HTTPS to the hub, loopback to task serve).
      `task bridge:launchd:install` fills __AIRLIE_DIR__ and __HOME__, writes ~/Library/LaunchAgents and loads it.
-     Requires BRIDGE_WORKER_SECRET in the environment (e.g. ~/.config/airlie/.env read by your login shell). -->
+     Secrets: ~/.config/airlie/.env (BRIDGE_WORKER_SECRET); airlie also reads that file without exporting. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>dev.airlie.bridge</string>
@@ -10,7 +10,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec uv run --quiet airlie bridge</string>
+    <string>set -a; [ -f "$HOME/.config/airlie/.env" ] &amp;&amp; . "$HOME/.config/airlie/.env"; set +a; cd "__AIRLIE_DIR__" &amp;&amp; exec uv run --quiet airlie bridge</string>
   </array>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>__HOME__/.local/state/airlie/bridge.log</string>
