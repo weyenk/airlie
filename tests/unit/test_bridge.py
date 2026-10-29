@@ -98,6 +98,24 @@ class FakeServe(httpx.AsyncBaseTransport):
 ENV = {"BRIDGE_WORKER_SECRET": "s" * 40}
 
 
+def test_credential_env_reads_bridge_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Worker secrets come from ~/.config/airlie/bridge.env, not the shared ATLASSIAN .env."""
+    home = tmp_path / "home"
+    airlie_cfg = home / ".config" / "airlie"
+    airlie_cfg.mkdir(parents=True)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("BRIDGE_WORKER_SECRET=" + "b" * 40 + "\n")
+    dotenv.chmod(0o600)
+    (airlie_cfg / ".env").write_text("BRIDGE_WORKER_SECRET=" + "wrong" * 8 + "\n")
+    monkeypatch.setenv("HOME", str(home))
+    for key in ("BRIDGE_WORKER_SECRET", "AIRLIE_SERVE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import credential_env, worker_secret
+
+    assert worker_secret(cfg.bridge, credential_env(cfg)) == "b" * 40
+
+
 # ---- T10: studio mapping, plan=None, report dropped, repo + payload rules ----
 
 

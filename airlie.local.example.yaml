@@ -5,6 +5,17 @@
 #     kind: openai_http
 #     base_url: http://127.0.0.1:8080/v1
 
+# Job Bus bridge (`task bridge`): hub URL + allowlisted repos here; put BRIDGE_WORKER_SECRET in
+# ~/.config/airlie/bridge.env (chmod 600). Not the ATLASSIAN ~/.config/airlie/.env file.
+# bridge:
+#   job_bus_url: https://airlie-hub.vercel.app/api/v1
+#   allowed_repos:
+#     - key: lhr
+#       path: ~/git/lhr
+#       default: true
+#     - key: ecff
+#       path: ~/git/ecff-website
+
 # The board (docs/integrations/story.md, Boards): stories come from airlie's own board by default, in
 # observability.state_dir/board.sqlite, with keys <board.prefix>-<n> (AIR-1, AIR-2, …). `task board:import-jira`
 # brings a Jira project onto it, each issue keeping its number under the prefix (HDS-5 → AIR-5); story.board: jira

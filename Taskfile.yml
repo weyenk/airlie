@@ -245,7 +245,7 @@ tasks:
       - '{{.RUN}} airlie bridge {{.CLI_ARGS}}'
 
   bridge:launchd:install:
-    desc: "Load launchd KeepAlive agent for task bridge (log ~/.local/state/airlie/bridge.log; needs BRIDGE_WORKER_SECRET in the shell env)"
+    desc: "Load launchd KeepAlive agent for task bridge (log ~/.local/state/airlie/bridge.log; needs ~/.config/airlie/bridge.env or BRIDGE_WORKER_SECRET)"
     cmds:
       - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
       - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/bridge.plist > ~/Library/LaunchAgents/dev.airlie.bridge.plist

@@ -224,8 +224,8 @@ line:
 
 # ---- Job Bus bridge (task bridge; docs/bridge-contract.md, src/airlie/serve/bridge/README.md) -------------------
 # Outbound worker on the Mac Studio: HTTPS claim/result to the hub, loopback POST /v1/airlie/runs on task serve.
-# Set bridge.job_bus_url and allowed_repos in airlie.local.yaml; export BRIDGE_WORKER_SECRET (and AIRLIE_SERVE_API_KEY
-# when serve requires it). Phase 1 kind: studio.
+# Set bridge.job_bus_url and allowed_repos in airlie.local.yaml; put BRIDGE_WORKER_SECRET in
+# ~/.config/airlie/bridge.env (chmod 600), or export it (and AIRLIE_SERVE_API_KEY when serve requires it).
 # bridge:
 #   job_bus_url: https://your-hub.vercel.app/api/v1
 #   worker_secret_env: BRIDGE_WORKER_SECRET

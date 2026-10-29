@@ -1,21 +1,35 @@
-"""Worker credentials from the environment and ~/.config/airlie/.env (never logged)."""
+"""Worker credentials from the environment and ~/.config/airlie/bridge.env (never logged)."""
 
 from __future__ import annotations
 
 import os
+import stat
+import warnings
 from collections.abc import Mapping
+from pathlib import Path
 
 from airlie.config.schema import AirlieConfig, BridgeSpec
 from airlie.serve.bridge.errors import BridgeError
 
 
+def bridge_dotenv_path() -> Path:
+    """~/.config/airlie/bridge.env — Job Bus worker secrets only (not the ATLASSIAN .env)."""
+    return Path.home() / ".config" / "airlie" / "bridge.env"
+
+
 def credential_env(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> Mapping[str, str]:
-    """Process env (non-empty) wins over ~/.config/airlie/.env and checkout `.env`; tests pass `env` explicitly."""
+    """Process env (non-empty) wins over ~/.config/airlie/bridge.env; tests pass `env` explicitly."""
     if env is not None:
         return env
-    from airlie.story.jira import config_dotenv
+    from airlie.story.jira import read_dotenv
 
-    merged = dict(config_dotenv(cfg))
+    path = bridge_dotenv_path()
+    merged = dict(read_dotenv(path))
+    try:
+        if path.is_file() and path.stat().st_mode & (stat.S_IRGRP | stat.S_IROTH):
+            warnings.warn(f"{path} is readable by group or others: chmod 600 {path}", stacklevel=2)
+    except OSError:
+        pass
     for key, value in os.environ.items():
         if value:
             merged[key] = value
@@ -28,7 +42,7 @@ def worker_secret(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str
     raw = (env or os.environ).get(name, "")
     if not raw:
         raise BridgeError(
-            f"set {name} (export it, or put it in ~/.config/airlie/.env with chmod 600)"
+            f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)"
         )
     return raw
 
