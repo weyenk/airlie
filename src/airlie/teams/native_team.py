@@ -32,7 +32,7 @@ from airlie.engine.types import (
 )
 from airlie.prompts import entry, text
 from airlie.skills import prompt_text
-from airlie.supervisor.advice import with_advice
+from airlie.supervisor.advice import WRONG_TEST, with_advice
 from airlie.teams.call_repair import Repair, repair_call
 from airlie.teams.protocol import (
     StepObserver,
@@ -391,6 +391,7 @@ class NativeTeam:
         changed = False  # a write_file or edit_file of this run has landed (a failed one has not)
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
         red_runs = 0  # failed run_tests runs in a row (think_when_red: a streak asks the advisor)
+        test_wrong = False  # the advisor diagnosed the red streak as a wrong locked test
         red_advised = False  # the advisor was asked about a red streak and has not heard what came of it
         wrote_paths: set[str] = set()  # the files this run wrote or edited: not read again while red
         has_run_tests = "run_tests" in ctx.tools.names()
@@ -578,6 +579,10 @@ class NativeTeam:
                                     _settled_red(ctx.on_stuck, ctx.team_id, False)
                                 shown = [*messages, Message(role="tool", content=result.output)]
                                 fix, red_advised = await _red_advised(ctx.on_stuck, ctx, fix, shown)
+                                # a test it may not change is wrong: no code fixes that, so it stops here
+                                # and the layer goes back to the architect (roman, 2026-10-28: 31 minutes
+                                # of fix round against 'MMMDCCCLXXXIX' for 3999)
+                                test_wrong = red_advised and ctx.on_stuck.last_category == WRONG_TEST
                             result = replace(result, output=f"{result.output}\n\n{fix}")
                 messages.append(
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
@@ -716,6 +721,12 @@ class NativeTeam:
             if forked:
                 final_text = "fork point: stuck, handing over to branches"
                 stop = "fork_point"
+                break
+            if test_wrong:
+                # the last observation is the failing run with the supervisor's diagnosis after it
+                said = str(messages[-1].content) if messages else ""
+                final_text = f"stopped: a test I may not change is wrong.\n{said[-3000:]}"
+                stop = "test_wrong"
                 break
             cycle = _loop(recent, ctx.repeat_limit)
             if cycle is not None:

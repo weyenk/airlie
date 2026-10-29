@@ -11,6 +11,12 @@ SUPERVISOR = (
 )
 
 
+WRONG_TEST = "wrong_acceptance_test"
+"""The triage category for a test the role may not change that asserts what correct code cannot give (roman,
+2026-10-28: 'MMMDCCCLXXXIX' for 3999). Code cannot fix it, so it goes back to the architect at once instead of
+to the coder for another round."""
+
+
 def with_advice(text: str, advice: str | None) -> str:
     """`text` with the supervisor's section after it; `text` itself when there is no advice."""
     if not advice:

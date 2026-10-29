@@ -1318,13 +1318,16 @@ class StoryPipeline:
         A `steer` event for it."""
         account = (coder.final_text if coder is not None else "").strip()
         tail = orch.gate_output.strip()[-GATE_TAIL_CHARS:]
+        wrong = orch.test_wrong  # a locked test is wrong, the supervisor says: it is the test to correct
         parts = [
             "The coder built this layer from your package and the whole gate is still red.",
             f"What the coder said when it stopped:\n{account[:GATE_TAIL_CHARS] or '(nothing)'}",
             f"The end of the gate's output:\n```\n{tail or '(none)'}\n```",
+            *([hub_text("package-test-wrong")] if wrong else []),
             hub_text("package-replan"),
         ]
-        self._steer(st, ["package-replan"], self.s.architect_role, nn)
+        said = [*(["package-test-wrong"] if wrong else []), "package-replan"]
+        self._steer(st, said, self.s.architect_role, nn)
         return "\n\n".join(parts)
 
     def _lesson(

@@ -78,6 +78,10 @@ class LayerSupervisor:
 
     # ---- asking --------------------------------------------------------------------------------------------
 
+    last_category: str | None = None
+    """The category of the latest advice (None after a fallback): the studio and the team loop act on a
+    wrong-test diagnosis (WRONG_TEST) by sending the layer back to the architect."""
+
     async def advise(
         self,
         trigger: str,
@@ -94,6 +98,7 @@ class LayerSupervisor:
         if trig == "block":
             raise ValueError("a block goes through at_block, which settles it at once")
         ledger_id, answer = await self._triage(trig, subtask, role, told, tuple(kinds), evidence)
+        self.last_category = answer.category if answer else None
         if ledger_id is not None:
             self._open.setdefault((trig, subtask), []).append(ledger_id)
         return answer.message if answer else None

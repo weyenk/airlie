@@ -2009,3 +2009,27 @@ async def test_a_red_streak_asks_the_advisor_and_tells_it_what_came_of_it(tmp_pa
     told = [str(m.content) for m in engine.requests[-1].messages if m.role == "tool"][-1]
     assert told.endswith("from_roman lets IIII through: add a repeat check")  # after red-fix
     assert [helped for _, helped in advisor.red_settles] == [False]  # the run ended red
+
+
+async def test_a_red_streak_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: Path) -> None:
+    """Roman, 2026-10-28: the supervisor said a locked test was wrong ('MMMDCCCLXXXIX' for 3999) and the coder
+    edited on for a 31-minute fix round. No code fixes a wrong test: the role stops, test_wrong."""
+    from airlie.supervisor.advice import WRONG_TEST
+    from airlie.teams.native_team import RED_STREAK
+    from tests.unit.advisor_doubles import RecordingAdvisor
+
+    run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+
+    def edit(n: int) -> FakeReply:
+        content = json.dumps({"path": "a.py", "content": f"x = {n}\n"})
+        return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
+
+    script = [x for n in range(RED_STREAK + 1) for x in (edit(n), run)] + [FakeReply(text="Done.")]
+    engine = FakeEngine({"coder": script})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, think_when_red=True, thinking_budget=32)
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
+    object.__setattr__(ctx, "on_stuck", RecordingAdvisor("line 17: MMMDCCCLXXXIX is 3889", WRONG_TEST))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "test_wrong" and not result.ok
+    assert result.steps == 2 * RED_STREAK  # it stopped at the streak: no further edit ran
+    assert "MMMDCCCLXXXIX is 3889" in result.final_text

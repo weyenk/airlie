@@ -11,8 +11,9 @@ from airlie.engine.types import Message
 class RecordingAdvisor:
     """Answers every question with `reply` and records each call."""
 
-    def __init__(self, reply: str | None) -> None:
+    def __init__(self, reply: str | None, category: str | None = None) -> None:
         self.reply = reply
+        self.last_category = category if reply else None
         self.stuck_calls: list[tuple[str, str, str, int]] = []  # (subtask, role, told, messages seen)
         self.stuck_settles: list[tuple[str, bool]] = []
         self.red_calls: list[tuple[str, str, str, int]] = []
@@ -53,6 +54,8 @@ class RecordingAdvisor:
 
 class RaisingAdvisor:
     """Fails at every call."""
+
+    last_category: str | None = None
 
     async def stuck(self, subtask: str, role: str, told: str, messages: Sequence[Message]) -> str | None:
         raise RuntimeError("advisor down")

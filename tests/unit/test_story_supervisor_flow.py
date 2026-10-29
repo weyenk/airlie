@@ -42,6 +42,7 @@ SUPERVISOR_ROLES = {
 def answer(
     message: str | None,
     *,
+    category: str = "missing_code",
     owner: str = "coder",
     fix: str | None = None,
     class_agrees: bool | None = None,
@@ -49,7 +50,7 @@ def answer(
 ) -> FakeReply:
     """Muse's answer: a diagnosis, the role's next step and, for a block, the fix another try would make."""
     data = {
-        "category": "wrong_acceptance_test",
+        "category": category,
         "owner": owner,
         "diagnosis": "the code breaks add, which the whole suite checks",
         "evidence": ["calc.py"],
@@ -117,6 +118,28 @@ async def test_the_gate_retry_carries_muses_advice(tmp_path: Path) -> None:
     [row] = rows(tmp_path)
     assert (row.trigger, row.subtask, row.role, row.outcome) == ("gate_retry", "build", "coder", "helped")
     assert row.kinds == ("gate_fails",) and row.layer == "01"
+
+
+async def test_a_gate_retry_diagnosed_as_a_wrong_test_skips_the_fix_round_for_the_architect(
+    tmp_path: Path,
+) -> None:
+    """Roman, 2026-10-28: the supervisor said a locked test was wrong and the coder got a 31-minute fix round
+    anyway. No code fixes a wrong test: no fix round; the architect's re-plan carries the diagnosis."""
+    wrong = answer("MMMDCCCLXXXIX is 3889: correct the test.", category="wrong_acceptance_test")
+    engine = scripted(coder=[BROKEN, DONE, FIXED, DONE], supervisor=[wrong], packages=[RED, RED])
+    repo = calc_repo(tmp_path)
+    story = {"supervisor": {"enabled": True}, "layer_attempts": 2}
+    st = await pipeline(tmp_path, repo, engine, test_cmd=PYTEST, story=story, roles=SUPERVISOR_ROLES).run(
+        text_card("multiply")
+    )
+    assert st.blocked is None and "01" in st.built, st.blocked
+    assert not [p for p in user_messages(engine, "coder") if "the whole suite fails with your change" in p]
+    [replanned] = kinds(st.path / "events.jsonl", "layer_replanned")
+    assert replanned["layer"] == "01"
+    told = [
+        p for p in user_messages(engine, "architect") if "correct that test to what is actually right" in p
+    ]
+    assert told and "MMMDCCCLXXXIX is 3889" in told[0]
 
 
 async def test_a_package_that_comes_back_to_the_architect_asks_muse_nothing(tmp_path: Path) -> None:
@@ -238,4 +261,4 @@ async def test_muse_reads_the_pack_at_block_and_its_agreement_is_recorded(tmp_pa
     note = board_notes(st)[-2]
     assert "Supervisor does not agree with the class: the test is wrong, not the model" in note
     # the mechanical class is read first; its kind is Muse's category once Muse has one
-    assert note.index("content: wrong_acceptance_test") < note.index("Supervisor:")
+    assert note.index("content: missing_code") < note.index("Supervisor:")
