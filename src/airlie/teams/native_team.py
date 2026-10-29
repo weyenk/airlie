@@ -191,6 +191,21 @@ def is_test_path(path: str) -> bool:
     return any(p in _TEST_DIRS for p in parts[:-1]) or bool(parts and _TEST_NAME.match(parts[-1]))
 
 
+def _read_key(call: ToolCall) -> str | None:
+    """What a read_file call reads: its path and range, so the same read can be told from another; None for
+    another tool or unreadable arguments."""
+    if call.name != "read_file":
+        return None
+    try:
+        args = json.loads(call.arguments)
+    except ValueError:
+        return None
+    if not isinstance(args, dict) or not isinstance(args.get("path"), str):
+        return None
+    shown = {**args, "path": args["path"].strip().removeprefix("./")}
+    return json.dumps(shown, sort_keys=True)
+
+
 def _read_path(call: ToolCall) -> str | None:
     """The path a read_file call names, as a write names it (no leading "./"), or None."""
     if call.name != "read_file":
@@ -394,6 +409,7 @@ class NativeTeam:
         test_wrong = False  # the advisor diagnosed the red streak as a wrong locked test
         red_advised = False  # the advisor was asked about a red streak and has not heard what came of it
         wrote_paths: set[str] = set()  # the files this run wrote or edited: not read again while red
+        reads_seen: dict[str, tuple[str, int]] = {}  # a read's key -> (its path, the step that read it)
         has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         while True:
@@ -544,7 +560,17 @@ class NativeTeam:
                     ctx.role.think_when_red and last_tests_ok is False and _read_path(call) in wrote_paths
                 )
                 held = ((reading_off or looped) and call.name not in WRITE_TOOLS_ONLY) or reread
-                if held and (looped or reread or reads_left == 0):
+                key = _read_key(call)
+                seen_at = reads_seen.get(key) if key is not None else None
+                if seen_at is not None and not held:
+                    # the same read again, nothing written to it since: its text is in the conversation
+                    # already (roman A/B run 2, 2026-10-29: the architect read one test file six times in a
+                    # row, each step thinking to its budget, until the repeat guard stopped the drafting)
+                    result = ToolResult(ok=True, output=_steer(ctx, steps, "already-read", step=seen_at[1]))
+                    tool_ms = 0.0
+                    if ctx.emit is not None:
+                        ctx.emit("read_repeated", team_id=ctx.team_id, role=ctx.role_name, step=steps)
+                elif held and (looped or reread or reads_left == 0):
                     refused = "red-read-refused" if reread else "read-refused"
                     result = ToolResult(ok=False, output=_steer(ctx, steps, refused))
                     tool_ms = 0.0
@@ -561,6 +587,8 @@ class NativeTeam:
                         t1 = time.monotonic()
                         result = await ctx.tools.call(call)
                         tool_ms = (time.monotonic() - t1) * 1000.0
+                    if key is not None and result.ok:
+                        reads_seen[key] = (_read_path(call) or "", steps)
                     if held:  # one of the few reads the hold still serves, and it says how many are left
                         reads_left -= 1
                         left = _steer(ctx, steps, "read-left", k=reads_left)
@@ -703,6 +731,8 @@ class NativeTeam:
                     if path is not None:
                         written["tests" if is_test_path(path) else "code"] = True
                         wrote_paths.add(path.strip().removeprefix("./"))
+                        changed_path = path.strip().removeprefix("./")
+                        reads_seen = {k: v for k, v in reads_seen.items() if v[0] != changed_path}
                     if continuing:
                         written["code"] = True  # any write is the change this round owes
                 if call.name == "run_tests":

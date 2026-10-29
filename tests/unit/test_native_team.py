@@ -2033,3 +2033,29 @@ async def test_a_red_streak_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: P
     assert result.stop_reason == "test_wrong" and not result.ok
     assert result.steps == 2 * RED_STREAK  # it stopped at the streak: no further edit ran
     assert "MMMDCCCLXXXIX is 3889" in result.final_text
+
+
+async def test_the_same_read_again_is_answered_from_the_conversation_until_the_file_is_written(
+    tmp_path: Path,
+) -> None:
+    """Roman A/B run 2 (2026-10-29): the architect read one test file six times in a row, each step thinking
+    to its budget, until the repeat guard stopped its drafting. A repeat of the same read, with nothing
+    written to the file since, does not run; a write to it, or another range, reads afresh."""
+
+    def read(**args: object) -> FakeReply:
+        return FakeReply(tool_calls=[ToolCall("r", "read_file", json.dumps({"path": "a.py", **args}))])
+
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "a.py", "content": "x = 2\n"}))]
+    )
+    engine = FakeEngine({"coder": [read(), read(), read(offset=1), write, read(), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10)
+    (ctx.tools.ctx.worktree / "a.py").write_text("x = 1\n")
+    events: list[dict[str, Any]] = []
+    object.__setattr__(ctx, "emit", lambda kind, **f: events.append({"kind": kind, **f}))
+    await team.run(ctx, Recorder())
+    outputs = [str(m.content) for m in engine.requests[-1].messages if m.role == "tool"]
+    assert "x = 1" in outputs[0] and outputs[1].startswith("You read this file at step 1")
+    assert "You read this file" not in outputs[2]  # another range is another read
+    assert "x = 2" in outputs[4]  # written since: read afresh
+    assert [e["step"] for e in events if e["kind"] == "read_repeated"] == [2]
