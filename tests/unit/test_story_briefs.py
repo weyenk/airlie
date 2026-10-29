@@ -999,3 +999,23 @@ def test_the_layer_sources_are_its_existing_files_read_at_a_commit(tmp_path: Pat
         (ScopedPath("src/a.py"), ScopedPath("src/new.py", True), ScopedPath("src/gone.py")),
     )
     assert layer_sources(root, sha, layer) == {"src/a.py": "A = 1\n"}
+
+
+def test_a_later_layers_package_brief_names_the_files_the_layers_before_it_create() -> None:
+    """Roman reliability run 1 (2026-10-28): layer 02, drafted at the story's base, created
+    tests/test_roman.py, which layer 01 had made, and came back as file_exists."""
+    from dataclasses import replace
+
+    from airlie.story.briefs import next_package_brief
+    from airlie.story.model import ScopedPath
+
+    first = replace(
+        LAYERS[0], files=(ScopedPath("store.py", new=True), ScopedPath("tests/test_store.py", True))
+    )
+    second = replace(LAYERS[1], files=(ScopedPath("tests/test_store.py"),))
+    layers = (first, second, LAYERS[2])
+    later = next_package_brief(STORY, layers, 1)
+    assert "## Files the layers before this one create" in later
+    assert "store.py, tests/test_store.py" in later and 'modifies (action "modify"), never creates' in later
+    first_brief = package_brief(STORY, layers, 0, max_steps=10, context_budget=1000)
+    assert "## Files the layers before this one create" not in first_brief  # layer 01 has none before it

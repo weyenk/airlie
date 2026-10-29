@@ -601,6 +601,9 @@ def _package_layer(
     owned = [c for c in story.acceptance if c.id in layer.acceptance]
     criteria = "\n".join(f"- {c.line()}" for c in owned) or hub_text("brief-layer-plan-no-criteria")
     later = ", ".join(f"{j + 1:02d} {x.title}" for j, x in enumerate(layers) if j > i) or "none"
+    # a later layer drafted at the story's base does not see what the layers before it create (roman,
+    # 2026-10-28: layer 02's draft created tests/test_roman.py, which layer 01 had made: file_exists)
+    earlier = list(dict.fromkeys(f.path for x in layers[:i] for f in x.files if f.new))
     return [
         f"This is layer {i + 1} of {len(layers)}: {layer.title}.\n"
         f"Scope of this layer: {layer.scope}\n"
@@ -608,6 +611,7 @@ def _package_layer(
         f"Later layers (not yours; leave their work alone): {later}",
         f"## What this layer builds\n{layer.brief}",
         *([_files_section(layer)] if layer.files or layer.interfaces else []),
+        *([hub_text("brief-package-earlier-files", files=", ".join(earlier))] if earlier else []),
         *_sources_section(sources or {}),
         *([_agreed_tests(proof)] if proof else []),
     ]
