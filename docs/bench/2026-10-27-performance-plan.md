@@ -265,3 +265,53 @@ Do P8 (speculative decoding) and P7 (batching) before the pipeline levers.
 4. Wiki confirmation with the passing flags on, and bisect on a miss.
 5. Turn the passing flags on by default, and record the run in `docs/bench/README.md`.
 6. Check vllm-mlx support for speculative decoding and two streams, then screen P8, then P7.
+
+## Overnight 2026-10-28/29: making the bench fair, then the dossier A/B
+
+Noah's brief: "wake up to a reliable pipeline with options for improvements tried; the priority is a pipeline
+reliable enough that the tests are fair."
+
+### Why the first A/B was not fair
+
+The first dossier A/B decided runs by failures the dossier has nothing to do with. Four runs on 2026-10-28
+missed the oracle three times, and the failures, not the lever, set the times.
+
+| Run | Dossier | Time | Oracle | What decided it |
+|---|---|---|---|---|
+| 1 | off | 48.7 min | 18/18 | Clean |
+| 2 | on | 105.8 min | 16/18 | Refine invented a wrong example ('MMMDCCCLXXXIX' for 3999); a 31-minute coder fix round no code could win; a thin re-planned package |
+| 3 | off | 49.9 min | 17/18 | Valid numerals refused; 9 tests, none over the range |
+| 4 | on | 30.8 min | 16/18 | Malformed numerals accepted; 7 tests |
+
+### What was wrong, and what changed (PRs 175 and 178, all on the bench branch)
+
+Ordered by the order they showed up.
+
+| Problem | Fix |
+|---|---|
+| The meeting's roles could not tell who said what: AutoGen sends the speaker only as `name`, which the generalist's chat template never reads. Product posted the tester's proof; the tester took it for its own. | `add_name_prefixes`: every message starts "<role> said:" (PR 177, folded into 175) |
+| A non-thinking coder looped red, writing the same file three times. | `think_when_red`: it thinks only while red, gets the `red-fix` instruction, and may not re-read files it wrote |
+| Thinking, it gamed a wrong locked test (`if n == 1984: return "MCMXCIV"`). | Coder prompt: never special-case a test's inputs; report a wrong test instead |
+| A 35-minute red streak, every edit different, and the supervisor never looked. | `red_streak` supervisor trigger, every 3 red runs in a row |
+| A wrong-test diagnosis still got a coder fix round. | `wrong_acceptance_test` routing: the coder stops, the gate skips the fix round, and the architect is told to correct that test |
+| Refine invented computed examples, and some were wrong. | No invented examples; a range or a refusal is one whole-domain criterion |
+| Thin tests let bugs through. | A range is proven over every value; a refusal by one exhaustive test (every string of up to 4 characters, accepted exactly when it is a valid output) |
+| A later layer's draft created a file an earlier layer made (`file_exists`). | Its brief lists the files earlier layers create |
+| Titles bounced plans (8 of 20 plan fixes). | Titles are mended, not sent back |
+| Pinned examples were wrong even when the criteria were right (MCMXCIV as 1984, three times in two days). | Beside a whole-range test, only the request's own examples are pinned |
+
+### Reliability round: dossier off, the build before the last rule
+
+All three runs passed the oracle at 18/18 and kept every quality check.
+
+| Run | Time | Oracle | Mutation | Notes |
+|---|---|---|---|---|
+| 1 | 51.8 min | 18/18 | 59/60 | 2 layers, exhaustive refusal test present |
+| 2 | 28.6 min | 18/18 (8/8 extra) | 28/35 | 6 tests: spec fully met, leaner tests |
+| 3 | 119.8 min | 18/18 | 57/59 | Two recoveries: an unrunnable 16–20-character exhaustive proof (the architect's `proof_change` fixed it), and a wrong pin the coder reported instead of gaming (re-plan) |
+
+Run 3 is why the last rule exists: both of its detours came from model-made numbers.
+
+### The dossier A/B (in progress)
+
+Six runs, alternating dossier off and on, on build 24a9138: every fix above, plus the no-pin rule.
