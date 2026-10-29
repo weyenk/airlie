@@ -1,0 +1,224 @@
+{
+ "case": "roman",
+ "started": "2026-10-29T07:00:50",
+ "airlie_build": "d05a3b7",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "review",
+ "blocked": null,
+ "layers_built": 1,
+ "prs": [
+  "https://github.com/weyenk/airlie-sandbox/pull/37"
+ ],
+ "cost": {
+  "wall_min": 34.1,
+  "idle_min": 0.8,
+  "decode_tps_by_context": {
+   "<16k": 24.7,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.8
+   },
+   {
+    "at": "plan_done",
+    "min": 11.6
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 20.4
+   },
+   {
+    "at": "story_done",
+    "min": 20.4
+   },
+   {
+    "at": "packages_drafting",
+    "min": 20.5
+   },
+   {
+    "at": "layer_built 01",
+    "min": 34.0
+   },
+   {
+    "at": "published",
+    "min": 34.1
+   },
+   {
+    "at": "story_done",
+    "min": 34.1
+   }
+  ],
+  "roles": [
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 18934,
+    "tokens_out": 10821,
+    "prefill_s": 8.0181,
+    "decode_s": 464.2152,
+    "wall_s": 472.328,
+    "reads": 2,
+    "thinking_tokens": 6683,
+    "decode_tps": 23.3,
+    "prefill_tps": 2361
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 4,
+    "tokens_in": 24169,
+    "tokens_out": 13827,
+    "prefill_s": 15.970600000000001,
+    "decode_s": 572.3277,
+    "wall_s": 432.49670000000003,
+    "reads": 2,
+    "thinking_tokens": 8017,
+    "decode_tps": 24.2,
+    "prefill_tps": 1513
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 22259,
+    "tokens_out": 5271,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 346.76,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layer build",
+    "role": "coder",
+    "calls": 8,
+    "tokens_in": 51713,
+    "tokens_out": 5766,
+    "prefill_s": 44.6395,
+    "decode_s": 207.5073,
+    "wall_s": 284.6757,
+    "reads": 1,
+    "thinking_tokens": 4239,
+    "decode_tps": 27.8,
+    "prefill_tps": 1158
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12850,
+    "tokens_out": 2649,
+    "prefill_s": 6.5258,
+    "decode_s": 102.1603,
+    "wall_s": 108.8001,
+    "reads": 6,
+    "thinking_tokens": 1593,
+    "decode_tps": 25.9,
+    "prefill_tps": 1969
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 2,
+    "tokens_in": 19898,
+    "tokens_out": 1874,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 95.57900000000001,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 1,
+    "tokens_in": 10685,
+    "tokens_out": 1661,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 84.793,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 5,
+    "tokens_in": 9711,
+    "tokens_out": 1633,
+    "prefill_s": 9.9831,
+    "decode_s": 60.67399999999999,
+    "wall_s": 70.8118,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 26.9,
+    "prefill_tps": 973
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 4,
+    "tokens_in": 32316,
+    "tokens_out": 961,
+    "prefill_s": 12.835800000000003,
+    "decode_s": 38.4928,
+    "wall_s": 52.4003,
+    "reads": 3,
+    "thinking_tokens": 0,
+    "decode_tps": 25.0,
+    "prefill_tps": 2518
+   }
+  ],
+  "retries": {
+   "plan_rounds": 2,
+   "plan_fixes": 0,
+   "meeting_turns": 5,
+   "meeting_objections": 2,
+   "critic_objections": 0,
+   "package_attempts": 1,
+   "packages_rejected": 0,
+   "unusable_replies": 0,
+   "layer_builds": 1,
+   "gate_replans": 0,
+   "supervisor_triages": 0
+  }
+ },
+ "quality": {
+  "gate_passes": true,
+  "oracle": {
+   "spec": [
+    18,
+    18
+   ],
+   "extra": [
+    8,
+    8
+   ],
+   "failed": []
+  },
+  "mutation": {
+   "total": 65,
+   "killed": 65,
+   "survived": []
+  },
+  "tests": 11,
+  "asserts": 12,
+  "source_lines": 51
+ },
+ "closed": [],
+ "branches_deleted": []
+}

@@ -1,0 +1,264 @@
+{
+ "case": "roman",
+ "started": "2026-10-29T07:35:05",
+ "airlie_build": "d05a3b7",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "build",
+ "blocked": "PublishError: `gh stack init --base main add-sandbox-roman-py-with-to-r-01-roman-module add-sandbox-roman-py-with-to-r-02-roman-validation` exited 5: \u2717 current branch \"add-sandbox-roman-py-with-to-r-02-roman-validation\" is already part of a stack",
+ "layers_built": 2,
+ "prs": [],
+ "cost": {
+  "wall_min": 113.5,
+  "idle_min": 4.1,
+  "decode_tps_by_context": {
+   "<16k": 23.6,
+   "16-48k": 20.3,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.7
+   },
+   {
+    "at": "plan_done",
+    "min": 10.4
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 24.0
+   },
+   {
+    "at": "story_done",
+    "min": 24.0
+   },
+   {
+    "at": "packages_drafting",
+    "min": 24.0
+   },
+   {
+    "at": "layer_built 01",
+    "min": 36.8
+   },
+   {
+    "at": "layer_built 02",
+    "min": 112.2
+   },
+   {
+    "at": "story_done",
+    "min": 113.5
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layer build",
+    "role": "coder",
+    "calls": 30,
+    "tokens_in": 343895,
+    "tokens_out": 46047,
+    "prefill_s": 86.80789999999999,
+    "decode_s": 2093.5173999999997,
+    "wall_s": 2330.2117999999996,
+    "reads": 3,
+    "thinking_tokens": 40919,
+    "decode_tps": 22.0,
+    "prefill_tps": 3962
+   },
+   {
+    "phase": "package",
+    "role": "architect",
+    "calls": 17,
+    "tokens_in": 154345,
+    "tokens_out": 42379,
+    "prefill_s": 30.297800000000002,
+    "decode_s": 1845.0341,
+    "wall_s": 1875.5590000000002,
+    "reads": 15,
+    "thinking_tokens": 35930,
+    "decode_tps": 23.0,
+    "prefill_tps": 5094
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 25372,
+    "tokens_out": 7623,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 469.159,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "proof",
+    "role": "tester",
+    "calls": 24,
+    "tokens_in": 188874,
+    "tokens_out": 6199,
+    "prefill_s": 63.01309999999998,
+    "decode_s": 241.60590000000005,
+    "wall_s": 308.7928,
+    "reads": 20,
+    "thinking_tokens": 0,
+    "decode_tps": 25.7,
+    "prefill_tps": 2997
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 38896,
+    "tokens_out": 4169,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 220.641,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 23260,
+    "tokens_out": 12677,
+    "prefill_s": 9.2655,
+    "decode_s": 510.2563,
+    "wall_s": 216.6205,
+    "reads": 3,
+    "thinking_tokens": 6873,
+    "decode_tps": 24.8,
+    "prefill_tps": 2510
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 47168,
+    "tokens_out": 16663,
+    "prefill_s": 15.343,
+    "decode_s": 684.7114,
+    "wall_s": 207.3837,
+    "reads": 5,
+    "thinking_tokens": 14747,
+    "decode_tps": 24.3,
+    "prefill_tps": 3074
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 2,
+    "tokens_in": 29526,
+    "tokens_out": 1949,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 123.71700000000001,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12917,
+    "tokens_out": 2446,
+    "prefill_s": 6.464900000000001,
+    "decode_s": 96.0384,
+    "wall_s": 102.61189999999999,
+    "reads": 6,
+    "thinking_tokens": 1529,
+    "decode_tps": 25.5,
+    "prefill_tps": 1998
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 9,
+    "tokens_in": 63785,
+    "tokens_out": 1417,
+    "prefill_s": 23.1134,
+    "decode_s": 50.465799999999994,
+    "wall_s": 74.96360000000001,
+    "reads": 7,
+    "thinking_tokens": 0,
+    "decode_tps": 28.1,
+    "prefill_tps": 2760
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 5,
+    "tokens_in": 9711,
+    "tokens_out": 1629,
+    "prefill_s": 9.4883,
+    "decode_s": 61.4157,
+    "wall_s": 71.0547,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 26.5,
+    "prefill_tps": 1023
+   }
+  ],
+  "retries": {
+   "plan_rounds": 3,
+   "plan_fixes": 0,
+   "meeting_turns": 7,
+   "meeting_objections": 5,
+   "critic_objections": 0,
+   "package_attempts": 4,
+   "packages_rejected": 0,
+   "unusable_replies": 2,
+   "layer_builds": 2,
+   "gate_replans": 0,
+   "supervisor_triages": 2
+  }
+ },
+ "quality": {
+  "gate_passes": true,
+  "oracle": {
+   "spec": [
+    14,
+    18
+   ],
+   "extra": [
+    6,
+    8
+   ],
+   "failed": [
+    "from_roman('IL') raises ValueError",
+    "from_roman('VX') raises ValueError",
+    "from_roman('MCMC') raises ValueError",
+    "from_roman('IIV') raises ValueError"
+   ]
+  },
+  "mutation": {
+   "total": 100,
+   "killed": 95,
+   "survived": [
+    "Constant line 44",
+    "Constant line 52",
+    "Constant line 52",
+    "BinOp line 55",
+    "BinOp line 57"
+   ]
+  },
+  "tests": 8,
+  "asserts": 16,
+  "source_lines": 67
+ },
+ "closed": [],
+ "branches_deleted": [
+  "add-sandbox-roman-py-with-to-r-01-roman-module",
+  "add-sandbox-roman-py-with-to-r-02-roman-validation"
+ ]
+}
