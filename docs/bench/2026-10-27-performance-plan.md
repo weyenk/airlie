@@ -343,3 +343,24 @@ calls were reads, at ~104 s each, because every call thinks to the 2048 budget f
 
 **Bundle 2 = P9 + R1 + Q1.** Q1 is a meeting finding when a refusal criterion is proven by a list instead of an
 exhaustive test. Each touches a different stage and has its own counter, so a bundle run shows each separately.
+
+### Bundle 1 result: the dossier A/B (2026-10-29, build d05a3b7, roman, dossier off and on alternating)
+
+| Run | Dossier | Layers | Minutes | Oracle | Mutation | Reads / calls | What happened |
+|---|---|---|---|---|---|---|---|
+| 1 | off | 1 | 46.7 | 18/18 | 24/35 | 33 / 57 | Clean |
+| 2 | on | 1 | 34.1 | 18/18 | 65/65 | 18 / 36 | Clean |
+| 3 | off | 2 | 113.5 | 14/18 | 95/100 | 63 / 112 | Proof revised twice; blocked at publish by stale gh-stack records (bench bug, fixed in 4972986) |
+| 4 | on | 2 | 54.5 | 18/18 | 23/35 | 34 / 64 | Clean |
+| 5 | off | 1 | 86.9 | 18/18 | 25/34 | 41 / 95 | Red build, re-planned |
+| 6 | on | 1 | 81.0 | 18/18 | 53/53 | 42 / 63 | Package sent back and redone cold (P9's target); the repo test suite ran beside it, taking CPU |
+
+**Results:**
+- **Time:** dossier on averaged 56.5 minutes against 82.4, 31% faster (median 54.5 against 86.9). Like for like,
+  one-layer clean runs were 34.1 against 46.7 minutes (27%), and two-layer runs 54.5 against 113.5.
+- **Work:** 31% fewer reads and 38% fewer model calls on average, the mechanism the dossier was built for.
+- **Quality:** the oracle passed 3/3 with the dossier on and 2/3 with it off. The miss is the sampled-refusal
+  gap that Q1 targets. Mutation varies in both arms, with test thinness, not with the dossier.
+
+**Verdict:** a real gain at no cost in quality, beyond the ±17% noise band on time and consistent in reads and
+calls. `story.dossier` should be on by default.
