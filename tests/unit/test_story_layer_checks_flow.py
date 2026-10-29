@@ -321,6 +321,8 @@ async def test_a_gate_still_red_after_the_coders_follow_up_replans_the_layer_onc
     [replanned] = kinds(events, "layer_replanned")
     assert (replanned["layer"], replanned["attempt"], replanned["why"]) == ("01", 1, "gate_red")
     assert [e["attempt"] for e in kinds(events, "layer_start")] == [1, 2]
+    # the re-plan is a turn of the drafting conversation (P9), not a cold ask: no reading the story again
+    assert [e["layer"] for e in kinds(events, "package_resumed")] == ["01"]
     branches = {e["branch"] for e in kinds(events, "layer_start")}
     assert len(branches) == 1 and st.built["01"]["branch"] in branches  # the same name, built twice
     assert built_file(tmp_path, st, "tests/test_calc.py") == OTHER_RED_TEXT.rstrip("\n")

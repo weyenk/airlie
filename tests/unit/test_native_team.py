@@ -2059,3 +2059,23 @@ async def test_the_same_read_again_is_answered_from_the_conversation_until_the_f
     assert "You read this file" not in outputs[2]  # another range is another read
     assert "x = 2" in outputs[4]  # written since: read afresh
     assert [e["step"] for e in events if e["kind"] == "read_repeated"] == [2]
+
+
+async def test_a_role_red_for_red_limit_runs_in_a_row_stops_for_the_architect(tmp_path: Path) -> None:
+    """R1 (2026-10-29): a failed build spent ~31 minutes red before its layer was re-planned, and the re-plan
+    is what fixed it. After RED_LIMIT failed runs in a row the role stops (red_limit)."""
+    from airlie.teams.native_team import RED_LIMIT
+
+    run = FakeReply(tool_calls=[ToolCall("t", "run_tests", "{}")])
+
+    def edit(n: int) -> FakeReply:
+        content = json.dumps({"path": "a.py", "content": f"x = {n}\n"})
+        return FakeReply(tool_calls=[ToolCall(f"w{n}", "write_file", content)])
+
+    script = [x for n in range(RED_LIMIT + 2) for x in (edit(n), run)] + [FakeReply(text="Done.")]
+    engine = FakeEngine({"coder": script})
+    team, ctx = make_team(tmp_path, engine, max_steps=40, think_when_red=True, thinking_budget=32)
+    object.__setattr__(ctx.tools.ctx, "test_cmd", "exit 1")
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "red_limit" and not result.ok
+    assert result.steps == 2 * RED_LIMIT and f"failed {RED_LIMIT} runs in a row" in result.final_text

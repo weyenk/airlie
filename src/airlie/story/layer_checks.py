@@ -53,6 +53,7 @@ Kind = Literal[
     "verdict_missing",
     "part_invalid",
     "proof_mismatch",
+    "proof_sampled",
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"

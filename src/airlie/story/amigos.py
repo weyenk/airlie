@@ -774,7 +774,8 @@ class AgreementReached(TerminationCondition):
                 continue
             self._seq += 1
             if m.source == CHECKER:
-                self._checker = (self._seq, m.content.strip() == NO_FINDINGS)
+                # its first line: advice may follow "no findings" (ADVISORY), and holds nothing up
+                self._checker = (self._seq, m.content.strip().split("\n", 1)[0] == NO_FINDINGS)
                 continue
             try:
                 verdict: Verdict | None = parse_verdict(m.content, m.source)

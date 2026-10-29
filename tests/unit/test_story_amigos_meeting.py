@@ -545,3 +545,24 @@ def test_while_no_proof_is_on_record_the_checker_names_who_posted_one_in_the_tes
         "The proof product posted is not the tester's and was not used"
     )
     assert '"stands as posted" posts nothing' in NO_PROOF
+
+
+def test_advice_after_no_findings_does_not_hold_up_agreement() -> None:
+    """Q1 (2026-10-29): an ADVISORY finding follows 'no findings' in the checker's message; the meeting ends
+    by agreement all the same."""
+    from autogen_agentchat.messages import TextMessage
+
+    from airlie.story.amigos import CHECKER, ROLES, AgreementReached
+    from airlie.story.amigos_checks import NO_FINDINGS
+
+    verdict = (
+        '```json\n{"type": "verdict", "requirements": "agree", "changes": "agree", "proof": "agree"}\n```'
+    )
+    said = [TextMessage(content=verdict, source=role) for role in ROLES]
+    for checker, ends in (
+        (f"{NO_FINDINGS}\nAdvice:\n- proof_sampled AC3: ...", True),
+        ("- split_invalid", False),
+    ):
+        done = AgreementReached()
+        done.observe([*said, TextMessage(content=checker, source=CHECKER)])
+        assert done.agreed() is ends

@@ -120,3 +120,23 @@ def test_findings_message_names_each_finding_under_the_hub_text() -> None:
     assert "criterion_unproven" in text and "AC2" in text and "no test proves it" in text
     assert "profile" in text and "AC9" in text
     assert findings_message([]) == "no findings"
+
+
+def test_a_refusal_criterion_proven_by_listed_examples_is_advice_not_a_hold() -> None:
+    """Q1 (2026-10-29): lists of six and of fourteen malformed numerals passed while 'IIV' and 'MCMC' were
+    accepted. A refusal criterion whose tests only list examples gets advice; one exhaustive test clears it,
+    and advice alone leaves the checker's message 'no findings' first, so it holds up no agreement."""
+    from airlie.story.amigos_checks import NO_FINDINGS, check_sampled_refusals, findings_message
+
+    refuse = Criterion("AC3", "a malformed numeral", "from_roman is called", "it raises ValueError")
+    story = replace(STORY, acceptance=(*STORY.acceptance, refuse))
+    listed = replace(_test("AC3", "storage", "test_c"), asserts="'IIII', 'VV' and 'IC' each raise ValueError")
+    found = check_sampled_refusals(story, (*PROOF, listed))
+    assert [(f.kind, f.test) for f in found] == [("proof_sampled", "AC3")]
+    every = replace(listed, asserts="every string of one to four characters is accepted iff valid")
+    assert check_sampled_refusals(story, (*PROOF, every)) == []
+    assert check_sampled_refusals(STORY, PROOF) == []  # no refusal criterion: nothing to say
+    said = findings_message(found)
+    assert said.split("\n", 1)[0] == NO_FINDINGS and "proof_sampled AC3" in said
+    blocking = Finding("criterion_unproven", "AC2", "no test of the proof plan proves it", "")
+    assert not findings_message([*found, blocking]).startswith(NO_FINDINGS)  # a real finding still holds

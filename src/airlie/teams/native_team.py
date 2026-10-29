@@ -116,6 +116,10 @@ ENGINE_RETRY_S = 5.0
 """The pause before a retried generation: the engine's guard has just cancelled the request on its side."""
 WRITE_ONLY_AFTER = 4
 """Steps after the write-now nudge by which a role that still has not written loses its read tools."""
+RED_LIMIT = 6
+"""Failed run_tests runs in a row after which a think_when_red role stops (red_limit) and its layer goes back
+to the architect: two red streaks, the advisor asked after each (R1 of the performance plan, 2026-10-29: a
+failed build spent ~31 minutes red before its layer was re-planned, and the re-plan is what fixed it)."""
 RED_STREAK = 3
 """Failed run_tests runs in a row after which a think_when_red role's advisor (the supervisor) is asked for a
 diagnosis, added to that red run's output; again after each further RED_STREAK (roman, 2026-10-28: 35
@@ -407,6 +411,7 @@ class NativeTeam:
         last_tests_ok: bool | None = None  # the result of the last run_tests call (None: none yet)
         red_runs = 0  # failed run_tests runs in a row (think_when_red: a streak asks the advisor)
         test_wrong = False  # the advisor diagnosed the red streak as a wrong locked test
+        red_out = False  # RED_LIMIT failed runs in a row: the layer goes back to the architect
         red_advised = False  # the advisor was asked about a red streak and has not heard what came of it
         wrote_paths: set[str] = set()  # the files this run wrote or edited: not read again while red
         reads_seen: dict[str, tuple[str, int]] = {}  # a read's key -> (its path, the step that read it)
@@ -601,6 +606,7 @@ class NativeTeam:
                                 red_advised = False
                         else:
                             red_runs += 1
+                            red_out = red_runs >= RED_LIMIT  # R1: the architect's turn, not more red
                             fix = _steer(ctx, steps, "red-fix")  # what to do next, exactly: one edit
                             if ctx.on_stuck is not None and red_runs % RED_STREAK == 0:
                                 if red_advised:  # still red a whole streak after the last advice
@@ -751,6 +757,11 @@ class NativeTeam:
             if forked:
                 final_text = "fork point: stuck, handing over to branches"
                 stop = "fork_point"
+                break
+            if red_out and not test_wrong:
+                said = str(messages[-1].content) if messages else ""
+                final_text = f"stopped: the tests failed {red_runs} runs in a row.\n{said[-3000:]}"
+                stop = "red_limit"
                 break
             if test_wrong:
                 # the last observation is the failing run with the supervisor's diagnosis after it

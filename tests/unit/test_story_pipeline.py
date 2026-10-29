@@ -288,8 +288,11 @@ async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_
         "layer 01 (Storage): its package still fails the readiness check after 2 tries"
     )
     assert "package_unusable" in st.blocked and "01" not in st.built
-    asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
-    assert len(asked) == 3 and "could not be used: no JSON object" in asked[2]
+    asked = [r for r in engine.requests if r.role == "architect"]
+    # the retry is a turn of the drafting conversation (P9): its last message, with the drafting brief before
+    assert len(asked) == 3 and "could not be used: no JSON object" in asked[2].messages[-1].content
+    assert "You write the packages of all" in asked[2].messages[1].content
+    assert [e["layer"] for e in kinds(st.path / "events.jsonl", "package_resumed")] == ["01"]
     assert [e["kinds"] for e in kinds(st.path / "events.jsonl", "package_returned")] == [
         ["package_unusable"],
         ["package_unusable"],
