@@ -315,3 +315,31 @@ Run 3 is why the last rule exists: both of its detours came from model-made numb
 ### The dossier A/B (in progress)
 
 Six runs, alternating dossier off and on, on build 24a9138: every fix above, plus the no-pin rule.
+
+## Levers added 2026-10-29: retries
+
+Measured today across 9 roman runs, retries cost:
+
+| Retry | Cost |
+|---|---|
+| A gate re-plan | ~47 min: ~31 for the failed build, then ~15 to re-package and rebuild |
+| A package sent back | ~26 min |
+| A proof revision | ~16 min |
+
+The costliest part is the architect starting over in a cold conversation. In one-by-one package asks, 60 of 68
+calls were reads, at ~104 s each, because every call thinks to the 2048 budget first.
+
+- **P9: a retry resumes the drafting conversation.** A package sent back or a gate re-plan is asked in the
+  architect's own drafting conversation, which still holds the files, the agreement and its drafts. It is
+  compacted as P3 describes so it does not grow unbounded.
+  - Measured: minutes, calls and reads per retry, against the baseline above.
+- **P4b: per-step thinking.** The full budget only on the turn that writes the plan or package; a small one on
+  read steps.
+  - Measured: seconds per architect call.
+  - It is its own bundle: it changes every call's time, which would blur P9's numbers.
+- **R1: a failed build is time-limited.** After N red runs with no progress, the layer goes back to the
+  architect early, with the supervisor's diagnosis.
+  - Measured: minutes of failed build before the re-plan (baseline ~31).
+
+**Bundle 2 = P9 + R1 + Q1.** Q1 is a meeting finding when a refusal criterion is proven by a list instead of an
+exhaustive test. Each touches a different stage and has its own counter, so a bundle run shows each separately.
