@@ -205,3 +205,39 @@ def test_a_read_only_worktree_moves_to_another_commit_detached(tmp_path: Path) -
     assert not (tree / "b.py").exists()
     detach_at(tree, second)
     assert head_sha(tree) == second and (tree / "b.py").read_text() == "y = 2\n"
+
+
+def test_squash_since_appends_trailers_git_can_read(tmp_path: Path) -> None:
+    from airlie.teams.worktree import add_worktree, commit_wip, head_sha, squash_since
+
+    repo = repo_with_marker_tests(tmp_path)
+    base = head_sha(repo)
+    wt = add_worktree(repo, tmp_path / "wt", branch="layer-01", start_point=base)
+    (wt / "a.txt").write_text("a\n")
+    commit_wip(wt, "wip")
+    trailers = {"Airlie-Story": "AIR-9", "Airlie-Layer": "02/05", "Airlie-Tests": "3 tests in 2 files"}
+    sha = squash_since(wt, base, "story: layer two", trailers=trailers)
+    message = subprocess.run(
+        ["git", "log", "-1", "--format=%B", sha], cwd=wt, capture_output=True, text=True, check=True
+    ).stdout
+    assert message.startswith("story: layer two\n\nAirlie-Story: AIR-9\n")
+    parsed = subprocess.run(
+        ["git", "interpret-trailers", "--parse"], input=message, capture_output=True, text=True, check=True
+    )
+    assert parsed.stdout.splitlines() == [f"{k}: {v}" for k, v in trailers.items()]
+
+
+def test_a_trailer_with_a_bad_key_or_a_newline_is_refused_before_git_runs(tmp_path: Path) -> None:
+    from airlie.teams.worktree import squash_since
+
+    nowhere = tmp_path / "not-a-repo"  # git would fail on it: a ValueError proves git never ran
+    for bad in (
+        {"Bad Key": "x"},
+        {"Key:": "x"},
+        {"": "x"},
+        {"Airlie-Run": "a\nInjected: yes"},
+        {"Airlie-Run": "a\x00b"},
+        {"Airlie-Run": "a b"},
+    ):
+        with pytest.raises(ValueError, match="trailer"):
+            squash_since(nowhere, "0" * 40, "m", trailers=bad)

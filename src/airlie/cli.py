@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
+import httpx
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -17,6 +18,7 @@ from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config
 from airlie.story.state import StoryState
 
 if TYPE_CHECKING:
+    from airlie.engine.http_engine import HTTPEngine
     from airlie.supervisor.ledger import Ledger
 
 app = typer.Typer(
@@ -87,6 +89,8 @@ auth_app = typer.Typer(
     "(docs/integrations/sign-in.md).",
 )
 app.add_typer(auth_app, name="auth")
+lhr_app = typer.Typer(no_args_is_help=True, help="Love Heat Relationship authoring session (Supabase token).")
+app.add_typer(lhr_app, name="lhr")
 console = Console()
 err = Console(stderr=True)
 
@@ -295,7 +299,13 @@ def engine_logs(
 # ---- bench ----
 
 
-def _http_engine(cfg: AirlieConfig, engine_name: str, model_override: str | None = None):  # type: ignore[no-untyped-def]
+def _http_engine(
+    cfg: AirlieConfig,
+    engine_name: str,
+    model_override: str | None = None,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> HTTPEngine:
     from airlie.engine.http_engine import HTTPEngine
 
     e = cfg.engines[engine_name]
@@ -308,6 +318,7 @@ def _http_engine(cfg: AirlieConfig, engine_name: str, model_override: str | None
         served,
         lambda role: cfg.roles[role],
         api_key=e.api_key,
+        transport=transport,
         per_request_draft=e.per_request_draft,
         model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
     )
@@ -565,10 +576,61 @@ def serve(
     run(create_app(cfg, api_key=api_key), host=host, port=port)
 
 
+@app.command()
+def bridge(
+    config: ConfigOpt = None,
+    once: Annotated[
+        bool, typer.Option("--once", help="claim and run at most one job, then exit (for launchd or tests)")
+    ] = False,
+) -> None:
+    """Claim jobs from the Job Bus and run them on loopback `task serve` (outbound HTTPS only)."""
+    import asyncio
+
+    from airlie.serve.bridge import run_bridge
+    from airlie.serve.bridge.errors import BridgeError
+
+    cfg = _load(config)
+    url = cfg.bridge.job_bus_url
+    console.print(
+        f"airlie bridge → {url or '(no job_bus_url)'}  (kinds: {', '.join(cfg.bridge.kinds)}; once: {once})",
+        markup=False,
+    )
+    try:
+        processed = asyncio.run(run_bridge(cfg, once=once))
+    except BridgeError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    if once:
+        console.print(f"bridge: processed {processed} job(s)", markup=False)
+
+
 def _auth_store(cfg: AirlieConfig):  # type: ignore[no-untyped-def]
     from airlie.auth.store import AuthStore
 
     return AuthStore(cfg.observability.state_dir.expanduser() / "auth.sqlite")
+
+
+@lhr_app.command("set-token")
+def lhr_set_token(
+    config: ConfigOpt = None,
+    token: Annotated[
+        str,
+        typer.Option(
+            "--token",
+            envvar="LHR_SUPABASE_ACCESS_TOKEN",
+            help="Supabase access token from lhr-office",
+        ),
+    ] = "",
+) -> None:
+    """Save the Supabase bearer token for LHR authoring tools (state_dir/lhr/supabase_token)."""
+    if not token.strip():
+        err.print("[red]pass --token or set LHR_SUPABASE_ACCESS_TOKEN[/red]", emoji=False)
+        raise typer.Exit(1)
+    from airlie.tools.lhr_session import LhrSessionStore
+
+    cfg = _load(config)
+    LhrSessionStore(cfg.observability.state_dir).set_token(token)
+    console.print(f"saved LHR session token under {cfg.observability.state_dir.expanduser() / 'lhr'}")
 
 
 BaseUrlOpt = Annotated[
@@ -1320,6 +1382,74 @@ def story_restack(
         err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@story_app.command("pr-body")
+def story_pr_body(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="the story's issue (AIR-7 or its link)")
+    ] = None,
+    layer: Annotated[str | None, typer.Argument(metavar="NN", help="the built layer, 1 or 01")] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Print the pull request body a built layer would get now (the initiative, epic and story, the layer's
+    package, the tests that are its contract, the checks, the cost and the stack), before anything is
+    published. It reads the story's state and the board: no network, no model, nothing changed."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+
+    if ref is None or layer is None or not layer.isdigit():
+        err.print("[red]pass the story's issue and a layer number: story pr-body AIR-7 2[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+
+    async def go() -> str:
+        board, card = await factory.card_for(cfg, ref, None)
+        return await factory.body_one(cfg, board=board, card=card, nn=f"{int(layer):02d}", repo=repo)
+
+    try:
+        text = _run_stoppable(go())
+    except (BoardError, StorySetupError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print(text, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
+@story_app.command("describe")
+def story_describe(
+    ref: Annotated[
+        str | None, typer.Argument(metavar="ISSUE", help="the published story's issue (AIR-7 or its link)")
+    ] = None,
+    repo: Annotated[Path | None, typer.Option(help=REPO_HELP)] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Rebuild the title and body of every pull request a story published and edit them on GitHub (`gh pr
+    edit`), so a stack published earlier carries what a new one does. This changes PRs on GitHub, so it runs
+    only when you ask: never from the tick. A story that has not published is refused."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StorySetupError
+    from airlie.story.publish import PublishError
+
+    if ref is None:
+        err.print("[red]pass the published story's issue (AIR-7 or its link)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    _fail(factory.story_problems(cfg))
+
+    async def go() -> list[int]:
+        board, card = await factory.card_for(cfg, ref, None)
+        return await factory.describe_one(cfg, board=board, card=card, repo=repo)
+
+    try:
+        numbers = _run_stoppable(go())
+    except (factory.StoryBusy, BoardError, StorySetupError, PublishError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    console.print("re-described " + ", ".join(f"#{n}" for n in numbers), markup=False, highlight=False)
 
 
 @story_app.command("steps")

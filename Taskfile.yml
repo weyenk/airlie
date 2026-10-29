@@ -101,6 +101,16 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  story:pr-body:
+    desc: "Print the PR body a built layer would get now: the chain, the layer's package, its tests as the contract, the checks, the cost and the stack; no network, nothing published (task story:pr-body -- AIR-9 2)"
+    cmds:
+      - '{{.RUN}} airlie story pr-body {{.CLI_ARGS}}'
+
+  story:describe:
+    desc: "Rebuild and edit (gh pr edit) the title and body of every PR a published story has, so an older stack carries the provenance too; changes PRs on GitHub, so only by hand (task story:describe -- AIR-9)"
+    cmds:
+      - '{{.RUN}} airlie story describe {{.CLI_ARGS}}'
+
   line:stats:
     desc: "The numbers that judge whether stories go through unattended: the unattended rate, blocks by class and kind with the fix cards filed, hours against estimates, the amigos' objections and how many were borne out, the budgets' overruns (task line:stats -- [--since 2026-10-18])"
     cmds:
@@ -229,6 +239,27 @@ tasks:
     cmds:
       - '{{.RUN}} airlie serve {{.CLI_ARGS}}'
 
+  bridge:
+    desc: "Job Bus worker: outbound HTTPS claim/result to the hub, studio jobs on loopback task serve (src/airlie/serve/bridge/README.md)"
+    cmds:
+      - '{{.RUN}} airlie bridge {{.CLI_ARGS}}'
+
+  bridge:launchd:install:
+    desc: "Load launchd KeepAlive agent for task bridge (log ~/.local/state/airlie/bridge.log; needs BRIDGE_WORKER_SECRET in the shell env)"
+    cmds:
+      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/bridge.plist > ~/Library/LaunchAgents/dev.airlie.bridge.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.bridge.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.bridge 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.bridge.plist
+      - echo "loaded; the log is ~/.local/state/airlie/bridge.log"
+
+  bridge:launchd:uninstall:
+    desc: "Unload the bridge launchd agent and remove its plist"
+    cmds:
+      - launchctl bootout gui/$(id -u)/dev.airlie.bridge 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.bridge.plist
+
   # Task shows a command's output but discards a `sh:` precondition's, so the node check is a task of its own: its
   # message (which node was found) reaches the user, and as a dep of web:install it runs even when npm ci is skipped.
   web:node:
@@ -299,6 +330,32 @@ tasks:
     deps: [web:install]
     cmds:
       - npm run dev
+
+  hub:install:
+    desc: "Install the Job Bus hub npm dependencies (npm ci)"
+    dir: hub
+    run: once
+    deps: [web:node]
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/.package-lock.json
+    cmds:
+      - npm ci
+
+  hub:check:
+    desc: "Job Bus hub typecheck and contract tests (T1–T9)"
+    dir: hub
+    deps: [hub:install]
+    cmds:
+      - npm run typecheck
+      - npm test
+
+  hub:gate:
+    desc: "Job Bus hub gate (typecheck + contract tests)"
+    cmds:
+      - task: hub:check
 
   auth:admin:
     desc: "Create the first admin and print their invite link (task auth:admin -- --name Noah [--login noah@github] [--base-url https://studio.tailxxxx.ts.net]); docs/integrations/sign-in.md"

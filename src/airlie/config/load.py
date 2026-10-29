@@ -248,6 +248,9 @@ def load_config(
     cfg.story.repos_root = (base / cfg.story.repos_root.expanduser()).resolve()
     if cfg.lts.controller.adapter_path is not None:
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
+    for repo in cfg.bridge.allowed_repos:
+        p = repo.path.expanduser()
+        repo.path = p.resolve() if p.is_absolute() else (base / p).resolve()
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
