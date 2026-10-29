@@ -990,15 +990,15 @@ class AirlieConfig(Strict):
                 if role not in self.roles:
                     problems.append(f"{label} names '{role}', which is not in roles ({sorted(self.roles)})")
         if self.bridge.job_bus_url:
-            keys = [r.key for r in self.bridge.allowed_repos]
+            keys = [repo.key for repo in self.bridge.allowed_repos]
             if len(keys) != len(set(keys)):
                 problems.append("bridge.allowed_repos keys must be unique")
-            defaults = [r for r in self.bridge.allowed_repos if r.default]
+            defaults = [repo for repo in self.bridge.allowed_repos if repo.default]
             if len(defaults) > 1:
                 problems.append("bridge.allowed_repos: at most one default: true")
-            for r in self.bridge.allowed_repos:
-                if not r.path.is_absolute():
-                    problems.append(f"bridge.allowed_repos.{r.key}.path must be an absolute path")
+            for repo in self.bridge.allowed_repos:  # not `r`: the roles loop above typed it a RoleSpec
+                if not repo.path.is_absolute():
+                    problems.append(f"bridge.allowed_repos.{repo.key}.path must be an absolute path")
         return problems
 
     def engine_for_model(self, model: str) -> str:

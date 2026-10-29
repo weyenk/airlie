@@ -313,12 +313,15 @@ def _http_engine(
     def served(role: str) -> str:
         return e.served_name(model_override or cfg.roles[role].model)
 
+    # only a transport given: passing None would override one HTTPEngine already carries (the story harness
+    # wraps HTTPEngine with a scripted transport; None sent its runs to the network)
+    given: dict[str, Any] = {"transport": transport} if transport is not None else {}
     return HTTPEngine(
         e.base_url or "",
         served,
         lambda role: cfg.roles[role],
         api_key=e.api_key,
-        transport=transport,
+        **given,
         per_request_draft=e.per_request_draft,
         model_spec_for=lambda role: cfg.models[model_override or cfg.roles[role].model],
     )
