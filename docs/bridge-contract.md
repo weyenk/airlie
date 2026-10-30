@@ -2,6 +2,8 @@
 
 The Job Bus is the shared cloud queue between product clients (LHR, ECFF, …), channel adapters, and the outbound Mac `task bridge`. This document is the human-readable source of truth; the machine-readable OpenAPI lives at [`hub/openapi.yaml`](../hub/openapi.yaml).
 
+**Product clients:** see [`docs/integrations/bridge-clients.md`](integrations/bridge-clients.md) for how any BFF connects (tenant key, `created_by`, payload rules).
+
 ## Base URL
 
 Deploy the hub at `/api/v1` (example: `https://hub.example/api/v1`).
