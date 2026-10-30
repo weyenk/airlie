@@ -383,3 +383,28 @@ R1 and Q1 never triggered. Run 3 had three faults, fixed in 7250e2c before bundl
   The ask after a proof revision is now a turn of the drafting conversation (`brief-proof-revised`).
 - **The tester labelled its revised tests with the story's slug.** A label that names no layer is now the
   revised layer's; another layer's name is still refused.
+
+### Bundle 3: reliability, until three clean runs (2026-10-29/30, roman, dossier on)
+
+Bundle 2's three fixes (7250e2c) went in first. Then each failed run was stopped, its cause fixed, and the bench
+restarted from run 1:
+
+| Try | Build | What broke | Fix |
+|---|---|---|---|
+| 1 | 7250e2c | Refine's AC8 said no canonical numeral exceeds four characters (XVIII has five). The meeting agreed, the architect's tests encoded it, the gate went red, and on the re-plan the critic held the architect to the false bound | 7de5f2b: a `proof_change` may name `{criterion, why}`. Product rewords the criterion under its id, then the tester revises the tests |
+| 2 | 7de5f2b | The architect wrote `_assert_malformed(s)` at the module's top level while the tests called `self._assert_malformed`. The coder, locked out of the test file, patched `unittest.TestCase` from `roman.py` | 3caade8: `unknown_method`, a test calling a `self.` method its class does not have |
+| 2 (re-plan) | 7de5f2b | AC5 named every string of sixteen or more characters, and the architect swept `itertools.product(letters, repeat=16)` (7^16 cases). Scoped runs timed out at 600 s, and the coder spent an hour in `shell` | 6f6e8e8: `test_too_large`, an `itertools.product` sweep over ten million cases |
+
+**Three clean runs on 6f6e8e8.** Each ran with no retry, no package sent back and no re-plan:
+
+| Run | Layers | Minutes | Oracle spec | Oracle extra | Mutation |
+|---|---|---|---|---|---|
+| 1 | 1 | 23.4 | 18/18 | 8/8 | 31/38 |
+| 2 | 2 | 55.1 | 18/18 | 6/8 | 55/55 |
+| 3 | 1 | 27.6 | 18/18 | 8/8 | 33/33 |
+
+Notes:
+- Run 1's survivors are the numeral table's constants. Its AC1 only round-trips, so no test pins the canonical form.
+- Run 2's two missed extras are type cases (a float or bool given to `to_roman`) that the request does not ask for.
+- When a scoped run times out, the coder stops calling `run_tests`, so R1 (which counts red `run_tests`) never fires.
+  `test_too_large` covers the case seen, but not the gap itself.
