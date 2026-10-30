@@ -35,6 +35,13 @@ def plan_pulls(cfg: AirlieConfig, only: Sequence[str] = ()) -> list[PullPlan]:
         plans.append(
             PullPlan(name, m.repo, m.revision, ("hf", "download", m.repo, *file, "--revision", m.revision))
         )
+        if m.mtp is not None:  # the head served beside it (engine/mtp.py)
+            r = m.mtp
+            plans.append(
+                PullPlan(
+                    f"{name}:mtp", r.repo, r.revision, ("hf", "download", r.repo, "--revision", r.revision)
+                )
+            )
     return plans
 
 

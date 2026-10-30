@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from airlie.config import AirlieConfig, load_config
+from airlie.config import AirlieConfig, ModelRef, load_config
 from airlie.doctor import CheckResult, SystemProbe, node_check, run_checks, web_node_pin
 
 TOOLS_OK = {
@@ -600,3 +600,16 @@ def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_nami
     assert engine_matches_profile(cfg, RunningEngine(None), "studio").status == "warn"
     assert engine_matches_profile(cfg, RunningEngine(None), "single").status == "warn"
     assert engine_matches_profile(cfg, RunningEngine(None), "nope").status == "warn"  # a profile not declared
+
+
+def test_a_missing_mtp_head_is_its_own_finding_and_names_the_pull_task(tmp_path: Path) -> None:
+    c = managed(tmp_path)
+    c.models["team"].mtp = ModelRef(repo="org/model-MTP", revision="h1")
+    missing = by_name(run_checks(c, FakeProbe(snapshots={"org/model@r1"})))
+    assert missing["model:team"].status == "ok"
+    assert (
+        missing["model:team:mtp"].status == "fail"
+        and "task models:pull -- team" in missing["model:team:mtp"].detail
+    )
+    present = by_name(run_checks(c, FakeProbe(snapshots={"org/model@r1", "org/model-MTP@h1"})))
+    assert present["model:team:mtp"].status == "ok"

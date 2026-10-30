@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from airlie.config import ModelSpec, load_config
+from airlie.config import ModelRef, ModelSpec, load_config
 from airlie.engine.registry import build_registry, build_serve_command, write_registry
 
 
@@ -87,8 +87,11 @@ def test_serve_command_pins_spec_launch_parameters(tmp_path: Path) -> None:
         "--models-config",
         "/state/models.yaml",
     ]
-    pairs = dict(zip(argv[6::2], argv[7::2], strict=False))
+    pairs = {
+        a: b for a, b in zip(argv, argv[1:], strict=False) if a.startswith("--") and not b.startswith("--")
+    }
     flags = set(argv)
+    assert "--enable-mtp" in flags  # `small` decodes with its MTP head
     assert pairs["--host"] == "127.0.0.1"
     assert pairs["--port"] == "8080"
     assert pairs["--max-num-seqs"] == "16"  # spec 02 §1
@@ -159,3 +162,20 @@ def test_server_parsers_false_emits_no_parser_flags(tmp_path: Path) -> None:
     assert "--enable-auto-tool-choice" not in argv
     argv = build_serve_command(cfg(tmp_path), "main", Path("/r.yaml"))
     assert argv[argv.index("--tool-call-parser") + 1] == "qwen"
+
+
+def test_a_model_with_an_mtp_head_is_served_from_its_built_directory_with_mtp_on(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    c.models["small"].enable_mtp = False
+    c.models["base"].mtp = ModelRef(repo="org/base-MTP-bf16", revision="h" * 40)
+    reg = build_registry(c, "main", snap, {"base": tmp_path / "built" / "base"})
+    base, small = reg["models"]
+    assert base["path"] == str(tmp_path / "built" / "base") and base["enable_mtp"] is True
+    assert small["enable_mtp"] is False
+    assert "--enable-mtp" in build_serve_command(c, "main", Path("/state/models.yaml"))
+
+
+def test_an_engine_whose_models_have_no_mtp_head_is_launched_without_it(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    c.models["small"].enable_mtp = False
+    assert "--enable-mtp" not in build_serve_command(c, "main", Path("/state/models.yaml"))

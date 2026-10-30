@@ -2,10 +2,11 @@
 
 from pathlib import Path
 
+import mlx.core as mx
 import pytest
 import yaml
 
-from airlie.config import load_config
+from airlie.config import ModelRef, load_config
 from airlie.engine.process import EngineProcess, ProcessRunner
 from airlie.engine.types import EngineError
 
@@ -200,3 +201,32 @@ async def test_llama_server_engine_starts_with_the_gguf_and_waits_for_its_alias(
     assert argv[:3] == ["llama-server", "-m", "/hf/ggml-org/Kev-4B-GGUF/d9/Kev-4B-Q4_K_M.gguf"]
     assert h.ok and h.models == {"kev": "ready"}
     assert not p.registry_path.exists()  # no vllm-mlx registry for a llama_server engine
+
+
+async def test_a_model_with_an_mtp_head_is_served_from_a_directory_built_for_it(
+    tmp_path: Path,
+) -> None:
+    hf = tmp_path / "hf"
+    (hf / "org/base/r1").mkdir(parents=True)
+    (hf / "org/base/r1/config.json").write_text("{}")
+    (hf / "org/base-MTP/h1").mkdir(parents=True)
+    mx.save_safetensors(str(hf / "org/base-MTP/h1/model.safetensors"), {"fc.weight": mx.ones((2,))})
+    c = cfg(tmp_path)
+    c.models["base"].mtp = ModelRef(repo="org/base-MTP", revision="h1")
+    runner = FakeRunner()
+    p = EngineProcess(
+        c,
+        "main",
+        state_dir=tmp_path / "state",
+        runner=runner,
+        prober=FakeProber(health=[True], models=[["base", "small"]]),
+        snapshot_dir=lambda m: hf / m.repo / m.revision,
+        poll_s=0,
+    )
+    await p.start(timeout_s=5)
+    argv, _ = runner.spawned[0]
+    base = yaml.safe_load(Path(argv[5]).read_text())["models"][0]
+    built = tmp_path / "state" / "engines" / "main" / "models" / "base-r1-h1"
+    assert base["path"] == str(built) and base["enable_mtp"] is True
+    assert (built / "config.json").is_symlink() and (built / "mtp" / "weights.safetensors").is_file()
+    assert "--enable-mtp" in argv

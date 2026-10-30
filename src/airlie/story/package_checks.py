@@ -217,10 +217,17 @@ def sweeps_too_large(worktree: Path, package: Package) -> list[Finding]:
                 for n in ast.walk(fn)
                 if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and (top := _range_top(n.iter))
             }
+            # a sweep inside itertools.islice(..., stop) goes over at most `stop` cases (bundle 4 run 1: a
+            # bounded islice(product(..., repeat=15), 1000) was sent back)
+            sliced = {
+                id(c.args[0])
+                for c in ast.walk(fn)
+                if isinstance(c, ast.Call) and _base_name(c.func) == "islice" and c.args
+            }
             sizes = [
                 got
                 for c in ast.walk(fn)
-                if isinstance(c, ast.Call) and (got := _sweep_size(c, consts, loops))
+                if isinstance(c, ast.Call) and id(c) not in sliced and (got := _sweep_size(c, consts, loops))
             ]
             big = [(n, how) for n, how in sizes if n > SWEEP_LIMIT]
             if big:

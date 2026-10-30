@@ -201,6 +201,10 @@ class MulTest(unittest.TestCase):
         for combo in itertools.product(LETTERS, repeat=16):
             self.assertTrue(mul(1, len(combo)) == 16)
 
+    def test_sliced_sweep(self):
+        for combo in itertools.islice(itertools.product(LETTERS, repeat=15), 1000):
+            self.assertTrue(mul(1, 1) == 1)
+
     def test_unreadable_sweep(self):
         for combo in itertools.product(make_letters(), repeat=16):
             self.assertTrue(mul(1, 1) == 1)
@@ -210,7 +214,7 @@ class MulTest(unittest.TestCase):
 async def test_a_test_that_sweeps_more_cases_than_can_run_is_a_finding(tmp_path: Path) -> None:
     """2026-10-29, bundle 3 (roman): itertools.product(letters, repeat=16) timed the coder's runs out."""
     root, base = calc(tmp_path)
-    ids = ("test_short_sweep", "test_long_sweep", "test_unreadable_sweep")
+    ids = ("test_short_sweep", "test_long_sweep", "test_sliced_sweep", "test_unreadable_sweep")
     covers = {"AC1": tuple(f"tests/test_mul.py::MulTest::{t}" for t in ids)}
     _, found = await check(tmp_path, root, base, package({"tests/test_mul.py": SWEEP_TESTS}, covers))
     [big] = [f for f in found if f.kind == "test_too_large"]

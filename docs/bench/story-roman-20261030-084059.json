@@ -1,0 +1,193 @@
+{
+ "case": "roman",
+ "started": "2026-10-30T08:02:36",
+ "airlie_build": "0684448",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "layers",
+ "blocked": "layer 01 (Add sandbox/roman.py with standard variable-length to_roman and a strict): its package still fails the readiness check after 2 tries (test_too_large)",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 38.4,
+  "idle_min": 1.0,
+  "decode_tps_by_context": {
+   "<16k": 32.7,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.1
+   },
+   {
+    "at": "plan_done",
+    "min": 10.5
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 25.4
+   },
+   {
+    "at": "story_done",
+    "min": 25.4
+   },
+   {
+    "at": "packages_drafting",
+    "min": 25.4
+   },
+   {
+    "at": "story_done",
+    "min": 38.4
+   }
+  ],
+  "roles": [
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 48864,
+    "tokens_out": 12130,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 520.211,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 58198,
+    "tokens_out": 18700,
+    "prefill_s": 35.8006,
+    "decode_s": 536.4718,
+    "wall_s": 206.6582,
+    "reads": 3,
+    "thinking_tokens": 12234,
+    "decode_tps": 34.9,
+    "prefill_tps": 1626
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 54751,
+    "tokens_out": 5398,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 195.047,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 42344,
+    "tokens_out": 5134,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 181.448,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 5,
+    "tokens_in": 25134,
+    "tokens_out": 17040,
+    "prefill_s": 16.840899999999998,
+    "decode_s": 485.76059999999995,
+    "wall_s": 171.3709,
+    "reads": 2,
+    "thinking_tokens": 10317,
+    "decode_tps": 35.1,
+    "prefill_tps": 1492
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 12922,
+    "tokens_out": 2426,
+    "prefill_s": 7.3304,
+    "decode_s": 116.2444,
+    "wall_s": 123.6852,
+    "reads": 6,
+    "thinking_tokens": 1332,
+    "decode_tps": 20.9,
+    "prefill_tps": 1763
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 6,
+    "tokens_in": 11664,
+    "tokens_out": 1736,
+    "prefill_s": 14.374600000000001,
+    "decode_s": 93.0707,
+    "wall_s": 107.60790000000001,
+    "reads": 5,
+    "thinking_tokens": 0,
+    "decode_tps": 18.7,
+    "prefill_tps": 811
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 6,
+    "tokens_in": 56029,
+    "tokens_out": 1995,
+    "prefill_s": 24.2229,
+    "decode_s": 56.863299999999995,
+    "wall_s": 83.5977,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 35.1,
+    "prefill_tps": 2313
+   },
+   {
+    "phase": "proof",
+    "role": "tester",
+    "calls": 5,
+    "tokens_in": 41668,
+    "tokens_out": 2042,
+    "prefill_s": 12.744300000000003,
+    "decode_s": 56.413199999999996,
+    "wall_s": 70.3605,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 36.2,
+    "prefill_tps": 3270
+   }
+  ],
+  "retries": {
+   "plan_rounds": 1,
+   "plan_fixes": 1,
+   "meeting_turns": 9,
+   "meeting_objections": 5,
+   "critic_objections": 0,
+   "package_attempts": 3,
+   "packages_rejected": 2,
+   "unusable_replies": 0,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

@@ -185,10 +185,15 @@ bar above plus the lever's own check listed below.
   - the acceptance rate is logged
   - outputs are identical at temperature 0 on a fixed prompt set
   - memory peak is under the limit
-- **Status: blocked by the engine (checked 2026-10-27).** vllm-mlx 0.5.0, the installed version, has no draft-model
-  speculative decoding. Its only draft model is SpecPrefill, which speeds up reading, not writing. `--enable-mtp`
-  exists in 0.5.0 and 0.6.0, but it needs a model with MTP heads, which mlx-community's Qwen builds lack, so MTP
-  stays parked. P8 waits on upstream or an MTP-capable build.
+- **Status: built (2026-10-30, MTP rather than a separate drafter).** The 2026-10-27 note here, "blocked by the
+  engine", was wrong. vllm-mlx 0.5.0 has MTP for this exact architecture (`patches/qwen3_5_mtp.py`, dense 27B,
+  and the MLLM batched path). mlx-community publishes the head alone as `Qwen3.8-27B-MTP-bf16` (0.85 GB, BF16),
+  which the 4-bit build drops. airlie serves the generalist from a directory that links the body and holds the
+  head re-keyed under `mtp.` (`engine/mtp.py`, a model's `mtp:` in `config/models.yaml`), with `--enable-mtp`.
+  - Smoke test, one draft token, temperature 0: 27.0–27.5 tok/s before, 32.6–36.2 after (1.19–1.34×).
+  - Outputs diverge only at near-ties (the two-token verify changes the arithmetic).
+  - The hybrid prefix cache still hits: a resumed 24k-token turn took 2.0 s against 28.7 s cold.
+  - Two concurrent requests both finish. Resident memory is 19.6 GB.
 - **Batching (P7) is already available:** airlie runs with `continuous_batching: true` and `max_num_seqs: 16`, so
   P7 needs no engine work, only the pipeline overlap and a memory measurement.
 
@@ -408,3 +413,74 @@ Notes:
 - Run 2's two missed extras are type cases (a float or bool given to `to_roman`) that the request does not ask for.
 - When a scoped run times out, the coder stops calling `run_tests`, so R1 (which counts red `run_tests`) never fires.
   `test_too_large` covers the case seen, but not the gap itself.
+
+## Levers added 2026-10-30: overlap (P7 split; value them after the MTP work)
+
+Noah's question: can the meeting, the architect, the coder and the reviewer work at the same time? Decoding is
+memory-bound, so two batched streams give about 1.8× the throughput of one. That beats MTP's 1.3×, and the
+single-stream MTP rule turns drafts off while requests overlap. These follow the MTP bundles and are valued
+then. Riskiest last:
+
+- **O1: the architect drafts ahead while the coder builds.** Today every package is drafted before the first
+  layer is built (bundle 3 run 2: 24 minutes for two packages before any code). Instead the coder starts layer
+  1 once its package passes the checks, while the architect drafts layers 2 to N and the critic reads them.
+  Each package is still checked against its real base just before its layer, so correctness is unchanged.
+  - Measured: minutes from the first package ready to the last layer built, on roman and on wiki.
+  - Check: locks, the shared SQLite, the test lock and peak memory with two contexts loaded.
+- **O2: the reviewer reviews layer N while layer N+1 is written.** N+1 is built on N's branch, so a review
+  that asks for changes means a rebase and possibly rework.
+  - First measure how often a review blocks. Then decide whether to overlap always, or only when the gate is
+    green and the review is advisory.
+- **O3: parallel meeting rounds.** Product, the architect and the tester answer the same state at once, then
+  the checker runs: one call per round instead of three (meetings ran 6–12 turns, 8–15 minutes).
+  - Risk: roles stop reacting to each other within a round, so parts can conflict and rounds can multiply.
+  - Measured: meeting minutes and turns, and the agreed proof's quality (re-plans, proof revisions, oracle),
+    against turn-based meetings.
+
+### Bundle 4 result: MTP (2026-10-30, roman)
+
+Built in four commits:
+- **6f083ec:** the generalist serves its mlx-community MTP head.
+- **2960f6d:** a request joins an MTP batch only once the batch is settled. vllm-mlx 0.5.0 otherwise fed rows
+  a token their cache already held, which corrupted 3 of 15 concurrent replays (`"acceptacceptance"`,
+  `<=read_file>`).
+- **3d4ff59:** thinking requests draft while their budget processor would change nothing. Before it, 1,829 of
+  4,552 requests carried the processor and got no MTP.
+- **43f54d3:** MTP drafts only while one request decodes. With two rows, refine fell to 17.6 tok/s against 26
+  without MTP.
+
+Live checks:
+- One request: 37 tok/s, against 27.
+- Three at once: 23.8 tok/s each.
+- Thinking budgets close on the exact token.
+- The corruption replay: 0 of 15.
+
+Three runs on 43f54d3, all published with the oracle spec at 18/18. A scan of all 199 replies found no dropped
+or doubled token.
+
+| Run | Minutes | Output tokens | Min per 1k tokens | Rework |
+|---|---|---|---|---|
+| 1 | 123.9 | 173,826 | 0.71 | The proof said no numeral exceeds 13 characters: red build, criteria reworded (AC4, AC6), proof revised |
+| 2 | 26.9 | 43,361 | 0.62 | None |
+| 3 | 47.2 | 68,621 | 0.69 | The architect's test compared `from_roman(s)` to `int(s)`: gate re-plan, and a package sent back once (`file_missing`) |
+
+Bundle 3's runs without MTP were 0.71–0.76 min per 1k tokens.
+
+**Decode per reply:**
+- 31.3–32.7 tok/s with MTP, against 24.8–25.4 without (+25–30%).
+- Architect 33.1–33.7, tester 32.0–36.1.
+- The coder stays at about 26: its repetition penalty is a logits processor, so it gets no MTP.
+
+Wall time per output token improves less, 10–18%. Prefill, test runs, tool calls and waiting are not decoding.
+
+**Verdict:** MTP is a real per-token gain and keeps output correct with the guard. Two things outweigh it at the
+run level:
+- **How much the roles write:** the meeting wrote 9k–12.6k tokens across runs, the coder 1.2k–9.1k.
+- **Rework from invented facts:** four runs in five had a false derived fact or a wrong expected value in the
+  criteria, the proof or a test.
+
+**Next, bundle 6:**
+- **C1:** a sandboxed `compute` tool for product, the architect and the tester, with a rule that a stated
+  number is computed first.
+- **R2:** a wrong-acceptance-test triage ends the build and re-plans.
+- **M1:** a test file the package writes in full, marked "modify" but missing on the base, is created.
