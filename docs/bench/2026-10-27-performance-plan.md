@@ -494,3 +494,37 @@ run level:
   - Speed: about 0.55× decode, about 0.7× with MTP, whose acceptance should rise.
   - Judge it by wall-clock per built layer including fix cycles, as the fidelity-vs-intelligence experiment
     set out (2026-10-18). Value it after bundle 6 shows what `compute` does to rework.
+
+### Bundle 6 result: compute (C1), R2, M1 (2026-10-30, roman)
+
+The first two tries (924e8ba) blocked:
+- **Try 1:** a layers follow-up was cut off at max_tokens.
+- **Try 2:** the meeting's 1..15-character sweep was dropped without a proof_change, then a covers id carried a
+  note. Both mended in 2d4b431.
+
+On 2d4b431/9d3f2bb:
+
+| Run | Layers | Minutes | Min per 1k tokens | Oracle | Rework | compute calls |
+|---|---|---|---|---|---|---|
+| 1 | 2 | 47.2 | 0.56 | 18/18, 8/8 | None | 24 |
+| 2 | – | blocked | – | – | The meeting hit its turn cap: `proof_sampled` kept firing on AC6 and the tester posted no proof until turn 13 | 7+ |
+| 3 | 2 | 71.7 | 0.55 | 18/18, 6/8 | Two proof revisions, one retried | 40 |
+
+**What it showed:**
+- **No invented derived fact reached a build.** Rework moved to the meeting and to proof revisions.
+- **compute was overused.** In run 3 its steps produced 72,000 tokens (about 36 minutes of decoding), each call
+  writing a fresh reference implementation. Layer planning in run 1 took 18.6 minutes.
+- **The meeting never had compute:** its tool list was hard-coded to the read tools. The tester's proof called
+  DCCCLXXXVIII "14 characters, the maximum".
+
+### Reliability round 1 (2026-10-30)
+
+- **The meeting gets compute.**
+- **compute keeps a workspace per conversation**, so a reference module is saved once and imported later, and
+  a conversation runs at most 6 programs.
+- **`proof_sampled` stays quiet** when the proof already has an exhaustive test under any criterion.
+- **`proof_too_large` (advice)** flags a proof sweep over a named alphabet that is too large to run.
+- **A first cut-off at max_tokens is asked again, shorter.** A second cut-off in the same story, stage and role
+  still blocks.
+- **Left as is:** a timed-out test run already counts as red for R1. The gap was the coder switching to shell,
+  which `test_too_large` (before the build) and R2 (the repeat guard) now cover.

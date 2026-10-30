@@ -68,3 +68,17 @@ async def test_it_cannot_reach_the_network(tmp_path: Path) -> None:
 def test_the_profile_without_network_denies_it() -> None:
     assert "(deny network*)" in confine.profile(1, network=False)
     assert "network" not in confine.profile(1)
+
+
+async def test_files_a_program_writes_stay_for_the_next_call_and_calls_are_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bundle 6 run 3 (2026-10-30): 40 calls, 72,000 tokens, each writing the same reference again. A module
+    saved once is imported after; past CALLS the tool says to answer."""
+    monkeypatch.setattr(compute, "CALLS", 2)
+    tool, ctx = Compute(), ToolContext(worktree=tmp_path)
+    saved = await tool.run({"code": "open('ref.py', 'w').write('def double(n):\\n    return 2 * n\\n')"}, ctx)
+    used = await tool.run({"code": "from ref import double\nprint(double(21))"}, ctx)
+    past = await tool.run({"code": "print(1)"}, ctx)
+    assert saved.ok and (used.ok, used.output) == (True, "42\n")
+    assert not past.ok and "answer from what they showed" in past.output

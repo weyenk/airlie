@@ -674,18 +674,19 @@ def cut_off_why(role: str) -> str:
 
 
 @pytest.mark.parametrize("cut", [CUT_THINKING, CUT_IN_JSON], ids=["still thinking", "half a json block"])
-async def test_an_architect_cut_off_at_max_tokens_stops_the_story_at_once_and_is_named(
+async def test_an_architect_cut_off_twice_at_max_tokens_stops_the_story_and_is_named(
     tmp_path: Path, cut: FakeReply
 ) -> None:
     """HDS-3 (2026-10-15): the architect thought until max_tokens, the loop took the empty text for its answer
-    and the story stopped with "no JSON object in the reply". Now the cut-off is named. The same config meets
-    the same cap, so the architect is not asked again though attempts are left."""
+    and the story stopped with "no JSON object in the reply". Now the cut-off is named. A first cut-off is
+    asked again, shorter (2026-10-30: two stories blocked on one long-winded reply each); a second stops."""
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine({"product": [STORY], "architect": [cut, cut, cut]})
     st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
     assert st.stage == "refine" and st.blocked == f"the architect did not finish: {cut_off_why('architect')}"
-    assert [r.role for r in engine.requests].count("architect") == 1
-    assert not kinds(st.path / "events.jsonl", "retry")
+    assert [r.role for r in engine.requests].count("architect") == 2
+    [retry] = kinds(st.path / "events.jsonl", "retry")
+    assert "ran out of room" in retry["error"]
     assert "cut off at max_tokens" in (st.path / "notes.md").read_text()  # the person is told on the board
     assert "no JSON object" not in (st.path / "events.jsonl").read_text()
 
@@ -704,7 +705,7 @@ async def test_a_reply_cut_off_in_a_loop_of_repeats_is_asked_again_with_the_reas
     assert retry["stage"] == "refine"
 
 
-async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_after_one_stops_the_story(
+async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_is_asked_again_shorter(
     tmp_path: Path,
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
@@ -712,11 +713,13 @@ async def test_a_retry_prompt_has_no_operator_advice_and_a_cut_off_after_one_sto
     engine = FakeEngine({"product": [STORY], "architect": replies})
     st = await pipeline(tmp_path, repo, engine, story={"stage_attempts": 3}).run(text_card("avatars"))
     asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
-    assert len(asked) == 2 and st.blocked == f"the architect did not finish: {cut_off_why('architect')}"
+    assert len(asked) >= 3 and (st.blocked is None or "did not finish" not in st.blocked), st.blocked
     assert (
         "could not be used" in asked[1] and "no JSON object" in asked[1]
     )  # the model is told what was wrong
-    assert "roles." not in asked[1] and "max_tokens" not in asked[1]  # in its own terms, not the operator's
+    assert "ran out of room" in asked[2] and "shorter" in asked[2]
+    for told in asked[1:3]:
+        assert "roles." not in told and "max_tokens" not in told  # in its own terms, not the operator's
 
 
 async def test_a_failing_layer_stops_and_a_resume_rebuilds_only_that_layer(tmp_path: Path) -> None:
