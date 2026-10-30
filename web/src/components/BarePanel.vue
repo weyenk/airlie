@@ -9,7 +9,7 @@
   >
     <div class="flex w-[400px] max-w-full flex-col gap-4 rounded-xl border border-border bg-card p-7 shadow-card">
       <div class="flex items-center gap-2.5">
-        <span class="inline-flex size-9 items-center justify-center rounded-[10px] bg-primary text-lg font-extrabold text-primary-foreground">a</span>
+        <img src="/logo.png" alt="" width="36" height="36" class="size-9 rounded-[10px] border border-border object-cover" />
         <strong class="text-lg">airlie</strong>
       </div>
       <slot />

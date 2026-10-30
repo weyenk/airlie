@@ -26,7 +26,10 @@ const initials = computed(() => {
   <header
     class="sticky top-0 z-[2] flex h-(--header-h) items-center gap-3.5 border-b border-border bg-bar px-5 max-[640px]:px-4"
   >
-    <RouterLink to="/" class="text-base font-bold">airlie</RouterLink>
+    <RouterLink to="/" class="inline-flex items-center gap-2.5 text-base font-bold">
+      <img src="/logo.png" alt="" width="28" height="28" class="size-7 rounded-full border border-border object-cover" />
+      airlie
+    </RouterLink>
     <nav data-test="tabs" aria-label="Main" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px] max-[640px]:hidden">
       <RouterLink
         v-for="t in TABS"

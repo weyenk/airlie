@@ -1,5 +1,9 @@
 # airlie
 
+<p align="center">
+  <img src="web/public/logo.png" alt="airlie" width="96" height="96" />
+</p>
+
 Parallel agent teams on one Apple Silicon Mac, sharing what they learn. airlie runs K independent agent teams
 against a [vllm-mlx](https://github.com/waybarrios/vllm-mlx) engine it manages for you, with a Learning-to-Share
 memory bank between the teams and an EdgeAgent-style scheduler, exactly as laid out in

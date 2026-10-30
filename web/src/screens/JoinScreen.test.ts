@@ -50,7 +50,7 @@ test("the invite is read from the path and names who it is for and who sent it",
 test("a name is shown as text, never as markup", async () => {
   api.peekInvite.mockResolvedValue("<img src=x onerror=alert(1)>");
   const { w } = await open();
-  expect(w.find("img").exists()).toBe(false);
+  expect(w.find('img[src="x"]').exists()).toBe(false);
   expect(w.text()).toContain("<img src=x onerror=alert(1)>");
 });
 
