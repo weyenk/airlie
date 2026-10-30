@@ -444,12 +444,14 @@ async def agreed_run(
     *,
     meeting: object | None = None,
     story: dict[str, object] | None = None,
+    product: list[FakeReply] = (),  # type: ignore[assignment]
 ) -> tuple[StoryState, FakeEngine]:
     """The one-layer calc story with an agreement in hand (the meeting is a double): the architect's
-    `packages` after its layer plan, the tester critic's replies, then the coder's."""
+    `packages` after its layer plan, the tester critic's replies, then the coder's; `product` after the
+    story it refines."""
     engine = FakeEngine(
         {
-            "product": [STORY],
+            "product": [STORY, *product],
             "architect": [LAYERS, *packages],
             "tester": tester,
             "coder": coder,
@@ -616,6 +618,71 @@ async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_
     assert ready["tests"] == [ID_MUL, ID_ONE]
     assert not kinds(events, "package_returned")
     assert [e["layer"] for e in kinds(events, "package_resumed")] == ["01"]
+
+
+CRITERION_FALSE = FakeReply(
+    text="AC2 says the profile shows it, which this layer's mul cannot.\n```json\n"
+    + json.dumps(
+        {
+            "type": "proof_change",
+            "changes": [{"criterion": "AC2", "why": "it asks for a profile page, not mul"}],
+        }
+    )
+    + "\n```"
+)
+REWORDED = fenced(
+    {
+        "type": "story",
+        "title": "Add avatar upload",
+        "summary": "Users upload an avatar and see it.",
+        "acceptance": [
+            {"id": "AC1", "given": "a user", "when": "they upload a PNG", "then": "it is stored"},
+            {"id": "AC2", "given": "a stored avatar", "when": "mul(7, 1) is asked", "then": "it is 7"},
+        ],
+    }
+)
+
+
+async def test_a_criterion_the_architect_finds_false_is_reworded_by_product_then_the_proof_revised(
+    tmp_path: Path,
+) -> None:
+    """2026-10-29, bundle 3 run 1 (roman): AC8 said no canonical numeral exceeds four characters, and nobody
+    after the meeting could change it. The architect names the criterion; product rewords it under its id in
+    one fresh ask, the tester revises the tests against the new story, and the architect is asked again."""
+    st, engine = await agreed_run(
+        tmp_path,
+        [CRITERION_FALSE, two(BY_ONE, "test_mul_by_one")],
+        [NEW_PROOF, AGREE_ALL],
+        [FEATURE, DONE],
+        story={"package_attempts": 1},
+        product=[REWORDED],
+    )
+    assert st.blocked is None and st.stage == "review", st.blocked
+    revision = prompts(engine, "product")[1]
+    assert "found the acceptance criteria named below false" in revision
+    assert "AC2: it asks for a profile page" in revision
+    assert st.story is not None and st.story["acceptance"][1]["when"] == "mul(7, 1) is asked"
+    assert st.agreement is not None and st.agreement["story"]["acceptance"][1]["then"] == "it is 7"
+    tester = prompts(engine, "tester")[0]
+    assert "mul(7, 1) is asked" in tester and "AC2: (criterion, now reworded)" in tester
+    events = st.path / "events.jsonl"
+    [revised] = kinds(events, "story_criteria_revised")
+    assert revised["criteria"] == ["AC2"]
+    assert kinds(events, "amigos_proof_revised") and kinds(events, "package_ready")
+
+
+async def test_a_criteria_revision_that_renumbers_the_criteria_is_asked_again(tmp_path: Path) -> None:
+    renumbered = FakeReply(text=REWORDED.text.replace('"AC2"', '"AC3"'))
+    st, engine = await agreed_run(
+        tmp_path,
+        [CRITERION_FALSE, two(BY_ONE, "test_mul_by_one")],
+        [NEW_PROOF, AGREE_ALL],
+        [FEATURE, DONE],
+        story={"package_attempts": 1},
+        product=[renumbered, REWORDED],
+    )
+    assert st.blocked is None, st.blocked
+    assert "keep the criteria and their ids" in prompts(engine, "product")[2]
 
 
 async def test_a_proof_revision_the_tester_cannot_give_stops_the_story(tmp_path: Path) -> None:

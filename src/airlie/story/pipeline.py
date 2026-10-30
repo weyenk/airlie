@@ -49,6 +49,7 @@ from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.briefs import (
     built_so_far,
+    criteria_revision_brief,
     critic_brief,
     drafts_brief,
     layer_goal,
@@ -265,6 +266,11 @@ def _ending(coder: TeamResult | None) -> str:
     return "gate_red"
 
 
+def _current(st: StoryState, story: Story) -> Story:
+    """The story as it now stands: the stored one, which a criteria revision rewrites after the meeting."""
+    return Story.from_dict(st.story) if st.story is not None else story
+
+
 def _gated(proof: Sequence[ProofTest]) -> set[str]:
     """The criteria the agreed proof leaves to the gate: a package needs no test for them."""
     return {t.criterion for t in proof if t.gate and t.criterion is not None}
@@ -471,13 +477,13 @@ class StoryPipeline:
                 self._held = held
                 try:
                     for i in range(len(layers)):
-                        await self._build(st, card, story, layers, i)
+                        await self._build(st, card, _current(st, story), layers, i)
                         await self._costed(st, card, "package", "layer", "review")
                 finally:
                     self._held, self._drafting = None, None
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
                 st.finish("build")
-            await self._publish(st, card, story, layers)
+            await self._publish(st, card, _current(st, story), layers)
             await self._costed(st, card, "publish")
             await self._finish(st, card)
         except StoryWaiting as e:
@@ -1177,6 +1183,7 @@ class StoryPipeline:
         if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
             await self._draft_packages(st, story, layers)
         package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
+        story = _current(st, story)  # a criterion the architect found false was reworded on the way
         attempts = self.s.layer_attempts
         for attempt in range(1, attempts + 1):
             again = await self._build_once(
@@ -1194,6 +1201,7 @@ class StoryPipeline:
             if again is None:
                 return
             package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
+            story = _current(st, story)
 
     async def _build_once(
         self,
@@ -1557,7 +1565,11 @@ class StoryPipeline:
                     )
                     break
                 if isinstance(got, ProofChange):  # its layer has the proof revised when it comes to it
-                    st.drafts[nn] = {"proof_change": [list(c) for c in got.changes], "run": run}
+                    st.drafts[nn] = {
+                        "proof_change": [list(c) for c in got.changes],
+                        "criteria_change": [list(c) for c in got.criteria],
+                        "run": run,
+                    }
                     break
                 st.drafts[nn] = {"package": got.to_dict(), "run": run}
                 st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
@@ -1673,15 +1685,19 @@ class StoryPipeline:
         base_sha: str,
         change: ProofChange,
         replan: bool,
-    ) -> None:
+    ) -> Story:
         """The architect found layer `i`'s agreed proof wrong (D12): the tester revises that layer's tests in
         one fresh ask (the contract of the meeting's proof, this layer only, the architect's reasons as data),
-        parsed against the whole agreement; the stored agreement takes the new tests. When the layer is being
-        re-planned after a red gate, a `gate_red` lesson records `proof_revised`. StoryError when there is no
-        agreed proof to change; StoryBlocked when the tester gives no usable revision."""
+        parsed against the whole agreement; the stored agreement takes the new tests. When it found criteria
+        false, product rewords them first (`_revise_criteria`) and the tester revises against the new story.
+        When the layer is being re-planned after a red gate, a `gate_red` lesson records `proof_revised`.
+        The story as it now stands is returned. StoryError when there is no agreed proof to change;
+        StoryBlocked when product or the tester gives no usable revision."""
         nn, layer = f"{i + 1:02d}", layers[i]
         if st.agreement is None or not self._layer_proof(st, layer):
             raise StoryError("this layer has no agreed proof to change: write its package from its criteria")
+        if change.criteria:
+            story = await self._revise_criteria(st, story, change.criteria, base_sha)
         agreement = Agreement.from_dict(st.agreement)
         mine = agreement.proof_for(layer.slug)
         others = [t.to_dict() for t in agreement.proof if t.layer != layer.slug]
@@ -1711,23 +1727,25 @@ class StoryPipeline:
             return parse_proof({**obj, "tests": [*others, *tests]}, story, layers, levels, guidelines)
 
         conventions_text_ = self._conventions_text(base_sha)
+        reasons = [
+            *change.changes,
+            *((cid, f"(criterion, now reworded) {why}") for cid, why in change.criteria),
+        ]
         proof = await self._usable(
             st,
             "proof",
             "tester",
             "proof revision",
-            lambda feedback: proof_revision_brief(
-                story, layer, mine, change.changes, conventions_text_, feedback
-            ),
+            lambda feedback: proof_revision_brief(story, layer, mine, reasons, conventions_text_, feedback),
             parse,
             at=base_sha,
             ask=partial(self._ask, steps=CRITIC_STEPS),
         )
-        revised = replace(agreement, proof=proof)
+        revised = replace(agreement, story=story, proof=proof)
         st.agreement = revised.to_dict()
         st.save()
         ids = [t.id for t in revised.proof_for(layer.slug)]
-        st.emit("amigos_proof_revised", layer=nn, tests=ids, why=[why for _, why in change.changes])
+        st.emit("amigos_proof_revised", layer=nn, tests=ids, why=[why for _, why in reasons])
         if replan:
             self._lesson(
                 st,
@@ -1736,8 +1754,45 @@ class StoryPipeline:
                 None,
                 None,
                 "gate_red",
-                "proof_revised: " + ", ".join(t for t, _ in change.changes),
+                "proof_revised: " + ", ".join(t for t, _ in reasons),
             )
+        return story
+
+    async def _revise_criteria(
+        self, st: StoryState, story: Story, reasons: tuple[tuple[str, str], ...], base_sha: str
+    ) -> Story:
+        """Product rewords the acceptance criteria the architect found false, in one fresh ask (the story as
+        agreed, the reasons as data): the same ids, the same number of criteria. The stored story and the
+        agreement's take it. Event: story_criteria_revised (the ids it reworded). StoryBlocked when product
+        gives no usable story."""
+        ids = [c.id for c in story.acceptance]
+
+        def parse(text: str) -> Story:
+            got = parse_story(extract_json_block(text))
+            if [c.id for c in got.acceptance] != ids:
+                raise StoryError(
+                    f"keep the criteria and their ids as they are ({', '.join(ids)}); reword only"
+                )
+            return got
+
+        revised = await self._usable(
+            st,
+            "criteria",
+            self.s.product_role,
+            "criteria revision",
+            lambda feedback: criteria_revision_brief(story, reasons, feedback),
+            parse,
+            at=base_sha,
+            ask=partial(self._ask, steps=CRITIC_STEPS),
+        )
+        before = {c.id: c.line() for c in story.acceptance}
+        changed = [c.id for c in revised.acceptance if c.line() != before[c.id]]
+        st.story = revised.to_dict()
+        if st.agreement is not None:
+            st.agreement = replace(Agreement.from_dict(st.agreement), story=revised).to_dict()
+        st.save()
+        st.emit("story_criteria_revised", criteria=changed, why=[why for _, why in reasons])
+        return revised
 
     @staticmethod
     def _objected(st: StoryState) -> dict[str, dict[str, Any]]:
@@ -1823,7 +1878,10 @@ class StoryPipeline:
                     got = (
                         Package.from_dict(draft["package"])
                         if "package" in draft
-                        else ProofChange(tuple((str(t), str(w)) for t, w in draft["proof_change"]))
+                        else ProofChange(
+                            tuple((str(t), str(w)) for t, w in draft["proof_change"]),
+                            tuple((str(c), str(w)) for c, w in draft.get("criteria_change") or ()),
+                        )
                     )
                     draft = None
                 else:
@@ -1839,7 +1897,9 @@ class StoryPipeline:
                             "package for it as it stands"
                         )
                     revisions += 1
-                    await self._revise_proof(st, story, layers, i, base_sha, got, feedback is not None)
+                    story = await self._revise_proof(
+                        st, story, layers, i, base_sha, got, feedback is not None
+                    )
                     attempt -= 1  # the attempt the architect used to say so is not charged
                     revised = True
                     continue
