@@ -1,5 +1,6 @@
-"""The MTP batch-join guard (engine/patches/mtp_batch_join.py): a request joins an MTP batch only once the
-batch is settled, so no row is fed a token its cache already holds."""
+"""The MTP guard (engine/patches/mtp_batch_join.py): a request joins an MTP batch only once the batch is
+settled, so no row is fed a token its cache already holds; more than one row decodes without drafts; thinking
+rows draft while their processor would change nothing."""
 
 from __future__ import annotations
 
@@ -15,15 +16,22 @@ from airlie.engine.patches.mtp_batch_join import closure_value, guard
 
 def mtp_generator(kept_logits: dict[int, list[float]] | None = None) -> tuple[Any, list[str]]:
     """A batch generator double with `_step`/`_next` shaped like `install_mtp_mllm`'s: the step closes over
-    `_skip_state_by_uid`; `_next` extends the batch with a waiting request when mid-batch extend is on."""
+    `_skip_state_by_uid` and the plain step `_orig_step` (which it runs for a prompt); `_next` extends the
+    batch with a waiting request when mid-batch extend is on."""
     calls: list[str] = []
     _skip_state_by_uid: dict[int, dict[str, Any]] = {
         uid: {"logits": mx.array([row])} for uid, row in (kept_logits or {}).items()
     }
 
+    def _orig_step(input_tokens: Any, *rest: Any) -> Any:
+        calls.append("plain")
+        return mx.array([0] * input_tokens.shape[0]), []
+
     def _mtp_step(
         input_tokens: Any, cache: Any, logits_processors: Any, output_tokens: Any, samplers: Any
     ) -> Any:
+        if input_tokens.shape[1] > 1:
+            return _orig_step(input_tokens, cache, logits_processors, output_tokens, samplers)
         calls.append(f"forward:{sorted(_skip_state_by_uid)}")
         return mx.array([0] * input_tokens.shape[0]), []
 
@@ -53,19 +61,33 @@ def test_a_waiting_request_joins_only_after_the_batch_settles_from_its_kept_logi
     assert tokens.tolist() == [1] and len(logprobs) == 1
     assert gen._allow_mid_batch_extend is True  # restored for the next call
     gen._next()
-    assert calls == ["extend", "forward:[]"]  # the join, then a plain step over a consistent batch
+    assert calls == ["extend", "plain"]  # the join, then a plain step over a consistent two-row batch
 
 
 def test_a_batch_with_no_kept_state_or_no_one_waiting_steps_as_vllm_mlx_does() -> None:
     gen, calls = mtp_generator({})
     guard(gen)
     gen._next()
-    assert calls == ["extend", "forward:[]"]
+    assert calls == ["extend", "plain"]
     alone, calls = mtp_generator({1: [1.0, 0.0]})
     alone.unprocessed_requests = []
     guard(alone)
     alone._next()
     assert calls == ["forward:[1]"]  # one stream keeps its speculative step
+
+
+def test_more_than_one_decoding_row_steps_without_drafts_after_settling_what_it_kept() -> None:
+    gen, calls = mtp_generator({1: [0.0, 4.0], 2: [3.0, 0.0]})
+    gen.active_batch.uids = [1, 2]
+    gen.unprocessed_requests = []
+    guard(gen)
+    tokens, _ = gen._step(mx.array([[5], [6]]), None, None, None, None)
+    assert calls == [] and tokens.tolist() == [1, 0]  # settled: each row from its kept logits
+    gen._step(mx.array([[5], [6]]), None, None, None, None)
+    assert calls == ["plain"]  # then vllm-mlx's plain step, no draft
+    gen.active_batch.uids = [1]
+    gen._step(mx.array([[5]]), None, None, None, None)
+    assert calls == ["plain", "forward:[]"]  # one row again: it drafts
 
 
 def test_settling_applies_each_rows_sampler() -> None:
@@ -75,9 +97,13 @@ def test_settling_applies_each_rows_sampler() -> None:
     assert tokens.tolist() == [2] and kept == {}
 
 
-def test_a_step_without_the_kept_state_is_refused() -> None:
+def test_a_step_without_the_kept_state_or_the_plain_step_is_refused() -> None:
     gen = SimpleNamespace(_step=lambda *a: None, _next=lambda: None)
     with pytest.raises(KeyError, match="_skip_state_by_uid"):
+        guard(gen)
+    _skip_state_by_uid: dict[int, Any] = {}
+    gen = SimpleNamespace(_step=lambda *a: _skip_state_by_uid, _next=lambda: None)
+    with pytest.raises(KeyError, match="_orig_step"):
         guard(gen)
 
 
@@ -127,7 +153,12 @@ def test_a_step_whose_rows_think_short_of_their_limit_runs_mtp_with_the_processo
     calls: list[Any] = []
     head = SimpleNamespace(mtp_forward=lambda *a, **k: mx.zeros((1, 1, 16)))
 
+    def _orig_step(*args: Any) -> Any:
+        raise AssertionError("one thinking row drafts")
+
     def _mtp_step(input_tokens: Any, cache: Any, lps: Any, outs: Any, samplers: Any) -> Any:
+        if input_tokens.shape[1] > 1:
+            return _orig_step(input_tokens, cache, lps, outs, samplers)
         calls.append((lps, samplers, head.mtp_forward()))
         return mx.array([0]), [_skip_state_by_uid]
 

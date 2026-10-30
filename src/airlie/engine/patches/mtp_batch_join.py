@@ -25,7 +25,13 @@ nothing while a row thinks short of its limit, and in the answer it only masks t
 whose rows are all in that state runs MTP with the processors lifted: each answering row's sampler, and the
 head's draft for it, mask the tags, so neither can be drawn. A row within two tokens of its limit (or in the
 forced close, or with a further constraint) goes to vllm-mlx's own path with its processors, after a settle
-step when the batch kept state: the close comes on the token it would without MTP."""
+step when the batch kept state: the close comes on the token it would without MTP.
+
+And it drafts only while one request decodes. With two rows, `_mtp_step` keeps a draft only when both accept
+and pays the two-token verify every step: in bundle 4 runs 1-2, refine (decoding beside the architect's
+survey) ran at 17.6-18.3 tok/s against 26.2-26.5 without MTP, while the architect alone ran at 33-34. So a
+step over more than one row is vllm-mlx's plain step (`_orig_step`), after a settle step when the batch kept
+state; a batch that drops back to one row drafts again."""
 
 from __future__ import annotations
 
@@ -161,11 +167,12 @@ class DraftMask:
 
 def guard(batch_gen: Any, language_model: Any = None) -> None:
     """Wrap the `_step` and `_next` that `install_mtp_mllm` put on `batch_gen` so a request joins only a
-    settled batch, and thinking rows decode with MTP while their processors would change nothing (with
-    `language_model`, whose head drafts). KeyError when the step does not keep its state where vllm-mlx
-    0.5.0 keeps it."""
+    settled batch, a batch of more than one row decodes without drafts, and thinking rows decode with MTP
+    while their processors would change nothing (with `language_model`, whose head drafts). KeyError when the
+    step does not keep its state, or its plain step, where vllm-mlx 0.5.0 keeps them."""
     step, nxt = batch_gen._step, batch_gen._next
     kept: dict[int, dict[str, Any]] = closure_value(step, _STATE)
+    plain: Callable[..., Any] = closure_value(step, "_orig_step")
     settling = [False]
     drafts = DraftMask(language_model) if language_model is not None else None
 
@@ -181,6 +188,12 @@ def guard(batch_gen: Any, language_model: Any = None) -> None:
             settled = settle(batch_gen, kept, logits_processors, output_tokens, samplers)
             if settled is not None:
                 return settled
+        if input_tokens.shape[0] > 1 and input_tokens.shape[1] == 1:
+            # more than one row decoding: no draft (see the module's last paragraph)
+            settled = settle(batch_gen, kept, logits_processors, output_tokens, samplers)
+            if settled is not None:
+                return settled
+            return plain(input_tokens, cache, logits_processors, output_tokens, samplers)
         if not (logits_processors and any(logits_processors)):
             return step(input_tokens, cache, logits_processors, output_tokens, samplers)
         rows = [
