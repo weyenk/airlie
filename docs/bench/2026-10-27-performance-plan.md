@@ -185,10 +185,15 @@ bar above plus the lever's own check listed below.
   - the acceptance rate is logged
   - outputs are identical at temperature 0 on a fixed prompt set
   - memory peak is under the limit
-- **Status: blocked by the engine (checked 2026-10-27).** vllm-mlx 0.5.0, the installed version, has no draft-model
-  speculative decoding. Its only draft model is SpecPrefill, which speeds up reading, not writing. `--enable-mtp`
-  exists in 0.5.0 and 0.6.0, but it needs a model with MTP heads, which mlx-community's Qwen builds lack, so MTP
-  stays parked. P8 waits on upstream or an MTP-capable build.
+- **Status: built (2026-10-30, MTP rather than a separate drafter).** The 2026-10-27 note here, "blocked by the
+  engine", was wrong. vllm-mlx 0.5.0 has MTP for this exact architecture (`patches/qwen3_5_mtp.py`, dense 27B,
+  and the MLLM batched path). mlx-community publishes the head alone as `Qwen3.8-27B-MTP-bf16` (0.85 GB, BF16),
+  which the 4-bit build drops. airlie serves the generalist from a directory that links the body and holds the
+  head re-keyed under `mtp.` (`engine/mtp.py`, a model's `mtp:` in `config/models.yaml`), with `--enable-mtp`.
+  - Smoke test, one draft token, temperature 0: 27.0–27.5 tok/s before, 32.6–36.2 after (1.19–1.34×).
+  - Outputs diverge only at near-ties (the two-token verify changes the arithmetic).
+  - The hybrid prefix cache still hits: a resumed 24k-token turn took 2.0 s against 28.7 s cold.
+  - Two concurrent requests both finish. Resident memory is 19.6 GB.
 - **Batching (P7) is already available:** airlie runs with `continuous_batching: true` and `max_num_seqs: 16`, so
   P7 needs no engine work, only the pipeline overlap and a memory measurement.
 
@@ -408,3 +413,26 @@ Notes:
 - Run 2's two missed extras are type cases (a float or bool given to `to_roman`) that the request does not ask for.
 - When a scoped run times out, the coder stops calling `run_tests`, so R1 (which counts red `run_tests`) never fires.
   `test_too_large` covers the case seen, but not the gap itself.
+
+## Levers added 2026-10-30: overlap (P7 split; value them after the MTP work)
+
+Noah's question: can the meeting, the architect, the coder and the reviewer work at the same time? Decoding is
+memory-bound, so two batched streams give about 1.8× the throughput of one. That beats MTP's 1.3×, and the
+single-stream MTP rule turns drafts off while requests overlap. These follow the MTP bundles and are valued
+then. Riskiest last:
+
+- **O1: the architect drafts ahead while the coder builds.** Today every package is drafted before the first
+  layer is built (bundle 3 run 2: 24 minutes for two packages before any code). Instead the coder starts layer
+  1 once its package passes the checks, while the architect drafts layers 2 to N and the critic reads them.
+  Each package is still checked against its real base just before its layer, so correctness is unchanged.
+  - Measured: minutes from the first package ready to the last layer built, on roman and on wiki.
+  - Check: locks, the shared SQLite, the test lock and peak memory with two contexts loaded.
+- **O2: the reviewer reviews layer N while layer N+1 is written.** N+1 is built on N's branch, so a review
+  that asks for changes means a rebase and possibly rework.
+  - First measure how often a review blocks. Then decide whether to overlap always, or only when the gate is
+    green and the review is advisory.
+- **O3: parallel meeting rounds.** Product, the architect and the tester answer the same state at once, then
+  the checker runs: one call per round instead of three (meetings ran 6–12 turns, 8–15 minutes).
+  - Risk: roles stop reacting to each other within a round, so parts can conflict and rounds can multiply.
+  - Measured: meeting minutes and turns, and the agreed proof's quality (re-plans, proof revisions, oracle),
+    against turn-based meetings.
