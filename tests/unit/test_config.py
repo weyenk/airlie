@@ -9,6 +9,7 @@ import yaml
 
 from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config, profile_configs
 from airlie.config.load import _yaml_problem
+from airlie.config.schema import MUTATING_TOOLS
 
 MINIMAL: dict = {
     "version": 1,
@@ -1070,7 +1071,8 @@ def test_the_tester_is_a_read_only_critic_on_the_generalist() -> None:
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL)
     tester = cfg.roles["tester"]
     assert tester.model == "generalist" != cfg.roles["reviewer"].model and not tester.thinking
-    assert tester.tools == ["read_file", "list_dir", "grep"]
+    assert tester.tools == ["read_file", "list_dir", "grep", "compute"]  # compute writes nothing (bundle 6)
+    assert not MUTATING_TOOLS & set(tester.tools)
     assert tester.skills is not None and tester.skills.name == "qa"
 
 

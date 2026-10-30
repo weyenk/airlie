@@ -410,7 +410,20 @@ class PackageChecker:
         and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
         `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
         package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`). A file the
-        package's interfaces name that its files leave out, and that is not on the base, is one it creates."""
+        package's interfaces name that its files leave out, and that is not on the base, is one it creates; so
+        is a test file it writes in full and calls a change when the base lacks it."""
+        # a test file the package writes in full and calls a change is a new one when its base lacks it
+        # (2026-10-30, roman: a re-plan after a red build named the thrown-away build's test file "modify")
+        mended = tuple(
+            replace(f, action="create")
+            if f.action == "modify"
+            and f.path in package.tests
+            and find_file(repo, base, f.path)[0] == "missing"
+            else f
+            for f in package.files
+        )
+        if mended != package.files:
+            package = replace(package, files=mended)
         listed = {f.path for f in package.files}
         unlisted = sorted({i.file for i in package.interfaces} - listed)
         if made := [p for p in unlisted if find_file(repo, base, p)[0] == "missing"]:

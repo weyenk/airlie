@@ -118,7 +118,7 @@ roles:
   architect:
     prompt: prompts/roles/architect.md
     model: generalist
-    tools: [read_file, list_dir, grep]
+    tools: [read_file, list_dir, grep, compute]
     max_context: 131072
     max_tokens: 16384
     thinking: true
@@ -135,7 +135,7 @@ roles:
   tester:                          # P2 (2026-10-24): the third amigo and the package critic; reads, never writes. On the generalist since 2026-10-26 (Noah): on Muse it lost the meeting's thread in runs 6, 8 and 10 on airlie-sandbox (empty turns, the opening echoed, its own proof never posted); the layer's reviewer stays on Muse
     prompt: prompts/roles/tester.md
     model: generalist
-    tools: [read_file, list_dir, grep]
+    tools: [read_file, list_dir, grep, compute]
     skills: skills/qa
     max_context: 131072
     max_tokens: 8192
@@ -149,7 +149,7 @@ roles:
   product:
     prompt: prompts/roles/product.md
     model: generalist
-    tools: [read_file, list_dir]
+    tools: [read_file, list_dir, compute]
     max_tokens: 8192                # an epic set is longer than a story (the specs phase, 2026-10-25)
     max_context: 131072             # the imagining conversation holds the consultations
     thinking: false

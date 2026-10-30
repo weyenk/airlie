@@ -128,17 +128,19 @@ def writable_roots(worktree: Path, extra: Sequence[Path] = ()) -> list[Path]:
     return out
 
 
-def profile(n: int) -> str:
-    """A Seatbelt profile that allows everything but file writes outside the parameters W0 … W{n-1}."""
+def profile(n: int, *, network: bool = True) -> str:
+    """A Seatbelt profile that allows everything but file writes outside the parameters W0 … W{n-1} (and,
+    without `network`, any network use)."""
     allowed = " ".join(f'(subpath (param "W{i}"))' for i in range(n))
-    return f"(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* {allowed})\n"
+    offline = "" if network else "(deny network*)\n"
+    return f"(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* {allowed})\n{offline}"
 
 
-def argv(command: Sequence[str], roots: Sequence[Path]) -> list[str]:
+def argv(command: Sequence[str], roots: Sequence[Path], *, network: bool = True) -> list[str]:
     """`command` run by sandbox-exec under `profile`, the writable roots passed as parameters (no quoting
     of paths inside the profile)."""
     params = [arg for i, r in enumerate(roots) for arg in ("-D", f"W{i}={r}")]
-    return [SANDBOX_EXEC, *params, "-p", profile(len(roots)), *command]
+    return [SANDBOX_EXEC, *params, "-p", profile(len(roots), network=network), *command]
 
 
 def explain(output: str, rc: int) -> str:

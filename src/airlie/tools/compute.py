@@ -1,0 +1,81 @@
+"""compute: run a short Python program and return what it prints, for roles that may only read.
+
+The planning roles stated derived facts they never computed, and each cost a red build or worse (roman,
+2026-10-29 and 30): "no canonical numeral exceeds four characters" (XVIII has five), every string of sixteen
+or more characters swept as 7**16 cases, "no valid output exceeds 13 characters" (the longest is 15), MMMDCLX
+called malformed (it is 3660). Each was one line of Python to check. The program runs in a fresh temporary
+directory, as `python3 -I` (no site directory, no current directory on the path), with airlie's agent
+environment, under a sandbox that refuses every file write outside that directory and any network use; a
+time limit ends it."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from airlie.subproc import agent_env, kill_group, started
+from airlie.tools import confine
+from airlie.tools.protocol import ToolContext, ToolResult
+from airlie.tools.sandbox import cap
+
+TIMEOUT_S = 10.0
+OUTPUT_CHARS = 4000
+
+
+class Compute:
+    name = "compute"
+    description = (
+        "Run a short Python 3 program (standard library) and return what it prints. Use it to check a "
+        "number before you state it: a bound, a count, a maximum, an example's value, a test's expected "
+        "result. It cannot change any file or reach the network; it stops after 10 seconds."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "the program; print what you need"}},
+        "required": ["code"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        code = str(args.get("code") or "")
+        if not code.strip():
+            return ToolResult(False, "error: no code given")
+        with tempfile.TemporaryDirectory(prefix="airlie-compute-") as tmp:
+            rc, text = await run_python(code, Path(tmp), sandbox=ctx.sandbox)
+        if rc is None:
+            return ToolResult(False, text)
+        body = cap(text, OUTPUT_CHARS) or "(it printed nothing: print what you need)"
+        return ToolResult(rc == 0, body if rc == 0 else f"{body}\n[exit {rc}]")
+
+
+async def run_python(code: str, where: Path, *, sandbox: bool = True) -> tuple[int | None, str]:
+    """(the exit code, the output) of `code` run in `where`; (None, why) when it could not start or ran past
+    TIMEOUT_S. Confined to writing in `where` and to no network when the sandbox is available."""
+    command = [sys.executable, "-I", "-c", code]
+    spawn: dict[str, Any] = dict(
+        cwd=where,
+        env=agent_env(),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    )
+    if sandbox and confine.available():
+        roots = [Path(p) for p in (where.resolve(), "/dev")]
+        command = confine.argv(command, roots, network=False)
+    try:
+        proc = await started(asyncio.create_subprocess_exec(*command, **spawn))
+    except OSError as e:
+        return None, f"error: {e}"
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT_S)
+    except TimeoutError:
+        await kill_group(proc)
+        return None, f"error: the program ran past {TIMEOUT_S:g}s; compute a smaller case or bound the loop"
+    except BaseException:  # cancelled: nothing it started may outlive its caller
+        await kill_group(proc)
+        raise
+    rc = proc.returncode or 0
+    return rc, out.decode("utf-8", "replace")

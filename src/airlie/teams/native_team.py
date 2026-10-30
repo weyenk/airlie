@@ -795,6 +795,13 @@ class NativeTeam:
                     )
                     if ctx.on_stuck is not None:
                         told, advised = await _advised(ctx.on_stuck, ctx, told, messages)
+                    wrong = ctx.on_stuck is not None and ctx.on_stuck.last_category == WRONG_TEST
+                    if advised and can_write and wrong:
+                        # the repeat guard's diagnosis is a wrong locked test: stop, as after a red streak
+                        # (roman, 2026-10-30: the coder went on in shell for 40 minutes after it)
+                        final_text = f"stopped: a test I may not change is wrong.\n{told[-3000:]}"
+                        stop = "test_wrong"
+                        break
                     messages.append(Message(role="user", content=told))
                     recent = []
                 elif (
