@@ -528,3 +528,17 @@ On 2d4b431/9d3f2bb:
   still blocks.
 - **Left as is:** a timed-out test run already counts as red for R1. The gap was the coder switching to shell,
   which `test_too_large` (before the build) and R2 (the repeat guard) now cover.
+
+**Round 1 result (28b4983): three clean runs in a row.** None had a retry, a package sent back, a proof
+revision or a re-plan. All three passed the oracle spec at 18/18, and a scan of 175 replies found no dropped or
+doubled token.
+
+| Run | Layers | Minutes | Min per 1k tokens | Oracle extra | Mutation | compute calls |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 38.8 | 0.79 | 8/8 | 55/55 | 8 |
+| 2 | 1 | 27.7 | 0.63 | 6/8 | 33/33 | 9 |
+| 3 | 1 | 33.3 | 0.59 | 8/8 | 58/59 | 14 |
+
+compute calls fell from 24–40 a run to 8–14 with the workspace and the cap. Meetings still take 9–10 turns
+(10–21 minutes), and that is now the largest stage: P5a (short turns) and the tester's proof in its first turn
+are next.
