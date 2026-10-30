@@ -45,6 +45,7 @@ Kind = Literal[
     "covers_missing",
     "import_unresolved",
     "unknown_method",
+    "test_too_large",
     "split_invalid",
     "over_size",
     "criterion_unproven",

@@ -146,6 +146,7 @@ _SHORT = {
     "covers_missing": "is covered but is not a new or changed test",
     "import_unresolved": "is an import nothing defines",
     "unknown_method": "calls a method its class does not have",
+    "test_too_large": "sweeps too many cases to finish",
     "proof_mismatch": "differs from the agreed proof",
 }
 """A finding in a stop reason, which is cut to REASON_CHARS: the events say more."""

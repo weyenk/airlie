@@ -183,6 +183,41 @@ async def test_a_test_that_calls_a_method_its_class_does_not_have_is_a_finding(t
     ]
 
 
+SWEEP_TESTS = """import itertools
+import unittest
+
+from calc import mul
+
+LETTERS = "IVXLCDM"
+
+
+class MulTest(unittest.TestCase):
+    def test_short_sweep(self):
+        for length in range(1, 5):
+            for combo in itertools.product(LETTERS, repeat=length):
+                self.assertTrue(mul(1, len(combo)) >= 1)
+
+    def test_long_sweep(self):
+        for combo in itertools.product(LETTERS, repeat=16):
+            self.assertTrue(mul(1, len(combo)) == 16)
+
+    def test_unreadable_sweep(self):
+        for combo in itertools.product(make_letters(), repeat=16):
+            self.assertTrue(mul(1, 1) == 1)
+"""
+
+
+async def test_a_test_that_sweeps_more_cases_than_can_run_is_a_finding(tmp_path: Path) -> None:
+    """2026-10-29, bundle 3 (roman): itertools.product(letters, repeat=16) timed the coder's runs out."""
+    root, base = calc(tmp_path)
+    ids = ("test_short_sweep", "test_long_sweep", "test_unreadable_sweep")
+    covers = {"AC1": tuple(f"tests/test_mul.py::MulTest::{t}" for t in ids)}
+    _, found = await check(tmp_path, root, base, package({"tests/test_mul.py": SWEEP_TESTS}, covers))
+    [big] = [f for f in found if f.kind == "test_too_large"]
+    assert big.test == "tests/test_mul.py::MulTest::test_long_sweep"
+    assert "33,232,930,569,601 cases (7 to the power 16)" in big.why
+
+
 async def test_third_party_imports_are_not_checked(tmp_path: Path) -> None:
     root, base = calc(tmp_path)
     text = "import pytest\nfrom httpx import Client\nfrom calc import mul\n\n\ndef test_x():\n    pass\n"
