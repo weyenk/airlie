@@ -436,3 +436,51 @@ then. Riskiest last:
   - Risk: roles stop reacting to each other within a round, so parts can conflict and rounds can multiply.
   - Measured: meeting minutes and turns, and the agreed proof's quality (re-plans, proof revisions, oracle),
     against turn-based meetings.
+
+### Bundle 4 result: MTP (2026-10-30, roman)
+
+Built in four commits:
+- **6f083ec:** the generalist serves its mlx-community MTP head.
+- **2960f6d:** a request joins an MTP batch only once the batch is settled. vllm-mlx 0.5.0 otherwise fed rows
+  a token their cache already held, which corrupted 3 of 15 concurrent replays (`"acceptacceptance"`,
+  `<=read_file>`).
+- **3d4ff59:** thinking requests draft while their budget processor would change nothing. Before it, 1,829 of
+  4,552 requests carried the processor and got no MTP.
+- **43f54d3:** MTP drafts only while one request decodes. With two rows, refine fell to 17.6 tok/s against 26
+  without MTP.
+
+Live checks:
+- One request: 37 tok/s, against 27.
+- Three at once: 23.8 tok/s each.
+- Thinking budgets close on the exact token.
+- The corruption replay: 0 of 15.
+
+Three runs on 43f54d3, all published with the oracle spec at 18/18. A scan of all 199 replies found no dropped
+or doubled token.
+
+| Run | Minutes | Output tokens | Min per 1k tokens | Rework |
+|---|---|---|---|---|
+| 1 | 123.9 | 173,826 | 0.71 | The proof said no numeral exceeds 13 characters: red build, criteria reworded (AC4, AC6), proof revised |
+| 2 | 26.9 | 43,361 | 0.62 | None |
+| 3 | 47.2 | 68,621 | 0.69 | The architect's test compared `from_roman(s)` to `int(s)`: gate re-plan, and a package sent back once (`file_missing`) |
+
+Bundle 3's runs without MTP were 0.71–0.76 min per 1k tokens.
+
+**Decode per reply:**
+- 31.3–32.7 tok/s with MTP, against 24.8–25.4 without (+25–30%).
+- Architect 33.1–33.7, tester 32.0–36.1.
+- The coder stays at about 26: its repetition penalty is a logits processor, so it gets no MTP.
+
+Wall time per output token improves less, 10–18%. Prefill, test runs, tool calls and waiting are not decoding.
+
+**Verdict:** MTP is a real per-token gain and keeps output correct with the guard. Two things outweigh it at the
+run level:
+- **How much the roles write:** the meeting wrote 9k–12.6k tokens across runs, the coder 1.2k–9.1k.
+- **Rework from invented facts:** four runs in five had a false derived fact or a wrong expected value in the
+  criteria, the proof or a test.
+
+**Next, bundle 6:**
+- **C1:** a sandboxed `compute` tool for product, the architect and the tester, with a rule that a stated
+  number is computed first.
+- **R2:** a wrong-acceptance-test triage ends the build and re-plans.
+- **M1:** a test file the package writes in full, marked "modify" but missing on the base, is created.
