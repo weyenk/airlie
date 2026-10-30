@@ -220,6 +220,14 @@ def _proof_change(obj: dict[str, Any], story: Story) -> ProofChange:
     return ProofChange(tuple(changes), tuple(criteria))
 
 
+def _test_id(tid: str) -> str:
+    """A pytest id as the architect wrote it, with any note after it dropped: a pytest id has no whitespace,
+    so what follows the first space is words about the test (2026-10-30, roman: "…::test_x (re-agreed to
+    the six named decodes only; …)" was refused and the story blocked). A Vitest id keeps its spaces."""
+    where = tid.partition("::")[0]
+    return tid if is_js_test(where) else tid.split(maxsplit=1)[0] if tid.split() else tid
+
+
 def parse_package(
     text: str, layer: Layer, story: Story, gated: Collection[str] = ()
 ) -> Package | ProofChange:
@@ -282,7 +290,9 @@ def parse_package(
             raise StoryError(
                 f"covers names {cid}, which the story does not have: {sorted(c.id for c in story.acceptance)}"
             )
-        covers[str(cid)] = tuple(_normal(t, "a test id") for t in _strs(ids, f"covers {cid}", "test ids"))
+        covers[str(cid)] = tuple(
+            _test_id(_normal(t, "a test id")) for t in _strs(ids, f"covers {cid}", "test ids")
+        )
     for own in owned:
         if own not in gated and not covers.get(own):  # a criterion the agreed proof leaves to the gate
             raise StoryError(

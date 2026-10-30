@@ -1,0 +1,93 @@
+{
+ "case": "roman",
+ "started": "2026-10-30T13:58:02",
+ "airlie_build": "924e8ba",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "refine",
+ "blocked": "the architect did not finish: the reply was cut off at max_tokens (16384) before it ended; raise roles.architect.max_tokens",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 20.1,
+  "idle_min": 1.2,
+  "decode_tps_by_context": {
+   "<16k": 32.6,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 3.1
+   },
+   {
+    "at": "story_done",
+    "min": 20.1
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 6,
+    "tokens_in": 40201,
+    "tokens_out": 29028,
+    "prefill_s": 11.191700000000003,
+    "decode_s": 913.7924999999999,
+    "wall_s": 305.1636,
+    "reads": 1,
+    "thinking_tokens": 10588,
+    "decode_tps": 31.8,
+    "prefill_tps": 3592
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 9,
+    "tokens_in": 30702,
+    "tokens_out": 4063,
+    "prefill_s": 113.9517,
+    "decode_s": 52.6128,
+    "wall_s": 205.8857,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 77.2,
+    "prefill_tps": 269
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 13746,
+    "tokens_out": 4097,
+    "prefill_s": 6.947100000000001,
+    "decode_s": 174.654,
+    "wall_s": 181.7003,
+    "reads": 6,
+    "thinking_tokens": 2692,
+    "decode_tps": 23.5,
+    "prefill_tps": 1979
+   }
+  ],
+  "retries": {
+   "plan_rounds": 1,
+   "plan_fixes": 0,
+   "meeting_turns": 0,
+   "meeting_objections": 0,
+   "critic_objections": 0,
+   "package_attempts": 0,
+   "packages_rejected": 0,
+   "unusable_replies": 0,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

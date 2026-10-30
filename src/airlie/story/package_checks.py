@@ -43,6 +43,10 @@ ROOTS = ("", "src/")
 """Where this repository's modules are imported from: the worktree's root and its src/ (the layouts the
 repositories airlie builds in use)."""
 _PARAMS = re.compile(r"\[.*\]$")
+PROOF_MISMATCH = (
+    "the agreed proof names it, but your package does not cover it: cover it, or, if the agreed test is "
+    "wrong or cannot run (too large a sweep, a false bound), reply with a proof_change naming it instead"
+)
 NOT_NEW = "it is not a new or changed test of that file, so it was there before this layer"
 NO_MODULE = "the module is not in the worktree and the package creates no such file"
 NO_NAME = "the name is defined neither in the file nor in the package's interfaces for it"
@@ -363,10 +367,7 @@ def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Findi
     package adds beyond the proof is not one (`beyond_proof`): it is checked like any other, and sending a
     package back for it cost about 11 minutes a time without making the layer better (roman, 2026-10-27)."""
     covered, agreed = _against_proof(package, proof_ids)
-    return [
-        Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
-        for t in sorted(agreed - covered)
-    ]
+    return [Finding("proof_mismatch", t, PROOF_MISMATCH, "") for t in sorted(agreed - covered)]
 
 
 def beyond_proof(package: Package, proof_ids: Collection[str]) -> list[str]:
