@@ -192,6 +192,11 @@ CASES |= {
     for tools, team, preamble in product((True, False), ("", "team-a"), (None, "Project rules apply.\n"))
 }
 CASES |= {
+    "fn:native_team._goal_message:read-tools-team": partial(
+        _goal_message, "Add the avatar upload.", HINT, "team-a", None, tools=True, writes=False
+    )
+}
+CASES |= {
     "fn:diversify.nudge_text:bare": partial(nudge_text, LABEL, WIDTH, None, ""),
     "fn:diversify.nudge_text:full": partial(
         nudge_text,

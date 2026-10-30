@@ -34,9 +34,6 @@ GOAL_CLOSE = (
     "when they pass'; a neutral close would settle it"
 )
 ACCEPTED = (
-    Accepted("architect", "answer.form", "brief-survey-task", "goal-tools", GOAL_CLOSE),
-    Accepted("architect", "answer.form", "goal-tools", "role:architect", GOAL_CLOSE),
-    Accepted("architect", "repo.edit", "goal-tools", "role:architect", GOAL_CLOSE),
     Accepted(
         "coder",
         "file.rewrite",
@@ -44,14 +41,6 @@ ACCEPTED = (
         "role:coder",
         "coder.md allows write_file on a short existing file, the build brief never; mild",
     ),
-    Accepted("design", "answer.form", "goal-tools", "role:design", GOAL_CLOSE),
-    Accepted("docs", "answer.form", "goal-tools", "role:docs", GOAL_CLOSE),
-    Accepted("docs", "repo.edit", "goal-tools", "role:docs", GOAL_CLOSE),
-    Accepted("product", "answer.form", "goal-tools", "role:product", GOAL_CLOSE),
-    Accepted("research", "answer.form", "goal-tools", "role:research", GOAL_CLOSE),
-    Accepted("security", "answer.form", "goal-tools", "role:security", GOAL_CLOSE),
-    Accepted("security", "repo.edit", "goal-tools", "role:security", GOAL_CLOSE),
-    Accepted("ux", "answer.form", "goal-tools", "role:ux", GOAL_CLOSE),
 )
 
 

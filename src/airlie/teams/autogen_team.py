@@ -31,6 +31,7 @@ from autogen_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
 from airlie.config import ModelSpec, RoleSpec
+from airlie.config.schema import MUTATING_TOOLS
 from airlie.engine.types import ToolCall
 from airlie.scheduler import SlotScheduler
 from airlie.skills import prompt_text
@@ -239,7 +240,15 @@ class AutoGenTeam:
         prompt_tokens = completion_tokens = 0
         max_prompt = 0
         recent: list[tuple[str, str, str]] = []
-        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble)
+        names = set(ctx.tools.names())
+        goal_msg = _goal_message(
+            ctx.goal,
+            ctx.worktree.name,
+            ctx.team_id,
+            ctx.preamble,
+            tools=bool(names),
+            writes=bool(MUTATING_TOOLS & names),
+        )
         task: str | None = goal_msg
         if ctx.initial_state is not None:
             await load_agent_state(agent, ctx.initial_state)

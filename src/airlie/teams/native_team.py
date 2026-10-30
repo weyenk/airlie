@@ -5,7 +5,7 @@ action u_t, its output the observation o_t. Entering a tool call releases the ge
 
 Every nudge the loop sends is a steering file in the prompt hub (`airlie/prompts/steering/<id>.md`, its `when`
 and `why` there), sent through `_steer`, which makes each one a `steer` event; the goal's closing sentences
-are the rules `goal-tools` and `goal-no-tools`."""
+are the rules `goal-tools`, `goal-read-tools` and `goal-no-tools`."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from airlie.config import RoleSpec
+from airlie.config.schema import MUTATING_TOOLS
 from airlie.engine.protocol import Engine
 from airlie.engine.types import (
     ContentPart,
@@ -48,13 +49,23 @@ from airlie.tools.protocol import ToolResult
 
 
 def _goal_message(
-    goal: str, worktree_hint: str, team_id: str = "", preamble: str | None = None, *, tools: bool = True
+    goal: str,
+    worktree_hint: str,
+    team_id: str = "",
+    preamble: str | None = None,
+    *,
+    tools: bool = True,
+    writes: bool = True,
 ) -> str:
     who = f"You are {team_id}. " if team_id else ""
     head = f"{preamble.rstrip()}\n\n" if preamble else ""
-    # the rules goal-tools and goal-no-tools: told to use tools it does not have, a model invents them
-    # (2026-10-16: Read, list_files)
-    rule = text("goal-tools", worktree_hint=worktree_hint) if tools else text("goal-no-tools")
+    # the rules goal-tools, goal-read-tools and goal-no-tools: told to use tools it does not have, a model
+    # invents them (2026-10-16: Read, list_files); told to change files it cannot, it argues with the brief
+    # till its thinking is cut (2026-10-29, the architect)
+    if not tools:
+        rule = text("goal-no-tools")
+    else:
+        rule = text("goal-tools" if writes else "goal-read-tools", worktree_hint=worktree_hint)
     return f"{head}Goal:\n{goal}\n\n{who}{rule}"
 
 
@@ -337,7 +348,10 @@ class NativeTeam:
         t0 = time.monotonic()
         system = prompt_text(ctx.role.prompt)
         toolless = not ctx.tools.names()
-        goal_msg = _goal_message(ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble, tools=not toolless)
+        writes = bool(MUTATING_TOOLS & set(ctx.tools.names()))
+        goal_msg = _goal_message(
+            ctx.goal, ctx.worktree.name, ctx.team_id, ctx.preamble, tools=not toolless, writes=writes
+        )
         messages: list[Message]
         if ctx.initial_state is not None:
             messages, stale = _without_stale_budget(load_messages(ctx.initial_state["messages"]))

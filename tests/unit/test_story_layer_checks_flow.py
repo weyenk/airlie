@@ -592,8 +592,8 @@ async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_
     tmp_path: Path,
 ) -> None:
     """The architect found the proof wrong: the tester revises that layer's tests in one fresh ask, the
-    agreement in the state changes, the architect is asked again, and the attempt it used is not charged
-    (one attempt is all this story allows)."""
+    agreement in the state changes, the architect is asked again in its drafting conversation (P9), and the
+    attempt it used is not charged (one attempt is all this story allows)."""
     st, engine = await agreed_run(
         tmp_path,
         [PROOF_CHANGE, two(BY_ONE, "test_mul_by_one")],
@@ -604,6 +604,7 @@ async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_
     assert st.blocked is None and st.stage == "review", st.blocked
     asked = prompts(engine, "architect")
     assert len(asked) == 3 and ID_ONE in asked[2] and "asserts: mul(7, 1) is 7" in asked[2]
+    assert "The tester has revised this layer's agreed tests" in asked[2]
     revision = prompts(engine, "tester")[0]
     assert "> " + ID_ZERO + ": zero is covered by test_mul's operands" in revision
     assert st.agreement is not None
@@ -614,15 +615,31 @@ async def test_a_proof_change_reply_revises_the_layers_proof_through_the_tester_
     [ready] = kinds(events, "package_ready")
     assert ready["tests"] == [ID_MUL, ID_ONE]
     assert not kinds(events, "package_returned")
+    assert [e["layer"] for e in kinds(events, "package_resumed")] == ["01"]
 
 
-async def test_a_proof_revision_that_names_another_layer_or_fails_stops_the_story(tmp_path: Path) -> None:
-    wrong = FakeReply(text=NEW_PROOF.text.replace('"layer": "mul"', '"layer": "elsewhere"'))
+async def test_a_proof_revision_the_tester_cannot_give_stops_the_story(tmp_path: Path) -> None:
+    wrong = FakeReply(text="I would keep the tests as they are.")
     st, _ = await agreed_run(
         tmp_path, [PROOF_CHANGE], [wrong, wrong], [], story={"package_attempts": 1, "stage_attempts": 2}
     )
     assert st.blocked is not None and "tester did not produce a usable proof revision" in st.blocked
     assert not kinds(st.path / "events.jsonl", "amigos_proof_revised")
+
+
+async def test_a_revised_test_labelled_with_no_layers_name_is_the_revised_layers(tmp_path: Path) -> None:
+    """2026-10-29, bundle 2 run 3: the tester labelled the revised tests with the story's slug, twice."""
+    story_slug = FakeReply(text=NEW_PROOF.text.replace('"layer": "mul"', '"layer": "add-mul-to-calc"'))
+    st, _ = await agreed_run(
+        tmp_path,
+        [PROOF_CHANGE, two(BY_ONE, "test_mul_by_one")],
+        [story_slug, AGREE_ALL],
+        [FEATURE, DONE],
+        story={"package_attempts": 1},
+    )
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert st.agreement is not None and {t["layer"] for t in st.agreement["proof"]} == {"mul"}
+    assert not kinds(st.path / "events.jsonl", "retry")
 
 
 class Objecting(FakeMeeting):

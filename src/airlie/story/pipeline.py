@@ -1419,12 +1419,15 @@ class StoryPipeline:
         guide: str,
         feedback: str | None,
         proof: tuple[ProofTest, ...] = (),
+        *,
+        revised: bool = False,
     ) -> Package | ProofChange:
         """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed: the package,
         or a ProofChange when the architect says the layer's agreed `proof` is wrong. A reply that cannot be
-        used is a StoryError: its text is the next try's feedback. A retry (`feedback`) while the drafting
-        conversation is held is a turn of it (`_resumed`), not a new ask."""
-        if feedback is not None and self._drafting is not None:
+        used is a StoryError: its text is the next try's feedback. A retry (`feedback`), or the ask after the
+        layer's proof was `revised`, while the drafting conversation is held is a turn of it (`_resumed`),
+        not a new ask."""
+        if (feedback is not None or revised) and self._drafting is not None:
             return await self._resumed(st, story, layers, i, base_sha, feedback, proof)
         max_steps, context = self._coder_budget()
         brief = package_brief(
@@ -1464,18 +1467,23 @@ class StoryPipeline:
         layers: tuple[Layer, ...],
         i: int,
         base_sha: str,
-        feedback: str,
+        feedback: str | None,
         proof: tuple[ProofTest, ...],
     ) -> Package | ProofChange:
         """A retry of layer `i`'s package as a turn of the architect's drafting conversation (P9 of the
         performance plan): it still holds the files, the agreement and its drafts, so it does not read them
         again (2026-10-29: a cold retry spent 60 of its 68 calls reading, ~104 s each; a gate re-plan cost
-        ~47 minutes). The conversation's checkout moves to the layer's real base first. Event:
-        package_resumed."""
+        ~47 minutes). With no `feedback` the turn follows a proof revision (`brief-proof-revised`). The
+        conversation's checkout moves to the layer's real base first. Event: package_resumed."""
         assert self._drafting is not None
         say, run = self._drafting
         sources = layer_sources(self.repo, base_sha, layers[i])
-        again = hub_text("brief-reply-again", feedback=feedback)  # worded as a cold retry's brief words it
+        # worded as a cold retry's brief words it
+        again = (
+            hub_text("brief-reply-again", feedback=feedback)
+            if feedback is not None
+            else hub_text("brief-proof-revised")
+        )
         told = f"{again}\n\n{next_package_brief(story, layers, i, proof, sources)}"
         st.emit("package_resumed", layer=f"{i + 1:02d}", studio_run=run)
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
@@ -1688,6 +1696,13 @@ class StoryPipeline:
             tests = obj.get("tests")
             if not isinstance(tests, list):
                 raise StoryError('the proof needs a non-empty "tests" list')
+            # a label that names no layer is this layer's (2026-10-29, bundle 2 run 3: the tester labelled
+            # them with the story's slug, twice, ~2 minutes a retry); another layer's name is refused
+            slugs = {other.slug for other in layers}
+            tests = [
+                {**t, "layer": layer.slug} if isinstance(t, dict) and t.get("layer") not in slugs else t
+                for t in tests
+            ]
             stray = sorted(
                 {str(t.get("layer")) for t in tests if isinstance(t, dict) and t.get("layer") != layer.slug}
             )
@@ -1789,6 +1804,7 @@ class StoryPipeline:
         kinds: list[str] = []
         package: Package | None = None
         attempt = revisions = 0
+        revised = False  # the layer's proof was revised: the next ask resumes the drafting conversation
         # the layer's draft, taken once (a re-plan after a red gate comes with feedback and asks afresh)
         draft = st.drafts.pop(nn, None) if feedback is None else None
         if draft is not None:
@@ -1811,7 +1827,9 @@ class StoryPipeline:
                     )
                     draft = None
                 else:
-                    got = await self._package(st, story, layers, i, base_sha, built, guide, feedback, proof)
+                    got = await self._package(
+                        st, story, layers, i, base_sha, built, guide, feedback, proof, revised=revised
+                    )
                     if isinstance(got, Package) and proof:
                         got = await self._critique(st, story, layers, i, base_sha, built, guide, got, proof)
                 if isinstance(got, ProofChange):
@@ -1823,6 +1841,7 @@ class StoryPipeline:
                     revisions += 1
                     await self._revise_proof(st, story, layers, i, base_sha, got, feedback is not None)
                     attempt -= 1  # the attempt the architect used to say so is not charged
+                    revised = True
                     continue
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
