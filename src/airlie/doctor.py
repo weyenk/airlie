@@ -504,6 +504,17 @@ def run_checks(cfg: AirlieConfig, probe: SystemProbe, *, root: Path = REPO_ROOT)
                 )
             )
             continue
+        if m.mtp is not None:
+            head = probe.model_snapshot_dir(m.mtp.repo, m.mtp.revision)
+            results.append(
+                CheckResult(f"model:{mname}:mtp", "ok", f"{m.mtp.repo}@{m.mtp.revision[:8]}")
+                if head
+                else CheckResult(
+                    f"model:{mname}:mtp",
+                    "fail" if m.preload else "warn",
+                    f"{m.mtp.repo}@{m.mtp.revision[:8]} not in HF cache; run: task models:pull -- {mname}",
+                )
+            )
         d = probe.model_snapshot_dir(m.repo, m.revision)
         if d:
             results.append(CheckResult(f"model:{mname}", "ok", f"{m.repo}@{m.revision[:8]}"))

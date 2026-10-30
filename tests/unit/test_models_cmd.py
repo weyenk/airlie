@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from airlie.config import load_config
+from airlie.config import ModelRef, load_config
 from airlie.models_cmd import plan_pulls, pull
 
 
@@ -66,3 +66,13 @@ def test_file_models_pull_only_that_file(tmp_path: Path) -> None:
     assert plans["kev"].cmd == (
         "hf", "download", "ggml-org/Kev-4B-GGUF", "Kev-4B-Q4_K_M.gguf", "--revision", "d9",
     )  # fmt: skip
+
+
+def test_a_model_with_an_mtp_head_pulls_the_head_too(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    c.models["team"].mtp = ModelRef(repo="org/model-MTP-bf16", revision="cafe")
+    plans = plan_pulls(c)
+    assert [(p.name, p.cmd) for p in plans] == [
+        ("team", ("hf", "download", "org/model", "--revision", "deadbeef")),
+        ("team:mtp", ("hf", "download", "org/model-MTP-bf16", "--revision", "cafe")),
+    ]

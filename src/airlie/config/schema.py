@@ -39,6 +39,13 @@ class Sampling(Strict):
     )
 
 
+class ModelRef(Strict):
+    """Weights pinned by HF repo and commit."""
+
+    repo: str
+    revision: str = Field(min_length=1, description="HF commit sha; `task models:pull` fetches exactly this")
+
+
 class ModelSpec(Strict):
     """A model in the catalog. `repo` + `revision` pin exactly which weights are used."""
 
@@ -53,6 +60,11 @@ class ModelSpec(Strict):
         default=None, description="per-model override of the engine default"
     )
     enable_mtp: bool = False
+    mtp: ModelRef | None = Field(
+        default=None,
+        description="an MTP head published apart from the body (vllm_mlx engines): served beside it, with "
+        "speculative decoding on (engine/mtp.py)",
+    )
     estimated_memory_gb: float | None = Field(
         default=None, description="weights only; feeds the engine memory budget"
     )

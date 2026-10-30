@@ -6,7 +6,7 @@ The server starts through `SERVE_ENTRY`: vllm-mlx's CLI with airlie's parsers re
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,19 +18,27 @@ SnapshotResolver = Callable[[ModelSpec], Path]
 SERVE_ENTRY = ["python", "-m", "airlie.engine.vllm_mlx_serve"]  # run by the runner inside `uv run`
 
 
-def build_registry(cfg: AirlieConfig, engine_name: str, snapshot_dir: SnapshotResolver) -> dict[str, Any]:
+def build_registry(
+    cfg: AirlieConfig,
+    engine_name: str,
+    snapshot_dir: SnapshotResolver,
+    paths: Mapping[str, Path] | None = None,
+) -> dict[str, Any]:
+    """The registry. `paths` are model directories built for the engine, by name."""
     e = cfg.engines[engine_name]
+    built = paths or {}
     models: list[dict[str, Any]] = []
     for name in e.models:
         m = cfg.models[name]
+        path = built.get(name) or (m.path if m.path is not None else snapshot_dir(m))
         entry: dict[str, Any] = {
             "name": name,
-            "path": str(m.path if m.path is not None else snapshot_dir(m)),
+            "path": str(path),
             "preload": m.preload,
             "continuous_batching": e.continuous_batching
             if m.continuous_batching is None
             else m.continuous_batching,
-            "enable_mtp": m.enable_mtp,
+            "enable_mtp": uses_mtp(m),
             "prefill_step_size": e.prefill_step_size,
         }
         if m.estimated_memory_gb is not None:
@@ -44,6 +52,11 @@ def build_registry(cfg: AirlieConfig, engine_name: str, snapshot_dir: SnapshotRe
         },
         "models": models,
     }
+
+
+def uses_mtp(m: ModelSpec) -> bool:
+    """Whether `m` decodes speculatively with an MTP head: one it carries, or one served beside it."""
+    return m.enable_mtp or m.mtp is not None
 
 
 def gguf_path(m: ModelSpec, snapshot_dir: SnapshotResolver) -> Path:
@@ -91,6 +104,10 @@ def build_serve_command(cfg: AirlieConfig, engine_name: str, registry_path: Path
     ]  # fmt: skip
     if e.continuous_batching:
         argv.append("--continuous-batching")
+    if any(uses_mtp(cfg.models[m]) for m in e.models):
+        # the batched engine reads MTP from the global flag only, not the registry entry; a model without a
+        # head is served without it (vllm-mlx logs a warning and skips the install)
+        argv.append("--enable-mtp")
     if e.use_paged_cache:
         argv.append("--use-paged-cache")
     if e.kv_cache_quantization:

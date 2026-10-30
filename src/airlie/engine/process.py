@@ -19,6 +19,7 @@ import httpx
 import psutil
 
 from airlie.config import AirlieConfig, ModelSpec
+from airlie.engine.mtp import mtp_model_dir
 from airlie.engine.registry import (
     SERVE_ENTRY,
     build_llama_command,
@@ -164,6 +165,20 @@ class EngineProcess:
         self.pidfile.unlink(missing_ok=True)
         return None
 
+    def built_models(self) -> dict[str, Path]:
+        """The model directories this engine serves that airlie builds: each body with an MTP head published
+        apart, under `<state>/engines/<engine>/models/<name>-<body rev>-<head rev>` (engine/mtp.py)."""
+        out: dict[str, Path] = {}
+        for name in self.spec.models:
+            m = self.cfg.models[name]
+            if m.mtp is None:
+                continue
+            body = m.path if m.path is not None else self.snapshot_dir(m)
+            head = self.snapshot_dir(ModelSpec(repo=m.mtp.repo, revision=m.mtp.revision))
+            where = self.dir / "models" / f"{name}-{m.revision[:8]}-{m.mtp.revision[:8]}"
+            out[name] = mtp_model_dir(body, head, where)
+        return out
+
     # ---- lifecycle ----
     async def start(self, timeout_s: float = 600.0) -> ProcessHealth:
         if (pid := self.pid()) is not None:
@@ -177,7 +192,7 @@ class EngineProcess:
             gguf = gguf_path(self.cfg.models[self.spec.models[0]], self.snapshot_dir)
             argv = build_llama_command(self.cfg, self.name, gguf)
         else:
-            registry = build_registry(self.cfg, self.name, self.snapshot_dir)
+            registry = build_registry(self.cfg, self.name, self.snapshot_dir, self.built_models())
             write_registry(registry, self.registry_path)
             argv = build_serve_command(self.cfg, self.name, self.registry_path)
         self.dir.mkdir(parents=True, exist_ok=True)
