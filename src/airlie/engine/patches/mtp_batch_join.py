@@ -15,13 +15,24 @@ The fix holds the join back one step. When a row has that state and a request is
 the kept logits, with no forward pass and no draft, which leaves every row as a plain step does (the returned
 token not yet in the cache). The next call has no kept state, so the request joins a consistent batch. The
 step-wrapper reads the kept state from `_mtp_step`'s closure and refuses to install, loudly, when it is not
-there. `AIRLIE_MTP_BATCH_JOIN=0` turns it off."""
+there. `AIRLIE_MTP_BATCH_JOIN=0` turns it off.
+
+The same step makes MTP work for thinking requests. vllm-mlx caps a request's thinking with a logits processor
+(`ThinkingAwareLogitsProcessor`) and `_mtp_step` runs no MTP for a batch where any row has a processor: in
+bundle 4 run 1, 1,829 of 4,552 requests had one, and the thinking roles (the architect's survey, layers and
+packages, most of a run's decoded tokens) decoded at 25-27 tok/s, as without MTP. The processor changes
+nothing while a row thinks short of its limit, and in the answer it only masks the two think tags. So a step
+whose rows are all in that state runs MTP with the processors lifted: each answering row's sampler, and the
+head's draft for it, mask the tags, so neither can be drawn. A row within two tokens of its limit (or in the
+forced close, or with a further constraint) goes to vllm-mlx's own path with its processors, after a settle
+step when the batch kept state: the close comes on the token it would without MTP."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 logger = logging.getLogger("vllm_mlx.airlie_mtp_batch_join")  # under vllm_mlx's: its log level and handlers
@@ -78,12 +89,85 @@ def settle(
     return tokens, list(logprobs)
 
 
-def guard(batch_gen: Any) -> None:
+LOOKAHEAD = 3
+"""How far short of its thinking limit a row must be for an MTP step: the step adds the primary and the
+accepted draft, and the previous step's accepted draft reaches the row's tokens (which the processor counts)
+only after the step that follows it."""
+
+
+def masked_ids(processors: list[Callable[..., Any]] | None, tokens: list[int]) -> tuple[int, ...] | None:
+    """For one row: the token ids to mask if MTP may run over its next `LOOKAHEAD` tokens with its processors
+    lifted, `()` for none; None when it may not (a processor that is not the thinking one, a forced close,
+    a row this close to its thinking limit, or an answer with a further constraint). Each thinking processor
+    is synced to the row's tokens first, as a call would sync it."""
+    import mlx.core as mx
+    from vllm_mlx.constrained.thinking_processor import Phase, ThinkingAwareLogitsProcessor
+
+    ids: list[int] = []
+    for p in processors or ():
+        if not isinstance(p, ThinkingAwareLogitsProcessor):
+            return None
+        p._sync_to_tokens(mx.array(tokens))
+        if p.state == Phase.CONTENT:
+            if not p.is_retired:
+                return None
+            ids.extend(p._content_phase_mask_ids)
+        elif p.state == Phase.THINKING:
+            limits = [p._thinking_token_budget, p._no_final_content_token_limit]
+            if p.thinking_tokens + LOOKAHEAD >= min(x for x in limits if x is not None):
+                return None
+        elif p.state != Phase.IDLE:
+            return None
+    return tuple(dict.fromkeys(ids))
+
+
+def masking(sampler: Callable[..., Any], ids: tuple[int, ...]) -> Callable[..., Any]:
+    """`sampler` that never draws one of `ids`."""
+    if not ids:
+        return sampler
+
+    def masked(logprobs: Any) -> Any:
+        logprobs[..., list(ids)] = float("-inf")
+        return sampler(logprobs)
+
+    return masked
+
+
+class DraftMask:
+    """The rows' masked ids for the head's next draft: `language_model.mtp_forward` is wrapped once so a draft
+    never proposes a token its row may not emit."""
+
+    def __init__(self, language_model: Any) -> None:
+        self.rows: list[tuple[int, ...]] = []
+        forward = language_model.mtp_forward
+
+        def mtp_forward(*args: Any, **kwargs: Any) -> Any:
+            logits = forward(*args, **kwargs)
+            for row, ids in enumerate(self.rows):
+                if ids and row < logits.shape[0]:
+                    logits[row, ..., list(ids)] = float("-inf")
+            return logits
+
+        language_model.mtp_forward = mtp_forward
+
+    @contextlib.contextmanager
+    def masking(self, rows: list[tuple[int, ...]]) -> Iterator[None]:
+        self.rows = rows
+        try:
+            yield
+        finally:
+            self.rows = []
+
+
+def guard(batch_gen: Any, language_model: Any = None) -> None:
     """Wrap the `_step` and `_next` that `install_mtp_mllm` put on `batch_gen` so a request joins only a
-    settled batch. KeyError when the step does not keep its state where vllm-mlx 0.5.0 keeps it."""
+    settled batch, and thinking rows decode with MTP while their processors would change nothing (with
+    `language_model`, whose head drafts). KeyError when the step does not keep its state where vllm-mlx
+    0.5.0 keeps it."""
     step, nxt = batch_gen._step, batch_gen._next
     kept: dict[int, dict[str, Any]] = closure_value(step, _STATE)
     settling = [False]
+    drafts = DraftMask(language_model) if language_model is not None else None
 
     def guarded_step(
         input_tokens: Any,
@@ -97,7 +181,24 @@ def guard(batch_gen: Any) -> None:
             settled = settle(batch_gen, kept, logits_processors, output_tokens, samplers)
             if settled is not None:
                 return settled
-        return step(input_tokens, cache, logits_processors, output_tokens, samplers)
+        if not (logits_processors and any(logits_processors)):
+            return step(input_tokens, cache, logits_processors, output_tokens, samplers)
+        rows = [
+            masked_ids(lp, list(output_tokens[e]) if output_tokens else [])
+            for e, lp in enumerate(logits_processors)
+        ]
+        if drafts is None or input_tokens.shape[1] != 1 or any(ids is None for ids in rows):
+            # vllm-mlx's own path, processors applied; a batch that kept state is settled first, since that
+            # path runs a full forward
+            settled = settle(batch_gen, kept, logits_processors, output_tokens, samplers)
+            if settled is not None:
+                return settled
+            return step(input_tokens, cache, logits_processors, output_tokens, samplers)
+        masks = [ids or () for ids in rows]
+        own = [(samplers[e] if samplers else None) or batch_gen.sampler for e in range(len(masks))]
+        lifted = [masking(s, m) for s, m in zip(own, masks, strict=True)]
+        with drafts.masking(masks):
+            return step(input_tokens, cache, None, None, lifted)
 
     def guarded_next() -> Any:
         batch = batch_gen.active_batch
@@ -135,7 +236,7 @@ def apply() -> bool:
         if kwargs.get("draft_model") is not None or (len(args) > 1 and args[1] is not None):
             return  # an external drafter turns mid-batch extend off itself
         try:
-            guard(batch_gen)
+            guard(batch_gen, language_model)
         except KeyError as e:
             batch_gen._step, batch_gen._next = plain  # unguarded MTP corrupts concurrent streams: none
             logger.error("airlie: MTP batch-join guard NOT applied (%s): MTP is off for this model", e)

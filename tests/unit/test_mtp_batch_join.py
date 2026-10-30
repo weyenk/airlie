@@ -97,3 +97,65 @@ def test_the_install_wrapper_guards_every_native_mtp_install(monkeypatch: pytest
     module.install_mtp_mllm(gen, None, num_draft_tokens=1)
     tokens, _ = gen._next()
     assert tokens.tolist() == [1] and calls == []  # guarded: settled, not joined
+
+
+THINK, END = 10, 11
+
+
+def thinking(budget: int, inner: Any = None) -> Any:
+    from vllm_mlx.constrained.thinking_processor import ThinkingAwareLogitsProcessor
+
+    return ThinkingAwareLogitsProcessor(
+        [THINK], [END], budget, inner=inner, vocab_size=16, prompt_has_think_tag=True
+    )
+
+
+def test_a_thinking_row_short_of_its_limit_needs_no_processor_and_one_near_it_does() -> None:
+    assert mtp_batch_join.masked_ids([thinking(100)], [1, 2, 3]) == ()
+    assert mtp_batch_join.masked_ids([thinking(6)], [1, 2, 3]) is None  # 3 thought, 3 short of 6
+    assert mtp_batch_join.masked_ids([thinking(6)], [1, 2]) == ()
+
+
+def test_an_answering_row_masks_the_think_tags_unless_another_constraint_applies() -> None:
+    assert mtp_batch_join.masked_ids([thinking(100)], [1, END, 2]) == (THINK, END)
+    assert mtp_batch_join.masked_ids([thinking(100, inner=lambda t, x: x)], [1, END, 2]) is None
+    assert mtp_batch_join.masked_ids([lambda t, x: x], [1]) is None  # not the thinking processor
+
+
+def test_a_step_whose_rows_think_short_of_their_limit_runs_mtp_with_the_processors_lifted() -> None:
+    _skip_state_by_uid: dict[int, dict[str, Any]] = {}
+    calls: list[Any] = []
+    head = SimpleNamespace(mtp_forward=lambda *a, **k: mx.zeros((1, 1, 16)))
+
+    def _mtp_step(input_tokens: Any, cache: Any, lps: Any, outs: Any, samplers: Any) -> Any:
+        calls.append((lps, samplers, head.mtp_forward()))
+        return mx.array([0]), [_skip_state_by_uid]
+
+    gen = SimpleNamespace(
+        active_batch=SimpleNamespace(uids=[1]),
+        unprocessed_requests=[],
+        sampler=lambda logprobs: mx.argmax(logprobs, axis=-1),
+        _step=_mtp_step,
+        _next=lambda: None,
+    )
+    guard(gen, head)
+    gen._step(mx.array([[5]]), None, [[thinking(100)]], [[1, END, 2]], None)
+    lps, samplers, draft = calls[0]
+    assert lps is None  # vllm-mlx sees no processor, so it drafts
+    assert draft[0, 0, THINK].item() == float("-inf") and draft[0, 0, END].item() == float("-inf")
+    logprobs = mx.zeros((1, 16))
+    logprobs[0, THINK] = 5.0
+    assert samplers[0](logprobs).tolist() != [THINK]  # the answering row's sampler masks the tag
+    assert head.mtp_forward()[0, 0, THINK].item() == 0.0  # the draft mask holds for that step only
+
+
+def test_a_row_near_its_limit_settles_a_batch_that_kept_state_before_vllm_mlx_applies_its_processor() -> None:
+    gen, calls = mtp_generator({1: [0.0] * 10 + [0.0, 9.0] + [0.0] * 4})
+    gen.unprocessed_requests = []
+    guard(gen, SimpleNamespace(mtp_forward=lambda *a, **k: mx.zeros((1, 1, 16))))
+    proc = thinking(5)
+    tokens, _ = gen._step(mx.array([[5]]), None, [[proc]], [[1, 2, 3]], None)
+    assert calls == []  # settled from the kept logits, not a forward that re-feeds the cache
+    assert tokens.tolist() == [END]  # the processor forced the close the kept logits also favoured
+    gen._step(mx.array([[5]]), None, [[proc]], [[1, 2, 3, END]], None)
+    assert calls == ["forward:[]"]  # then vllm-mlx's own path, with its processor
