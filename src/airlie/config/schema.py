@@ -18,7 +18,7 @@ class Strict(BaseModel):
 
 KNOWN_TOOLS = frozenset(
     {
-        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git",
+        "read_file", "write_file", "edit_file", "list_dir", "grep", "shell", "run_tests", "git", "compute",
         "retrieve_value", "decide", "search_knowledge", "web_search", "web_fetch",
         "lhr_create_draft", "lhr_update_section", "lhr_set_recipe", "lhr_upload_photo",
         "lhr_preview", "lhr_publish", "lhr_list_drafts",

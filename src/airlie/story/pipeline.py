@@ -838,7 +838,9 @@ class StoryPipeline:
 
         def tools(role: str) -> ToolRegistry:
             listed = self.cfg.roles[role].tools or ()
-            names = [n for n in listed if n in ("read_file", "list_dir", "grep")]
+            # the meeting's tools: the role's reads, and compute to check a number before stating it (bundle 6
+            # run 1, 2026-10-30: the tester's proof called DCCCLXXXVIII 14 characters, the maximum)
+            names = [n for n in listed if n in ("read_file", "list_dir", "grep", "compute")]
             ctx = ToolContext(
                 worktree,
                 self.cfg.tools.shell_timeout_s,

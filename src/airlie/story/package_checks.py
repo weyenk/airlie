@@ -43,6 +43,10 @@ ROOTS = ("", "src/")
 """Where this repository's modules are imported from: the worktree's root and its src/ (the layouts the
 repositories airlie builds in use)."""
 _PARAMS = re.compile(r"\[.*\]$")
+PROOF_MISMATCH = (
+    "the agreed proof names it, but your package does not cover it: cover it, or, if the agreed test is "
+    "wrong or cannot run (too large a sweep, a false bound), reply with a proof_change naming it instead"
+)
 NOT_NEW = "it is not a new or changed test of that file, so it was there before this layer"
 NO_MODULE = "the module is not in the worktree and the package creates no such file"
 NO_NAME = "the name is defined neither in the file nor in the package's interfaces for it"
@@ -363,10 +367,7 @@ def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Findi
     package adds beyond the proof is not one (`beyond_proof`): it is checked like any other, and sending a
     package back for it cost about 11 minutes a time without making the layer better (roman, 2026-10-27)."""
     covered, agreed = _against_proof(package, proof_ids)
-    return [
-        Finding("proof_mismatch", t, "the agreed proof names it, but your package does not cover it", "")
-        for t in sorted(agreed - covered)
-    ]
+    return [Finding("proof_mismatch", t, PROOF_MISMATCH, "") for t in sorted(agreed - covered)]
 
 
 def beyond_proof(package: Package, proof_ids: Collection[str]) -> list[str]:
@@ -410,7 +411,20 @@ class PackageChecker:
         and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
         `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
         package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`). A file the
-        package's interfaces name that its files leave out, and that is not on the base, is one it creates."""
+        package's interfaces name that its files leave out, and that is not on the base, is one it creates; so
+        is a test file it writes in full and calls a change when the base lacks it."""
+        # a test file the package writes in full and calls a change is a new one when its base lacks it
+        # (2026-10-30, roman: a re-plan after a red build named the thrown-away build's test file "modify")
+        mended = tuple(
+            replace(f, action="create")
+            if f.action == "modify"
+            and f.path in package.tests
+            and find_file(repo, base, f.path)[0] == "missing"
+            else f
+            for f in package.files
+        )
+        if mended != package.files:
+            package = replace(package, files=mended)
         listed = {f.path for f in package.files}
         unlisted = sorted({i.file for i in package.interfaces} - listed)
         if made := [p for p in unlisted if find_file(repo, base, p)[0] == "missing"]:

@@ -87,6 +87,13 @@ class Asker:
         self.repo = repo
         self.lane = lane
         self.stories = cfg.observability.state_dir.expanduser() / "stories"
+        self.cut_off: set[tuple[str, str, str]] = set()
+        """(the item, the stage, the role) of each reply cut off at max_tokens once: the next one stops."""
+
+    @staticmethod
+    def cut_key(st: Recorder, stage: str, role: str) -> tuple[str, str, str]:
+        """The key `answer` keeps a cut-off under: the item (its card's key or title), the stage, the role."""
+        return (str(st.card.get("key") or st.card.get("title") or ""), stage, role)
 
     # ---- the planning lane's manners (P5b) ----
 
@@ -136,10 +143,12 @@ class Asker:
         )
         return orch, base
 
-    def answer(self, team: Any, role: str, orch: Any) -> str:
-        """What a specialist's turn said, or the stop it ended in (a cut-off one stops the story: another try
-        with the same config meets the same cap, so it is no StoryError, which is retried with its text in
-        the model's prompt)."""
+    def answer(self, team: Any, role: str, orch: Any, *, cut: tuple[str, str, str] | None = None) -> str:
+        """What a specialist's turn said, or the stop it ended in. A reply cut off at max_tokens is a
+        StoryError, asked again with a request to be shorter, unless `cut` (the story, the stage and the role)
+        was cut off before: then it stops the story (2026-10-29 and 30, roman: two stories blocked on one
+        long-winded reply each, a layer plan and a package, that the same role writes well within its room on
+        other runs)."""
         if team is not None and team.stop_reason == "cut_off":
             unit = runaway_repeat(str(team.final_text or ""))
             if unit is not None:  # a loop, not a reply too long for its room: another try is worth it
@@ -147,7 +156,13 @@ class Asker:
                     f"your reply repeated {unit!r} over and over until it was cut off: write it again, "
                     "complete, with no run of repeats"
                 )
-            raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
+            if cut is None or cut in self.cut_off:
+                raise StoryBlocked(f"the {role} did not finish: {cut_off_text(role, orch.cfg.roles[role])}")
+            self.cut_off.add(cut)
+            raise StoryError(
+                "your reply ran out of room and was cut off before it ended: write it again, complete and "
+                "shorter; give what the format asks for and nothing else (no restated brief, no long prose)"
+            )
         if team is None or not team.ok:
             raise StoryError(f"the {role} did not finish ({team.stop_reason if team else 'no result'})")
         return str(team.final_text)
@@ -184,7 +199,9 @@ class Asker:
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
-        return self.answer(report.teams[0] if report.teams else None, role, orch)
+        return self.answer(
+            report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
+        )
 
     @asynccontextmanager
     async def conversation(
@@ -224,9 +241,11 @@ class Asker:
                     max_steps=steps,
                     images=images,
                 )
-                return self.answer(report.teams[0] if report.teams else None, role, orch)
+                return self.answer(
+                    report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
+                )
             await orch.follow_up(stage, nudge or "", max_steps=steps)
-            return self.answer(orch.runs[stage].result, role, orch)
+            return self.answer(orch.runs[stage].result, role, orch, cut=self.cut_key(st, stage, role))
 
         try:
             yield say
@@ -263,12 +282,14 @@ class Asker:
                 synthesise=False,
                 max_steps=round_steps,
             )
-            return self.answer(report.teams[0] if report.teams else None, role, orch)
+            return self.answer(
+                report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
+            )
 
         async def again(nudge: str) -> str:
             await self.wait(st, stage, True)
             await orch.follow_up(stage, nudge)
-            return self.answer(orch.runs[stage].result, role, orch)
+            return self.answer(orch.runs[stage].result, role, orch, cut=self.cut_key(st, stage, role))
 
         try:
             return await plan_in_rounds(

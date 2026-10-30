@@ -212,6 +212,13 @@ def test_a_proof_change_reply_is_a_proof_change_and_not_a_package() -> None:
     assert got == ProofChange(((f"{PATH}::test_a", "store() has no zero"),))
 
 
+def test_a_note_after_a_test_id_in_covers_is_dropped() -> None:
+    """Roman, 2026-10-30: a covers id with a parenthesised note after it was refused twice and blocked."""
+    noted = f"{PATH}::test_a (re-agreed to the named cases only; the loop is AC2's)"
+    p = parse_package(reply(covers={"AC1": [noted]}), LAYER, STORY)
+    assert p.covers == {"AC1": (f"{PATH}::test_a",)}
+
+
 def test_a_proof_change_may_name_a_false_criterion_of_the_story() -> None:
     """2026-10-29 (roman): a criterion that states something untrue about the domain goes to product."""
     changes = [

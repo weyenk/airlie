@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,19 @@ async def test_a_file_the_packages_interfaces_name_but_its_files_leave_out_is_on
     )
     assert found == []
     assert [(f.path, f.action) for f in got.files] == [("src/store.py", "create")]  # src/old.py is there
+
+
+async def test_a_test_file_written_in_full_and_called_a_change_is_created_when_the_base_lacks_it(
+    tmp_path: Path,
+) -> None:
+    """Roman, 2026-10-30: a re-plan after a red build named the thrown-away build's test file "modify", and
+    the package came back file_missing. The package writes it in full, so it creates it."""
+    root, base = calc(tmp_path)
+    p = package()
+    p = replace(p, files=(*p.files, PackageFile("tests/test_mul.py", "modify")))
+    got, found = await check(tmp_path, root, base, p)
+    assert [f.kind for f in found] == []
+    assert ("tests/test_mul.py", "create") in [(f.path, f.action) for f in got.files]
 
 
 UNKNOWN_METHOD_TESTS = """import unittest

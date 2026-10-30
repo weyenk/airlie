@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from airlie.engine.types import ToolCall, ToolSchema
+from airlie.tools.compute import Compute
 from airlie.tools.fs import EditFile, Grep, ListDir, ReadFile, WriteFile
 from airlie.tools.jsonargs import parse_tool_args
 from airlie.tools.protocol import Tool, ToolContext, ToolResult
@@ -21,6 +22,7 @@ BUILTIN: dict[str, type] = {
     "shell": Shell,
     "run_tests": RunTests,
     "git": Git,
+    "compute": Compute,
 }
 
 

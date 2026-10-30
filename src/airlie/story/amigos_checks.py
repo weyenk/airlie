@@ -28,13 +28,22 @@ if TYPE_CHECKING:  # amigos imports this module; only the type of a proof test i
 
 NO_FINDINGS = "no findings"
 """What the checker says when the parts are sound; the meeting's termination reads it (its first line)."""
-ADVISORY = frozenset({"proof_sampled"})
+ADVISORY = frozenset({"proof_sampled", "proof_too_large"})
 """Findings the checker posts as advice: told to the owner, never holding up agreement or standing as an
 objection at the end. A keyword check can be wrong, and a finding that blocks would keep the meeting going
 to its turn cap over it."""
 _REFUSES = re.compile(r"\b(raises?|refused?|rejects?|rejected|error)\b")
 _MALFORMED = re.compile(r"\b(malformed|invalid|ill-formed|not a valid|not valid)\b")
 _EXHAUSTIVE = re.compile(r"\b(every|all)\b[^.;]*\b(strings?|inputs?)\b")
+_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+)  # fmt: skip
+_NUM = r"(\d+|" + "|".join(_WORDS) + r")"
+_LENGTHS = re.compile(rf"\b{_NUM}\s*(?:to|-|–|\.\.)\s*{_NUM}[\s-]*char", re.IGNORECASE)
+_ALPHABET = re.compile(r"""over\s+(?:the\s+alphabet\s+)?['"]([A-Za-z]{2,})['"]""", re.IGNORECASE)
+SWEEP_LIMIT = 10_000_000
+"""The most strings a proof test may sweep (as the package check's test_too_large holds it)."""
 
 
 def split_problems(layers: Sequence[Layer], story: Story) -> list[Finding]:
@@ -138,8 +147,13 @@ def check_references(story: Story, layers: Sequence[Layer], proof: Sequence[Proo
 def check_sampled_refusals(story: Story, proof: Sequence[ProofTest]) -> list[Finding]:
     """A `proof_sampled` (advice) for each criterion that refuses malformed input but whose tests only list
     examples of it: no test goes over every short input (roman, 2026-10-28/29: lists of six and of fourteen
-    malformed numerals, 'IIV' and 'MCMC' in neither, passed while the code accepted them)."""
+    malformed numerals, 'IIV' and 'MCMC' in neither, passed while the code accepted them). A proof that has
+    an exhaustive test already, under any criterion, gets none: in bundle 6 run 2 (2026-10-30) the advice
+    fired on a criterion pinning the refusal's message with one example while another's test walked every
+    short string, and the tester reworded the parts around it until the meeting ran out of turns."""
     found: list[Finding] = []
+    if any(_EXHAUSTIVE.search((t.asserts or "").lower()) for t in proof):
+        return found
     for c in story.acceptance:
         text = f"{c.given} {c.when} {c.then}".lower()
         if not (_REFUSES.search(text) and _MALFORMED.search(text)):
@@ -151,6 +165,32 @@ def check_sampled_refusals(story: Story, proof: Sequence[ProofTest]) -> list[Fin
                 "every input of one to four characters accepted exactly when it is valid"
             )
             found.append(Finding("proof_sampled", c.id, why, ""))
+    return found
+
+
+def _number(word: str) -> int:
+    return int(word) if word.isdigit() else _WORDS.index(word.lower())
+
+
+def check_sweep_sizes(proof: Sequence[ProofTest]) -> list[Finding]:
+    """A `proof_too_large` (advice) for each proof test whose asserts sweep every string of one length to
+    another over a named alphabet, when that is more strings than can run (bundle 6 run 2, 2026-10-30: the
+    meeting agreed every string of 1..15 characters over 'IVXLCDM', 7**15 of them; the package check caught
+    it only after drafting, and the architect dropped it without a proof_change)."""
+    found: list[Finding] = []
+    for t in proof:
+        text = t.asserts or ""
+        lengths, alphabet = _LENGTHS.search(text), _ALPHABET.search(text)
+        if lengths is None or alphabet is None:
+            continue
+        low, high = _number(lengths.group(1)), _number(lengths.group(2))
+        size = sum(len(alphabet.group(1)) ** n for n in range(low, high + 1))
+        if size > SWEEP_LIMIT:
+            why = (
+                f"it sweeps {size:,} strings ({low} to {high} characters over {len(alphabet.group(1))} "
+                "letters), too many to run: sweep to four characters and prove longer inputs another way"
+            )
+            found.append(Finding("proof_too_large", t.id, why, ""))
     return found
 
 
@@ -168,6 +208,7 @@ def check_agreement(
         *check_proof(proof, story, layers),
         *check_references(story, layers, proof),
         *check_sampled_refusals(story, proof),
+        *check_sweep_sizes(proof),
     ]
 
 

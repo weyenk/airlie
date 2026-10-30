@@ -140,3 +140,38 @@ def test_a_refusal_criterion_proven_by_listed_examples_is_advice_not_a_hold() ->
     assert said.split("\n", 1)[0] == NO_FINDINGS and "proof_sampled AC3" in said
     blocking = Finding("criterion_unproven", "AC2", "no test of the proof plan proves it", "")
     assert not findings_message([*found, blocking]).startswith(NO_FINDINGS)  # a real finding still holds
+
+
+def test_a_proof_with_an_exhaustive_test_under_another_criterion_gets_no_sampled_advice() -> None:
+    """Bundle 6 run 2 (2026-10-30): the advice fired on a criterion pinning the refusal's message with one
+    example while another criterion's test walked every short string; the meeting reworded around it until it
+    ran out of turns."""
+    from airlie.story.amigos_checks import check_sampled_refusals
+
+    refuse = Criterion("AC3", "a malformed numeral", "from_roman is called", "it raises ValueError")
+    message = Criterion(
+        "AC4", "an invalid numeral", "from_roman is called", "it raises ValueError 'malformed'"
+    )
+    story = replace(STORY, acceptance=(*STORY.acceptance, refuse, message))
+    every = replace(
+        _test("AC3", "storage", "test_c"),
+        asserts="every string of one to four characters is refused iff invalid",
+    )
+    pinned = replace(_test("AC4", "storage", "test_d"), asserts="'IC' raises ValueError with 'malformed'")
+    assert check_sampled_refusals(story, (*PROOF, every, pinned)) == []
+
+
+def test_a_proof_test_that_sweeps_more_strings_than_can_run_is_advice() -> None:
+    """Bundle 6 run 2 (2026-10-30): the meeting agreed every string of 1..15 characters over 'IVXLCDM'
+    (7**15); the package check caught it only after drafting."""
+    from airlie.story.amigos_checks import ADVISORY, check_sweep_sizes
+
+    huge = replace(
+        _test("AC3", "storage", "test_c"),
+        asserts="for every string of 1..15 characters over 'IVXLCDM' not in the valid set: raises ValueError",
+    )
+    worded = replace(huge, name="test_d", asserts="every string of one to four characters over 'IVXLCDM'")
+    unnamed = replace(huge, name="test_e", asserts="every string of 1 to 15 characters raises")
+    found = check_sweep_sizes((huge, worded, unnamed))
+    assert [(f.kind, f.test) for f in found] == [("proof_too_large", huge.id)]
+    assert "7 letters" in found[0].why and "proof_too_large" in ADVISORY

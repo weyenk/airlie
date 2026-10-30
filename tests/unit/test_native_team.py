@@ -2046,6 +2046,24 @@ async def test_a_red_streak_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: P
     assert "MMMDCCCLXXXIX is 3889" in result.final_text
 
 
+async def test_a_repeat_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: Path) -> None:
+    """Roman, 2026-10-30: the repeat guard's advice said a locked test was wrong (13 characters, the longest
+    numeral is 15) and the coder went on in shell for 40 minutes. As after a red streak, it stops."""
+    from airlie.supervisor.advice import WRONG_TEST
+    from tests.unit.advisor_doubles import RecordingAdvisor
+
+    probe = FakeReply(tool_calls=[ToolCall("s", "shell", json.dumps({"cmd": "python3 -c 1"}))])
+    engine = FakeEngine({"coder": [probe] * 8 + [FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=20, nudge_stuck=True)
+    object.__setattr__(
+        ctx, "on_stuck", RecordingAdvisor("the bound is 15, not 13: the test is wrong", WRONG_TEST)
+    )
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason == "test_wrong" and not result.ok
+    assert "the bound is 15, not 13" in result.final_text
+    assert result.steps == ctx.repeat_limit  # it stopped at the guard
+
+
 async def test_the_same_read_again_is_answered_from_the_conversation_until_the_file_is_written(
     tmp_path: Path,
 ) -> None:
