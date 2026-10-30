@@ -1145,6 +1145,17 @@ async def test_a_role_without_tools_is_asked_to_answer_directly_and_offered_no_t
     assert engine.requests[0].tools is None
 
 
+async def test_a_role_whose_tools_only_read_is_not_told_to_change_files_or_run_tests(tmp_path: Path) -> None:
+    """2026-10-29, bundle 2 run 3: the architect, told "change it, run the tests" with read tools only, argued
+    with the brief till its thinking was cut at max_tokens."""
+    engine = FakeEngine({"coder": [FakeReply(text="The plan.")]})
+    team, ctx = make_team(tmp_path, engine, tool_names=("read_file", "list_dir", "grep"))
+    await team.run(ctx, Recorder())
+    goal = str(engine.requests[0].messages[1].content)
+    assert "only read" in goal and "change it" not in goal and "run the tests" not in goal
+    assert engine.requests[0].tools
+
+
 async def test_a_role_without_tools_gets_one_correction_for_an_invented_call(tmp_path: Path) -> None:
     engine = FakeEngine({"coder": [INVENTED, FakeReply(text="The answer.")]})
     team, ctx = make_team(tmp_path, engine, tool_names=())

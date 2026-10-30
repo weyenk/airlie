@@ -1,0 +1,193 @@
+{
+ "case": "roman",
+ "started": "2026-10-29T18:27:53",
+ "airlie_build": "91369da",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "layers",
+ "blocked": "the architect did not finish: the reply was cut off at max_tokens (16384) before it ended; raise roles.architect.max_tokens",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 74.6,
+  "idle_min": 1.2,
+  "decode_tps_by_context": {
+   "<16k": 22.8,
+   "16-48k": 19.1,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 1.1
+   },
+   {
+    "at": "plan_done",
+    "min": 9.5
+   },
+   {
+    "at": "amigos_agreed",
+    "min": 21.9
+   },
+   {
+    "at": "story_done",
+    "min": 21.9
+   },
+   {
+    "at": "packages_drafting",
+    "min": 21.9
+   },
+   {
+    "at": "story_done",
+    "min": 74.6
+   }
+  ],
+  "roles": [
+   {
+    "phase": "package",
+    "role": "architect",
+    "calls": 11,
+    "tokens_in": 115247,
+    "tokens_out": 50706,
+    "prefill_s": 38.291,
+    "decode_s": 2339.0052,
+    "wall_s": 2377.4831999999997,
+    "reads": 9,
+    "thinking_tokens": 22476,
+    "decode_tps": 21.7,
+    "prefill_tps": 3010
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 27085,
+    "tokens_out": 6526,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 407.253,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "proof",
+    "role": "tester",
+    "calls": 22,
+    "tokens_in": 194161,
+    "tokens_out": 8248,
+    "prefill_s": 70.32700000000001,
+    "decode_s": 329.46470000000005,
+    "wall_s": 405.28779999999995,
+    "reads": 18,
+    "thinking_tokens": 0,
+    "decode_tps": 25.0,
+    "prefill_tps": 2761
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 4,
+    "tokens_in": 21372,
+    "tokens_out": 11778,
+    "prefill_s": 12.784199999999998,
+    "decode_s": 472.6075000000001,
+    "wall_s": 339.79179999999997,
+    "reads": 2,
+    "thinking_tokens": 8159,
+    "decode_tps": 24.9,
+    "prefill_tps": 1672
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 23950,
+    "tokens_out": 7192,
+    "prefill_s": 9.447400000000002,
+    "decode_s": 304.1896,
+    "wall_s": 313.7301,
+    "reads": 2,
+    "thinking_tokens": 6275,
+    "decode_tps": 23.6,
+    "prefill_tps": 2535
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 2,
+    "tokens_in": 23130,
+    "tokens_out": 3910,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 232.066,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 1,
+    "tokens_in": 12822,
+    "tokens_out": 1931,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 103.722,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 5,
+    "tokens_in": 9711,
+    "tokens_out": 2011,
+    "prefill_s": 9.6221,
+    "decode_s": 75.6517,
+    "wall_s": 85.4397,
+    "reads": 4,
+    "thinking_tokens": 0,
+    "decode_tps": 26.6,
+    "prefill_tps": 1009
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 5,
+    "tokens_in": 8329,
+    "tokens_out": 1453,
+    "prefill_s": 5.3283,
+    "decode_s": 57.55559999999999,
+    "wall_s": 62.9976,
+    "reads": 4,
+    "thinking_tokens": 490,
+    "decode_tps": 25.2,
+    "prefill_tps": 1563
+   }
+  ],
+  "retries": {
+   "plan_rounds": 2,
+   "plan_fixes": 0,
+   "meeting_turns": 5,
+   "meeting_objections": 2,
+   "critic_objections": 0,
+   "package_attempts": 3,
+   "packages_rejected": 0,
+   "unusable_replies": 2,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}

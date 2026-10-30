@@ -28,6 +28,7 @@ from airlie.story.briefs import (
     built_so_far,
     consult_brief,
     consult_round_text,
+    criteria_revision_brief,
     critic_brief,
     directions_brief,
     imagine_brief,
@@ -192,6 +193,11 @@ CASES |= {
     for tools, team, preamble in product((True, False), ("", "team-a"), (None, "Project rules apply.\n"))
 }
 CASES |= {
+    "fn:native_team._goal_message:read-tools-team": partial(
+        _goal_message, "Add the avatar upload.", HINT, "team-a", None, tools=True, writes=False
+    )
+}
+CASES |= {
     "fn:diversify.nudge_text:bare": partial(nudge_text, LABEL, WIDTH, None, ""),
     "fn:diversify.nudge_text:full": partial(
         nudge_text,
@@ -314,6 +320,9 @@ CASES["fn:briefs.proof_revision_brief:plain"] = partial(
     AGREED,
     (("tests/unit/test_profile.py::test_shows", "the page is not rendered in this layer"),),
     "## The repository's test gate\n- uv run pytest",
+)
+CASES["fn:briefs.criteria_revision_brief:plain"] = partial(
+    criteria_revision_brief, STORY, (("AC1", "a PNG cannot be stored at zero bytes"),)
 )
 CASES["fn:briefs.build_brief:plain"] = partial(build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE)
 CASES["fn:briefs.build_brief:guide-built"] = partial(

@@ -41,9 +41,7 @@ def worker_secret(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str
     name = spec.worker_secret_env
     raw = (env or os.environ).get(name, "")
     if not raw:
-        raise BridgeError(
-            f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)"
-        )
+        raise BridgeError(f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)")
     return raw
 
 

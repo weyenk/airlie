@@ -34,7 +34,7 @@ PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <pa
  "done_when": "one sentence"}
 Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files."""  # noqa: E501
 
-AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package."""  # noqa: E501
+AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package. When an acceptance criterion itself is false (it states something untrue about the domain, or no correct code could meet it), name it in the same block as {"criterion": "<its id>", "why": "one sentence"}: product rewords it, then the tester revises the tests."""  # noqa: E501
 BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 
@@ -131,6 +131,9 @@ class ProofChange:
     wrong, each with why, and no package. The pipeline asks the tester to revise the layer's tests."""
 
     changes: tuple[tuple[str, str], ...]
+    criteria: tuple[tuple[str, str], ...] = ()
+    """The acceptance criteria it says are false, each with why (2026-10-29, roman: "no canonical numeral
+    exceeds four characters"): product rewords them before the tester revises the tests."""
 
 
 def test_files_in(text: str) -> dict[str, str]:
@@ -194,19 +197,27 @@ def _test_named(path: str, text: str, name: str) -> str | bool | None:
     return ending[0] if len(ending) == 1 else False
 
 
-def _proof_change(obj: dict[str, Any]) -> ProofChange:
+def _proof_change(obj: dict[str, Any], story: Story) -> ProofChange:
     raw = obj.get("changes")
     if not isinstance(raw, list):
-        raise StoryError("proof_change needs 'changes': a list of {test, why} objects")
+        raise StoryError("proof_change needs 'changes': a list of {test, why} or {criterion, why} objects")
     if not raw:
         raise StoryError("proof_change needs at least one change: name the test and why it is wrong")
     changes: list[tuple[str, str]] = []
+    criteria: list[tuple[str, str]] = []
+    known = {c.id for c in story.acceptance}
     for n, item in enumerate(raw, 1):
         if not isinstance(item, dict):
-            raise StoryError(f"changes item {n} must be an object with test and why")
+            raise StoryError(f"changes item {n} must be an object with test (or criterion) and why")
         where = f"changes item {n}"
-        changes.append((_text(item, "test", where), _text(item, "why", where)))
-    return ProofChange(tuple(changes))
+        if "criterion" in item:
+            cid = _text(item, "criterion", where)
+            if cid not in known:
+                raise StoryError(f"{where}: the story has no criterion {cid!r}; its ids are {sorted(known)}")
+            criteria.append((cid, _text(item, "why", where)))
+        else:
+            changes.append((_text(item, "test", where), _text(item, "why", where)))
+    return ProofChange(tuple(changes), tuple(criteria))
 
 
 def parse_package(
@@ -217,7 +228,7 @@ def parse_package(
     criteria the agreed proof leaves to the gate: they need no covers."""
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
-        return _proof_change(obj)
+        return _proof_change(obj, story)
     raw_tests = test_files_in(text)
     if obj is None:
         raise StoryError(NO_JSON)

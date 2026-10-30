@@ -1,6 +1,6 @@
 ---
 kind: rule
-roles: [architect, coder, design, docs, product, research, security, tester, ux]
+roles: [coder]
 fields: [worktree_hint]
 governs:
   repo.edit: change

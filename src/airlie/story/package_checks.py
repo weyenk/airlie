@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import re
 import tempfile
+import unittest
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +31,7 @@ from airlie.story.layer_checks import (
     changed_tests,
     checks_for,
     listed_findings,
+    test_functions,
     unparseable_tests,
 )
 from airlie.story.package import Package, PackageFile
@@ -44,6 +46,16 @@ _PARAMS = re.compile(r"\[.*\]$")
 NOT_NEW = "it is not a new or changed test of that file, so it was there before this layer"
 NO_MODULE = "the module is not in the worktree and the package creates no such file"
 NO_NAME = "the name is defined neither in the file nor in the package's interfaces for it"
+SWEEP_LIMIT = 10_000_000
+"""The most cases one itertools.product sweep in a package test may go over: 7**8 is about 5.8 million."""
+TOO_LARGE = (
+    "it sweeps itertools.product over {size:,} cases ({how}), which cannot finish in the gate's time: bound "
+    "the sweep (the rules' exhaustive check stops at four characters) and prove the rest another way"
+)
+NO_METHOD = (
+    "it calls self.{name}(), which neither its class nor unittest.TestCase defines (a helper written at the "
+    "module's top level is not a method)"
+)
 FILE_EXISTS = "the package says to create it, but it already exists on the layer's base"
 FILE_MISSING = "the package says to modify it, but it does not exist on the layer's base"
 
@@ -99,6 +111,160 @@ def _bound_names(body: Sequence[ast.stmt]) -> set[str]:
 def _declares(signature: str, name: str) -> bool:
     n = re.escape(name)
     return bool(re.match(rf"\s*(?:(?:async\s+)?def\s+{n}\s*\(|class\s+{n}\b|{n}\s*[=:])", signature))
+
+
+def _base_name(base: ast.expr) -> str:
+    return base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else ""
+
+
+def _class_names(
+    cls: ast.ClassDef, classes: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()
+) -> set[str] | None:
+    """What `cls` has beyond unittest.TestCase: what its body defines or assigns (`self.x = ...` too) and
+    what its bases in the same file have; None when a base comes from elsewhere (a mixin), unknown here."""
+    names: set[str] = set()
+    for base in cls.bases:
+        name = _base_name(base)
+        if name.endswith("TestCase"):
+            continue
+        local = classes.get(name)
+        inherited = None if local is None or name in seen else _class_names(local, classes, seen | {cls.name})
+        if inherited is None:
+            return None
+        names |= inherited
+    names |= _bound_names(cls.body)
+    for node in ast.walk(cls):
+        for target in node.targets if isinstance(node, ast.Assign) else ():
+            if isinstance(target, ast.Attribute) and getattr(target.value, "id", "") == "self":
+                names.add(target.attr)
+    return names
+
+
+def _self_calls(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    return {
+        call.func.attr
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and getattr(call.func.value, "id", "") == "self"
+    }
+
+
+def _sized(node: ast.expr, consts: dict[str, int], loops: dict[str, int]) -> int | None:
+    """The length of a sweep's alphabet, or the value of its repeat count: a literal, a module constant, or
+    (for a count) the largest value of an enclosing `for x in range(...)`; None when it cannot be read."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str | bytes | int):
+        return node.value if isinstance(node.value, int) else len(node.value)
+    if isinstance(node, ast.List | ast.Tuple | ast.Set):
+        return len(node.elts)
+    if isinstance(node, ast.Name):
+        return loops.get(node.id, consts.get(node.id))
+    return None
+
+
+def _sweep_size(call: ast.Call, consts: dict[str, int], loops: dict[str, int]) -> tuple[int, str] | None:
+    """The number of cases an itertools.product call goes over, and how, when it can be read."""
+    if not (isinstance(call.func, ast.Attribute | ast.Name) and _base_name(call.func) == "product"):
+        return None
+    if not call.args:
+        return None
+    sizes = [_sized(a, consts, {}) for a in call.args]
+    repeat = next((_sized(k.value, consts, loops) for k in call.keywords if k.arg == "repeat"), 1)
+    if None in sizes or repeat is None:
+        return None
+    total, how = 1, []
+    for n in sizes:
+        assert n is not None
+        total *= n
+        how.append(str(n))
+    return total**repeat, "×".join(how) + (f" to the power {repeat}" if repeat != 1 else "")
+
+
+def _range_top(node: ast.expr) -> int | None:
+    if not (isinstance(node, ast.Call) and _base_name(node.func) == "range" and node.args):
+        return None
+    stop = node.args[1] if len(node.args) > 1 else node.args[0]
+    return stop.value - 1 if isinstance(stop, ast.Constant) and isinstance(stop.value, int) else None
+
+
+def sweeps_too_large(worktree: Path, package: Package) -> list[Finding]:
+    """A finding for each test in the package's tests with an itertools.product sweep over more than
+    SWEEP_LIMIT cases: `Finding("test_too_large", "<path>::[<Class>::]<test>", why, source)`. The alphabet and
+    the repeat count are read from literals, module constants and enclosing `for x in range(...)` loops;
+    a sweep whose size cannot be read is not one. 2026-10-29, bundle 3 (roman): AC5 named every string of
+    sixteen or more characters, the architect swept itertools.product(letters, repeat=16), and the coder's
+    test runs timed out at 600 s for an hour."""
+    found: list[Finding] = []
+    for path in sorted(p for p in package.tests if not is_js_test(p)):
+        text = (worktree / path).read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):  # unparseable_tests reports it
+            continue
+        consts: dict[str, int] = {}
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                size = _sized(node.value, {}, {})
+                if size is not None:
+                    consts[node.targets[0].id] = size
+        for name, fn in test_functions(tree):
+            loops = {
+                n.target.id: top
+                for n in ast.walk(fn)
+                if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and (top := _range_top(n.iter))
+            }
+            sizes = [
+                got
+                for c in ast.walk(fn)
+                if isinstance(c, ast.Call) and (got := _sweep_size(c, consts, loops))
+            ]
+            big = [(n, how) for n, how in sizes if n > SWEEP_LIMIT]
+            if big:
+                size, how = max(big)
+                source = (ast.get_source_segment(text, fn) or "")[:1500]
+                found.append(
+                    Finding("test_too_large", f"{path}::{name}", TOO_LARGE.format(size=size, how=how), source)
+                )
+    return found
+
+
+def unknown_methods(worktree: Path, package: Package) -> list[Finding]:
+    """A finding for each method of a unittest.TestCase class in the package's tests that calls a `self.`
+    method its class does not have: `Finding("unknown_method", "<path>::<Class>::<method>", why, source)`.
+    The class has what `_class_names` finds and what unittest.TestCase has; a class with a base from
+    elsewhere is skipped. 2026-10-29, bundle 3 (roman): the architect wrote `_assert_malformed(s)` at the
+    module's top level and the tests called `self._assert_malformed`; the coder, locked out of the test
+    file, patched TestCase from the module under test."""
+    found: list[Finding] = []
+    for path in sorted(p for p in package.tests if not is_js_test(p)):
+        text = (worktree / path).read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):  # unparseable_tests reports it
+            continue
+        classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+        for cls in classes.values():
+            if not any(_base_name(b).endswith("TestCase") or _base_name(b) in classes for b in cls.bases):
+                continue
+            names = _class_names(cls, classes)
+            if names is None:
+                continue
+            for fn in cls.body:
+                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                source = ast.get_source_segment(text, fn) or ""
+                found += [
+                    Finding(
+                        "unknown_method", f"{path}::{cls.name}::{fn.name}", NO_METHOD.format(name=m), source
+                    )
+                    for m in sorted(_self_calls(fn) - names)
+                    if not hasattr(unittest.IsolatedAsyncioTestCase, m)
+                ]
+    return found
 
 
 def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
@@ -294,6 +460,8 @@ class PackageChecker:
                 if key not in changed:
                     found.append(Finding("covers_missing", tid, NOT_NEW, ""))
             found += imports_unresolved(scratch, package)
+            found += unknown_methods(scratch, package)
+            found += sweeps_too_large(scratch, package)
             if self.checks is not None:
                 found += [
                     f

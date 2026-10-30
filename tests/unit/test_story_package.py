@@ -212,6 +212,20 @@ def test_a_proof_change_reply_is_a_proof_change_and_not_a_package() -> None:
     assert got == ProofChange(((f"{PATH}::test_a", "store() has no zero"),))
 
 
+def test_a_proof_change_may_name_a_false_criterion_of_the_story() -> None:
+    """2026-10-29 (roman): a criterion that states something untrue about the domain goes to product."""
+    changes = [
+        {"criterion": "AC1", "why": "no store holds zero bytes"},
+        {"test": f"{PATH}::test_a", "why": "x"},
+    ]
+    text = "```json\n" + json.dumps({"type": "proof_change", "changes": changes}) + "\n```"
+    got = parse_package(text, LAYER, STORY)
+    assert got == ProofChange(((f"{PATH}::test_a", "x"),), (("AC1", "no store holds zero bytes"),))
+    unknown = text.replace('"AC1"', '"AC9"')
+    with pytest.raises(StoryError, match="no criterion 'AC9'"):
+        parse_package(unknown, LAYER, STORY)
+
+
 @pytest.mark.parametrize(
     ("changes", "why"),
     [
