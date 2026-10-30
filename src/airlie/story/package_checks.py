@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import re
 import tempfile
+import unittest
 from collections.abc import Collection, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +45,10 @@ _PARAMS = re.compile(r"\[.*\]$")
 NOT_NEW = "it is not a new or changed test of that file, so it was there before this layer"
 NO_MODULE = "the module is not in the worktree and the package creates no such file"
 NO_NAME = "the name is defined neither in the file nor in the package's interfaces for it"
+NO_METHOD = (
+    "it calls self.{name}(), which neither its class nor unittest.TestCase defines (a helper written at the "
+    "module's top level is not a method)"
+)
 FILE_EXISTS = "the package says to create it, but it already exists on the layer's base"
 FILE_MISSING = "the package says to modify it, but it does not exist on the layer's base"
 
@@ -99,6 +104,78 @@ def _bound_names(body: Sequence[ast.stmt]) -> set[str]:
 def _declares(signature: str, name: str) -> bool:
     n = re.escape(name)
     return bool(re.match(rf"\s*(?:(?:async\s+)?def\s+{n}\s*\(|class\s+{n}\b|{n}\s*[=:])", signature))
+
+
+def _base_name(base: ast.expr) -> str:
+    return base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else ""
+
+
+def _class_names(
+    cls: ast.ClassDef, classes: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()
+) -> set[str] | None:
+    """What `cls` has beyond unittest.TestCase: what its body defines or assigns (`self.x = ...` too) and
+    what its bases in the same file have; None when a base comes from elsewhere (a mixin), unknown here."""
+    names: set[str] = set()
+    for base in cls.bases:
+        name = _base_name(base)
+        if name.endswith("TestCase"):
+            continue
+        local = classes.get(name)
+        inherited = None if local is None or name in seen else _class_names(local, classes, seen | {cls.name})
+        if inherited is None:
+            return None
+        names |= inherited
+    names |= _bound_names(cls.body)
+    for node in ast.walk(cls):
+        for target in node.targets if isinstance(node, ast.Assign) else ():
+            if isinstance(target, ast.Attribute) and getattr(target.value, "id", "") == "self":
+                names.add(target.attr)
+    return names
+
+
+def _self_calls(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    return {
+        call.func.attr
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and getattr(call.func.value, "id", "") == "self"
+    }
+
+
+def unknown_methods(worktree: Path, package: Package) -> list[Finding]:
+    """A finding for each method of a unittest.TestCase class in the package's tests that calls a `self.`
+    method its class does not have: `Finding("unknown_method", "<path>::<Class>::<method>", why, source)`.
+    The class has what `_class_names` finds and what unittest.TestCase has; a class with a base from
+    elsewhere is skipped. 2026-10-29, bundle 3 (roman): the architect wrote `_assert_malformed(s)` at the
+    module's top level and the tests called `self._assert_malformed`; the coder, locked out of the test
+    file, patched TestCase from the module under test."""
+    found: list[Finding] = []
+    for path in sorted(p for p in package.tests if not is_js_test(p)):
+        text = (worktree / path).read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):  # unparseable_tests reports it
+            continue
+        classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+        for cls in classes.values():
+            if not any(_base_name(b).endswith("TestCase") or _base_name(b) in classes for b in cls.bases):
+                continue
+            names = _class_names(cls, classes)
+            if names is None:
+                continue
+            for fn in cls.body:
+                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                source = ast.get_source_segment(text, fn) or ""
+                found += [
+                    Finding(
+                        "unknown_method", f"{path}::{cls.name}::{fn.name}", NO_METHOD.format(name=m), source
+                    )
+                    for m in sorted(_self_calls(fn) - names)
+                    if not hasattr(unittest.IsolatedAsyncioTestCase, m)
+                ]
+    return found
 
 
 def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
@@ -294,6 +371,7 @@ class PackageChecker:
                 if key not in changed:
                     found.append(Finding("covers_missing", tid, NOT_NEW, ""))
             found += imports_unresolved(scratch, package)
+            found += unknown_methods(scratch, package)
             if self.checks is not None:
                 found += [
                     f

@@ -145,6 +145,7 @@ _SHORT = {
     "file_missing": "is modified by the package but is not there",
     "covers_missing": "is covered but is not a new or changed test",
     "import_unresolved": "is an import nothing defines",
+    "unknown_method": "calls a method its class does not have",
     "proof_mismatch": "differs from the agreed proof",
 }
 """A finding in a stop reason, which is cut to REASON_CHARS: the events say more."""

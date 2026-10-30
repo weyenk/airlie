@@ -43,6 +43,7 @@ CHECK_KINDS = frozenset(
         "file_missing",
         "covers_missing",
         "import_unresolved",
+        "unknown_method",
         "assertion_free_test",
         "unparseable_test",
         "test_type_error",
