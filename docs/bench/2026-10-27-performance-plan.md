@@ -484,3 +484,13 @@ run level:
   number is computed first.
 - **R2:** a wrong-acceptance-test triage ends the build and re-plans.
 - **M1:** a test file the package writes in full, marked "modify" but missing on the base, is created.
+
+## Parked 2026-10-30 (Noah)
+
+- **Did MTP lower fidelity?** Unlikely in theory: the verify keeps the target distribution. The runs show
+  about one rework per run, before MTP as after. The test is the same planning prompts 20 times with MTP on
+  and 20 off (roles' temperatures, no `compute`), counting wrong derived facts.
+- **The 8-bit generalist** (`mlx-community/Qwen3.8-27B-8bit`, ~29 GB).
+  - Speed: about 0.55× decode, about 0.7× with MTP, whose acceptance should rise.
+  - Judge it by wall-clock per built layer including fix cycles, as the fidelity-vs-intelligence experiment
+    set out (2026-10-18). Value it after bundle 6 shows what `compute` does to rework.
