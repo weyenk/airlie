@@ -13,7 +13,7 @@ import httpx
 
 from airlie.config.schema import AirlieConfig, BridgeSpec
 from airlie.serve.bridge.airlie_client import ServeClient
-from airlie.serve.bridge.busy import busy_reason
+from airlie.serve.bridge.busy import busy_reason, reason_key
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
@@ -82,10 +82,13 @@ class BridgeRunner:
                 log.warning("busy probe failed; not claiming this tick", exc_info=True)
                 reason = f"busy probe failed ({type(e).__name__}: {e})"
             if reason is not None:
-                if reason != self._last_busy_logged:
+                key = reason_key(reason)  # the age moves every tick; the wait is the same one
+                if key != self._last_busy_logged:
                     log.info("not claiming: %s", reason)
-                self._last_busy_logged = reason
+                self._last_busy_logged = key
                 return False
+            if self._last_busy_logged is not None:
+                log.info("idle again, claiming")
             self._last_busy_logged = None
         job = await self.hub.claim(self.worker)
         if job is None:

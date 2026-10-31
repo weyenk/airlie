@@ -497,6 +497,42 @@ def test_busy_reason_logged_once_per_change(tmp_path: Path, caplog: pytest.LogCa
     assert sum("story plan lane is running" in r.getMessage() for r in caplog.records) == 1
 
 
+def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    reasons: list[str | None] = [
+        "model generalist used 14 s ago on engine main",
+        "model generalist used 19 s ago on engine main",
+        "model generalist used 24 s ago on engine main",
+        None,
+        None,
+    ]
+
+    async def busy() -> str | None:
+        return reasons.pop(0)
+
+    runner = _runner(tmp_path, busy, FakeHub())
+
+    async def go() -> None:
+        for _ in range(5):
+            await runner.tick()
+
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(go())
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
+
+
+def test_no_idle_line_when_the_bridge_was_never_busy(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    async def busy() -> str | None:
+        return None
+
+    runner = _runner(tmp_path, busy, FakeHub())
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(runner.tick())
+    assert caplog.records == []
+
+
 # ---- heartbeat: keep a running hub job leased ----
 
 

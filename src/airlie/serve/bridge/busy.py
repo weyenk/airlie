@@ -22,6 +22,7 @@ This is the one place GPU sharing would change: if jobs ever ran beside a story,
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -34,6 +35,12 @@ log = logging.getLogger(__name__)
 LANES: tuple[Lane, ...] = ("build", "plan")
 STATUS_TIMEOUT_S = 3.0
 OWN_SLACK_S = 2.0
+_AGE = re.compile(r" used \d+ s ago ")
+
+
+def reason_key(reason: str) -> str:
+    """`reason` without the age that moves every tick ("used 14 s ago"): one wait on one model, one key."""
+    return _AGE.sub(" used recently ", reason)
 
 
 def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:

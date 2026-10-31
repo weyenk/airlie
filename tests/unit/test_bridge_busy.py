@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from airlie.config import load_config
-from airlie.serve.bridge.busy import busy_reason
+from airlie.serve.bridge.busy import busy_reason, reason_key
 from airlie.story.state import lane_lock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +143,12 @@ def test_an_unpatched_engine_falls_back_to_the_last_use(tmp_path: Path) -> None:
     assert _probe(_cfg(tmp_path), recent) == "model generalist used 14 s ago on engine main"
     old = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 500}])
     assert _probe(_cfg(tmp_path), old) is None
+
+
+def test_the_reason_key_drops_only_the_age() -> None:
+    assert reason_key("model g used 14 s ago on engine main") == reason_key("model g used 9 s ago on engine main")
+    assert reason_key("model g used 14 s ago on engine main") != reason_key("model h used 14 s ago on engine main")
+    assert reason_key("story build lane is running") == "story build lane is running"
 
 
 # ---- engine keys and roots ----
