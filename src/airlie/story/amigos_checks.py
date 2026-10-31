@@ -62,10 +62,14 @@ def split_problems(layers: Sequence[Layer], story: Story) -> list[Finding]:
 def check_split(
     layers: Sequence[Layer], story: Story, repo: Path, base: str, max_scope_files: int
 ) -> list[Finding]:
-    """`file_missing` for a file a layer names that is not at `base` and is not marked new, `over_size` for a
-    layer naming more than `max_scope_files` files, and `split_invalid` (`split_problems`). A layer that
-    names no files is read by the paths its scope mentions (D14's fallback)."""
+    """`file_missing` for a file a layer names that is not at `base`, not marked new, and not made new by a
+    layer below it, `over_size` for a layer naming more than `max_scope_files` files, and `split_invalid`
+    (`split_problems`). A layer that names no files is read by the paths its scope mentions (D14's
+    fallback). Layers stack, so a file layer 01 creates is there for layer 02 (2026-10-31, roman: the
+    from-roman layer named the to-roman layer's new files as existing, was flagged, and the architect's
+    workaround posted an invalid part)."""
     found = split_problems(layers, story)
+    below: set[str] = set()  # the files the layers so far create
     for layer in layers:
         paths = layer.paths()
         new = {f.path for f in layer.files if f.new}
@@ -73,12 +77,14 @@ def check_split(
             Finding(
                 "file_missing",
                 p,
-                f"layer '{layer.slug}' names it, but it is not at the base and is not marked new",
+                f"layer '{layer.slug}' names it, but it is not at the base, not marked new, and no layer "
+                "below creates it",
                 "",
             )
             for p in paths
-            if p not in new and find_file(repo, base, p)[0] == "missing"
+            if p not in new and p not in below and find_file(repo, base, p)[0] == "missing"
         ]
+        below |= new
         if len(paths) > max_scope_files:
             found.append(
                 Finding(

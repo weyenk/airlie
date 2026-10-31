@@ -45,6 +45,17 @@ def kinds(found: list[Finding]) -> list[str]:
     return [f.kind for f in found]
 
 
+def test_a_file_a_lower_layer_creates_is_there_for_the_layers_above_it(tmp_path: Path) -> None:
+    """2026-10-31 (roman): the from-roman layer named the to-roman layer's new files as existing and was
+    flagged file_missing; the architect's workaround then posted an invalid part. Layers stack."""
+    root, sha = _repo(tmp_path)
+    makes = replace(LAYERS[1], files=(ScopedPath("src/profile.py", True),))
+    uses = Layer("avatar", "Avatar", "src/profile.py", "b", ("AC1",), (ScopedPath("src/profile.py"),))
+    assert "file_missing" not in kinds(check_split((makes, uses), STORY, root, sha, 5))
+    found = check_split((uses, makes), STORY, root, sha, 5)  # above it, not below: still missing
+    assert "file_missing" in kinds(found)
+
+
 def test_a_split_naming_a_file_the_base_lacks_without_new_is_a_finding(tmp_path: Path) -> None:
     root, sha = _repo(tmp_path)
     assert check_split(LAYERS, STORY, root, sha, 5) == []  # profile.py is marked new
