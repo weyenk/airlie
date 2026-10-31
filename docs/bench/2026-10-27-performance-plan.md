@@ -542,3 +542,36 @@ doubled token.
 compute calls fell from 24–40 a run to 8–14 with the workspace and the cap. Meetings still take 9–10 turns
 (10–21 minutes), and that is now the largest stage: P5a (short turns) and the tester's proof in its first turn
 are next.
+
+## Possible revisit: the meeting's time (P5a, set aside 2026-10-30)
+
+P5a ("an agreeing role does not repost its part; the tester posts its proof first") was measured before it was
+built, and changes nothing today:
+- No role reposted an unchanged part in round 1's meetings (`amigos-turn` already says not to).
+- The tester posted its proof in its first turn in each.
+
+The meeting's cost is elsewhere. In round 1 it wrote 9.8k–15.7k tokens in 9.5–21.2 minutes, 12–17 tok/s of
+wall time against about 33 tok/s decoding. Most of that is the architect's turns (144–418 s each, against 6–65
+s for product). Each turn takes up to `tool_iterations: 3` tool rounds plus a reflection call, each re-reading a
+10–25k-token prompt.
+
+If revisited:
+1. Log the meeting's tool calls (role, tool, arguments). Today they are not recorded.
+2. Then trim on that evidence, one change at a time: compute only (the dossier holds the files), fewer rounds,
+   or no reflection call when a tool result needs no new reasoning.
+
+## Reliability rounds on merged main (2026-10-30/31, roman)
+
+Each fix lives in the node that owns the problem (a client, a tool, a checker or a rule), not in the pipeline's
+sequencing, so the nodes stay reusable.
+
+**Round 1** (33d185d = main, fixes landing between runs):
+
+| Run | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|
+| 1 | 30.6 | 18/18, 8/8 | 60/62 | Nothing | – |
+| 2 | 39.0 | 18/18, 8/8 | 49/49 | The architect's meeting turns ended in AutoGen's reflection with its compute results and no verdict, three times (`verdict_missing`). The tester held a false count ("0 of 2800 short strings are valid"; 346 are) to the turn cap | c0b47b8: the client takes a `reflection_note`, which the meeting sets to its verdict contract. The tester's false count was not fixed: it cost no rework, and checking disputed numbers is a larger design |
+| 3 | 32.1 | **16/18** | 36/36 | Product's refine re-ran one buggy compute program three times until the repeat guard stopped it. A two-layer split's second layer named the first layer's new files as existing, and the meeting checker flagged them `file_missing`. **AC2 restated the numeral table without V=5; the coder built that table, and the tests (alphabet plus round trip, no V among the pinned examples) passed `5 -> IVI`** | 859bb62: compute answers a repeated identical program without running it. e2d5fba: the checker counts the files lower layers create. The rules: a criterion names a standard and does not restate it; a whole-range test compares every output with a reference the test computes, checked with compute on cases that use every row |
+
+Run 3 shows why the bench's own oracle matters: the story's tests and mutation score were perfect while the
+product was wrong.
