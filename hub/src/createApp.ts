@@ -209,6 +209,10 @@ export function createApp(deps: AppDeps): express.Express {
       res.status(err.status).json({ error: err.message });
       return;
     }
+    if (typeof err === "object" && err !== null && (err as { type?: unknown }).type === "entity.too.large") {
+      res.status(413).json({ error: "payload too large" });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: "Internal server error" });
   });

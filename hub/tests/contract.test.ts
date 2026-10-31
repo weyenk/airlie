@@ -234,4 +234,14 @@ describe("job lease", () => {
       .send({ worker_id: "w1", status: "done", result: {} });
     expect(res.status).toBe(403);
   });
+
+  it("an oversized body answers 413, not 500", async () => {
+    const { app, config } = await createTestHub();
+    const res = await request(app)
+      .post("/api/v1/jobs")
+      .set(tenantAuth(config.tenantServiceKeys.lhr!, "alice"))
+      .send({ kind: "studio", payload: { goal: "x".repeat(config.maxPayloadBytes + 1) }, created_by: "alice" });
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({ error: "payload too large" });
+  });
 });
