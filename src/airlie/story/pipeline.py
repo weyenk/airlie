@@ -875,6 +875,7 @@ class StoryPipeline:
                 if v is None
                 else {"requirements": v.requirements, "changes": v.changes, "proof": v.proof},
                 problems=[p.kind for p in turn.problems],
+                verdict_asked=turn.verdict_asked,
                 prompt_tokens=turn.prompt_tokens,
                 completion_tokens=turn.completion_tokens,
                 wall_ms=round(turn.wall_ms),

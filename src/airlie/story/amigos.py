@@ -27,7 +27,7 @@ from autogen_agentchat.base import ChatAgent, Response, Team, TerminatedExceptio
 from autogen_agentchat.messages import BaseAgentEvent, BaseChatMessage, StopMessage, TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_core import CancellationToken
-from autogen_core.models import ChatCompletionClient
+from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.prompts import text as hub_text
@@ -551,6 +551,8 @@ class Turn:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     wall_ms: float = 0.0
+    verdict_asked: bool = False
+    """The turn ended with no verdict and the role was asked for it once, at once (`verdict_only`)."""
 
 
 @dataclass(frozen=True)
@@ -593,6 +595,34 @@ def part_of(obj: Mapping[str, Any]) -> Part | None:
     if kind != "verdict" and "layers" in obj:
         return "changes"
     return None
+
+
+VERDICT_ONLY = (
+    "Your turn in the story meeting ended without your verdict. Your turn was:\n\n{turn}\n\n"
+    "Reply with only the verdict for that turn, as the contract says: one ```json block, nothing else."
+)
+
+
+async def verdict_only(client: ChatCompletionClient, role: str, said: str) -> str | None:
+    """The verdict block `role` gives for its turn `said` when asked once, at once, or None when its reply
+    holds none. A turn that used tools ends in AutoGen's reflection, which reported what the tools showed and
+    no verdict even when reminded (2026-10-31, roman: three architect turns in one meeting, each a lost round
+    and a checker finding); one short ask keeps the round."""
+    try:
+        res = await client.create(
+            [
+                SystemMessage(content=VERDICT_CONTRACT),
+                UserMessage(content=VERDICT_ONLY.format(turn=said), source="airlie"),
+            ]
+        )
+    except Exception:  # noqa: BLE001 - a repair that fails leaves the turn as it was: the checker says so
+        return None
+    text = res.content if isinstance(res.content, str) else ""
+    try:
+        parse_verdict(text, role)
+    except StoryError:
+        return None
+    return text
 
 
 def read_turn(role: str, text: str, standing: Standing, rules: ReadRules) -> Turn:
@@ -791,6 +821,12 @@ class AgreementReached(TerminationCondition):
                 if self._posted.get(part) != text:  # a part posted again as it stands leaves the verdicts
                     self._posted[part] = text
                     self._revised = self._seq
+
+    def amend(self, role: str, verdict: Verdict) -> None:
+        """Take `verdict` as the one `role`'s latest message carried: the verdict it was asked for once, at
+        once, when its turn ended without one (`verdict_only`)."""
+        seq, _ = self._verdicts.get(role, (self._seq, None))
+        self._verdicts[role] = (seq, verdict)
 
     def agreed(self) -> bool:
         """Whether the meeting as observed so far has reached agreement."""
@@ -1003,6 +1039,13 @@ class Meeting:
                     turn = Turn(CHECKER, said.content, findings=checker.last)
                 else:
                     turn = read_turn(said.source, said.content, standing, rules)
+                    if turn.verdict is None and any(p.kind == "verdict_missing" for p in turn.problems):
+                        verdict = await verdict_only(agents[said.source][1], said.source, said.content)
+                        if verdict is not None:  # the turn as it would have read with its verdict
+                            turn = read_turn(said.source, f"{said.content}\n\n{verdict}", standing, rules)
+                            turn.verdict_asked = True
+                            if turn.verdict is not None:
+                                agreement.amend(said.source, turn.verdict)
                 usage = said.models_usage
                 turn.prompt_tokens = usage.prompt_tokens if usage else 0
                 turn.completion_tokens = usage.completion_tokens if usage else 0

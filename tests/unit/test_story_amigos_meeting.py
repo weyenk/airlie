@@ -218,20 +218,40 @@ async def test_an_objection_is_answered_by_a_revision_the_checker_reads_and_the_
     assert [t.text for t in seen if t.role == "airlie"] == ["no findings"] * 2
 
 
-async def test_a_turn_without_a_verdict_is_a_finding_not_an_agreement(tmp_path: Path) -> None:
-    """Product answers in prose with no verdict: the checker names it, and the meeting does not end on the
-    strength of a silence; product's next turn, with a verdict, does."""
+async def test_a_turn_without_a_verdict_whose_role_gives_none_when_asked_is_a_finding(tmp_path: Path) -> None:
+    """Product answers in prose with no verdict, and asked once for it, gives none: the checker names it, and
+    the meeting does not end on the strength of a silence; product's next turn, with a verdict, does."""
     script = {
-        "product": [say("Looks fine to me.", ""), say("Verdict this time.", AGREE), say("ok", AGREE)],
+        "product": [say("Looks fine to me.", ""), "still no verdict", say("Verdict this time.", AGREE)]
+        + [say("ok", AGREE)] * 2,
         "architect": [say("ok", AGREE)] * 3,
         "tester": [say("Proof.", fence(PROOF), AGREE), say("ok", AGREE), say("ok", AGREE)],
     }
     seen: list[Turn] = []
     out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
-    assert seen[0].verdict is None and seen[0].problems[0].kind == "verdict_missing"
+    assert (
+        seen[0].verdict is None
+        and seen[0].problems[0].kind == "verdict_missing"
+        and seen[0].verdict_asked is False
+    )
     first_check = seen[3].text
     assert "verdict_missing" in first_check and "product" in first_check
     assert out.turns > 4 and out.turns % 4 == 0 and out.unresolved == ()
+
+
+async def test_a_turn_without_a_verdict_is_asked_once_for_it_and_keeps_its_round(tmp_path: Path) -> None:
+    """2026-10-31 (roman): the architect's turns that used tools ended in AutoGen's reflection with what its
+    checks showed and no verdict, three times in one meeting, each a lost round. Asked once, at once, for the
+    verdict, the turn counts: the meeting ends at six turns as if it had been there."""
+    script = {
+        "product": [say("The criteria read fine.", AGREE)] * 2,
+        "architect": [say("All the numbers check out.", ""), AGREE, say("The split holds.", AGREE)],
+        "tester": [say("Here is the proof.", fence(PROOF), AGREE), say("Still good.", AGREE)],
+    }
+    seen: list[Turn] = []
+    out = await agree(meeting(script, on_turn=lambda t, s: seen.append(t)), tmp_path)
+    assert seen[1].role == "architect" and seen[1].verdict is not None and seen[1].verdict_asked
+    assert not seen[1].problems and out.turns == 6 and out.unresolved == ()
 
 
 async def test_a_verdict_inside_prose_is_not_a_revised_part_and_a_bad_part_is_a_finding(
