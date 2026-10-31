@@ -45,7 +45,11 @@ class ServeClient:
             data = res.json()
             return str(data["job_id"])
         if res.status_code == 401:
-            raise BridgeError("serve rejected the API key (401)")
+            detail = (res.text or "").strip().replace("\n", " ")[:160]
+            raise BridgeError(
+                "serve rejected the request (401)"
+                + (f": {detail}" if detail else " — check AIRLIE_SERVE_API_KEY matches task serve")
+            )
         raise BridgeError(f"serve POST /v1/airlie/runs failed: {res.status_code} {res.text[:400]}")
 
     async def poll_job(self, job_id: str, *, wait: float = 0.0) -> dict[str, Any]:

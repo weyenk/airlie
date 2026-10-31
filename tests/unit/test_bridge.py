@@ -116,6 +116,46 @@ def test_credential_env_reads_bridge_dotenv(tmp_path: Path, monkeypatch: pytest.
     assert worker_secret(cfg.bridge, credential_env(cfg)) == "b" * 40
 
 
+def test_resolve_serve_api_key_reads_bridge_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """task serve and task bridge share AIRLIE_SERVE_API_KEY from bridge.env — no --api-key every time."""
+    home = tmp_path / "home"
+    airlie_cfg = home / ".config" / "airlie"
+    airlie_cfg.mkdir(parents=True)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("AIRLIE_SERVE_API_KEY=serve-secret-from-file\n")
+    dotenv.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AIRLIE_SERVE_API_KEY", raising=False)
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import resolve_serve_api_key
+
+    assert resolve_serve_api_key(cfg) == "serve-secret-from-file"
+    assert resolve_serve_api_key(cfg, explicit="cli-wins") == "cli-wins"
+
+
+def test_bridge_dotenv_wins_over_stale_shell_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrong AIRLIE_SERVE_API_KEY left in the shell must not override bridge.env."""
+    home = tmp_path / "home"
+    airlie_cfg = home / ".config" / "airlie"
+    airlie_cfg.mkdir(parents=True)
+    dotenv = airlie_cfg / "bridge.env"
+    dotenv.write_text("AIRLIE_SERVE_API_KEY=from-file\nBRIDGE_WORKER_SECRET=" + "b" * 40 + "\n")
+    dotenv.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AIRLIE_SERVE_API_KEY", "stale-from-shell")
+    cfg = _cfg_with_bridge(bridge_cfg(tmp_path))
+    from airlie.serve.bridge.session import credential_env, resolve_serve_api_key, serve_api_key
+
+    assert serve_api_key(cfg.bridge, credential_env(cfg)) == "from-file"
+    # No --api-key: file wins over stale shell. CLI --api-key still wins via explicit=.
+    assert resolve_serve_api_key(cfg) == "from-file"
+    assert resolve_serve_api_key(cfg, explicit="stale-from-shell") == "stale-from-shell"
+
+
 # ---- T10: studio mapping, plan=None, report dropped, repo + payload rules ----
 
 

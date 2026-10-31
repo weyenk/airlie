@@ -18,21 +18,23 @@ def bridge_dotenv_path() -> Path:
 
 
 def credential_env(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> Mapping[str, str]:
-    """Process env (non-empty) wins over ~/.config/airlie/bridge.env; tests pass `env` explicitly."""
+    """Merge process env with ~/.config/airlie/bridge.env; keys set in the file win (stale shell exports lose).
+
+    Tests pass `env` explicitly to skip the file.
+    """
     if env is not None:
         return env
     from airlie.story.jira import read_dotenv
 
     path = bridge_dotenv_path()
-    merged = dict(read_dotenv(path))
+    file_vals = read_dotenv(path)
     try:
         if path.is_file() and path.stat().st_mode & (stat.S_IRGRP | stat.S_IROTH):
             warnings.warn(f"{path} is readable by group or others: chmod 600 {path}", stacklevel=2)
     except OSError:
         pass
-    for key, value in os.environ.items():
-        if value:
-            merged[key] = value
+    merged = {k: v for k, v in os.environ.items() if v}
+    merged.update(file_vals)
     return merged
 
 
@@ -41,7 +43,9 @@ def worker_secret(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str
     name = spec.worker_secret_env
     raw = (env or os.environ).get(name, "")
     if not raw:
-        raise BridgeError(f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)")
+        raise BridgeError(
+            f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)"
+        )
     return raw
 
 
@@ -49,6 +53,18 @@ def serve_api_key(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str
     name = spec.serve_api_key_env
     raw = (env or os.environ).get(name, "").strip()
     return raw or None
+
+
+def resolve_serve_api_key(
+    cfg: AirlieConfig,
+    *,
+    explicit: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """CLI/env override, else AIRLIE_SERVE_API_KEY from process env or ~/.config/airlie/bridge.env."""
+    if explicit is not None and explicit.strip():
+        return explicit.strip()
+    return serve_api_key(cfg.bridge, credential_env(cfg, env))
 
 
 def worker_id(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str:
