@@ -53,7 +53,7 @@ export function loadConfigForTests(overrides: Partial<HubConfig> = {}): HubConfi
     databaseUrl: "postgres://local/test",
     bridgeWorkerSecret: "test-worker-secret-32-chars-minimum!!",
     tenantServiceKeys: { lhr: "tenant-lhr-key", ecff: "tenant-ecff-key" },
-    allowedKinds: ["studio"],
+    allowedKinds: ["studio", "llm"],
     maxPayloadBytes: 65536,
     ...overrides,
   };

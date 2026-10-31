@@ -109,6 +109,26 @@ describe("Job Bus contract (T1–T9)", () => {
     expect(res.body.error).toMatch(/kind not allowed/i);
   });
 
+  it("T7b kind allowlist accepts llm", async () => {
+    const { app, config } = await createTestHub();
+    expect(config.allowedKinds).toContain("llm");
+    const res = await request(app)
+      .post("/api/v1/jobs")
+      .set(tenantAuth(config.tenantServiceKeys.lhr!, "alice"))
+      .send({
+        kind: "llm",
+        created_by: "alice",
+        payload: {
+          prompt: "hi",
+          persona: "you are a writer",
+          output: "chat.completions",
+          caller: "lhr",
+        },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.job.kind).toBe("llm");
+  });
+
   it("T8 invalid tenant service key returns 401", async () => {
     const { app } = await createTestHub();
     const res = await request(app)
