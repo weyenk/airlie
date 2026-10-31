@@ -749,7 +749,7 @@ class StoryPipeline:
                 self.s.product_role,
                 "story",
                 lambda feedback: refine_brief(card, feedback),
-                lambda text: parse_story(extract_json_block(text)),
+                lambda text: parse_story(extract_json_block(text), renumber=True),
             )
         except NotActionable as e:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e

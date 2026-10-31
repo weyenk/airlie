@@ -54,6 +54,18 @@ def test_parse_story_errors_say_what_to_fix() -> None:
         parse_story({"type": "blocked", "reason": "which sizes?"})
 
 
+def test_refine_gives_a_repeated_criterion_id_the_next_free_one_and_the_first_keeps_its_own() -> None:
+    """Roman, 2026-10-31: AC1, AC2, AC3, AC3, AC4, AC5 cost a whole fresh refine run; nothing cites the ids
+    at refine, so the second AC3 becomes AC6 and every other id stays as written."""
+    c = lambda cid, then: {"id": cid, "given": "g", "when": "w", "then": then}  # noqa: E731
+    ids = ["AC1", "AC2", "AC3", "AC3", "AC4", "AC5"]
+    s = parse_story({**GOOD, "acceptance": [c(i, f"t{n}") for n, i in enumerate(ids)]}, renumber=True)
+    assert [(x.id, x.then) for x in s.acceptance][2:4] == [("AC3", "t2"), ("AC6", "t3")]
+    assert [x.id for x in s.acceptance] == ["AC1", "AC2", "AC3", "AC6", "AC4", "AC5"]
+    with pytest.raises(StoryError, match="repeat"):  # elsewhere (the meeting) the ids are cited: refused
+        parse_story({**GOOD, "acceptance": [c("AC1", "a"), c("AC1", "b")]})
+
+
 def test_parse_layers_checks_count_slugs_and_coverage() -> None:
     story = parse_story(GOOD)
     one = {"slug": "Data Model!", "title": "Model", "scope": "models.py", "brief": "b"}
