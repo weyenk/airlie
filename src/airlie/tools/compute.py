@@ -30,6 +30,10 @@ same reference implementation again). Past it the tool says to answer from what 
 
 class Compute:
     name = "compute"
+    distinct_by_arguments = True
+    """Another program that prints the same is a different check, not a repeat (2026-10-31, roman: product's
+    three different checks of one table printed the same and the repeat guard stopped its refine); the same
+    program again is answered in `run`, and CALLS bounds the rest."""
     description = (
         "Run a short Python 3 program (standard library) and return what it prints. Use it to check a "
         "number before you state it: a bound, a count, a maximum, an example's value, a test's expected "

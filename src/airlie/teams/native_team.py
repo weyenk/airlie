@@ -761,7 +761,7 @@ class NativeTeam:
                 seen = _settled(result.output)
                 recent.append(
                     (call.name, call.arguments, seen)
-                    if call.name in ("write_file", "edit_file")
+                    if ctx.tools.distinct_by_arguments(call.name)
                     else (call.name, seen)
                 )
                 recent = recent[-ctx.repeat_limit * MAX_CYCLE :]

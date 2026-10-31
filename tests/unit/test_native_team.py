@@ -2064,6 +2064,21 @@ async def test_a_repeat_diagnosed_as_a_wrong_test_stops_the_role(tmp_path: Path)
     assert result.steps == ctx.repeat_limit  # it stopped at the guard
 
 
+async def test_different_programs_that_print_the_same_are_not_a_repeat(tmp_path: Path) -> None:
+    """2026-10-31 (roman): product's three different checks of one table printed the same, and the repeat
+    guard stopped its refine (repeated_action). compute counts calls apart by their program."""
+
+    def check(n: int) -> FakeReply:
+        return FakeReply(
+            tool_calls=[ToolCall(f"c{n}", "compute", json.dumps({"code": f"print(15)  # check {n}"}))]
+        )
+
+    engine = FakeEngine({"coder": [check(1), check(2), check(3), check(4), FakeReply(text="Done.")]})
+    team, ctx = make_team(tmp_path, engine, max_steps=10, tool_names=("compute",))
+    result = await team.run(ctx, Recorder())
+    assert result.stop_reason != "repeated_action" and result.final_text == "Done."
+
+
 async def test_the_same_read_again_is_answered_from_the_conversation_until_the_file_is_written(
     tmp_path: Path,
 ) -> None:

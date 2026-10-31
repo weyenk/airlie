@@ -238,6 +238,7 @@ def _refused_by_definition(ctx: ToolContext, p: Path, shown: str, before: str, a
 
 class WriteFile:
     name = "write_file"
+    distinct_by_arguments = True  # a different write that ends the same is not a repeat
     description = (
         "Create a text file in the repository with the given content, or overwrite one of at most "
         f"{ToolContext.write_file_max_overwrite_lines} lines, or any file you created in this run. A longer "
@@ -344,6 +345,7 @@ def _loose_span(text: str, old: str) -> tuple[int, int] | None:
 
 class EditFile:
     name = "edit_file"
+    distinct_by_arguments = True
     description = (
         "Replace one exact occurrence of `old` with `new` in a file. Fails if `old` is absent or ambiguous."
     )

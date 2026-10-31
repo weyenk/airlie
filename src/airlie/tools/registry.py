@@ -66,6 +66,11 @@ class ToolRegistry:
     def add(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
 
+    def distinct_by_arguments(self, name: str) -> bool:
+        """Whether two calls of tool `name` with the same result but other arguments are different actions (a
+        tool says so with a true `distinct_by_arguments`): the repeat guard then counts them apart."""
+        return bool(getattr(self._tools.get(name), "distinct_by_arguments", False))
+
     def names(self) -> list[str]:
         return list(self._tools)
 
