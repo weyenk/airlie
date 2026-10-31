@@ -1,4 +1,4 @@
-import { ApiError, KEY, getKey, onUnauthorized, queryString, request, signalUnauthorized } from "./index";
+import { ApiError, KEY, getKey, onUnauthorized, queryString, request, setKey, signalUnauthorized } from "./index";
 
 beforeEach(() => {
   localStorage.clear();
@@ -20,6 +20,9 @@ test("the key lives where today's app keeps it", () => {
   expect(getKey()).toBe("");
   localStorage.setItem("airlie.key", "k1");
   expect(getKey()).toBe("k1");
+  setKey("");
+  expect(getKey()).toBe("");
+  expect(localStorage.getItem("airlie.key")).toBeNull();
 });
 
 test("a localStorage that throws is no key", () => {

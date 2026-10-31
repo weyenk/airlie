@@ -18,10 +18,9 @@ def bridge_dotenv_path() -> Path:
 
 
 def credential_env(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> Mapping[str, str]:
-    """Merge process env with ~/.config/airlie/bridge.env; keys set in the file win (stale shell exports
-    lose).
+    """Merge process env with ~/.config/airlie/bridge.env.
 
-    Tests pass `env` explicitly to skip the file.
+    Keys set in the file win (stale shell exports lose). Tests pass `env` to skip the file.
     """
     if env is not None:
         return env

@@ -22,10 +22,11 @@ export function getKey(): string {
   }
 }
 
-/** Keep `key` for this browser (the admin key sign-in). */
+/** Keep `key` for this browser (the admin key sign-in). Empty string clears it so a passkey session is not shadowed. */
 export function setKey(key: string): void {
   try {
-    localStorage.setItem(KEY, key);
+    if (key) localStorage.setItem(KEY, key);
+    else localStorage.removeItem(KEY);
   } catch {
     // private mode or blocked storage: the key lives for this page load only, and the cookie is not set either
   }
