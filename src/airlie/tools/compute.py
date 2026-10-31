@@ -46,6 +46,8 @@ class Compute:
     def __init__(self) -> None:
         self.calls = 0
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
+        self.ran: dict[str, int] = {}
+        """Each program this conversation ran (its text, stripped) and the call that ran it."""
 
     def workspace(self) -> Path:
         """The directory this conversation's programs run in and keep files in, made on first use and removed
@@ -58,12 +60,22 @@ class Compute:
         code = str(args.get("code") or "")
         if not code.strip():
             return ToolResult(False, "error: no code given")
+        again = self.ran.get(code.strip())
+        if again is not None:
+            # the same program again prints the same: say so instead of running it (2026-10-31, roman: product
+            # re-ran one buggy program three times, unchanged, until the repeat guard stopped its refine)
+            said = (
+                f"you ran this exact program already (call {again}); it would print the same. If its output "
+                "shows a bug in the program, change the program; otherwise answer from what it printed"
+            )
+            return ToolResult(False, said)
         if self.calls >= CALLS:
             return ToolResult(
                 False,
                 f"compute ran {CALLS} programs in this conversation already: answer from what they showed",
             )
         self.calls += 1
+        self.ran[code.strip()] = self.calls
         rc, text = await run_python(code, self.workspace(), sandbox=ctx.sandbox)
         if rc is None:
             return ToolResult(False, text)
