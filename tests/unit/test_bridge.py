@@ -523,7 +523,9 @@ def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
     assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
 
 
-def test_no_idle_line_when_the_bridge_was_never_busy(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_no_idle_line_when_the_bridge_was_never_busy(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     async def busy() -> str | None:
         return None
 
@@ -670,7 +672,14 @@ def test_studio_poll_error_fails_the_job(tmp_path: Path) -> None:
 
 
 def _hub_job(jid: str, kind: str = "llm") -> dict[str, Any]:
-    return {"id": jid, "kind": kind, "tenant_id": "lhr", "payload": {}, "worker_id": "w1", "status": "running"}
+    return {
+        "id": jid,
+        "kind": kind,
+        "tenant_id": "lhr",
+        "payload": {},
+        "worker_id": "w1",
+        "status": "running",
+    }
 
 
 class _RaisingHandler:

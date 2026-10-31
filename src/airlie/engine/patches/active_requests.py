@@ -1,11 +1,11 @@
 """vllm-mlx 0.5.0's `/v1/status` says when each model was last used, never whether it is in use now.
 
 The bridge claims a product's job only while airlie is idle (airlie.serve.bridge.busy). vllm-mlx stamps a
-model's `last_used_at` when a request takes its lease and again when it gives it back, so a single generation
-longer than `bridge.idle_s` (a long thinking reply from a chat or an editor) reads as idle halfway through,
-and a hub job would start beside it. The model manager keeps the number it needs, `LoadedModel.active_requests`
-(one per lease held), but `ModelManager.list_models()`, which `/v1/status` returns as `model_manager.models`,
-leaves it out.
+model's `last_used_at` when a request takes its lease and again when it gives it back, so a single
+generation longer than `bridge.idle_s` (a long thinking reply from a chat or an editor) reads as idle halfway
+through, and a hub job would start beside it. The model manager keeps the number it needs,
+`LoadedModel.active_requests` (one per lease held), but `ModelManager.list_models()`, which `/v1/status`
+returns as `model_manager.models`, leaves it out.
 
 This adds `"active_requests": <int>` to every entry `list_models()` returns: the loaded model's count, 0 for
 one not loaded. (`/v1/models` reads only each entry's id, so the extra key changes nothing there.) The patch
@@ -52,13 +52,13 @@ def apply() -> bool:
         return False
 
     def list_models(self: Any) -> list[dict[str, Any]]:
-        data = original(self)
+        data: list[dict[str, Any]] = original(self)
         for entry in data:
             loaded = self._loaded.get(entry.get("id"))
             entry[FIELD] = int(loaded.active_requests) if loaded is not None else 0
         return data
 
-    ModelManager.list_models = list_models  # type: ignore[method-assign]
+    ModelManager.list_models = list_models
     _applied = True
     logger.info("airlie: /v1/status reports each model's requests in flight")
     return True

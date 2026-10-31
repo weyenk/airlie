@@ -360,8 +360,8 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
 
 CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
 """How long a non-streamed `/v1/chat/completions` waits on the engine. It sends no bytes until the reply is
-whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs (`bridge.llm.timeout_s`)
-wait as long as this. Every other upstream call keeps 600 s."""
+whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs
+(`bridge.llm.timeout_s`) wait as long as this. Every other upstream call keeps 600 s."""
 
 
 def create_app(
