@@ -353,3 +353,56 @@ def test_a_vitest_file_comes_in_a_ts_fence_and_the_contract_says_which_fence_is_
         text = f"### test file: {WEB}\n```{lang}\n{WEB_TEXT}```\n\n```json\n{{}}\n```\n"
         assert test_files_in(text) == {WEB: WEB_TEXT}, lang
     assert "```ts" in PACKAGE_CONTRACT and "```python" in PACKAGE_CONTRACT
+
+
+EXISTING = (
+    '"""The store."""\n\nimport pytest\n\nfrom store import store\n\n\n'
+    "def test_old():\n    assert store() == 1\n"
+)
+ADDED = "import json\n\nimport pytest\n\n\ndef test_a():\n    assert json.loads(str(store())) == 1\n"
+
+
+def additions(path: str, text: str) -> str:
+    """A reply whose one test block adds to `path` rather than writing it whole."""
+    return reply(tests={}).replace(
+        "```json", f"### test additions: {path}\n```python\n{text}```\n\n```json", 1
+    )
+
+
+def test_test_additions_join_the_file_on_the_base_with_their_imports_in_its_import_block() -> None:
+    """AIR-47 (2026-10-31): a layer's tests went in tests/unit/test_config.py, 1299 lines, and the contract
+    asked for the whole file back: twice the reply was cut off at max_tokens before its package object. Now
+    an existing file's new tests come alone and the pipeline joins them to the base's file."""
+    p = parse_package(additions(PATH, ADDED), LAYER, STORY, base={PATH: EXISTING}.get)
+    assert isinstance(p, Package)
+    whole = p.tests[PATH]
+    assert whole.startswith(
+        '"""The store."""\n\nimport pytest\n\nfrom store import store\nimport json\n\n\ndef test_old'
+    )
+    assert whole.count("import pytest") == 1  # an import the file already has is not written twice
+    assert "def test_old():" in whole and whole.endswith("assert json.loads(str(store())) == 1\n")
+    assert p.test_ids == (f"{PATH}::test_a",)
+    assert p.added == {PATH: ADDED}
+    assert Package.from_dict(p.to_dict()) == p
+    assert "test additions" in PACKAGE_CONTRACT
+
+
+def test_test_additions_to_a_file_the_base_lacks_are_refused_in_words_the_architect_acts_on() -> None:
+    with pytest.raises(StoryError, match=r"not on the layer's base.*### test file:"):
+        parse_package(additions(PATH, ADDED), LAYER, STORY, base={}.get)
+    with pytest.raises(StoryError, match=r"not on the layer's base"):
+        parse_package(additions(PATH, ADDED), LAYER, STORY)
+
+
+def test_a_drafted_package_rebased_joins_its_additions_to_the_file_on_the_layer_s_real_base() -> None:
+    """A draft is written at the story's base; an earlier layer may add tests to the same file before this
+    layer takes its draft, and those must be kept."""
+    p = parse_package(additions(PATH, ADDED), LAYER, STORY, base={PATH: EXISTING}.get)
+    later = EXISTING + "\n\ndef test_layer_one():\n    assert store()\n"
+    q = p.rebased({PATH: later}.get)
+    assert "def test_layer_one():" in q.tests[PATH] and q.tests[PATH].endswith(
+        p.tests[PATH].split("\n\n\n")[-1]
+    )
+    assert q.added == p.added and q.covers == p.covers
+    whole = parse_package(reply(), LAYER, STORY)
+    assert whole.rebased({PATH: later}.get) == whole  # a file written whole stays as written
