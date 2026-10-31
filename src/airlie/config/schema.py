@@ -332,6 +332,11 @@ class BridgeSpec(Strict):
     claim_poll_s: float = Field(default=5.0, ge=0.0, description="seconds between short-poll claim attempts")
     job_poll_s: float = Field(default=2.0, ge=0.0, description="seconds between serve job status polls")
     concurrency: int = Field(default=1, ge=1, description="Phase 1: one job at a time")
+    idle_s: float = Field(
+        default=120.0,
+        ge=0.0,
+        description="a model used this recently by anything but the bridge counts as busy",
+    )
     kinds: list[str] = Field(default_factory=lambda: ["studio", "llm"])
     llm: LlmKindSpec = Field(default_factory=LlmKindSpec, description="settings for the `llm` kind")
     allowed_repos: list[AllowedRepoSpec] = Field(default_factory=list)

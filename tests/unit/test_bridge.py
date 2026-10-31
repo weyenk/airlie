@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -17,10 +19,11 @@ from airlie.config.schema import AllowedRepoSpec, BridgeSpec, LlmKindSpec
 from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
+from airlie.serve.bridge.job_bus import JobBusClient
 from airlie.serve.bridge.kinds import LlmKind, StudioKind, map_run_result
 from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
-from airlie.serve.bridge.runner import run_bridge
+from airlie.serve.bridge.runner import BridgeRunner, run_bridge
 
 ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
@@ -29,6 +32,8 @@ NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.loc
 def _cfg_with_bridge(bridge: BridgeSpec) -> Any:
     cfg = load_config(ROOT / "airlie.yaml", local_path=NO_LOCAL)
     cfg.bridge = bridge
+    cfg.engines = {}  # the busy probe must not look at this machine's engines or story locks
+    cfg.observability.state_dir = Path(tempfile.mkdtemp(prefix="bridge-state-"))
     return cfg
 
 
@@ -429,3 +434,56 @@ def test_llm_runner_claims_and_posts_hub_result(tmp_path: Path) -> None:
     assert n == 1
     assert hub_t.results[0]["status"] == "done"
     assert hub_t.results[0]["result"] == {"output": "chat.completions", "content": "ok"}
+
+
+# ---- busy gate: claim only while airlie is idle ----
+
+
+def _runner(tmp_path: Path, busy: Any, hub_t: FakeHub) -> BridgeRunner:
+    bridge = bridge_cfg(tmp_path)
+    return BridgeRunner(
+        cfg=_cfg_with_bridge(bridge),
+        hub=JobBusClient(bridge.job_bus_url or "", "s" * 40, transport=hub_t),
+        serve=ServeClient(bridge.serve_url, api_key="k", transport=FakeServe()),
+        worker="w1",
+        clock=FakeClock(),
+        bridge=bridge,
+        stop=asyncio.Event(),
+        busy=busy,
+    )
+
+
+def test_busy_bridge_does_not_claim(tmp_path: Path) -> None:
+    async def busy() -> str | None:
+        return "story build lane is running"
+
+    hub_t = FakeHub()
+    assert asyncio.run(_runner(tmp_path, busy, hub_t).tick()) is False
+    assert hub_t.claim_calls == 0
+
+
+def test_idle_bridge_claims(tmp_path: Path) -> None:
+    async def busy() -> str | None:
+        return None
+
+    hub_t = FakeHub()
+    asyncio.run(_runner(tmp_path, busy, hub_t).tick())
+    assert hub_t.claim_calls == 1
+
+
+def test_busy_reason_logged_once_per_change(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    reasons = ["story build lane is running", "story build lane is running", "story plan lane is running"]
+
+    async def busy() -> str | None:
+        return reasons.pop(0)
+
+    runner = _runner(tmp_path, busy, FakeHub())
+
+    async def go() -> None:
+        for _ in range(3):
+            await runner.tick()
+
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(go())
+    assert sum("story build lane is running" in r.getMessage() for r in caplog.records) == 1
+    assert sum("story plan lane is running" in r.getMessage() for r in caplog.records) == 1

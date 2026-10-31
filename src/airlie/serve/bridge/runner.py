@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from airlie.config.schema import AirlieConfig, BridgeSpec
 from airlie.serve.bridge.airlie_client import ServeClient
+from airlie.serve.bridge.busy import busy_reason
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
@@ -29,6 +33,9 @@ class BridgeRunner:
     bridge: BridgeSpec
     stop: asyncio.Event
     jobs_processed: int = 0
+    last_job_finished: float = 0.0
+    busy: Callable[[], Awaitable[str | None]] | None = None
+    _last_busy_logged: str | None = None
 
     async def process_job(self, job: HubJob) -> None:
         log.info("claimed hub job %s kind=%s tenant=%s", job.id, job.kind, job.tenant_id)
@@ -46,9 +53,18 @@ class BridgeRunner:
             error_message=outcome.error_message,
         )
         self.jobs_processed += 1
+        self.last_job_finished = self.clock.wall()
 
     async def tick(self) -> bool:
         """One claim attempt; True when a job was processed."""
+        if self.busy is not None:
+            reason = await self.busy()
+            if reason is not None:
+                if reason != self._last_busy_logged:
+                    log.info("not claiming: %s", reason)
+                self._last_busy_logged = reason
+                return False
+            self._last_busy_logged = None
         job = await self.hub.claim(self.worker)
         if job is None:
             return False
@@ -111,6 +127,14 @@ async def run_bridge(
         bridge=bridge,
         stop=stop or asyncio.Event(),
     )
+    probe_http = httpx.AsyncClient()
+
+    async def busy() -> str | None:
+        return await busy_reason(
+            cfg, http=probe_http, now=runner.clock.wall(), own_last_used=runner.last_job_finished
+        )
+
+    runner.busy = busy
     try:
         if once:
             await runner.run_once()
@@ -119,4 +143,5 @@ async def run_bridge(
     finally:
         await hub.aclose()
         await serve.aclose()
+        await probe_http.aclose()
     return runner.jobs_processed
