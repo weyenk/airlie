@@ -21,7 +21,7 @@ from typing import Any, Literal, cast
 
 from airlie.story.js_tests import JsParseError, js_tests
 from airlie.story.layer_checks import test_functions
-from airlie.story.model import NO_JSON, Layer, Story, StoryError, _encodable, _strs, _text
+from airlie.story.model import NO_JSON, REPLY_TAIL, Layer, Story, StoryError, _encodable, _strs, _text
 from airlie.tools.scope import is_js_test, is_test_file
 from airlie.topology.studio_plan import extract_json_block
 
@@ -38,7 +38,9 @@ AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the crit
 BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 
-_HEADING = re.compile(r"^### test file: (?P<path>\S+)\s*$")
+_HEADING = re.compile(r"^#{2,4} test file: [`'\"]?(?P<path>[^\s`'\"]+)[`'\"]?\s*$", re.IGNORECASE)
+"""A test file's heading: `### test file: <path>`, at heading level two to four, in any case, its path bare or
+quoted (roman, 2026-10-31: a resumed draft's test file was not found, and the reply was a retry)."""
 _FENCE = re.compile(r"^(?P<fence>`{3,})(?:python|py|ts|typescript|tsx|js|javascript|jsx)?\s*$")
 """A test file's opening fence: ```python for a pytest module, ```ts (and kin) for a Vitest file, or bare."""
 _JSON_OPENER = re.compile(r"^`{3,}json[ \t]*$", re.IGNORECASE)
@@ -232,8 +234,16 @@ def parse_package(
     text: str, layer: Layer, story: Story, gated: Collection[str] = ()
 ) -> Package | ProofChange:
     """The architect's reply as a Package, or as a ProofChange when it says the agreed proof is wrong and
-    writes no package. A StoryError says what to fix, in words the architect acts on. `gated` are the
-    criteria the agreed proof leaves to the gate: they need no covers."""
+    writes no package. A StoryError says what to fix, in words the architect acts on, and keeps the reply's
+    end (`reply`). `gated` are the criteria the agreed proof leaves to the gate: they need no covers."""
+    try:
+        return _parse_package(text, layer, story, gated)
+    except StoryError as e:
+        e.reply = text[-REPLY_TAIL:]
+        raise
+
+
+def _parse_package(text: str, layer: Layer, story: Story, gated: Collection[str]) -> Package | ProofChange:
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
         return _proof_change(obj, story)
@@ -252,15 +262,21 @@ def parse_package(
         tests[path] = body
 
     files: list[PackageFile] = []
+    agreed = {x.path: ("create" if x.new else "modify") for x in layer.files}
     for n, f in enumerate(_list(obj.get("files"), "files"), 1):
         if not isinstance(f, dict):
             raise StoryError(f"files item {n} must be an object with path and action")
+        path = _normal(_text(f, "path", f"files item {n}"), "a file path")
         action = f.get("action")
+        if action is None:
+            # the agreed split says whether the file is new (roman round 6, 2026-10-31: a package that left
+            # out one action was a retry)
+            action = agreed.get(path)
         if action not in _ACTIONS:
             raise StoryError(f"files item {n}: action must be create or modify, not {action!r}")
         files.append(
             PackageFile(
-                _normal(_text(f, "path", f"files item {n}"), "a file path"),
+                path,
                 cast(Any, action),
                 _encodable(str(f.get("why") or "").strip(), "a file's 'why'"),
             )

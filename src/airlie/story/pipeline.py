@@ -749,7 +749,7 @@ class StoryPipeline:
                 self.s.product_role,
                 "story",
                 lambda feedback: refine_brief(card, feedback),
-                lambda text: parse_story(extract_json_block(text)),
+                lambda text: parse_story(extract_json_block(text), renumber=True),
             )
         except NotActionable as e:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
@@ -875,6 +875,7 @@ class StoryPipeline:
                 if v is None
                 else {"requirements": v.requirements, "changes": v.changes, "proof": v.proof},
                 problems=[p.kind for p in turn.problems],
+                verdict_asked=turn.verdict_asked,
                 prompt_tokens=turn.prompt_tokens,
                 completion_tokens=turn.completion_tokens,
                 wall_ms=round(turn.wall_ms),
@@ -1563,7 +1564,7 @@ class StoryPipeline:
                             got = parse_package(await say(told), layer, story, gated=_gated(proof))
                 except StoryError as e:
                     st.drafts[nn] = {"unusable": str(e)}
-                    st.emit("retry", stage="package", error=str(e))
+                    st.emit("retry", stage="package", error=str(e), reply=e.reply)
                     st.emit(
                         "package_returned", layer=nn, attempt=1, kinds=["package_unusable"], studio_run=run
                     )
@@ -1909,7 +1910,7 @@ class StoryPipeline:
                     continue
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
-                st.emit("retry", stage="package", error=feedback)
+                st.emit("retry", stage="package", error=feedback, reply=e.reply)
                 st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=st.runs[-1])
                 continue
             package, found = await checker.check(

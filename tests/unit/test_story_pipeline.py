@@ -2872,7 +2872,7 @@ async def test_a_meeting_that_stops_the_story_leaves_its_transcript_on_disk(tmp_
     script = {
         "product": [spoken("Fine by me.", AGREE_V)] * 2,
         "architect": [spoken("ok", AGREE_V)] * 2,
-        "tester": ["I would test the storage first."] * 2,
+        "tester": ["I would test the storage first."] * 4,  # each turn, and its answer to the verdict ask
     }
     pipe = pipeline(
         tmp_path,

@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from airlie.prompts import text as hub_text
-from airlie.story.model import Layer, StoryError, unusable_why
+from airlie.story.model import REPLY_TAIL, Layer, StoryError, unusable_why
 
 REFINE_FIELD = (
     'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
@@ -49,9 +49,10 @@ async def plan_in_rounds[T](
     """The text of the plan the rounds end on. `first()` runs round 1 and `again(nudge)` each later one, up
     to `rounds` in all; either raises StoryError for a round that ended with no answer. A round 1 with no
     answer, or whose reply `parse` refuses, goes back in the same conversation (`plan-unfinished`, or
-    `plan-fix` with the reason), up to `fixes` times in all (`plan_fix` events), and is then a StoryError
-    (the caller asks again from the start); a later round with no answer, or one it refuses, ends the rounds
-    on the plan before it. `signal(text)` reads the plan's own verdict (its `refine` object):
+    `plan-fix` with the reason), up to `fixes` times in all (`plan_fix` events, with a refused reply's end),
+    and is then a StoryError (the caller asks again from the start); a later round with no answer, or one it
+    refuses, ends the rounds on the plan before it. `signal(text)` reads the plan's own verdict (its `refine`
+    object):
     `worth_another_round: false` ends the rounds on that plan, at once (a `plan_check` event says what it
     said). A round whose plan is `same` as the one before ends them on it, whatever the verdict. Each round's
     plan and the reason the rounds ended are events, and each nudge sent is a `steer` event naming `role`,
@@ -73,7 +74,9 @@ async def plan_in_rounds[T](
             why = unusable_why(e, text)
             if attempt == fixes:
                 raise StoryError(why) from e
-            emit("plan_fix", attempt=attempt + 1, error=why[:300])
+            # the refused reply's end goes with it: the reply is kept nowhere else, and a refusal whose cause
+            # it shows could not be read after the run (roman, 2026-10-31: a plan with no "layers" list)
+            emit("plan_fix", attempt=attempt + 1, error=why[:300], reply=text[-REPLY_TAIL:])
             nudge = ("plan-fix", {"error": why})
     emit("plan_round", round=1, **_shape(plan))
     if _finished(signal, text, 1, emit):

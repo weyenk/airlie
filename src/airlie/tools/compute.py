@@ -30,6 +30,10 @@ same reference implementation again). Past it the tool says to answer from what 
 
 class Compute:
     name = "compute"
+    distinct_by_arguments = True
+    """Another program that prints the same is a different check, not a repeat (2026-10-31, roman: product's
+    three different checks of one table printed the same and the repeat guard stopped its refine); the same
+    program again is answered in `run`, and CALLS bounds the rest."""
     description = (
         "Run a short Python 3 program (standard library) and return what it prints. Use it to check a "
         "number before you state it: a bound, a count, a maximum, an example's value, a test's expected "
@@ -46,6 +50,8 @@ class Compute:
     def __init__(self) -> None:
         self.calls = 0
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
+        self.ran: dict[str, int] = {}
+        """Each program this conversation ran (its text, stripped) and the call that ran it."""
 
     def workspace(self) -> Path:
         """The directory this conversation's programs run in and keep files in, made on first use and removed
@@ -58,12 +64,22 @@ class Compute:
         code = str(args.get("code") or "")
         if not code.strip():
             return ToolResult(False, "error: no code given")
+        again = self.ran.get(code.strip())
+        if again is not None:
+            # the same program again prints the same: say so instead of running it (2026-10-31, roman: product
+            # re-ran one buggy program three times, unchanged, until the repeat guard stopped its refine)
+            said = (
+                f"you ran this exact program already (call {again}); it would print the same. If its output "
+                "shows a bug in the program, change the program; otherwise answer from what it printed"
+            )
+            return ToolResult(False, said)
         if self.calls >= CALLS:
             return ToolResult(
                 False,
                 f"compute ran {CALLS} programs in this conversation already: answer from what they showed",
             )
         self.calls += 1
+        self.ran[code.strip()] = self.calls
         rc, text = await run_python(code, self.workspace(), sandbox=ctx.sandbox)
         if rc is None:
             return ToolResult(False, text)

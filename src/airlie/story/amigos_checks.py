@@ -41,7 +41,11 @@ _WORDS = (
 )  # fmt: skip
 _NUM = r"(\d+|" + "|".join(_WORDS) + r")"
 _LENGTHS = re.compile(rf"\b{_NUM}\s*(?:to|-|–|\.\.)\s*{_NUM}[\s-]*char", re.IGNORECASE)
-_ALPHABET = re.compile(r"""over\s+(?:the\s+alphabet\s+)?['"]([A-Za-z]{2,})['"]""", re.IGNORECASE)
+_ALPHABET = re.compile(
+    r"""over\s+(?:the\s+alphabet\s+)?(?:['"]([A-Za-z]{2,})['"]|((?:[A-Z][\s,/]+)+[A-Z])(?![A-Za-z]))"""
+)
+"""The alphabet a sweep goes over: quoted ('IVXLCDM'), or its capital letters one by one ("I V X L C D M",
+"I, V, X": roman round 5 run 3, 2026-10-31, a 5..15-character sweep written that way passed unflagged)."""
 SWEEP_LIMIT = 10_000_000
 """The most strings a proof test may sweep (as the package check's test_too_large holds it)."""
 
@@ -62,10 +66,14 @@ def split_problems(layers: Sequence[Layer], story: Story) -> list[Finding]:
 def check_split(
     layers: Sequence[Layer], story: Story, repo: Path, base: str, max_scope_files: int
 ) -> list[Finding]:
-    """`file_missing` for a file a layer names that is not at `base` and is not marked new, `over_size` for a
-    layer naming more than `max_scope_files` files, and `split_invalid` (`split_problems`). A layer that
-    names no files is read by the paths its scope mentions (D14's fallback)."""
+    """`file_missing` for a file a layer names that is not at `base`, not marked new, and not made new by a
+    layer below it, `over_size` for a layer naming more than `max_scope_files` files, and `split_invalid`
+    (`split_problems`). A layer that names no files is read by the paths its scope mentions (D14's
+    fallback). Layers stack, so a file layer 01 creates is there for layer 02 (2026-10-31, roman: the
+    from-roman layer named the to-roman layer's new files as existing, was flagged, and the architect's
+    workaround posted an invalid part)."""
     found = split_problems(layers, story)
+    below: set[str] = set()  # the files the layers so far create
     for layer in layers:
         paths = layer.paths()
         new = {f.path for f in layer.files if f.new}
@@ -73,12 +81,14 @@ def check_split(
             Finding(
                 "file_missing",
                 p,
-                f"layer '{layer.slug}' names it, but it is not at the base and is not marked new",
+                f"layer '{layer.slug}' names it, but it is not at the base, not marked new, and no layer "
+                "below creates it",
                 "",
             )
             for p in paths
-            if p not in new and find_file(repo, base, p)[0] == "missing"
+            if p not in new and p not in below and find_file(repo, base, p)[0] == "missing"
         ]
+        below |= new
         if len(paths) > max_scope_files:
             found.append(
                 Finding(
@@ -184,10 +194,11 @@ def check_sweep_sizes(proof: Sequence[ProofTest]) -> list[Finding]:
         if lengths is None or alphabet is None:
             continue
         low, high = _number(lengths.group(1)), _number(lengths.group(2))
-        size = sum(len(alphabet.group(1)) ** n for n in range(low, high + 1))
+        letters = len(alphabet.group(1) or re.sub(r"[^A-Z]", "", alphabet.group(2)))
+        size = sum(letters**n for n in range(low, high + 1))
         if size > SWEEP_LIMIT:
             why = (
-                f"it sweeps {size:,} strings ({low} to {high} characters over {len(alphabet.group(1))} "
+                f"it sweeps {size:,} strings ({low} to {high} characters over {letters} "
                 "letters), too many to run: sweep to four characters and prove longer inputs another way"
             )
             found.append(Finding("proof_too_large", t.id, why, ""))

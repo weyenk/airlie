@@ -167,6 +167,19 @@ def test_a_verdict_is_read_from_the_last_json_fence_whatever_surrounds_it() -> N
     assert '"type": "verdict"' in VERDICT_CONTRACT and "End every turn with your verdict" in VERDICT_CONTRACT
 
 
+def test_a_part_nobody_has_posted_yet_may_be_left_open_without_an_objection() -> None:
+    """2026-10-31 (roman): product and architect each said "object" to the proof before the tester had
+    posted it; read as no verdict, it cost the meeting two checker findings. A posted part still needs one."""
+    open_proof = {**VERDICT, "proof": "object"}
+    v = parse_verdict(_fence(open_proof), "product", frozenset({"proof"}))
+    assert v.proof == "object" and v.objections == () and not v.agrees_to_all()
+    with pytest.raises(StoryError, match="no objection"):
+        parse_verdict(_fence(open_proof), "product")
+    with pytest.raises(StoryError, match="no objection"):  # the story was posted: it needs one
+        parse_verdict(_fence({**VERDICT, "requirements": "object"}), "architect", frozenset({"proof"}))
+    assert "nobody has posted yet is open" in VERDICT_CONTRACT
+
+
 def test_a_verdict_that_objects_to_the_speakers_own_part_or_objects_with_nothing_is_refused() -> None:
     mine = {
         **VERDICT,
@@ -284,6 +297,17 @@ def test_a_proof_with_one_bad_entry_keeps_its_good_ones_and_names_the_bad() -> N
     tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
     assert [t.name for t in tests] == [t.name for t in _proof()]
     assert len(problems) == 1 and problems[0].startswith("proof test 4: criterion 'the suite passes'")
+
+
+def test_a_gate_entry_with_no_criterion_is_read_past_not_refused() -> None:
+    """2026-10-31 (roman round 6): {"criterion": null, "gate": true} added nothing, since the gate runs for
+    every layer, and held the meeting up as part_invalid."""
+    from airlie.story.amigos import parse_proof_entries
+
+    obj = copy.deepcopy(GOOD)
+    obj["tests"].append({"criterion": None, "layer": "profile", "gate": True})
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert [t.name for t in tests] == [t.name for t in _proof()] and problems == []
 
 
 def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_level() -> None:

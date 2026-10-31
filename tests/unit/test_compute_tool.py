@@ -82,3 +82,15 @@ async def test_files_a_program_writes_stay_for_the_next_call_and_calls_are_cappe
     past = await tool.run({"code": "print(1)"}, ctx)
     assert saved.ok and (used.ok, used.output) == (True, "42\n")
     assert not past.ok and "answer from what they showed" in past.output
+
+
+async def test_the_same_program_again_is_not_run_and_the_role_is_told_to_change_it_or_answer(
+    tmp_path: Path,
+) -> None:
+    """2026-10-31 (roman): product re-ran one buggy program three times, unchanged, until the repeat guard
+    stopped its refine. A repeat is answered without running and does not count toward CALLS."""
+    tool, ctx = Compute(), ToolContext(worktree=tmp_path)
+    first = await tool.run({"code": "print(6 * 7)"}, ctx)
+    again = await tool.run({"code": "print(6 * 7)\n"}, ctx)
+    assert first.output == "42\n" and not again.ok and "already (call 1)" in again.output
+    assert tool.calls == 1

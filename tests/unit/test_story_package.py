@@ -5,12 +5,13 @@ the steps, what covers which criterion) parsed into a Package, with refusals a r
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from airlie.story import package as package_module
-from airlie.story.model import Criterion, Layer, Story, StoryError
+from airlie.story.model import Criterion, Layer, ScopedPath, Story, StoryError
 from airlie.story.package import PACKAGE_CONTRACT, Package, ProofChange, parse_package
 
 STORY = Story(
@@ -95,6 +96,35 @@ def test_test_files_in_reads_each_heading_and_longer_fences() -> None:
         "tests/a_test.py": "x = 1\n```\ny = 2\n",
         "tests/test_b.py": "z = 3\n",
     }
+
+
+def test_a_test_file_heading_is_read_at_levels_two_to_four_in_any_case_with_its_path_bare_or_quoted() -> None:
+    """Roman, 2026-10-31: a resumed draft's test file was not found and the reply cost a retry."""
+    for heading in (
+        "## Test file: tests/test_b.py",
+        "#### test file: `tests/test_b.py`",
+        "### TEST FILE: 'tests/test_b.py'",
+    ):
+        assert package_module.test_files_in(f"{heading}\n```python\nz = 3\n```\n") == {
+            "tests/test_b.py": "z = 3\n"
+        }
+
+
+def test_a_file_with_no_action_takes_it_from_the_agreed_split_when_the_split_names_it() -> None:
+    """Roman round 6 (2026-10-31): a package that left out one action was a retry."""
+    layer = replace(LAYER, files=(ScopedPath("src/store.py", True), ScopedPath("src/old.py")))
+    files = [{"path": "src/store.py"}, {"path": "src/old.py", "why": "w"}]
+    p = parse_package(reply(files=files), layer, STORY)
+    assert [(f.path, f.action) for f in p.files] == [("src/store.py", "create"), ("src/old.py", "modify")]
+    with pytest.raises(StoryError, match="action must be create or modify, not None"):
+        parse_package(reply(files=[{"path": "src/other.py"}]), layer, STORY)
+
+
+def test_a_refused_package_keeps_the_replys_end_for_the_retry_event() -> None:
+    text = reply(tests={})
+    with pytest.raises(StoryError, match="no test file") as e:
+        parse_package(text, LAYER, STORY)
+    assert e.value.reply == text[-1500:] and e.value.reply.endswith("```\n")
 
 
 def test_a_heading_with_no_block_is_refused() -> None:

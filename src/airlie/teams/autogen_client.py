@@ -81,6 +81,9 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
     """How the latest reply ended; "length" means max_tokens cut it off."""
     model_spec: ModelSpec | None = None
     """The served model's catalog entry, whose parsers read a reply the server left as text."""
+    reflection_note: str = ""
+    """Said after the no-tools note on AutoGen's reflection request: what the caller's answer must hold (the
+    meeting's verdict). Empty: nothing more."""
 
     def _slot(self) -> AbstractAsyncContextManager[None]:
         if self.slot_scheduler is None:
@@ -111,9 +114,10 @@ class RepairingOpenAIClient(OpenAIChatCompletionClient):
         if not tools and messages and isinstance(messages[-1], FunctionExecutionResultMessage):
             # AutoGen's reflection after a tool round offers no tools: say so up front, or a role that still
             # wants to read answers "let me read ..." in prose, with no verdict (wiki run B, 2026-10-27)
+            note = entry("last-turn-retry").body.strip()
             messages = [
                 *messages,
-                UserMessage(content=entry("last-turn-retry").body.strip(), source="airlie"),
+                UserMessage(content=f"{note}\n\n{self.reflection_note}".strip(), source="airlie"),
             ]
         res = await ask(messages)
         if self.model_spec is not None:

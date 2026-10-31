@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 from airlie.config import AirlieConfig
 from airlie.story.fixes import line_event
-from airlie.story.model import StoryError, unusable_why
+from airlie.story.model import REPLY_TAIL, StoryError, unusable_why
 from airlie.story.phase import fanout, wait_for_gap
 from airlie.story.rounds import plan_in_rounds
 from airlie.story.state import Lane
@@ -328,5 +328,5 @@ class Asker:
                 return parse(reply)
             except StoryError as e:
                 feedback = unusable_why(e, reply)
-                st.emit("retry", stage=stage, error=feedback)
+                st.emit("retry", stage=stage, error=feedback, reply=reply[-REPLY_TAIL:])
         raise StoryBlocked(f"{role} did not produce a usable {what}: {feedback}")

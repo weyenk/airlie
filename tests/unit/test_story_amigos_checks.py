@@ -45,6 +45,17 @@ def kinds(found: list[Finding]) -> list[str]:
     return [f.kind for f in found]
 
 
+def test_a_file_a_lower_layer_creates_is_there_for_the_layers_above_it(tmp_path: Path) -> None:
+    """2026-10-31 (roman): the from-roman layer named the to-roman layer's new files as existing and was
+    flagged file_missing; the architect's workaround then posted an invalid part. Layers stack."""
+    root, sha = _repo(tmp_path)
+    makes = replace(LAYERS[1], files=(ScopedPath("src/profile.py", True),))
+    uses = Layer("avatar", "Avatar", "src/profile.py", "b", ("AC1",), (ScopedPath("src/profile.py"),))
+    assert "file_missing" not in kinds(check_split((makes, uses), STORY, root, sha, 5))
+    found = check_split((uses, makes), STORY, root, sha, 5)  # above it, not below: still missing
+    assert "file_missing" in kinds(found)
+
+
 def test_a_split_naming_a_file_the_base_lacks_without_new_is_a_finding(tmp_path: Path) -> None:
     root, sha = _repo(tmp_path)
     assert check_split(LAYERS, STORY, root, sha, 5) == []  # profile.py is marked new
@@ -172,6 +183,14 @@ def test_a_proof_test_that_sweeps_more_strings_than_can_run_is_advice() -> None:
     )
     worded = replace(huge, name="test_d", asserts="every string of one to four characters over 'IVXLCDM'")
     unnamed = replace(huge, name="test_e", asserts="every string of 1 to 15 characters raises")
-    found = check_sweep_sizes((huge, worded, unnamed))
-    assert [(f.kind, f.test) for f in found] == [("proof_too_large", huge.id)]
-    assert "7 letters" in found[0].why and "proof_too_large" in ADVISORY
+    spelled = replace(  # round 5 run 3 (2026-10-31): the letters one by one, unquoted
+        huge,
+        name="test_f",
+        asserts="for every 5 to 15 character string over the alphabet I V X L C D M: raises",
+    )
+    found = check_sweep_sizes((huge, worded, unnamed, spelled))
+    assert [(f.kind, f.test) for f in found] == [
+        ("proof_too_large", huge.id),
+        ("proof_too_large", spelled.id),
+    ]
+    assert "7 letters" in found[0].why and "7 letters" in found[1].why and "proof_too_large" in ADVISORY

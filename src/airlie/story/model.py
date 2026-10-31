@@ -4,7 +4,7 @@ errors a role can act on; slugs, branch names, the issue-key pattern and the sto
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from airlie.topology.studio_plan import json_block_problem
@@ -12,6 +12,14 @@ from airlie.topology.studio_plan import json_block_problem
 
 class StoryError(ValueError):
     """A reply that cannot be used; the message goes back to the role with the next attempt."""
+
+    reply: str = ""
+    """The refused reply's end (REPLY_TAIL), where the parser that refused it keeps it: the retry event
+    carries it, because the reply is kept nowhere else."""
+
+
+REPLY_TAIL = 1500
+"""How much of a refused reply, from its end, a retry event keeps (its ```json block ends it)."""
 
 
 class NotActionable(Exception):
@@ -276,7 +284,12 @@ def _scoped_paths(v: Any, where: str) -> tuple[ScopedPath, ...]:
     return tuple(out)
 
 
-def parse_story(obj: dict[str, Any] | None) -> Story:
+def parse_story(obj: dict[str, Any] | None, *, renumber: bool = False) -> Story:
+    """The story in `obj`, or a StoryError saying what to mend. With `renumber` (refine, where nothing cites
+    the ids yet), a criterion whose id repeats an earlier one's takes the next unused ACn instead of costing
+    the whole refine again (roman, 2026-10-31: AC1, AC2, AC3, AC3, AC4, AC5 was a fresh refine run); the
+    first of each keeps its id, so whatever the story's own text says of the others still holds. The meeting
+    reads a revised story without it: there the layers cite the ids."""
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") == "blocked":
@@ -296,6 +309,8 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
         where = f"acceptance {cid}"
         given, when, then = (_text(c, k, where) for k in ("given", "when", "then"))
         criteria.append(Criterion(cid, given, when, then))
+    if renumber:
+        criteria = _renumbered(criteria)
     ids = [c.id for c in criteria]
     if len(set(ids)) != len(ids):
         raise StoryError(f"acceptance ids repeat ({ids}); give each criterion its own id")
@@ -306,6 +321,24 @@ def parse_story(obj: dict[str, Any] | None) -> Story:
         _strs(obj.get("out_of_scope"), "'out_of_scope'"),
         _strs(obj.get("assumptions"), "'assumptions'"),
     )
+
+
+def _renumbered(criteria: list[Criterion]) -> list[Criterion]:
+    """`criteria` with each repeat of an earlier id given the next ACn no criterion has."""
+    taken = {c.id for c in criteria}
+    seen: set[str] = set()
+    out: list[Criterion] = []
+    n = 0
+    for c in criteria:
+        if c.id in seen:
+            n += 1
+            while f"AC{n}" in taken:
+                n += 1
+            taken.add(f"AC{n}")
+            c = replace(c, id=f"AC{n}")
+        seen.add(c.id)
+        out.append(c)
+    return out
 
 
 def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> tuple[Layer, ...]:

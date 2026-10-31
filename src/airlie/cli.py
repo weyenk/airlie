@@ -898,6 +898,9 @@ def bench_story(
         return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
 
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    # the build that runs, read before it does: a commit made during an hour-long run is not this run's code
+    # (2026-10-31: two runs were stamped with commits made while they ran)
+    build = sp.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
     prune_stale_stacks(clone)  # nor of a stack whose branches an earlier run deleted
     before = local_branches(clone)
@@ -913,9 +916,7 @@ def bench_story(
     record: dict[str, Any] = {
         "case": case.id,
         "started": started,
-        "airlie_build": sp.run(
-            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
-        ).stdout.strip(),
+        "airlie_build": build,
         "base": {"expected": case.base, "built_on": built_on, "same": built_on == case.base},
         "stage": st.stage,
         "blocked": st.blocked,
