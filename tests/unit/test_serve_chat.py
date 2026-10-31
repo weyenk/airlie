@@ -165,3 +165,11 @@ def test_the_why_skill_loads_with_its_action() -> None:
     assert why["action"] == "why" and "diagnosis" in why["summary"]
     text = (ROOT / "skills/chat/why.md").read_text()
     assert "--- diagnosis (data) ---" in text  # the markers the Vue app wraps the route's Markdown in
+
+
+def test_raw_catalog_model_gets_only_the_clients_system_message(tmp_path: Path) -> None:
+    persona = {"role": "system", "content": "PERSONA ONLY"}
+    user = {"role": "user", "content": "go"}
+    r, up = post(tmp_path, model="base", messages=[persona, user])
+    assert r.status_code == 200
+    assert json.loads(up.requests[0].content)["messages"] == [persona, user]

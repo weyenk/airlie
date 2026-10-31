@@ -234,6 +234,12 @@ line:
 #   job_poll_s: 2
 #   concurrency: 1
 #   kinds: [studio, llm]
+#   llm:                             # the llm kind: a raw catalog model, the job's persona is the only system text
+#     model: generalist
+#     max_tokens: 16384              # caps thinking plus answer; must exceed thinking_budget
+#     thinking: true
+#     thinking_budget: 8192
+#     timeout_s: 900
 #   allowed_repos:
 #     - key: lhr
 #       path: /Users/you/git/lhr-office

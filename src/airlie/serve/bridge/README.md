@@ -22,7 +22,8 @@ The bridge short-polls `POST /jobs/claim` every `bridge.claim_poll_s` seconds (d
 enqueues a run with `plan: null`, polls serve until terminal, and posts `{ ok, final_answer, branch, tests }` to
 the hub (Mac `report` paths are not forwarded). For `llm` jobs it POSTs `/v1/chat/completions` with inline
 `persona` (system) + `prompt` (user) and posts `{ output, content }` — persona markdown is owned by the product,
-never read from Studio disk.
+never read from Studio disk. The model is a raw catalog model (no chat role prompt, so the persona is the only
+system text); `bridge.llm` sets it (`model: generalist`, `max_tokens`, `thinking`, `thinking_budget`, `timeout_s`).
 
 Set hub production `ALLOWED_KINDS=studio,llm` and Mac `bridge.kinds: [studio, llm]` (see
 `docs/integrations/bridge-clients.md`).

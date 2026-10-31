@@ -52,9 +52,16 @@ class ServeClient:
             )
         raise BridgeError(f"serve POST /v1/airlie/runs failed: {res.status_code} {res.text[:400]}")
 
-    async def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
+    async def chat_completions(
+        self, body: dict[str, Any], *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
         """POST /v1/chat/completions on loopback serve; return the OpenAI-style response object."""
-        res = await self._http.post("/v1/chat/completions", json=body)
+        if timeout_s is None:
+            res = await self._http.post("/v1/chat/completions", json=body)
+        else:
+            res = await self._http.post(
+                "/v1/chat/completions", json=body, timeout=httpx.Timeout(timeout_s, connect=10.0)
+            )
         if res.status_code == 401:
             detail = (res.text or "").strip().replace("\n", " ")[:160]
             raise BridgeError(

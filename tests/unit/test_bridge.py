@@ -10,9 +10,10 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from airlie.config import load_config
-from airlie.config.schema import AllowedRepoSpec, BridgeSpec
+from airlie.config.schema import AllowedRepoSpec, BridgeSpec, LlmKindSpec
 from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
@@ -68,6 +69,7 @@ class FakeServe(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.posts: list[dict[str, Any]] = []
         self.chat_posts: list[dict[str, Any]] = []
+        self.chat_read_timeouts: list[float | None] = []
         self._state = "running"
         self._result: dict[str, Any] = {}
         self._job_id = "20261028-test-run"
@@ -98,6 +100,7 @@ class FakeServe(httpx.AsyncBaseTransport):
             return httpx.Response(202, json={"job_id": self._job_id, "kind": "run"})
         if request.method == "POST" and request.url.path == "/v1/chat/completions":
             self.chat_posts.append(json.loads(request.content))
+            self.chat_read_timeouts.append(request.extensions.get("timeout", {}).get("read"))
             if self._chat_body is not None:
                 return httpx.Response(self._chat_status, json=self._chat_body)
             if self._chat_content is None:
@@ -324,13 +327,43 @@ def test_llm_happy_path_posts_chat_completions(tmp_path: Path) -> None:
     assert out.result == {"output": "chat.completions", "content": "weekly digest"}
     assert serve_t.chat_posts == [
         {
-            "model": "chat",
+            "model": "generalist",
             "messages": [
                 {"role": "system", "content": "# Writer\n\nYou write concise summaries."},
                 {"role": "user", "content": "summarise the week"},
             ],
+            "max_tokens": 16384,
+            "chat_template_kwargs": {"enable_thinking": True},
+            "thinking_token_budget": 8192,
         }
     ]
+
+
+def test_llm_uses_bridge_llm_settings(tmp_path: Path) -> None:
+    llm = LlmKindSpec(model="small", max_tokens=4096, thinking=False, thinking_budget=None)
+    bridge = bridge_cfg(tmp_path, kinds=["llm"], llm=llm)
+    serve_t = FakeServe()
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "done"
+    body = serve_t.chat_posts[0]
+    assert body["model"] == "small"
+    assert body["max_tokens"] == 4096
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "thinking_token_budget" not in body
+
+
+def test_llm_spec_rejects_max_tokens_under_budget() -> None:
+    with pytest.raises(ValidationError):
+        LlmKindSpec(max_tokens=100, thinking_budget=200)
+
+
+def test_llm_chat_timeout_is_the_spec_timeout(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    serve_t = FakeServe()
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert serve_t.chat_read_timeouts == [900.0]
 
 
 @pytest.mark.parametrize(

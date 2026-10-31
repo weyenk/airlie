@@ -294,6 +294,24 @@ class AllowedRepoSpec(Strict):
         return self
 
 
+class LlmKindSpec(Strict):
+    """The `llm` kind calls serve with a raw catalog model, so the job's persona is the only system text."""
+
+    model: str = Field(default="generalist", description="catalog model name posted to serve (not a role)")
+    max_tokens: int = Field(default=16384, ge=1, description="caps thinking plus answer")
+    thinking: bool = Field(default=True, description="chat_template_kwargs.enable_thinking")
+    thinking_budget: int | None = Field(
+        default=8192, ge=1, description="thinking_token_budget when thinking is on; None = uncapped"
+    )
+    timeout_s: float = Field(default=900.0, gt=0.0, description="read timeout for one completion")
+
+    @model_validator(mode="after")
+    def _answer_room(self) -> LlmKindSpec:
+        if self.thinking and self.thinking_budget and self.max_tokens <= self.thinking_budget:
+            raise ValueError("max_tokens must exceed thinking_budget (it caps thinking plus the answer)")
+        return self
+
+
 class BridgeSpec(Strict):
     """Job Bus worker (`task bridge`): outbound HTTPS to the hub, loopback to `task serve`."""
 
@@ -315,6 +333,7 @@ class BridgeSpec(Strict):
     job_poll_s: float = Field(default=2.0, ge=0.0, description="seconds between serve job status polls")
     concurrency: int = Field(default=1, ge=1, description="Phase 1: one job at a time")
     kinds: list[str] = Field(default_factory=lambda: ["studio", "llm"])
+    llm: LlmKindSpec = Field(default_factory=LlmKindSpec, description="settings for the `llm` kind")
     allowed_repos: list[AllowedRepoSpec] = Field(default_factory=list)
     test_cmds: list[str] = Field(
         default_factory=list,

@@ -120,7 +120,11 @@ LLM_OUTPUT_CHAT = "chat.completions"
 
 
 class LlmKind:
-    """POST /v1/chat/completions with inline persona as system + prompt as user; model role ``chat``."""
+    """POST /v1/chat/completions with inline persona as system + prompt as user.
+
+    Posts a raw catalog model, not the chat role: the persona is the only system text. Role defaults do not
+    apply to a raw model, so the bridge sets max_tokens and thinking from ``bridge.llm``.
+    """
 
     def __init__(
         self,
@@ -163,15 +167,20 @@ class LlmKind:
                 error_message=f"llm payload caller must be one of {sorted(LLM_CALLERS)}",
             )
 
+        spec = self._bridge.llm
         body: dict[str, Any] = {
-            "model": "chat",
+            "model": spec.model,
             "messages": [
                 {"role": "system", "content": persona.strip()},
                 {"role": "user", "content": prompt.strip()},
             ],
+            "max_tokens": spec.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": spec.thinking},
         }
+        if spec.thinking and spec.thinking_budget:
+            body["thinking_token_budget"] = spec.thinking_budget
         try:
-            raw = await self._serve.chat_completions(body)
+            raw = await self._serve.chat_completions(body, timeout_s=spec.timeout_s)
         except BridgeError as e:
             return KindOutcome("failed", error_message=str(e))
 
