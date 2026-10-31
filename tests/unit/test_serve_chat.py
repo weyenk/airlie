@@ -170,6 +170,21 @@ def test_the_why_skill_loads_with_its_action() -> None:
 def test_raw_catalog_model_gets_only_the_clients_system_message(tmp_path: Path) -> None:
     persona = {"role": "system", "content": "PERSONA ONLY"}
     user = {"role": "user", "content": "go"}
-    r, up = post(tmp_path, model="base", messages=[persona, user])
+    fields = {  # what the bridge's llm kind sets: a raw model has no role defaults to fill them in
+        "max_tokens": 1234,
+        "chat_template_kwargs": {"enable_thinking": True},
+        "thinking_token_budget": 567,
+    }
+    r, up = post(tmp_path, model="base", messages=[persona, user], **fields)
     assert r.status_code == 200
-    assert json.loads(up.requests[0].content)["messages"] == [persona, user]
+    sent = json.loads(up.requests[0].content)
+    assert sent["messages"] == [persona, user]
+    assert {k: sent[k] for k in fields} == fields
+
+
+def test_a_non_streamed_chat_completion_waits_900_s_for_the_engine(tmp_path: Path) -> None:
+    """A non-streamed reply sends no bytes until it is whole: a long thinking reply outlasts the client's
+    600 s default (the bridge's llm jobs wait 900 s)."""
+    r, up = post(tmp_path, model="base")
+    assert r.status_code == 200
+    assert up.requests[0].extensions["timeout"]["read"] == 900.0
