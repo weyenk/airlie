@@ -115,6 +115,91 @@ class StudioKind:
             return KindOutcome("failed", error_message=f"unexpected serve state {state!r}")
 
 
+LLM_CALLERS = frozenset({"lhr", "ecff"})
+LLM_OUTPUT_CHAT = "chat.completions"
+
+
+class LlmKind:
+    """POST /v1/chat/completions with inline persona as system + prompt as user; model role ``chat``."""
+
+    def __init__(
+        self,
+        bridge: BridgeSpec,
+        serve: ServeClient,
+        *,
+        clock: Clock | None = None,
+    ) -> None:
+        self._bridge = bridge
+        self._serve = serve
+        self._clock = clock or RealClock()
+
+    async def run(self, payload: dict[str, Any]) -> KindOutcome:
+        try:
+            data = assert_data_payload(payload)
+        except BridgeError as e:
+            return KindOutcome("failed", error_message=str(e))
+
+        if data.get("model") is not None:
+            return KindOutcome("failed", error_message="llm payload field model is not supported yet")
+        if data.get("thinking") is not None:
+            return KindOutcome("failed", error_message="llm payload field thinking is not supported yet")
+
+        prompt = data.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return KindOutcome("failed", error_message="llm payload requires a non-empty prompt")
+        persona = data.get("persona")
+        if not isinstance(persona, str) or not persona.strip():
+            return KindOutcome("failed", error_message="llm payload requires a non-empty persona")
+        output = data.get("output")
+        if output != LLM_OUTPUT_CHAT:
+            return KindOutcome(
+                "failed",
+                error_message=f"llm payload output must be {LLM_OUTPUT_CHAT!r}",
+            )
+        caller = data.get("caller")
+        if not isinstance(caller, str) or caller not in LLM_CALLERS:
+            return KindOutcome(
+                "failed",
+                error_message=f"llm payload caller must be one of {sorted(LLM_CALLERS)}",
+            )
+
+        body: dict[str, Any] = {
+            "model": "chat",
+            "messages": [
+                {"role": "system", "content": persona.strip()},
+                {"role": "user", "content": prompt.strip()},
+            ],
+        }
+        try:
+            raw = await self._serve.chat_completions(body)
+        except BridgeError as e:
+            return KindOutcome("failed", error_message=str(e))
+
+        content = _assistant_content(raw)
+        if content is None:
+            return KindOutcome("failed", error_message="serve chat completions returned no assistant content")
+        return KindOutcome(
+            "done",
+            result={"output": LLM_OUTPUT_CHAT, "content": content},
+        )
+
+
+def _assistant_content(raw: dict[str, Any]) -> str | None:
+    choices = raw.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content
+
+
 def handler_for(
     kind: str,
     bridge: BridgeSpec,
@@ -126,4 +211,6 @@ def handler_for(
         raise BridgeError(f"kind {kind!r} is not in bridge.kinds")
     if kind == "studio":
         return StudioKind(bridge, serve, clock=clock)
+    if kind == "llm":
+        return LlmKind(bridge, serve, clock=clock)
     raise BridgeError(f"no handler for kind {kind!r}")

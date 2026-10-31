@@ -9,6 +9,7 @@
 # ~/.config/airlie/bridge.env (chmod 600). Not the ATLASSIAN ~/.config/airlie/.env file.
 # bridge:
 #   job_bus_url: https://airlie-hub.vercel.app/api/v1
+#   kinds: [studio, llm]
 #   allowed_repos:
 #     - key: lhr
 #       path: ~/git/lhr

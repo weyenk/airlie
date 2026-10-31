@@ -314,7 +314,7 @@ class BridgeSpec(Strict):
     claim_poll_s: float = Field(default=5.0, ge=0.0, description="seconds between short-poll claim attempts")
     job_poll_s: float = Field(default=2.0, ge=0.0, description="seconds between serve job status polls")
     concurrency: int = Field(default=1, ge=1, description="Phase 1: one job at a time")
-    kinds: list[str] = Field(default_factory=lambda: ["studio"])
+    kinds: list[str] = Field(default_factory=lambda: ["studio", "llm"])
     allowed_repos: list[AllowedRepoSpec] = Field(default_factory=list)
     test_cmds: list[str] = Field(
         default_factory=list,

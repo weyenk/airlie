@@ -52,6 +52,22 @@ class ServeClient:
             )
         raise BridgeError(f"serve POST /v1/airlie/runs failed: {res.status_code} {res.text[:400]}")
 
+    async def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /v1/chat/completions on loopback serve; return the OpenAI-style response object."""
+        res = await self._http.post("/v1/chat/completions", json=body)
+        if res.status_code == 401:
+            detail = (res.text or "").strip().replace("\n", " ")[:160]
+            raise BridgeError(
+                "serve rejected the request (401)"
+                + (f": {detail}" if detail else " — check AIRLIE_SERVE_API_KEY matches task serve")
+            )
+        if not res.is_success:
+            raise BridgeError(f"serve POST /v1/chat/completions failed: {res.status_code} {res.text[:400]}")
+        data = res.json()
+        if not isinstance(data, dict):
+            raise BridgeError("serve chat completions response is not an object")
+        return data
+
     async def poll_job(self, job_id: str, *, wait: float = 0.0) -> dict[str, Any]:
         res = await self._http.get(job_path(job_id), params={"wait": wait})
         if res.status_code == 404:

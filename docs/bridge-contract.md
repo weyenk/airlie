@@ -25,7 +25,7 @@ Bearer tokens must not appear in logs.
 | `DATABASE_URL` | yes | Supabase Postgres (owner/service role connection) |
 | `BRIDGE_WORKER_SECRET` | yes | ≥256-bit shared secret for worker routes |
 | `TENANT_SERVICE_KEYS` | yes | JSON map `{"lhr":"…","ecff":"…"}` |
-| `ALLOWED_KINDS` | no | Comma-separated kind allowlist (default `studio`) |
+| `ALLOWED_KINDS` | no | Comma-separated kind allowlist (default `studio`; production should set `studio,llm`) |
 | `MAX_PAYLOAD_BYTES` | no | Enqueue payload cap (default `65536`) |
 
 Apply schema from [`hub/migrations/001_jobs.sql`](../hub/migrations/001_jobs.sql). Tables have **RLS enabled with no policies**; only the owner connection used by the hub may access rows.

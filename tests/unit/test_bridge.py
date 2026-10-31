@@ -16,7 +16,7 @@ from airlie.config.schema import AllowedRepoSpec, BridgeSpec
 from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
-from airlie.serve.bridge.kinds import StudioKind, map_run_result
+from airlie.serve.bridge.kinds import LlmKind, StudioKind, map_run_result
 from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
 from airlie.serve.bridge.runner import run_bridge
@@ -67,11 +67,15 @@ class FakeHub(httpx.AsyncBaseTransport):
 class FakeServe(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.posts: list[dict[str, Any]] = []
+        self.chat_posts: list[dict[str, Any]] = []
         self._state = "running"
         self._result: dict[str, Any] = {}
         self._job_id = "20261028-test-run"
         self.polls = 0
         self._missing = False
+        self._chat_content: str | None = "hello from serve"
+        self._chat_status = 200
+        self._chat_body: dict[str, Any] | None = None
 
     def set_done(self, result: dict[str, Any]) -> None:
         self._result = result
@@ -80,10 +84,31 @@ class FakeServe(httpx.AsyncBaseTransport):
     def set_missing(self) -> None:
         self._missing = True
 
+    def set_chat_content(self, content: str | None) -> None:
+        self._chat_content = content
+        self._chat_body = None
+
+    def set_chat_response(self, status: int, body: dict[str, Any]) -> None:
+        self._chat_status = status
+        self._chat_body = body
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/airlie/runs":
             self.posts.append(json.loads(request.content))
             return httpx.Response(202, json={"job_id": self._job_id, "kind": "run"})
+        if request.method == "POST" and request.url.path == "/v1/chat/completions":
+            self.chat_posts.append(json.loads(request.content))
+            if self._chat_body is not None:
+                return httpx.Response(self._chat_status, json=self._chat_body)
+            if self._chat_content is None:
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": self._chat_content}}]},
+            )
         if request.method == "GET" and request.url.path.startswith("/v1/airlie/jobs/"):
             self.polls += 1
             if self._missing:
@@ -93,6 +118,19 @@ class FakeServe(httpx.AsyncBaseTransport):
                 json={"state": self._state, "result": self._result, "next": 0, "events": []},
             )
         return httpx.Response(404)
+
+
+def _llm_payload(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "prompt": "summarise the week",
+        "persona": "# Writer\n\nYou write concise summaries.",
+        "output": "chat.completions",
+        "caller": "lhr",
+        "model": None,
+        "thinking": None,
+    }
+    base.update(over)
+    return base
 
 
 ENV = {"BRIDGE_WORKER_SECRET": "s" * 40}
@@ -271,3 +309,90 @@ def test_t12_runner_claims_one_job_and_posts_hub_result(tmp_path: Path) -> None:
     assert n == 1 and hub_t.claim_calls == 1
     assert hub_t.results[0]["status"] == "done"
     assert hub_t.results[0]["result"] == {"ok": True, "final_answer": "y", "branch": "b", "tests": {}}
+
+
+# ---- llm kind: payload validation + chat completions ----
+
+
+def test_llm_happy_path_posts_chat_completions(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["studio", "llm"])
+    serve_t = FakeServe()
+    serve_t.set_chat_content("weekly digest")
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "done"
+    assert out.result == {"output": "chat.completions", "content": "weekly digest"}
+    assert serve_t.chat_posts == [
+        {
+            "model": "chat",
+            "messages": [
+                {"role": "system", "content": "# Writer\n\nYou write concise summaries."},
+                {"role": "user", "content": "summarise the week"},
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("over", "match"),
+    [
+        ({"prompt": ""}, "non-empty prompt"),
+        ({"prompt": "   "}, "non-empty prompt"),
+        ({"persona": ""}, "non-empty persona"),
+        ({"output": "embeddings"}, "chat.completions"),
+        ({"caller": "other"}, "caller"),
+        ({"model": "gpt-4"}, "model is not supported yet"),
+        ({"thinking": True}, "thinking is not supported yet"),
+    ],
+)
+def test_llm_rejects_invalid_payload(tmp_path: Path, over: dict[str, Any], match: str) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    serve_t = FakeServe()
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload(**over)))
+    assert out.status == "failed"
+    assert out.error_message and match in out.error_message
+    assert serve_t.chat_posts == []
+
+
+def test_llm_rejects_empty_assistant_content(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    serve_t = FakeServe()
+    serve_t.set_chat_content(None)
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "failed"
+    assert out.error_message and "no assistant content" in out.error_message
+    assert len(serve_t.chat_posts) == 1
+
+
+def test_llm_runner_claims_and_posts_hub_result(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["studio", "llm"])
+    cfg = _cfg_with_bridge(bridge)
+    jid = str(uuid.uuid4())
+    hub_t = FakeHub(
+        jobs=[
+            {
+                "id": jid,
+                "kind": "llm",
+                "tenant_id": "lhr",
+                "payload": _llm_payload(),
+                "worker_id": "w1",
+                "status": "running",
+            }
+        ]
+    )
+    serve_t = FakeServe()
+    serve_t.set_chat_content("ok")
+    n = asyncio.run(
+        run_bridge(
+            cfg,
+            env=ENV,
+            once=True,
+            hub_transport=hub_t,
+            serve_transport=serve_t,
+        )
+    )
+    assert n == 1
+    assert hub_t.results[0]["status"] == "done"
+    assert hub_t.results[0]["result"] == {"output": "chat.completions", "content": "ok"}

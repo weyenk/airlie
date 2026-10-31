@@ -29,4 +29,7 @@ Contract tests use in-process PGlite (no external Postgres required).
 
 Point Vercel at the `hub/` directory; set the same env vars. Entry: `api/index.ts`.
 
+Production should set `ALLOWED_KINDS=studio,llm` so product BFFs can enqueue chat completions
+(`docs/integrations/bridge-clients.md`). Without it, only `studio` is accepted.
+
 See [`docs/bridge-contract.md`](../docs/bridge-contract.md) for the full contract.

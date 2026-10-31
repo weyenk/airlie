@@ -233,7 +233,7 @@ line:
 #   claim_poll_s: 5
 #   job_poll_s: 2
 #   concurrency: 1
-#   kinds: [studio]
+#   kinds: [studio, llm]
 #   allowed_repos:
 #     - key: lhr
 #       path: /Users/you/git/lhr-office
