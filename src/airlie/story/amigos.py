@@ -179,7 +179,7 @@ def _proof_entry(
     if layer not in slugs:
         raise StoryError(f"{where}: layer {layer!r} is not in the split; the layers are {sorted(slugs)}")
     if t.get("gate") is True:
-        if crit is None:
+        if crit is None:  # parse_proof_entries reads these past; a caller that does not still refuses them
             raise StoryError(f"{where}: a gate entry names the criterion the gate proves")
         return ProofTest(str(crit), layer, "", "", "gate", None, GATE_ASSERTS, "", gate=True)
     level = _field(t, "level", where)
@@ -243,6 +243,10 @@ def parse_proof_entries(
     problems: list[str] = []
     seen: set[str] = set()
     for n, t in enumerate(raw, 1):
+        if isinstance(t, dict) and t.get("gate") is True and t.get("criterion") is None:
+            # the gate runs for every layer: an entry that leaves it no criterion adds nothing, so it is read
+            # past, not refused (2026-10-31, roman round 6: one held the meeting up as part_invalid)
+            continue
         try:
             test = _proof_entry(t, f"proof test {n}", criteria, slugs, levels, guidelines)
         except StoryError as e:

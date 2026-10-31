@@ -299,6 +299,17 @@ def test_a_proof_with_one_bad_entry_keeps_its_good_ones_and_names_the_bad() -> N
     assert len(problems) == 1 and problems[0].startswith("proof test 4: criterion 'the suite passes'")
 
 
+def test_a_gate_entry_with_no_criterion_is_read_past_not_refused() -> None:
+    """2026-10-31 (roman round 6): {"criterion": null, "gate": true} added nothing, since the gate runs for
+    every layer, and held the meeting up as part_invalid."""
+    from airlie.story.amigos import parse_proof_entries
+
+    obj = copy.deepcopy(GOOD)
+    obj["tests"].append({"criterion": None, "layer": "profile", "gate": True})
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert [t.name for t in tests] == [t.name for t in _proof()] and problems == []
+
+
 def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_level() -> None:
     flat = {"tests": 1}
     obj = {"type": "proof", "tests": [{**copy.deepcopy(GOOD["tests"][0]), "file": "tests/test_store.py"}]}
