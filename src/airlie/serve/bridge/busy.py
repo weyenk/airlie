@@ -59,9 +59,10 @@ async def busy_reason(
 ) -> str | None:
     """None when idle, else one human line saying why not."""
     stories = cfg.observability.state_dir.expanduser() / "stories"
-    for lane in LANES:
-        if lock_held(stories, lane):
-            return f"story {lane} lane is running"
+    if stories.is_dir():  # no directory, no story has ever run; the probe would create it
+        for lane in LANES:
+            if lock_held(stories, lane):
+                return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
     for engine, root in _engine_roots(cfg):
         for m in await _models(http, root):

@@ -106,3 +106,9 @@ def test_unloaded_or_null_last_used_is_ignored(tmp_path: Path) -> None:
         ]
     )
     assert _probe(_cfg(tmp_path), t) is None
+
+
+def test_missing_stories_dir_is_idle(tmp_path: Path) -> None:
+    state = tmp_path / "fresh"
+    assert _probe(_cfg(state), FakeStatus()) is None
+    assert not (state / "stories").exists()
