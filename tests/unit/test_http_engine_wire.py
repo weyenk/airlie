@@ -538,6 +538,36 @@ async def test_timing_single_token_has_no_decode_rate_and_tool_calls_count_as_fi
     assert res.decode_tps == 3 / 1e-6  # first and last token were the same instant
 
 
+async def test_timing_takes_the_engines_first_output_time_over_a_tool_call_held_back_to_the_end(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    """vllm-mlx sends a parsed call whole at the end: its arrival is no first token (AIR-46 refine read 1,015
+    tok/s). The engine's own time (patches/first_output.py) splits the request."""
+    monkeypatch.setattr(he, "time", fake_clock(0.0, 5.0, 5.0))
+    frames = [
+        frame({"tool_calls": [tc(0, "c", "f", "{}")]}),
+        frame({}, "tool_calls", usage={"completion_tokens": 21}, airlie_ttft_ms=1500.0),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    res = await e.generate(req())
+    assert res.ttft_ms == 1500.0
+    assert res.decode_tps == 21 / 3.5
+
+
+async def test_timing_without_the_engines_time_counts_a_tool_call_only_when_nothing_streamed_before(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(he, "time", fake_clock(0.0, 1.0, 4.0))
+    frames = [
+        frame({"content": "Reading it."}),
+        frame({"tool_calls": [tc(0, "c", "f", "{}")]}),
+        frame({}, "tool_calls", usage={"completion_tokens": 6}),
+    ]
+    e, _ = make({CHAT: sse(*frames)})
+    res = await e.generate(req())
+    assert res.ttft_ms == 1000.0 and res.decode_tps == 6 / 3.0
+
+
 async def test_timing_without_any_token_is_zero_ttft(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(he, "time", fake_clock(5.0, 6.0))
     e, _ = make({CHAT: sse(frame({}, "stop", usage={"completion_tokens": 3}))})

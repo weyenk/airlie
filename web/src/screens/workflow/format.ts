@@ -34,7 +34,7 @@ export function stats(job: FlowJob): [string, string][] {
     // a run's job carries only prompt and completion counts (the tree has no steps or speeds): what is missing is left out
     rows.push(["Steps", t.steps === undefined ? null : String(t.steps)]);
     rows.push(["Prompt tokens", t.prompt === undefined ? null : count(t.prompt)], ["Completion tokens", t.completion === undefined ? null : count(t.completion)]);
-    rows.push(["Generation", rate(t.tps)], ["End to end", rate(t.effective_tps)], ["Prefill", rate(t.prefill_tps)]);
+    rows.push(["Read speed", rate(t.prefill_tps)], ["Write speed", rate(t.tps)], ["End to end", rate(t.effective_tps)]);
     if (t.model) rows.push(["Model", t.model]);
   }
   return rows.filter((r): r is [string, string] => Boolean(r[1]));
