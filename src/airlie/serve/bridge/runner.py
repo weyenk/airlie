@@ -17,7 +17,7 @@ from airlie.serve.bridge.busy import busy_reason
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
-from airlie.serve.bridge.kinds import handler_for
+from airlie.serve.bridge.kinds import KindOutcome, handler_for
 from airlie.serve.bridge.session import credential_env, serve_api_key, worker_id, worker_secret
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ class BridgeRunner:
         beat = asyncio.create_task(self._heartbeat_loop(job.id))
         try:
             outcome = await handler.run(job.payload)
+        except Exception as e:  # a handler bug fails its job, never the bridge
+            log.exception("hub job %s kind=%s handler raised", job.id, job.kind)
+            outcome = KindOutcome("failed", error_message=f"bridge handler error: {type(e).__name__}: {e}")
         finally:
             beat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -73,7 +76,11 @@ class BridgeRunner:
     async def tick(self) -> bool:
         """One claim attempt; True when a job was processed."""
         if self.busy is not None:
-            reason = await self.busy()
+            try:
+                reason = await self.busy()
+            except Exception as e:  # a broken probe means "not sure": wait this tick, never stop the loop
+                log.warning("busy probe failed; not claiming this tick", exc_info=True)
+                reason = f"busy probe failed ({type(e).__name__}: {e})"
             if reason is not None:
                 if reason != self._last_busy_logged:
                     log.info("not claiming: %s", reason)

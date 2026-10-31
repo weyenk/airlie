@@ -573,3 +573,104 @@ def test_unexpected_heartbeat_error_does_not_fail_the_job(
     runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
     asyncio.run(runner.process_job(_job(jid)))
     assert hub_t.results[0]["status"] == "done"
+
+
+# ---- a serve outage or a broken handler fails the job, never the bridge ----
+
+
+class DownServe(httpx.AsyncBaseTransport):
+    """serve is not listening: every request is a ConnectError (with `start_ok`, all but starting a run)."""
+
+    def __init__(self, *, start_ok: bool = False) -> None:
+        self.start_ok = start_ok
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.start_ok and request.method == "POST" and request.url.path == "/v1/airlie/runs":
+            return httpx.Response(202, json={"job_id": "j1", "kind": "run"})
+        raise httpx.ConnectError("connection refused", request=request)
+
+
+def test_llm_serve_down_fails_the_job(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    client = ServeClient("http://127.0.0.1:8090", transport=DownServe())
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "failed"
+    assert out.error_message and out.error_message.startswith("serve unreachable:")
+
+
+def test_llm_serve_read_timeout_fails_the_job(tmp_path: Path) -> None:
+    class SlowServe(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    client = ServeClient("http://127.0.0.1:8090", transport=SlowServe())
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "failed"
+    assert out.error_message and "serve unreachable" in out.error_message
+
+
+@pytest.mark.parametrize("start_ok", [False, True])
+def test_studio_serve_down_fails_the_job(tmp_path: Path, start_ok: bool) -> None:
+    bridge = bridge_cfg(tmp_path)
+    client = ServeClient("http://127.0.0.1:8090", transport=DownServe(start_ok=start_ok))
+    out = asyncio.run(StudioKind(bridge, client, clock=FakeClock()).run({"goal": "x"}))
+    assert out.status == "failed"
+    assert out.error_message and out.error_message.startswith("serve unreachable:")
+
+
+def test_studio_poll_error_fails_the_job(tmp_path: Path) -> None:
+    class BadPoll(FakeServe):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(500, text="boom")
+            return await super().handle_async_request(request)
+
+    bridge = bridge_cfg(tmp_path)
+    client = ServeClient("http://127.0.0.1:8090", transport=BadPoll())
+    out = asyncio.run(StudioKind(bridge, client, clock=FakeClock()).run({"goal": "x"}))
+    assert out.status == "failed"
+    assert out.error_message and "500" in out.error_message
+
+
+def _hub_job(jid: str, kind: str = "llm") -> dict[str, Any]:
+    return {"id": jid, "kind": kind, "tenant_id": "lhr", "payload": {}, "worker_id": "w1", "status": "running"}
+
+
+class _RaisingHandler:
+    async def run(self, payload: dict[str, Any]) -> Any:
+        raise RuntimeError("handler blew up")
+
+
+def test_a_handler_that_raises_posts_failed_and_the_loop_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    hub_t = FakeHub(jobs=[_hub_job(first), _hub_job(second)])
+    runner = _runner(tmp_path, None, hub_t)
+    monkeypatch.setattr("airlie.serve.bridge.runner.handler_for", lambda *a, **k: _RaisingHandler())
+
+    async def go() -> list[asyncio.Task[Any]]:
+        await runner.run_until_stopped(max_cycles=2)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    left = asyncio.run(go())
+    assert left == []  # the heartbeat task was cancelled
+    assert [r["status"] for r in hub_t.results] == ["failed", "failed"]
+    assert "handler blew up" in hub_t.results[0]["error_message"]
+    assert hub_t.claim_calls == 2
+
+
+def test_a_busy_probe_that_raises_counts_as_busy_and_the_loop_goes_on(tmp_path: Path) -> None:
+    calls = 0
+
+    async def busy() -> str | None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("probe broke")
+
+    hub_t = FakeHub()
+    runner = _runner(tmp_path, busy, hub_t)
+    asyncio.run(runner.run_until_stopped(max_cycles=3))
+    assert calls == 3
+    assert hub_t.claim_calls == 0
