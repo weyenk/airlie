@@ -54,6 +54,7 @@ class FakeHub(httpx.AsyncBaseTransport):
         self.results: list[dict[str, Any]] = []
         self.heartbeats: list[str] = []
         self.heartbeat_status = 200
+        self.heartbeat_raises: Exception | None = None
         self._queue = list(jobs or [])
 
     def enqueue(self, job: dict[str, Any]) -> None:
@@ -71,6 +72,8 @@ class FakeHub(httpx.AsyncBaseTransport):
             return httpx.Response(200, json={"ok": True})
         if request.method == "POST" and request.url.path.endswith("/heartbeat"):
             self.heartbeats.append(request.url.path.split("/")[-2])
+            if self.heartbeat_raises is not None:
+                raise self.heartbeat_raises
             return httpx.Response(self.heartbeat_status, json={"ok": self.heartbeat_status == 200})
         return httpx.Response(404, json={"error": "unexpected hub route"})
 
@@ -552,8 +555,21 @@ def test_heartbeat_stops_when_job_ends(tmp_path: Path, monkeypatch: pytest.Monke
     async def go() -> int:
         await runner.process_job(_job(jid))
         seen = len(hub_t.heartbeats)
-        await runner.clock.sleep(600)
+        for _ in range(5):
+            await runner.clock.sleep(600)
+            for _ in range(5):
+                await asyncio.sleep(0)
         return seen
 
     seen = asyncio.run(go())
     assert len(hub_t.heartbeats) == seen
+
+
+def test_unexpected_heartbeat_error_does_not_fail_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub_t = FakeHub()
+    hub_t.heartbeat_raises = ValueError("malformed")
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert hub_t.results[0]["status"] == "done"

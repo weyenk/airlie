@@ -43,8 +43,8 @@ class BridgeRunner:
             await self.clock.sleep(self.bridge.heartbeat_s)
             try:
                 await self.hub.heartbeat(job_id, self.worker)
-            except (BridgeError, httpx.HTTPError) as e:
-                log.warning("hub job %s heartbeat failed: %s", job_id, e)
+            except Exception:  # a heartbeat failure must never fail the job
+                log.warning("hub job %s heartbeat failed", job_id, exc_info=True)
 
     async def process_job(self, job: HubJob) -> None:
         log.info("claimed hub job %s kind=%s tenant=%s", job.id, job.kind, job.tenant_id)
