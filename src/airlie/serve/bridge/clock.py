@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Protocol
 
 
 class Clock(Protocol):
     def monotonic(self) -> float: ...
+
+    def wall(self) -> float: ...
 
     async def sleep(self, seconds: float) -> None: ...
 
@@ -15,6 +18,9 @@ class Clock(Protocol):
 class RealClock:
     def monotonic(self) -> float:
         return asyncio.get_running_loop().time()
+
+    def wall(self) -> float:
+        return time.time()
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -29,6 +35,9 @@ class FakeClock:
 
     def monotonic(self) -> float:
         return self.now
+
+    def wall(self) -> float:
+        return 1_800_000_000.0 + self.now
 
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)

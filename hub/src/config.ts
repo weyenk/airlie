@@ -39,12 +39,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HubConfig {
   if (!Number.isFinite(maxPayloadBytes) || maxPayloadBytes < 1024) {
     throw new Error("MAX_PAYLOAD_BYTES must be a number ≥ 1024");
   }
+  const leaseSeconds = Number(env.LEASE_SECONDS ?? "300");
+  if (!Number.isFinite(leaseSeconds) || leaseSeconds < 1) {
+    throw new Error("LEASE_SECONDS must be a number ≥ 1");
+  }
+  const maxJobAttempts = Number(env.MAX_JOB_ATTEMPTS ?? "3");
+  if (!Number.isInteger(maxJobAttempts) || maxJobAttempts < 1) {
+    throw new Error("MAX_JOB_ATTEMPTS must be an integer ≥ 1");
+  }
   return {
     databaseUrl,
     bridgeWorkerSecret,
     tenantServiceKeys: parseTenantKeys(env.TENANT_SERVICE_KEYS),
     allowedKinds: parseAllowedKinds(env.ALLOWED_KINDS),
     maxPayloadBytes,
+    leaseSeconds,
+    maxJobAttempts,
   };
 }
 
@@ -55,6 +65,8 @@ export function loadConfigForTests(overrides: Partial<HubConfig> = {}): HubConfi
     tenantServiceKeys: { lhr: "tenant-lhr-key", ecff: "tenant-ecff-key" },
     allowedKinds: ["studio", "llm"],
     maxPayloadBytes: 65536,
+    leaseSeconds: 300,
+    maxJobAttempts: 3,
     ...overrides,
   };
 }

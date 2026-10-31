@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from airlie.config import load_config
-from airlie.config.schema import AllowedRepoSpec, BridgeSpec
+from airlie.config.schema import AllowedRepoSpec, BridgeSpec, LlmKindSpec
 from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
+from airlie.serve.bridge.job_bus import HubJob, JobBusClient
 from airlie.serve.bridge.kinds import LlmKind, StudioKind, map_run_result
 from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
-from airlie.serve.bridge.runner import run_bridge
+from airlie.serve.bridge.runner import BridgeRunner, run_bridge
 
 ROOT = Path(__file__).resolve().parents[2]
 NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.local.yaml
@@ -28,6 +32,8 @@ NO_LOCAL = ROOT / "no-local-overrides.yaml"  # never the person's own airlie.loc
 def _cfg_with_bridge(bridge: BridgeSpec) -> Any:
     cfg = load_config(ROOT / "airlie.yaml", local_path=NO_LOCAL)
     cfg.bridge = bridge
+    cfg.engines = {}  # the busy probe must not look at this machine's engines or story locks
+    cfg.observability.state_dir = Path(tempfile.mkdtemp(prefix="bridge-state-"))
     return cfg
 
 
@@ -46,6 +52,9 @@ class FakeHub(httpx.AsyncBaseTransport):
     def __init__(self, *, jobs: list[dict[str, Any]] | None = None) -> None:
         self.claim_calls = 0
         self.results: list[dict[str, Any]] = []
+        self.heartbeats: list[str] = []
+        self.heartbeat_status = 200
+        self.heartbeat_raises: Exception | None = None
         self._queue = list(jobs or [])
 
     def enqueue(self, job: dict[str, Any]) -> None:
@@ -61,6 +70,11 @@ class FakeHub(httpx.AsyncBaseTransport):
         if request.method == "POST" and request.url.path.endswith("/result"):
             self.results.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True})
+        if request.method == "POST" and request.url.path.endswith("/heartbeat"):
+            self.heartbeats.append(request.url.path.split("/")[-2])
+            if self.heartbeat_raises is not None:
+                raise self.heartbeat_raises
+            return httpx.Response(self.heartbeat_status, json={"ok": self.heartbeat_status == 200})
         return httpx.Response(404, json={"error": "unexpected hub route"})
 
 
@@ -68,6 +82,7 @@ class FakeServe(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.posts: list[dict[str, Any]] = []
         self.chat_posts: list[dict[str, Any]] = []
+        self.chat_read_timeouts: list[float | None] = []
         self._state = "running"
         self._result: dict[str, Any] = {}
         self._job_id = "20261028-test-run"
@@ -98,6 +113,7 @@ class FakeServe(httpx.AsyncBaseTransport):
             return httpx.Response(202, json={"job_id": self._job_id, "kind": "run"})
         if request.method == "POST" and request.url.path == "/v1/chat/completions":
             self.chat_posts.append(json.loads(request.content))
+            self.chat_read_timeouts.append(request.extensions.get("timeout", {}).get("read"))
             if self._chat_body is not None:
                 return httpx.Response(self._chat_status, json=self._chat_body)
             if self._chat_content is None:
@@ -324,13 +340,43 @@ def test_llm_happy_path_posts_chat_completions(tmp_path: Path) -> None:
     assert out.result == {"output": "chat.completions", "content": "weekly digest"}
     assert serve_t.chat_posts == [
         {
-            "model": "chat",
+            "model": "generalist",
             "messages": [
                 {"role": "system", "content": "# Writer\n\nYou write concise summaries."},
                 {"role": "user", "content": "summarise the week"},
             ],
+            "max_tokens": 16384,
+            "chat_template_kwargs": {"enable_thinking": True},
+            "thinking_token_budget": 8192,
         }
     ]
+
+
+def test_llm_uses_bridge_llm_settings(tmp_path: Path) -> None:
+    llm = LlmKindSpec(model="small", max_tokens=4096, thinking=False, thinking_budget=None)
+    bridge = bridge_cfg(tmp_path, kinds=["llm"], llm=llm)
+    serve_t = FakeServe()
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "done"
+    body = serve_t.chat_posts[0]
+    assert body["model"] == "small"
+    assert body["max_tokens"] == 4096
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "thinking_token_budget" not in body
+
+
+def test_llm_spec_rejects_max_tokens_under_budget() -> None:
+    with pytest.raises(ValidationError):
+        LlmKindSpec(max_tokens=100, thinking_budget=200)
+
+
+def test_llm_chat_timeout_is_the_spec_timeout(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    serve_t = FakeServe()
+    client = ServeClient("http://127.0.0.1:8090", transport=serve_t)
+    asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert serve_t.chat_read_timeouts == [900.0]
 
 
 @pytest.mark.parametrize(
@@ -396,3 +442,280 @@ def test_llm_runner_claims_and_posts_hub_result(tmp_path: Path) -> None:
     assert n == 1
     assert hub_t.results[0]["status"] == "done"
     assert hub_t.results[0]["result"] == {"output": "chat.completions", "content": "ok"}
+
+
+# ---- busy gate: claim only while airlie is idle ----
+
+
+def _runner(tmp_path: Path, busy: Any, hub_t: FakeHub) -> BridgeRunner:
+    bridge = bridge_cfg(tmp_path)
+    return BridgeRunner(
+        cfg=_cfg_with_bridge(bridge),
+        hub=JobBusClient(bridge.job_bus_url or "", "s" * 40, transport=hub_t),
+        serve=ServeClient(bridge.serve_url, api_key="k", transport=FakeServe()),
+        worker="w1",
+        clock=FakeClock(),
+        bridge=bridge,
+        stop=asyncio.Event(),
+        busy=busy,
+    )
+
+
+def test_busy_bridge_does_not_claim(tmp_path: Path) -> None:
+    async def busy() -> str | None:
+        return "story build lane is running"
+
+    hub_t = FakeHub()
+    assert asyncio.run(_runner(tmp_path, busy, hub_t).tick()) is False
+    assert hub_t.claim_calls == 0
+
+
+def test_idle_bridge_claims(tmp_path: Path) -> None:
+    async def busy() -> str | None:
+        return None
+
+    hub_t = FakeHub()
+    asyncio.run(_runner(tmp_path, busy, hub_t).tick())
+    assert hub_t.claim_calls == 1
+
+
+def test_busy_reason_logged_once_per_change(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    reasons = ["story build lane is running", "story build lane is running", "story plan lane is running"]
+
+    async def busy() -> str | None:
+        return reasons.pop(0)
+
+    runner = _runner(tmp_path, busy, FakeHub())
+
+    async def go() -> None:
+        for _ in range(3):
+            await runner.tick()
+
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(go())
+    assert sum("story build lane is running" in r.getMessage() for r in caplog.records) == 1
+    assert sum("story plan lane is running" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    reasons: list[str | None] = [
+        "model generalist used 14 s ago on engine main",
+        "model generalist used 19 s ago on engine main",
+        "model generalist used 24 s ago on engine main",
+        None,
+        None,
+    ]
+
+    async def busy() -> str | None:
+        return reasons.pop(0)
+
+    runner = _runner(tmp_path, busy, FakeHub())
+
+    async def go() -> None:
+        for _ in range(5):
+            await runner.tick()
+
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(go())
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
+
+
+def test_no_idle_line_when_the_bridge_was_never_busy(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def busy() -> str | None:
+        return None
+
+    runner = _runner(tmp_path, busy, FakeHub())
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(runner.tick())
+    assert caplog.records == []
+
+
+# ---- heartbeat: keep a running hub job leased ----
+
+
+class _WaitingHandler:
+    """Runs until the hub has seen `beats` heartbeats (the fake clock drives them)."""
+
+    def __init__(self, hub_t: FakeHub, beats: int) -> None:
+        self.hub_t = hub_t
+        self.beats = beats
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        from airlie.serve.bridge.kinds import KindOutcome
+
+        while len(self.hub_t.heartbeats) < self.beats:
+            await asyncio.sleep(0)
+        return KindOutcome("done", result={"ok": True})
+
+
+def _heartbeat_runner(
+    tmp_path: Path, hub_t: FakeHub, beats: int, monkeypatch: pytest.MonkeyPatch
+) -> tuple[BridgeRunner, str]:
+    runner = _runner(tmp_path, None, hub_t)
+    runner.bridge = runner.bridge.model_copy(update={"heartbeat_s": 60.0})
+    monkeypatch.setattr(
+        "airlie.serve.bridge.runner.handler_for", lambda *a, **k: _WaitingHandler(hub_t, beats)
+    )
+    return runner, str(uuid.uuid4())
+
+
+def _job(jid: str) -> HubJob:
+    return HubJob(id=jid, kind="llm", tenant_id="lhr", payload={}, worker_id="w1")
+
+
+def test_running_job_sends_heartbeats(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert hub_t.heartbeats == [jid, jid]
+    assert hub_t.results[0]["status"] == "done"
+    assert runner.clock.sleeps[:2] == [60.0, 60.0]  # type: ignore[attr-defined]
+
+
+def test_heartbeat_failure_does_not_stop_the_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    hub_t.heartbeat_status = 409
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert len(hub_t.heartbeats) >= 2
+    assert hub_t.results[0]["status"] == "done"
+
+
+def test_heartbeat_stops_when_job_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 1, monkeypatch)
+
+    async def go() -> int:
+        await runner.process_job(_job(jid))
+        seen = len(hub_t.heartbeats)
+        for _ in range(5):
+            await runner.clock.sleep(600)
+            for _ in range(5):
+                await asyncio.sleep(0)
+        return seen
+
+    seen = asyncio.run(go())
+    assert len(hub_t.heartbeats) == seen
+
+
+def test_unexpected_heartbeat_error_does_not_fail_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub_t = FakeHub()
+    hub_t.heartbeat_raises = ValueError("malformed")
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert hub_t.results[0]["status"] == "done"
+
+
+# ---- a serve outage or a broken handler fails the job, never the bridge ----
+
+
+class DownServe(httpx.AsyncBaseTransport):
+    """serve is not listening: every request is a ConnectError (with `start_ok`, all but starting a run)."""
+
+    def __init__(self, *, start_ok: bool = False) -> None:
+        self.start_ok = start_ok
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.start_ok and request.method == "POST" and request.url.path == "/v1/airlie/runs":
+            return httpx.Response(202, json={"job_id": "j1", "kind": "run"})
+        raise httpx.ConnectError("connection refused", request=request)
+
+
+def test_llm_serve_down_fails_the_job(tmp_path: Path) -> None:
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    client = ServeClient("http://127.0.0.1:8090", transport=DownServe())
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "failed"
+    assert out.error_message and out.error_message.startswith("serve unreachable:")
+
+
+def test_llm_serve_read_timeout_fails_the_job(tmp_path: Path) -> None:
+    class SlowServe(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+    bridge = bridge_cfg(tmp_path, kinds=["llm"])
+    client = ServeClient("http://127.0.0.1:8090", transport=SlowServe())
+    out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
+    assert out.status == "failed"
+    assert out.error_message and "serve unreachable" in out.error_message
+
+
+@pytest.mark.parametrize("start_ok", [False, True])
+def test_studio_serve_down_fails_the_job(tmp_path: Path, start_ok: bool) -> None:
+    bridge = bridge_cfg(tmp_path)
+    client = ServeClient("http://127.0.0.1:8090", transport=DownServe(start_ok=start_ok))
+    out = asyncio.run(StudioKind(bridge, client, clock=FakeClock()).run({"goal": "x"}))
+    assert out.status == "failed"
+    assert out.error_message and out.error_message.startswith("serve unreachable:")
+
+
+def test_studio_poll_error_fails_the_job(tmp_path: Path) -> None:
+    class BadPoll(FakeServe):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(500, text="boom")
+            return await super().handle_async_request(request)
+
+    bridge = bridge_cfg(tmp_path)
+    client = ServeClient("http://127.0.0.1:8090", transport=BadPoll())
+    out = asyncio.run(StudioKind(bridge, client, clock=FakeClock()).run({"goal": "x"}))
+    assert out.status == "failed"
+    assert out.error_message and "500" in out.error_message
+
+
+def _hub_job(jid: str, kind: str = "llm") -> dict[str, Any]:
+    return {
+        "id": jid,
+        "kind": kind,
+        "tenant_id": "lhr",
+        "payload": {},
+        "worker_id": "w1",
+        "status": "running",
+    }
+
+
+class _RaisingHandler:
+    async def run(self, payload: dict[str, Any]) -> Any:
+        raise RuntimeError("handler blew up")
+
+
+def test_a_handler_that_raises_posts_failed_and_the_loop_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    hub_t = FakeHub(jobs=[_hub_job(first), _hub_job(second)])
+    runner = _runner(tmp_path, None, hub_t)
+    monkeypatch.setattr("airlie.serve.bridge.runner.handler_for", lambda *a, **k: _RaisingHandler())
+
+    async def go() -> list[asyncio.Task[Any]]:
+        await runner.run_until_stopped(max_cycles=2)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    left = asyncio.run(go())
+    assert left == []  # the heartbeat task was cancelled
+    assert [r["status"] for r in hub_t.results] == ["failed", "failed"]
+    assert "handler blew up" in hub_t.results[0]["error_message"]
+    assert hub_t.claim_calls == 2
+
+
+def test_a_busy_probe_that_raises_counts_as_busy_and_the_loop_goes_on(tmp_path: Path) -> None:
+    calls = 0
+
+    async def busy() -> str | None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("probe broke")
+
+    hub_t = FakeHub()
+    runner = _runner(tmp_path, busy, hub_t)
+    asyncio.run(runner.run_until_stopped(max_cycles=3))
+    assert calls == 3
+    assert hub_t.claim_calls == 0

@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import httpx
+
 from airlie.config.schema import BridgeSpec
 from airlie.serve.bridge.airlie_client import ServeClient, ServeJobNotFound
 from airlie.serve.bridge.clock import Clock, RealClock
@@ -45,6 +47,11 @@ class KindOutcome:
 
 class KindHandler(Protocol):
     async def run(self, payload: dict[str, Any]) -> KindOutcome: ...
+
+
+def _unreachable(e: httpx.HTTPError) -> KindOutcome:
+    """A transport error talking to serve (down, refused, timed out): the job fails, the bridge goes on."""
+    return KindOutcome("failed", error_message=f"serve unreachable: {type(e).__name__}: {e}")
 
 
 class StudioKind:
@@ -90,6 +97,8 @@ class StudioKind:
             job_id = await self._serve.start_run(body)
         except BridgeError as e:
             return KindOutcome("failed", error_message=str(e))
+        except httpx.HTTPError as e:
+            return _unreachable(e)
 
         log.info("studio serve job %s started", job_id)
         while True:
@@ -100,6 +109,10 @@ class StudioKind:
                     "failed",
                     error_message=f"serve lost job {job_id} (404 while polling)",
                 )
+            except BridgeError as e:
+                return KindOutcome("failed", error_message=str(e))
+            except httpx.HTTPError as e:
+                return _unreachable(e)
             state = str(snap.get("state", ""))
             if state == "running":
                 await self._clock.sleep(self._bridge.job_poll_s)
@@ -120,7 +133,11 @@ LLM_OUTPUT_CHAT = "chat.completions"
 
 
 class LlmKind:
-    """POST /v1/chat/completions with inline persona as system + prompt as user; model role ``chat``."""
+    """POST /v1/chat/completions with inline persona as system + prompt as user.
+
+    Posts a raw catalog model, not the chat role: the persona is the only system text. Role defaults do not
+    apply to a raw model, so the bridge sets max_tokens and thinking from ``bridge.llm``.
+    """
 
     def __init__(
         self,
@@ -163,17 +180,24 @@ class LlmKind:
                 error_message=f"llm payload caller must be one of {sorted(LLM_CALLERS)}",
             )
 
+        spec = self._bridge.llm
         body: dict[str, Any] = {
-            "model": "chat",
+            "model": spec.model,
             "messages": [
                 {"role": "system", "content": persona.strip()},
                 {"role": "user", "content": prompt.strip()},
             ],
+            "max_tokens": spec.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": spec.thinking},
         }
+        if spec.thinking and spec.thinking_budget:
+            body["thinking_token_budget"] = spec.thinking_budget
         try:
-            raw = await self._serve.chat_completions(body)
+            raw = await self._serve.chat_completions(body, timeout_s=spec.timeout_s)
         except BridgeError as e:
             return KindOutcome("failed", error_message=str(e))
+        except httpx.HTTPError as e:  # serve down, or no reply within bridge.llm.timeout_s
+            return _unreachable(e)
 
         content = _assistant_content(raw)
         if content is None:

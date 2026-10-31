@@ -86,12 +86,16 @@ Content-Type: application/json
 | Field | Required | Notes |
 |-------|----------|-------|
 | `prompt` | yes | Non-empty user message |
-| `persona` | yes | Non-empty agent markdown (system message) |
+| `persona` | yes | Non-empty agent markdown; the only system text (no airlie role prompt is added) |
 | `output` | yes | Phase 1: only `chat.completions` |
 | `caller` | yes | Product slug `lhr` or `ecff` |
 | `model` / `thinking` | no | If present and non-null → job fails (“not supported yet”) |
 
-On `done`: `{ "output": "chat.completions", "content": "<assistant text>" }`.
+On `done`: `{ "output": "chat.completions", "content": "<assistant text>" }` — the model's answer without its
+reasoning. The Mac picks the model and limits from `bridge.llm` in its config (default model `generalist`,
+`max_tokens` 16384, thinking on with an 8192-token budget, 900 s timeout). The reply is not streamed, so
+nothing arrives until it is whole: the bridge waits up to `bridge.llm.timeout_s` for serve, and serve waits up
+to 900 s for the engine on a non-streamed chat completion. A reply that takes longer fails the job.
 
 ## Payload rules (security)
 

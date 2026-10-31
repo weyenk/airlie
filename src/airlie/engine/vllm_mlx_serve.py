@@ -24,6 +24,7 @@ def _tool_parser_flag(argv: list[str]) -> str | None:
 
 def main() -> int:
     ensure_registered()
+    from airlie.engine.patches.active_requests import apply as apply_active_requests
     from airlie.engine.patches.first_output import apply as apply_first_output
     from airlie.engine.patches.hybrid_prefix_cache import apply as apply_hybrid_prefix_cache
     from airlie.engine.patches.mtp_batch_join import apply as apply_mtp_batch_join
@@ -31,6 +32,7 @@ def main() -> int:
     apply_hybrid_prefix_cache()
     apply_mtp_batch_join()
     apply_first_output()
+    apply_active_requests()
     import vllm_mlx.cli
     from vllm_mlx.tool_parsers import ToolParserManager
 

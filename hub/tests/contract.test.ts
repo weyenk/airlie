@@ -174,3 +174,64 @@ describe("claim short poll", () => {
     expect(res.status).toBe(204);
   });
 });
+
+describe("job lease", () => {
+  async function claim(app: Parameters<typeof request>[0], secret: string, workerId: string) {
+    return request(app).post("/api/v1/jobs/claim").set(workerAuth(secret)).send({ worker_id: workerId });
+  }
+  const age = `UPDATE jobs SET heartbeat_at = now() - interval '10 minutes'`;
+
+  it("requeues a running job whose heartbeat lapsed", async () => {
+    const { app, config, pglite } = await createTestHub();
+    const jobId = await enqueueStudio(app, config.tenantServiceKeys.lhr!, "alice");
+    const first = await claim(app, config.bridgeWorkerSecret, "w1");
+    expect(first.body.job.attempts).toBe(1);
+    await pglite.exec(age);
+    const second = await claim(app, config.bridgeWorkerSecret, "w2");
+    expect(second.status).toBe(200);
+    expect(second.body.job.id).toBe(jobId);
+    expect(second.body.job.attempts).toBe(2);
+    expect(second.body.job.status).toBe("running");
+    expect(second.body.job.worker_id).toBe("w2");
+  });
+
+  it("fails a lapsed job that used its attempts", async () => {
+    const { app, config, pglite } = await createTestHub({ maxJobAttempts: 1 });
+    const jobId = await enqueueStudio(app, config.tenantServiceKeys.lhr!, "alice");
+    await claim(app, config.bridgeWorkerSecret, "w1");
+    await pglite.exec(age);
+    const second = await claim(app, config.bridgeWorkerSecret, "w2");
+    expect(second.status).toBe(204);
+    const got = await request(app)
+      .get(`/api/v1/jobs/${jobId}`)
+      .set(tenantAuth(config.tenantServiceKeys.lhr!, "alice"));
+    expect(got.body.job.status).toBe("failed");
+    expect(got.body.job.error_message).toContain("heartbeat lapsed");
+  });
+
+  it("keeps a job with a fresh heartbeat", async () => {
+    const { app, config } = await createTestHub();
+    const jobId = await enqueueStudio(app, config.tenantServiceKeys.lhr!, "alice");
+    await claim(app, config.bridgeWorkerSecret, "w1");
+    const hb = await request(app)
+      .post(`/api/v1/jobs/${jobId}/heartbeat`)
+      .set(workerAuth(config.bridgeWorkerSecret))
+      .send({ worker_id: "w1" });
+    expect(hb.status).toBe(200);
+    const second = await claim(app, config.bridgeWorkerSecret, "w2");
+    expect(second.status).toBe(204);
+  });
+
+  it("a stale worker cannot post a result after requeue", async () => {
+    const { app, config, pglite } = await createTestHub();
+    const jobId = await enqueueStudio(app, config.tenantServiceKeys.lhr!, "alice");
+    await claim(app, config.bridgeWorkerSecret, "w1");
+    await pglite.exec(age);
+    await claim(app, config.bridgeWorkerSecret, "w2");
+    const res = await request(app)
+      .post(`/api/v1/jobs/${jobId}/result`)
+      .set(workerAuth(config.bridgeWorkerSecret))
+      .send({ worker_id: "w1", status: "done", result: {} });
+    expect(res.status).toBe(403);
+  });
+});

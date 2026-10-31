@@ -8,21 +8,23 @@ import { createApp } from "../src/createApp.js";
 import { PgliteQueryable } from "../src/db.js";
 import type { HubConfig, Queryable } from "../src/types.js";
 
-const migrationSql = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../migrations/001_jobs.sql"),
-  "utf8",
+const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "../migrations");
+const migrationSqls = ["001_jobs.sql", "002_job_attempts.sql"].map((name) =>
+  readFileSync(join(migrationsDir, name), "utf8"),
 );
 
-export async function createTestHub(): Promise<{
+export async function createTestHub(overrides: Partial<HubConfig> = {}): Promise<{
   app: ReturnType<typeof createApp>;
   config: HubConfig;
   db: Queryable;
   pglite: PGlite;
 }> {
   const pglite = new PGlite();
-  await pglite.exec(migrationSql);
+  for (const sql of migrationSqls) {
+    await pglite.exec(sql);
+  }
   const db = new PgliteQueryable(pglite);
-  const config = loadConfigForTests();
+  const config = loadConfigForTests(overrides);
   const app = createApp({ config, db });
   return { app, config, db, pglite };
 }

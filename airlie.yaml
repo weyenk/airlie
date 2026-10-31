@@ -226,6 +226,9 @@ line:
 # Outbound worker on the Mac Studio: HTTPS claim/result to the hub, loopback POST /v1/airlie/runs on task serve.
 # Set bridge.job_bus_url and allowed_repos in airlie.local.yaml; put BRIDGE_WORKER_SECRET in
 # ~/.config/airlie/bridge.env (chmod 600), or export it (and AIRLIE_SERVE_API_KEY when serve requires it).
+# The bridge claims only while airlie is idle: it waits while a story lane is held, a model has a request in flight,
+# or a model was used by anything else in the last idle_s seconds. Each wait logs one "not claiming:" line to
+# ~/.local/state/airlie/bridge.log (and "idle again, claiming" when it ends).
 # bridge:
 #   job_bus_url: https://your-hub.vercel.app/api/v1
 #   worker_secret_env: BRIDGE_WORKER_SECRET
@@ -233,7 +236,15 @@ line:
 #   claim_poll_s: 5
 #   job_poll_s: 2
 #   concurrency: 1
+#   idle_s: 120                      # a model used this recently by anything but the bridge counts as busy
+#   heartbeat_s: 60                  # keeps a running job's hub lease alive (hub LEASE_SECONDS, default 300)
 #   kinds: [studio, llm]
+#   llm:                             # the llm kind: a raw catalog model, the job's persona is the only system text
+#     model: generalist
+#     max_tokens: 16384              # caps thinking plus answer; must exceed thinking_budget
+#     thinking: true
+#     thinking_budget: 8192
+#     timeout_s: 900
 #   allowed_repos:
 #     - key: lhr
 #       path: /Users/you/git/lhr-office

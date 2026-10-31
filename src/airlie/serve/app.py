@@ -358,6 +358,12 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
+"""How long a non-streamed `/v1/chat/completions` waits on the engine. It sends no bytes until the reply is
+whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs
+(`bridge.llm.timeout_s`) wait as long as this. Every other upstream call keeps 600 s."""
+
+
 def create_app(
     cfg: AirlieConfig,
     *,
@@ -665,7 +671,12 @@ def create_app(
                     await resp.aclose()
 
             return StreamingResponse(gen(), status_code=resp.status_code, media_type="text/event-stream")
-        r = await client.post(f"{base}/chat/completions", json=out, headers=headers)
+        r = await client.post(
+            f"{base}/chat/completions",
+            json=out,
+            headers=headers,
+            timeout=httpx.Timeout(600.0, connect=10.0, read=CHAT_COMPLETIONS_READ_TIMEOUT_S),
+        )
         if r.status_code != 200:
             raise HTTPException(r.status_code, r.text[:500])
         return _no_call_stops(r.json())

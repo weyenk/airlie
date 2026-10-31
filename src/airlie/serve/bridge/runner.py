@@ -5,15 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from airlie.config.schema import AirlieConfig, BridgeSpec
 from airlie.serve.bridge.airlie_client import ServeClient
+from airlie.serve.bridge.busy import busy_reason, reason_key
 from airlie.serve.bridge.clock import Clock, RealClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
-from airlie.serve.bridge.kinds import handler_for
+from airlie.serve.bridge.kinds import KindOutcome, handler_for
 from airlie.serve.bridge.session import credential_env, serve_api_key, worker_id, worker_secret
 
 log = logging.getLogger(__name__)
@@ -29,6 +33,18 @@ class BridgeRunner:
     bridge: BridgeSpec
     stop: asyncio.Event
     jobs_processed: int = 0
+    last_job_finished: float = 0.0
+    busy: Callable[[], Awaitable[str | None]] | None = None
+    _last_busy_logged: str | None = None
+
+    async def _heartbeat_loop(self, job_id: str) -> None:
+        """Keep the hub lease alive while a handler runs; a failed beat never stops the job."""
+        while True:
+            await self.clock.sleep(self.bridge.heartbeat_s)
+            try:
+                await self.hub.heartbeat(job_id, self.worker)
+            except Exception:  # a heartbeat failure must never fail the job
+                log.warning("hub job %s heartbeat failed", job_id, exc_info=True)
 
     async def process_job(self, job: HubJob) -> None:
         log.info("claimed hub job %s kind=%s tenant=%s", job.id, job.kind, job.tenant_id)
@@ -37,7 +53,16 @@ class BridgeRunner:
         except BridgeError as e:
             await self.hub.post_result(job.id, self.worker, status="failed", error_message=str(e))
             return
-        outcome = await handler.run(job.payload)
+        beat = asyncio.create_task(self._heartbeat_loop(job.id))
+        try:
+            outcome = await handler.run(job.payload)
+        except Exception as e:  # a handler bug fails its job, never the bridge
+            log.exception("hub job %s kind=%s handler raised", job.id, job.kind)
+            outcome = KindOutcome("failed", error_message=f"bridge handler error: {type(e).__name__}: {e}")
+        finally:
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat
         await self.hub.post_result(
             job.id,
             self.worker,
@@ -46,9 +71,25 @@ class BridgeRunner:
             error_message=outcome.error_message,
         )
         self.jobs_processed += 1
+        self.last_job_finished = self.clock.wall()
 
     async def tick(self) -> bool:
         """One claim attempt; True when a job was processed."""
+        if self.busy is not None:
+            try:
+                reason = await self.busy()
+            except Exception as e:  # a broken probe means "not sure": wait this tick, never stop the loop
+                log.warning("busy probe failed; not claiming this tick", exc_info=True)
+                reason = f"busy probe failed ({type(e).__name__}: {e})"
+            if reason is not None:
+                key = reason_key(reason)  # the age moves every tick; the wait is the same one
+                if key != self._last_busy_logged:
+                    log.info("not claiming: %s", reason)
+                self._last_busy_logged = key
+                return False
+            if self._last_busy_logged is not None:
+                log.info("idle again, claiming")
+            self._last_busy_logged = None
         job = await self.hub.claim(self.worker)
         if job is None:
             return False
@@ -111,6 +152,14 @@ async def run_bridge(
         bridge=bridge,
         stop=stop or asyncio.Event(),
     )
+    probe_http = httpx.AsyncClient()
+
+    async def busy() -> str | None:
+        return await busy_reason(
+            cfg, http=probe_http, now=runner.clock.wall(), own_last_used=runner.last_job_finished
+        )
+
+    runner.busy = busy
     try:
         if once:
             await runner.run_once()
@@ -119,4 +168,5 @@ async def run_bridge(
     finally:
         await hub.aclose()
         await serve.aclose()
+        await probe_http.aclose()
     return runner.jobs_processed
