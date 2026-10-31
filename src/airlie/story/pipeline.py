@@ -607,7 +607,8 @@ class StoryPipeline:
         """The command every layer must pass: a person's --test-cmd, else the story's test gate. The gate is
         read once, from the AGENTS.md of the story's base commit (never from a worktree, which a model
         writes), and kept in the state: the story keeps it for its whole life, whatever AGENTS.md says later.
-        A repository with no gate there stops the story, before any model works."""
+        A repository with no gate there stops the story, before any model works, and forgets the base: the
+        gate can only land as a new trunk commit, so a resume resolves the base again (AIR-46)."""
         if self.person_cmd is not None:
             run = shown = self.person_cmd
             self.commands = (self.person_cmd,)
@@ -617,6 +618,8 @@ class StoryPipeline:
                     gate = read_gate(self.repo, base["sha"])
                 except NoTestGate as e:
                     who = self.github_repo or st.github_repo or str(self.repo)
+                    st.base = None
+                    st.save()
                     raise StoryBlocked(missing_gate(who, base["ref"], base["sha"], str(e))) from None
                 st.gate = {"commands": list(gate.commands), "agents_md": gate.blob}
                 st.save()
