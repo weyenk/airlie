@@ -184,6 +184,15 @@ async def test_an_unfinished_and_an_unusable_first_round_share_the_fixes() -> No
     assert s.nudges == [hub_text("plan-unfinished"), hub_text("plan-fix", error="no JSON")]
 
 
+async def test_a_refused_first_round_keeps_its_replys_end_in_the_plan_fix_event() -> None:
+    """Roman, 2026-10-31: a plan with no "layers" list was refused and its reply was kept nowhere, so why
+    could not be read after the run."""
+    s = Script("garbage", "a|stop")
+    assert await run(s) == "a|stop"
+    fix = [f for k, f in s.events if k == "plan_fix"]
+    assert fix == [{"attempt": 1, "error": "no JSON", "reply": "garbage"}]
+
+
 async def test_a_later_round_with_no_answer_ends_the_rounds_on_the_plan_before_it() -> None:
     s = Unfinished("a|more", "unfinished")
     assert await run(s) == "a|more"
