@@ -18,9 +18,9 @@ def bridge_dotenv_path() -> Path:
 
 
 def credential_env(cfg: AirlieConfig, env: Mapping[str, str] | None = None) -> Mapping[str, str]:
-    """Merge process env with ~/.config/airlie/bridge.env; keys set in the file win (stale shell exports lose).
+    """Merge process env with ~/.config/airlie/bridge.env.
 
-    Tests pass `env` explicitly to skip the file.
+    Keys set in the file win (stale shell exports lose). Tests pass `env` to skip the file.
     """
     if env is not None:
         return env
@@ -43,9 +43,7 @@ def worker_secret(spec: BridgeSpec, env: Mapping[str, str] | None = None) -> str
     name = spec.worker_secret_env
     raw = (env or os.environ).get(name, "")
     if not raw:
-        raise BridgeError(
-            f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)"
-        )
+        raise BridgeError(f"set {name} (export it, or put it in ~/.config/airlie/bridge.env with chmod 600)")
     return raw
 
 

@@ -1,9 +1,10 @@
-"""Who a request is. The order is the plan's: the admin Bearer key, then the Tailscale identity header (only
-with `auth.tailscale: true`, and only on a request `tailscale serve` proxied: it arrives from loopback with
-the device's tailnet address in X-Forwarded-For), then the `airlie_session` cookie a passkey sign-in set. A
-fresh install (no users, no key) lets a direct loopback request in as a bootstrap admin so the web app works
-on the Mac before anyone is invited. serve runs uvicorn with proxy_headers off, so `request.client` is the
-real peer."""
+"""Who a request is. The order is the plan's: a matching admin Bearer key, then the Tailscale identity header
+(only with `auth.tailscale: true`, and only on a request `tailscale serve` proxied: it arrives from loopback
+with the device's tailnet address in X-Forwarded-For), then the `airlie_session` cookie a passkey sign-in set.
+A wrong or stale Bearer does not short-circuit the rest (the SPA may still hold an old admin key). A fresh
+install (no users, no key) lets a direct loopback request in as a bootstrap admin so the web app works on the
+Mac before anyone is invited. serve runs uvicorn with proxy_headers off, so `request.client` is the real peer.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +70,15 @@ def tailnet_peer(request: Request) -> str | None:
     return forwarded if any(addr in net for net in TAILNET) else None
 
 
+def _bearer_matches_api_key(provided: str, expected: str) -> bool:
+    """Timing-safe compare; different lengths are a miss (never raise)."""
+    a, b = provided.encode(), expected.encode()
+    if len(a) != len(b):
+        secrets.compare_digest(b, b)
+        return False
+    return secrets.compare_digest(a, b)
+
+
 class Resolver:
     def __init__(self, store: AuthStore, cfg: AuthSpec, api_key: str | None) -> None:
         self.store, self.cfg, self.api_key = store, cfg, api_key
@@ -77,10 +87,14 @@ class Resolver:
         """The request's principal, or None for nobody. Raises NotInvited for a trusted Tailscale login that
         has no user, so the caller can say so instead of asking for a key."""
         auth = request.headers.get("authorization", "")
-        if self.api_key and auth.startswith("Bearer "):
-            if secrets.compare_digest(auth.removeprefix("Bearer "), self.api_key):
-                return API_KEY_PRINCIPAL
-            return None
+        # Wrong/stale Bearer must not block Tailscale or a passkey session cookie (SPA may keep an old
+        # admin key in localStorage while the person signs in with a passkey).
+        if (
+            self.api_key
+            and auth.startswith("Bearer ")
+            and _bearer_matches_api_key(auth.removeprefix("Bearer "), self.api_key)
+        ):
+            return API_KEY_PRINCIPAL
         login = request.headers.get(TAILSCALE_HEADER)
         unknown_login: str | None = None
         if login and self.cfg.tailscale and tailnet_peer(request):

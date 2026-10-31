@@ -72,6 +72,7 @@ test("a used invite is a 410 ApiError", async () => {
 });
 
 test("signing in with a passkey asks for options, signs, and returns the person", async () => {
+  localStorage.setItem("airlie.key", "stale-admin");
   const fetchMock = vi
     .fn()
     .mockResolvedValueOnce(Response.json({ challenge: "AQID" }))
@@ -86,6 +87,7 @@ test("signing in with a passkey asks for options, signs, and returns the person"
   expect(fetchMock.mock.calls[0][0]).toBe("/v1/auth/login/options");
   expect(fetchMock.mock.calls[1][0]).toBe("/v1/auth/login/verify");
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ credential: { id: "cred" } });
+  expect(localStorage.getItem("airlie.key")).toBeNull();
 });
 
 test("the admin key is checked with the key itself, and kept only when accepted", async () => {

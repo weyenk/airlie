@@ -121,6 +121,7 @@ export async function passkeyRegister(invite: string): Promise<User> {
     quiet401: true,
     key: "",
   });
+  setKey("");
   return out.user;
 }
 
@@ -134,5 +135,7 @@ export async function passkeyLogin(): Promise<User> {
     quiet401: true,
     key: "",
   });
+  // Drop any leftover admin key so later /v1 calls use the session cookie, not a stale Bearer.
+  setKey("");
   return out.user;
 }

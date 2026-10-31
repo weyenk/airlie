@@ -134,6 +134,19 @@ def test_the_bearer_key_wins_over_a_cookie(store: AuthStore) -> None:
     assert got.json()["via"] == "api-key"
 
 
+def test_a_wrong_bearer_does_not_block_a_passkey_session(store: AuthStore) -> None:
+    """Stale admin Bearer in the SPA must not beat a valid passkey session cookie."""
+    u = store.add_user("Pat", "member")
+    token = store.make_session(u.id, days=30)
+    r = Resolver(store, AuthSpec(), api_key="s3cret")
+    got = probe(
+        r,
+        ELSEWHERE,
+        headers={"Authorization": "Bearer stale-or-wrong", "Cookie": f"airlie_session={token}"},
+    )
+    assert got.json() == {"user_id": u.id, "name": "Pat", "role": "member", "via": "session"}
+
+
 def test_fresh_install_is_loopback_only(store: AuthStore) -> None:
     r = Resolver(store, AuthSpec(), api_key=None)
     assert probe(r, LOOPBACK).json() == {

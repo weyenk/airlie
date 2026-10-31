@@ -71,7 +71,10 @@ test.each([["//evil.com"], ["https://evil.com/x"], ["/\\evil.com"]])("next=%s is
 });
 
 test.each([
-  [Object.assign(new Error("x"), { name: "NotAllowedError" }), null],
+  [
+    Object.assign(new Error("x"), { name: "NotAllowedError" }),
+    "Passkey didn't complete on http://localhost:3000. Open airlie at the same address you used when you created the passkey (Tailscale https://… or http://127.0.0.1:8090), then try again.",
+  ],
   [Object.assign(new Error("x"), { name: "AbortError" }), null],
   [new ApiError(401, "sign-in failed"), "That passkey isn't known here. Ask Noah for an invite."],
   [new TypeError("Failed to fetch"), "Can't reach airlie. Is it running, and are you on Noah's network?"],
