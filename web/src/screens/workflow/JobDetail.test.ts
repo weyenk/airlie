@@ -19,7 +19,9 @@ test("without a node label the head is the job's own", () => {
 test("its numbers: attempts, duration and, for a model job, the speed", () => {
   const w = show(detail({ job: job({ tokens: { steps: 3, prompt: 1000, completion: 200, gen_s: 1, prefill_s: 1, tool_s: 0, tps: 38.2, effective_tps: 21, prefill_tps: 1240, role: "tester", model: "m" } }) }));
   expect(w.text()).toContain("38.2 tok/s");
-  expect(w.text()).toContain("Generation");
+  expect(w.text()).toContain("Write speed");
+  expect(w.text()).toContain("Read speed");
+  expect(w.text()).toContain("1240 tok/s");
   expect(w.text()).toContain("2 min 5 s");
 });
 

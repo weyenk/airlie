@@ -158,6 +158,7 @@ class HTTPEngine:
         cached: int | None = None
         accepted: int | None = None
         drafts: int | None = None
+        engine_ttft_ms: float | None = None  # the engine's own (patches/first_output.py), when it sends one
         t0 = time.monotonic()
         t_first: float | None = None  # pragma: no mutate  ("" is just as falsy)
         t_last = t0
@@ -178,6 +179,8 @@ class HTTPEngine:
                             accepted = int(meta["mtp_accepted"])
                         if meta.get("mtp_drafts") is not None:
                             drafts = int(meta["mtp_drafts"])
+                    if isinstance(frame.get("airlie_ttft_ms"), int | float):
+                        engine_ttft_ms = float(frame["airlie_ttft_ms"])
                     usage = frame.get("usage")
                     if isinstance(usage, dict):
                         prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens))
@@ -231,8 +234,11 @@ class HTTPEngine:
         if tool_calls and finish != "cancelled":
             finish = "tool_calls"
         self._stats.tokens_out += completion_tokens
-        ttft_ms = ((t_first or t_last) - t0) * 1000.0
+        # a tool call arrives whole at the end, so its delta is no first token: the engine's own time wins
+        ttft_ms = ((t_first or t_last) - t0) * 1000.0 if engine_ttft_ms is None else engine_ttft_ms
         span = max(t_last - (t_first or t_last), 1e-6)
+        if engine_ttft_ms is not None:
+            span = max(t_last - t0 - engine_ttft_ms / 1000.0, 1e-6)
         res = GenResult(
             text="".join(text),
             reasoning="".join(reasoning),

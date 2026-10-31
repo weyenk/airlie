@@ -35,7 +35,7 @@ test("stats list only the numbers a job has", () => {
     ["Steps", "14"],
     ["Prompt tokens", "48.2k"],
     ["Completion tokens", "3.1k"],
-    ["Generation", "38.2 tok/s"],
+    ["Write speed", "38.2 tok/s"],
     ["End to end", "21 tok/s"],
     ["Model", "qwen"],
   ]);
