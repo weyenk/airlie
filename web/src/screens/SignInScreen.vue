@@ -36,8 +36,13 @@ async function usePasskey(): Promise<void> {
     await done();
   } catch (e) {
     const name = (e as { name?: string })?.name;
-    if (name === "NotAllowedError" || name === "AbortError") error.value = ""; // the person closed the prompt
-    else if (e instanceof ApiError && e.status === 401) error.value = "That passkey isn't known here. Ask Noah for an invite.";
+    // AbortError: dialog dismissed. NotAllowedError: often cancel too, but also wrong origin / no matching
+    // passkey for this host — show a hint so "nothing happens" is not silent.
+    if (name === "AbortError") error.value = "";
+    else if (name === "NotAllowedError") {
+      error.value =
+        `Passkey didn't complete on ${window.location.origin}. Open airlie at the same address you used when you created the passkey (Tailscale https://… or http://127.0.0.1:8090), then try again.`;
+    } else if (e instanceof ApiError && e.status === 401) error.value = "That passkey isn't known here. Ask Noah for an invite.";
     else if (e instanceof TypeError) error.value = "Can't reach airlie. Is it running, and are you on Noah's network?";
     else error.value = `Can't sign in: ${(e as Error).message}`;
   } finally {
