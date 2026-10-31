@@ -27,8 +27,10 @@ Bearer tokens must not appear in logs.
 | `TENANT_SERVICE_KEYS` | yes | JSON map `{"lhr":"…","ecff":"…"}` |
 | `ALLOWED_KINDS` | no | Comma-separated kind allowlist (default `studio`; production should set `studio,llm`) |
 | `MAX_PAYLOAD_BYTES` | no | Enqueue payload cap (default `65536`) |
+| `LEASE_SECONDS` | no | A running job whose heartbeat is older than this is requeued (default `300`, at least 1; the bridge heartbeats every 60 s) |
+| `MAX_JOB_ATTEMPTS` | no | Claims a job may use before a lapsed lease fails it (default `3`, at least 1) |
 
-Apply schema from [`hub/migrations/001_jobs.sql`](../hub/migrations/001_jobs.sql). Tables have **RLS enabled with no policies**; only the owner connection used by the hub may access rows.
+Apply schema from [`hub/migrations/001_jobs.sql`](../hub/migrations/001_jobs.sql), then [`hub/migrations/002_job_attempts.sql`](../hub/migrations/002_job_attempts.sql) (adds `attempts`; **must be applied to production** before deploying the lease code). Tables have **RLS enabled with no policies**; only the owner connection used by the hub may access rows.
 
 ## Job model
 
@@ -46,6 +48,7 @@ State machine: `queued → running → done | failed | cancelled`.
 | `created_by` | Subject for ownership SQL |
 | `channel`, `channel_ref` | Optional routing metadata |
 | `worker_id` | Set on claim |
+| `attempts` | Claims so far; each claim adds one |
 | `claimed_at`, `heartbeat_at`, `finished_at` | Timestamps |
 
 ### Job events
@@ -75,9 +78,10 @@ Claim uses `FOR UPDATE SKIP LOCKED` and sets `status=running` atomically.
 1. **Payload is data:** reject `repo`, `test_cmd`, shell/path control fields; optional `repo_key` must be a short enum key (no `/`). Bridge resolves paths from config allowlists.
 2. **Kind allowlist** at enqueue; payload size cap.
 3. **Ownership SQL:** reads filter `tenant_id` + `created_by`; other users get **404** (IDOR-safe).
-4. **Worker binding:** events/heartbeat/result require matching `worker_id` and expected `status`.
-5. **Worker secret:** timing-safe, length-safe **401**.
-6. **RLS parity:** enabled, no policies; document owner bypass for ops.
+4. **Lease:** each claim first requeues running jobs whose heartbeat is older than `LEASE_SECONDS`, or fails them (`worker heartbeat lapsed after N attempts`) once `attempts >= MAX_JOB_ATTEMPTS`. A requeue clears `worker_id`, so the old worker's result gets **403**.
+5. **Worker binding:** events/heartbeat/result require matching `worker_id` and expected `status`.
+6. **Worker secret:** timing-safe, length-safe **401**.
+7. **RLS parity:** enabled, no policies; document owner bypass for ops.
 
 ## Versioning
 

@@ -13,6 +13,7 @@ export interface JobRow {
   channel: string | null;
   channel_ref: string | null;
   worker_id: string | null;
+  attempts: number;
   claimed_at: Date | null;
   heartbeat_at: Date | null;
   finished_at: Date | null;
@@ -35,6 +36,8 @@ export interface HubConfig {
   tenantServiceKeys: Record<string, string>;
   allowedKinds: string[];
   maxPayloadBytes: number;
+  leaseSeconds: number;
+  maxJobAttempts: number;
 }
 
 export interface Queryable {

@@ -12,6 +12,7 @@ import { assertKindAllowed, assertPayloadWithinLimits } from "./validation.js";
 import {
   appendJobEvent,
   claimNextQueuedJob,
+  requeueLapsedJobs,
   finishJob,
   getJobForOwner,
   heartbeatJob,
@@ -89,6 +90,7 @@ export function createApp(deps: AppDeps): express.Express {
       if (typeof workerId !== "string" || !workerId.trim()) {
         throw new HttpError(400, "worker_id is required");
       }
+      await requeueLapsedJobs(db, config.leaseSeconds, config.maxJobAttempts);
       const job = await claimNextQueuedJob(db, workerId.trim());
       if (!job) {
         res.status(204).send();

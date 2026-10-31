@@ -26,6 +26,7 @@ function mapJob(row: Record<string, unknown>): JobRow {
     channel: row.channel as string | null,
     channel_ref: row.channel_ref as string | null,
     worker_id: row.worker_id as string | null,
+    attempts: Number(row.attempts ?? 0),
     claimed_at: row.claimed_at != null ? asDate(row.claimed_at) : null,
     heartbeat_at: row.heartbeat_at != null ? asDate(row.heartbeat_at) : null,
     finished_at: row.finished_at != null ? asDate(row.finished_at) : null,
@@ -122,6 +123,40 @@ export async function listJobEvents(db: Queryable, jobId: string): Promise<JobEv
   return result.rows.map(mapEvent);
 }
 
+export async function requeueLapsedJobs(
+  db: Queryable,
+  leaseSeconds: number,
+  maxAttempts: number,
+): Promise<{ requeued: number; failed: number }> {
+  const failed = await db.query<Record<string, unknown>>(
+    `UPDATE jobs
+     SET status = 'failed',
+         error_message = 'worker heartbeat lapsed after ' || attempts || ' attempts',
+         finished_at = now(),
+         updated_at = now(),
+         version = version + 1
+     WHERE status = 'running'
+       AND heartbeat_at < now() - make_interval(secs => $1)
+       AND attempts >= $2
+     RETURNING id`,
+    [leaseSeconds, maxAttempts],
+  );
+  const requeued = await db.query<Record<string, unknown>>(
+    `UPDATE jobs
+     SET status = 'queued',
+         worker_id = NULL,
+         claimed_at = NULL,
+         updated_at = now(),
+         version = version + 1
+     WHERE status = 'running'
+       AND heartbeat_at < now() - make_interval(secs => $1)
+       AND attempts < $2
+     RETURNING id`,
+    [leaseSeconds, maxAttempts],
+  );
+  return { requeued: requeued.rows.length, failed: failed.rows.length };
+}
+
 export async function claimNextQueuedJob(db: Queryable, workerId: string): Promise<JobRow | null> {
   const updated = await db.query<Record<string, unknown>>(
     `WITH next AS (
@@ -135,6 +170,7 @@ export async function claimNextQueuedJob(db: Queryable, workerId: string): Promi
      SET status = 'running',
          worker_id = $1,
          claimed_at = now(),
+         attempts = j.attempts + 1,
          heartbeat_at = now(),
          updated_at = now(),
          version = j.version + 1
@@ -291,6 +327,7 @@ export function serializeJob(job: JobRow): Record<string, unknown> {
     channel: job.channel,
     channel_ref: job.channel_ref,
     worker_id: job.worker_id,
+    attempts: job.attempts,
     claimed_at: job.claimed_at?.toISOString() ?? null,
     heartbeat_at: job.heartbeat_at?.toISOString() ?? null,
     finished_at: job.finished_at?.toISOString() ?? null,

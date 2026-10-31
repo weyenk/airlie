@@ -13,7 +13,9 @@ export TENANT_SERVICE_KEYS='{"lhr":"dev-key"}'
 npm run dev                            # listens on :8787
 ```
 
-Apply `migrations/001_jobs.sql` to the database once.
+Apply `migrations/001_jobs.sql`, then `migrations/002_job_attempts.sql`, to the database (owner role). **002 must be applied to production before this hub version is deployed**: the claim path writes `jobs.attempts`.
+
+Leases: every claim counts an attempt. On each claim the hub first sweeps `running` jobs whose `heartbeat_at` is older than `LEASE_SECONDS` (default 300): jobs with `attempts >= MAX_JOB_ATTEMPTS` (default 3) become `failed` (`worker heartbeat lapsed after N attempts`), the rest go back to `queued`. A stale worker's later result is rejected with 403. Both env vars must be at least 1.
 
 ## Tests
 
