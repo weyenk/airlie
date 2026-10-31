@@ -41,7 +41,11 @@ _WORDS = (
 )  # fmt: skip
 _NUM = r"(\d+|" + "|".join(_WORDS) + r")"
 _LENGTHS = re.compile(rf"\b{_NUM}\s*(?:to|-|–|\.\.)\s*{_NUM}[\s-]*char", re.IGNORECASE)
-_ALPHABET = re.compile(r"""over\s+(?:the\s+alphabet\s+)?['"]([A-Za-z]{2,})['"]""", re.IGNORECASE)
+_ALPHABET = re.compile(
+    r"""over\s+(?:the\s+alphabet\s+)?(?:['"]([A-Za-z]{2,})['"]|((?:[A-Z][\s,/]+)+[A-Z])(?![A-Za-z]))"""
+)
+"""The alphabet a sweep goes over: quoted ('IVXLCDM'), or its capital letters one by one ("I V X L C D M",
+"I, V, X": roman round 5 run 3, 2026-10-31, a 5..15-character sweep written that way passed unflagged)."""
 SWEEP_LIMIT = 10_000_000
 """The most strings a proof test may sweep (as the package check's test_too_large holds it)."""
 
@@ -190,10 +194,11 @@ def check_sweep_sizes(proof: Sequence[ProofTest]) -> list[Finding]:
         if lengths is None or alphabet is None:
             continue
         low, high = _number(lengths.group(1)), _number(lengths.group(2))
-        size = sum(len(alphabet.group(1)) ** n for n in range(low, high + 1))
+        letters = len(alphabet.group(1) or re.sub(r"[^A-Z]", "", alphabet.group(2)))
+        size = sum(letters**n for n in range(low, high + 1))
         if size > SWEEP_LIMIT:
             why = (
-                f"it sweeps {size:,} strings ({low} to {high} characters over {len(alphabet.group(1))} "
+                f"it sweeps {size:,} strings ({low} to {high} characters over {letters} "
                 "letters), too many to run: sweep to four characters and prove longer inputs another way"
             )
             found.append(Finding("proof_too_large", t.id, why, ""))

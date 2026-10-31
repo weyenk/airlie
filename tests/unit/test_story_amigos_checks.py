@@ -183,6 +183,14 @@ def test_a_proof_test_that_sweeps_more_strings_than_can_run_is_advice() -> None:
     )
     worded = replace(huge, name="test_d", asserts="every string of one to four characters over 'IVXLCDM'")
     unnamed = replace(huge, name="test_e", asserts="every string of 1 to 15 characters raises")
-    found = check_sweep_sizes((huge, worded, unnamed))
-    assert [(f.kind, f.test) for f in found] == [("proof_too_large", huge.id)]
-    assert "7 letters" in found[0].why and "proof_too_large" in ADVISORY
+    spelled = replace(  # round 5 run 3 (2026-10-31): the letters one by one, unquoted
+        huge,
+        name="test_f",
+        asserts="for every 5 to 15 character string over the alphabet I V X L C D M: raises",
+    )
+    found = check_sweep_sizes((huge, worded, unnamed, spelled))
+    assert [(f.kind, f.test) for f in found] == [
+        ("proof_too_large", huge.id),
+        ("proof_too_large", spelled.id),
+    ]
+    assert "7 letters" in found[0].why and "7 letters" in found[1].why and "proof_too_large" in ADVISORY
