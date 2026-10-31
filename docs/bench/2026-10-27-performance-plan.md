@@ -575,3 +575,59 @@ sequencing, so the nodes stay reusable.
 
 Run 3 shows why the bench's own oracle matters: the story's tests and mutation score were perfect while the
 product was wrong.
+
+**Round 2** (fixes landing between runs):
+
+| Run | Build | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|---|
+| 1 | 6925fe5 | 3.7 | – | – | Blocked in refine: product ran three *different* compute checks of one table that printed the same, and the repeat guard, which keys a call by its name and its result, called the third a repeat (`repeated_action`) | 1434c7b: a tool says whether calls with other arguments are different actions (`distinct_by_arguments`); compute, write_file and edit_file do, so the guard keys them by their arguments too |
+| 2 | 1434c7b | 56.1 | 18/18, 6/8 | 59/61 | Nothing reworked; the meeting still had turns end without a verdict after tool use despite the reflection note | ec007eb + 088b9b6: a turn that ends without a verdict is asked once, at once, for the verdict alone (`verdict_only`, `verdict_asked` on the turn event), and keeps its round |
+| 3 | 088b9b6 | 48.3 | 18/18, 8/8 | 63/64 | Nothing: 8 meeting turns, every one with a verdict, no repair needed; one layer, no send-backs, 0 suspect texts in the corruption scan | – |
+
+Watch: product's refine still wrote an uncomputed example into an assumption ("MMMCMXCIX is 15"; it is 9).
+The architect and tester computed it and objected, and it was mended in the meeting's second round at no
+extra turns, but it is the invented-fact pattern compute was added for. Product and architect also object to
+the proof in round 1 before the tester has posted one; that costs nothing (round 2 resolves it) but is noise.
+
+The bench stamped `airlie_build` when it wrote the record, so two runs carried commits made while they ran;
+the build is now read when the run starts, and the two records were corrected.
+
+**Round 3** (088b9b6; 86c0837 and 2662529 landed between runs, bench and observability only):
+
+| Run | Build | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|---|
+| 1 | 088b9b6 | 39.8 | 18/18, 6/8 | 58/59 | One `plan_fix`: the architect's first layer plan had no `layers` list, and the refused reply was kept nowhere, so why could not be read. The tester's first proof sampled a refusal (`proof_sampled`), mended in the meeting at two extra turns | 2662529: a refused first plan's `plan_fix` event keeps the reply's last 1,500 characters |
+| 2 | 088b9b6 | 32.8 | **9/18**, 8/8 | 57/57 | **Product's refine checked the refusal with its own lenient evaluator, found 2,453 short non-standard strings it accepts, called refusing them "not testable" and put the request's malformed-numeral refusal in out_of_scope. The tester's exhaustive proof met the architect citing that scope; everyone agreed, and the story shipped accepting IIII, VV, IC** | a2ae0f8: out_of_scope holds only what the request does not ask for; a check that seems to show part of the request cannot be met is the check's error (refine rule); every meeting role objects to an out_of_scope entry or criterion that leaves out what the request asks for, and none cites out_of_scope against it (meeting turn rule) |
+| 3 | – | – | – | – | Stopped 8 minutes in, so the next round runs wholly on a2ae0f8 | – |
+
+Run 2 is round 1 run 3's lesson again: perfect tests and mutation score, wrong product. The refine rule already
+said the valid inputs are the conversion's outputs; product's compute check overrode it, so the new text says
+which one wins.
+
+**Round 4** (a2ae0f8, fixes landing between runs):
+
+| Run | Build | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|---|
+| 1 | a2ae0f8 | 40.2 | 18/18, 8/8 | 80/80 | Nothing reworked. Product and architect each said "object" to the proof before the tester had posted one; the verdict reader refused an objection-less "object", read both turns as having no verdict, the repair asked again and got the same, and the checker posted two `verdict_missing` findings | bb7f725: a part nobody has posted yet may be left open ("object", no objection); the contract says so, and the repair reads the same way |
+| 2 | bb7f725 | 22.0 | – | – | **Blocked.** Refine's first story repeated an id (AC3 twice), which cost a fresh refine; that retry drifted into criteria over 0..10000 that repeated each other. The meeting saw the story contradict the request, and product posted `blocked`, asking a person to choose the domain the request already gave | fa0d65b: refine gives a repeated criterion id the next free one (the first keeps its own; the meeting stays strict, the layers cite ids there). f32bf1b: the story contract says a story that contradicts the request, or itself, is written again, never blocked |
+| 3 | fa0d65b | 68.7 | 18/18, 8/8 | 102/113 | Nothing reworked; two layers. Slow: package drafting (architect, 17 calls, 57k tokens out, 35k thinking) and the coder (23 calls, 21k thinking) | – (speed, not reliability) |
+
+**Round 5** (f32bf1b, fixes landing between runs; the prompt hub loads once per process, so a commit during a
+run does not reach it):
+
+| Run | Build | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|---|
+| 1 | f32bf1b | 51.5 | 18/18, 8/8 | 79/83 | One proof revision after agreement: the agreed refusal test set the accepted 1-4 character strings equal to all 3,999 outputs (3,653 are longer), which no code can pass; the architect found it while drafting | 8db7f45: the tester's and the package's exhaustive-test sentence says to compare with the valid outputs of the same lengths, never all of them |
+| 2 | 8db7f45 | **25.4** | 18/18, 6/8 | 57/58 | Nothing: a 6-turn meeting, one layer, no rework. The fastest roman run yet | – |
+| 3 | 8db7f45 | 59.5 | 18/18, 8/8 | 34/34 | Three rework events. (a) The tester accepted an objection to its proof, said it had no tools that turn, and objected to its own part "to apply when I next post"; the turn was read as having no verdict. (b) The agreed proof swept every string of 5 to 15 characters (5.5 trillion), and the size check missed it because the alphabet was written letter by letter ("I V X L C D M"); drafting found it and the proof was revised. (c) The resumed draft's reply held no test file the parser could find, and the reply was kept nowhere | 1dab80c: a role posts its changed part in the turn it decides to change it (no tool needed), and the reader's message says so. 7c9e053: the size check reads an alphabet spelled letter by letter. d2e25d1: every retry event keeps the refused reply's last 1,500 characters (refine, package and the rest, with plan_fix); a test file heading is read at levels two to four, in any case, its path bare or quoted |
+
+**Round 6** (d2e25d1; stopped by hand after run 1):
+
+| Run | Build | Minutes | Oracle | Mutation | What broke | Fix |
+|---|---|---|---|---|---|---|
+| 1 | d2e25d1 | 30.5 | 18/18, 8/8 | 58/60 | Two rework events. The tester added `{"criterion": null, "gate": true}` and the reader flagged it `part_invalid`. A package file left out its action, a retry (the new reply tail on the retry event showed it at once) | 48517a7: a gate entry with no criterion is read past. 17c8f40: a package file with no action takes it from the agreed split's `new` flag |
+
+**Where it stands after six rounds:** 15 complete runs, the product right in 13 (both misses were the story
+narrowing or restating the request; both rules are fixed). No corrupted output in any run. Rework is down to
+a long tail of one-off format slips, each now mended at its own reader or check. Runs on the same code still
+vary from 25 to 69 minutes, mostly the meeting's length and two-layer splits.

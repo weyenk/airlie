@@ -1,0 +1,97 @@
+{
+ "case": "roman",
+ "started": "2026-10-31T02:09:16",
+ "airlie_build": "bb7f725",
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true
+ },
+ "stage": "refine",
+ "blocked": "product says this cannot be built as written: The story's title and out-of-scope say the domain is 1..3999 with 0 and 4000+ refused, but AC3-AC8 all convert 0 and 4000..10000. A person must decide the intended domain: (a) strict 1..3999 \u2014 then AC3-AC8 must be dropped and the architect's 0..10000 split re-scoped to 1..3999, or (b) 0..10000 \u2014 then the title and the out-of-scope note must be rewritten. Separately, AC5's '4999 outputs' is a miscount (the range 5001..10000 has 5000 integers) and AC3 duplicates AC7 (both: 0..3999 canonical + 4000 distinct); both need fixing once the domain is settled.",
+ "layers_built": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 22.0,
+  "idle_min": 2.6,
+  "decode_tps_by_context": {
+   "<16k": 36.1,
+   "16-48k": null,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.4
+   },
+   {
+    "at": "plan_done",
+    "min": 19.7
+   },
+   {
+    "at": "story_done",
+    "min": 22.0
+   }
+  ],
+  "roles": [
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 14,
+    "tokens_in": 39729,
+    "tokens_out": 6139,
+    "prefill_s": 115.78989999999999,
+    "decode_s": 106.78110000000001,
+    "wall_s": 232.9993,
+    "reads": 8,
+    "thinking_tokens": 0,
+    "decode_tps": 57.5,
+    "prefill_tps": 343
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 9,
+    "tokens_in": 65690,
+    "tokens_out": 32142,
+    "prefill_s": 30.854200000000002,
+    "decode_s": 914.3865000000001,
+    "wall_s": 200.2672,
+    "reads": 1,
+    "thinking_tokens": 19131,
+    "decode_tps": 35.2,
+    "prefill_tps": 2129
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 13726,
+    "tokens_out": 3386,
+    "prefill_s": 6.8602,
+    "decode_s": 133.5824,
+    "wall_s": 140.5493,
+    "reads": 6,
+    "thinking_tokens": 2170,
+    "decode_tps": 25.3,
+    "prefill_tps": 2001
+   }
+  ],
+  "retries": {
+   "plan_rounds": 3,
+   "plan_fixes": 1,
+   "meeting_turns": 0,
+   "meeting_objections": 0,
+   "critic_objections": 0,
+   "package_attempts": 0,
+   "packages_rejected": 0,
+   "unusable_replies": 1,
+   "layer_builds": 0,
+   "gate_replans": 0,
+   "supervisor_triages": 1
+  }
+ },
+ "quality": null,
+ "closed": [],
+ "branches_deleted": []
+}
