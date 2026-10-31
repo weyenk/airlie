@@ -167,6 +167,19 @@ def test_a_verdict_is_read_from_the_last_json_fence_whatever_surrounds_it() -> N
     assert '"type": "verdict"' in VERDICT_CONTRACT and "End every turn with your verdict" in VERDICT_CONTRACT
 
 
+def test_a_part_nobody_has_posted_yet_may_be_left_open_without_an_objection() -> None:
+    """2026-10-31 (roman): product and architect each said "object" to the proof before the tester had
+    posted it; read as no verdict, it cost the meeting two checker findings. A posted part still needs one."""
+    open_proof = {**VERDICT, "proof": "object"}
+    v = parse_verdict(_fence(open_proof), "product", frozenset({"proof"}))
+    assert v.proof == "object" and v.objections == () and not v.agrees_to_all()
+    with pytest.raises(StoryError, match="no objection"):
+        parse_verdict(_fence(open_proof), "product")
+    with pytest.raises(StoryError, match="no objection"):  # the story was posted: it needs one
+        parse_verdict(_fence({**VERDICT, "requirements": "object"}), "architect", frozenset({"proof"}))
+    assert "nobody has posted yet is open" in VERDICT_CONTRACT
+
+
 def test_a_verdict_that_objects_to_the_speakers_own_part_or_objects_with_nothing_is_refused() -> None:
     mine = {
         **VERDICT,

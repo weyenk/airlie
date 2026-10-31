@@ -80,7 +80,7 @@ behaviour of a layer with no criterion. A criterion no test can prove because th
 VERDICT_CONTRACT = """End every turn with your verdict, one ```json block holding exactly one object:
 {"type": "verdict", "requirements": "agree" | "object", "changes": "agree" | "object", "proof": "agree" | "object",
  "objections": [{"part": "proof", "about": "AC2", "claim": "one sentence", "suggest": "one sentence"}]}
-Object to a part only with an objection for it; never object to your own part."""  # noqa: E501
+Object to a part only with an objection for it; never object to your own part. A part nobody has posted yet is open: say object, with no objection for it."""  # noqa: E501
 
 
 GATE_ASSERTS = "the layer's test gate passes"
@@ -316,11 +316,14 @@ class Verdict:
         return cast(str, getattr(self, part))
 
 
-def parse_verdict(text: str, role: str) -> Verdict:
+def parse_verdict(text: str, role: str, unposted: frozenset[Part] = frozenset()) -> Verdict:
     """The verdict at the end of `role`'s turn: the object under the last ```json fence, whatever prose or
     channel text surrounds it (Muse wraps its answer). A StoryError, which the checker posts as a finding on
     the next turn, when there is no verdict, a value is not agree|object, an objection is for the role's own
-    part or for a part it agrees to, or a part is objected to without an objection."""
+    part or for a part it agrees to, or a part is objected to without an objection. A part in `unposted`,
+    which nobody has posted yet, may be objected to without one: there is nothing to claim against
+    (2026-10-31, roman: product and architect each said "object" to the proof before the tester had posted
+    it, the turn was read as having no verdict, and the checker posted two findings)."""
     obj = extract_json_block(text)
     if obj is None:
         raise StoryError("no verdict: end your turn with the verdict JSON object, in one ```json block")
@@ -367,7 +370,7 @@ def parse_verdict(text: str, role: str) -> Verdict:
     for part in PARTS:
         if values[part] == "object" and OWNER[part] == role:
             raise StoryError(f"verdict: you object to your own part, {part}")
-        if values[part] == "object" and not any(o.part == part for o in objections):
+        if values[part] == "object" and part not in unposted and not any(o.part == part for o in objections):
             raise StoryError(
                 f"verdict: you object to {part} but give no objection for it (part, about, claim, suggest)"
             )
@@ -575,6 +578,11 @@ class Standing:
     proof: tuple[ProofTest, ...] | None = None
     dropped: Mapping[str, str] = field(default_factory=dict)
 
+    def unposted(self) -> frozenset[Part]:
+        """The parts nobody has posted yet: only the proof can be (the story and the layers open the
+        meeting)."""
+        return frozenset({"proof"}) if self.proof is None else frozenset()
+
     def after(self, turn: Turn) -> Standing:
         """These parts with the ones `turn` carried in place of the ones they replace."""
         return Standing(
@@ -603,7 +611,9 @@ VERDICT_ONLY = (
 )
 
 
-async def verdict_only(client: ChatCompletionClient, role: str, said: str) -> str | None:
+async def verdict_only(
+    client: ChatCompletionClient, role: str, said: str, unposted: frozenset[Part] = frozenset()
+) -> str | None:
     """The verdict block `role` gives for its turn `said` when asked once, at once, or None when its reply
     holds none. A turn that used tools ends in AutoGen's reflection, which reported what the tools showed and
     no verdict even when reminded (2026-10-31, roman: three architect turns in one meeting, each a lost round
@@ -619,7 +629,7 @@ async def verdict_only(client: ChatCompletionClient, role: str, said: str) -> st
         return None
     text = res.content if isinstance(res.content, str) else ""
     try:
-        parse_verdict(text, role)
+        parse_verdict(text, role, unposted)
     except StoryError:
         return None
     return text
@@ -632,7 +642,7 @@ def read_turn(role: str, text: str, standing: Standing, rules: ReadRules) -> Tur
     problems: list[Finding] = []
     verdict: Verdict | None = None
     try:
-        verdict = parse_verdict(text, role)
+        verdict = parse_verdict(text, role, standing.unposted())
     except StoryError as e:
         problems.append(Finding("verdict_missing", role, str(e), ""))
     parts: dict[str, Any] = {}
@@ -1040,7 +1050,9 @@ class Meeting:
                 else:
                     turn = read_turn(said.source, said.content, standing, rules)
                     if turn.verdict is None and any(p.kind == "verdict_missing" for p in turn.problems):
-                        verdict = await verdict_only(agents[said.source][1], said.source, said.content)
+                        verdict = await verdict_only(
+                            agents[said.source][1], said.source, said.content, standing.unposted()
+                        )
                         if verdict is not None:  # the turn as it would have read with its verdict
                             turn = read_turn(said.source, f"{said.content}\n\n{verdict}", standing, rules)
                             turn.verdict_asked = True
