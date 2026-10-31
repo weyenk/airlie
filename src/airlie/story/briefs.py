@@ -63,7 +63,11 @@ STORY_CONTRACT = """End your reply with one ```json block holding exactly one ob
  "acceptance": [{"id": "AC1", "given": "...", "when": "...", "then": "..."}],
  "out_of_scope": ["..."], "assumptions": ["..."]}
 If the request cannot be built as written (it contradicts itself, or needs a decision only a person can
-make), reply instead with {"type": "blocked", "reason": "the decision a person must make"}."""
+make), reply instead with {"type": "blocked", "reason": "the decision a person must make"}. A story that
+contradicts the request, or itself, is no reason to block: write the story again, to the request."""
+"""Refine's reply and product's story in the meeting. Roman, 2026-10-31: a refine retry drifted to criteria
+over 0..10000; in the meeting product saw the story contradict the request and blocked, asking a person to
+pick the domain the request had already given, instead of writing its own story again."""
 
 LAYERS_CONTRACT = """End your reply with one ```json block holding exactly one object:
 {"layers": [{"slug": "data-model", "title": "...", "scope": "the files or areas this layer may touch",
