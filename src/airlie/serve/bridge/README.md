@@ -7,10 +7,11 @@ Outbound Mac worker for the [Job Bus](../../../docs/bridge-contract.md): HTTPS c
 
 1. Configure `bridge:` in `airlie.yaml` / `airlie.local.yaml` (`job_bus_url`, `allowed_repos`, `kinds`).
 2. Secrets (never commit them):
-   - Put `BRIDGE_WORKER_SECRET=…` in `~/.config/airlie/bridge.env` (`chmod 600`); airlie reads it without exporting
-   - Or export `BRIDGE_WORKER_SECRET` for a one-off session
-   - `AIRLIE_SERVE_API_KEY` — if serve requires a bearer (same `bridge.env` or export)
-   - Do **not** put the worker secret in `~/.config/airlie/.env` (that file is for ATLASSIAN_* / story)
+   - Put secrets once in `~/.config/airlie/bridge.env` (`chmod 600`); `task serve` and `task bridge` both read them (no `--api-key` every launch):
+     - `BRIDGE_WORKER_SECRET=…`
+     - `AIRLIE_SERVE_API_KEY=…` (loopback serve bearer; same value for serve + bridge)
+   - Or export those for a one-off session
+   - Do **not** put these in `~/.config/airlie/.env` (that file is for ATLASSIAN_* / story)
 3. Start inference and serve:
    - `task up` then `task serve` (or your usual Studio serve command with `--api-key` when tunneled)
 4. Run the bridge:

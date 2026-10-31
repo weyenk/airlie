@@ -561,16 +561,20 @@ def serve(
     api_key: Annotated[
         str | None,
         typer.Option(
-            envvar="AIRLIE_SERVE_API_KEY",
-            help="require `Authorization: Bearer <key>` on /v1 (set it before exposing the server)",
+            "--api-key",
+            help="require Authorization Bearer on /v1 (default: AIRLIE_SERVE_API_KEY from "
+            "~/.config/airlie/bridge.env or the environment)",
         ),
     ] = None,
 ) -> None:
     """OpenAI-compatible endpoint in front of airlie: roles and catalog models, plus POST /v1/airlie/run."""
     from airlie.serve import create_app
+    from airlie.serve.bridge.session import resolve_serve_api_key
     from airlie.serve.server import run
 
     cfg = _load(config)
+    # --api-key only; do not bind envvar here or a stale shell export overrides bridge.env
+    api_key = resolve_serve_api_key(cfg, explicit=api_key)
     raw = [m for m in cfg.models if m not in cfg.roles]
     console.print(
         f"airlie serve on http://{host}:{port}/v1  (roles: {', '.join(cfg.roles)}; "
