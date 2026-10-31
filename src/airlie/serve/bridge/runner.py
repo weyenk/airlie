@@ -37,6 +37,15 @@ class BridgeRunner:
     busy: Callable[[], Awaitable[str | None]] | None = None
     _last_busy_logged: str | None = None
 
+    async def _heartbeat_loop(self, job_id: str) -> None:
+        """Keep the hub lease alive while a handler runs; a failed beat never stops the job."""
+        while True:
+            await self.clock.sleep(self.bridge.heartbeat_s)
+            try:
+                await self.hub.heartbeat(job_id, self.worker)
+            except (BridgeError, httpx.HTTPError) as e:
+                log.warning("hub job %s heartbeat failed: %s", job_id, e)
+
     async def process_job(self, job: HubJob) -> None:
         log.info("claimed hub job %s kind=%s tenant=%s", job.id, job.kind, job.tenant_id)
         try:
@@ -44,7 +53,13 @@ class BridgeRunner:
         except BridgeError as e:
             await self.hub.post_result(job.id, self.worker, status="failed", error_message=str(e))
             return
-        outcome = await handler.run(job.payload)
+        beat = asyncio.create_task(self._heartbeat_loop(job.id))
+        try:
+            outcome = await handler.run(job.payload)
+        finally:
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat
         await self.hub.post_result(
             job.id,
             self.worker,

@@ -19,7 +19,7 @@ from airlie.config.schema import AllowedRepoSpec, BridgeSpec, LlmKindSpec
 from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
-from airlie.serve.bridge.job_bus import JobBusClient
+from airlie.serve.bridge.job_bus import HubJob, JobBusClient
 from airlie.serve.bridge.kinds import LlmKind, StudioKind, map_run_result
 from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
@@ -52,6 +52,8 @@ class FakeHub(httpx.AsyncBaseTransport):
     def __init__(self, *, jobs: list[dict[str, Any]] | None = None) -> None:
         self.claim_calls = 0
         self.results: list[dict[str, Any]] = []
+        self.heartbeats: list[str] = []
+        self.heartbeat_status = 200
         self._queue = list(jobs or [])
 
     def enqueue(self, job: dict[str, Any]) -> None:
@@ -67,6 +69,9 @@ class FakeHub(httpx.AsyncBaseTransport):
         if request.method == "POST" and request.url.path.endswith("/result"):
             self.results.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True})
+        if request.method == "POST" and request.url.path.endswith("/heartbeat"):
+            self.heartbeats.append(request.url.path.split("/")[-2])
+            return httpx.Response(self.heartbeat_status, json={"ok": self.heartbeat_status == 200})
         return httpx.Response(404, json={"error": "unexpected hub route"})
 
 
@@ -487,3 +492,68 @@ def test_busy_reason_logged_once_per_change(tmp_path: Path, caplog: pytest.LogCa
         asyncio.run(go())
     assert sum("story build lane is running" in r.getMessage() for r in caplog.records) == 1
     assert sum("story plan lane is running" in r.getMessage() for r in caplog.records) == 1
+
+
+# ---- heartbeat: keep a running hub job leased ----
+
+
+class _WaitingHandler:
+    """Runs until the hub has seen `beats` heartbeats (the fake clock drives them)."""
+
+    def __init__(self, hub_t: FakeHub, beats: int) -> None:
+        self.hub_t = hub_t
+        self.beats = beats
+
+    async def run(self, payload: dict[str, Any]) -> Any:
+        from airlie.serve.bridge.kinds import KindOutcome
+
+        while len(self.hub_t.heartbeats) < self.beats:
+            await asyncio.sleep(0)
+        return KindOutcome("done", result={"ok": True})
+
+
+def _heartbeat_runner(
+    tmp_path: Path, hub_t: FakeHub, beats: int, monkeypatch: pytest.MonkeyPatch
+) -> tuple[BridgeRunner, str]:
+    runner = _runner(tmp_path, None, hub_t)
+    runner.bridge = runner.bridge.model_copy(update={"heartbeat_s": 60.0})
+    monkeypatch.setattr(
+        "airlie.serve.bridge.runner.handler_for", lambda *a, **k: _WaitingHandler(hub_t, beats)
+    )
+    return runner, str(uuid.uuid4())
+
+
+def _job(jid: str) -> HubJob:
+    return HubJob(id=jid, kind="llm", tenant_id="lhr", payload={}, worker_id="w1")
+
+
+def test_running_job_sends_heartbeats(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert hub_t.heartbeats == [jid, jid]
+    assert hub_t.results[0]["status"] == "done"
+    assert runner.clock.sleeps[:2] == [60.0, 60.0]  # type: ignore[attr-defined]
+
+
+def test_heartbeat_failure_does_not_stop_the_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    hub_t.heartbeat_status = 409
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 2, monkeypatch)
+    asyncio.run(runner.process_job(_job(jid)))
+    assert len(hub_t.heartbeats) >= 2
+    assert hub_t.results[0]["status"] == "done"
+
+
+def test_heartbeat_stops_when_job_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hub_t = FakeHub()
+    runner, jid = _heartbeat_runner(tmp_path, hub_t, 1, monkeypatch)
+
+    async def go() -> int:
+        await runner.process_job(_job(jid))
+        seen = len(hub_t.heartbeats)
+        await runner.clock.sleep(600)
+        return seen
+
+    seen = asyncio.run(go())
+    assert len(hub_t.heartbeats) == seen

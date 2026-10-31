@@ -332,6 +332,11 @@ class BridgeSpec(Strict):
     claim_poll_s: float = Field(default=5.0, ge=0.0, description="seconds between short-poll claim attempts")
     job_poll_s: float = Field(default=2.0, ge=0.0, description="seconds between serve job status polls")
     concurrency: int = Field(default=1, ge=1, description="Phase 1: one job at a time")
+    heartbeat_s: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="seconds between heartbeats the bridge sends the hub for a running job",
+    )
     idle_s: float = Field(
         default=120.0,
         ge=0.0,

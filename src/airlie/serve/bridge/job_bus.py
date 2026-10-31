@@ -83,3 +83,13 @@ class JobBusClient:
         if res.status_code not in (200, 201):
             raise BridgeError(f"Job Bus result failed: {res.status_code} {res.text[:300]}")
         log.info("hub job %s → %s", job_id, status)
+
+    async def heartbeat(self, job_id: str, worker_id: str) -> bool:
+        """Tell the hub this worker still holds the job. False when the hub says it does not."""
+        res = await self._http.post(f"/jobs/{job_id}/heartbeat", json={"worker_id": worker_id})
+        if res.status_code == 200:
+            return True
+        if res.status_code == 401:
+            raise BridgeError("Job Bus rejected the worker secret (401)")
+        log.warning("hub job %s heartbeat refused: %s %s", job_id, res.status_code, res.text[:200])
+        return False
