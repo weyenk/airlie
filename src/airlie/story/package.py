@@ -262,15 +262,21 @@ def _parse_package(text: str, layer: Layer, story: Story, gated: Collection[str]
         tests[path] = body
 
     files: list[PackageFile] = []
+    agreed = {x.path: ("create" if x.new else "modify") for x in layer.files}
     for n, f in enumerate(_list(obj.get("files"), "files"), 1):
         if not isinstance(f, dict):
             raise StoryError(f"files item {n} must be an object with path and action")
+        path = _normal(_text(f, "path", f"files item {n}"), "a file path")
         action = f.get("action")
+        if action is None:
+            # the agreed split says whether the file is new (roman round 6, 2026-10-31: a package that left
+            # out one action was a retry)
+            action = agreed.get(path)
         if action not in _ACTIONS:
             raise StoryError(f"files item {n}: action must be create or modify, not {action!r}")
         files.append(
             PackageFile(
-                _normal(_text(f, "path", f"files item {n}"), "a file path"),
+                path,
                 cast(Any, action),
                 _encodable(str(f.get("why") or "").strip(), "a file's 'why'"),
             )
