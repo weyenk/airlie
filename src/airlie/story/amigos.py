@@ -351,8 +351,8 @@ def parse_verdict(text: str, role: str, unposted: frozenset[Part] = frozenset())
         part = cast(Part, raw_part)
         if OWNER[part] == role:
             raise StoryError(
-                f"{where}: {part} is your own part ({role} owns it); change it in your turn, "
-                "never object to it"
+                f"{where}: {part} is your own part ({role} owns it); post it changed, whole, in its JSON "
+                "shape, in the turn you decide to change it (that needs no tool), and never object to it"
             )
         if values[part] == "agree":
             raise StoryError(
@@ -369,7 +369,10 @@ def parse_verdict(text: str, role: str, unposted: frozenset[Part] = frozenset())
         )
     for part in PARTS:
         if values[part] == "object" and OWNER[part] == role:
-            raise StoryError(f"verdict: you object to your own part, {part}")
+            raise StoryError(
+                f"verdict: you object to your own part, {part}: post it changed, whole, in its JSON shape "
+                "(that needs no tool), and agree to it"
+            )
         if values[part] == "object" and part not in unposted and not any(o.part == part for o in objections):
             raise StoryError(
                 f"verdict: you object to {part} but give no objection for it (part, about, claim, suggest)"
