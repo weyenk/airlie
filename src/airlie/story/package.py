@@ -6,16 +6,18 @@ against them; no tester agent writes a test.
 
 The architect's reply is model output, read as data: test files follow `### test file: <path>` headings in
 fenced blocks (a test's own text may hold fences, so a block ends at the last fence line before the next
-heading or the package object, not the first), and the package object is the last ```json fence of the reply,
-as every role's reply is read. Nothing here executes the text; a path is checked to be inside the repository
-before anything is written (`package_checks.place_package`)."""
+heading or the package object, not the first), new tests for a file the layer's base already has follow
+`### test additions: <path>` (joined to the base's file here, so a reply never copies a long file out:
+AIR-47, 2026-10-31, was cut off at max_tokens twice writing a 1299-line one), and the package object is the
+last ```json fence of the reply, as every role's reply is read. Nothing here executes the text; a path is
+checked to be inside the repository before anything is written (`package_checks.place_package`)."""
 
 from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Collection, Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
@@ -25,7 +27,7 @@ from airlie.story.model import NO_JSON, REPLY_TAIL, Layer, Story, StoryError, _e
 from airlie.tools.scope import is_js_test, is_test_file
 from airlie.topology.studio_plan import extract_json_block
 
-PACKAGE_CONTRACT = """Reply with, for each test file, a line `### test file: <path from the repository root>` followed by one fenced block (```python for a pytest module, ```ts for a Vitest *.test.ts) holding that file's whole text (the file as it must be after this layer: new, or the existing file with your tests added). Then end your reply with one ```json block holding exactly one object:
+PACKAGE_CONTRACT = """Reply with, for each new test file, a line `### test file: <path from the repository root>` followed by one fenced block (```python for a pytest module, ```ts for a Vitest *.test.ts) holding that file's whole text. For a test file that already exists, do not copy it out: write a line `### test additions: <path from the repository root>` followed by one fenced block holding only the tests you add and the imports they need; they are appended to the file as it is on the layer's base, the imports joining its imports. Then end your reply with one ```json block holding exactly one object:
 {"type": "package",
  "files": [{"path": "src/pkg/mod.py", "action": "create" | "modify", "why": "one line"}],
  "interfaces": [{"file": "src/pkg/mod.py", "signature": "def name(arg: T) -> R", "behaviour": "one line: what it does, the exact message or value the tests assert"}],
@@ -38,9 +40,12 @@ AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the crit
 BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 
-_HEADING = re.compile(r"^#{2,4} test file: [`'\"]?(?P<path>[^\s`'\"]+)[`'\"]?\s*$", re.IGNORECASE)
-"""A test file's heading: `### test file: <path>`, at heading level two to four, in any case, its path bare or
-quoted (roman, 2026-10-31: a resumed draft's test file was not found, and the reply was a retry)."""
+_HEADING = re.compile(
+    r"^#{2,4} test (?P<kind>file|additions): [`'\"]?(?P<path>[^\s`'\"]+)[`'\"]?\s*$", re.IGNORECASE
+)
+"""A test file's heading: `### test file: <path>` (the file whole) or `### test additions: <path>` (tests
+added to the base's file), at heading level two to four, in any case, its path bare or quoted (roman,
+2026-10-31: a resumed draft's test file was not found, and the reply was a retry)."""
 _FENCE = re.compile(r"^(?P<fence>`{3,})(?:python|py|ts|typescript|tsx|js|javascript|jsx)?\s*$")
 """A test file's opening fence: ```python for a pytest module, ```ts (and kin) for a Vitest file, or bare."""
 _JSON_OPENER = re.compile(r"^`{3,}json[ \t]*$", re.IGNORECASE)
@@ -70,7 +75,8 @@ class Interface:
 @dataclass(frozen=True)
 class Package:
     """A layer's package: tests (path -> the file's whole text), files, interfaces, steps, `covers`
-    (criterion id -> test ids "path::name") and `done_when`."""
+    (criterion id -> test ids "path::name") and `done_when`. `added` holds, for a test file the reply added
+    to rather than wrote whole, only what it added: `rebased` joins it again to a later base's file."""
 
     layer: str
     tests: Mapping[str, str]
@@ -79,6 +85,7 @@ class Package:
     steps: tuple[str, ...]
     covers: Mapping[str, tuple[str, ...]]
     done_when: str
+    added: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-native: lists for tuples, so a saved package equals the one read back."""
@@ -90,6 +97,7 @@ class Package:
             "steps": list(self.steps),
             "covers": {k: list(v) for k, v in self.covers.items()},
             "done_when": self.done_when,
+            "added": dict(self.added),
         }
 
     @classmethod
@@ -108,13 +116,28 @@ class Package:
             tuple(str(s) for s in d["steps"]),
             {str(k): tuple(str(t) for t in v) for k, v in d["covers"].items()},
             str(d.get("done_when") or ""),
+            {str(k): str(v) for k, v in (d.get("added") or {}).items()},
         )
 
     def with_tests(self, tests: Mapping[str, str]) -> Package:
         """The same package with other test text (ruff's fixes, carried from the scratch worktree)."""
         return Package(
-            self.layer, dict(tests), self.files, self.interfaces, self.steps, self.covers, self.done_when
+            self.layer,
+            dict(tests),
+            self.files,
+            self.interfaces,
+            self.steps,
+            self.covers,
+            self.done_when,
+            self.added,
         )
+
+    def rebased(self, base: Callable[[str], str | None]) -> Package:
+        """The same package with each added-to test file joined again to its text on another base (`base`:
+        path -> text, None when absent): a draft is written at the story's base, and an earlier layer may
+        have added tests to the same file by the time its layer takes it. A file written whole is kept."""
+        joined = {p: joined_tests(text, a) for p, a in self.added.items() if (text := base(p)) is not None}
+        return self.with_tests({**self.tests, **joined}) if joined else self
 
     @property
     def test_ids(self) -> tuple[str, ...]:
@@ -139,14 +162,20 @@ class ProofChange:
 
 
 def test_files_in(text: str) -> dict[str, str]:
-    """The test files of a reply: each `### test file: <path>` heading and the fenced block after it. A
+    """The test files of a reply written whole: each `### test file: <path>` heading and its block."""
+    return {path: body for path, (kind, body) in _test_blocks(text).items() if kind == "file"}
+
+
+def _test_blocks(text: str) -> dict[str, tuple[str, str]]:
+    """The test blocks of a reply, path -> (kind, text), kind "file" or "additions": each
+    `### test file: <path>` or `### test additions: <path>` heading and the fenced block after it. A
     block ends at the last line equal to its opening fence before the next heading (or, for the last file,
     before the package's ```json fence), so a fence inside the test's text does not end it. A heading with no
     closed block is a StoryError."""
     lines = text.split("\n")
     headings = [n for n, line in enumerate(lines) if _HEADING.match(line)]
     last_json = max((n for n, line in enumerate(lines) if _JSON_OPENER.match(line)), default=len(lines))
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
     for k, n in enumerate(headings):
         path = _HEADING.match(lines[n])
         assert path is not None
@@ -161,8 +190,54 @@ def test_files_in(text: str) -> dict[str, str]:
         closer = next((m for m in range(end - 1, opener, -1) if lines[m].rstrip() == fence["fence"]), None)
         if closer is None:
             raise StoryError(f"test file {path['path']}: its fenced block is never closed")
-        out[path["path"]] = "\n".join(lines[opener + 1 : closer]) + "\n"
+        out[path["path"]] = (path["kind"].lower(), "\n".join(lines[opener + 1 : closer]) + "\n")
     return out
+
+
+def joined_tests(existing: str, added: str) -> str:
+    """`existing` (a test file's text) with `added` (tests and the imports they need) joined to it: the
+    imports `added` opens with go after the file's last top-level import, those it already has left out,
+    and the rest at its end. Text that does not parse is appended as it is (the readiness check says so)."""
+    appended = f"{existing.rstrip()}\n\n\n{added.lstrip()}"
+    try:
+        old, new = ast.parse(existing).body, ast.parse(added).body
+    except (SyntaxError, ValueError):
+        return appended
+    imports = new[: next((n for n, s in enumerate(new) if not _is_import(s)), len(new))]
+    if not imports:
+        return appended
+    lines = added.split("\n")
+    have = {line.strip() for line in existing.split("\n")}
+    taken = [
+        line
+        for s in imports
+        for line in lines[s.lineno - 1 : s.end_lineno]
+        if line.strip() and line.strip() not in have
+    ]
+    rest = "\n".join(lines[imports[-1].end_lineno or 0 :]).strip("\n")
+    file_lines = existing.rstrip().split("\n")
+    at = max((s.end_lineno or 0 for s in old if _is_import(s)), default=_docstring_end(old))
+    head, tail = file_lines[:at], file_lines[at:]
+    if taken and not any(_is_import(s) for s in old):  # the imports open the file, after any docstring
+        taken = [*([""] if head else []), *taken, *([""] if tail else [])]
+    whole = "\n".join([*head, *taken, *tail]).rstrip()
+    return f"{whole}\n\n\n{rest}\n" if rest else f"{whole}\n"
+
+
+def _is_import(s: ast.stmt) -> bool:
+    return isinstance(s, ast.Import | ast.ImportFrom)
+
+
+def _docstring_end(body: list[ast.stmt]) -> int:
+    """The line a module's docstring ends on (0 when it has none)."""
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return first.end_lineno or 0
+    return 0
 
 
 def _normal(path: str, what: str) -> str:
@@ -231,23 +306,31 @@ def _test_id(tid: str) -> str:
 
 
 def parse_package(
-    text: str, layer: Layer, story: Story, gated: Collection[str] = ()
+    text: str,
+    layer: Layer,
+    story: Story,
+    gated: Collection[str] = (),
+    base: Callable[[str], str | None] | None = None,
 ) -> Package | ProofChange:
     """The architect's reply as a Package, or as a ProofChange when it says the agreed proof is wrong and
     writes no package. A StoryError says what to fix, in words the architect acts on, and keeps the reply's
-    end (`reply`). `gated` are the criteria the agreed proof leaves to the gate: they need no covers."""
+    end (`reply`). `gated` are the criteria the agreed proof leaves to the gate: they need no covers. `base`
+    reads a file on the base the reply was written at (path -> text, None when absent): test additions are
+    joined to it."""
     try:
-        return _parse_package(text, layer, story, gated)
+        return _parse_package(text, layer, story, gated, base or (lambda _: None))
     except StoryError as e:
         e.reply = text[-REPLY_TAIL:]
         raise
 
 
-def _parse_package(text: str, layer: Layer, story: Story, gated: Collection[str]) -> Package | ProofChange:
+def _parse_package(
+    text: str, layer: Layer, story: Story, gated: Collection[str], base: Callable[[str], str | None]
+) -> Package | ProofChange:
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
         return _proof_change(obj, story)
-    raw_tests = test_files_in(text)
+    raw_tests = _test_blocks(text)
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "package":
@@ -255,10 +338,20 @@ def _parse_package(text: str, layer: Layer, story: Story, gated: Collection[str]
     if not raw_tests:
         raise StoryError("the reply holds no test file: write each as `### test file: <path>` and a block")
     tests: dict[str, str] = {}
-    for raw_path, body in raw_tests.items():
+    added: dict[str, str] = {}
+    for raw_path, (kind, body) in raw_tests.items():
         path = _normal(raw_path, "a test file path")
         if not is_test_file(path):
             raise StoryError(f"{path} is not a test file (a pytest test_*.py, or a Vitest *.test.ts)")
+        if kind == "additions":
+            existing = base(path)
+            if existing is None:
+                raise StoryError(
+                    f"test additions to {path}: the file is not on the layer's base; write it whole under "
+                    f"`### test file: {path}`"
+                )
+            added[path] = body
+            body = joined_tests(existing, body)
         tests[path] = body
 
     files: list[PackageFile] = []
@@ -337,6 +430,7 @@ def _parse_package(text: str, layer: Layer, story: Story, gated: Collection[str]
         steps,
         covers,
         str(obj.get("done_when") or "").strip(),
+        added,
     )
 
 

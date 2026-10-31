@@ -122,7 +122,9 @@ from airlie.teams.worktree import (
     commit_wip,
     delete_branch,
     diff_commits,
+    find_file,
     move_branches,
+    read_blob,
     remove_worktree,
     rev_parse,
     squash_since,
@@ -1465,7 +1467,16 @@ class StoryPipeline:
                 st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
             )
         self._package_run = st.runs[-1]
-        return parse_package(text, layers[i], story, gated=_gated(proof))
+        return parse_package(text, layers[i], story, gated=_gated(proof), base=self._files_at(base_sha))
+
+    def _files_at(self, commit: str) -> Callable[[str], str | None]:
+        """A file's text in `commit` (None when it has none): the base a package's test additions join."""
+
+        def text(path: str) -> str | None:
+            kind, sha = find_file(self.repo, commit, path)
+            return read_blob(self.repo, sha) if kind == "blob" else None
+
+        return text
 
     def _dossier(self, st: StoryState, commit: str | None) -> Mapping[str, str]:
         """The story's dossier for a step reading `commit` (story.dossier, P2 of the performance plan): the
@@ -1505,7 +1516,7 @@ class StoryPipeline:
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await say(told, at=base_sha)
         self._package_run = run
-        return parse_package(text, layers[i], story, gated=_gated(proof))
+        return parse_package(text, layers[i], story, gated=_gated(proof), base=self._files_at(base_sha))
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
         """Every layer's package drafted in one architect conversation at the story's base, before the first
@@ -1560,11 +1571,12 @@ class StoryPipeline:
                 try:
                     sources = layer_sources(self.repo, sha, layer)
                     asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
-                    got = parse_package(await say(asked), layer, story, gated=_gated(proof))
+                    at = self._files_at(sha)
+                    got = parse_package(await say(asked), layer, story, gated=_gated(proof), base=at)
                     if isinstance(got, Package) and proof:
                         told = await self._objections(st, layers, i, sha, got, proof)
                         if told is not None:
-                            got = parse_package(await say(told), layer, story, gated=_gated(proof))
+                            got = parse_package(await say(told), layer, story, gated=_gated(proof), base=at)
                 except StoryError as e:
                     st.drafts[nn] = {"unusable": str(e)}
                     st.emit("retry", stage="package", error=str(e), reply=e.reply)
@@ -1884,7 +1896,8 @@ class StoryPipeline:
                 if draft is not None:  # drafted with the others and read by the critic: the checks follow
                     self._package_run = str(draft["run"])
                     got = (
-                        Package.from_dict(draft["package"])
+                        # drafted at the story's base: its test additions join the files of this one
+                        Package.from_dict(draft["package"]).rebased(self._files_at(base_sha))
                         if "package" in draft
                         else ProofChange(
                             tuple((str(t), str(w)) for t, w in draft["proof_change"]),
