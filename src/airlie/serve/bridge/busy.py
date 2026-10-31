@@ -1,13 +1,20 @@
 """Is airlie busy? The bridge claims a hub job only while it is not.
 
-The owner wants airlie to run one thing at a time. Two signals say it is busy:
+The owner wants airlie to run one thing at a time. Three signals say it is busy:
 
 - A story lane lock (`build.lock`, `plan.lock` in the stories directory) is held. A story's whole run
   counts, gaps included: between two model calls (a test run, a git step, a pause for a human) no model
   is in use, yet the run is still going and a hub job taking the GPU then would slow it.
-- A loaded model was used within `bridge.idle_s` by anything but the bridge (a chat, an editor, a script).
-  vllm-mlx reports `last_used_at` per model on `/v1/status`; a use at or just after the bridge's own last
-  job is the bridge's own and does not count.
+- A loaded model has a request in flight. vllm-mlx stamps `last_used_at` only when a request starts and
+  ends, so one generation longer than `bridge.idle_s` would look idle halfway; airlie's engine patch
+  (airlie.engine.patches.active_requests) adds each model's `active_requests` to `/v1/status`. The bridge
+  probes only while no job of its own runs, so any request in flight is someone else's.
+- A loaded model was used within `bridge.idle_s` by anything but the bridge (a chat, an editor, a script):
+  the gaps between one request and the next. A use at or just after the bridge's own last job is the
+  bridge's own and does not count. An engine without the patch (no `active_requests`) has only this rule.
+
+The probe sends each engine's `api_key`, as serve does: vllm-mlx checks it on `/v1/status`, and an engine
+that answers 401 (or anything but 200, or nothing) reads as idle.
 
 This is the one place GPU sharing would change: if jobs ever ran beside a story, this gate is what to relax.
 """
@@ -29,29 +36,36 @@ STATUS_TIMEOUT_S = 3.0
 OWN_SLACK_S = 2.0
 
 
-def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str]]:
-    """(engine name, root URL) per distinct root, in config order."""
+def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:
+    """(engine name, root URL, api key) per distinct root, in config order."""
     seen: set[str] = set()
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str | None]] = []
     for name, spec in cfg.engines.items():
         if not spec.base_url:
             continue
-        root = spec.base_url.removesuffix("/v1").rstrip("/")
+        root = spec.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         if root not in seen:
             seen.add(root)
-            out.append((name, root))
+            out.append((name, root, spec.api_key))
     return out
 
 
-async def _models(http: httpx.AsyncClient, root: str) -> list[Any]:
+async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> list[Any]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        r = await http.get(f"{root}/v1/status", timeout=STATUS_TIMEOUT_S)
+        r = await http.get(f"{root}/v1/status", headers=headers, timeout=STATUS_TIMEOUT_S)
         if r.status_code != 200:
             return []
         models = r.json()["model_manager"]["models"]
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return []
     return models if isinstance(models, list) else []
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
 
 
 async def busy_reason(
@@ -64,17 +78,22 @@ async def busy_reason(
             if lock_held(stories, lane):
                 return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
-    for engine, root in _engine_roots(cfg):
-        for m in await _models(http, root):
+    for engine, root, key in _engine_roots(cfg):
+        for m in await _models(http, root, key):
             if not isinstance(m, dict) or not m.get("loaded"):
                 continue
-            used = m.get("last_used_at")
-            if isinstance(used, bool) or not isinstance(used, int | float):
+            model = str(m.get("id", "?"))
+            active = _number(m.get("active_requests"))
+            if active is not None and active > 0:
+                n = int(active)
+                return f"model {model} has {n} request{'s' if n != 1 else ''} in flight on engine {engine}"
+            used = _number(m.get("last_used_at"))
+            if used is None:
                 continue
             if now - used >= cfg.bridge.idle_s or used <= own_last_used + OWN_SLACK_S:
                 continue
             if newest is None or used > newest[0]:
-                newest = (float(used), str(m.get("id", "?")), engine)
+                newest = (used, model, engine)
     if newest is None:
         return None
     used, model, engine = newest

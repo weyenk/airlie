@@ -31,10 +31,14 @@ class FakeStatus(httpx.AsyncBaseTransport):
         self.status = status
         self.calls = 0
         self.timeouts: list[Any] = []
+        self.auth: dict[str, str | None] = {}  # host:port → the Authorization header it was sent
+        self.paths: list[str] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
         self.timeouts.append(request.extensions.get("timeout"))
+        self.auth[f"{request.url.host}:{request.url.port}"] = request.headers.get("authorization")
+        self.paths.append(request.url.path)
         if self.error:
             raise httpx.ConnectError("refused", request=request)
         assert request.url.path == "/v1/status"
@@ -112,3 +116,50 @@ def test_missing_stories_dir_is_idle(tmp_path: Path) -> None:
     state = tmp_path / "fresh"
     assert _probe(_cfg(state), FakeStatus()) is None
     assert not (state / "stories").exists()
+
+
+# ---- requests in flight (patches/active_requests.py) ----
+
+
+def test_a_request_in_flight_is_busy_however_old_its_start(tmp_path: Path) -> None:
+    """vllm-mlx stamps last_used_at only when a request starts and ends: a long one looks idle halfway."""
+    t = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 500, "active_requests": 1}])
+    assert _probe(_cfg(tmp_path), t) == "model generalist has 1 request in flight on engine main"
+
+
+def test_a_request_in_flight_counts_even_just_after_the_bridges_own_job(tmp_path: Path) -> None:
+    """The bridge probes only with no job of its own running: a request in flight is someone else's."""
+    t = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 1, "active_requests": 2}])
+    assert _probe(_cfg(tmp_path), t, own=NOW - 1) == "model generalist has 2 requests in flight on engine main"
+
+
+def test_nothing_in_flight_and_an_old_use_is_idle(tmp_path: Path) -> None:
+    t = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 500, "active_requests": 0}])
+    assert _probe(_cfg(tmp_path), t) is None
+
+
+def test_an_unpatched_engine_falls_back_to_the_last_use(tmp_path: Path) -> None:
+    recent = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 14}])
+    assert _probe(_cfg(tmp_path), recent) == "model generalist used 14 s ago on engine main"
+    old = FakeStatus([{"id": "generalist", "loaded": True, "last_used_at": NOW - 500}])
+    assert _probe(_cfg(tmp_path), old) is None
+
+
+# ---- engine keys and roots ----
+
+
+def test_the_probe_sends_each_engines_api_key(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.engines["main"] = cfg.engines["main"].model_copy(update={"api_key": "sekrit"})
+    t = FakeStatus([])
+    _probe(cfg, t)
+    assert t.auth == {"127.0.0.1:8080": "Bearer sekrit", "127.0.0.1:8081": None}
+
+
+def test_a_trailing_slash_after_v1_is_the_same_root(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.engines["main"] = cfg.engines["main"].model_copy(update={"base_url": "http://127.0.0.1:8080/v1/"})
+    t = FakeStatus([])
+    _probe(cfg, t)
+    assert sorted(t.auth) == ["127.0.0.1:8080", "127.0.0.1:8081"]
+    assert t.paths == ["/v1/status", "/v1/status"]

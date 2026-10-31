@@ -69,6 +69,17 @@ def test_an_unknown_tool_parser_stops_the_engine_before_it_starts(
     )
 
 
+def test_the_engine_reports_requests_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bridge's busy gate reads `active_requests` off /v1/status (patches/active_requests.py)."""
+    from airlie.engine.patches import active_requests
+
+    applied: list[bool] = []
+    monkeypatch.setattr(active_requests, "apply", lambda: applied.append(True) or True)
+    started = cli(monkeypatch, "serve", "--port", "8080")
+    assert vllm_mlx_serve.main() == 0 and len(started) == 1
+    assert applied == [True]
+
+
 def test_a_known_parser_given_with_equals_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     started = cli(monkeypatch, "serve", "--tool-call-parser=qwen3_coder")
     assert vllm_mlx_serve.main() == 0 and len(started) == 1
