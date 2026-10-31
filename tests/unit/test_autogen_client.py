@@ -171,3 +171,25 @@ async def test_the_tool_less_request_after_a_tool_round_says_no_tools_are_left(s
     served.answers.append(reply("fine"))
     await client(QWEN).create([UserMessage(content="go", source="u")], tools=[])
     assert served[1][0][-1].content == "go"  # a tool-less request that follows no tool round is left as it is
+
+
+async def test_the_reflection_request_carries_the_callers_note(served: Any) -> None:
+    """2026-10-31 (roman): the architect's meeting turns that used compute ended in the reflection with the
+    checks' results and no verdict, twice. The meeting sets its verdict contract as the note."""
+    from autogen_core import FunctionCall as Call
+    from autogen_core.models import AssistantMessage, FunctionExecutionResult, FunctionExecutionResultMessage
+
+    history = [
+        UserMessage(content="go", source="u"),
+        AssistantMessage(content=[Call(id="1", name="compute", arguments="{}")], source="a"),
+        FunctionExecutionResultMessage(
+            content=[FunctionExecutionResult(call_id="1", content="15", name="compute")]
+        ),
+    ]
+    served.answers.append(reply("fine"))
+    c = client(QWEN)
+    c.reflection_note = "End with your verdict."
+    await c.create(history, tools=[])
+    sent, _ = served[0]
+    assert sent[-1].content.startswith(entry("last-turn-retry").body.strip())  # type: ignore[union-attr]
+    assert sent[-1].content.endswith("End with your verdict.")  # type: ignore[union-attr]

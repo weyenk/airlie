@@ -52,6 +52,7 @@ from airlie.story.model import (
     parse_layers,
     parse_story,
 )
+from airlie.teams.autogen_client import RepairingOpenAIClient
 from airlie.teams.autogen_team import build_function_tools, build_model_client
 from airlie.tools import ToolRegistry
 from airlie.tools.scope import is_js_test, is_test_module
@@ -928,6 +929,10 @@ class Meeting:
     def _agent(self, role: str) -> tuple[AssistantAgent, ChatCompletionClient]:
         spec = self.cfg.roles[role]
         client = self.clients(role, spec)
+        if isinstance(client, RepairingOpenAIClient):
+            # a turn that used tools ends in AutoGen's reflection, which answered with what the tools showed
+            # and no verdict (2026-10-31, roman: the architect twice reported its compute checks, no verdict)
+            client.reflection_note = VERDICT_CONTRACT
         registry = self.tools(role) if self.tools is not None and self.tool_iterations > 0 else None
         tools = build_function_tools(registry) if registry is not None else []
         system = "\n\n".join(
