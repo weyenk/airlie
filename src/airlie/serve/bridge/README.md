@@ -25,6 +25,24 @@ the hub (Mac `report` paths are not forwarded). For `llm` jobs it POSTs `/v1/cha
 never read from Studio disk. The model is a raw catalog model (no chat role prompt, so the persona is the only
 system text); `bridge.llm` sets it (`model: generalist`, `max_tokens`, `thinking`, `thinking_budget`, `timeout_s`).
 
+```yaml
+bridge:
+  idle_s: 120          # a model used this recently by anything but the bridge counts as busy
+  heartbeat_s: 60      # heartbeat a running job so the hub keeps its lease (hub LEASE_SECONDS, default 300)
+  llm:
+    model: generalist
+    max_tokens: 16384  # caps thinking plus answer; must exceed thinking_budget
+    thinking: true
+    thinking_budget: 8192
+    timeout_s: 900     # serve waits up to 900 s for a non-streamed reply too
+```
+
+**Busy gate.** The bridge claims a job only while airlie is idle. Before each claim it waits while a story lane
+(`build` or `plan`) is held, while a model has a request in flight (`active_requests` on the engine's
+`/v1/status`, which airlie's engine patch adds), or while a model was used by anything but the bridge in the last
+`bridge.idle_s` seconds. Each wait logs one `not claiming: <reason>` line to `~/.local/state/airlie/bridge.log`,
+and `idle again, claiming` when it ends. A serve outage or a handler error fails that job; the bridge keeps going.
+
 Set hub production `ALLOWED_KINDS=studio,llm` and Mac `bridge.kinds: [studio, llm]` (see
 `docs/integrations/bridge-clients.md`).
 

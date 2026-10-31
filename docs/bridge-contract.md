@@ -78,7 +78,7 @@ Claim uses `FOR UPDATE SKIP LOCKED` and sets `status=running` atomically.
 1. **Payload is data:** reject `repo`, `test_cmd`, shell/path control fields; optional `repo_key` must be a short enum key (no `/`). Bridge resolves paths from config allowlists.
 2. **Kind allowlist** at enqueue; payload size cap.
 3. **Ownership SQL:** reads filter `tenant_id` + `created_by`; other users get **404** (IDOR-safe).
-4. **Lease:** each claim first requeues running jobs whose heartbeat is older than `LEASE_SECONDS`, or fails them (`worker heartbeat lapsed after N attempts`) once `attempts >= MAX_JOB_ATTEMPTS`. A requeue clears `worker_id`, so the old worker's result gets **403**.
+4. **Lease:** each claim first requeues running jobs whose heartbeat is older than `LEASE_SECONDS`, or fails them (`worker heartbeat lapsed after N attempts`) once `attempts >= MAX_JOB_ATTEMPTS`. A requeue clears `worker_id`, so the old worker's result gets **403**. Nothing sweeps leases between claims: a lapsed job stays `running` until a worker next claims (a bridge waiting for airlie to go idle does not claim).
 5. **Worker binding:** events/heartbeat/result require matching `worker_id` and expected `status`.
 6. **Worker secret:** timing-safe, length-safe **401**.
 7. **RLS parity:** enabled, no policies; document owner bypass for ops.
