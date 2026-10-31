@@ -20,7 +20,7 @@ from airlie.serve.bridge.airlie_client import ServeClient
 from airlie.serve.bridge.clock import FakeClock
 from airlie.serve.bridge.errors import BridgeError
 from airlie.serve.bridge.job_bus import HubJob, JobBusClient
-from airlie.serve.bridge.kinds import LlmKind, StudioKind, map_run_result
+from airlie.serve.bridge.kinds import LlmKind, StudioKind, _unreachable, map_run_result
 from airlie.serve.bridge.payload import assert_data_payload
 from airlie.serve.bridge.repos import resolve_repo
 from airlie.serve.bridge.runner import BridgeRunner, run_bridge
@@ -523,6 +523,34 @@ def test_a_model_in_use_logs_once_however_its_age_moves_and_idle_logs_once(
     assert lines == ["not claiming: model generalist used 14 s ago on engine main", "idle again, claiming"]
 
 
+def test_an_outage_logs_once_and_recovery_logs_idle_again_claiming(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    reasons: list[str | None] = [
+        "serve not answering at http://127.0.0.1:8090",
+        "serve not answering at http://127.0.0.1:8090",
+        None,
+    ]
+    hub_t = FakeHub()
+
+    async def busy() -> str | None:
+        return reasons.pop(0)
+
+    runner = _runner(tmp_path, busy, hub_t)
+
+    async def go() -> None:
+        for _ in range(3):
+            await runner.tick()
+
+    with caplog.at_level(logging.INFO, logger="airlie.serve.bridge.runner"):
+        asyncio.run(go())
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines[0] == "not claiming: serve not answering at http://127.0.0.1:8090"
+    assert lines.count(lines[0]) == 1
+    assert "idle again, claiming" in lines
+    assert hub_t.claim_calls == 1  # only the recovered tick claimed
+
+
 def test_no_idle_line_when_the_bridge_was_never_busy(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -646,6 +674,22 @@ def test_llm_serve_read_timeout_fails_the_job(tmp_path: Path) -> None:
     out = asyncio.run(LlmKind(bridge, client).run(_llm_payload()))
     assert out.status == "failed"
     assert out.error_message and "serve unreachable" in out.error_message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("refused"),
+        httpx.ConnectTimeout("slow"),
+        httpx.ReadTimeout("slow"),
+        httpx.RemoteProtocolError("reset"),
+    ],
+)
+def test_a_transport_error_message_starts_with_serve_unreachable(error: httpx.HTTPError) -> None:
+    """ECFF treats the `serve unreachable` prefix as transient: do not reword it."""
+    out = _unreachable(error)
+    assert out.status == "failed"
+    assert out.error_message and out.error_message.startswith("serve unreachable")
 
 
 @pytest.mark.parametrize("start_ok", [False, True])
