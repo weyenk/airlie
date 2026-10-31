@@ -2071,6 +2071,21 @@ async def test_a_repository_without_a_test_gate_stops_the_story_before_any_model
     assert f"stopped after 'intake': o/r has no test gate on origin/{trunk}" in board.notes[-1]
 
 
+async def test_a_resume_after_a_missing_gate_builds_on_the_trunk_that_now_has_one(tmp_path: Path) -> None:
+    """AIR-46 (2026-10-31): the gate a story asks for can only land as a new trunk commit, so a story stopped
+    for want of one keeps no base, and its resume fetches the trunk again and reads the gate there."""
+    repo = repo_with_marker_tests(tmp_path)  # no AGENTS.md
+    card = text_card("avatars")
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(card)
+    assert st.stage == "intake" and st.blocked is not None and "has no test gate" in st.blocked
+    assert st.base is None
+    fixed = commit_file(repo, "AGENTS.md", agents_md("./check.sh"), "add the test gate")
+    st = await pipeline(tmp_path, repo, happy_engine(), test_cmd=None).run(card)
+    assert st.blocked is None and st.stage == "review"
+    assert st.base is not None and st.base["sha"] == fixed
+    assert st.gate is not None and st.gate["commands"] == ["./check.sh"]
+
+
 async def test_a_resume_builds_with_the_gate_the_story_read_when_it_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
