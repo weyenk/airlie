@@ -116,9 +116,7 @@ def test_credential_env_reads_bridge_dotenv(tmp_path: Path, monkeypatch: pytest.
     assert worker_secret(cfg.bridge, credential_env(cfg)) == "b" * 40
 
 
-def test_resolve_serve_api_key_reads_bridge_dotenv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_serve_api_key_reads_bridge_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """task serve and task bridge share AIRLIE_SERVE_API_KEY from bridge.env — no --api-key every time."""
     home = tmp_path / "home"
     airlie_cfg = home / ".config" / "airlie"
@@ -135,9 +133,7 @@ def test_resolve_serve_api_key_reads_bridge_dotenv(
     assert resolve_serve_api_key(cfg, explicit="cli-wins") == "cli-wins"
 
 
-def test_bridge_dotenv_wins_over_stale_shell_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bridge_dotenv_wins_over_stale_shell_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A wrong AIRLIE_SERVE_API_KEY left in the shell must not override bridge.env."""
     home = tmp_path / "home"
     airlie_cfg = home / ".config" / "airlie"
