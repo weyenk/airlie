@@ -13,6 +13,14 @@ from airlie.topology.studio_plan import json_block_problem
 class StoryError(ValueError):
     """A reply that cannot be used; the message goes back to the role with the next attempt."""
 
+    reply: str = ""
+    """The refused reply's end (REPLY_TAIL), where the parser that refused it keeps it: the retry event
+    carries it, because the reply is kept nowhere else."""
+
+
+REPLY_TAIL = 1500
+"""How much of a refused reply, from its end, a retry event keeps (its ```json block ends it)."""
+
 
 class NotActionable(Exception):
     """Product judged the request not buildable as written; the message says what a person must decide."""

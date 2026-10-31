@@ -97,6 +97,25 @@ def test_test_files_in_reads_each_heading_and_longer_fences() -> None:
     }
 
 
+def test_a_test_file_heading_is_read_at_levels_two_to_four_in_any_case_with_its_path_bare_or_quoted() -> None:
+    """Roman, 2026-10-31: a resumed draft's test file was not found and the reply cost a retry."""
+    for heading in (
+        "## Test file: tests/test_b.py",
+        "#### test file: `tests/test_b.py`",
+        "### TEST FILE: 'tests/test_b.py'",
+    ):
+        assert package_module.test_files_in(f"{heading}\n```python\nz = 3\n```\n") == {
+            "tests/test_b.py": "z = 3\n"
+        }
+
+
+def test_a_refused_package_keeps_the_replys_end_for_the_retry_event() -> None:
+    text = reply(tests={})
+    with pytest.raises(StoryError, match="no test file") as e:
+        parse_package(text, LAYER, STORY)
+    assert e.value.reply == text[-1500:] and e.value.reply.endswith("```\n")
+
+
 def test_a_heading_with_no_block_is_refused() -> None:
     with pytest.raises(StoryError, match="tests/test_x.py"):
         package_module.test_files_in("### test file: tests/test_x.py\nno block here\n")

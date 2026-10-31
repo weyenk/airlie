@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from airlie.prompts import text as hub_text
-from airlie.story.model import Layer, StoryError, unusable_why
+from airlie.story.model import REPLY_TAIL, Layer, StoryError, unusable_why
 
 REFINE_FIELD = (
     'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
@@ -26,10 +26,6 @@ REFINE_FIELD = (
 """What the layers brief adds when the architect plans in rounds: the plan carries its own verdict."""
 
 Emit = Callable[..., None]
-
-REPLY_TAIL = 1500
-"""How much of a refused round-1 reply, from its end, its `plan_fix` event keeps (the ```json block ends
-it)."""
 
 
 def same_layers(a: tuple[Layer, ...], b: tuple[Layer, ...]) -> bool:

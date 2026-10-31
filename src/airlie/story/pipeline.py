@@ -1564,7 +1564,7 @@ class StoryPipeline:
                             got = parse_package(await say(told), layer, story, gated=_gated(proof))
                 except StoryError as e:
                     st.drafts[nn] = {"unusable": str(e)}
-                    st.emit("retry", stage="package", error=str(e))
+                    st.emit("retry", stage="package", error=str(e), reply=e.reply)
                     st.emit(
                         "package_returned", layer=nn, attempt=1, kinds=["package_unusable"], studio_run=run
                     )
@@ -1910,7 +1910,7 @@ class StoryPipeline:
                     continue
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
-                st.emit("retry", stage="package", error=feedback)
+                st.emit("retry", stage="package", error=feedback, reply=e.reply)
                 st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=st.runs[-1])
                 continue
             package, found = await checker.check(
