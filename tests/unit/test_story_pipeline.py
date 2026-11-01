@@ -279,6 +279,36 @@ async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_f
     assert len(second.messages) > len(first.messages)  # the same conversation, layer 01's reply in it
 
 
+async def test_each_layer_build_records_its_brief_event_and_runs_without_the_repository_map(
+    tmp_path: Path,
+) -> None:
+    """Brief recipes (2026-11-01): the coder's brief is the layer-build recipe's, its size per section on
+    record before the run starts; the brief shows the layer's files, so the studio builds no repo map."""
+    tasks: list[dict[str, Any]] = []
+
+    class Records(StudioOrchestrator):
+        async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
+            tasks.append(kwargs)
+            return await super().execute_task(query_text, **kwargs)
+
+    repo = repo_with_marker_tests(tmp_path)
+    st = await pipeline(tmp_path, repo, happy_engine(), studio=Records).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    events = st.path / "events.jsonl"
+    briefs = kinds(events, "brief")
+    assert [(e["brief"], e["layer"]) for e in briefs] == [("layer-build", "01"), ("layer-build", "02")]
+    for e in briefs:
+        names = [s["name"] for s in e["sections"]]
+        assert "locked_tests" in names and "scope_files" in names
+        joins = 2 * (len([s for s in e["sections"] if s["chars"]]) - 1)
+        assert e["chars"] == sum(s["chars"] for s in e["sections"]) + joins
+    names = [e["kind"] for e in kinds_all(events)]
+    assert names.index("brief") < names.index("layer_built")
+    builds = [t for t in tasks if t.get("gate_follow_up") == "build"]
+    assert len(builds) == 2 and all(t["repo_map"] is False for t in builds)
+    assert all("map_focus" not in t for t in builds)
+
+
 async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_stops_the_story(
     tmp_path: Path,
 ) -> None:
@@ -874,9 +904,9 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
         # ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
         *("packages_drafting", "run", "package_drafted", "package_drafted"),
         *("test_checks_skipped", "package_start", "package_ready"),
-        *("layer_start", "package_placed", "layer_built"),
+        *("layer_start", "brief", "package_placed", "layer_built"),
         *("test_checks_skipped", "package_start", "package_ready"),
-        *("layer_start", "package_placed", "layer_built"),
+        *("layer_start", "brief", "package_placed", "layer_built"),
         "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
     ]

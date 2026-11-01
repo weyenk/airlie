@@ -12,7 +12,6 @@ from airlie.story.amigos import ProofTest
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
     GUIDE_HEADING,
-    build_brief,
     consult_brief,
     consult_round_text,
     critic_brief,
@@ -181,14 +180,6 @@ def test_the_layers_contract_asks_for_files_and_interfaces() -> None:
     assert "Name each layer's files and the interfaces at its boundary." in text
 
 
-def test_the_build_brief_tells_the_coder_in_one_line_to_follow_agents_md() -> None:
-    for i in (1, 2):  # a layer that owns criteria, and an enabling one
-        [build] = layer_plan(STORY, LAYERS, i, PACKAGE, build_role="coder").subtasks
-        assert build.id == "build"
-        [line] = [x for x in build.brief.splitlines() if "AGENTS.md" in x]
-        assert line == "Follow AGENTS.md at the repository root, if it has one."
-
-
 def pbrief(**kw: Any) -> str:
     return package_brief(STORY, LAYERS, 1, max_steps=40, context_budget=65_536, **kw)
 
@@ -304,25 +295,11 @@ def test_the_package_brief_carries_the_rejection_feedback_when_asked_again() -> 
     assert text.rstrip().endswith("it passes before the code") or "could not be used" in text.splitlines()[-1]
 
 
-def test_the_build_brief_lists_the_tests_per_criterion_the_files_the_interfaces_and_the_steps() -> None:
-    text = build_brief(STORY, LAYERS, 1, PACKAGE, guide="- src/a.py: def f()")
-    assert "layer 2 of 3" in text and "03 Docs" in text and "Show the avatar." not in text
-    tests = text.split("## The tests you make pass")[1].split("## Files")[0]
-    assert "**AC2** Given a stored avatar" in tests and "  - tests/unit/test_profile.py::test_shows" in tests
-    assert "- src/profile.py (create): the profile view" in text
-    assert "- src/profile.py: def show() -> int\n  returns 1, the avatar id" in text
-    assert "1. create src/profile.py with show() returning 1\n2. export show from src/__init__.py" in text
-    assert "## Done when\nrun_tests passes on tests/unit/test_profile.py" in text
-    assert "you cannot change them" in text and "once they pass, you are done" in text
-    assert "Write the tests first" not in text and GUIDE_HEADING in text
-    assert text.index("## Steps") < text.index("you cannot change them")
-
-
-def test_a_layer_plan_is_one_build_subtask_from_its_package() -> None:
-    plan = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder")
+def test_a_layer_plan_is_one_build_subtask_with_its_brief() -> None:
+    plan = layer_plan("the coder's brief", build_role="coder")
     [build] = plan.subtasks
     assert (build.id, build.role_hint, build.depends_on, build.pinned) == ("build", "coder", (), False)
-    assert build.brief == build_brief(STORY, LAYERS, 1, PACKAGE)
+    assert build.brief == "the coder's brief"
     assert len(schedule(plan)) == 1
 
 
@@ -357,11 +334,6 @@ def test_the_brief_of_a_later_layer_lists_what_the_earlier_layers_added() -> Non
     )
     assert "- tests/unit/test_context.py: test_a_role_has_a_limit" in digest
     assert built_so_far("") == ""
-    plan = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder", built=digest)
-    brief = plan.subtasks[0].brief
-    assert digest in brief and brief.index(digest) < brief.index("## The tests you make pass")
-    first = layer_plan(STORY, LAYERS, 0, PACKAGE, build_role="coder").subtasks[0].brief
-    assert "What the earlier layers" not in first
 
 
 def test_pr_title_and_body() -> None:
@@ -687,16 +659,6 @@ def test_a_layers_brief_for_rounds_says_the_plan_is_asked_for_after_every_round(
     text = layers_brief(STORY, 4, round_steps=5)
     assert "asked for your plan after every 5 steps" in text and "no tools on that turn" in text
     assert '"refine" object' in text and "worth_another_round" in text
-
-
-def test_a_layers_build_brief_carries_the_files_read_for_the_coder_only_when_there_are_some() -> None:
-    plain = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder").subtasks[0].brief
-    assert "Read for you:" not in plain
-    guide = "### src/profile.py\n```\nx = 1\n```"
-    full = layer_plan(STORY, LAYERS, 1, PACKAGE, build_role="coder", guide=guide)
-    brief = full.subtasks[0].brief
-    assert GUIDE_HEADING + "\n### src/profile.py" in brief
-    assert brief.index("Read for you:") < brief.index("## The tests you make pass")  # before the package
 
 
 def _lesson(title: str, **overrides: object) -> Lesson:

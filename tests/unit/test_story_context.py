@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from airlie.config import load_config
-from airlie.story.context import FILE_HEAD_CHARS, guide_budget, named_paths, repo_guide
+from airlie.story.context import FILE_HEAD_CHARS, guide_budget, named_paths, repo_guide, whole_paths
 from tests.unit.git_helpers import git
 
 
@@ -124,3 +124,11 @@ def test_a_small_file_after_a_big_one_still_goes_in_whole(tmp_path: Path) -> Non
     guide = repo_guide(repo, sha, "src/big.py src/small.py", budget_chars=12_000)
     assert "### src/big.py (outline:" in guide
     assert "### src/small.py (whole, 2 lines)" in guide and "b = 2" in guide
+
+
+def test_whole_paths_are_the_guides_whole_files() -> None:
+    guide = (
+        "### AGENTS.md\nx\n\n### src/a.py (whole, 3 lines)\n```\n...\n```\n\n"
+        "### src/b.py (outline: read a span with read_file offset and limit)\n```\n...\n```"
+    )
+    assert whole_paths(guide) == frozenset({"src/a.py"})

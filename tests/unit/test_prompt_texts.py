@@ -24,7 +24,6 @@ from airlie.prompts import text
 from airlie.story.amigos import ProofTest
 from airlie.story.board import text_card
 from airlie.story.briefs import (
-    build_brief,
     built_so_far,
     consult_brief,
     consult_round_text,
@@ -33,6 +32,7 @@ from airlie.story.briefs import (
     directions_brief,
     imagine_brief,
     layers_brief,
+    package_blocks,
     package_brief,
     plan_brief,
     proof_revision_brief,
@@ -324,12 +324,9 @@ CASES["fn:briefs.proof_revision_brief:plain"] = partial(
 CASES["fn:briefs.criteria_revision_brief:plain"] = partial(
     criteria_revision_brief, STORY, (("AC1", "a PNG cannot be stored at zero bytes"),)
 )
-CASES["fn:briefs.build_brief:plain"] = partial(build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE)
-CASES["fn:briefs.build_brief:guide-built"] = partial(
-    build_brief, STORY, LAYERS, 1, SAMPLE_PACKAGE, guide=GUIDE, built=built_so_far(DIFF)
-)
-CASES["fn:briefs.build_brief:foundation"] = partial(
-    build_brief, STORY, LAYERS, 2, replace(SAMPLE_PACKAGE, covers={})
+CASES["fn:briefs.package_blocks:plain"] = partial(package_blocks, STORY, LAYERS, 1, SAMPLE_PACKAGE)
+CASES["fn:briefs.package_blocks:foundation"] = partial(
+    package_blocks, STORY, LAYERS, 2, replace(SAMPLE_PACKAGE, covers={})
 )
 CASES |= {
     "brief-package-task": lambda: text("brief-package-task"),

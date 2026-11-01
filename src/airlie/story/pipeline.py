@@ -47,6 +47,7 @@ from airlie.story.amigos import (
 )
 from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
+from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
 from airlie.story.briefs import (
     built_so_far,
     criteria_revision_brief,
@@ -66,7 +67,7 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.budgets import StageMeter, check, run_dir_of
-from airlie.story.context import guide_budget, repo_guide
+from airlie.story.context import CHARS_PER_TOKEN, guide_budget, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
     Classified,
@@ -1204,7 +1205,6 @@ class StoryPipeline:
                 i,
                 package,
                 (base_ref, base_sha, branch, author),
-                guide,
                 built,
                 attempt,
             )
@@ -1222,7 +1222,6 @@ class StoryPipeline:
         i: int,
         package: Package,
         where: tuple[str, str, str, Any],
-        guide: str,
         built: str,
         attempt: int,
     ) -> str | None:
@@ -1256,16 +1255,13 @@ class StoryPipeline:
         sup = self._supervisor(st, card, layer, nn, orch, wt, base_sha)
         orch.advisor = sup  # the gate retry and the repeat guard, in the studio and the team
         try:
-            plan = layer_plan(
-                story,
-                layers,
-                i,
-                package,
-                build_role=self.s.build_role,
-                guide=guide,
-                built=built,
-                dossier=self._dossier(st, base_sha),
+            chars = self.cfg.roles[self.s.build_role].max_context * CHARS_PER_TOKEN
+            inputs = BriefInputs(
+                story, layers, i, package, self.repo, base_sha, chars, built=built, survey=st.survey or ""
             )
+            brief = assemble("layer-build", load_recipe("layer-build"), inputs)
+            st.emit("brief", brief="layer-build", layer=nn, chars=len(brief.text), sections=brief.sizes())
+            plan = layer_plan(brief.text, build_role=self.s.build_role)
             async with decoding(
                 self.stories_dir, orch.run_dir.path
             ):  # the planning lane waits for the gap after
@@ -1280,7 +1276,7 @@ class StoryPipeline:
                     synthesise=False,
                     scope_tests=True,
                     gate_follow_up="build",
-                    map_focus=[*layer.paths(), *package.source_files],
+                    repo_map=False,  # the brief shows the layer's files (brief recipes, 2026-11-01)
                     prepare=self._place(st, orch, package, nn),
                 )
             commit_wip(wt, f"studio: {branch} (final)")
