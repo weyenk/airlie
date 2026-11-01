@@ -399,6 +399,8 @@ _AIRLIE_FILE = re.compile(r"[/\\]airlie[/\\](.+)\.py$")
 _EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*)(?::|$)")
 _TEST_ID = re.compile(r"((?:[\w.\-]+/)*test_?[\w.\-]*\.py::[\w\[\]\-.]+)")
 _UNFETCHED = re.compile(r"could not be fetched|failed to fetch", re.IGNORECASE)
+_CUT_OFF_CAP = re.compile(r"max_tokens \((\d+)\)")
+"""The cap `cut_off_text` put in the stop's reason: `max_tokens (16384)`."""
 
 
 @dataclass(frozen=True)
@@ -512,7 +514,17 @@ def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
         return _made("process", "unhandled", where, "unhandled_error", tb.strip().splitlines()[-1][:200])
     who = pack.role or pack.stage
     if pack.stop_reason == "cut_off":
-        return _made("config", "cut_off", who, "cut_off", f"{who} stopped: cut_off")
+        cap = _CUT_OFF_CAP.search(pack.reason)
+        if cap:
+            evidence = (
+                f"{who} stopped with cut_off: its reply hit max_tokens ({cap.group(1)}); "
+                f"raise roles.{who}.max_tokens"
+            )
+        else:
+            evidence = (
+                f"{who} stopped with cut_off: its reply hit its max_tokens cap; raise roles.{who}.max_tokens"
+            )
+        return _made("config", "cut_off", who, "cut_off", evidence)
     if pack.stop_reason == "max_steps" and (pack.layer is None or pack.stage in PLANNING_STAGES):
         return _made(
             "config",
