@@ -10,8 +10,19 @@ from typing import Any
 
 import pytest
 
-from airlie.story.diagnosis import Pack, Paths, classify, gather, render_pack
+from airlie.config import RoleSpec
+from airlie.story.diagnosis import (
+    Diagnosis,
+    Pack,
+    Paths,
+    classify,
+    gather,
+    next_for,
+    render_diagnosis,
+    render_pack,
+)
 from airlie.story.model import StoryError
+from airlie.teams.protocol import cut_off_text
 from tests.unit.git_helpers import git
 
 BLOCKS = Path(__file__).parent / "data" / "blocks"
@@ -225,3 +236,75 @@ def test_muses_category_names_a_content_kind_and_the_failing_test_is_the_where()
     got = classify(pack, muse_category="wrong_acceptance_test")
     assert got.signature == "content:wrong_acceptance_test:tests/unit/test_x.py::test_y"
     assert classify(pack).kind == "gate_failed"
+
+
+def _cut_off_role() -> RoleSpec:
+    """The request's role: a 16384 cap, no thinking, so cut_off_text names only the cap."""
+    return RoleSpec(
+        prompt=Path("prompts/architect.md"),
+        model="m",
+        max_tokens=16384,
+        thinking=False,
+        thinking_budget=None,
+    )
+
+
+def test_classify_cut_off_names_config_cut_off_and_role_signature() -> None:
+    pack = blocked_pack(
+        stop_reason="cut_off",
+        role="architect",
+        stage="build",
+        reason=cut_off_text("architect", _cut_off_role()),
+        refused_calls=0,
+        repeats=0,
+        continuations=0,
+        steps=23,
+        tokens=1180965,
+        minutes=29.8,
+    )
+    got = classify(pack)
+    assert got.class_ == "config"
+    assert got.kind == "cut_off"
+    assert got.where == "architect"
+    assert got.signature == "config:cut_off:architect"
+    evidence = " ".join(got.evidence)
+    assert "cut_off" in evidence and "16384" in evidence  # names the stop reason and the cap it hit
+    assert "engine_error" not in evidence
+    assert "fetch_failed" not in evidence
+
+
+def test_render_diagnosis_cut_off_names_role_cap_and_next_step() -> None:
+    pack = blocked_pack(
+        stop_reason="cut_off",
+        role="architect",
+        stage="build",
+        reason=cut_off_text("architect", _cut_off_role()),
+        refused_calls=0,
+        repeats=0,
+        continuations=0,
+        steps=23,
+        tokens=1180965,
+        minutes=29.8,
+    )
+    c = classify(pack)
+    out = render_diagnosis(Diagnosis(pack, c, None, next_for(c)))
+    assert "architect" in out  # the role that stopped
+    assert "16384" in out  # the token cap its reply hit
+    assert "max_tokens" in out  # a next step naming max_tokens and the role
+    assert "architect stopped: cut_off" not in out  # the old bare evidence is gone
+
+
+def test_render_diagnosis_cut_off_fallback_when_reason_empty() -> None:
+    pack = blocked_pack(
+        stop_reason="cut_off",
+        role="architect",
+        reason="",
+        refused_calls=0,
+        repeats=0,
+        continuations=0,
+    )
+    c = classify(pack)
+    out = render_diagnosis(Diagnosis(pack, c, None, next_for(c)))
+    assert "architect" in out  # the fallback still names the role
+    assert "max_tokens" in out  # and a next step naming max_tokens
+    assert "architect stopped: cut_off" not in out  # never a bare cut_off
