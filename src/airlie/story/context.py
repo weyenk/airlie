@@ -63,6 +63,15 @@ def _assemble(parts: list[str], listed: list[str]) -> str:
     return "\n\n".join(sections)
 
 
+_WHOLE_HEADING = re.compile(r"^### (.+) \(whole, \d+ lines\)$", re.MULTILINE)
+
+
+def whole_paths(guide: str) -> frozenset[str]:
+    """The paths a `repo_guide` shows whole (its `### <path> (whole, N lines)` headings), so a brief that
+    carries the guide does not carry them a second time (the dossier)."""
+    return frozenset(_WHOLE_HEADING.findall(guide))
+
+
 def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
     """AGENTS.md (if the commit has one) and the files `text` names that it has, in order of mention, within
     `budget_chars` for the whole string: each file whole if it fits, else as an outline with line numbers,

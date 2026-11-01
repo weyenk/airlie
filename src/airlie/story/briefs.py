@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.amigos import CRITIC_CONTRACT, PROOF_CONTRACT
 from airlie.story.board import Card
+from airlie.story.context import whole_paths
 from airlie.story.epic import EpicSpec, Estimate
 from airlie.story.epic_plan import PLAN_REFINE_FIELD, STORY_PLAN_CONTRACT, StoryPlan, StoryProgress
 from airlie.story.initiative import (
@@ -241,7 +242,7 @@ def layers_brief(
             if survey.strip()
             else []
         ),
-        *dossier_section(dossier or {}),
+        *dossier_section(dossier or {}, whole_paths(guide)),
         hub_text("brief-layers-rules", max_layers=max_layers),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
         *(
@@ -580,23 +581,36 @@ def layer_sources(repo: Path, commit: str, layer: Layer) -> dict[str, str]:
     return out
 
 
+NOT_SHOWN = "### Not shown (read with read_file)"
+"""The heading of the one block that lists the files past a section's budget."""
+
+
 def _sources_section(
-    sources: Mapping[str, str], heading: str = "brief-package-sources", budget: int = SOURCES_CHARS
+    sources: Mapping[str, str],
+    heading: str = "brief-package-sources",
+    budget: int = SOURCES_CHARS,
+    shown: Collection[str] = frozenset(),
 ) -> list[str]:
     """Files given whole under the hub text `heading`, each fenced, each clipped at SOURCE_CHARS, all within
-    `budget`: the layer's existing files (lever 2), or the story's dossier (P2)."""
-    if not sources:
+    `budget`: the layer's existing files (lever 2), or the story's dossier (P2). A path in `shown` is already
+    in the brief and is left out; the files past the budget are listed once, with their line counts, under
+    `NOT_SHOWN`."""
+    files = {p: t for p, t in sources.items() if p not in shown}
+    if not files:
         return []
     parts = [hub_text(heading)]
     left = budget
-    for path, text in sources.items():
+    unlisted: list[str] = []
+    for path, text in files.items():
         cap = min(SOURCE_CHARS, left)
         if cap <= 0:
-            parts.append(f"### {path}\n[clipped: read it with read_file]")
+            unlisted.append(f"- {path} ({len(text.splitlines())} lines)")
             continue
-        shown = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
-        left -= len(shown)
-        parts.append(f"### {path}\n{_fenced(shown, PurePosixPath(path).suffix.lstrip('.'))}")
+        body = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
+        left -= len(body)
+        parts.append(f"### {path}\n{_fenced(body, PurePosixPath(path).suffix.lstrip('.'))}")
+    if unlisted:
+        parts.append(NOT_SHOWN + "\n" + "\n".join(unlisted))
     return ["\n\n".join(parts)]
 
 
@@ -604,9 +618,10 @@ DOSSIER_CHARS = 30_000
 """The most of the story's dossier one brief carries (P2): the files earlier steps read."""
 
 
-def dossier_section(files: Mapping[str, str]) -> list[str]:
-    """The story's dossier as a brief section (P2 of the performance plan): none when it holds no file."""
-    return _sources_section(files, "brief-dossier", DOSSIER_CHARS)
+def dossier_section(files: Mapping[str, str], shown: Collection[str] = ()) -> list[str]:
+    """The story's dossier as a brief section (P2 of the performance plan): none when it holds no file
+    that the brief does not already show (`shown`)."""
+    return _sources_section(files, "brief-dossier", DOSSIER_CHARS, shown)
 
 
 def _package_layer(
@@ -685,7 +700,7 @@ def package_brief(
         story_text(story),
         *epic_section(story),
         *_package_layer(story, layers, i, proof, sources),
-        *dossier_section({p: t for p, t in (dossier or {}).items() if p not in (sources or {})}),
+        *dossier_section(dossier or {}, shown=set(sources or {}) | whole_paths(guide)),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
@@ -744,7 +759,7 @@ def build_brief(
             "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
             "## Steps\n" + "\n".join(steps),
             f"## Done when\n{package.done_when or 'the tests above pass.'}",
-            *dossier_section(dossier or {}),
+            *dossier_section(dossier or {}, whole_paths(guide)),
             hub_text("package-contract"),
             hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
             hub_text("brief-layer-plan-build-stop"),

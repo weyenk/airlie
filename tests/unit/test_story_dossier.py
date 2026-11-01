@@ -66,3 +66,32 @@ def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_
         STORY, LAYERS, 0, max_steps=10, context_budget=1000, sources={"src/app.py": "x = 1\n"}, dossier=files
     )
     assert brief.count("### src/app.py") == 1 and "### README.md" in brief  # lever 2 holds app.py already
+
+
+def test_a_dossier_leaves_out_what_the_guide_shows_whole_and_lists_what_does_not_fit() -> None:
+    from airlie.story.briefs import dossier_section
+
+    files = {
+        "src/a.py": "a\n" * 10,
+        "src/big.py": "b" * 50_000,  # clipped at 12k
+        "src/e.py": "e" * 11_000,
+        "src/f.py": "f" * 11_000,  # the 30k budget is spent by here
+        "src/c.py": "c\n",
+        "src/d.py": "d\n" * 4,
+    }
+    [text] = dossier_section(files, shown={"src/a.py"})
+    assert "### src/a.py" not in text
+    assert "[clipped: read it with read_file]" not in text
+    assert "### Not shown (read with read_file)\n" in text and "- src/d.py (4 lines)" in text
+    assert text.count("### Not shown") == 1
+
+
+def test_a_package_brief_carries_no_dossier_file_its_guide_shows_whole() -> None:
+    from airlie.story.briefs import package_brief
+    from tests.unit.test_story_briefs import LAYERS, STORY
+
+    guide = "### src/x.py (whole, 1 lines)\n```py\nx = 1\n```"
+    text = package_brief(
+        STORY, LAYERS, 0, guide=guide, max_steps=10, context_budget=1000, dossier={"src/x.py": "x = 1\n"}
+    )
+    assert text.count("### src/x.py") == 1
