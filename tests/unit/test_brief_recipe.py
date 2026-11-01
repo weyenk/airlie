@@ -18,7 +18,9 @@ from airlie.story.brief_recipe import (
     resolve,
     span,
 )
-from airlie.story.package import Package, PackageFile
+from airlie.story.context import CHARS_PER_TOKEN
+from airlie.story.model import Criterion, Layer, Story
+from airlie.story.package import Interface, Package, PackageFile
 from tests.unit.git_helpers import git
 from tests.unit.test_story_briefs import LAYERS, PACKAGE, STORY
 
@@ -43,20 +45,24 @@ def repo(tmp_path: Path) -> Path:
 
 
 def inputs(
-    repo: Path | None = None, *, brief: str | None = None, survey: str = "", steps: tuple[str, ...] = ()
+    repo: Path | None = None,
+    *,
+    brief: str | None = None,
+    survey: str = "",
+    steps: tuple[str, ...] = (),
+    scope: str = "src/a.py, tests/test_a.py",
+    files: tuple[PackageFile, ...] = (PackageFile("src/a.py", "modify", "change"),),
 ) -> BriefInputs:
     """Layer 1 of the shared story; with a `repo`, its scope, brief and package name the repo's files.
-    `brief`, `survey` and `steps` override the layer brief, the survey notes and the package's steps."""
+    `brief`, `survey`, `steps`, `scope` and `files` override the layer brief, the survey notes, the
+    package's steps, the layer's scope and the package's files."""
     if repo is None:
         return BriefInputs(STORY, LAYERS, 1, PACKAGE, Path("."), "HEAD", 196_608, survey=survey)
-    layers = (
-        LAYERS[0],
-        replace(LAYERS[1], scope="src/a.py, tests/test_a.py", brief=brief or "Update `src/b.md`."),
-    )
+    layers = (LAYERS[0], replace(LAYERS[1], scope=scope, brief=brief or "Update `src/b.md`."))
     package = Package(
         "profile",
         {"tests/test_a.py": "def test_locked():\n    pass\n"},
-        (PackageFile("src/a.py", "modify", "change"),),
+        files,
         (),
         steps,
         {},
@@ -294,3 +300,264 @@ def test_the_layer_build_recipe_puts_the_locked_tests_before_the_scope_files() -
     names = [e.section or e.rule for e in load_recipe("layer-build")]
     assert names.index("locked_tests") < names.index("scope_files") < names.index("cited_spans")
     assert "coder-gate-autofix" in names and "brief-files-given" in names
+
+
+def test_a_layer_whose_scope_names_no_file_still_has_a_brief(repo: Path) -> None:
+    recipe = load_recipe("layer-build")
+    brief = assemble("layer-build", recipe, inputs(repo, scope="the cut_off rule", files=()))
+    assert "## Steps" in brief.text and "Scope of this layer: the cut_off rule" in brief.text
+
+
+def layer_brief(repo: Path, i: int = 1, *, built: str = "") -> str:
+    """The shared story's layer `i` brief from the layer-build recipe, its files read at `repo`'s HEAD."""
+    commit = git(repo, "rev-parse", "HEAD")
+    got = BriefInputs(STORY, LAYERS, i, PACKAGE, repo, commit, 196_608, built=built)
+    return assemble("layer-build", load_recipe("layer-build"), got).text
+
+
+def test_the_layer_brief_lists_the_tests_per_criterion_the_files_the_interfaces_and_the_steps(
+    repo: Path,
+) -> None:
+    text = layer_brief(repo)
+    assert "layer 2 of 3" in text and "03 Docs" in text and "Show the avatar." not in text
+    tests = text.split("## The tests you make pass")[1].split("## Files")[0]
+    assert "**AC2** Given a stored avatar" in tests and "  - tests/unit/test_profile.py::test_shows" in tests
+    assert "- src/profile.py (create): the profile view" in text
+    assert "- src/profile.py: def show() -> int\n  returns 1, the avatar id" in text
+    assert "1. create src/profile.py with show() returning 1\n2. export show from src/__init__.py" in text
+    assert "## Done when\nrun_tests passes on tests/unit/test_profile.py" in text
+    assert "you cannot change them" in text and "once they pass, you are done" in text
+    assert "Write the tests first" not in text and "Read for you:" not in text
+    assert text.index("## Steps") < text.index("you cannot change them")
+
+
+def test_the_layer_brief_tells_the_coder_in_one_line_to_follow_agents_md(repo: Path) -> None:
+    for i in (1, 2):  # a layer that owns criteria, and an enabling one
+        [line] = [x for x in layer_brief(repo, i).splitlines() if "AGENTS.md" in x]
+        assert line == "Follow AGENTS.md at the repository root, if it has one."
+
+
+def test_the_brief_of_a_later_layer_puts_what_the_earlier_layers_added_before_its_tests(repo: Path) -> None:
+    digest = "## What the earlier layers of this story added (read nothing to find this)\n- src/a.py: f0"
+    brief = layer_brief(repo, built=digest)
+    assert digest in brief and brief.index(digest) < brief.index("## The tests you make pass")
+    assert "What the earlier layers" not in layer_brief(repo, 0)
+
+
+# ---- AIR-48 layer 01: trimmed copies of its files at the base, its layer, package and survey ----
+
+AIR48_DIAGNOSIS = '''\
+"""A block's evidence pack and class, from disk alone."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+_UNFETCHED = re.compile(r"could not be fetched|failed to fetch", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Classified:
+    class_: str
+    kind: str
+    where: str
+    rule: str
+    evidence: tuple[str, ...]
+
+
+def _made(class_: str, kind: str, where: str, rule: str, *evidence: str) -> Classified:
+    return Classified(class_, kind, where, rule, evidence)
+
+
+def classify(pack, *, muse_category=None):
+    if _UNFETCHED.search(pack.reason):
+        return _made("transient", "fetch_failed", pack.stage, "fetch_failed", pack.reason)
+    who = pack.role or pack.stage
+    if pack.stop_reason == "cut_off":
+        return _made("config", "cut_off", who, "cut_off", f"{who} stopped: cut_off")
+    return _made("process", "unknown", who, "unknown")
+'''
+CUT_OFF_TEXT = '''\
+def cut_off_text(role_name: str, role: RoleSpec, *, thinking: bool = False) -> str:
+    """What a person reads when a reply of `role_name` ended at max_tokens: what happened, and what to raise.
+    `thinking`: the reply was all thinking (the server split it off, so there is no visible text)."""
+    still = ", still thinking" if thinking else ""
+    fix = f"raise roles.{role_name}.max_tokens"
+    if role.thinking and role.thinking_budget is not None and role.max_tokens <= role.thinking_budget:
+        fix += f" above its thinking_budget ({role.thinking_budget})"
+    return f"the reply was cut off at max_tokens ({role.max_tokens}) before it ended{still}; {fix}"
+'''
+AIR48_PROTOCOL = (
+    "".join(f"V{n} = {n}\n" for n in range(1, 41))
+    + "\n"
+    + CUT_OFF_TEXT  # lines 42-49
+    + "\n\nclass StuckAdvisor:\n    pass\n"
+)
+AIR48_TEST_BASE = '''\
+"""A block's evidence pack and class, from disk alone."""
+
+from airlie.story.diagnosis import classify
+
+
+def test_a_fetch_failure_is_transient(pack) -> None:
+    assert classify(pack).class_ == "transient"
+'''
+AIR48_TEST_LOCKED = (
+    AIR48_TEST_BASE
+    + """
+
+def test_classify_cut_off_names_config_cut_off_and_role_signature() -> None:
+    got = classify(blocked_pack(stop_reason="cut_off", role="architect", reason=cut_off_text("architect", R)))
+    assert got.signature == "config:cut_off:architect"
+    assert "16384" in " ".join(got.evidence)
+"""
+)
+AIR48_AGENTS = """\
+# airlie
+
+Python 3.12 with uv; every action is a Taskfile task (`task --list`).
+
+## Configuration
+
+Committed config is split for readability.
+
+## Test gate
+
+Every change must pass these commands:
+
+```sh
+uv run pytest -q -n auto --maxprocesses 8
+```
+"""
+AIR48_STORY = Story(
+    "Surface a cut_off stop with an actionable reason",
+    "A cut_off stop names the role, its cap and a concrete next step, never a silent truncation.",
+    (
+        Criterion(
+            "AC1", "a role whose reply is cut off at its token cap", "the block is diagnosed", "it is config"
+        ),
+        Criterion(
+            "AC2", "a config / cut_off diagnosis", "it is rendered", "it names max_tokens and the role"
+        ),
+        Criterion("AC3", "a cut_off block", "the fix card is rendered", "it is the generic cut_off template"),
+    ),
+)
+AIR48_LAYERS = (
+    Layer(
+        "cut-off-diagnosis",
+        "The cut_off rule names the cap and a next step",
+        "src/airlie/story/diagnosis.py, tests/unit/test_story_diagnosis.py",
+        "In classify, keep the cut_off rule's class config, kind cut_off and where = pack.role or pack.stage "
+        '(so the signature stays config:cut_off:architect), but replace the bare evidence f"{who} stopped: '
+        'cut_off" with evidence that names the role, the token cap its reply hit, and a concrete next step '
+        "naming max_tokens and the role. The cap is NOT a Pack field: parse it out of pack.reason, which on "
+        "the real path already carries cut_off_text's sentence 'the reply was cut off at max_tokens (N) "
+        "before it ended; raise roles.<role>.max_tokens' (protocol.py:42-49; appended to the stop's reason "
+        "by pipeline._cut_off, pipeline.py:243-250; gathered into pack.reason by gather).",
+        ("AC1", "AC2"),
+    ),
+    Layer(
+        "fix-card",
+        "Guard the cut_off fix card's generic criteria and out-of-scope",
+        "src/airlie/story/fixes.py",
+        "Guard the fix card.",
+        ("AC3",),
+    ),
+)
+AIR48_PACKAGE = Package(
+    "cut-off-diagnosis",
+    {"tests/unit/test_story_diagnosis.py": AIR48_TEST_LOCKED},
+    (
+        PackageFile(
+            "src/airlie/story/diagnosis.py",
+            "modify",
+            "the cut_off rule's evidence names the role, the cap parsed from pack.reason, and a max_tokens "
+            "next step (with a fallback)",
+        ),
+        PackageFile("tests/unit/test_story_diagnosis.py", "modify", "three tests: AC1 classify, AC2 render"),
+    ),
+    (
+        Interface(
+            "src/airlie/story/diagnosis.py",
+            "def classify(pack: Pack, *, muse_category: str | None = None) -> Classified",
+            "cut_off rule (stop_reason == 'cut_off') keeps class_ 'config', kind 'cut_off', where = "
+            "pack.role or pack.stage; its evidence names the cap when "
+            "re.search(r'max_tokens \\((\\d+)\\)', pack.reason) matches, else a sentence naming max_tokens "
+            "and the role",
+        ),
+    ),
+    (
+        "In src/airlie/story/diagnosis.py, beside the other module-level regexes (near _UNFETCHED), add "
+        '_CUT_OFF_CAP = re.compile(r"max_tokens \\((\\d+)\\)") with a docstring: the cap cut_off_text put in '
+        "the stop's reason.",
+        "In classify, replace the cut_off rule's single bare evidence: keep who = pack.role or pack.stage "
+        "and the _made('config', 'cut_off', who, 'cut_off', ...) call, but build the one evidence string "
+        "from _CUT_OFF_CAP.search(pack.reason), with the cap when it matches, else the fallback sentence.",
+        "Leave every other rule, the Diagnosis/render_diagnosis/next_for functions untouched.",
+    ),
+    {
+        "AC1": (
+            "tests/unit/test_story_diagnosis.py::test_classify_cut_off_names_config_cut_off_and_role_signature",
+        )
+    },
+    "classify of a cut_off block returns config/cut_off/<role> with evidence naming the role, the cap parsed "
+    "from pack.reason (16384) and a max_tokens next step.",
+)
+AIR48_SURVEY = (
+    "## Notes for the engineer planning `config:cut_off:architect`\n\n"
+    "- **`src/airlie/teams/protocol.py:18-49`** - `StopReason` includes `cut_off`; `cut_off_text(role_name, "
+    "role, *, thinking=False)` builds the human-facing message.\n"
+    "- **`src/airlie/story/diagnosis.py:514-515`** - the cut_off rule, the `config:cut_off:architect` "
+    "signature.\n"
+    "- **`src/airlie/story/pipeline.py:243-249`** - `_cut_off(orch)` names the subtasks whose reply was cut "
+    "off.\n"
+)
+
+
+@pytest.fixture
+def air48_repo(tmp_path: Path) -> Path:
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "t@t")
+    git(tmp_path, "config", "user.name", "t")
+    for name, text in {
+        "src/airlie/story/diagnosis.py": AIR48_DIAGNOSIS,
+        "src/airlie/teams/protocol.py": AIR48_PROTOCOL,
+        "src/airlie/router/protocol.py": "class Router:\n    pass\n",
+        "tests/unit/test_story_diagnosis.py": AIR48_TEST_BASE,
+        "AGENTS.md": AIR48_AGENTS,
+    }.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    return tmp_path
+
+
+def air48_inputs(repo: Path) -> BriefInputs:
+    """AIR-48's layer 01 at `repo`'s HEAD, with the coder's context (131,072 tokens)."""
+    commit = git(repo, "rev-parse", "HEAD")
+    chars = 131_072 * CHARS_PER_TOKEN
+    return BriefInputs(AIR48_STORY, AIR48_LAYERS, 0, AIR48_PACKAGE, repo, commit, chars, survey=AIR48_SURVEY)
+
+
+def test_the_air48_layer_one_brief(air48_repo: Path) -> None:
+    """AIR-48 layer 01 (2026-11-01): the coder's brief carried the story dossier, a repository map and the
+    whole AGENTS.md, and clipped the very file it changed. From the recipe it shows diagnosis.py once and
+    whole, the locked test as the package wrote it, cut_off_text from the bare `protocol.py:42-49` (the story
+    names the full path; another protocol.py exists), and AGENTS.md without its Test gate."""
+    brief = assemble("layer-build", load_recipe("layer-build"), air48_inputs(air48_repo))
+    t = brief.text
+    assert (
+        "[clipped: read it with read_file]" not in t
+        and "## Test gate" not in t
+        and "[Repository map]" not in t
+    )
+    assert t.count("### src/airlie/story/diagnosis.py") == 1
+    assert "### src/airlie/teams/protocol.py (lines 42-49)" in t and "def cut_off_text" in t
+    assert "src/airlie/router/protocol.py" not in t
+    assert AIR48_PACKAGE.tests["tests/unit/test_story_diagnosis.py"] in t
+    assert "## Configuration" in t
+    assert sum(s["chars"] for s in brief.sizes()) + 2 * (len([p for p in brief.parts if p.text]) - 1) == len(
+        t
+    )

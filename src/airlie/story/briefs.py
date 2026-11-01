@@ -753,45 +753,10 @@ def package_blocks(story: Story, layers: tuple[Layer, ...], i: int, package: Pac
     )
 
 
-def build_brief(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    package: Package,
-    *,
-    guide: str = "",
-    built: str = "",
-    dossier: Mapping[str, str] | None = None,
-) -> str:
-    """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
-    (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
-    the numbered steps and when it is done. There is no second prose brief (D3, planning-line design)."""
-    return "\n\n".join(
-        [
-            _layer_context(story, layers, i, built, guide),
-            package_blocks(story, layers, i, package),
-            *dossier_section(dossier or {}, whole_paths(guide)),
-            hub_text("package-contract"),
-            hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
-            hub_text("brief-layer-plan-build-stop"),
-        ]
-    )
-
-
-def layer_plan(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    package: Package,
-    *,
-    build_role: str,
-    guide: str = "",
-    built: str = "",
-    dossier: Mapping[str, str] | None = None,
-) -> Plan:
-    """The layer's plan: one `build` subtask from its package (`build_brief`). No tester subtask: the
-    tests were written by the architect and are in the worktree before the plan runs (P1, 2026-10-24)."""
-    brief = build_brief(story, layers, i, package, guide=guide, built=built, dossier=dossier)
+def layer_plan(brief: str, *, build_role: str) -> Plan:
+    """The layer's plan: one `build` subtask with `brief`, the coder's brief the layer-build recipe assembled
+    (brief recipes, 2026-11-01). No tester subtask: the tests were written by the architect and are in the
+    worktree before the plan runs (P1, 2026-10-24)."""
     return Plan((), (Subtask("build", brief, build_role),))
 
 

@@ -47,9 +47,12 @@ def test_a_story_dossier_reads_its_runs_then_the_commit(tmp_path: Path) -> None:
     assert story_dossier(root, base, []) == {}
 
 
-def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_twice() -> None:
+def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_twice(tmp_path: Path) -> None:
+    """The coder's layer brief is the exception (brief recipes, 2026-11-01): it shows the layer's own files
+    from the repository, not what the story's earlier steps read."""
     from airlie.story.amigos import opening_message
-    from airlie.story.briefs import build_brief, critic_brief, dossier_section, layers_brief, package_brief
+    from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
+    from airlie.story.briefs import critic_brief, dossier_section, layers_brief, package_brief
     from airlie.story.package import Package
     from tests.unit.test_story_briefs import LAYERS, STORY
 
@@ -61,7 +64,9 @@ def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_
     assert heading in opening_message(STORY, LAYERS, "", (), files)
     assert heading in critic_brief(LAYERS[0], {"tests/test_a.py": "def test_a(): ..."}, (), "", dossier=files)
     pkg = Package(LAYERS[0].slug, {}, (), (), ("write it",), {}, "")
-    assert heading in build_brief(STORY, LAYERS, 0, pkg, dossier=files)
+    root, base = repo(tmp_path, files)
+    layer = BriefInputs(STORY, LAYERS, 0, pkg, root, base, 196_608)
+    assert heading not in assemble("layer-build", load_recipe("layer-build"), layer).text
     brief = package_brief(
         STORY, LAYERS, 0, max_steps=10, context_budget=1000, sources={"src/app.py": "x = 1\n"}, dossier=files
     )
