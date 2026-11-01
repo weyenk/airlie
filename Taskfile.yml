@@ -244,6 +244,22 @@ tasks:
     cmds:
       - '{{.RUN}} airlie bridge {{.CLI_ARGS}}'
 
+  serve:launchd:install:
+    desc: "Load launchd KeepAlive agent for task serve (log ~/.local/state/airlie/serve.log); stop any task serve in a terminal first"
+    cmds:
+      - mkdir -p ~/Library/LaunchAgents ~/.local/state/airlie
+      - sed -e 's|__AIRLIE_DIR__|{{.ROOT_DIR}}|g' -e "s|__HOME__|$HOME|g" docs/integrations/serve.plist > ~/Library/LaunchAgents/dev.airlie.serve.plist
+      - plutil -lint ~/Library/LaunchAgents/dev.airlie.serve.plist
+      - launchctl bootout gui/$(id -u)/dev.airlie.serve 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.airlie.serve.plist
+      - echo "loaded; the log is ~/.local/state/airlie/serve.log"
+
+  serve:launchd:uninstall:
+    desc: "Unload the serve launchd agent and remove its plist"
+    cmds:
+      - launchctl bootout gui/$(id -u)/dev.airlie.serve 2>/dev/null || true
+      - rm -f ~/Library/LaunchAgents/dev.airlie.serve.plist
+
   bridge:launchd:install:
     desc: "Load launchd KeepAlive agent for task bridge (log ~/.local/state/airlie/bridge.log; needs ~/.config/airlie/bridge.env or BRIDGE_WORKER_SECRET)"
     cmds:
