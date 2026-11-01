@@ -293,12 +293,49 @@ def _cited_spans_section(
     return Part("cited_spans", "\n\n".join(cards), shown_here)
 
 
+_H2 = "## "
+
+
+def drop_headings(text: str, titles: Sequence[str]) -> str:
+    """`text` without each level-2 heading whose title (the line after `## `, stripped) is in `titles`, and
+    everything up to the next `## ` line or the end; the blank lines left where a section was cut are
+    collapsed to one."""
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        if line.startswith(_H2):
+            skipping = line[len(_H2) :].strip() in titles
+        if not skipping:
+            out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "".join(out))
+
+
+def _agents_md_section(
+    inputs: BriefInputs, entry: RecipeEntry, cap: int | None, shown: frozenset[str]
+) -> Part:
+    """AGENTS.md at the layer's base without the headings in `entry.drop`, clipped so the whole part fits
+    `cap` (as `repo_guide` clips it). Empty when the commit has no AGENTS.md, or when not even a clipped one
+    fits."""
+    kind, sha = find_file(inputs.repo, inputs.commit, "AGENTS.md")
+    if kind != "blob":
+        return Part("agents_md", "")
+    body = drop_headings(read_blob(inputs.repo, sha), entry.drop)
+    head, tail = "### AGENTS.md\n", "\n[clipped]"
+    if cap is None or len(head) + len(body) <= cap:
+        return Part("agents_md", head + body, {"AGENTS.md": "whole"})
+    limit = cap - len(head) - len(tail)
+    if limit <= 0:
+        return Part("agents_md", "")
+    return Part("agents_md", head + body[:limit].rstrip() + tail)
+
+
 SECTIONS: dict[str, Section] = {
     "layer_context": _layer_context_section,
     "package": _package_section,
     "locked_tests": _locked_tests_section,
     "scope_files": _scope_files_section,
     "cited_spans": _cited_spans_section,
+    "agents_md": _agents_md_section,
 }
 
 TAKES: dict[str, frozenset[str]] = {
@@ -307,6 +344,7 @@ TAKES: dict[str, frozenset[str]] = {
     "locked_tests": frozenset({"share", "over"}),
     "scope_files": frozenset({"share", "over"}),
     "cited_spans": frozenset({"share"}),
+    "agents_md": frozenset({"share", "drop"}),
 }
 """Which of `share`, `over` and `drop` each section accepts."""
 

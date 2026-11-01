@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import replace
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -258,3 +259,38 @@ def test_overlapping_spans_in_one_file_merge(span_repo: Path) -> None:
 def test_no_citations_is_an_empty_part(span_repo: Path) -> None:
     entry = RecipeEntry(section="cited_spans")
     assert SECTIONS["cited_spans"](inputs(span_repo), entry, None, frozenset()).text == ""
+
+
+def test_agents_md_leaves_out_the_dropped_headings(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "t@t")
+    git(tmp_path, "config", "user.name", "t")
+    agents = "# x\n\n## Configuration\nc\n\n## Test gate\nuv run pytest\n\n\n## After\na\n"
+    (tmp_path / "AGENTS.md").write_text(agents)
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    entry = RecipeEntry(section="agents_md", drop=("Test gate",))
+    part = SECTIONS["agents_md"](inputs(tmp_path), entry, None, frozenset())
+    assert "## Test gate" not in part.text and "uv run pytest" not in part.text
+    assert "## Configuration\nc\n\n## After\na" in part.text
+    assert part.text.startswith("### AGENTS.md\n") and part.shown == {"AGENTS.md": "whole"}
+    clipped = SECTIONS["agents_md"](inputs(tmp_path), entry, 40, frozenset())
+    assert clipped.text.endswith("\n[clipped]") and len(clipped.text) <= 40 and not clipped.shown
+
+
+def test_agents_md_is_empty_without_an_agents_file(repo: Path) -> None:
+    part = SECTIONS["agents_md"](inputs(repo), RecipeEntry(section="agents_md"), None, frozenset())
+    assert part.text == "" and not part.shown
+
+
+def test_every_shipped_recipe_loads() -> None:
+    found = [f.name for f in (files("airlie.prompts") / "briefs").iterdir() if f.name.endswith(".yaml")]
+    assert "layer-build.yaml" in found
+    for name in found:
+        assert load_recipe(name.removesuffix(".yaml"))
+
+
+def test_the_layer_build_recipe_puts_the_locked_tests_before_the_scope_files() -> None:
+    names = [e.section or e.rule for e in load_recipe("layer-build")]
+    assert names.index("locked_tests") < names.index("scope_files") < names.index("cited_spans")
+    assert "coder-gate-autofix" in names and "brief-files-given" in names

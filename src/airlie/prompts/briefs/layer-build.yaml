@@ -1,0 +1,20 @@
+# The coder's brief for one layer, from its package.
+- section: layer_context       # story, layer N of M, scope, later layers, built-so-far digest
+- section: package             # the tests it makes pass (under their criteria), files, interfaces, steps, done when
+- rule: brief-files-given      # new: "the files below are given for you: whole ones are complete, do not read them again"
+- section: locked_tests        # the locked test files, whole, as the package wrote them
+  share: 0.10
+  over: outline
+- section: scope_files         # the layer's existing files, whole; then files the layer brief names
+  share: 0.20
+  over: outline                # whole → outline with line numbers → listed with line count
+- section: cited_spans         # path:line spans the layer brief and package cite, outside the files above
+  share: 0.03
+- section: agents_md
+  drop: ["Test gate"]          # level-2 headings left out, with their bodies
+  share: 0.03
+- rule: package-contract
+- rule: coder-gate-autofix     # new
+- rule: brief-layer-plan-agents-md
+- rule: brief-layer-plan-edit-file
+- rule: brief-layer-plan-build-stop
