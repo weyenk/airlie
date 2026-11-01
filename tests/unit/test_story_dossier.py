@@ -63,6 +63,8 @@ def test_each_brief_carries_the_dossier_and_a_package_brief_not_its_own_sources_
     assert heading in layers_brief(STORY, 3, dossier=files) and heading not in layers_brief(STORY, 3)
     assert heading in opening_message(STORY, LAYERS, "", (), files)
     assert heading in critic_brief(LAYERS[0], {"tests/test_a.py": "def test_a(): ..."}, (), "", dossier=files)
+    seen = critic_brief(LAYERS[0], {"src/app.py": "x = 1\n"}, (), "", dossier=files)
+    assert seen.count("### src/app.py") == 1 and "### README.md" in seen  # shown whole, not again
     pkg = Package(LAYERS[0].slug, {}, (), (), ("write it",), {}, "")
     root, base = repo(tmp_path, files)
     layer = BriefInputs(STORY, LAYERS, 0, pkg, root, base, 196_608)

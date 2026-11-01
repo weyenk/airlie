@@ -17,9 +17,9 @@ GUIDE_SHARE = 0.2
 CHARS_PER_TOKEN = 3
 FILE_HEAD_CHARS = 2_000
 """How much of a big non-Python file the outline form keeps."""
-_PATH = re.compile(
-    r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh))\b"
-)
+PATH_EXTENSIONS = "py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh"
+"""The extensions that make a word in prose a repository path (a regex alternation)."""
+_PATH = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:{PATH_EXTENSIONS}))\b")
 """A repository path in prose: at least one directory, a known extension."""
 
 

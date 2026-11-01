@@ -22,7 +22,7 @@ from airlie.prompts import PromptError
 from airlie.prompts import entry as hub_entry
 from airlie.prompts import text as hub_text
 from airlie.story.briefs import NOT_SHOWN, _layer_context, package_blocks
-from airlie.story.context import FILE_HEAD_CHARS, fenced, named_paths
+from airlie.story.context import FILE_HEAD_CHARS, PATH_EXTENSIONS, fenced, named_paths
 from airlie.story.model import Layer, Story
 from airlie.story.package import Package
 from airlie.teams.worktree import find_file, read_blob, tree_paths
@@ -85,7 +85,9 @@ class Brief:
     parts: tuple[Part, ...]
 
     def sizes(self) -> list[dict[str, Any]]:
-        """Each part's name, size in characters and what it shows of each file, for the run's record."""
+        """Each part's name, size in characters and what it shows of each file, for the run's record. The
+        sizes are the parts' own lengths; the brief joins its non-empty parts with a blank line, so
+        `sum(chars) + 2 * (non-empty parts - 1) == len(text)`."""
         return [{"name": p.name, "chars": len(p.text), "shown": dict(p.shown)} for p in self.parts]
 
 
@@ -169,9 +171,7 @@ def _scope_files_section(
     return file_cards("scope_files", files, cap, entry.over)
 
 
-CITATION = re.compile(
-    r"(?<![\w/.])((?:[\w.-]+/)*[\w.-]+\.(?:py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh)):(\d+)(?:-(\d+))?\b"
-)
+CITATION = re.compile(rf"(?<![\w/.])((?:[\w.-]+/)*[\w.-]+\.(?:{PATH_EXTENSIONS})):(\d+)(?:-(\d+))?\b")
 """A citation in prose: `file.py:N` or `file.py:N-M`, the file with or without its directory."""
 
 _MAX_DEF = 80
@@ -198,15 +198,18 @@ def _around(a: int, b: int, n: int) -> tuple[int, int]:
     return (max(1, a - 10), min(n, a + 10)) if a == b else (a, b)
 
 
-def span(source: str, path: str, a: int, b: int) -> tuple[int, int]:
+def span(source: str, path: str, a: int, b: int) -> tuple[int, int] | None:
     """The 1-based inclusive lines to show for a citation of `a..b` in `source`: the innermost def or class
     (Python only) that contains the whole range and is at most 80 lines, else a single line with ten lines
-    either side, else the range as cited. Clamped to the file; a start past the end gives its last 11
-    lines."""
+    either side, else the range as cited. Clamped to the file; a start before line 1 is line 1 and a start
+    past the end gives its last 11 lines. None for an empty file: there is no line to show."""
     n = len(source.splitlines())
+    if n == 0:
+        return None
     if a > n:
         return max(1, n - 10), n
-    a, b = max(1, a), min(b, n)
+    a = max(1, a)
+    b = min(max(b, a), n)
     if not path.endswith(".py"):
         return _around(a, b, n)
     try:
@@ -244,7 +247,7 @@ def _cited_spans_section(
         package.done_when,
     ]
     named = named_paths("\n".join([*texts, inputs.survey]))
-    tree = tree_paths(inputs.repo, inputs.commit)
+    tree = list(dict.fromkeys([*tree_paths(inputs.repo, inputs.commit), *package.tests]))
     cites: dict[tuple[str, int, int], None] = {}
     for text in texts:
         for m in CITATION.finditer(text):
@@ -259,16 +262,24 @@ def _cited_spans_section(
         if len(found) > 1:
             unresolved.append(f"- {_as_cited(name, a, b)} (more than one file has this name)")
             continue
-        if found and found[0] in shown:
+        if found and (found[0] in shown or found[0] == "AGENTS.md"):
+            continue  # the agents_md section carries AGENTS.md
+        if found and found[0] in package.tests:  # a locked test is as the package has it, not as the base
+            path = found[0]
+            lines.setdefault(path, package.tests[path].splitlines())
+        else:
+            kind, sha = find_file(inputs.repo, inputs.commit, found[0]) if found else ("", "")
+            if kind != "blob":
+                unresolved.append(f"- {_as_cited(name, a, b)} (no such file at this layer's base)")
+                continue
+            path = found[0]
+            if path not in lines:
+                lines[path] = read_blob(inputs.repo, sha).splitlines()
+        got = span("\n".join(lines[path]), path, a, b)
+        if got is None:
+            unresolved.append(f"- {_as_cited(name, a, b)} (no such line)")
             continue
-        kind, sha = find_file(inputs.repo, inputs.commit, found[0]) if found else ("", "")
-        if kind != "blob":
-            unresolved.append(f"- {_as_cited(name, a, b)} (no such file at this layer's base)")
-            continue
-        path = found[0]
-        if path not in lines:
-            lines[path] = read_blob(inputs.repo, sha).splitlines()
-        spans.setdefault(path, []).append(span("\n".join(lines[path]), path, a, b))
+        spans.setdefault(path, []).append(got)
     cards: list[str] = []
     listed: list[str] = []
     shown_here: dict[str, Shown] = {}
@@ -294,17 +305,23 @@ def _cited_spans_section(
 
 
 _H2 = "## "
+_HEADING = re.compile(r"#{1,2} ")
+_FENCE = re.compile(r"\s*(```|~~~)")
 
 
 def drop_headings(text: str, titles: Sequence[str]) -> str:
     """`text` without each level-2 heading whose title (the line after `## `, stripped) is in `titles`, and
-    everything up to the next `## ` line or the end; the blank lines left where a section was cut are
-    collapsed to one."""
+    everything up to the next level-1 or level-2 heading or the end; the blank lines left where a section
+    was cut are collapsed to one. A heading-looking line inside a fenced code block is not a heading."""
     out: list[str] = []
     skipping = False
+    fence = ""
     for line in text.splitlines(keepends=True):
-        if line.startswith(_H2):
-            skipping = line[len(_H2) :].strip() in titles
+        marker = _FENCE.match(line)
+        if marker and (not fence or marker.group(1) == fence):
+            fence = "" if fence else marker.group(1)
+        elif not fence and _HEADING.match(line):
+            skipping = line.startswith(_H2) and line[len(_H2) :].strip() in titles
         if not skipping:
             out.append(line)
     return re.sub(r"\n{3,}", "\n\n", "".join(out))
@@ -380,7 +397,7 @@ def parse_recipe(text: str, source: str) -> tuple[RecipeEntry, ...]:
             raise RecipeError(f"{where}: over must be one of {', '.join(_OVERS)} (got {over!r})")
         drop = item.get("drop", ())
         if not isinstance(drop, (list, tuple)) or not all(isinstance(d, str) for d in drop):
-            raise RecipeError(f"{where}: drop is a list of paths")
+            raise RecipeError(f"{where}: drop is a list of heading titles")
         if "rule" in item:
             rule = str(item["rule"])
             try:
@@ -418,6 +435,23 @@ def load_recipe(name: str) -> tuple[RecipeEntry, ...]:
     return parse_recipe(text, name)
 
 
+def _without_idle_files_rule(parts: list[Part]) -> list[Part]:
+    """`parts` without the `brief-files-given` rule when every section after it, up to the next rule, gave
+    no text: it tells the coder the files below are given, and none is."""
+    out = list(parts)
+    for n, part in reversed(list(enumerate(parts))):
+        if part.name != "rule:brief-files-given":
+            continue
+        after = []
+        for later in parts[n + 1 :]:
+            if later.name.startswith("rule:"):
+                break
+            after.append(later)
+        if not any(p.text for p in after):
+            del out[n]
+    return out
+
+
 def assemble(name: str, recipe: Sequence[RecipeEntry], inputs: BriefInputs) -> Brief:
     """The brief `recipe` makes for `inputs`, its parts joined by blank lines (a part with no text is left
     out of the join). A section gets its cap (its share of `inputs.context_chars`) and the paths the parts
@@ -436,4 +470,5 @@ def assemble(name: str, recipe: Sequence[RecipeEntry], inputs: BriefInputs) -> B
             part = SECTIONS[e.section](inputs, e, cap, shown)
         parts.append(part)
         shown |= {p for p, how in part.shown.items() if how == "whole"}
+    parts = _without_idle_files_rule(parts)
     return Brief(name, "\n\n".join(p.text for p in parts if p.text), tuple(parts))

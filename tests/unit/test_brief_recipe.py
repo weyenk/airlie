@@ -13,6 +13,7 @@ from airlie.story.brief_recipe import (
     RecipeEntry,
     RecipeError,
     assemble,
+    drop_headings,
     load_recipe,
     parse_recipe,
     resolve,
@@ -548,11 +549,7 @@ def test_the_air48_layer_one_brief(air48_repo: Path) -> None:
     names the full path; another protocol.py exists), and AGENTS.md without its Test gate."""
     brief = assemble("layer-build", load_recipe("layer-build"), air48_inputs(air48_repo))
     t = brief.text
-    assert (
-        "[clipped: read it with read_file]" not in t
-        and "## Test gate" not in t
-        and "[Repository map]" not in t
-    )
+    assert "[clipped: read it with read_file]" not in t and "## Test gate" not in t
     assert t.count("### src/airlie/story/diagnosis.py") == 1
     assert "### src/airlie/teams/protocol.py (lines 42-49)" in t and "def cut_off_text" in t
     assert "src/airlie/router/protocol.py" not in t
@@ -560,4 +557,67 @@ def test_the_air48_layer_one_brief(air48_repo: Path) -> None:
     assert "## Configuration" in t
     assert sum(s["chars"] for s in brief.sizes()) + 2 * (len([p for p in brief.parts if p.text]) - 1) == len(
         t
+    )
+
+
+def _cited(repo: Path, brief: str, package_tests: dict[str, str]) -> str:
+    got = inputs(repo, brief=brief)
+    got = replace(got, package=replace(got.package, tests=package_tests))
+    return SECTIONS["cited_spans"](got, RecipeEntry(section="cited_spans"), None, frozenset()).text
+
+
+def _commit(path: Path, files: dict[str, str]) -> None:
+    git(path, "init", "-q")
+    git(path, "config", "user.email", "t@t")
+    git(path, "config", "user.name", "t")
+    for name, text in files.items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(text)
+    git(path, "add", ".")
+    git(path, "commit", "-qm", "base")
+
+
+def test_a_citation_into_a_locked_test_shows_the_packages_lines_not_the_bases(repo: Path) -> None:
+    text = _cited(repo, "see tests/test_a.py:2", {"tests/test_a.py": "base\ndef test_new():\n    pass\n"})
+    assert "### tests/test_a.py (lines 2-3)" in text and "def test_new" in text
+
+
+def test_a_citation_into_a_new_locked_test_is_shown_not_listed(repo: Path) -> None:
+    text = _cited(repo, "see tests/test_new.py:1", {"tests/test_new.py": "def test_x():\n    pass\n"})
+    assert "def test_x" in text and "no such file" not in text
+    bare = _cited(repo, "see test_new.py:1", {"tests/test_new.py": "def test_x():\n    pass\n"})
+    assert "### tests/test_new.py" in bare
+
+
+def test_a_citation_of_line_zero_or_into_an_empty_file_is_never_an_empty_card(tmp_path: Path) -> None:
+    assert span("a\nb\nc\n", "x.md", 0, 0) == (1, 3)
+    assert span("", "x.md", 1, 1) is None and span("", "x.py", 0, 0) is None
+    _commit(tmp_path, {"docs/e.md": ""})
+    text = _cited(tmp_path, "docs/e.md:1 and docs/e.md:0", {})
+    assert "(lines 1-0)" not in text and "- docs/e.md:1 (no such line)" in text
+
+
+def test_drop_headings_stops_at_a_level_one_heading_and_ignores_fenced_headings() -> None:
+    assert drop_headings("# T\n## Test gate\nx\n# Other\nkeep", ["Test gate"]) == "# T\n# Other\nkeep"
+    text = "## Gate\n```sh\n## Gate\n# x\n```\nstill\n## Next\nkeep\n"
+    assert drop_headings(text, ["Gate"]) == "## Next\nkeep\n"
+    kept = "## Keep\n~~~\n## Gate\n~~~\nmore\n"
+    assert drop_headings(kept, ["Gate"]) == kept
+
+
+def test_agents_md_cited_in_the_layer_brief_appears_once(tmp_path: Path) -> None:
+    _commit(tmp_path, {"AGENTS.md": "# x\n\n## Rules\nr\n"})
+    got = inputs(tmp_path, brief="Follow AGENTS.md:3 here.", files=())
+    text = assemble("layer-build", load_recipe("layer-build"), got).text
+    assert text.count("### AGENTS.md") == 1 and "(lines" not in text.split("### AGENTS.md")[1].split("\n")[0]
+
+
+def test_the_files_given_rule_is_left_out_when_no_file_section_has_text(tmp_path: Path) -> None:
+    _commit(tmp_path, {"x": "x"})
+    got = inputs(tmp_path, brief="Do it.", scope="nothing", files=())
+    got = replace(got, package=replace(got.package, tests={}))
+    brief = assemble("layer-build", load_recipe("layer-build"), got)
+    assert all(p.name != "rule:brief-files-given" for p in brief.parts)
+    assert sum(s["chars"] for s in brief.sizes()) + 2 * (len([p for p in brief.parts if p.text]) - 1) == len(
+        brief.text
     )
