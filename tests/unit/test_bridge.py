@@ -108,6 +108,8 @@ class FakeServe(httpx.AsyncBaseTransport):
         self._chat_body = body
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(200, json={"ok": True})
         if request.method == "POST" and request.url.path == "/v1/airlie/runs":
             self.posts.append(json.loads(request.content))
             return httpx.Response(202, json={"job_id": self._job_id, "kind": "run"})

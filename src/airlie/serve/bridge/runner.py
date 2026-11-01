@@ -152,7 +152,8 @@ async def run_bridge(
         bridge=bridge,
         stop=stop or asyncio.Event(),
     )
-    probe_http = httpx.AsyncClient()
+    # Injected serve_transport must back the busy probe too, or /health hits the live URL in tests.
+    probe_http = httpx.AsyncClient(transport=serve_transport) if serve_transport is not None else httpx.AsyncClient()
     probe_key = serve_api_key(bridge, creds)
 
     async def busy() -> str | None:
