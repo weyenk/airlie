@@ -436,7 +436,7 @@ def built_so_far(diff: str) -> str:
     return _clip("\n".join(lines), BUILT_CHARS)
 
 
-def _layer_context(story: Story, layers: tuple[Layer, ...], i: int, built: str, guide: str) -> str:
+def _layer_context(story: Story, layers: tuple[Layer, ...], i: int, built: str, guide: str = "") -> str:
     """What a role told about layer `i` reads first: the story, the layer's place in the stack and its
     scope, the later layers it leaves alone, the digest of the earlier ones (`built`, from built_so_far) and
     the code guide."""
@@ -718,19 +718,10 @@ def package_brief(
     return "\n\n".join(parts)
 
 
-def build_brief(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    package: Package,
-    *,
-    guide: str = "",
-    built: str = "",
-    dossier: Mapping[str, str] | None = None,
-) -> str:
-    """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
-    (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
-    the numbered steps and when it is done. There is no second prose brief (D3, planning-line design)."""
+def package_blocks(story: Story, layers: tuple[Layer, ...], i: int, package: Package) -> str:
+    """The package as the coder reads it: the tests it makes pass (each under the criterion it covers; they
+    are in the worktree and locked), the files, the interfaces, the numbered steps and when it is done,
+    joined by blank lines."""
     layer = layers[i]
     owned = {c.id: c for c in story.acceptance if c.id in layer.acceptance}
     tests: list[str] = []
@@ -747,7 +738,6 @@ def build_brief(
     steps = [f"{n}. {step}" for n, step in enumerate(package.steps, 1)]
     return "\n\n".join(
         [
-            _layer_context(story, layers, i, built, guide),
             "## The tests you make pass (in the worktree, locked)\n"
             + (
                 "The acceptance criteria this layer makes true, each with the tests that prove it:\n"
@@ -759,6 +749,27 @@ def build_brief(
             "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
             "## Steps\n" + "\n".join(steps),
             f"## Done when\n{package.done_when or 'the tests above pass.'}",
+        ]
+    )
+
+
+def build_brief(
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    package: Package,
+    *,
+    guide: str = "",
+    built: str = "",
+    dossier: Mapping[str, str] | None = None,
+) -> str:
+    """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
+    (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
+    the numbered steps and when it is done. There is no second prose brief (D3, planning-line design)."""
+    return "\n\n".join(
+        [
+            _layer_context(story, layers, i, built, guide),
+            package_blocks(story, layers, i, package),
             *dossier_section(dossier or {}, whole_paths(guide)),
             hub_text("package-contract"),
             hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
