@@ -15,11 +15,15 @@ from typing import Any, Literal
 
 import yaml
 
-from airlie.prompts import PromptError, entry
+from airlie.outline import outline
+from airlie.prompts import PromptError
+from airlie.prompts import entry as hub_entry
 from airlie.prompts import text as hub_text
-from airlie.story.briefs import _layer_context, package_blocks
+from airlie.story.briefs import NOT_SHOWN, _layer_context, package_blocks
+from airlie.story.context import FILE_HEAD_CHARS, fenced, named_paths
 from airlie.story.model import Layer, Story
 from airlie.story.package import Package
+from airlie.teams.worktree import find_file, read_blob
 
 Over = Literal["outline", "list"]
 Shown = Literal["whole", "outline", "span", "listed"]
@@ -100,9 +104,82 @@ def _package_section(inputs: BriefInputs, entry: RecipeEntry, cap: int | None, s
     return Part("package", package_blocks(inputs.story, inputs.layers, inputs.i, inputs.package))
 
 
-SECTIONS: dict[str, Section] = {"layer_context": _layer_context_section, "package": _package_section}
+def file_cards(name: str, files: Sequence[tuple[str, str]], cap: int | None, over: Over) -> Part:
+    """The part `name` showing each of `files` (path, text) in order, as `repo_guide` does: whole if it fits
+    what is left of `cap` characters, else (with `over="outline"`) as an outline, else it goes to the one
+    `NOT_SHOWN` block of paths and line counts after the cards. That block is not counted against `cap`: it
+    is the trace that nothing was dropped silently. "" when there are no files."""
+    cards: list[str] = []
+    listed: list[str] = []
+    shown: dict[str, Shown] = {}
+    used = 0
+    for path, text in files:
+        n = len(text.splitlines())
+        whole = f"### {path} (whole, {n} lines)\n{fenced(text)}"
+        if cap is None or used + len(whole) <= cap:
+            cards.append(whole)
+            shown[path] = "whole"
+            used += len(whole)
+            continue
+        if over == "outline":
+            heading = f"### {path} (outline: read a span with read_file offset and limit)"
+            card = f"{heading}\n{fenced(outline(path, text, head_chars=FILE_HEAD_CHARS))}"
+            if used + len(card) <= cap:
+                cards.append(card)
+                shown[path] = "outline"
+                used += len(card)
+                continue
+        listed.append(f"- {path} ({n} lines)")
+        shown[path] = "listed"
+    if listed:
+        cards.append(NOT_SHOWN + "\n" + "\n".join(listed))
+    return Part(name, "\n\n".join(cards), shown)
 
-TAKES: dict[str, frozenset[str]] = {"layer_context": frozenset(), "package": frozenset()}
+
+def _locked_tests_section(
+    inputs: BriefInputs, entry: RecipeEntry, cap: int | None, shown: frozenset[str]
+) -> Part:
+    """The package's tests, each whole as the package has it (never read from the repository)."""
+    return file_cards("locked_tests", list(inputs.package.tests.items()), cap, entry.over)
+
+
+def _scope_files_section(
+    inputs: BriefInputs, entry: RecipeEntry, cap: int | None, shown: frozenset[str]
+) -> Part:
+    """The files at `inputs.commit` the layer's scope names, then the package's files it modifies, then the
+    ones its brief names, none twice; a locked test, a path in `shown`, a directory and a path the commit
+    lacks are left out."""
+    layer = inputs.layers[inputs.i]
+    wanted = [
+        *named_paths(layer.scope),
+        *(f.path for f in inputs.package.files if f.action == "modify"),
+        *named_paths(layer.brief),
+    ]
+    files: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for path in wanted:
+        if path in seen or path in shown or path in inputs.package.tests:
+            continue
+        seen.add(path)
+        kind, sha = find_file(inputs.repo, inputs.commit, path)
+        if kind == "blob":
+            files.append((path, read_blob(inputs.repo, sha)))
+    return file_cards("scope_files", files, cap, entry.over)
+
+
+SECTIONS: dict[str, Section] = {
+    "layer_context": _layer_context_section,
+    "package": _package_section,
+    "locked_tests": _locked_tests_section,
+    "scope_files": _scope_files_section,
+}
+
+TAKES: dict[str, frozenset[str]] = {
+    "layer_context": frozenset(),
+    "package": frozenset(),
+    "locked_tests": frozenset({"share", "over"}),
+    "scope_files": frozenset({"share", "over"}),
+}
 """Which of `share`, `over` and `drop` each section accepts."""
 
 
@@ -141,7 +218,7 @@ def parse_recipe(text: str, source: str) -> tuple[RecipeEntry, ...]:
         if "rule" in item:
             rule = str(item["rule"])
             try:
-                entry(rule)
+                hub_entry(rule)
             except PromptError:
                 raise RecipeError(f"{where}: unknown rule {rule!r}") from None
             given = [k for k in ("share", "over", "drop") if k in item]

@@ -49,7 +49,7 @@ _ALSO = "### Also named (not shown)"
 _BACKTICKS = re.compile(r"`+")
 
 
-def _fenced(body: str) -> str:
+def fenced(body: str) -> str:
     """`body` in a code fence longer than any backtick run in it, so a Markdown file's own ``` fences
     cannot close it early and spill the rest of the file into the brief as markup."""
     fence = "`" * max(3, 1 + max((len(m.group()) for m in _BACKTICKS.finditer(body)), default=0))
@@ -93,13 +93,13 @@ def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
     for k, (path, body) in enumerate(files):
         n = len(body.splitlines())
         rest = lines[k + 1 :]
-        whole = f"### {path} (whole, {n} lines)\n{_fenced(body)}"
+        whole = f"### {path} (whole, {n} lines)\n{fenced(body)}"
         if len(_assemble([*parts, whole], rest)) <= budget_chars:
             parts.append(whole)
             shown = k + 1
             continue
         heading = f"### {path} (outline: read a span with read_file offset and limit)"
-        card = f"{heading}\n{_fenced(outline(path, body, head_chars=FILE_HEAD_CHARS))}"
+        card = f"{heading}\n{fenced(outline(path, body, head_chars=FILE_HEAD_CHARS))}"
         if len(_assemble([*parts, card], rest)) <= budget_chars:
             parts.append(card)
             shown = k + 1
