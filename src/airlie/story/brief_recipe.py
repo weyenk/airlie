@@ -6,6 +6,8 @@ whole, and `Brief.sizes` says how many characters each part took."""
 
 from __future__ import annotations
 
+import ast
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cache
@@ -23,7 +25,7 @@ from airlie.story.briefs import NOT_SHOWN, _layer_context, package_blocks
 from airlie.story.context import FILE_HEAD_CHARS, fenced, named_paths
 from airlie.story.model import Layer, Story
 from airlie.story.package import Package
-from airlie.teams.worktree import find_file, read_blob
+from airlie.teams.worktree import find_file, read_blob, tree_paths
 
 Over = Literal["outline", "list"]
 Shown = Literal["whole", "outline", "span", "listed"]
@@ -167,11 +169,136 @@ def _scope_files_section(
     return file_cards("scope_files", files, cap, entry.over)
 
 
+CITATION = re.compile(
+    r"(?<![\w/.])((?:[\w.-]+/)*[\w.-]+\.(?:py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh)):(\d+)(?:-(\d+))?\b"
+)
+"""A citation in prose: `file.py:N` or `file.py:N-M`, the file with or without its directory."""
+
+_MAX_DEF = 80
+
+
+def resolve(name: str, named: Sequence[str], tree: Sequence[str]) -> list[str]:
+    """The files a cited `name` may mean: itself when `tree` has it; else the one full path in `named` (the
+    paths the story names) that ends in it; else every `tree` path that does. One is a resolved citation,
+    none a missing file, several an ambiguous name."""
+    if name in tree:
+        return [name]
+
+    def ends(path: str) -> bool:
+        return path == name or path.endswith("/" + name)
+
+    from_story = list(dict.fromkeys(p for p in named if ends(p)))
+    if len(from_story) == 1:
+        return from_story
+    return [p for p in tree if ends(p)]
+
+
+def _around(a: int, b: int, n: int) -> tuple[int, int]:
+    """A single line with ten lines either side, clamped to a file of `n` lines; else `a..b` as cited."""
+    return (max(1, a - 10), min(n, a + 10)) if a == b else (a, b)
+
+
+def span(source: str, path: str, a: int, b: int) -> tuple[int, int]:
+    """The 1-based inclusive lines to show for a citation of `a..b` in `source`: the innermost def or class
+    (Python only) that contains the whole range and is at most 80 lines, else a single line with ten lines
+    either side, else the range as cited. Clamped to the file; a start past the end gives its last 11
+    lines."""
+    n = len(source.splitlines())
+    if a > n:
+        return max(1, n - 10), n
+    a, b = max(1, a), min(b, n)
+    if not path.endswith(".py"):
+        return _around(a, b, n)
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return _around(a, b, n)
+    best: tuple[int, int] | None = None
+    for node in ast.walk(module):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            start, end = node.lineno, node.end_lineno or node.lineno
+            fits = start <= a and b <= end and end - start + 1 <= _MAX_DEF
+            if fits and (best is None or end - start < best[1] - best[0]):
+                best = (start, end)
+    return best or _around(a, b, n)
+
+
+def _as_cited(name: str, a: int, b: int) -> str:
+    return f"{name}:{a}" if a == b else f"{name}:{a}-{b}"
+
+
+def _cited_spans_section(
+    inputs: BriefInputs, entry: RecipeEntry, cap: int | None, shown: frozenset[str]
+) -> Part:
+    """The lines the layer brief and the package cite as `file.py:N` or `file.py:N-M`, each widened to its
+    small enclosing def, so the coder need not search for code the plan already pointed at. A bare file name
+    resolves through the full paths the story names, else the base's tree; a file already shown whole is
+    skipped; a span that does not fit `cap`, a missing file and an ambiguous name go to the `NOT_SHOWN`
+    block."""
+    layer, package = inputs.layers[inputs.i], inputs.package
+    texts = [
+        layer.brief,
+        *package.steps,
+        *(i.behaviour for i in package.interfaces),
+        *(f.why for f in package.files),
+        package.done_when,
+    ]
+    named = named_paths("\n".join([*texts, inputs.survey]))
+    tree = tree_paths(inputs.repo, inputs.commit)
+    cites: dict[tuple[str, int, int], None] = {}
+    for text in texts:
+        for m in CITATION.finditer(text):
+            a = int(m.group(2))
+            b = int(m.group(3) or a)
+            cites[(m.group(1), min(a, b), max(a, b))] = None
+    spans: dict[str, list[tuple[int, int]]] = {}
+    lines: dict[str, list[str]] = {}
+    unresolved: list[str] = []
+    for name, a, b in cites:
+        found = resolve(name, named, tree)
+        if len(found) > 1:
+            unresolved.append(f"- {_as_cited(name, a, b)} (more than one file has this name)")
+            continue
+        if found and found[0] in shown:
+            continue
+        kind, sha = find_file(inputs.repo, inputs.commit, found[0]) if found else ("", "")
+        if kind != "blob":
+            unresolved.append(f"- {_as_cited(name, a, b)} (no such file at this layer's base)")
+            continue
+        path = found[0]
+        if path not in lines:
+            lines[path] = read_blob(inputs.repo, sha).splitlines()
+        spans.setdefault(path, []).append(span("\n".join(lines[path]), path, a, b))
+    cards: list[str] = []
+    listed: list[str] = []
+    shown_here: dict[str, Shown] = {}
+    used = 0
+    for path, found_spans in spans.items():
+        merged: list[tuple[int, int]] = []
+        for a, b in sorted(found_spans):
+            if merged and a <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        for a, b in merged:
+            card = f"### {path} (lines {a}-{b})\n{fenced(chr(10).join(lines[path][a - 1 : b]))}"
+            if cap is None or used + len(card) <= cap:
+                cards.append(card)
+                shown_here[path] = "span"
+                used += len(card)
+            else:
+                listed.append(f"- {path}:{a}-{b}")
+    if listed or unresolved:
+        cards.append(NOT_SHOWN + "\n" + "\n".join([*listed, *unresolved]))
+    return Part("cited_spans", "\n\n".join(cards), shown_here)
+
+
 SECTIONS: dict[str, Section] = {
     "layer_context": _layer_context_section,
     "package": _package_section,
     "locked_tests": _locked_tests_section,
     "scope_files": _scope_files_section,
+    "cited_spans": _cited_spans_section,
 }
 
 TAKES: dict[str, frozenset[str]] = {
@@ -179,6 +306,7 @@ TAKES: dict[str, frozenset[str]] = {
     "package": frozenset(),
     "locked_tests": frozenset({"share", "over"}),
     "scope_files": frozenset({"share", "over"}),
+    "cited_spans": frozenset({"share"}),
 }
 """Which of `share`, `over` and `drop` each section accepts."""
 
