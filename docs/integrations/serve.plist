@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- task serve: keeps airlie's loopback server (127.0.0.1:8090) and its managed engine running, so the Job Bus bridge
+     and the line always have something to call. `task serve:launchd:install` fills __AIRLIE_DIR__ and __HOME__, writes
+     ~/Library/LaunchAgents and loads it. A login shell gives it the same PATH (uv, task, node) as a terminal; serve
+     reads its API key from ~/.config/airlie/bridge.env itself. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.airlie.serve</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "__AIRLIE_DIR__" &amp;&amp; exec task serve</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__HOME__/.local/state/airlie/serve.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.local/state/airlie/serve.log</string>
+</dict>
+</plist>

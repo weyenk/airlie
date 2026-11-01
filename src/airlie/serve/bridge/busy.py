@@ -2,6 +2,10 @@
 
 The owner wants airlie to run one thing at a time. Three signals say it is busy:
 
+- Serve or an engine is not answering. Claiming into an outage would fail every queued job in minutes
+  (`serve unreachable`), so the bridge waits: serve's `GET /health` must answer 200, and each engine's
+  `/v1/status` must answer at all. An HTTP answer that is not 200 (404 from an engine kind with no
+  `/v1/status`) is an answer and leaves that engine idle; a refused connection or a timeout is not.
 - A story lane lock (`build.lock`, `plan.lock` in the stories directory) is held. A story's whole run
   counts, gaps included: between two model calls (a test run, a git step, a pause for a human) no model
   is in use, yet the run is still going and a hub job taking the GPU then would slow it.
@@ -14,7 +18,7 @@ The owner wants airlie to run one thing at a time. Three signals say it is busy:
   bridge's own and does not count. An engine without the patch (no `active_requests`) has only this rule.
 
 The probe sends each engine's `api_key`, as serve does: vllm-mlx checks it on `/v1/status`, and an engine
-that answers 401 (or anything but 200, or nothing) reads as idle.
+that answers 401 (or anything but 200) reads as idle.
 
 This is the one place GPU sharing would change: if jobs ever ran beside a story, this gate is what to relax.
 """
@@ -57,10 +61,23 @@ def _engine_roots(cfg: AirlieConfig) -> list[tuple[str, str, str | None]]:
     return out
 
 
-async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> list[Any]:
+async def _serve_answers(http: httpx.AsyncClient, url: str, api_key: str | None) -> bool:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        r = await http.get(f"{url.rstrip('/')}/health", headers=headers, timeout=STATUS_TIMEOUT_S)
+    except httpx.HTTPError:
+        return False
+    return r.status_code == 200
+
+
+async def _models(http: httpx.AsyncClient, root: str, api_key: str | None) -> list[Any] | None:
+    """The engine's models; [] when it answered without any; None when it did not answer at all."""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         r = await http.get(f"{root}/v1/status", headers=headers, timeout=STATUS_TIMEOUT_S)
+    except httpx.TransportError:  # refused, reset, timed out
+        return None
+    try:
         if r.status_code != 200:
             return []
         models = r.json()["model_manager"]["models"]
@@ -76,9 +93,17 @@ def _number(value: Any) -> float | None:
 
 
 async def busy_reason(
-    cfg: AirlieConfig, *, http: httpx.AsyncClient, now: float, own_last_used: float
+    cfg: AirlieConfig,
+    *,
+    http: httpx.AsyncClient,
+    now: float,
+    own_last_used: float,
+    serve_api_key: str | None = None,
 ) -> str | None:
     """None when idle, else one human line saying why not."""
+    serve_url = cfg.bridge.serve_url
+    if not await _serve_answers(http, serve_url, serve_api_key):
+        return f"serve not answering at {serve_url}"
     stories = cfg.observability.state_dir.expanduser() / "stories"
     if stories.is_dir():  # no directory, no story has ever run; the probe would create it
         for lane in LANES:
@@ -86,7 +111,10 @@ async def busy_reason(
                 return f"story {lane} lane is running"
     newest: tuple[float, str, str] | None = None
     for engine, root, key in _engine_roots(cfg):
-        for m in await _models(http, root, key):
+        models = await _models(http, root, key)
+        if models is None:
+            return f"engine {engine} not answering"
+        for m in models:
             if not isinstance(m, dict) or not m.get("loaded"):
                 continue
             model = str(m.get("id", "?"))

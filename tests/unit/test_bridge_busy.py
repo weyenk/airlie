@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from airlie.config import load_config
 from airlie.serve.bridge.busy import busy_reason, reason_key
@@ -24,8 +25,17 @@ def _cfg(tmp_path: Path) -> Any:
 
 class FakeStatus(httpx.AsyncBaseTransport):
     def __init__(
-        self, models: list[dict[str, Any]] | None = None, *, error: bool = False, status: int = 200
+        self,
+        models: list[dict[str, Any]] | None = None,
+        *,
+        error: bool = False,
+        status: int = 200,
+        health: int | str = 200,
     ) -> None:
+        self.health = health  # an HTTP status, or "down" for a connection error
+        self.health_calls = 0
+        self.health_auth: str | None = None
+        self.health_timeouts: list[Any] = []
         self.models = models or []
         self.error = error
         self.status = status
@@ -35,6 +45,13 @@ class FakeStatus(httpx.AsyncBaseTransport):
         self.paths: list[str] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            self.health_calls += 1
+            self.health_auth = request.headers.get("authorization")
+            self.health_timeouts.append(request.extensions.get("timeout"))
+            if self.health == "down":
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(int(self.health), json={"ok": True})
         self.calls += 1
         self.timeouts.append(request.extensions.get("timeout"))
         self.auth[f"{request.url.host}:{request.url.port}"] = request.headers.get("authorization")
@@ -45,10 +62,10 @@ class FakeStatus(httpx.AsyncBaseTransport):
         return httpx.Response(self.status, json={"model_manager": {"models": self.models}})
 
 
-def _probe(cfg: Any, t: FakeStatus, *, own: float = 0.0) -> str | None:
+def _probe(cfg: Any, t: FakeStatus, *, own: float = 0.0, serve_key: str | None = None) -> str | None:
     async def go() -> str | None:
         async with httpx.AsyncClient(transport=t) as http:
-            return await busy_reason(cfg, http=http, now=NOW, own_last_used=own)
+            return await busy_reason(cfg, http=http, now=NOW, own_last_used=own, serve_api_key=serve_key)
 
     return asyncio.run(go())
 
@@ -86,8 +103,55 @@ def test_own_job_does_not_count(tmp_path: Path) -> None:
     assert _probe(_cfg(tmp_path), t, own=NOW - 4) is None
 
 
-def test_unreachable_engine_is_idle(tmp_path: Path) -> None:
-    assert _probe(_cfg(tmp_path), FakeStatus(error=True)) is None
+def test_engine_connection_refused_is_busy(tmp_path: Path) -> None:
+    """An engine that does not answer is down or wedged: claiming into it would fail every job."""
+    assert _probe(_cfg(tmp_path), FakeStatus(error=True)) == "engine main not answering"
+
+
+def test_engine_timeout_is_busy(tmp_path: Path) -> None:
+    class Slow(FakeStatus):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/health":
+                return await super().handle_async_request(request)
+            raise httpx.ReadTimeout("slow", request=request)
+
+    assert _probe(_cfg(tmp_path), Slow()) == "engine main not answering"
+
+
+def test_engine_404_stays_idle(tmp_path: Path) -> None:
+    """An engine kind with no /v1/status answers 404: it answered, so it is not down."""
+    assert _probe(_cfg(tmp_path), FakeStatus(status=404)) is None
+
+
+@pytest.mark.parametrize("health", ["down", 500, 503, 404])
+def test_serve_not_answering_is_busy_and_checked_first(tmp_path: Path, health: int | str) -> None:
+    t = FakeStatus(health=health)
+    reason = _probe(_cfg(tmp_path), t)
+    assert reason == "serve not answering at http://127.0.0.1:8090"
+    assert t.calls == 0
+
+
+def test_serve_down_beats_a_held_lane_lock(tmp_path: Path) -> None:
+    with lane_lock(tmp_path / "stories", "build") as held:
+        assert held
+        reason = _probe(_cfg(tmp_path), FakeStatus(health="down"))
+    assert reason == "serve not answering at http://127.0.0.1:8090"
+
+
+def test_serve_probe_times_out_in_3s_and_sends_the_serve_key(tmp_path: Path) -> None:
+    t = FakeStatus()
+    _probe(_cfg(tmp_path), t, serve_key="srv-key")
+    assert t.health_calls == 1
+    assert t.health_auth == "Bearer srv-key"
+    assert all(x["read"] == 3.0 for x in t.health_timeouts)
+    keyless = FakeStatus()
+    _probe(_cfg(tmp_path), keyless)
+    assert keyless.health_auth is None
+
+
+def test_outage_reasons_keep_their_key() -> None:
+    for r in ("serve not answering at http://127.0.0.1:8090", "engine main not answering"):
+        assert reason_key(r) == r
 
 
 def test_non_200_is_idle(tmp_path: Path) -> None:

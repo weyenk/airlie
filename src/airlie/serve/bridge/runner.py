@@ -152,11 +152,17 @@ async def run_bridge(
         bridge=bridge,
         stop=stop or asyncio.Event(),
     )
-    probe_http = httpx.AsyncClient()
+    # Injected serve_transport must back the busy probe too, or /health hits the live URL in tests.
+    probe_http = httpx.AsyncClient(transport=serve_transport)
+    probe_key = serve_api_key(bridge, creds)
 
     async def busy() -> str | None:
         return await busy_reason(
-            cfg, http=probe_http, now=runner.clock.wall(), own_last_used=runner.last_job_finished
+            cfg,
+            http=probe_http,
+            now=runner.clock.wall(),
+            own_last_used=runner.last_job_finished,
+            serve_api_key=probe_key,
         )
 
     runner.busy = busy
