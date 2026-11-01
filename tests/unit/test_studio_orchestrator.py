@@ -1064,6 +1064,22 @@ async def test_the_story_build_maps_the_layers_files(tmp_path: Path) -> None:
     assert "src/m.py (" in first and "def made() -> None" in first and "## In scope" not in first
 
 
+async def test_a_task_run_without_the_repo_map_has_no_preamble_and_no_map_event(tmp_path: Path) -> None:
+    """The story's layer build (brief recipes, 2026-11-01): its brief shows the layer's files, so the run
+    builds no repository map even where the config turns the map on."""
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True}})
+    build = Plan((), (Subtask("build", "write it", "docs"),))
+    engine = FakeEngine({"docs": [DONE]})
+    orch = StudioOrchestrator(cfg, engine, router=ChiefRouter())
+    await orch.execute_task("g", repo=repo, plan=build, detach=True, synthesise=False, repo_map=False)
+    first = next(r for r in engine.requests if r.role == "docs").messages[1].content
+    assert orch.preamble is None and not first.startswith("[Repository map]")
+    lines = (orch.run_dir.path / "events.jsonl").read_text().splitlines()
+    kinds = [json.loads(x)["kind"] for x in lines]
+    assert "run_start" in kinds and "repo_map" not in kinds
+
+
 # ---- the test gate ----
 
 

@@ -17,9 +17,9 @@ GUIDE_SHARE = 0.2
 CHARS_PER_TOKEN = 3
 FILE_HEAD_CHARS = 2_000
 """How much of a big non-Python file the outline form keeps."""
-_PATH = re.compile(
-    r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh))\b"
-)
+PATH_EXTENSIONS = "py|md|yaml|yml|toml|json|js|ts|tsx|css|html|sql|sh"
+"""The extensions that make a word in prose a repository path (a regex alternation)."""
+_PATH = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:{PATH_EXTENSIONS}))\b")
 """A repository path in prose: at least one directory, a known extension."""
 
 
@@ -49,7 +49,7 @@ _ALSO = "### Also named (not shown)"
 _BACKTICKS = re.compile(r"`+")
 
 
-def _fenced(body: str) -> str:
+def fenced(body: str) -> str:
     """`body` in a code fence longer than any backtick run in it, so a Markdown file's own ``` fences
     cannot close it early and spill the rest of the file into the brief as markup."""
     fence = "`" * max(3, 1 + max((len(m.group()) for m in _BACKTICKS.finditer(body)), default=0))
@@ -61,6 +61,15 @@ def _assemble(parts: list[str], listed: list[str]) -> str:
     if listed:
         sections.append(_ALSO + "\n" + "\n".join(listed))
     return "\n\n".join(sections)
+
+
+_WHOLE_HEADING = re.compile(r"^### (.+) \(whole, \d+ lines\)$", re.MULTILINE)
+
+
+def whole_paths(guide: str) -> frozenset[str]:
+    """The paths a `repo_guide` shows whole (its `### <path> (whole, N lines)` headings), so a brief that
+    carries the guide does not carry them a second time (the dossier)."""
+    return frozenset(_WHOLE_HEADING.findall(guide))
 
 
 def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
@@ -84,13 +93,13 @@ def repo_guide(repo: Path, commit: str, text: str, *, budget_chars: int) -> str:
     for k, (path, body) in enumerate(files):
         n = len(body.splitlines())
         rest = lines[k + 1 :]
-        whole = f"### {path} (whole, {n} lines)\n{_fenced(body)}"
+        whole = f"### {path} (whole, {n} lines)\n{fenced(body)}"
         if len(_assemble([*parts, whole], rest)) <= budget_chars:
             parts.append(whole)
             shown = k + 1
             continue
         heading = f"### {path} (outline: read a span with read_file offset and limit)"
-        card = f"{heading}\n{_fenced(outline(path, body, head_chars=FILE_HEAD_CHARS))}"
+        card = f"{heading}\n{fenced(outline(path, body, head_chars=FILE_HEAD_CHARS))}"
         if len(_assemble([*parts, card], rest)) <= budget_chars:
             parts.append(card)
             shown = k + 1

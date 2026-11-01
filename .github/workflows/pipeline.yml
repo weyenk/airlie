@@ -29,7 +29,7 @@ jobs:
   # ---- stage 1: static ----
   static:
     # Apple Silicon, like the project itself: mlx and vllm-mlx are macOS-only dependencies.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
   # ---- stage 2: the lowest level of the pyramid ----
   unit:
     needs: static
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
   # concurrent macOS runners: more shards than that only queue.
   mutation:
     needs: unit
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -80,7 +80,7 @@ jobs:
   mutation-gate:
     needs: mutation
     if: always() && needs.mutation.result != 'skipped'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +101,7 @@ jobs:
   # ---- stage 3: units in concert ----
   functional:
     needs: unit
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
 
   contract:
     needs: unit
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +123,7 @@ jobs:
 
   integration:
     needs: unit
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -160,7 +160,7 @@ jobs:
 
   journey:
     needs: [functional, contract, integration]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -172,7 +172,7 @@ jobs:
   # ---- stage 5: environmental ----
   performance:
     needs: [e2e, journey]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +183,7 @@ jobs:
 
   security:
     needs: [e2e, journey]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

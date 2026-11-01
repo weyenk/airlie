@@ -847,6 +847,7 @@ class StudioOrchestrator:
         checkpoints: Mapping[str, Callable[[], Awaitable[bool]]] | None = None,
         gate_follow_up: str | None = None,
         map_focus: Sequence[str] = (),
+        repo_map: bool = True,
         prepare: Callable[[Path], Awaitable[None]] | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
@@ -868,6 +869,8 @@ class StudioOrchestrator:
         places files the plan builds on (the story pipeline writes a layer's tests from the architect's
         package), so `base_sha` is the commit before them and the map shows them. What it writes it commits
         and, for tests, `lock`s itself.
+        `repo_map=False` builds no repository map, whatever the config says: the story's layer build gives
+        the coder the layer's files in its brief (brief recipes, 2026-11-01).
         `max_steps` limits every subtask's steps in this run, follow-ups included."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
@@ -893,7 +896,8 @@ class StudioOrchestrator:
         self.checkpoints, self.halted = dict(checkpoints or {}), False
         if prepare is not None:
             await prepare(self.worktree)
-        self._prepare(self.worktree, test_cmd, map_focus)
+        if repo_map:
+            self._prepare(self.worktree, test_cmd, map_focus)
         chosen: Plan | None = given
         final = ""
         if given is not None:

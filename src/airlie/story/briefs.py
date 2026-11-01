@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.amigos import CRITIC_CONTRACT, PROOF_CONTRACT
 from airlie.story.board import Card
+from airlie.story.context import whole_paths
 from airlie.story.epic import EpicSpec, Estimate
 from airlie.story.epic_plan import PLAN_REFINE_FIELD, STORY_PLAN_CONTRACT, StoryPlan, StoryProgress
 from airlie.story.initiative import (
@@ -241,7 +242,7 @@ def layers_brief(
             if survey.strip()
             else []
         ),
-        *dossier_section(dossier or {}),
+        *dossier_section(dossier or {}, whole_paths(guide)),
         hub_text("brief-layers-rules", max_layers=max_layers),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
         *(
@@ -435,7 +436,7 @@ def built_so_far(diff: str) -> str:
     return _clip("\n".join(lines), BUILT_CHARS)
 
 
-def _layer_context(story: Story, layers: tuple[Layer, ...], i: int, built: str, guide: str) -> str:
+def _layer_context(story: Story, layers: tuple[Layer, ...], i: int, built: str, guide: str = "") -> str:
     """What a role told about layer `i` reads first: the story, the layer's place in the stack and its
     scope, the later layers it leaves alone, the digest of the earlier ones (`built`, from built_so_far) and
     the code guide."""
@@ -513,7 +514,7 @@ def critic_brief(
         "## The agreed proof for this layer\n" + "\n".join(_proof_lines(proof)),
         "## The package's test files (data; not in the repository until the coder writes them)\n"
         + "\n\n".join(f"### {path}\n{_fenced(text, 'python')}" for path, text in files.items()),
-        *dossier_section(dossier or {}),
+        *dossier_section(dossier or {}, shown=files),
         *([conventions_text] if conventions_text else []),
         CRITIC_CONTRACT,
         *_again(feedback),
@@ -580,23 +581,36 @@ def layer_sources(repo: Path, commit: str, layer: Layer) -> dict[str, str]:
     return out
 
 
+NOT_SHOWN = "### Not shown (read with read_file)"
+"""The heading of the one block that lists the files past a section's budget."""
+
+
 def _sources_section(
-    sources: Mapping[str, str], heading: str = "brief-package-sources", budget: int = SOURCES_CHARS
+    sources: Mapping[str, str],
+    heading: str = "brief-package-sources",
+    budget: int = SOURCES_CHARS,
+    shown: Collection[str] = frozenset(),
 ) -> list[str]:
     """Files given whole under the hub text `heading`, each fenced, each clipped at SOURCE_CHARS, all within
-    `budget`: the layer's existing files (lever 2), or the story's dossier (P2)."""
-    if not sources:
+    `budget`: the layer's existing files (lever 2), or the story's dossier (P2). A path in `shown` is already
+    in the brief and is left out; the files past the budget are listed once, with their line counts, under
+    `NOT_SHOWN`."""
+    files = {p: t for p, t in sources.items() if p not in shown}
+    if not files:
         return []
     parts = [hub_text(heading)]
     left = budget
-    for path, text in sources.items():
+    unlisted: list[str] = []
+    for path, text in files.items():
         cap = min(SOURCE_CHARS, left)
         if cap <= 0:
-            parts.append(f"### {path}\n[clipped: read it with read_file]")
+            unlisted.append(f"- {path} ({len(text.splitlines())} lines)")
             continue
-        shown = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
-        left -= len(shown)
-        parts.append(f"### {path}\n{_fenced(shown, PurePosixPath(path).suffix.lstrip('.'))}")
+        body = text if len(text) <= cap else text[:cap].rstrip() + "\n[clipped]"
+        left -= len(body)
+        parts.append(f"### {path}\n{_fenced(body, PurePosixPath(path).suffix.lstrip('.'))}")
+    if unlisted:
+        parts.append(NOT_SHOWN + "\n" + "\n".join(unlisted))
     return ["\n\n".join(parts)]
 
 
@@ -604,9 +618,10 @@ DOSSIER_CHARS = 30_000
 """The most of the story's dossier one brief carries (P2): the files earlier steps read."""
 
 
-def dossier_section(files: Mapping[str, str]) -> list[str]:
-    """The story's dossier as a brief section (P2 of the performance plan): none when it holds no file."""
-    return _sources_section(files, "brief-dossier", DOSSIER_CHARS)
+def dossier_section(files: Mapping[str, str], shown: Collection[str] = ()) -> list[str]:
+    """The story's dossier as a brief section (P2 of the performance plan): none when it holds no file
+    that the brief does not already show (`shown`)."""
+    return _sources_section(files, "brief-dossier", DOSSIER_CHARS, shown)
 
 
 def _package_layer(
@@ -685,7 +700,7 @@ def package_brief(
         story_text(story),
         *epic_section(story),
         *_package_layer(story, layers, i, proof, sources),
-        *dossier_section({p: t for p, t in (dossier or {}).items() if p not in (sources or {})}),
+        *dossier_section(dossier or {}, shown=set(sources or {}) | whole_paths(guide)),
         *([built] if built else []),
         *([f"## {GUIDE_HEADING}\n{guide}"] if guide else []),
         *(
@@ -703,19 +718,10 @@ def package_brief(
     return "\n\n".join(parts)
 
 
-def build_brief(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    package: Package,
-    *,
-    guide: str = "",
-    built: str = "",
-    dossier: Mapping[str, str] | None = None,
-) -> str:
-    """The coder's brief for layer `i`, from its package: the layer's context, the tests it makes pass
-    (each under the criterion it covers; they are in the worktree and locked), the files, the interfaces,
-    the numbered steps and when it is done. There is no second prose brief (D3, planning-line design)."""
+def package_blocks(story: Story, layers: tuple[Layer, ...], i: int, package: Package) -> str:
+    """The package as the coder reads it: the tests it makes pass (each under the criterion it covers; they
+    are in the worktree and locked), the files, the interfaces, the numbered steps and when it is done,
+    joined by blank lines."""
     layer = layers[i]
     owned = {c.id: c for c in story.acceptance if c.id in layer.acceptance}
     tests: list[str] = []
@@ -732,7 +738,6 @@ def build_brief(
     steps = [f"{n}. {step}" for n, step in enumerate(package.steps, 1)]
     return "\n\n".join(
         [
-            _layer_context(story, layers, i, built, guide),
             "## The tests you make pass (in the worktree, locked)\n"
             + (
                 "The acceptance criteria this layer makes true, each with the tests that prove it:\n"
@@ -744,28 +749,14 @@ def build_brief(
             "## Interfaces\n" + ("\n".join(interfaces) or "- none"),
             "## Steps\n" + "\n".join(steps),
             f"## Done when\n{package.done_when or 'the tests above pass.'}",
-            *dossier_section(dossier or {}),
-            hub_text("package-contract"),
-            hub_text("brief-layer-plan-agents-md") + "\n" + hub_text("brief-layer-plan-edit-file"),
-            hub_text("brief-layer-plan-build-stop"),
         ]
     )
 
 
-def layer_plan(
-    story: Story,
-    layers: tuple[Layer, ...],
-    i: int,
-    package: Package,
-    *,
-    build_role: str,
-    guide: str = "",
-    built: str = "",
-    dossier: Mapping[str, str] | None = None,
-) -> Plan:
-    """The layer's plan: one `build` subtask from its package (`build_brief`). No tester subtask: the
-    tests were written by the architect and are in the worktree before the plan runs (P1, 2026-10-24)."""
-    brief = build_brief(story, layers, i, package, guide=guide, built=built, dossier=dossier)
+def layer_plan(brief: str, *, build_role: str) -> Plan:
+    """The layer's plan: one `build` subtask with `brief`, the coder's brief the layer-build recipe assembled
+    (brief recipes, 2026-11-01). No tester subtask: the tests were written by the architect and are in the
+    worktree before the plan runs (P1, 2026-10-24)."""
     return Plan((), (Subtask("build", brief, build_role),))
 
 
