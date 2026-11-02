@@ -12,10 +12,11 @@ the tests' imports of the names the layer adds are meant to fail them."""
 
 from __future__ import annotations
 
+import ast
 import re
 import shlex
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,9 @@ class RuffStep:
     sub: str
 
     def fixer(self, files: str) -> str:
-        fix = "check --fix" if self.sub == "check" else "format"
+        # --unsafe-fixes, as the coder's autofix (tools/scope.py): F841's removal of an unused local is
+        # "unsafe" (AIR-47 layer 02, 2026-11-02); the layer's tests and the gate still run after it
+        fix = "check --fix --unsafe-fixes" if self.sub == "check" else "format"
         return f"{self.ruff} {fix} --no-cache --force-exclude -- {files}"
 
     def check(self, files: str) -> str:
@@ -96,6 +99,63 @@ def lint_note(repo: Path, commit: str, commands: Sequence[str]) -> str:
     return hub_text("brief-package-lint", line_length=ruff_line_length(repo, commit))
 
 
+AMBIGUOUS = ("l", "O", "I")
+"""The names ruff's E741 refuses, which no ruff fix renames (AIR-47 layer 02, 2026-11-02:
+`for l in layers`)."""
+
+
+def _scopes(tree: ast.Module) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The outermost functions of a module: its own and its top-level classes' methods."""
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            yield node
+        elif isinstance(node, ast.ClassDef):
+            yield from (n for n in node.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef))
+
+
+def rename_ambiguous(source: str) -> str:
+    """`source` with each ambiguous name (AMBIGUOUS) a function binds renamed inside that function, at its
+    own references only (an attribute `x.l` or a keyword `f(l=1)` keeps its name) to a fresh `l_`, `o_`
+    or `i_`. A function that takes one as a parameter or declares it global is left as it is, as is the
+    module's top level: a caller may use the name. Source that does not parse comes back unchanged."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    edits: list[tuple[int, int, int, str]] = []  # (line, start, end) in UTF-8 bytes, the new name
+    for fn in _scopes(tree):
+        nodes = list(ast.walk(fn))
+        names = [n for n in nodes if isinstance(n, ast.Name)]
+        kept = {
+            a.arg
+            for n in nodes
+            if isinstance(n, ast.arguments)
+            for a in (
+                *n.posonlyargs,
+                *n.args,
+                *n.kwonlyargs,
+                *(x for x in (n.vararg, n.kwarg) if x is not None),
+            )
+        }
+        kept |= {d for n in nodes if isinstance(n, ast.Global | ast.Nonlocal) for d in n.names}
+        taken = {n.id for n in names} | kept
+        for old in AMBIGUOUS:
+            if old in kept or not any(n.id == old and isinstance(n.ctx, ast.Store) for n in names):
+                continue
+            new, k = f"{old.lower()}_", 2
+            while new in taken:
+                new, k = f"{old.lower()}_{k}", k + 1
+            taken.add(new)
+            edits += [(n.lineno, n.col_offset, n.end_col_offset or 0, new) for n in names if n.id == old]
+    if not edits:
+        return source
+    lines = source.splitlines(keepends=True)
+    for line, start, end, new in sorted(edits, reverse=True):
+        raw = lines[line - 1].encode()
+        lines[line - 1] = (raw[:start] + new.encode() + raw[end:]).decode()
+    return "".join(lines)
+
+
 class LayerLint:
     """The gate's ruff steps, run on the files a worktree's HEAD changed since `base`."""
 
@@ -114,6 +174,11 @@ class LayerLint:
         files = self._files(worktree, base)
         if not files:
             return []
+        for f in files:  # before ruff, which then formats what the rename lengthened
+            path = worktree / f
+            text = path.read_text(encoding="utf-8")
+            if (renamed := rename_ambiguous(text)) != text:
+                path.write_text(renamed, encoding="utf-8")
         quoted = " ".join(shlex.quote(f) for f in files)
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
         for s in self.steps:

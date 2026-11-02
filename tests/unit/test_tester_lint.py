@@ -56,7 +56,7 @@ def test_the_ruff_steps_are_read_from_the_gate_and_nothing_else() -> None:
 
 def test_a_step_keeps_its_ruff_and_runs_on_the_files_given_without_a_cache() -> None:
     check, fmt = ruff_steps(("uv run ruff check .", "uv run ruff format --check src tests"))
-    assert check.fixer("a.py") == "uv run ruff check --fix --no-cache --force-exclude -- a.py"
+    assert check.fixer("a.py") == "uv run ruff check --fix --unsafe-fixes --no-cache --force-exclude -- a.py"
     assert check.check("a.py") == "uv run ruff check --no-cache --force-exclude -- a.py"
     assert fmt.fixer("a.py") == "uv run ruff format --no-cache --force-exclude -- a.py"
     assert fmt.check("a.py") == "uv run ruff format --check --no-cache --force-exclude -- a.py"
@@ -85,6 +85,53 @@ async def test_what_ruff_cannot_fix_is_a_finding_naming_the_step_the_file_and_th
     assert (found.kind, found.test) == ("lint_fails", GATE[0])
     assert "fix these by hand" in found.why
     assert "tests/test_long.py" in found.why and "E501" in found.why
+
+
+UNUSED_AND_AMBIGUOUS = """from collections import namedtuple
+
+Layer = namedtuple("Layer", "title l")
+
+
+def helper(n):
+    return n
+
+
+def test_positions():
+    layers = [Layer("a", 1), Layer("b", 2)]
+    top = layers[-1]
+    body = "a b"
+    positions = [body.index(l.title) for l in layers]
+    assert positions == sorted(positions)
+    for l in layers:
+        assert l.l in (1, 2)
+    assert helper(n=3) == 3
+"""
+"""AIR-47 layer 02, 2026-11-02: a package came back lint_fails on F841 (`top`, never used) and E741 (`l` in a
+comprehension and a loop), neither of which `ruff check --fix` mends."""
+
+
+async def test_an_unused_local_and_an_ambiguous_name_are_fixed_and_nothing_else_is(tmp_path: Path) -> None:
+    root, base = base_repo(tmp_path)
+    commit(root, "tests", {"tests/test_pos.py": UNUSED_AND_AMBIGUOUS})
+    assert await lint().fix(root, base) == ["tests/test_pos.py"]
+    fixed = (root / "tests" / "test_pos.py").read_text()
+    assert "top =" not in fixed
+    assert "[body.index(l_.title) for l_ in layers]" in fixed
+    assert "for l_ in layers:" in fixed and "assert l_.l in (1, 2)" in fixed  # the attribute keeps its name
+    assert 'namedtuple("Layer", "title l")' in fixed and "helper(n=3)" in fixed
+    assert await lint().check(root, base) == []
+
+
+def test_a_parameter_or_a_module_name_is_not_renamed_and_a_taken_name_is_not_reused() -> None:
+    from airlie.story.tester_lint import rename_ambiguous
+
+    source = (
+        "l = 1\n\n\ndef f(I):\n    return I\n\n\ndef g(xs):\n    l_ = 0\n    return [l for l in xs] + [l_]\n"
+    )
+    renamed = rename_ambiguous(source)
+    assert renamed.startswith("l = 1\n") and "def f(I):\n    return I\n" in renamed
+    assert "[l_2 for l_2 in xs] + [l_]" in renamed
+    assert rename_ambiguous("def broken(:\n") == "def broken(:\n"
 
 
 async def test_a_layer_that_changed_no_python_file_has_nothing_to_lint(tmp_path: Path) -> None:
