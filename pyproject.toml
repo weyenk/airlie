@@ -51,6 +51,7 @@ dev = [
     "mutmut>=3.8.0",
     "pytest-xdist>=3.8.0",
     "pytest-playwright>=0.10.0",
+    "pytest-timeout>=2.3",
 ]
 
 [build-system]
@@ -94,7 +95,11 @@ pytest_add_cli_args_test_selection = ["tests/unit/"]
 #   whose stderr is closed under mutmut's runner ("ValueError: I/O operation on closed file");
 # - the torch/peft/safetensors tests are not fork-safe: mutmut forks a worker per mutant, and on macOS torch's
 #   BLAS thread pool and Metal buffers segfault in a forked, multi-threaded process (a crash dialog per mutant).
+# --timeout: a mutant of tools/shell._run left a child holding its pipes and the test waited forever; mutmut's
+# own timeout never fired (0 timeouts, "Terminate orphan process" each time), and the shard sat until its job
+# was cancelled (PR 207, 2026-11-02). pytest-timeout fails such a test, so the mutant counts as caught.
 pytest_add_cli_args = [
+    "--timeout=60",
     "--deselect",
     "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
     "--deselect",
