@@ -21,6 +21,7 @@ from airlie.report import RunReport
 from airlie.router import ChiefRouter
 from airlie.story import pipeline as pipeline_module
 from airlie.story.amigos import Agreement, Meeting, ProofTest
+from airlie.story.asking import MapUse
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
 from airlie.story.epic_plan import PlannedStory, ScopedPath, render_story_card
@@ -37,6 +38,7 @@ from airlie.story.pipeline import (
     _reason,
     _running,
     build_commit,
+    stage_map,
 )
 from airlie.story.publish import Publisher, PublishError, run_cmd
 from airlie.story.state import STAGES, StoryState
@@ -307,6 +309,39 @@ async def test_each_layer_build_records_its_brief_event_and_runs_without_the_rep
     builds = [t for t in tasks if t.get("gate_follow_up") == "build"]
     assert len(builds) == 2 and all(t["repo_map"] is False for t in builds)
     assert all("map_focus" not in t for t in builds)
+
+
+async def test_only_the_layer_planning_starts_with_a_repository_map_and_its_map_is_capped(
+    tmp_path: Path,
+) -> None:
+    """Repo map per stage (2026-11-02): refine, the package drafting and the rest carry their files in their
+    briefs, so they start with no map; the layer planning's is focused and capped at repo_map.story_chars."""
+    asked: dict[str, dict[str, Any]] = {}
+
+    class Records(StudioOrchestrator):
+        async def execute_task(self, query_text: str, **kwargs: Any) -> RunReport:
+            if kwargs.get("gate_follow_up") != "build":
+                asked.setdefault(query_text.split(":")[0], kwargs)
+            return await super().execute_task(query_text, **kwargs)
+
+    repo = repo_with_marker_tests(tmp_path)
+    st = await pipeline(tmp_path, repo, happy_engine(), studio=Records).run(text_card("avatars"))
+    assert st.blocked is None, st.blocked
+    assert {"refine", "layers", "packages"} <= set(asked)
+    assert asked["layers"]["repo_map"] is True and asked["layers"]["map_chars"] == 3000
+    assert all(kw["repo_map"] is False for stage, kw in asked.items() if stage != "layers")
+
+
+def test_a_mapped_stage_is_focused_on_the_paths_its_brief_names_and_the_rest_get_none() -> None:
+    brief = (
+        "Change src/airlie/repo_map.py, then tests/unit/test_repo_map.py; see src/airlie/repo_map.py again."
+    )
+    assert stage_map("survey", brief, 3000) == MapUse(
+        focus=("src/airlie/repo_map.py", "tests/unit/test_repo_map.py"), chars=3000
+    )
+    assert stage_map("layers", "no paths here", 1200) == MapUse(chars=1200)
+    for stage in ("refine", "packages", "package", "critic", "proof", "criteria"):
+        assert stage_map(stage, brief, 3000) == MapUse(on=False)
 
 
 async def test_a_package_the_parser_refuses_is_asked_again_with_the_reason_then_stops_the_story(

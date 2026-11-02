@@ -1064,6 +1064,27 @@ async def test_the_story_build_maps_the_layers_files(tmp_path: Path) -> None:
     assert "src/m.py (" in first and "def made() -> None" in first and "## In scope" not in first
 
 
+async def test_map_chars_caps_a_runs_map_below_the_configs(tmp_path: Path) -> None:
+    """A story's survey and layer planning (2026-11-02): `map_chars` caps the map under repo_map.max_chars."""
+    repo = repo_with_marker_tests(tmp_path)
+    for n in range(40):
+        (repo / f"module_{n:02d}.py").write_text(f"def f{n}() -> int:\n    return {n}\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "many")
+    cfg = cfg_for(
+        tmp_path, review={"enabled": False}, extra={"repo_map": {"enabled": True, "max_chars": 6000}}
+    )
+    look = Plan((), (Subtask("look", "read it", "docs"),))
+    sizes = []
+    for chars in (None, 400):
+        orch = StudioOrchestrator(cfg, FakeEngine({"docs": [DONE]}), router=ChiefRouter())
+        await orch.execute_task("g", repo=repo, plan=look, detach=True, synthesise=False, map_chars=chars)
+        lines = (orch.run_dir.path / "events.jsonl").read_text().splitlines()
+        [event] = [e for e in map(json.loads, lines) if e["kind"] == "repo_map"]
+        sizes.append(event["chars"])
+    assert sizes[0] > 400 >= sizes[1] > 0
+
+
 async def test_a_task_run_without_the_repo_map_has_no_preamble_and_no_map_event(tmp_path: Path) -> None:
     """The story's layer build (brief recipes, 2026-11-01): its brief shows the layer's files, so the run
     builds no repository map even where the config turns the map on."""
