@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import re
 import shlex
+import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import Finding
-from airlie.teams.worktree import changed_files, differs_from
+from airlie.teams.worktree import changed_files, differs_from, find_file, read_blob
 from airlie.tools.protocol import ToolContext
 from airlie.tools.shell import run_cmd
 
@@ -59,6 +61,39 @@ def ruff_steps(commands: Sequence[str]) -> tuple[RuffStep, ...]:
         if (m["sub"] == "check" and "--fix" not in rest) or (m["sub"] == "format" and "--check" in rest):
             steps.append(RuffStep(c.strip(), m["ruff"].strip(), m["sub"]))
     return tuple(steps)
+
+
+RUFF_LINE_LENGTH = 88
+"""Ruff's line length when no configuration names one."""
+_RUFF_CONFIGS = ((".ruff.toml", ()), ("ruff.toml", ()), ("pyproject.toml", ("tool", "ruff")))
+"""Where ruff reads its configuration, in its own order: the first of these that configures ruff wins."""
+
+
+def ruff_line_length(repo: Path, commit: str) -> int:
+    """The line length ruff applies at `commit`, read from its configuration files at the repository's root
+    as ruff reads them (RUFF_LINE_LENGTH when none sets one). A file that does not parse is passed over."""
+    for name, table in _RUFF_CONFIGS:
+        kind, sha = find_file(repo, commit, name)
+        if kind != "blob":
+            continue
+        try:
+            config: Any = tomllib.loads(read_blob(repo, sha))
+        except tomllib.TOMLDecodeError:
+            continue
+        for key in table:
+            config = config.get(key) if isinstance(config, dict) else None
+        if isinstance(config, dict):
+            length = config.get("line-length")
+            return length if isinstance(length, int) else RUFF_LINE_LENGTH
+    return RUFF_LINE_LENGTH
+
+
+def lint_note(repo: Path, commit: str, commands: Sequence[str]) -> str:
+    """What the architect is told about the gate's lint before it writes a package's tests: the line length
+    and the rules ruff's fixer cannot mend (`brief-package-lint`); "" when the gate runs no ruff step."""
+    if not ruff_steps(commands):
+        return ""
+    return hub_text("brief-package-lint", line_length=ruff_line_length(repo, commit))
 
 
 class LayerLint:

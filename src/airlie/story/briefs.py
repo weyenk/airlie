@@ -687,9 +687,11 @@ def package_brief(
     proof: Sequence[ProofTest] = (),
     sources: Mapping[str, str] | None = None,
     dossier: Mapping[str, str] | None = None,
+    lint: str = "",
 ) -> str:
     """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
     2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
+    `lint` is what the gate's ruff will hold its tests to (tester_lint.lint_note), when the gate runs ruff.
     The coder's step and context budget size the package (`brief-layers-sizing`); the lessons recorded for
     the repository, the guide and `built` are carried when there are any; `feedback` is why the last try
     came back. `proof` is the layer's tests as the story meeting agreed them (three-amigos D9, 2026-10-24):
@@ -710,6 +712,7 @@ def package_brief(
         ),
         hub_text("package-tests-rules"),
         hub_text("test-rules"),
+        *([lint] if lint else []),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
         PACKAGE_CONTRACT,
         *([AGREED_PROOF_CONTRACT] if proof else []),

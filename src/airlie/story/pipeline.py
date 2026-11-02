@@ -110,6 +110,7 @@ from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import same_layers
 from airlie.story.state import STAGES, StoryState
+from airlie.story.tester_lint import lint_note
 from airlie.story.testing_conventions import conventions, conventions_text, test_levels
 from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
@@ -1457,6 +1458,7 @@ class StoryPipeline:
             proof=proof,
             sources=layer_sources(self.repo, base_sha, layers[i]),  # lever 2, on the layer's real base
             dossier=self._dossier(st, base_sha),
+            lint=lint_note(self.repo, base_sha, self.commands),
         )
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await self._ask(
@@ -1542,6 +1544,7 @@ class StoryPipeline:
             proof=self._layer_proof(st, layers[0]),
             sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
             dossier=self._dossier(st, sha),
+            lint=lint_note(self.repo, sha, self.commands),
         )
         st.emit("packages_drafting", layers=len(layers))
         talk = self.asker.conversation(

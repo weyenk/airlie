@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from airlie.prompts import text as hub_text
 from airlie.story.amigos import ProofTest
 from airlie.story.board import Card, text_card
 from airlie.story.briefs import (
@@ -182,6 +183,13 @@ def test_the_layers_contract_asks_for_files_and_interfaces() -> None:
 
 def pbrief(**kw: Any) -> str:
     return package_brief(STORY, LAYERS, 1, max_steps=40, context_budget=65_536, **kw)
+
+
+def test_the_package_brief_carries_the_gates_lint_note_only_when_given() -> None:
+    """AIR-47 and AIR-48, 2026-11-01: four package tries lost to E501 and E741 the fixer cannot mend."""
+    note = hub_text("brief-package-lint", line_length=110)
+    assert "110 characters" in note and note in pbrief(lint=note)
+    assert "## Lint your tests must pass" not in pbrief()
 
 
 def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_coders_budget() -> None:
