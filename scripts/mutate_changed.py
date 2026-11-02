@@ -230,6 +230,30 @@ def needs_mac(path: str) -> bool:
     return bool(MAC_IMPORT.search((ROOT / path).read_text()))
 
 
+def mac_functions() -> list[str]:
+    """[tool.airlie.mutation] mac_functions: the functions whose code runs only on macOS (module:function)."""
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    return list(cfg["tool"]["airlie"]["mutation"].get("mac_functions", []))
+
+
+def function_glob(ref: str) -> str:
+    """'airlie.tools.shell:_run' -> the glob of its mutants as `functions_of` names it; 'module:Class.method'
+    for a method."""
+    module, _, name = ref.partition(":")
+    cls, _, method = name.rpartition(".")
+    return f"{module}.xǁ{cls}ǁ{method}__mutmut_*" if cls else f"{module}.x_{name}__mutmut_*"
+
+
+_GLOB_MODULE = re.compile(r"^(?P<module>.+?)\.x[_ǁ]")
+
+
+def on_mac(glob: str, mac_modules: set[str], mac_globs: set[str]) -> bool:
+    """Whether a function's mutants (`glob`) run on the mac job: a function `mac_functions` names, or one of a
+    module that imports vllm-mlx or mlx (`mac_modules`)."""
+    found = _GLOB_MODULE.match(glob)
+    return glob in mac_globs or (found is not None and found["module"] in mac_modules)
+
+
 def platform_sources(sources: list[str], mac_only: bool) -> tuple[list[str], list[str]]:
     """(the sources this run mutates, the ones it leaves to another platform): with `mac_only`, only the
     files that need a Mac; where vllm-mlx is missing, every file but those; on a Mac without the flag, all."""
@@ -507,6 +531,7 @@ def main() -> int:
         )
         if unenrolled:
             out += ["changed but not enrolled (not gated):", *[f"- {f}" for f in unenrolled]]
+    impacted = list(sources)  # before the split: the mac job also takes the macOS-only functions of the rest
     if args.scope != "project":
         sources, elsewhere = platform_sources(sources, args.mac_only)
         if elsewhere:
@@ -517,11 +542,24 @@ def main() -> int:
         weights = {g: size(f) for f in project_files() for g in file_globs(f)}
     elif args.scope == "changed" and not whole:
         # the merge base only when there is a changed enrolled file to map (a shallow checkout has none)
-        weights, touched = changed_functions(merge_base_of(args.base), sources) if sources else ({}, [])
+        weights, touched = changed_functions(merge_base_of(args.base), impacted) if impacted else ({}, [])
     else:
         # by function, as a change is: a module's mutants in one shard took 91 minutes for a big module and
         # hit the timeout (PR 207, 2026-11-02); mutmut mutates only functions, so their globs are all of them
-        weights = {g: last - first + 1 for f in sources for g, _, first, last in functions_of(f)}
+        weights = {g: last - first + 1 for f in impacted for g, _, first, last in functions_of(f)}
+    if args.scope != "project":
+        mac_modules = {module_name(f) for f in impacted if needs_mac(f)}
+        mac_globs = {function_glob(ref) for ref in mac_functions()}
+        moved = sorted(g for g in weights if g in mac_globs and not on_mac(g, mac_modules, set()))
+        if args.mac_only:
+            weights = {g: w for g, w in weights.items() if on_mac(g, mac_modules, mac_globs)}
+        elif not HAS_VLLM:
+            weights = {g: w for g, w in weights.items() if not on_mac(g, mac_modules, mac_globs)}
+        if moved and (args.mac_only or not HAS_VLLM):
+            where = "here" if args.mac_only else "on the mac job"
+            out += [f"macOS-only functions (mac_functions) mutated {where}:", *[f"- {g}" for g in moved]]
+        if args.scope == "changed" and not whole:
+            touched = [t for t in touched if any(f"- {s}:" in t for s in sources)]
     globs = ["airlie.*"] if args.scope == "project" and not args.shard else list(weights)
     if args.scope == "changed" and sources and not whole:
         out += [f"{len(weights)} changed function(s) in {len(sources)} enrolled file(s):", *touched]

@@ -38,6 +38,54 @@ def test_the_mac_job_mutates_only_the_mac_sources_and_a_runner_without_vllm_muta
     assert mc.platform_sources(sources, mac_only=False) == (sources, [])
 
 
+SHELL = "src/airlie/tools/shell.py"
+
+
+def test_each_listed_macos_only_function_names_a_function_of_an_enrolled_file() -> None:
+    """[tool.airlie.mutation] mac_functions: a glob that names no function would leave its mutants nowhere."""
+    refs = mc.mac_functions()
+    assert {"airlie.tools.shell:_spawn_confined", "airlie.tools.shell:_explained"} <= set(refs)
+    known = {g for f in mc.enrolled_files() for g, *_ in mc.functions_of(f)}
+    assert all(mc.function_glob(ref) in known for ref in refs)
+    assert mc.function_glob("airlie.lts.bank:SharedMemoryBank.new_id") == (
+        "airlie.lts.bank.xǁSharedMemoryBankǁnew_id__mutmut_*"
+    )
+
+
+def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays_on_linux(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PRs 207 and 208 (2026-11-02): shell's confined spawn runs only under macOS's sandbox. On Linux no test
+    reached it, so each of its mutants passed every test of `_run` (5.5 minutes each): the shard ran out."""
+    confined = {
+        mc.function_glob("airlie.tools.shell:_spawn_confined"),
+        mc.function_glob("airlie.tools.shell:_explained"),
+    }
+    run = mc.function_glob("airlie.tools.shell:_run")
+
+    def globs(argv: list[str], vllm: bool) -> set[str]:
+        fake = FakeMutmut()
+        monkeypatch.setattr(mc, "mutmut", fake.run)
+        monkeypatch.setattr(mc, "mutmut_out", lambda *a: "")
+        monkeypatch.setattr(mc, "enrolled_files", lambda: [SHELL, MAC])
+        monkeypatch.setattr(mc, "HAS_VLLM", vllm)
+        monkeypatch.setattr(
+            mc.sys, "argv", ["mutate_changed.py", "--scope", "enrolled", "--gate-only", *argv]
+        )
+        mc.main()
+        [ran] = [r for r in fake.runs if r[0] == "run"]
+        return set(ran[1:]) - {"--max-children"}
+
+    linux = globs([], vllm=False)
+    mac_job = globs(["--mac-only"], vllm=True)
+    assert run in linux and not confined & linux
+    assert confined <= mac_job and run not in mac_job
+    assert any(g.startswith("airlie.engine.parsers.qwen3_xml_raw.") for g in mac_job)
+    assert not any(g.startswith("airlie.engine.parsers.qwen3_xml_raw.") for g in linux)
+    assert "macOS-only functions (mac_functions) mutated on the mac job:" in capsys.readouterr().out
+    assert globs([], vllm=True) == linux | mac_job  # a Mac without --mac-only runs them all
+
+
 def test_only_changed_enrolled_files_are_impacted_in_scope_order() -> None:
     changed = {"src/airlie/lts/bank.py", "src/airlie/engine/sse.py", "src/airlie/cli.py", "README.md"}
     assert mc.impacted_sources(changed, SCOPE) == ["src/airlie/engine/sse.py", "src/airlie/lts/bank.py"]
