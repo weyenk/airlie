@@ -42,7 +42,9 @@ def test_the_pipeline_shows_stages_and_a_lane_per_layer_and_opens_on_the_failed_
     evidence.expect(lanes.nth(0), "layer 01 is built").to_have_attribute("data-status", "passed")
     evidence.expect(lanes.nth(1), "layer 02 stopped").to_have_attribute("data-status", "failed")
     evidence.expect(
-        app_page.locator("[data-flow] > button[data-job=refine]"), "the refine stage passed"
+        # each stage's jobs sit in its [data-stage] column since PR 211 (a stage stacks every job it has)
+        app_page.locator("[data-flow] [data-stage] > button[data-job=refine]"),
+        "the refine stage passed",
     ).to_have_attribute("data-status", "passed")
     evidence.expect(detail(app_page), "the failed job is open").to_contain_text("Layer 02")
     evidence.expect(detail(app_page), "it says why it retried").to_contain_text("no_new_test")
