@@ -385,7 +385,13 @@ def test_a_link_that_leaves_the_commit_is_not_followed_and_is_named_as_one(tmp_p
         "the files of the commit"
     )
     (repo / "AGENTS.md").unlink()
-    (repo / "AGENTS.md").symlink_to(outside)  # a long path is cut where it is quoted: it is the file's text
+    # a long path is cut where it is quoted: it is the file's text. Made long here, whatever tmp_path is: a
+    # Linux runner's tmp_path is short enough that it was not cut (PR 207's mutation run, 2026-11-02)
+    deep = tmp_path / ("d" * 60) / ("e" * 60)
+    deep.mkdir(parents=True)
+    outside = deep / "outside.md"
+    outside.write_text("## Test gate\n```\nmake test\n```\n")
+    (repo / "AGENTS.md").symlink_to(outside)
     git(repo, "add", "AGENTS.md")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "linked out, absolute")
     with pytest.raises(NoTestGate) as e:
