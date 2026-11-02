@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from airlie.story.tester_lint import LayerLint, RuffStep, lint_for, ruff_steps
+from airlie.story.tester_lint import LayerLint, RuffStep, lint_for, lint_note, ruff_steps
 from tests.unit.git_helpers import git
 from tests.unit.test_story_layer_checks import commit, repo
 
@@ -92,3 +92,29 @@ async def test_a_layer_that_changed_no_python_file_has_nothing_to_lint(tmp_path:
     commit(root, "docs", {"README.md": "x=1\n"})
     assert await lint().fix(root, base) == []
     assert await lint().check(root, base) == []
+
+
+def test_the_lint_note_names_the_repositorys_line_length_and_what_ruff_cannot_fix(tmp_path: Path) -> None:
+    """AIR-48 and AIR-47, 2026-11-01: four package tries came back lint_fails on E501 (strings and docstrings
+    of 111-113 characters against 110) and E741 (`l`), which ruff's fixer cannot mend, and the architect had
+    never been told the line length. The note reads it as ruff would: ruff.toml before pyproject.toml."""
+    root, base = repo(
+        tmp_path, {"ruff.toml": RUFF_TOML, "pyproject.toml": "[tool.ruff]\nline-length = 110\n"}
+    )
+    note = lint_note(root, base, GATE)
+    assert "60 characters" in note and "110" not in note
+    assert "E741" in note and "`l`" in note
+    assert "string" in note and "docstring" in note
+
+
+def test_the_lint_note_reads_pyproject_falls_back_to_ruffs_default_and_is_empty_without_a_ruff_step(
+    tmp_path: Path,
+) -> None:
+    root, base = repo(
+        tmp_path, {"pyproject.toml": "[project]\nname = 'x'\n\n[tool.ruff]\nline-length = 110\n"}
+    )
+    assert "110 characters" in lint_note(root, base, GATE)
+    (tmp_path / "bare").mkdir()
+    bare, bare_base = repo(tmp_path / "bare", {"calc.py": "x = 1\n"})
+    assert "88 characters" in lint_note(bare, bare_base, GATE)
+    assert lint_note(root, base, (f"{sys.executable} -m pytest -q",)) == ""
