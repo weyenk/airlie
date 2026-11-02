@@ -110,6 +110,8 @@ def build_serve_command(cfg: AirlieConfig, engine_name: str, registry_path: Path
         argv.append("--enable-mtp")
     if e.use_paged_cache:
         argv.append("--use-paged-cache")
+    if e.buffer_cache_mb is not None:  # read by airlie's entry point, never passed on to vllm-mlx
+        argv += ["--buffer-cache-mb", str(e.buffer_cache_mb)]
     if e.kv_cache_quantization:
         argv.append("--kv-cache-quantization")
     if e.api_key:

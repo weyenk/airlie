@@ -36,6 +36,11 @@ topology:
           # effect at the next `task restart -- --topology studio`, which this change never runs.
           kv_cache_quantization: true
           extra_args: ["--cache-memory-mb", "24576"]
+          # MLX keeps freed GPU buffers for reuse up to this many MB (vllm-mlx's own cap is device-scaled: 103.9
+          # GB here). 2026-11-01 (AIR-47 layer 02): after six hours the engine failed two 52-56k-token prefills
+          # with "Insufficient Memory" beside 36 GB of weights and the 24 GB prefix cache; a prefill's buffers
+          # are reused within it, so 8 GB keeps the speed and gives the rest back.
+          buffer_cache_mb: 8192
       models:
         generalist:
           preload: true
