@@ -55,6 +55,20 @@ def test_vllm_mlx_starts_with_airlie_parsers_registered(monkeypatch: pytest.Monk
     assert started[0]["parsers"]["qwen3_xml_raw"] is Qwen3XmlRawToolParser
 
 
+@pytest.mark.usefixtures("fresh_process")
+def test_the_buffer_cache_flag_becomes_mlxs_limit_and_never_reaches_vllm_mlx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AIR-47 layer 02, 2026-11-01: after six hours the engine failed two 52-56k-token prefills with
+    "Insufficient Memory" while MLX could keep up to 103.9 GB of freed buffers (vllm-mlx's device-scaled
+    cap)."""
+    monkeypatch.delenv("MLX_BUFFER_CACHE_LIMIT", raising=False)
+    started = cli(monkeypatch, "serve", "--buffer-cache-mb", "8192", "--port", "8080")
+    assert vllm_mlx_serve.main() == 0
+    assert [s["argv"] for s in started] == [["vllm_mlx_serve", "serve", "--port", "8080"]]
+    assert vllm_mlx_serve.os.environ["MLX_BUFFER_CACHE_LIMIT"] == str(8192 * 1024 * 1024)
+
+
 @pytest.mark.parametrize(
     "flag", [["--tool-call-parser", "qwen3_xml_rwa"], ["--tool-call-parser=qwen3_xml_rwa"]]
 )
