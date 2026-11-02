@@ -16,14 +16,14 @@ import ast
 import re
 import shlex
 import tomllib
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import Finding
-from airlie.teams.worktree import changed_files, differs_from, find_file, read_blob
+from airlie.teams.worktree import changed_files, differs_from, find_file, read_blob, tree_paths
 from airlie.tools.protocol import ToolContext
 from airlie.tools.shell import run_cmd
 
@@ -156,6 +156,93 @@ def rename_ambiguous(source: str) -> str:
     return "".join(lines)
 
 
+STDLIB_IMPORTS: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "Mapping",
+            "MutableMapping",
+            "Sequence",
+            "MutableSequence",
+            "Callable",
+            "Iterable",
+            "Iterator",
+            "Awaitable",
+            "AsyncIterator",
+            "AsyncIterable",
+            "Coroutine",
+            "Generator",
+        ),
+        "from collections.abc import {}",
+    ),
+    **dict.fromkeys(
+        ("Any", "cast", "Literal", "Protocol", "TypeVar", "ClassVar", "Final", "overload", "TYPE_CHECKING"),
+        "from typing import {}",
+    ),
+    "Path": "from pathlib import {}",
+    "dataclass": "from dataclasses import {}",
+    "field": "from dataclasses import {}",
+    "SimpleNamespace": "from types import {}",
+    **dict.fromkeys(
+        ("json", "os", "re", "sys", "asyncio", "subprocess", "shutil", "tempfile", "time", "textwrap"),
+        "import {}",
+    ),
+}
+"""The import an undefined name (ruff's F821, which no ruff fix mends) gets when the standard library is where
+it comes from by convention (AIR-47 layer 02, 2026-11-02: `Mapping` in an added test)."""
+_UNDEFINED = re.compile(r"Undefined name `(?P<name>[A-Za-z_][A-Za-z0-9_]*)`")
+
+
+def _definers(worktree: Path, names: set[str]) -> dict[str, set[str]]:
+    """For each of `names`, the modules of the worktree's committed Python outside tests that define it at
+    their top level (a class, a function or an assignment), as dotted names (a leading src/ dropped)."""
+    found: dict[str, set[str]] = {n: set() for n in names}
+    if not names:
+        return found
+    alternation = "|".join(sorted(names))
+    top = re.compile(rf"^(?:class|def|async def)\s+({alternation})\b|^({alternation})\s*(?::[^=\n]*)?=", re.M)
+    for rel in tree_paths(worktree, "HEAD"):
+        parts = Path(rel).parts
+        if not rel.endswith(".py") or "tests" in parts or parts[0].startswith("."):
+            continue
+        try:
+            text = (worktree / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        module = ".".join(Path(*(parts[1:] if parts[0] == "src" else parts)).with_suffix("").parts)
+        for m in top.finditer(text):
+            found[m[1] or m[2]].add(module.removesuffix(".__init__"))
+    return found
+
+
+def import_for(name: str, definers: Mapping[str, set[str]]) -> str | None:
+    """The import line an undefined `name` gets: the standard library's (STDLIB_IMPORTS), else the one module
+    of the repository that defines it; None when it is not known or more than one module defines it."""
+    if name in STDLIB_IMPORTS:
+        return STDLIB_IMPORTS[name].format(name)
+    modules = definers.get(name, set())
+    return f"from {next(iter(modules))} import {name}" if len(modules) == 1 else None
+
+
+def with_imports(source: str, lines: Sequence[str]) -> str:
+    """`source` with each import line of `lines` it does not hold placed after its last top-level import
+    (or after its docstring when it has none); ruff's fixer then sorts them. Source that does not parse comes
+    back unchanged."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    new = [x for x in dict.fromkeys(lines) if x not in source.splitlines()]
+    if not new:
+        return source
+    at = 0
+    for n, node in enumerate(tree.body):
+        is_doc = n == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        if isinstance(node, ast.Import | ast.ImportFrom) or is_doc:
+            at = node.end_lineno or node.lineno
+    body = source.splitlines(keepends=True)
+    return "".join([*body[:at], *(x + "\n" for x in new), *body[at:]])
+
+
 class LayerLint:
     """The gate's ruff steps, run on the files a worktree's HEAD changed since `base`."""
 
@@ -181,9 +268,34 @@ class LayerLint:
                 path.write_text(renamed, encoding="utf-8")
         quoted = " ".join(shlex.quote(f) for f in files)
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
+        await self._import_undefined(worktree, files, quoted, ctx)
         for s in self.steps:
             await run_cmd(s.fixer(quoted), ctx, shell=True)  # what it could not fix, check() reports
         return differs_from(worktree, "HEAD", files)
+
+    async def _import_undefined(
+        self, worktree: Path, files: list[str], quoted: str, ctx: ToolContext
+    ) -> None:
+        """Add the import of each name ruff's F821 says is undefined, where `import_for` knows the one place
+        it comes from; any other F821 is left for check() to report."""
+        check = next((s for s in self.steps if s.sub == "check"), None)
+        if check is None:
+            return
+        undefined: dict[str, set[str]] = {}
+        for f in files:  # one file a run, one line an error: no path to match, and no output cap to cut it
+            flags = "--select F821 --output-format concise --no-cache --force-exclude"
+            cmd = f"{check.ruff} check {flags} -- {shlex.quote(f)}"
+            result = await run_cmd(cmd, ctx, shell=True)
+            if not result.ok:
+                undefined[f] = {m["name"] for m in _UNDEFINED.finditer(result.output)}
+        definers = _definers(
+            worktree, {n for names in undefined.values() for n in names} - set(STDLIB_IMPORTS)
+        )
+        for f, names in undefined.items():
+            lines = [line for n in sorted(names) if (line := import_for(n, definers)) is not None]
+            if lines:
+                path = worktree / f
+                path.write_text(with_imports(path.read_text(encoding="utf-8"), lines), encoding="utf-8")
 
     async def check(self, worktree: Path, base: str) -> list[Finding]:
         """A `lint_fails` finding for each step that still fails on the changed files, with its output."""
