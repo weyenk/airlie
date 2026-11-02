@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { layer, stage } from "@/test-utils/workflow-fixtures";
+import { job, layer, stage } from "@/test-utils/workflow-fixtures";
 import Pipeline from "./Pipeline.vue";
 
 const STAGES_ONLY = [stage("intake", "Intake"), stage("refine", "Refine", "running"), stage("survey", "Survey", "skipped"), stage("layers", "Plan layers", "pending"), stage("publish", "Publish", "pending"), stage("review", "Review", "pending")];
@@ -66,4 +66,46 @@ test("on a phone the pipeline runs top to bottom, each layer's three jobs side b
   expect(rows[1].get("[data-job=checks]").text()).toBe("Checks 2x");
   await rows[1].get("[data-job=build]").trigger("click");
   expect(w.emitted("pick")).toEqual([["layer-02", "build"]]);
+});
+
+// the story meeting is the layers stage's second job (the server's `_meeting_job`)
+const WITH_MEETING = () => {
+  const layers = stage("layers", "Plan layers");
+  layers.jobs.push(job({ id: "meeting", label: "Three amigos", role: "amigos", status: "running", duration_s: 240 }));
+  return [stage("intake", "Intake"), stage("refine", "Refine"), layers, stage("publish", "Publish", "pending")];
+};
+
+test("a stage with more than one job stacks them: the three amigos under Plan layers", async () => {
+  const w = draw(WITH_MEETING());
+  const layers = w.get("[data-stage][data-node=layers]");
+  expect(layers.findAll("[data-job]").map((b) => b.attributes("data-job"))).toEqual(["layers", "meeting"]);
+  const box = layers.get("[data-job=meeting]");
+  expect(box.text()).toContain("Three amigos");
+  expect(box.text()).toContain("amigos · 4 min");
+  expect(box.attributes("data-status")).toBe("running");
+  await box.trigger("click");
+  expect(w.emitted("pick")).toEqual([["layers", "meeting"]]);
+});
+
+test("the meeting is picked out when selected", () => {
+  const w = draw(WITH_MEETING(), { selected: ["layers", "meeting"] });
+  expect(w.get("[data-job=meeting]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[data-job=layers]").attributes("aria-pressed")).toBe("false");
+});
+
+test("on a phone the meeting gets its own row under Plan layers", async () => {
+  phone(true);
+  const w = draw(WITH_MEETING());
+  const rows = w.findAll("[data-vstage]");
+  expect(rows.map((r) => [r.attributes("data-node"), r.attributes("data-job")])).toEqual([
+    ["intake", "intake"],
+    ["refine", "refine"],
+    ["layers", "layers"],
+    ["layers", "meeting"],
+    ["publish", "publish"],
+  ]);
+  expect(rows[2].text()).toContain("Plan layers");
+  expect(rows[3].text()).toContain("Three amigos");
+  await rows[3].trigger("click");
+  expect(w.emitted("pick")).toEqual([["layers", "meeting"]]);
 });

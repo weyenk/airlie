@@ -2,7 +2,7 @@
 import { useMediaQuery } from "@vueuse/core";
 import { computed } from "vue";
 import { PHONE_QUERY } from "@/lib/breakpoints";
-import type { FlowNode } from "@/api/workflows";
+import type { FlowJob, FlowNode } from "@/api/workflows";
 import { briefSpan } from "./format";
 import JobBox from "./JobBox.vue";
 import LayerLane from "./LayerLane.vue";
@@ -44,10 +44,7 @@ const figure = computed(() => {
 
 const isSelected = (node: string, job: string) => props.selected?.[0] === node && props.selected?.[1] === job;
 const SHORT: Record<string, string> = { tests: "Tests", checks: "Checks", build: "Build" };
-const sub = (n: FlowNode) => {
-  const j = n.jobs[0];
-  return [j.role, j.duration_s ? briefSpan(j.duration_s) : null].filter(Boolean).join(" · ") || j.status;
-};
+const sub = (j: FlowJob) => [j.role, j.duration_s ? briefSpan(j.duration_s) : null].filter(Boolean).join(" · ") || j.status;
 </script>
 
 <template>
@@ -61,13 +58,16 @@ const sub = (n: FlowNode) => {
     <div v-if="!phone" data-flow class="flex items-center overflow-x-auto p-[18px] [mask-image:linear-gradient(to_right,#000_96%,transparent)]">
       <template v-for="(item, i) in items" :key="item.kind === 'stage' ? item.node.id : 'lanes'">
         <span v-if="i" class="flex-none px-2 text-muted-foreground" aria-hidden="true">→</span>
-        <JobBox
-          v-if="item.kind === 'stage'"
-          :node-id="item.node.id"
-          :job="item.node.jobs[0]"
-          :selected="isSelected(item.node.id, item.node.jobs[0].id)"
-          @pick="(n, j) => emit('pick', n, j)"
-        />
+        <div v-if="item.kind === 'stage'" data-stage :data-node="item.node.id" class="flex flex-none flex-col gap-2">
+          <JobBox
+            v-for="j in item.node.jobs"
+            :key="j.id"
+            :node-id="item.node.id"
+            :job="j"
+            :selected="isSelected(item.node.id, j.id)"
+            @pick="(n, jb) => emit('pick', n, jb)"
+          />
+        </div>
         <div v-else class="flex flex-none flex-col gap-2">
           <LayerLane v-for="n in item.nodes" :key="n.id" :node="n" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
         </div>
@@ -76,21 +76,24 @@ const sub = (n: FlowNode) => {
 
     <div v-else class="flex flex-col px-3 pt-2 pb-3">
       <template v-for="item in items" :key="item.kind === 'stage' ? item.node.id : 'lanes'">
-        <button
-          v-if="item.kind === 'stage'"
-          type="button"
-          data-vstage
-          :data-job="item.node.id"
-          :data-node="item.node.id"
-          :data-status="item.node.jobs[0].status"
-          :aria-pressed="isSelected(item.node.id, item.node.jobs[0].id) ? 'true' : 'false'"
-          :class="['flex items-center gap-2.5 border-b border-border px-1 py-[9px] text-left last:border-b-0', isSelected(item.node.id, item.node.jobs[0].id) ? 'ring-2 ring-ring' : '', item.node.jobs[0].status === 'running' ? 'motion-safe:animate-pulse' : '']"
-          @click="emit('pick', item.node.id, item.node.jobs[0].id)"
-        >
-          <span :class="['size-2 flex-none rounded-full', DOT[item.node.jobs[0].status]]" />
-          <span :class="['font-semibold', item.node.jobs[0].status === 'pending' ? 'text-muted-foreground' : '']">{{ item.node.label }}</span>
-          <span class="ml-auto font-mono text-xs text-muted-foreground">{{ sub(item.node) }}</span>
-        </button>
+        <template v-if="item.kind === 'stage'">
+          <button
+            v-for="(j, k) in item.node.jobs"
+            :key="j.id"
+            type="button"
+            data-vstage
+            :data-job="j.id"
+            :data-node="item.node.id"
+            :data-status="j.status"
+            :aria-pressed="isSelected(item.node.id, j.id) ? 'true' : 'false'"
+            :class="['flex items-center gap-2.5 border-b border-border py-[9px] text-left last:border-b-0', k ? 'pr-1 pl-5' : 'px-1', isSelected(item.node.id, j.id) ? 'ring-2 ring-ring' : '', j.status === 'running' ? 'motion-safe:animate-pulse' : '']"
+            @click="emit('pick', item.node.id, j.id)"
+          >
+            <span :class="['size-2 flex-none rounded-full', DOT[j.status]]" />
+            <span :class="['font-semibold', j.status === 'pending' ? 'text-muted-foreground' : '']">{{ k ? j.label : item.node.label }}</span>
+            <span class="ml-auto font-mono text-xs text-muted-foreground">{{ sub(j) }}</span>
+          </button>
+        </template>
         <template v-else>
           <div
             v-for="n in item.nodes"
