@@ -193,7 +193,7 @@ revision repeats an attempt number (`attempt -= 1` in `_ready_package`). So:
 - Lanes come from `state.layers`. Events for a layer that is no longer in the state (one dropped by hand) are
   not drawn.
 
-See the open question at the end: this is Claude's proposal and needs Noah's yes.
+Noah chose this on 2026-11-02: every try cycle stays visible, with a divider at each block and resume.
 
 ### Events the pipeline adds
 
@@ -255,6 +255,7 @@ model" as `checks` has today).
 - Phone: fold finished, open active, bottom sheet on tap.
 - These six box shapes are enough for now.
 - No stall warning yet.
+- A resumed story shows every try cycle, with a divider at each block and resume.
 
 ## Claude's calls (check these)
 
@@ -269,12 +270,6 @@ model" as `checks` has today).
 - One row per try cycle in a layer lane; earlier cycles stay visible.
 - Layers dropped from the state by hand are not drawn.
 - The done-check row appears only when the run logged it.
-
-## Open question for Noah
-
-How much of a resumed story's history should a layer lane show? The proposal above keeps every try cycle and
-marks each block and resume with a divider. The alternative is to show only the latest session and fold the
-earlier ones into a `2 earlier sessions` row.
 
 ## Left to the builder
 
