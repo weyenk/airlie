@@ -122,6 +122,64 @@ async def test_an_unused_local_and_an_ambiguous_name_are_fixed_and_nothing_else_
     assert await lint().check(root, base) == []
 
 
+UNIMPORTED = '''"""Added tests."""
+
+from pathlib import Path
+
+
+async def no_ghstack(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+    raise PublishError("`gh stack --help` exited 1")
+
+
+def test_twice() -> None:
+    assert Twice and no_ghstack
+'''
+"""AIR-47 layer 02, 2026-11-02: the architect's test additions used `Mapping` and `PublishError` unimported
+(F821, which no ruff fix mends), and the package came back lint_fails until the story blocked."""
+
+
+async def test_an_undefined_name_gets_its_import_when_it_comes_from_one_known_place(tmp_path: Path) -> None:
+    root, base = base_repo(tmp_path)
+    commit(
+        root,
+        "sources",
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/publish.py": "class PublishError(Exception):\n    pass\n",
+            "src/pkg/a.py": "Twice = 2\n",
+            "src/pkg/b.py": "def Twice():\n    return 2\n",  # a second definer: no import is guessed
+            "tests/test_helpers.py": "class PublishError(Exception):\n    pass\n",  # tests are not a source
+        },
+    )
+    base = git(root, "rev-parse", "HEAD")
+    commit(root, "tests", {"tests/test_publish.py": UNIMPORTED})
+    assert await lint().fix(root, base) == ["tests/test_publish.py"]
+    fixed = (root / "tests" / "test_publish.py").read_text()
+    assert (
+        "from collections.abc import Mapping\n" in fixed and "from pkg.publish import PublishError\n" in fixed
+    )
+    assert fixed.startswith('"""Added tests."""\n') and "import Twice" not in fixed
+    [found] = await lint().check(root, base)
+    assert "Undefined name `Twice`" in found.why
+    assert "Mapping" not in found.why and "PublishError" not in found.why
+
+
+def test_an_import_goes_after_the_last_import_or_the_docstring_and_is_not_repeated() -> None:
+    from airlie.story.tester_lint import import_for, with_imports
+
+    assert with_imports('"""Doc."""\nx = Path()\n', ["from pathlib import Path"]) == (
+        '"""Doc."""\nfrom pathlib import Path\nx = Path()\n'
+    )
+    held = "import os\n\nx = os.sep\n"
+    assert with_imports(held, ["import os"]) == held
+    assert with_imports("import os\n\ny = json.dumps(1)\n", ["import json"]) == (
+        "import os\nimport json\n\ny = json.dumps(1)\n"
+    )
+    assert import_for("Any", {}) == "from typing import Any" and import_for("json", {}) == "import json"
+    assert import_for("Thing", {"Thing": {"pkg.m"}}) == "from pkg.m import Thing"
+    assert import_for("Thing", {"Thing": {"pkg.m", "pkg.n"}}) is None and import_for("Thing", {}) is None
+
+
 def test_a_parameter_or_a_module_name_is_not_renamed_and_a_taken_name_is_not_reused() -> None:
     from airlie.story.tester_lint import rename_ambiguous
 
