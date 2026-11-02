@@ -249,8 +249,7 @@ def load_config(
     if cfg.lts.controller.adapter_path is not None:
         cfg.lts.controller.adapter_path = (base / cfg.lts.controller.adapter_path.expanduser()).resolve()
     for repo in cfg.bridge.allowed_repos:
-        p = repo.path.expanduser()
-        repo.path = p.resolve() if p.is_absolute() else (base / p).resolve()
+        repo.path = (base / repo.path.expanduser()).resolve()  # an absolute path stays itself under `base /`
     problems = cfg.validate_references()
     if problems:
         raise ConfigError("config invalid:\n  " + "\n  ".join(problems))
