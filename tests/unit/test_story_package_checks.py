@@ -197,6 +197,54 @@ async def test_a_test_that_calls_a_method_its_class_does_not_have_is_a_finding(t
     ]
 
 
+ASSIGNED_CALLABLE_TESTS = """import unittest
+from collections.abc import Callable
+
+from calc import mul
+
+
+class RecordingBoard:
+    def __init__(self):
+        self.moves = []
+
+
+class FlakyBoard(RecordingBoard):
+    def __init__(self, refuses: Callable[[str, str], bool], message: str = "refused") -> None:
+        super().__init__()
+        self.refuses, self.message = refuses, message
+
+    def move(self, card, column):
+        if self.refuses("move", column):
+            raise RuntimeError(self.message)
+
+
+class MulTest(unittest.TestCase):
+    def setUp(self):
+        self.double, [self.triple] = (lambda n: mul(n, 2)), [lambda n: mul(n, 3)]
+        self.half: Callable[[int], int] = lambda n: n // 2
+
+    def test_mul(self):
+        self.assertEqual(self.double(3), 6)
+        self.assertEqual(self.triple(2), 6)
+        self.assertEqual(self.half(12), 6)
+"""
+
+
+async def test_a_callable_kept_on_the_instance_or_a_fake_that_is_no_test_case_is_no_finding(
+    tmp_path: Path,
+) -> None:
+    """AIR-47 layer 02, 2026-11-01: test_story_pipeline.py's FlakyBoard keeps its `refuses` callable with
+    `self.refuses, self.message = refuses, message`, and the package came back unknown_method twice, which
+    blocked the story. A name assigned through a tuple, a list or an annotation is the class's own; a fake
+    whose bases never reach unittest.TestCase is no test class to check."""
+    root, base = calc(tmp_path)
+    covers = {"AC1": ("tests/test_mul.py::MulTest::test_mul",)}
+    _, found = await check(
+        tmp_path, root, base, package({"tests/test_mul.py": ASSIGNED_CALLABLE_TESTS}, covers)
+    )
+    assert [f.test for f in found if f.kind == "unknown_method"] == []
+
+
 SWEEP_TESTS = """import itertools
 import unittest
 
