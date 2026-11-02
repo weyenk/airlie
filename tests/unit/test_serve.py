@@ -19,7 +19,7 @@ from airlie.prompts import text
 from airlie.serve.app import create_app
 from airlie.teams import TeamResult
 from tests.unit.serve_helpers import TestClient
-from tests.unit.vllm_helpers import ChatCompletionRequest
+from tests.unit.vllm_helpers import chat_completion_request
 
 
 def cfg(tmp_path: Path):
@@ -187,7 +187,7 @@ def test_vllm_mlx_reads_the_budget_from_the_body_serve_sends(tmp_path: Path) -> 
     client.post(
         "/v1/chat/completions", json={"model": "judge", "messages": [{"role": "user", "content": "yo"}]}
     )
-    read = ChatCompletionRequest.model_validate(json.loads(up.requests[0].content))
+    read = chat_completion_request().model_validate(json.loads(up.requests[0].content))
     assert read.thinking_token_budget == c.roles["judge"].thinking_budget == 8192
     assert read.max_tokens == c.roles["judge"].max_tokens
 

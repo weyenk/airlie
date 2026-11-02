@@ -28,8 +28,9 @@ permissions:
 jobs:
   # ---- stage 1: static ----
   static:
-    # Apple Silicon, like the project itself: mlx and vllm-mlx are macOS-only dependencies.
-    runs-on: macos-15
+    # Linux since 2026-11-02: mlx and vllm-mlx install on macOS only (pyproject.toml), and the tests and mutants
+    # that need them run on the `mac` and `mutation-mac` jobs (tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +42,7 @@ jobs:
   # ---- stage 2: the lowest level of the pyramid ----
   unit:
     needs: static
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -53,23 +54,23 @@ jobs:
   # concurrent macOS runners: more shards than that only queue.
   mutation:
     needs: unit
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]  # 8 since 2026-11-02: a whole-module run (a setup change) took 91 min in one of 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the merge base with the PR's base branch
       - uses: ./.github/actions/setup
-      - name: Mutation-test shard ${{ matrix.shard }} of 5
+      - name: Mutation-test shard ${{ matrix.shard }} of 8
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
         run: >-
           task mutate:changed -- --base "$BASE" --gate-only --max-children 3
-          --shard ${{ matrix.shard }}/5 --results mutation/shard-${{ matrix.shard }}.json
+          --shard ${{ matrix.shard }}/8 --results mutation/shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -77,10 +78,46 @@ jobs:
           path: mutation/
           if-no-files-found: ignore
 
+  # The unit tests that need vllm-mlx or mlx, on Apple Silicon. A macOS runner is the longest wait, so the two
+  # mac jobs start with the pipeline (no `needs`) and no other job waits for them: each is its own check.
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: task test:mac
+
+  # The mutants of the sources that import vllm-mlx or mlx (scripts/mutate_changed.py --mac-only), gated here.
+  mutation-mac:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the merge base with the PR's base branch
+      - uses: ./.github/actions/setup
+      - name: Mutation-test the mac-only sources
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+        run: >-
+          task mutate:changed -- --base "$BASE" --gate-only --max-children 3 --mac-only
+          --results mutation/shard-mac.json
+      - name: Gate the mac-only mutants
+        run: task mutate:merge -- --merge mutation --expect 1 --report mutation-mac-report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-mac  # not mutation-shard-*: the Linux gate never waits for it
+          path: |
+            mutation/
+            mutation-mac-report.md
+          if-no-files-found: ignore
+
   mutation-gate:
     needs: mutation
     if: always() && needs.mutation.result != 'skipped'
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +127,7 @@ jobs:
           pattern: mutation-shard-*
           path: mutation
       - name: Merge the shards and gate
-        run: task mutate:merge -- --merge mutation --expect 5 --report mutation-report.md
+        run: task mutate:merge -- --merge mutation --expect 8 --report mutation-report.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -101,7 +138,7 @@ jobs:
   # ---- stage 3: units in concert ----
   functional:
     needs: unit
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +149,7 @@ jobs:
 
   contract:
     needs: unit
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +160,7 @@ jobs:
 
   integration:
     needs: unit
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -160,7 +197,7 @@ jobs:
 
   journey:
     needs: [functional, contract, integration]
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -172,7 +209,7 @@ jobs:
   # ---- stage 5: environmental ----
   performance:
     needs: [e2e, journey]
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +220,7 @@ jobs:
 
   security:
     needs: [e2e, journey]
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

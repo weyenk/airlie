@@ -1213,11 +1213,12 @@ def _print_story(st: StoryState) -> None:
         console.print(
             f"  #{p['number']} {p['branch']}  {p['url']}", markup=False, highlight=False, emoji=False
         )
-    console.print(
+    console.print(  # unwrapped: a path broken across lines cannot be copied (seen on the Linux runners)
         f"state: {st.path}/state.json\nevents: {st.path}/events.jsonl",
         markup=False,
         highlight=False,
         emoji=False,
+        soft_wrap=True,
     )
 
 

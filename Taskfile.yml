@@ -557,6 +557,11 @@ tasks:
     cmds:
       - '{{.RUN}} python scripts/run_layer.py unit {{.CLI_ARGS}}'
 
+  test:mac:
+    desc: "The unit tests that need vllm-mlx or mlx (macOS only; tests/unit/conftest.py MAC_ONLY, MAC_ONLY_TESTS): the pipeline's mac job"
+    cmds:
+      - '{{.RUN}} python scripts/run_layer.py unit --mac-only {{.CLI_ARGS}}'
+
   test:functional:
     desc: "Stage 3, units in concert: functional tests (tests/functional)"
     cmds:

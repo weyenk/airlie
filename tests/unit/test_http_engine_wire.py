@@ -15,7 +15,7 @@ from airlie.config import RoleSpec, Sampling
 from airlie.engine import ContentPart, EngineError, GenRequest, Message, ToolCall, ToolSchema
 from airlie.engine.http_engine import YES_NO_SYSTEM, HTTPEngine, _error_text, _finish, _wire_message
 from airlie.engine.types import EngineCapabilities, EngineHealth, EngineStats, TokenEvent
-from tests.unit.vllm_helpers import ChatCompletionRequest
+from tests.unit.vllm_helpers import chat_completion_request
 
 
 def role_spec(**kw: Any) -> RoleSpec:
@@ -211,7 +211,7 @@ def test_vllm_mlx_reads_the_budget_from_the_body_the_engine_sends() -> None:
     e, _ = make(spec=role_spec(thinking=True, thinking_budget=100, max_tokens=4096))
     tools = [ToolSchema("read_file", "Read", {"type": "object"})]
     body = e._body(req(tools=tools, stop=["END"], max_tokens=4096), stream=True)
-    read = ChatCompletionRequest.model_validate(body)
+    read = chat_completion_request().model_validate(body)
     assert read.thinking_token_budget == 100
     assert read.max_tokens == 4096 and read.stop == ["END"]
     assert read.chat_template_kwargs == {"enable_thinking": True}
