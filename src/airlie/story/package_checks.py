@@ -18,7 +18,7 @@ import ast
 import re
 import tempfile
 import unittest
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -138,10 +138,41 @@ def _class_names(
         names |= inherited
     names |= _bound_names(cls.body)
     for node in ast.walk(cls):
-        for target in node.targets if isinstance(node, ast.Assign) else ():
-            if isinstance(target, ast.Attribute) and getattr(target.value, "id", "") == "self":
-                names.add(target.attr)
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            targets = [node.target]
+        else:
+            continue
+        names |= {t.attr for t in _unpacked(targets) if getattr(t.value, "id", "") == "self"}
     return names
+
+
+def _unpacked(targets: Iterable[ast.expr]) -> Iterator[ast.Attribute]:
+    """The attributes an assignment binds, through tuples, lists and starred names: AIR-47 layer 02,
+    2026-11-01, `self.refuses, self.message = refuses, message` bound `refuses` and the check missed it."""
+    for target in targets:
+        if isinstance(target, ast.Tuple | ast.List):
+            yield from _unpacked(target.elts)
+        elif isinstance(target, ast.Starred):
+            yield from _unpacked([target.value])
+        elif isinstance(target, ast.Attribute):
+            yield target
+
+
+def _is_test_case(
+    cls: ast.ClassDef, classes: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()
+) -> bool:
+    """Whether `cls` reaches unittest.TestCase through its bases in the same file: a fake board or engine the
+    tests use is no test class (AIR-47 layer 02, 2026-11-01: FlakyBoard(RecordingBoard) was checked)."""
+    for base in cls.bases:
+        name = _base_name(base)
+        if name.endswith("TestCase"):
+            return True
+        local = classes.get(name)
+        if local is not None and name not in seen and _is_test_case(local, classes, seen | {cls.name}):
+            return True
+    return False
 
 
 def _self_calls(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -259,7 +290,7 @@ def unknown_methods(worktree: Path, package: Package) -> list[Finding]:
             continue
         classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
         for cls in classes.values():
-            if not any(_base_name(b).endswith("TestCase") or _base_name(b) in classes for b in cls.bases):
+            if not _is_test_case(cls, classes):
                 continue
             names = _class_names(cls, classes)
             if names is None:
