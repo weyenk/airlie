@@ -552,6 +552,16 @@ async def test_timing_takes_the_engines_first_output_time_over_a_tool_call_held_
     res = await e.generate(req())
     assert res.ttft_ms == 1500.0
     assert res.decode_tps == 21 / 3.5
+    # a clock that does not start at 0, and a decode shorter than a second: the span is the request's own
+    # time less the engine's first-output time, floored at 1e-6, not 1
+    monkeypatch.setattr(he, "time", fake_clock(100.0, 105.0, 105.0))
+    late = [
+        frame({"tool_calls": [tc(0, "c", "f", "{}")]}),
+        frame({}, "tool_calls", usage={"completion_tokens": 21}, airlie_ttft_ms=4500.0),
+    ]
+    e2, _ = make({CHAT: sse(*late)})
+    res = await e2.generate(req())
+    assert res.decode_tps == 21 / 0.5
 
 
 async def test_timing_without_the_engines_time_counts_a_tool_call_only_when_nothing_streamed_before(

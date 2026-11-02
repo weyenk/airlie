@@ -125,13 +125,23 @@ async def test_a_request_the_engine_failed_is_an_engine_error_not_an_empty_answe
     with finish_reason "error" and nothing else, and airlie took it as an empty stop: the architect's package
     try was spent on "no JSON object in the reply" instead of the engine error being retried."""
     body = (
+        b'data: {"choices":[{"index":0,"delta":{"content":"pa"},"finish_reason":null}]}\n\n'
+        b'data: {"choices":[{"index":0,"delta":{"content":"rt"},"finish_reason":null}]}\n\n'
         b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}\n\n'
         b'data: {"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0}}\n\n'
         b"data: [DONE]\n\n"
     )
     eng, _ = engine({"stream": body})
-    with pytest.raises(EngineError, match="the engine failed the request"):
+    with pytest.raises(EngineError) as ei:
         await eng.generate(plain_request())
+    assert str(ei.value) == (
+        "the engine failed the request (finish_reason error; its log names why, such as "
+        "running out of GPU memory)"
+    )
+    assert ei.value.partial_text == "part"
+    with pytest.raises(EngineError):
+        await eng.generate(plain_request())
+    assert eng.stats().errors == 2  # each failed request counts once
 
 
 async def test_truncated_stream_raises() -> None:
