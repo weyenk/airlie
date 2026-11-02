@@ -1,0 +1,24 @@
+why: |
+  The adversarial reviewer's verdict on a diff (topology/review.py). A reply the parser could not read was
+  "unparsable" and the fix round was skipped; now it goes back once, in the same conversation, with what the
+  schema says is wrong (2026-11-02).
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [verdict]
+  properties:
+    verdict: {enum: [approve, request_changes]}
+    findings:
+      type: array
+      items:
+        type: object
+        required: [severity, file, claim]
+        properties:
+          severity: {enum: [blocking, minor]}
+          file: {type: string}
+          line: {type: [integer, "null"]}
+          claim: {type: string}
+          evidence: {type: string}
+shape: |
+  {"verdict": "approve" | "request_changes", "findings": [{"severity": "blocking" | "minor", "file": "...",
+   "line": 12, "claim": "...", "evidence": "..."}]}

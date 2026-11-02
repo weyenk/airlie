@@ -22,6 +22,7 @@ dependencies = [
     # airlie additions
     "typer>=0.15",
     "pyyaml>=6.0",
+    "jsonschema>=4.23", # prompts/reply: each node's answer checked against its template's schema
     "psutil>=6",
     "mcp>=2.3",
     "autogen-agentchat>=0.7", # spec 01 §2: AutoGen team orchestrator

@@ -468,20 +468,23 @@ async def test_a_reviewer_reply_cut_off_with_no_visible_text_is_an_error_review_
     assert trace["raw"] == why and orch.runs["fix"].fix_rounds == 0  # no blocking findings, no fix round
 
 
-async def test_unparsable_review_skips_the_fix_round(tmp_path: Path) -> None:
+async def test_a_review_still_unparsable_after_its_fix_turn_skips_the_fix_round(tmp_path: Path) -> None:
+    """The reviewer's unreadable verdict goes back once (`review-fix`, a steer event); unreadable again, the
+    review is unparsable and the coder gets no fix round."""
     repo = repo_with_marker_tests(tmp_path)
     engine = FakeEngine(
         {
             "chief": [PLAN, SYNTH],
             "coder": [WRITE_PASS, RUN, DONE],
             "docs": [DONE],
-            "reviewer": [FakeReply(text="fine")],
+            "reviewer": [FakeReply(text="fine"), FakeReply(text="still fine")],
         }
     )
     orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
     report = await orch.execute_task("g", repo=repo, test_cmd="./check.sh")
     ev = events(report)
     assert [e["verdict"] for e in ev if e["kind"] == "review"] == ["unparsable"]
+    assert [e["id"] for e in ev if e["kind"] == "steer" and e.get("role") == "reviewer"] == ["review-fix"]
     assert not [e for e in ev if e["kind"] == "fix_round"] and report.final_answer == "all done"
 
 

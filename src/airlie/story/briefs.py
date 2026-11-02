@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from airlie.prompts import text as hub_text
+from airlie.prompts.reply import reply
 from airlie.story.amigos import CRITIC_CONTRACT, PROOF_CONTRACT
 from airlie.story.board import Card
 from airlie.story.context import whole_paths
@@ -70,15 +71,9 @@ contradicts the request, or itself, is no reason to block: write the story again
 over 0..10000; in the meeting product saw the story contradict the request and blocked, asking a person to
 pick the domain the request had already given, instead of writing its own story again."""
 
-LAYERS_CONTRACT = """End your reply with one ```json block holding exactly one object:
-{"layers": [{"slug": "data-model", "title": "...", "scope": "the files or areas this layer may touch",
- "acceptance": ["AC1"], "brief": "what to build in this layer, concretely",
- "files": [{"path": "src/pkg/mod.py", "new": false}],
- "interfaces": ["def name(arg: T) -> R  (what later layers import from this one)"]}]}
-List in "acceptance" each criterion id the layer makes true, each id under one layer. Use [] only for a layer
-that makes no criterion true (a foundation): a layer that makes one true lists it, which gives the layer its
-test-first step. List every file the layer creates or changes under files, and under interfaces the
-signatures a later layer will import from it."""
+LAYERS_CONTRACT = reply("layers").contract
+"""The layer plan as the architect's whole answer, the object and nothing else
+(prompts/replies/layers.yaml)."""
 
 _REFERENCE = re.compile(r"#(?=[0-9])")
 
