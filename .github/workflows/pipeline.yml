@@ -78,9 +78,9 @@ jobs:
           path: mutation/
           if-no-files-found: ignore
 
-  # The unit tests that need vllm-mlx or mlx, on Apple Silicon: the only macOS job of the pipeline.
+  # The unit tests that need vllm-mlx or mlx, on Apple Silicon. A macOS runner is the longest wait, so the two
+  # mac jobs start with the pipeline (no `needs`) and no other job waits for them: each is its own check.
   mac:
-    needs: static
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -88,9 +88,8 @@ jobs:
       - uses: ./.github/actions/setup
       - run: task test:mac
 
-  # The mutants of the sources that import vllm-mlx or mlx (scripts/mutate_changed.py --mac-only): a sixth shard.
+  # The mutants of the sources that import vllm-mlx or mlx (scripts/mutate_changed.py --mac-only), gated here.
   mutation-mac:
-    needs: mac
     runs-on: macos-15
     timeout-minutes: 90
     steps:
@@ -104,16 +103,20 @@ jobs:
         run: >-
           task mutate:changed -- --base "$BASE" --gate-only --max-children 3 --mac-only
           --results mutation/shard-mac.json
+      - name: Gate the mac-only mutants
+        run: task mutate:merge -- --merge mutation --expect 1 --report mutation-mac-report.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mutation-shard-mac
-          path: mutation/
+          name: mutation-mac  # not mutation-shard-*: the Linux gate never waits for it
+          path: |
+            mutation/
+            mutation-mac-report.md
           if-no-files-found: ignore
 
   mutation-gate:
-    needs: [mutation, mutation-mac]
-    if: always() && needs.mutation.result != 'skipped' && needs.mutation-mac.result != 'skipped'
+    needs: mutation
+    if: always() && needs.mutation.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -124,7 +127,7 @@ jobs:
           pattern: mutation-shard-*
           path: mutation
       - name: Merge the shards and gate
-        run: task mutate:merge -- --merge mutation --expect 6 --report mutation-report.md
+        run: task mutate:merge -- --merge mutation --expect 5 --report mutation-report.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
