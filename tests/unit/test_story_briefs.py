@@ -43,7 +43,7 @@ from airlie.story.initiative import (
 )
 from airlie.story.lessons import Lesson
 from airlie.story.model import Criterion, EpicHeader, Layer, ScopedPath, Story
-from airlie.story.package import Interface, Package, PackageFile
+from airlie.story.package import PACKAGE_CONTRACT, Interface, Package, PackageFile
 from airlie.story.provenance import Builder, Chain, Checks, Contract, Cost, Provenance, Stack
 from airlie.topology.studio_plan import schedule
 
@@ -190,6 +190,15 @@ def test_the_package_brief_carries_the_gates_lint_note_only_when_given() -> None
     note = hub_text("brief-package-lint", line_length=110)
     assert "110 characters" in note and note in pbrief(lint=note)
     assert "## Lint your tests must pass" not in pbrief()
+
+
+def test_the_package_brief_asks_for_the_existing_tests_the_change_breaks() -> None:
+    """AIR-47 layer 02, 2026-11-02: a new default broke existing stack-publish tests the package never named,
+    and two builds ended red on them."""
+    text = pbrief()
+    rule = hub_text("brief-package-existing-tests")
+    assert rule in text and "## The existing tests your change breaks" in rule
+    assert text.index(hub_text("package-tests-rules")) < text.index(rule) < text.index(PACKAGE_CONTRACT)
 
 
 def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_coders_budget() -> None:

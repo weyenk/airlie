@@ -711,6 +711,7 @@ def package_brief(
             else []
         ),
         hub_text("package-tests-rules"),
+        hub_text("brief-package-existing-tests"),
         hub_text("test-rules"),
         *([lint] if lint else []),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
