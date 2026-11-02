@@ -158,5 +158,8 @@ def test_try_leaves_the_worktree_as_it_was(tmp_path: Path, monkeypatch) -> None:
 def test_try_refuses_a_brief_file_that_is_not_there(tmp_path: Path) -> None:
     root, base = calc_repo(tmp_path, NO_IMPORT)
     args = ["--worktree", str(root), "--base", base, "--brief-file", str(tmp_path / "nope.md")]
-    res = runner.invoke(cli.app, ["supervisor", "try", *args, "--config", str(try_cfg(tmp_path))])
+    # wide enough that typer's error box does not cut the path short (an 80-column runner did, 2026-11-02)
+    res = runner.invoke(
+        cli.app, ["supervisor", "try", *args, "--config", str(try_cfg(tmp_path))], env={"COLUMNS": "400"}
+    )
     assert res.exit_code == 2 and "nope.md" in res.output  # typer refuses it, no traceback
