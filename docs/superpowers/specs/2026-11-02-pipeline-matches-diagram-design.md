@@ -267,7 +267,6 @@ model" as `checks` has today).
 - A killed process draws as stopped, using `running.py`'s one-hour rule.
 - The event additions and the one corrected field above, rather than the screen inferring from order.
 - The skill pick before the meeting is a line in the amigos card, not a box.
-- One row per try cycle in a layer lane; earlier cycles stay visible.
 - Layers dropped from the state by hand are not drawn.
 - The done-check row appears only when the run logged it.
 
