@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import mlx.core as mx
 import pytest
 import yaml
 
@@ -206,6 +205,7 @@ async def test_llama_server_engine_starts_with_the_gguf_and_waits_for_its_alias(
 async def test_a_model_with_an_mtp_head_is_served_from_a_directory_built_for_it(
     tmp_path: Path,
 ) -> None:
+    mx = pytest.importorskip("mlx.core", reason="mlx installs on macOS only")
     hf = tmp_path / "hf"
     (hf / "org/base/r1").mkdir(parents=True)
     (hf / "org/base/r1/config.json").write_text("{}")

@@ -17,6 +17,27 @@ spec.loader.exec_module(mc)
 SCOPE = ["src/airlie/engine/sse.py", "src/airlie/tools/fs.py", "src/airlie/lts/bank.py"]
 
 
+MAC = "src/airlie/engine/parsers/qwen3_xml_raw.py"  # imports vllm-mlx at its top
+LAZY = "src/airlie/engine/output_parse.py"  # imports vllm-mlx inside a function
+PLAIN = "src/airlie/engine/http_engine.py"
+
+
+def test_a_source_that_imports_vllm_mlx_or_mlx_needs_a_mac() -> None:
+    assert mc.needs_mac(MAC) and mc.needs_mac(LAZY) and not mc.needs_mac(PLAIN)
+
+
+def test_the_mac_job_mutates_only_the_mac_sources_and_a_runner_without_vllm_mutates_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Linux runners (2026-11-02) cannot import vllm-mlx: its sources' mutants go to the mac job."""
+    sources = [PLAIN, MAC, LAZY]
+    assert mc.platform_sources(sources, mac_only=True) == ([MAC, LAZY], [PLAIN])
+    monkeypatch.setattr(mc, "HAS_VLLM", False)
+    assert mc.platform_sources(sources, mac_only=False) == ([PLAIN], [MAC, LAZY])
+    monkeypatch.setattr(mc, "HAS_VLLM", True)
+    assert mc.platform_sources(sources, mac_only=False) == (sources, [])
+
+
 def test_only_changed_enrolled_files_are_impacted_in_scope_order() -> None:
     changed = {"src/airlie/lts/bank.py", "src/airlie/engine/sse.py", "src/airlie/cli.py", "README.md"}
     assert mc.impacted_sources(changed, SCOPE) == ["src/airlie/engine/sse.py", "src/airlie/lts/bank.py"]
