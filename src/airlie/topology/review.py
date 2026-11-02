@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from airlie.config import RoleSpec
 from airlie.engine.protocol import Engine
 from airlie.engine.types import EngineError, GenRequest, Message
+from airlie.prompts import text as hub_text
+from airlie.prompts.reply import reply
 from airlie.skills import prompt_text
 from airlie.teams.protocol import cut_off_text
 from airlie.tools.loop import DEFAULT_STEPS, generate_with_tools
@@ -16,10 +18,8 @@ from airlie.tools.registry import ToolRegistry
 from airlie.topology.studio_plan import extract_json
 
 VERDICTS = ("approve", "request_changes")
-CONTRACT = (
-    'Reply with one JSON object: {"verdict": "approve" | "request_changes", "findings": [{"severity": '
-    '"blocking" | "minor", "file": "...", "line": 12, "claim": "...", "evidence": "..."}]}'
-)
+REVIEW = reply("review")
+CONTRACT = REVIEW.contract
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,20 @@ def _verdict_object(text: str) -> dict[str, Any] | None:
             return obj
         pos = text.rfind("{", 0, pos)
     return None
+
+
+def review_problem(text: str) -> str:
+    """What is wrong with a reply `parse_review` could not read, for the reviewer to mend: the schema's
+    problem with its last JSON object that has a "verdict" (not a finding inside it), or that it has none."""
+    found = False
+    pos = text.rfind("{")
+    while pos >= 0:
+        obj = extract_json(text[pos:])
+        if obj is not None and "verdict" in obj:
+            return REVIEW.problem(obj) or "the verdict object could not be read"
+        found = found or obj is not None
+        pos = text.rfind("{", 0, pos)
+    return 'the JSON object has no "verdict"' if found else "no JSON object in the reply"
 
 
 def parse_review(text: str) -> Review:
@@ -139,7 +153,24 @@ class Reviewer:
         )
         if res.finish_reason == "length" and not res.text.strip():  # no verdict because max_tokens ended it
             raise EngineError(cut_off_text(self.role_name, self.role, thinking=bool(res.reasoning.strip())))
-        return parse_review(res.text)
+        review = parse_review(res.text)
+        if review.verdict != "unparsable":
+            return review
+        # once, in the same conversation, with what is wrong: an unparsable verdict skipped the fix round
+        if on_steer is not None:
+            on_steer("review-fix")
+        fix = hub_text("review-fix", error=review_problem(res.text))
+        again = await self.engine.generate(
+            replace(
+                req,
+                messages=[
+                    *req.messages,
+                    Message(role="assistant", content=res.text),
+                    Message(role="user", content=fix),
+                ],
+            )
+        )
+        return parse_review(again.text)
 
 
 def nudge_from_review(r: Review) -> str:
