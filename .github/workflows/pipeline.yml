@@ -59,18 +59,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]  # 8 since 2026-11-02: a whole-module run (a setup change) took 91 min in one of 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the merge base with the PR's base branch
       - uses: ./.github/actions/setup
-      - name: Mutation-test shard ${{ matrix.shard }} of 5
+      - name: Mutation-test shard ${{ matrix.shard }} of 8
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
         run: >-
           task mutate:changed -- --base "$BASE" --gate-only --max-children 3
-          --shard ${{ matrix.shard }}/5 --results mutation/shard-${{ matrix.shard }}.json
+          --shard ${{ matrix.shard }}/8 --results mutation/shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -127,7 +127,7 @@ jobs:
           pattern: mutation-shard-*
           path: mutation
       - name: Merge the shards and gate
-        run: task mutate:merge -- --merge mutation --expect 5 --report mutation-report.md
+        run: task mutate:merge -- --merge mutation --expect 8 --report mutation-report.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
