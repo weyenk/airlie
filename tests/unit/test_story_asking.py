@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from airlie.story import asking, phase
-from airlie.story.asking import Asker
+from airlie.story.asking import Asker, MapUse
 from airlie.story.phase import fanout, read_phase, wait_for_gap, write_phase
 from tests.unit.test_studio_orchestrator import cfg_for
 
@@ -103,6 +103,30 @@ async def test_a_short_ask_and_the_build_lanes_own_asks_never_wait(tmp_path: Pat
     asker.lane = None  # the build lane's package and critic, or a standalone run
     assert await asyncio.wait_for(asker.ask(st, "package", "architect", "b"), 5) == "answer"
     assert log == ["start", "end", "start", "end"] and not [k for k, _ in st.events if k == "lane_wait"]
+
+
+async def test_an_ask_passes_its_map_to_the_studio_and_the_default_leaves_the_studios_own(
+    tmp_path: Path,
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    class Notes(Studio):
+        async def execute_task(self, *args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs)
+            return await super().execute_task(*args, **kwargs)
+
+    log: list[str] = []
+    asker = Asker(cfg_for(tmp_path), lambda: Notes(tmp_path, log), tmp_path)  # type: ignore[arg-type, return-value]
+    st = Record(tmp_path)
+    await asker.ask(st, "refine", "product", "b", long=False)
+    await asker.ask(st, "refine", "product", "b", long=False, repo_map=MapUse(on=False))
+    await asker.ask(st, "survey", "architect", "b", long=False, repo_map=MapUse(focus=("a/b.py",), chars=900))
+    keys = ("repo_map", "map_focus", "map_chars")
+    assert [{k: kw[k] for k in keys if k in kw} for kw in seen] == [
+        {},
+        {"repo_map": False, "map_focus": (), "map_chars": None},
+        {"repo_map": True, "map_focus": ("a/b.py",), "map_chars": 900},
+    ]
 
 
 def write_steps(run_dir: Path, steps: list[tuple[int, float]]) -> None:

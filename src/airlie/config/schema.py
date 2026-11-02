@@ -890,6 +890,12 @@ class RepoMapSpec(Strict):
     depth: int = Field(
         default=3, ge=1, description="directory depth shown; deeper paths collapse to 'dir/ …'"
     )
+    story_chars: int = Field(
+        default=3000,
+        ge=0,
+        description="the cap for a story's survey and layer planning map, focused on the paths their briefs "
+        "name; a story's other stages get no map (their briefs carry the files)",
+    )
 
 
 class AirlieConfig(Strict):

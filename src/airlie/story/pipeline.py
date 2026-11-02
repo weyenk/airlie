@@ -45,7 +45,7 @@ from airlie.story.amigos import (
     unbuildable,
     unresolved_note,
 )
-from airlie.story.asking import Asker, Say, StoryBlocked, StudioFactory
+from airlie.story.asking import Asker, MapUse, Say, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
 from airlie.story.briefs import (
@@ -67,7 +67,7 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.budgets import StageMeter, check, run_dir_of
-from airlie.story.context import CHARS_PER_TOKEN, guide_budget, repo_guide
+from airlie.story.context import CHARS_PER_TOKEN, guide_budget, named_paths, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
     Classified,
@@ -178,6 +178,20 @@ keeps finding the proof wrong is not asked for another."""
 
 SURVEY_STEPS = 8
 """Steps the architect gets for the survey: enough to read a handful of files."""
+
+
+MAPPED_STAGES = frozenset({"survey", "layers"})
+"""The story stages that start with a repository map (2026-11-02): the survey and the layer planning look for
+where a change goes. Every other stage's brief carries the files it works on (the layer plan's scopes, the
+package's sources, the dossier), and a map before it was 6k characters read on every turn for nothing."""
+
+
+def stage_map(stage: str, brief: str, chars: int) -> MapUse:
+    """The map a story's `stage` starts with: none, or for a `MAPPED_STAGES` one, a map focused on the paths
+    its `brief` names (the card's, the survey's) and capped at `chars` (`repo_map.story_chars`)."""
+    if stage not in MAPPED_STAGES:
+        return MapUse(on=False)
+    return MapUse(focus=tuple(named_paths(brief)), chars=chars)
 
 
 def build_commit() -> str | None:
@@ -647,7 +661,9 @@ class StoryPipeline:
     ) -> str:
         """One read-only specialist turn at the story's base (or `at`): `Asker.ask`. `long=False` for a short
         ask (the survey), which the planning lane starts at once beside the build's decode."""
-        return await self.asker.ask(st, stage, role, brief, at, steps, long=long)
+        return await self.asker.ask(
+            st, stage, role, brief, at, steps, long=long, repo_map=self._map(stage, brief)
+        )
 
     async def _ask_in_rounds[T](
         self,
@@ -675,7 +691,12 @@ class StoryPipeline:
             round_steps=round_steps,
             rounds=rounds,
             signal=signal,
+            repo_map=self._map(stage, brief),
         )
+
+    def _map(self, stage: str, brief: str) -> MapUse:
+        """`stage_map` with the config's cap."""
+        return stage_map(stage, brief, self.cfg.repo_map.story_chars)
 
     async def _usable[T](
         self,
@@ -1548,7 +1569,13 @@ class StoryPipeline:
         )
         st.emit("packages_drafting", layers=len(layers))
         talk = self.asker.conversation(
-            st, "packages", self.s.architect_role, first, steps=self.s.package_steps, at=sha
+            st,
+            "packages",
+            self.s.architect_role,
+            first,
+            steps=self.s.package_steps,
+            at=sha,
+            repo_map=self._map("packages", first),
         )
         async with contextlib.AsyncExitStack() as here:
             # held for the story's layers when there is a hold (P9), else closed with the drafting

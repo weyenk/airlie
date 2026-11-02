@@ -12,6 +12,7 @@ import asyncio
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -36,6 +37,26 @@ class Say(Protocol):
     (a story's later layer's base, P9)."""
 
     def __call__(self, nudge: str | None = None, /, *, at: str | None = None) -> Awaitable[str]: ...
+
+
+@dataclass(frozen=True)
+class MapUse:
+    """The repository map an ask starts with: the config's (the default), none (`on=False`), or one focused on
+    `focus` and capped at `chars` (a story's survey and layer planning, 2026-11-02)."""
+
+    on: bool = True
+    focus: tuple[str, ...] = ()
+    chars: int | None = None
+
+    def kwargs(self) -> dict[str, Any]:
+        """`execute_task`'s map arguments; none for the default, so the studio's own defaults hold."""
+        if self == CONFIG_MAP:
+            return {}
+        return {"repo_map": self.on, "map_focus": self.focus, "map_chars": self.chars}
+
+
+CONFIG_MAP = MapUse()
+"""The config's map, unfocused: what an ask that names no other gets."""
 
 
 class StoryBlocked(Exception):
@@ -177,12 +198,14 @@ class Asker:
         steps: int | None = None,
         images: Sequence[Path] = (),
         long: bool = True,
+        repo_map: MapUse = CONFIG_MAP,
     ) -> str:
         """One read-only specialist turn through the studio: a pinned one-subtask plan, a detached worktree at
         the record's base, or at commit `at` (removed after, even when the studio raises), no synthesis.
         `steps` limits its steps (the role's own limit when None); `images` are shown to a role that can see
         (P4: a picture the person attached to an initiative). `long` says it is a long turn, which the
-        planning lane starts in the build lane's gap; consultations, surveys, reads and renders are short."""
+        planning lane starts in the build lane's gap; consultations, surveys, reads and renders are short.
+        `repo_map` is the map the turn starts with (`MapUse`)."""
         await self.wait(st, stage, long)
         plan = Plan((), (Subtask(stage, brief, role),))
         orch, base = self.start_ask(st, stage, at)
@@ -196,6 +219,7 @@ class Asker:
                 synthesise=False,
                 max_steps=steps,
                 images=images,
+                **repo_map.kwargs(),
             )
         finally:
             remove_worktree(self.repo, orch.run_dir.path / "studio")
@@ -215,6 +239,7 @@ class Asker:
         at: str | None = None,
         images: Sequence[Path] = (),
         long: bool = True,
+        repo_map: MapUse = CONFIG_MAP,
     ) -> AsyncIterator[Say]:
         """A read-only conversation with `role` (P4, 2026-10-25): the first `say(...)` runs `brief` as the
         subtask (detached worktree at the record's base, or `at`), each later `say(text)` sends `text` as a
@@ -240,6 +265,7 @@ class Asker:
                     synthesise=False,
                     max_steps=steps,
                     images=images,
+                    **repo_map.kwargs(),
                 )
                 return self.answer(
                     report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
@@ -265,6 +291,7 @@ class Asker:
         round_steps: int,
         rounds: int,
         signal: Callable[[str], Any] | None = None,
+        repo_map: MapUse = CONFIG_MAP,
     ) -> str:
         """`ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
         conversation until a round leaves the plan unchanged or `rounds` are used."""
@@ -281,6 +308,7 @@ class Asker:
                 detach=True,
                 synthesise=False,
                 max_steps=round_steps,
+                **repo_map.kwargs(),
             )
             return self.answer(
                 report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)

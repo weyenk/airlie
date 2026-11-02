@@ -756,13 +756,15 @@ class StudioOrchestrator:
         """Raise PlanError when a plan from outside the chief cannot run (see the module's `check_plan`)."""
         check_plan(self.cfg, plan)
 
-    def _prepare(self, repo: Path, test_cmd: str | None, focus: Sequence[str] = ()) -> None:
+    def _prepare(
+        self, repo: Path, test_cmd: str | None, focus: Sequence[str] = (), max_chars: int | None = None
+    ) -> None:
         if not self.cfg.repo_map.enabled:
             return
         text, cached = build_repo_map(
             repo,
             test_cmd=test_cmd,
-            max_chars=self.cfg.repo_map.max_chars,
+            max_chars=self.cfg.repo_map.max_chars if max_chars is None else max_chars,
             depth=self.cfg.repo_map.depth,
             cache_dir=self.cfg.observability.state_dir.expanduser() / "repo_maps",
             focus=focus,
@@ -848,6 +850,7 @@ class StudioOrchestrator:
         gate_follow_up: str | None = None,
         map_focus: Sequence[str] = (),
         repo_map: bool = True,
+        map_chars: int | None = None,
         prepare: Callable[[Path], Awaitable[None]] | None = None,
         max_steps: int | None = None,
     ) -> RunReport:
@@ -870,7 +873,8 @@ class StudioOrchestrator:
         package), so `base_sha` is the commit before them and the map shows them. What it writes it commits
         and, for tests, `lock`s itself.
         `repo_map=False` builds no repository map, whatever the config says: the story's layer build gives
-        the coder the layer's files in its brief (brief recipes, 2026-11-01).
+        the coder the layer's files in its brief (brief recipes, 2026-11-01). `map_chars` caps the map below
+        `repo_map.max_chars` (a story's survey and layer planning: `repo_map.story_chars`).
         `max_steps` limits every subtask's steps in this run, follow-ups included."""
         self.step_limit = max_steps
         given = pin(plan) if plan is not None else None
@@ -897,7 +901,7 @@ class StudioOrchestrator:
         if prepare is not None:
             await prepare(self.worktree)
         if repo_map:
-            self._prepare(self.worktree, test_cmd, map_focus)
+            self._prepare(self.worktree, test_cmd, map_focus, map_chars)
         chosen: Plan | None = given
         final = ""
         if given is not None:
