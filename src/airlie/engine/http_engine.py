@@ -228,6 +228,15 @@ class HTTPEngine:
         finally:
             self._live.pop(req.request_id, None)
             self._cancelled.discard(req.request_id)
+        if finish == "error":
+            # vllm-mlx ends a request it could not serve (out of GPU memory in a prefill, AIR-47 layer 02,
+            # 2026-11-01) with finish_reason "error" and nothing else: an empty "stop" spent a package try
+            self._stats.errors += 1
+            raise EngineError(
+                "the engine failed the request (finish_reason error; its log names why, such as "
+                "running out of GPU memory)",
+                partial_text="".join(text),
+            )
         tool_calls = [
             ToolCall(id=v["id"], name=v["name"], arguments=v["arguments"]) for _, v in sorted(calls.items())
         ]
