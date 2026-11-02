@@ -519,7 +519,9 @@ def main() -> int:
         # the merge base only when there is a changed enrolled file to map (a shallow checkout has none)
         weights, touched = changed_functions(merge_base_of(args.base), sources) if sources else ({}, [])
     else:
-        weights = {module_glob(f): size(f) for f in sources}
+        # by function, as a change is: a module's mutants in one shard took 91 minutes for a big module and
+        # hit the timeout (PR 207, 2026-11-02); mutmut mutates only functions, so their globs are all of them
+        weights = {g: last - first + 1 for f in sources for g, _, first, last in functions_of(f)}
     globs = ["airlie.*"] if args.scope == "project" and not args.shard else list(weights)
     if args.scope == "changed" and sources and not whole:
         out += [f"{len(weights)} changed function(s) in {len(sources)} enrolled file(s):", *touched]
