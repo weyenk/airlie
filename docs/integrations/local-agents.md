@@ -38,7 +38,7 @@ The sample's default model is `airlie/generalist`, the chief's (see below). Pick
 except the reviewer (Muse Glimmer).
 Each role's prompt is prepended to OpenCode's own system prompt by `task serve`. The `limit.context` values
 assume the studio profile (`max_kv_size: 131072`); under the single profile the engine caps at 65536. The thinking
-models (`architect`, `research`, `generalist`) have `limit.output` 16384, as their `max_tokens` in `airlie.yaml`:
+models have `limit.output` at their `max_tokens` in `airlie.yaml` (`architect` and `generalist` 24576, `research` 16384):
 OpenCode sends it as `max_tokens`, which caps the thinking and the reply together, so at 4096 they could spend it
 all thinking and return an empty reply (`finish_reason: "length"`). For a role that thinks, `task serve` also sends
 its `thinking_budget` as `thinking_token_budget`, the per-request field vllm-mlx reads to cap reasoning tokens (one

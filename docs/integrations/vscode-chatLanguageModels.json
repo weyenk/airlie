@@ -22,8 +22,8 @@
         "url": "http://127.0.0.1:8080/v1/chat/completions",
         "toolCalling": true,
         "vision": true,
-        "maxInputTokens": 112000,
-        "maxOutputTokens": 16384,
+        "maxInputTokens": 106496,
+        "maxOutputTokens": 24576,
         "thinking": true,
         "streaming": true,
         "editTools": [
@@ -75,8 +75,8 @@
         "url": "http://127.0.0.1:8090/v1/chat/completions",
         "toolCalling": true,
         "vision": false,
-        "maxInputTokens": 112000,
-        "maxOutputTokens": 16384,
+        "maxInputTokens": 106496,
+        "maxOutputTokens": 24576,
         "thinking": true,
         "streaming": true
       }
