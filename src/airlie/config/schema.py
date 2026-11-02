@@ -105,6 +105,13 @@ class EngineSpec(Strict):
         default=False,
         description="engine accepts num_draft_tokens per request (HAL budgets apply); vllm-mlx 0.5.0: no",
     )
+    buffer_cache_mb: int | None = Field(
+        default=None,
+        gt=0,
+        description="vllm_mlx: MLX's cap on freed GPU buffers it keeps for reuse (MLX_BUFFER_CACHE_LIMIT); "
+        "None = vllm-mlx's device-scaled cap (103.9 GB on a 128 GB Mac, which ran a six-hour engine out of "
+        "memory on 52-56k-token prefills, AIR-47 2026-11-01)",
+    )
     extra_args: list[str] = Field(default_factory=list, description="appended verbatim to `vllm-mlx serve`")
     server_parsers: bool = Field(
         default=True,

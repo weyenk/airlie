@@ -118,6 +118,12 @@ def test_serve_command_extra_args_and_kv_quant(tmp_path: Path) -> None:
     assert argv[-1] == "--enable-metrics"
 
 
+def test_serve_command_passes_the_buffer_cache_only_when_set(tmp_path: Path) -> None:
+    argv = build_serve_command(cfg(tmp_path, buffer_cache_mb=8192), "main", Path("m.yaml"))
+    assert argv[argv.index("--buffer-cache-mb") + 1] == "8192"
+    assert "--buffer-cache-mb" not in build_serve_command(cfg(tmp_path), "main", Path("m.yaml"))
+
+
 def test_serve_command_omits_parsers_when_model_has_none(tmp_path: Path) -> None:
     c = cfg(tmp_path)
     c.models["base"].tool_call_parser = None
