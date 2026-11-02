@@ -45,7 +45,7 @@ from airlie.story.amigos import (
     unbuildable,
     unresolved_note,
 )
-from airlie.story.asking import Asker, MapUse, Say, StoryBlocked, StudioFactory
+from airlie.story.asking import ASK_LAYER, Asker, MapUse, Say, StoryBlocked, StudioFactory
 from airlie.story.board import Board, Card, Column, note
 from airlie.story.brief_recipe import BriefInputs, assemble, load_recipe
 from airlie.story.briefs import (
@@ -216,7 +216,11 @@ class StoryWaiting(Exception):
     """A dependent story cannot start yet: the story it is built on (its last `after:` label) has not
     reached review, so there is no branch to build on. This is a wait, not a stop: the card goes back to
     where it waits (To Do), nothing is recorded as blocked, and the tick promotes it when its dependency's
-    pull requests are open (D5 of the plans phase, 2026-10-24)."""
+    pull requests are open (D5 of the plans phase, 2026-10-24). `on` is the key of that story."""
+
+    def __init__(self, message: str, *, on: str) -> None:
+        super().__init__(message)
+        self.on = on
 
 
 def _rows(orch: StudioOrchestrator) -> list[dict[str, Any]]:
@@ -509,7 +513,7 @@ class StoryPipeline:
             await self._costed(st, card, "publish")
             await self._finish(st, card)
         except StoryWaiting as e:
-            await self._wait(st, card, str(e))
+            await self._wait(st, card, str(e), e.on)
         except StoryBlocked as e:
             await self._block(st, card, str(e))
         except asyncio.CancelledError:
@@ -611,9 +615,11 @@ class StoryPipeline:
             saved = json.loads((self.stories_dir / dep / "state.json").read_text())
             stage = str(saved.get("stage"))
         except (OSError, ValueError, AttributeError):
-            raise StoryWaiting(f"waiting for {dep}: it has not been started") from None
+            raise StoryWaiting(f"waiting for {dep}: it has not been started", on=dep) from None
         if stage != "review":
-            raise StoryWaiting(f"waiting for {dep}: its pull requests are not open yet (it is at '{stage}')")
+            raise StoryWaiting(
+                f"waiting for {dep}: its pull requests are not open yet (it is at '{stage}')", on=dep
+            )
         built = saved.get("built") or {}
         branch = str(built[max(built)]["branch"]) if built else ""
         if not _BRANCH.fullmatch(branch):
@@ -1010,6 +1016,7 @@ class StoryPipeline:
         )
         tree = st.path / "meeting-tree"
         remove_worktree(self.repo, tree)  # one a killed run left behind
+        st.emit("amigos_start", resumed=st.meeting is not None)
         add_worktree(self.repo, tree, branch=None, start_point=sha)
         try:
             meeting = self.meeting(self.cfg, self._meeting_tools(tree), self._on_turn(st))
@@ -1534,9 +1541,9 @@ class StoryPipeline:
         )
         told = f"{again}\n\n{next_package_brief(story, layers, i, proof, sources)}"
         st.emit("package_resumed", layer=f"{i + 1:02d}", studio_run=run)
+        self._package_run = run  # before the turn: a reply that cannot be used is still this run's
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await say(told, at=base_sha)
-        self._package_run = run
         return parse_package(text, layers[i], story, gated=_gated(proof), base=self._files_at(base_sha))
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
@@ -1596,32 +1603,43 @@ class StoryPipeline:
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             for i, layer in enumerate(layers):
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
+                token = ASK_LAYER.set(nn)
                 try:
-                    sources = layer_sources(self.repo, sha, layer)
-                    asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
-                    at = self._files_at(sha)
-                    got = parse_package(await say(asked), layer, story, gated=_gated(proof), base=at)
-                    if isinstance(got, Package) and proof:
-                        told = await self._objections(st, layers, i, sha, got, proof)
-                        if told is not None:
-                            got = parse_package(await say(told), layer, story, gated=_gated(proof), base=at)
-                except StoryError as e:
-                    st.drafts[nn] = {"unusable": str(e)}
-                    st.emit("retry", stage="package", error=str(e), reply=e.reply)
-                    st.emit(
-                        "package_returned", layer=nn, attempt=1, kinds=["package_unusable"], studio_run=run
-                    )
-                    break
-                if isinstance(got, ProofChange):  # its layer has the proof revised when it comes to it
-                    st.drafts[nn] = {
-                        "proof_change": [list(c) for c in got.changes],
-                        "criteria_change": [list(c) for c in got.criteria],
-                        "run": run,
-                    }
-                    break
-                st.drafts[nn] = {"package": got.to_dict(), "run": run}
-                st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
-                st.save()
+                    try:
+                        st.emit("package_draft_start", layer=nn)
+                        sources = layer_sources(self.repo, sha, layer)
+                        asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
+                        at = self._files_at(sha)
+                        got = parse_package(await say(asked), layer, story, gated=_gated(proof), base=at)
+                        if isinstance(got, Package) and proof:
+                            told = await self._objections(st, layers, i, sha, got, proof)
+                            if told is not None:
+                                got = parse_package(
+                                    await say(told), layer, story, gated=_gated(proof), base=at
+                                )
+                    except StoryError as e:
+                        st.drafts[nn] = {"unusable": str(e)}
+                        st.emit("retry", stage="package", error=str(e), reply=e.reply)
+                        st.emit(
+                            "package_returned",
+                            layer=nn,
+                            attempt=1,
+                            kinds=["package_unusable"],
+                            studio_run=run,
+                        )
+                        break
+                    if isinstance(got, ProofChange):  # its layer has the proof revised when it comes to it
+                        st.drafts[nn] = {
+                            "proof_change": [list(c) for c in got.changes],
+                            "criteria_change": [list(c) for c in got.criteria],
+                            "run": run,
+                        }
+                        break
+                    st.drafts[nn] = {"package": got.to_dict(), "run": run}
+                    st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
+                    st.save()
+                finally:
+                    ASK_LAYER.reset(token)
 
     def _layer_proof(self, st: StoryState, layer: Layer) -> tuple[ProofTest, ...]:
         """The tests the agreement holds for `layer`, as it stands now (a revision changes it)."""
@@ -1885,6 +1903,27 @@ class StoryPipeline:
         *,
         feedback: str | None = None,
     ) -> Package:
+        """`_ready_package`, with the layer named on the `run` event of every ask it makes."""
+        token = ASK_LAYER.set(f"{i + 1:02d}")
+        try:
+            return await self._ready_package_for(
+                st, story, layers, i, base_sha, built, guide, feedback=feedback
+            )
+        finally:
+            ASK_LAYER.reset(token)
+
+    async def _ready_package_for(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        base_sha: str,
+        built: str,
+        guide: str,
+        *,
+        feedback: str | None = None,
+    ) -> Package:
         """A package for layer `i` that passes the readiness check (package_checks): up to
         story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
         base; what a try left (a reply that could not be parsed, or the findings) goes back to the architect
@@ -1918,6 +1957,7 @@ class StoryPipeline:
         while attempt < self.s.package_attempts:
             attempt += 1
             st.emit("package_start", layer=nn, attempt=attempt)
+            self._package_run = ""  # this try's drafting or asking run, set where it is made
             proof = self._layer_proof(st, layer)
             got: Package | ProofChange
             try:
@@ -1955,8 +1995,15 @@ class StoryPipeline:
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
                 st.emit("retry", stage="package", error=feedback, reply=e.reply)
-                st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=st.runs[-1])
+                st.emit(
+                    "package_returned",
+                    layer=nn,
+                    attempt=attempt,
+                    kinds=kinds,
+                    studio_run=self._package_run or st.runs[-1],
+                )
                 continue
+            st.emit("package_checks_start", layer=nn, attempt=attempt)
             package, found = await checker.check(
                 got,
                 self.repo,
@@ -2217,10 +2264,11 @@ class StoryPipeline:
             await self._cancelled(st, card)
             raise
 
-    async def _wait(self, st: StoryState, card: Card, reason: str) -> None:
+    async def _wait(self, st: StoryState, card: Card, reason: str, on: str) -> None:
         """A dependent story whose dependency is not in review: the event, a note, and the card back where it
-        waits (To Do). Nothing is blocked and nothing is built; the state stays as it was."""
-        st.emit("waiting", reason=reason)
+        waits (To Do). Nothing is blocked and nothing is built; the state stays as it was. `on` is the story
+        waited for."""
+        st.emit("waiting", reason=reason, on=on)
         text = f"{reason}. It is back in To Do and is built once that story's pull requests are open."
         await self._tell(st, card, text, "intake")
 

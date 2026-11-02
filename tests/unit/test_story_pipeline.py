@@ -392,6 +392,23 @@ async def test_a_rejected_package_records_a_lesson_and_the_next_layers_brief_car
     assert "Storage: 0 source files, 0 test files, 0 steps, 0 tokens, ended package_rejected" in asked[1]
 
 
+async def test_a_returned_resumed_package_names_the_drafting_run(tmp_path: Path) -> None:
+    """Layer 02's draft was unusable and so is the resumed turn that follows it: the package it returns is
+    the drafting conversation's (the `packages` run), not the run of layer 01 that was built since."""
+    repo = repo_with_marker_tests(tmp_path)
+    nonsense = FakeReply(text="no package")
+    engine = happy_engine(architect=[LAYERS, PKG1, nonsense, nonsense])
+    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    assert st.blocked is not None and "layer 02" in st.blocked
+    events = st.path / "events.jsonl"
+    [drafting] = [e for e in kinds(events, "run") if e["stage"] == "packages"]
+    [layer_one] = [e for e in kinds(events, "layer_start") if e["layer"] == "01"]
+    returned = [e for e in kinds(events, "package_returned") if e["layer"] == "02"]
+    assert [e["attempt"] for e in returned] == [1, 2]
+    assert [e["studio_run"] for e in returned] == [drafting["studio_run"]] * 2
+    assert layer_one["studio_run"] != drafting["studio_run"]
+
+
 def worktrees(repo: Path) -> int:
     return git(repo, "worktree", "list", "--porcelain").count("worktree ")
 
@@ -937,10 +954,11 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
         *("run", "stage", "run", "stage"),  # refine, layers
         # build: every package drafted in one conversation, then each checked just before its layer;
         # ./check.sh runs no pytest, so the check on a layer's package says it ran no red check
-        *("packages_drafting", "run", "package_drafted", "package_drafted"),
-        *("test_checks_skipped", "package_start", "package_ready"),
+        *("packages_drafting", "run", "package_draft_start", "package_drafted"),
+        *("package_draft_start", "package_drafted"),
+        *("test_checks_skipped", "package_start", "package_checks_start", "package_ready"),
         *("layer_start", "brief", "package_placed", "layer_built"),
-        *("test_checks_skipped", "package_start", "package_ready"),
+        *("test_checks_skipped", "package_start", "package_checks_start", "package_ready"),
         *("layer_start", "brief", "package_placed", "layer_built"),
         "stage",  # mutation testing is CI's, on the PRs: no stage of its own here
         *("published", "stage", "stage", "story_done"),  # publish, review
@@ -2565,7 +2583,7 @@ async def test_a_dependency_not_yet_in_review_is_a_wait_not_a_build(tmp_path: Pa
     assert st.stage == "new" and st.blocked is None and st.base is None
     assert not engine.requests and not gh.calls  # nothing built, nothing fetched or pushed
     [waiting] = kinds(st.path / "events.jsonl", "waiting")
-    assert "AIR-4" in waiting["reason"]
+    assert "AIR-4" in waiting["reason"] and waiting["on"] == "AIR-4"
     assert "waiting for AIR-4" in (st.path / "notes.md").read_text()
     # a dependency that has started but is not in review yet is a wait too
     low = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
@@ -2829,6 +2847,57 @@ async def test_an_agreement_that_cannot_be_built_stops_the_story_naming_what_is_
     assert st.blocked is not None and "the meeting ended without an agreement that can be built" in st.blocked
     assert "AC2" in st.blocked and st.agreement is None and st.stage == "refine"
     assert st.meeting is None
+
+
+async def test_a_layers_asks_name_the_layer_on_their_run_event(tmp_path: Path) -> None:
+    """Layer 01's draft is unusable, so the drafting ends there: layer 01 is asked again as a turn of the
+    drafting conversation and layer 02 is asked cold. Both layers have a proof, so each package is read by
+    the critic. Each run the layers make says whose it is; the asks before the layers do not."""
+    repo = repo_with_levels(tmp_path)
+    split = (
+        Layer("storage", "Storage", "store.py", "Store.", ("AC1",)),
+        Layer("profile", "Profile", "profile.py", "Show.", ("AC2",)),
+    )
+    proof = tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"])
+    agreed = Agreement(Story.from_dict(REWORDED_STORY), split, proof, 12)
+    agree = fenced({"type": "verdict", "requirements": "agree", "changes": "agree", "proof": "agree"})
+    engine = happy_engine(architect=[LAYERS, FakeReply(text="no package"), PKG1, PKG2], tester=[agree, agree])
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        engine,
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=lambda cfg, tools, on_turn: FakeMeeting(agreed),
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    runs = kinds_all(st.path / "events.jsonl")
+    laid = [e for e in runs if e["kind"] == "run"]
+    assert [(e["stage"], e["layer"]) for e in laid if e["stage"] in ("package", "critic")] == [
+        ("critic", "01"),
+        ("package", "02"),
+        ("critic", "02"),
+    ]
+    assert all("layer" not in e for e in laid if e["stage"] in ("refine", "layers", "packages"))
+
+
+async def test_the_meeting_logs_its_start(tmp_path: Path) -> None:
+    repo = repo_with_levels(tmp_path)
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(EASY_MEETING),
+    )
+    st = await pipe.run(ISSUE)
+    assert st.blocked is None, st.blocked
+    [start] = kinds(st.path / "events.jsonl", "amigos_start")
+    assert start["resumed"] is False
+    log = [e["kind"] for e in kinds_all(st.path / "events.jsonl")]
+    assert log.index("amigos_start") < log.index("amigos_turn")
 
 
 async def test_a_story_killed_mid_meeting_resumes_the_meeting_from_its_saved_history(tmp_path: Path) -> None:
