@@ -1,0 +1,51 @@
+why: |
+  The architect's layer plan (story stage "layers", and the changes part of the story meeting). Its parser,
+  model.parse_layers, checks it and names what is wrong (an unknown criterion id, one criterion under two
+  layers); the schema states the same shape, as leniently as the parser reads it, for decoding constrained
+  to it. 2026-11-02: the plans were 6-19k characters, mostly prose before the block (the oversharing audit).
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [layers]
+  properties:
+    layers:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        required: [title, scope, brief]
+        properties:
+          slug: {type: string}
+          title: {type: string}
+          scope: {type: string}
+          brief: {type: string}
+          acceptance:
+            anyOf: [{type: string}, {type: array, items: {type: string}}]
+          files:
+            type: array
+            items:
+              anyOf:
+                - {type: string}
+                - type: object
+                  required: [path]
+                  properties:
+                    path: {type: string}
+                    new: {type: boolean}
+          interfaces:
+            anyOf: [{type: string}, {type: array, items: {type: string}}]
+    refine:
+      type: object
+      properties:
+        worth_another_round: {type: boolean}
+        reason: {type: string}
+        check: {type: string}
+shape: |
+  {"layers": [{"slug": "data-model", "title": "...", "scope": "the files or areas this layer may touch",
+   "acceptance": ["AC1"], "brief": "what to build in this layer, concretely",
+   "files": [{"path": "src/pkg/mod.py", "new": false}],
+   "interfaces": ["def name(arg: T) -> R  (what later layers import from this one)"]}]}
+rules: |
+  List in "acceptance" each criterion id the layer makes true, each id under one layer. Use [] only for a layer
+  that makes no criterion true (a foundation): a layer that makes one true lists it, which gives the layer its
+  test-first step. List every file the layer creates or changes under files, and under interfaces the
+  signatures a later layer will import from it.

@@ -6,7 +6,7 @@ import pytest
 
 from airlie.config import RoleSpec
 from airlie.engine import EngineError, FakeEngine, FakeReply
-from airlie.topology.review import Reviewer, nudge_from_review, parse_review, review_message
+from airlie.topology.review import Reviewer, nudge_from_review, parse_review, review_message, review_problem
 
 RC = (
     '{"verdict": "request_changes", "findings": ['
@@ -66,8 +66,10 @@ async def test_a_reviewer_reply_that_has_text_or_stopped_by_itself_is_read_as_be
     half = FakeReply(text='{"verdict": "request_chan', finish_reason="length")
     quiet = FakeReply(reasoning="All of it was thinking. ", finish_reason="stop")
     for reply, raw in ((half, '{"verdict": "request_chan'), (quiet, "")):
-        r = await Reviewer(FakeEngine({"reviewer": [reply]}), "reviewer", role).review("fix it", "d", "t", {})
-        assert (r.verdict, r.findings, r.raw) == ("unparsable", (), raw)
+        # each is unreadable, so it goes back once (the reply templates' fix turn) and is unreadable again
+        engine = FakeEngine({"reviewer": [reply, reply]})
+        r = await Reviewer(engine, "reviewer", role).review("fix it", "d", "t", {})
+        assert (r.verdict, r.findings, r.raw) == ("unparsable", (), raw) and len(engine.requests) == 2
 
 
 def test_nudge_lists_blocking_findings_with_lines() -> None:
@@ -87,3 +89,40 @@ def test_parse_review_finds_the_verdict_after_prose_with_braces() -> None:
     r = parse_review(text)
     assert r.verdict == "request_changes" and [f.line for f in r.findings] == [29]
     assert parse_review('no verdict here {"x": 1}').verdict == "unparsable"
+
+
+async def test_an_unreadable_verdict_goes_back_once_with_what_is_wrong_in_the_same_conversation(
+    tmp_path: Path,
+) -> None:
+    """Reply templates (2026-11-02): an unparsable verdict skipped the fix round; now the reviewer is told
+    what the schema says is wrong, once, after its own reply, and its second answer is the verdict."""
+    (tmp_path / "reviewer.md").write_text("You review.")
+    wrong = 'Mostly fine.\n```json\n{"verdict": "approved", "findings": []}\n```'
+    eng = FakeEngine({"reviewer": [FakeReply(text=wrong), FakeReply(text=RC)]})
+    role = RoleSpec(prompt=tmp_path / "reviewer.md", model="m", thinking=False, max_tokens=512)
+    steers: list[str] = []
+    r = await Reviewer(eng, "reviewer", role).review("fix it", "diff", "tail", {}, on_steer=steers.append)
+    assert r.verdict == "request_changes" and len(r.blocking) == 1 and steers == ["review-fix"]
+    first, second = eng.requests
+    assert second.messages[: len(first.messages)] == first.messages
+    assert [m.role for m in second.messages[-2:]] == ["assistant", "user"]
+    assert second.messages[-2].content == wrong
+    assert second.messages[-1].content.startswith(
+        "Your verdict could not be read: verdict: 'approved' is not one of"
+    )
+
+
+async def test_a_verdict_still_unreadable_after_the_one_fix_is_unparsable(tmp_path: Path) -> None:
+    (tmp_path / "reviewer.md").write_text("You review.")
+    eng = FakeEngine({"reviewer": [FakeReply(text="Looks fine."), FakeReply(text="Still fine.")]})
+    role = RoleSpec(prompt=tmp_path / "reviewer.md", model="m", thinking=False, max_tokens=512)
+    r = await Reviewer(eng, "reviewer", role).review("fix it", "diff", "tail", {})
+    assert (r.verdict, r.raw) == ("unparsable", "Still fine.") and len(eng.requests) == 2
+    assert "no JSON object in the reply" in eng.requests[1].messages[-1].content
+
+
+def test_review_problem_names_where_the_object_is_wrong() -> None:
+    assert review_problem("no braces at all") == "no JSON object in the reply"
+    bad = '{"verdict": "request_changes", "findings": [{"severity": "major", "file": "a.py", "claim": "x"}]}'
+    assert review_problem(bad).startswith("findings[0].severity: 'major' is not one of")
+    assert review_problem('{"findings": []}') == 'the JSON object has no "verdict"'

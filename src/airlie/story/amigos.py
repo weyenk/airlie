@@ -31,6 +31,7 @@ from autogen_core.models import ChatCompletionClient, SystemMessage, UserMessage
 
 from airlie.config import AirlieConfig, RoleSpec
 from airlie.prompts import text as hub_text
+from airlie.prompts.reply import reply
 from airlie.skills import prompt_text
 from airlie.story.amigos_checks import (
     NO_FINDINGS,
@@ -889,7 +890,6 @@ def opening_message(
     story as product refined it, the architect's split, the repository's testing conventions, the lessons
     recorded for the repository when there are any, and the contracts each part and the verdict travel in."""
     from airlie.story.briefs import (  # as in _lessons_text
-        LAYERS_CONTRACT,
         STORY_CONTRACT,
         dossier_section,
         story_text,
@@ -908,7 +908,7 @@ def opening_message(
         *([_lessons_text(lessons)] if lessons else []),
         "## How each part and your verdict travel\n"
         + "\n\n".join(
-            [_as_turn_part(STORY_CONTRACT), _as_turn_part(LAYERS_CONTRACT), PROOF_CONTRACT, VERDICT_CONTRACT]
+            [_as_turn_part(STORY_CONTRACT), reply("layers").part, PROOF_CONTRACT, VERDICT_CONTRACT]
         ),
     ]
     return "\n\n".join(parts)
