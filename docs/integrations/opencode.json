@@ -20,7 +20,7 @@
           "name": "architect",
           "limit": {
             "context": 131072,
-            "output": 16384
+            "output": 24576
           }
         },
         "security": {
@@ -69,7 +69,7 @@
           "name": "generalist",
           "limit": {
             "context": 131072,
-            "output": 16384
+            "output": 24576
           }
         },
         "small": {

@@ -120,7 +120,9 @@ roles:
     model: generalist
     tools: [read_file, list_dir, grep, compute]
     max_context: 131072
-    max_tokens: 16384
+    # 16384 until 2026-11-01: AIR-47 layer 02's package (8 tests added to test_story_pipeline.py, 40k chars of
+    # tests + 13k of files, steps and covers) was cut off at the cap; the reply was the package, not a copied file
+    max_tokens: 24576
     thinking: true
     thinking_budget: 2048            # 8192 until 2026-10-26: the roman bench's architect wrote to the cap on nearly every call (lever 1 of 3, Noah)
     last_turn_thinking: false
