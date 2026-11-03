@@ -179,7 +179,7 @@ def by_id(items: list[dict[str, Any]], id: str) -> dict[str, Any]:
 
 
 def test_the_flow_lists_the_stages_in_order_with_their_status(state_dir: Path) -> None:
-    flow = story_flow(state_dir, KEY)
+    flow = story_flow(state_dir, KEY, held=True)
     assert flow["key"] == KEY and flow["title"] == "Do the thing"
     assert [n["id"] for n in flow["nodes"]] == [
         "intake", "base", "gate", "survey", "refine", "layers", "amigos", "planned",
@@ -192,13 +192,13 @@ def test_the_flow_lists_the_stages_in_order_with_their_status(state_dir: Path) -
 
 
 def test_the_acceptance_criteria_and_the_block_reason_come_with_the_flow(state_dir: Path) -> None:
-    flow = story_flow(state_dir, KEY)
+    flow = story_flow(state_dir, KEY, held=True)
     assert flow["acceptance"] == [{"id": "AC1", "given": "g", "when": "w", "then": "t"}]
     assert flow["blocked"].startswith("layer 02")
 
 
 def test_a_stage_job_counts_its_retries_its_time_and_its_tokens(state_dir: Path) -> None:
-    refine = by_id(story_flow(state_dir, KEY)["nodes"], "refine")
+    refine = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "refine")
     (job,) = refine["jobs"]
     assert job["role"] is not None and job["attempts"] == 2 and job["studio_run"] == "run-refine"
     assert job["retries"] == [{"kind": "retry", "detail": "no acceptance criteria"}]
@@ -215,7 +215,7 @@ def test_a_stage_job_counts_its_retries_its_time_and_its_tokens(state_dir: Path)
 def test_a_story_recorded_before_the_package_still_renders_its_tests_job(state_dir: Path) -> None:
     """A story built with a tester (before P1, 2026-10-24) has a `tests` subtask in its layer runs and no
     package events: its lane is the tester's, as it was recorded."""
-    layer = by_id(story_flow(state_dir, KEY)["nodes"], "layer-01")
+    layer = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "layer-01")
     assert layer["title"] == "The seam" and layer["acceptance"] == ["AC1"]
     assert [j["id"] for j in layer["jobs"]] == ["tests", "checks", "build"]
     tests, checks, build = layer["jobs"]
@@ -226,7 +226,7 @@ def test_a_story_recorded_before_the_package_still_renders_its_tests_job(state_d
 
 
 def test_a_layer_that_stopped_shows_which_job_failed_and_why(state_dir: Path) -> None:
-    layer = by_id(story_flow(state_dir, KEY)["nodes"], "layer-02")
+    layer = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "layer-02")
     tests, checks, build = layer["jobs"]
     assert tests["status"] == "passed"
     assert checks["status"] == "failed" and checks["attempts"] == 2
@@ -268,7 +268,7 @@ def test_a_layer_run_without_a_tester_shows_its_tests_job_as_skipped(state_dir: 
             },
         ],
     )
-    tests, _, build = by_id(story_flow(state_dir, KEY)["nodes"], "layer-02")["jobs"]
+    tests, _, build = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "layer-02")["jobs"]
     assert tests["status"] == "skipped" and build["status"] == "failed"
 
 
@@ -360,7 +360,7 @@ def write_packaged_story(root: Path) -> Path:
 
 def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path) -> None:
     write_packaged_story(state_dir)
-    layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-01")
+    layer = by_id(story_flow(state_dir, KEY2, held=True)["nodes"], "layer-01")
     assert [j["id"] for j in layer["jobs"]] == ["package", "checks", "place", "build", "squash"]
     package, checks, place, build, squash = layer["jobs"]
     assert (package["role"], package["status"], package["attempts"]) == ("architect", "passed", 1)
@@ -374,7 +374,7 @@ def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path)
 
 def test_a_layer_whose_package_came_back_twice_shows_the_package_job_failed(state_dir: Path) -> None:
     write_packaged_story(state_dir)
-    layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-02")
+    layer = by_id(story_flow(state_dir, KEY2, held=True)["nodes"], "layer-02")
     package, checks, place, build, squash = layer["jobs"]
     assert (package["status"], package["attempts"]) == ("failed", 2)
     assert checks["status"] == "failed" and checks["attempts"] == 2
@@ -396,7 +396,7 @@ def test_a_package_that_is_being_written_is_running(state_dir: Path) -> None:
     state = json.loads((state_dir / "stories" / KEY2 / "state.json").read_text())
     state["blocked"] = None
     (state_dir / "stories" / KEY2 / "state.json").write_text(json.dumps(state))
-    package, *_ = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-02")["jobs"]
+    package, *_ = by_id(story_flow(state_dir, KEY2, held=True)["nodes"], "layer-02")["jobs"]
     assert package["status"] == "running"
 
 
@@ -685,7 +685,7 @@ MEETING_EVENTS = [
 
 def test_a_story_shows_its_meeting_with_turns_and_objections(state_dir: Path) -> None:
     add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
-    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    amigos = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "amigos")
     assert [j["id"] for j in amigos["jobs"]] == ["meeting"]
     meeting = by_id(amigos["jobs"], "meeting")
     assert (meeting["role"], meeting["status"]) == ("amigos", "passed")
@@ -707,7 +707,7 @@ def test_a_meeting_that_ran_out_of_turns_says_which_parts_their_owners_decided(s
             {"ts": 85.5, "kind": "amigos_unresolved", "role": "product", "part": "proof", "about": "AC1"},
         ],
     )
-    meeting = by_id(by_id(story_flow(state_dir, KEY)["nodes"], "amigos")["jobs"], "meeting")
+    meeting = by_id(by_id(story_flow(state_dir, KEY, held=True)["nodes"], "amigos")["jobs"], "meeting")
     assert (
         meeting["status"] == "passed" and meeting["owner_decided"] == ["proof"] and meeting["unresolved"] == 1
     )
@@ -719,16 +719,16 @@ def test_a_meeting_in_progress_is_running_and_one_the_story_stopped_in_is_failed
     state = json.loads(state_file.read_text())
     state.update(stage="refine", blocked=None, built={})
     state_file.write_text(json.dumps(state))
-    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    amigos = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "amigos")
     assert by_id(amigos["jobs"], "meeting")["status"] == "running" and amigos["status"] == "running"
     state["blocked"] = "the engine went away"
     state_file.write_text(json.dumps(state))
-    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    amigos = by_id(story_flow(state_dir, KEY, held=True)["nodes"], "amigos")
     assert by_id(amigos["jobs"], "meeting")["status"] == "failed"
 
 
 def test_a_story_without_a_meeting_has_no_meeting_job_and_the_job_has_a_detail(state_dir: Path) -> None:
-    nodes = story_flow(state_dir, KEY)["nodes"]
+    nodes = story_flow(state_dir, KEY, held=True)["nodes"]
     assert [j["id"] for j in by_id(nodes, "layers")["jobs"]] == ["layers"]
     assert by_id(nodes, "amigos")["jobs"] == []
     add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
@@ -746,7 +746,7 @@ def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> Non
     from airlie.story.diagnosis import Classified, Diagnosis, Pack, Paths, write_diagnosis
 
     write_story(tmp_path)
-    plain = story_flow(tmp_path, KEY)
+    plain = story_flow(tmp_path, KEY, held=True)
     assert plain["diagnosis"] is None and plain["budgets"] == {}  # never diagnosed, nothing recorded
     pack = Pack(
         key=KEY, n=2, reason="x", stage="layers", layer="02", attempt=1, run_id=None, subtask=None, role=None,
@@ -766,7 +766,7 @@ def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> Non
     stages = tmp_path / "stories" / KEY / "stages"
     stages.mkdir()
     (stages / "layer.json").write_text(json.dumps({"tokens": 5000, "wall_s": 900.0, "state": "ok"}))
-    flow = story_flow(tmp_path, KEY)
+    flow = story_flow(tmp_path, KEY, held=True)
     assert flow["diagnosis"] == {
         "class": "process",
         "kind": "hold_trap",

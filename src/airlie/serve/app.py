@@ -914,14 +914,20 @@ def create_app(
     @app.get("/v1/airlie/stories/{key}/flow")
     async def story_flow_get(key: str) -> dict[str, Any]:
         try:
-            return story_flow(cfg.observability.state_dir.expanduser(), key)
+            return story_flow(cfg.observability.state_dir.expanduser(), key, held=job_running(f"story-{key}"))
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 
     @app.get("/v1/airlie/stories/{key}/flow/{node_id}/{job_id}")
     async def story_job_get(key: str, node_id: str, job_id: str) -> dict[str, Any]:
         try:
-            return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
+            return job_detail(
+                cfg.observability.state_dir.expanduser(),
+                key,
+                node_id,
+                job_id,
+                held=job_running(f"story-{key}"),
+            )
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 

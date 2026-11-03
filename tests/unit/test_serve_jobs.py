@@ -552,3 +552,25 @@ def test_the_story_endpoint_answers_in_words_when_the_named_repository_has_no_ch
         r = client.post("/v1/airlie/stories", json=body, headers={"Authorization": "Bearer k"})
         assert r.status_code == 400 and r.json()["detail"].startswith("no checkout of weyenk/airlie in ")
         assert "clone it there" in r.json()["detail"]
+
+
+def test_a_story_this_server_holds_draws_running_however_quiet_its_log(tmp_path: Path) -> None:
+    async def fake_story_job(cfg, **kw):  # type: ignore[no-untyped-def]
+        async def work() -> dict[str, Any]:
+            await asyncio.sleep(30)  # a chief thinking for an hour writes nothing
+            return {}
+
+        return "story-AIR-1", tmp_path / "events.jsonl", work()
+
+    cfg = cfg_for(tmp_path)
+    story = cfg.observability.state_dir.expanduser() / "stories" / "AIR-1"
+    story.mkdir(parents=True)
+    (story / "state.json").write_text(json.dumps({"card": {"key": "AIR-1", "title": "t"}, "stage": "new"}))
+    (story / "events.jsonl").write_text(json.dumps({"ts": 1.0, "kind": "story_start", "stage": "new"}) + "\n")
+    app = create_app(cfg, transport=httpx.MockTransport(FakeUpstream()), story_job=fake_story_job)
+    with TestClient(app) as client:
+        before = client.get("/v1/airlie/stories/AIR-1/flow").json()
+        assert before["now"]["status"] != "running"  # nobody holds it: a log from 1970 is a stopped story
+        assert client.post("/v1/airlie/stories", json={"card": "AIR-1"}).status_code == 202
+        assert client.get("/v1/airlie/stories/AIR-1/flow").json()["now"]["status"] == "running"
+        assert client.delete("/v1/airlie/jobs/story-AIR-1").json()["cancelled"] is True

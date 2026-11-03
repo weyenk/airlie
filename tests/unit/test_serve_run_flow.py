@@ -560,7 +560,8 @@ def test_story_job_detail_is_unchanged_after_the_trace_helper(tmp_path: Path) ->
         **no_trace,
         "output": {"final_text": "", "story": story},
     }
-    assert trace_part("intake", "intake") == {"node": "intake", **no_trace, "output": {"final_text": ""}}
+    own = {**no_trace, "input_note": "airlie's own check, no model"}  # intake is a code step
+    assert trace_part("intake", "intake") == {"node": "intake", **own, "output": {"final_text": ""}}
     layers = trace_part("layers", "layers")
     assert layers["output"]["layers"][0] == layer and len(layers["output"]["layers"]) == 2
     assert {k: layers[k] for k in ("input", "input_note", "steps")} == no_trace

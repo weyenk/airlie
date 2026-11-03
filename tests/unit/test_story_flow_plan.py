@@ -25,7 +25,7 @@ def make_story(root: Path, events: list[dict[str, Any]], **state: Any) -> Path:
 
 
 def nodes_of(root: Path) -> list[dict[str, Any]]:
-    return story_flow(root, KEY)["nodes"]
+    return story_flow(root, KEY, held=True)["nodes"]
 
 
 def turn(ts: float, role: str, n: int, verdict: dict[str, str] | None = None) -> dict[str, Any]:

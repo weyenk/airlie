@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from airlie.board import BoardStore
 from airlie.serve.flow_build import build_nodes
+from airlie.serve.flow_now import run_last_ts, settle, story_exit, story_live, story_now
 from airlie.serve.flow_parts import StoryNotFound, load, name, safe
 from airlie.serve.flow_plan import plan_nodes
 from airlie.story.budgets import stage_figures
@@ -27,13 +30,19 @@ from airlie.story.model import StoryError
 OBSERVATION_CHARS = 2000
 
 
-def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
+def story_flow(state_dir: Path, key: str, *, held: bool = False, now: float | None = None) -> dict[str, Any]:
     """The pipeline of one story: `nodes` left to right, each with its `jobs`; the acceptance criteria and
-    the reason it stopped, if it did."""
+    the reason it stopped, if it did; what it is doing `now` and how it left (`exit`). `held`: the server
+    runs it (running however quiet its log); `now` is the clock, for tests. A box recorded as running that
+    nobody works on any more is drawn stopped, or failed when the story is blocked."""
     _, st, events = load(state_dir, key)
+    at = time.time() if now is None else now
     card = st["card"] if isinstance(st.get("card"), dict) else {}
     story = st["story"] if isinstance(st.get("story"), dict) else {}
     nodes = plan_nodes(state_dir, st, events) + build_nodes(state_dir, st, events)
+    run_ts = run_last_ts(state_dir, nodes)
+    live = story_live(events, run_ts, held=held, now=at)
+    settle(nodes, live=live, blocked=bool(st.get("blocked")))
     return {
         "key": key,
         "title": card.get("title") or story.get("title"),
@@ -44,6 +53,8 @@ def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
         "budgets": stage_figures(state_dir / "stories" / key),
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
+        "now": story_now(nodes, st, events, live=live, run_last_ts=run_ts),
+        "exit": story_exit(state_dir, key, st, events, nodes),
     }
 
 
@@ -262,20 +273,43 @@ def final_text(steps: list[dict[str, Any]]) -> str:
     return next((s["assistant_text"] for s in reversed(steps) if s["assistant_text"]), "")
 
 
-def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str, Any]:
+_CYCLE_PREFIX = re.compile(r"c\d+-")
+
+
+def _find_job(
+    flow: dict[str, Any], node_id: str, job_id: str
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """(node, job) for `job_id` of `node_id`: a node's own jobs, a layer's cycle rows (an earlier cycle's ids
+    are `c{n}-{job}`) or the exit row (node `exit`). None when there is none."""
+    node: dict[str, Any] | None
+    if node_id == "exit":
+        node = {"id": "exit", "kind": "exit", "jobs": (flow["exit"] or {}).get("jobs", [])}
+    else:
+        node = next((n for n in flow["nodes"] if n["id"] == node_id), None)
+    if node is None:
+        return None
+    rows = [j for r in node.get("rows") or () if r.get("kind") == "cycle" for j in r["jobs"]]
+    found = next((j for j in [*node.get("jobs", []), *rows] if j["id"] == job_id), None)
+    return (node, found) if found is not None else None
+
+
+def job_detail(
+    state_dir: Path, key: str, node_id: str, job_id: str, *, held: bool = False, now: float | None = None
+) -> dict[str, Any]:
     """One job of the flow: its summary, what it was given, what it produced and the steps it took."""
     _, st, _ = load(state_dir, key)
-    flow = story_flow(state_dir, key)
-    node = next((n for n in flow["nodes"] if n["id"] == node_id), None)
-    job = next((j for j in (node or {}).get("jobs", []) if j["id"] == job_id), None)
-    if node is None or job is None:
+    flow = story_flow(state_dir, key, held=held, now=now)
+    hit = _find_job(flow, node_id, job_id)
+    if hit is None:
         raise StoryNotFound(f"no job '{job_id}' in '{node_id}' of {key}")
-    team = job_id if node["kind"] == "layer" else node_id
+    node, job = hit
+    plain = _CYCLE_PREFIX.sub("", job_id)
+    team = plain if node["kind"] in ("layer", "exit") else node_id
     run = job.get("studio_run")
     prompt, steps = trace_of(state_dir, run, team) if isinstance(run, str) else (None, [])
     note = None
     if prompt is None:
-        note = "airlie's own check, no model" if job_id == "checks" else "opening prompt not recorded"
+        note = "airlie's own check, no model" if job.get("shape") == "code" else "opening prompt not recorded"
     output: dict[str, Any] = {"final_text": final_text(steps)}
     if node["kind"] == "layer":
         i = int(node_id.split("-")[1]) - 1
@@ -283,8 +317,11 @@ def job_detail(state_dir: Path, key: str, node_id: str, job_id: str) -> dict[str
         if 0 <= i < len(layers):
             output["layer"] = layers[i]
         built = (st.get("built") or {}).get(node_id.split("-")[1])
-        if job_id == "build" and built:
+        if plain == "build" and built:
             output["built"] = built
+    elif node_id == "exit" and job_id == "diagnose":
+        d = latest(state_dir, key)
+        output["diagnosis"] = d.to_dict() if d else None
     elif node_id == "refine":
         output["story"] = st.get("story")
     elif node_id == "layers":

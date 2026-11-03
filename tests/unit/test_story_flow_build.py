@@ -50,7 +50,7 @@ def air47_at_16_12(root: Path) -> Path:
 
 
 def nodes_of(root: Path, key: str = KEY) -> list[dict[str, Any]]:
-    return story_flow(root, key)["nodes"]
+    return story_flow(root, key, held=True)["nodes"]
 
 
 def steps_of(box: dict[str, Any]) -> list[dict[str, Any]]:
