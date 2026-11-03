@@ -137,6 +137,7 @@ from airlie.topology.studio_plan import extract_json_block
 
 _SHORT = {
     "passes_before_code": "passes before the code is written",
+    "test_not_run": "was not run (no outcome)",
     "existing_test_changed": "is an existing test the package changed (still passing)",
     "existing_test_fails": "fails with the new tests in place",
     "assertion_free_test": "has no assertion",
