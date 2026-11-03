@@ -150,21 +150,29 @@ class LocalBoard:
         return stage in STAGES and STAGES.index(stage) >= STAGES.index(PLANNED)
 
     def _next_story(self, *, planned: bool) -> Item | None:
-        """The oldest approved story that is (or is not) planned. A planned story may also be in doing: the
-        planning lane moved its card to building when it picked it up, and nothing moves it back, so the
-        build lane takes it from there (and takes a story a killed build left, which only a person's
-        approval used to resume)."""
-        for story in self.store.list(level="story", status="approved"):
-            if not self.is_held(story) and self._planned(story.key) == planned:
+        """The oldest approved story that is (or is not) planned, else the oldest such story in doing. The
+        planning lane moves a card to doing when it picks it up, and nothing moves it back: a planned story
+        in doing is the build lane's from there (and a story a killed build left). An unplanned one in doing
+        with a record is a planning job that was killed (a serve restarted while it planned): every planning
+        job holds the planning lane's lock and the lane picks only while it is free, so none is running it,
+        and the planning lane takes it again rather than leave it in doing for good. One with no record was
+        never started by the line (a person moved it): it is left where it is."""
+        for status in ("approved", "doing"):
+            for story in self.store.list(level="story", status=status):
+                if self.is_held(story) or self._planned(story.key) != planned:
+                    continue
+                if status == "doing" and not planned and not self._started(story.key):
+                    continue
                 return story
-        if planned:
-            for story in self.store.list(level="story", status="doing"):
-                if not self.is_held(story) and self._planned(story.key):
-                    return story
         return None
 
+    def _started(self, key: str) -> bool:
+        """The story has a record: the line (or a person's `story run`) began it."""
+        return self.stories_dir is not None and (self.stories_dir / key / "state.json").is_file()
+
     def next_unplanned_story(self) -> Item | None:
-        """The oldest approved story whose record has not reached the boundary: the planning lane's (P5b)."""
+        """The oldest approved (or doing: a killed planning job's) story whose record has not reached the
+        boundary: the planning lane's (P5b). Only while the planning lane's lock is free."""
         return self._next_story(planned=False)
 
     def next_planned_story(self) -> Item | None:
