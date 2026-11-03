@@ -779,6 +779,12 @@ class StorySpec(Strict):
     trunk: str = Field(default="main", description="the stack's base branch")
     remote: str = "origin"
     topology: str = Field(default="studio", description="the profile story runs load")
+    publish: Literal["single", "stack"] = Field(
+        default="stack",
+        description="how the story's layers are published: stack = one draft PR per layer (gh stack, "
+        "today's behaviour); single = one draft PR on the top layer's branch, holding every layer's "
+        "commit in layer order",
+    )
     max_layers: int = Field(default=5, ge=1)
     stage_attempts: int = Field(
         default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"

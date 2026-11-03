@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, load_config, profile_configs
+from airlie.config import TOPOLOGY_KINDS, AirlieConfig, ConfigError, StorySpec, load_config, profile_configs
 from airlie.config.load import _yaml_problem
 from airlie.config.schema import MUTATING_TOOLS
 
@@ -1298,3 +1299,32 @@ def test_load_resolves_a_relative_bridge_repo_path_against_the_config(tmp_path: 
     bridge = {"job_bus_url": "https://hub/api/v1", "allowed_repos": [{"key": "main", "path": "checkout"}]}
     cfg = load_config(write(tmp_path, {**MINIMAL, "bridge": bridge}))
     assert cfg.bridge.allowed_repos[0].path == (tmp_path / "checkout").resolve()
+
+
+def _story(**overrides: object) -> dict:
+    """A minimal valid StorySpec dict: trunk, remote, topology and the three roles, plus any overrides."""
+    base: dict[str, object] = {
+        "trunk": "main",
+        "remote": "origin",
+        "topology": "studio",
+        "product_role": "product",
+        "architect_role": "architect",
+        "build_role": "coder",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_story_spec_publish_defaults_to_stack() -> None:
+    spec = StorySpec(**_story())
+    assert spec.publish == "stack"
+
+
+def test_story_spec_publish_single_parses() -> None:
+    spec = StorySpec(**_story(publish="single"))
+    assert spec.publish == "single"
+
+
+def test_story_spec_publish_invalid_rejected() -> None:
+    with pytest.raises(ValidationError, match="Input should be 'single' or 'stack'"):
+        StorySpec(**_story(publish="banana"))
