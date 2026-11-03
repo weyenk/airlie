@@ -1674,6 +1674,11 @@ def _publish_repo(tmp_path: Path) -> tuple[Path, list[str], list[str]]:
         branches.append(branch)
         shas.append(git(repo, "rev-parse", "HEAD"))
     git(repo, "checkout", "-q", "main")
+    # the remote a publish pushes to: it holds the trunk, as GitHub would, and no layer branch yet
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "main")
     return repo, branches, shas
 
 
@@ -1697,13 +1702,14 @@ def _publish_pipeline(
 
 def _publish_state(tmp_path: Path, repo: Path, branches: list[str], shas: list[str]) -> StoryState:
     """A state that has built all three layers (one commit each) and is ready to publish: `built` holds
-    each layer's branch, commit, tests and gate; `base` is the trunk."""
+    each layer's branch, commit, tests and gate; `base` is the trunk's remote-tracking ref, as a real story
+    records it."""
     st = StoryState(
         path=tmp_path / "state" / "stories" / "req",
         card={"key": "req", "ref": "", "title": "Three layers"},
         repo=str(repo),
         stage="build",
-        base={"ref": "main", "sha": git(repo, "rev-parse", "main")},
+        base={"ref": "origin/main", "sha": git(repo, "rev-parse", "main")},
     )
     st.path.mkdir(parents=True, exist_ok=True)
     for n, (branch, sha) in enumerate(zip(branches, shas, strict=True), 1):
@@ -1720,8 +1726,10 @@ def _publish_state(tmp_path: Path, repo: Path, branches: list[str], shas: list[s
 
 class PublishRun:
     """A publish `run` that records every command and answers the gh calls a publish makes: `gh pr view`
-    with a numbered PR, `gh pr create` with the PR it opened, everything else empty. Git commands run for
-    real, so a push lands on the local repository."""
+    with a numbered PR, `gh pr list` with the open PRs `gh pr create` opened, `gh pr create` with the PR it
+    opened, everything else empty. Git commands run for real, so a push lands on the repository's bare
+    origin. `gh pr create` refuses what real gh refuses without a terminal: no body, a base that is no branch
+    on the remote (`origin/main`, say), a head the remote does not have yet."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], Path]] = []
@@ -1736,7 +1744,19 @@ class PublishRun:
         if args[:3] == ["gh", "pr", "view"]:
             n = self.numbers.setdefault(args[3], 11 + len(self.numbers))
             return json.dumps({"number": n, "url": f"https://github.com/o/r/pull/{n}"})
+        if args[:3] == ["gh", "pr", "list"]:
+            head = args[args.index("--head") + 1]
+            return json.dumps([{"number": self.numbers[head]}] if head in self.numbers else [])
         if args[:3] == ["gh", "pr", "create"]:
+            if not {"--body", "--body-file", "--fill"} & set(args):
+                raise PublishError("`gh pr create` exited 1: must provide `--title` and `--body`")
+            heads = await run_cmd(["git", "ls-remote", "--heads", "origin"], cwd, env)
+            on_remote = {line.split("refs/heads/", 1)[1] for line in heads.splitlines()}
+            for flag in ("--base", "--head"):
+                if args[args.index(flag) + 1] not in on_remote:
+                    raise PublishError(
+                        f"`gh pr create` exited 1: {flag} {args[args.index(flag) + 1]} not found"
+                    )
             n = 11 + len(self.numbers)
             self.numbers[args[args.index("--head") + 1]] = n
             return f"https://github.com/o/r/pull/{n}"
@@ -1820,7 +1840,9 @@ def _args(run: PublishRun) -> list[list[str]]:
     return [args for args, _ in run.calls]
 
 
-async def test_single_publish_one_draft_pr_top_branch_commit_sequence(tmp_path: Path) -> None:
+async def test_single_publish_one_draft_pr_top_branch_commit_sequence(
+    tmp_path: Path, local_remotes: None
+) -> None:
     """AC1: `story.publish: single` opens exactly one draft PR, on the top layer's branch against the
     trunk, whose commits are the three layer commits in layer order; no `gh stack init`, no per-layer PR."""
     repo, branches, shas = _publish_repo(tmp_path)
@@ -1847,7 +1869,25 @@ async def test_single_publish_one_draft_pr_top_branch_commit_sequence(tmp_path: 
     assert [p["branch"] for p in st.prs] == [branches[-1]]
 
 
-async def test_single_publish_body_one_section_per_layer_in_order(tmp_path: Path) -> None:
+async def test_single_publish_rerun_reuses_the_open_pr(tmp_path: Path, local_remotes: None) -> None:
+    """A single publish interrupted after its draft PR opened runs again: the top branch is pushed again
+    and the open PR is described, not created twice (gh refuses a second PR on one head)."""
+    repo, branches, shas = _publish_repo(tmp_path)
+    run = PublishRun()
+    pipe = _publish_pipeline(tmp_path, repo, _happy_engine(), run, publish="single")
+    st = _publish_state(tmp_path, repo, branches, shas)
+    story, layers = _story_and_layers()
+    await pipe._publish(st, text_card("Three layers"), story, layers)
+    st.stage = "build"  # as if it was cut off before it finished
+    await pipe._publish(st, text_card("Three layers"), story, layers)
+    assert len([a for a in _args(run) if a[:3] == ["gh", "pr", "create"]]) == 1
+    assert len([a for a in _args(run) if a[:3] == ["gh", "pr", "edit"]]) == 2
+    assert [p["branch"] for p in st.prs] == [branches[-1]]
+
+
+async def test_single_publish_body_one_section_per_layer_in_order(
+    tmp_path: Path, local_remotes: None
+) -> None:
     """AC2: the one PR's body has one section per layer, in layer order, each naming that layer's title and
     the criteria it owns."""
     repo, branches, _shas = _publish_repo(tmp_path)
