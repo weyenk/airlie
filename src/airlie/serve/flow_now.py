@@ -87,6 +87,18 @@ def _path(node: dict[str, Any]) -> list[str]:
     return [p for p in path if p]
 
 
+def _box_path(node: dict[str, Any], box: dict[str, Any] | None) -> list[str]:
+    """Where a running box sits: its lane, its node, the layer's latest cycle when the layer has more than
+    one, and the box itself (unless it is the node's own, a stage's one job)."""
+    path = [LANES.get(str(node.get("lane")), ""), str(node.get("label"))]
+    cycles = [r for r in node.get("rows") or () if r.get("kind") == "cycle"]
+    if len(cycles) > 1:
+        path.append(str(cycles[-1]["label"]))
+    if box is not None and box.get("label") != node.get("label"):
+        path.append(str(box.get("label")))
+    return [p for p in path if p]
+
+
 def _clock(ts: float | None) -> str:
     return time.strftime("%H:%M", time.localtime(ts)) if ts is not None else "the start"
 
@@ -100,7 +112,26 @@ def _exit_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     return last if last is not None and last.get("kind") != "story_start" else None
 
 
-def _idle_text(st: dict[str, Any], events: list[dict[str, Any]], nodes: list[dict[str, Any]]) -> str:
+def diagnosing(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The `diagnosis_start` of a block Muse is reading now: the last of it, `blocked`, `cancelled` and
+    `story_start` when it is that. None otherwise, and always for a story logged before the event."""
+    kinds = ("diagnosis_start", "blocked", "cancelled", "story_start")
+    last = next((e for e in reversed(events) if e.get("kind") in kinds), None)
+    return last if last is not None and last.get("kind") == "diagnosis_start" else None
+
+
+def _last_passed(nodes: list[dict[str, Any]]) -> str | None:
+    """The last box in pipeline order that passed, as its node and its label; None when none did."""
+    for node in reversed(nodes):
+        box = next((j for j in reversed(node.get("jobs", [])) if j.get("status") == "passed"), None)
+        if box is not None:
+            return " › ".join(dict.fromkeys(str(x) for x in (node.get("label"), box.get("label"))))
+    return None
+
+
+def _idle_text(
+    st: dict[str, Any], events: list[dict[str, Any]], nodes: list[dict[str, Any]], *, live: bool
+) -> str:
     if st.get("blocked"):
         hit = active(nodes, {"failed"})
         return f"Blocked at {' › '.join(_path(hit[0]))}" if hit else "Blocked"
@@ -115,7 +146,13 @@ def _idle_text(st: dict[str, Any], events: list[dict[str, Any]], nodes: list[dic
     work = [e for e in events if e.get("kind") != "story_done"]
     if work and work[-1].get("kind") == "story_planned":
         return "Planned · waiting for the build lane"
-    return "Not started"
+    after = _last_passed(nodes) if live else None
+    return f"Between steps · after {after}" if after else "Not started"
+
+
+def _working_text(path: list[str], *, live: bool, last: float | None) -> str:
+    where = " › ".join(path)
+    return f"Running {where}" if live else f"Stopped at {where} · no event since {_clock(last)}"
 
 
 def story_now(
@@ -143,13 +180,25 @@ def story_now(
         "last_event": last,
         "text": "",
     }
+    opened = diagnosing(events) if st.get("blocked") else None
+    if opened is not None:  # the block is being read: the exit row's Diagnose is the running box
+        out.update(
+            status="running" if live else "stopped",
+            path=["Blocked", "Diagnose"],
+            node="exit",
+            job="diagnose",
+            role="muse",
+            started=_ts(opened),
+        )
+        out["text"] = _working_text(out["path"], live=live, last=last)
+        return out
     left = st.get("blocked") or _exit_event(events)  # a story that left is at rest
     hit = None if left else active(nodes, {"stopped" if not live else "running"})
     if hit is None:
-        out["text"] = _idle_text(st, events, nodes)
+        out["text"] = _idle_text(st, events, nodes, live=live)
         return out
     node, box = hit
-    out.update(status="running" if live else "stopped", path=_path(node), node=node["id"])
+    out.update(status="running" if live else "stopped", path=_box_path(node, box), node=node["id"])
     if box is not None:
         out.update(
             job=box["id"],
@@ -158,8 +207,7 @@ def story_now(
             steps=(box.get("tokens") or {}).get("steps"),
             started=box.get("started"),
         )
-    where = " › ".join(out["path"])
-    out["text"] = f"Stopped at {where} · no event since {_clock(last)}" if not live else f"Running {where}"
+    out["text"] = _working_text(out["path"], live=live, last=last)
     return out
 
 
@@ -167,6 +215,23 @@ def _fix_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The events of the latest block's handling: after the block before it, up to the end."""
     blocks = [i for i, e in enumerate(events) if e.get("kind") == "blocked"]
     return events[blocks[-2] + 1 :] if len(blocks) > 1 else events
+
+
+def _diagnosing_jobs(
+    events: list[dict[str, Any]], opened: dict[str, Any], *, live: bool
+) -> list[dict[str, Any]]:
+    """The block Muse is reading now (after its `diagnosis_start`): Diagnose running (stopped when nobody
+    works on the story), and the fix card it has made so far, else pending. The diagnosis on disk and the
+    fix events before the start are the previous block's."""
+    handled = events[next(i for i, e in enumerate(events) if e is opened) + 1 :]
+    failed = any(e.get("kind") == "diagnosis_failed" for e in handled)
+    status = "failed" if failed else "running" if live else "stopped"
+    diagnose = shaped(job("diagnose", "diagnose", "muse", status, started=_ts(opened)), "model")
+    made = [e for e in handled if e.get("kind") in ("fix_filed", "fix_linked", "fix_noted")]
+    untaken = any(e.get("kind") == "fix_did_not_take" for e in handled)
+    fix = job("fix", "fix", None, "failed" if untaken else "passed" if made else "pending")
+    fix = shaped(fix, "code", sub=str(made[-1].get("fix")) if made and made[-1].get("fix") else None)
+    return [diagnose, fix]
 
 
 def _blocked_jobs(state_dir: Path, key: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -188,16 +253,37 @@ def _blocked_jobs(state_dir: Path, key: str, events: list[dict[str, Any]]) -> li
 
 
 def story_exit(
-    state_dir: Path, key: str, st: dict[str, Any], events: list[dict[str, Any]], nodes: list[dict[str, Any]]
+    state_dir: Path,
+    key: str,
+    st: dict[str, Any],
+    events: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    *,
+    live: bool = True,
 ) -> dict[str, Any] | None:
     """How the story's last turn ended, drawn after the lanes: `kind` blocked, waiting or cancelled, `where`
     it stopped, how many `times` it has, `at` when, the `reason` and what it waits `on`, and its `jobs`
     (blocked: diagnose, fix, card; the others only the card moving back to To Do). None for a story that is
-    running, finished, or started again after a stop."""
+    running, finished, or started again after a stop. While Muse reads a new block (its `diagnosis_start` is
+    open) the row is that block: Diagnose running, the rest pending, counted in `times`."""
     blocked = st.get("blocked")
     ended = _exit_event(events)
     if not blocked and ended is None:
         return None
+    opened = diagnosing(events) if blocked else None
+    if opened is not None:
+        hit = active(nodes, {"failed"})
+        jobs = _diagnosing_jobs(events, opened, live=live)
+        jobs.append(shaped(job("card", "card", None, "pending"), "code", sub="→ blocked"))
+        return {
+            "kind": "blocked",
+            "where": " › ".join(_path(hit[0])) if hit else str(opened.get("stage") or ""),
+            "times": sum(1 for e in events if e.get("kind") == "blocked") + 1,
+            "at": _ts(opened),
+            "reason": blocked,
+            "on": None,
+            "jobs": jobs,
+        }
     if blocked:
         kind, wanted = "blocked", [e for e in events if e.get("kind") == "blocked"]
         hit = active(nodes, {"failed"})

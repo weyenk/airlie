@@ -592,6 +592,15 @@ async def test_a_pack_that_cannot_be_gathered_is_an_event_and_the_plain_note(
     assert board.moves[-1] == "blocked"  # a diagnosis that fails never keeps the issue out of Blocked
 
 
+async def test_the_diagnosis_logs_its_start_before_the_block_so_the_flow_can_light_it(tmp_path: Path) -> None:
+    st, _ = await stopped_with(tmp_path, "layer 01 (B) changed nothing")
+    got = [e["kind"] for e in kinds_all(st.path / "events.jsonl")]
+    assert got.count("diagnosis_start") == 1
+    assert got.index("diagnosis_start") < got.index("blocked")
+    [start] = kinds(st.path / "events.jsonl", "diagnosis_start")
+    assert start["stage"] == "new"
+
+
 async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

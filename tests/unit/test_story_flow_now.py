@@ -11,7 +11,7 @@ from airlie.serve.flow import job_detail, story_flow
 from airlie.serve.flow_now import story_live
 from airlie.serve.running import ACTIVE_S
 from tests.unit.test_story_flow import KEY, by_id
-from tests.unit.test_story_flow_build import air47_at_16_12, from_fixture, story_files
+from tests.unit.test_story_flow_build import air47_at_16_12, from_fixture, layered, story_files
 from tests.unit.test_story_flow_plan import make_story
 
 
@@ -65,6 +65,41 @@ def test_a_blocked_story_settles_its_running_boxes_as_failed(tmp_path: Path) -> 
     assert flow["now"]["status"] == "idle" and flow["now"]["text"].startswith("Blocked at")
 
 
+def test_the_now_bar_names_the_running_box_inside_a_layer(tmp_path: Path) -> None:
+    checking = [
+        {"ts": 1.0, "kind": "package_start", "layer": "01", "attempt": 1},
+        {"ts": 5.0, "kind": "package_checks_start", "layer": "01", "attempt": 1},
+    ]
+    layered(tmp_path / "a", checking)
+    now = story_flow(tmp_path / "a", KEY, held=True)["now"]
+    assert now["path"] == ["Build lane", "Layer 01", "checks"]  # one cycle: no cycle label
+    assert now["text"] == "Running Build lane › Layer 01 › checks"
+    placing = [
+        {"ts": 1.0, "kind": "package_start", "layer": "01", "attempt": 1},
+        {"ts": 2.0, "kind": "package_ready", "layer": "01", "attempt": 1},
+        {"ts": 3.0, "kind": "layer_start", "layer": "01", "attempt": 1, "studio_run": "run-b"},
+    ]
+    layered(tmp_path / "b", placing)
+    assert story_flow(tmp_path / "b", KEY, held=True)["now"]["path"] == ["Build lane", "Layer 01", "place"]
+
+
+def test_a_layer_with_several_cycles_names_the_cycle_then_the_box(tmp_path: Path) -> None:
+    from_fixture(tmp_path, "AIR-47")
+    now = story_flow(tmp_path, "AIR-47", held=True)["now"]  # L03's package, asked again after a stop
+    assert now["path"] == ["Build lane", "Layer 03", "Package"]
+    events = [
+        {"ts": 1.0, "kind": "package_start", "layer": "01", "attempt": 1},
+        {"ts": 2.0, "kind": "package_returned", "layer": "01", "attempt": 1, "kinds": ["lint_fails"]},
+        {"ts": 3.0, "kind": "blocked", "stage": "layers", "reason": "x"},
+        {"ts": 4.0, "kind": "story_start", "stage": "layers", "resumed": True},
+        {"ts": 5.0, "kind": "package_start", "layer": "01", "attempt": 1},
+        {"ts": 6.0, "kind": "package_checks_start", "layer": "01", "attempt": 1},
+    ]
+    layered(tmp_path / "c", events)
+    now = story_flow(tmp_path / "c", KEY, held=True)["now"]
+    assert now["path"] == ["Build lane", "Layer 01", "package", "checks"]
+
+
 # ---- the now bar when idle ----
 
 
@@ -77,6 +112,21 @@ def test_a_planned_story_waiting_for_the_build_lane_says_so(tmp_path: Path) -> N
     make_story(tmp_path, events, stage="layers")
     flow = story_flow(tmp_path, KEY, now=4.0)
     assert flow["now"] == {**flow["now"], "status": "idle", "text": "Planned · waiting for the build lane"}
+
+
+def test_a_live_story_between_two_steps_says_what_it_did_last(tmp_path: Path) -> None:
+    events = [
+        {"ts": 1.0, "kind": "package_start", "layer": "01", "attempt": 1},
+        {"ts": 2.0, "kind": "package_ready", "layer": "01", "attempt": 1},
+        {"ts": 3.0, "kind": "layer_start", "layer": "01", "attempt": 1, "studio_run": "run-b"},
+        {"ts": 4.0, "kind": "package_placed", "layer": "01", "paths": ["tests/test_a.py"]},
+        {"ts": 9.0, "kind": "layer_built", "layer": "01", "branch": "b", "sha": "s"},
+    ]
+    layered(tmp_path, events, built={"01": {"branch": "b", "sha": "s"}})
+    now = story_flow(tmp_path, KEY, now=10.0)["now"]
+    assert now["status"] == "idle"
+    assert now["text"] == "Between steps · after Layer 01 › squash"
+    assert story_flow(tmp_path, KEY, now=10.0 + ACTIVE_S + 1)["now"]["text"] == "Not started"  # not live
 
 
 def test_a_story_not_started_says_so(tmp_path: Path) -> None:
@@ -97,6 +147,52 @@ def test_a_blocked_story_has_an_exit_row_with_its_diagnosis_and_fix_card(tmp_pat
     assert ex["jobs"][1]["sub"] == "AIR-48"
     assert ex["jobs"][2]["sub"] == "→ blocked"
     assert ex["jobs"][0]["role"] == "muse"
+
+
+def air48_diagnosing(root: Path, *, closed: bool) -> float:
+    """AIR-48 with a `diagnosis_start` logged where its third block's diagnosis began (before its triage);
+    cut there (Muse still reading) unless `closed`. Returns the start's ts."""
+    from_fixture(root, "AIR-48")
+    _, log = story_files(root, "AIR-48")
+    lines = log.read_text().splitlines()
+    triage = max(
+        i
+        for i, x in enumerate(lines)
+        if json.loads(x)["kind"] == "supervisor_triage" and json.loads(x).get("trigger") == "block"
+    )
+    ts = float(json.loads(lines[triage - 1])["ts"]) + 1.0
+    start = json.dumps({"ts": ts, "kind": "diagnosis_start", "stage": "layers"})
+    kept = [*lines[:triage], start, *(lines[triage:] if closed else [])]
+    log.write_text("\n".join(kept) + "\n")
+    return ts
+
+
+def test_while_muse_diagnoses_a_block_the_exit_row_is_the_new_block_with_diagnose_lit(tmp_path: Path) -> None:
+    ts = air48_diagnosing(tmp_path, closed=False)
+    flow = story_flow(tmp_path, "AIR-48", now=ts + 5)
+    ex = flow["exit"]
+    assert ex["kind"] == "blocked" and ex["times"] == 3 and ex["at"] == ts
+    diagnose, fix, moved = ex["jobs"]
+    assert (diagnose["status"], diagnose["role"], diagnose["card"]) == ("running", "muse", None)
+    assert diagnose["started"] == ts
+    assert fix["status"] == "pending" and fix["sub"] is None  # the previous block's AIR-49 is not this one's
+    assert moved["status"] == "pending" and moved["started"] is None
+    now = flow["now"]
+    assert now["status"] == "running" and now["path"] == ["Blocked", "Diagnose"]
+    assert (now["node"], now["job"], now["role"], now["started"]) == ("exit", "diagnose", "muse", ts)
+    assert now["text"] == "Running Blocked › Diagnose"
+
+
+def test_after_the_diagnosis_the_exit_row_is_the_block_it_handled(tmp_path: Path) -> None:
+    air48_diagnosing(tmp_path, closed=True)
+    flow = story_flow(tmp_path, "AIR-48", now=last_ts(tmp_path, "AIR-48") + 5)
+    ex = flow["exit"]
+    assert ex["times"] == 3
+    diagnose, fix, moved = ex["jobs"]
+    assert diagnose["status"] == "skipped"  # the fixture keeps no diagnosis file: as before the event
+    assert (fix["status"], fix["sub"]) == ("passed", "AIR-48")
+    assert moved["status"] == "passed" and moved["started"] == ex["at"]
+    assert flow["now"]["status"] == "idle" and flow["now"]["text"].startswith("Blocked at")
 
 
 def test_a_waiting_story_names_what_it_waits_on(tmp_path: Path) -> None:

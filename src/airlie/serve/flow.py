@@ -54,7 +54,7 @@ def story_flow(state_dir: Path, key: str, *, held: bool = False, now: float | No
         "acceptance": list(story.get("acceptance") or []),
         "nodes": nodes,
         "now": story_now(nodes, st, events, live=live, run_last_ts=run_ts),
-        "exit": story_exit(state_dir, key, st, events, nodes),
+        "exit": story_exit(state_dir, key, st, events, nodes, live=live),
     }
 
 

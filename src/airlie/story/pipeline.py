@@ -2252,6 +2252,7 @@ class StoryPipeline:
         reason = _cap(_redact_urls(reason))
         st.blocked = reason
         st.save()
+        st.emit("diagnosis_start", stage=st.stage)  # for the flow: Muse reads the block for a minute or two
         try:
             text, fields = await self._diagnose(st, card, reason)
         except asyncio.CancelledError:  # Muse is asked in there, which takes minutes: a cancel can land
