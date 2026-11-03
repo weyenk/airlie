@@ -18,7 +18,7 @@ pytestmark = pytest.mark.e2e
 
 RUNNING_KEY = "AIR-9"
 RUNNING_TITLE = "Context gathering for the coder"
-BLOCKED_REASON = "layer 02 (Full screen toggle): its tests still do not test its change"
+BLOCKED_REASON = "layer 02 (Full screen toggle): the gate stays red after the coder's fix rounds"
 """What conftest seeds as STORY_KEY's blocked reason."""
 
 
