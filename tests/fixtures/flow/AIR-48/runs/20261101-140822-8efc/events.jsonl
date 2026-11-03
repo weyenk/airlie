@@ -1,0 +1,16 @@
+{"ts": 1793560102.173482, "kind": "run_start", "k": 1, "orchestrator": "studio", "given_plan": true}
+{"ts": 1793560102.593432, "kind": "plan", "subtasks": ["build"], "roles": ["coder"], "pinned": true}
+{"ts": 1793560102.5937579, "kind": "handoff", "src": "chief", "dst": "build", "what": "brief"}
+{"ts": 1793560102.593786, "kind": "subtask_start", "subtask": "build", "role": "coder", "skill": null, "writes": true}
+{"ts": 1793560183.29304, "kind": "write_deadline", "team_id": "build", "role": "coder", "kind_of_write": "code", "step": 10, "met": false}
+{"ts": 1793560347.578866, "kind": "handoff", "src": "build", "dst": "reviewer", "what": "diff", "role": "reviewer"}
+{"ts": 1793560362.888226, "kind": "review", "subtask": "build", "verdict": "approve", "findings": 0, "blocking": 0, "round": 0}
+{"ts": 1793560362.888447, "kind": "handoff", "src": "reviewer", "dst": "build", "what": "findings", "role": "reviewer"}
+{"ts": 1793560362.8885992, "kind": "subtask_done", "subtask": "build", "role": "coder", "ok": true, "stop_reason": "done", "steps": 22, "fix_rounds": 0}
+{"ts": 1793560362.888715, "kind": "handoff", "src": "build", "dst": "chief", "what": "result"}
+{"ts": 1793560521.7812202, "kind": "gate_failed", "follow_up": "build"}
+{"ts": 1793560652.4739761, "kind": "follow_up", "subtask": "build", "role": "coder"}
+{"ts": 1793560704.867174, "kind": "write_deadline", "team_id": "build", "role": "coder", "kind_of_write": "code", "step": 10, "met": false}
+{"ts": 1793560866.07676, "kind": "subtask_done", "subtask": "build", "role": "coder", "ok": false, "stop_reason": "repeated_action", "steps": 34, "fix_rounds": 0}
+{"ts": 1793560866.076836, "kind": "handoff", "src": "build", "dst": "chief", "what": "result"}
+{"ts": 1793561041.670961, "kind": "run_done", "ok": false, "wall_ms": 939493.8, "subtasks": 1}

@@ -183,7 +183,7 @@ def test_the_flow_lists_the_stages_in_order_with_their_status(state_dir: Path) -
     assert flow["key"] == KEY and flow["title"] == "Do the thing"
     assert [n["id"] for n in flow["nodes"]] == [
         "intake", "base", "gate", "survey", "refine", "layers", "amigos", "planned",
-        "layer-01", "layer-02", "publish", "review",
+        "packages", "layer-01", "layer-02", "publish", "review",
     ]  # fmt: skip
     status = {n["id"]: n["status"] for n in flow["nodes"]}
     assert status["intake"] == status["refine"] == status["layers"] == status["layer-01"] == "passed"
@@ -361,19 +361,21 @@ def write_packaged_story(root: Path) -> Path:
 def test_a_layer_is_a_lane_of_jobs_with_package_and_coder_stats(state_dir: Path) -> None:
     write_packaged_story(state_dir)
     layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-01")
-    assert [j["id"] for j in layer["jobs"]] == ["package", "checks", "build"]
-    package, checks, build = layer["jobs"]
+    assert [j["id"] for j in layer["jobs"]] == ["package", "checks", "place", "build", "squash"]
+    package, checks, place, build, squash = layer["jobs"]
     assert (package["role"], package["status"], package["attempts"]) == ("architect", "passed", 1)
     assert package["studio_run"] == "run-p1" and package["tokens"]["tps"] == pytest.approx(50.0)
     assert package["duration_s"] == pytest.approx(60.0)  # from package_start to package_ready
-    assert checks["status"] == "passed" and checks["retries"] == []
+    assert checks["status"] == "passed" and checks["retries"] == [] and checks["label"] == "checks"
+    assert place["status"] == "passed" and place["sub"] == "1 test file"
     assert build["role"] == "coder" and build["status"] == "passed"
+    assert squash["status"] == "passed"
 
 
 def test_a_layer_whose_package_came_back_twice_shows_the_package_job_failed(state_dir: Path) -> None:
     write_packaged_story(state_dir)
     layer = by_id(story_flow(state_dir, KEY2)["nodes"], "layer-02")
-    package, checks, build = layer["jobs"]
+    package, checks, place, build, squash = layer["jobs"]
     assert (package["status"], package["attempts"]) == ("failed", 2)
     assert checks["status"] == "failed" and checks["attempts"] == 2
     assert [r["kind"] for r in checks["retries"]] == [
@@ -382,7 +384,7 @@ def test_a_layer_whose_package_came_back_twice_shows_the_package_job_failed(stat
         "import_unresolved",
         "package_returned",
     ]
-    assert build["status"] == "pending"
+    assert place["status"] == build["status"] == squash["status"] == "pending"
     assert layer["status"] == "failed"
 
 

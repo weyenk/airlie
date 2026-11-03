@@ -1,0 +1,114 @@
+{"ts": 1793646779.419806, "kind": "story_start", "card": "Publish one draft PR per story; layers stay build steps", "stage": "new", "resumed": false, "build": "e8146e0"}
+{"ts": 1793646779.4208698, "kind": "stage", "stage": "intake"}
+{"ts": 1793646780.695014, "kind": "gate", "commands": ["uv sync --frozen", "uv run ruff check .", "uv run ruff format --check .", "uv run mypy", "uv run pytest -q -n auto --maxprocesses 8", "task web:gate"], "agents_md": "29021b8c65cdf504126cd48abf9c69ea9dabbf4b", "base": {"ref": "origin/main", "sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}}
+{"ts": 1793646780.7020001, "kind": "run", "stage": "refine", "studio_run": "20261102-141300-a629", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793646781.3183548, "kind": "run", "stage": "survey", "studio_run": "20261102-141301-355e", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793646993.328486, "kind": "stage", "stage": "refine"}
+{"ts": 1793647003.301462, "kind": "survey_done", "chars": 6157}
+{"ts": 1793647003.3960168, "kind": "run", "stage": "layers", "studio_run": "20261102-141643-b5f1", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793647310.295058, "kind": "plan_fix", "stage": "layers", "attempt": 1}
+{"ts": 1793647310.295118, "kind": "steer", "stage": "layers", "id": "plan-fix", "role": "architect", "round": 1}
+{"ts": 1793647725.596951, "kind": "plan_fix", "stage": "layers", "attempt": 2}
+{"ts": 1793647725.597041, "kind": "steer", "stage": "layers", "id": "plan-fix", "role": "architect", "round": 1}
+{"ts": 1793648303.570018, "kind": "retry", "stage": "layers"}
+{"ts": 1793648303.650484, "kind": "run", "stage": "layers", "studio_run": "20261102-143823-9bb7", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793648699.770394, "kind": "plan_round", "stage": "layers", "round": 1, "layers": ["story-publish-field", "publish-mode-thread", "single-pr-publish", "single-pr-state-bench", "airlie-yaml-single-docs"]}
+{"ts": 1793648699.770456, "kind": "steer", "stage": "layers", "id": "plan-round", "role": "architect", "round": 2}
+{"ts": 1793649300.0822132, "kind": "plan_round_unusable", "stage": "layers", "round": 2}
+{"ts": 1793649300.082273, "kind": "plan_done", "stage": "layers", "reason": "malformed", "rounds": 1}
+{"ts": 1793649300.155618, "kind": "budget_warning", "stage": "plan", "tokens_in": 850085, "tokens_out": 32747, "wall_s": 2296.5240008831024, "steps": 25, "attempts": 2}
+{"ts": 1793649300.155676, "kind": "budget_exceeded", "stage": "plan", "tokens_in": 850085, "tokens_out": 32747, "wall_s": 2296.5240008831024, "steps": 25, "attempts": 2}
+{"ts": 1793649300.161736, "kind": "run", "stage": "skill", "studio_run": "20261102-145500-3a55", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793649300.472561, "kind": "skill", "subtask": "amigos", "chosen": "functional", "decision": "low-confidence", "confidence": 0.2959483821163189}
+{"ts": 1793649409.8455381, "kind": "amigos_turn", "role": "product", "turn": 8, "verdict": {"requirements": "agree", "changes": "agree", "proof": "object"}, "problems": [], "verdict_asked": false, "prompt_tokens": 33503, "completion_tokens": 962, "wall_ms": 109040}
+{"ts": 1793649750.971961, "kind": "amigos_turn", "role": "architect", "turn": 19, "verdict": {"requirements": "agree", "changes": "agree", "proof": "object"}, "problems": [], "verdict_asked": false, "prompt_tokens": 32725, "completion_tokens": 5451, "wall_ms": 341112}
+{"ts": 1793649936.122129, "kind": "amigos_turn", "role": "tester", "turn": 27, "verdict": {"requirements": "agree", "changes": "object", "proof": "agree"}, "problems": [], "verdict_asked": false, "prompt_tokens": 32242, "completion_tokens": 2555, "wall_ms": 185140}
+{"ts": 1793649936.122277, "kind": "amigos_objection", "role": "tester", "part": "changes", "about": "story-publish-field", "round": 7}
+{"ts": 1793649936.1224499, "kind": "amigos_objection", "role": "tester", "part": "changes", "about": "publish-mode-thread", "round": 7}
+{"ts": 1793649936.122566, "kind": "amigos_objection", "role": "tester", "part": "changes", "about": "single-pr-publish", "round": 7}
+{"ts": 1793649936.122668, "kind": "amigos_objection", "role": "tester", "part": "changes", "about": "single-pr-state-bench", "round": 7}
+{"ts": 1793649936.122764, "kind": "amigos_objection", "role": "tester", "part": "changes", "about": "airlie-yaml-single-docs", "round": 7}
+{"ts": 1793649936.252107, "kind": "amigos_turn", "role": "airlie", "turn": 28, "verdict": null, "problems": [], "verdict_asked": false, "prompt_tokens": 0, "completion_tokens": 0, "wall_ms": 122}
+{"ts": 1793649936.252168, "kind": "amigos_findings", "turn": 28, "kinds": ["file_missing"]}
+{"ts": 1793649994.076877, "kind": "amigos_turn", "role": "product", "turn": 32, "verdict": {"requirements": "agree", "changes": "object", "proof": "agree"}, "problems": [], "verdict_asked": false, "prompt_tokens": 45811, "completion_tokens": 827, "wall_ms": 57814}
+{"ts": 1793649994.0770712, "kind": "amigos_objection", "role": "product", "part": "changes", "about": "story-publish-field", "round": 8}
+{"ts": 1793649994.077207, "kind": "amigos_objection", "role": "product", "part": "changes", "about": "publish-mode-thread", "round": 8}
+{"ts": 1793649994.077332, "kind": "amigos_objection", "role": "product", "part": "changes", "about": "single-pr-publish", "round": 8}
+{"ts": 1793649994.0774379, "kind": "amigos_objection", "role": "product", "part": "changes", "about": "single-pr-state-bench", "round": 8}
+{"ts": 1793649994.077547, "kind": "amigos_objection", "role": "product", "part": "changes", "about": "airlie-yaml-single-docs", "round": 8}
+{"ts": 1793650366.81021, "kind": "amigos_turn", "role": "architect", "turn": 43, "verdict": {"requirements": "agree", "changes": "agree", "proof": "object"}, "problems": [], "verdict_asked": false, "prompt_tokens": 47981, "completion_tokens": 5593, "wall_ms": 372722}
+{"ts": 1793650366.810385, "kind": "amigos_objection", "role": "architect", "part": "proof", "about": "AC5", "round": 11}
+{"ts": 1793650458.471912, "kind": "amigos_turn", "role": "tester", "turn": 49, "verdict": {"requirements": "agree", "changes": "agree", "proof": "agree"}, "problems": [], "verdict_asked": false, "prompt_tokens": 40417, "completion_tokens": 1870, "wall_ms": 91644}
+{"ts": 1793650458.472126, "kind": "amigos_resolved", "role": "tester", "part": "changes", "about": "story-publish-field"}
+{"ts": 1793650458.47227, "kind": "amigos_resolved", "role": "tester", "part": "changes", "about": "publish-mode-thread"}
+{"ts": 1793650458.472391, "kind": "amigos_resolved", "role": "tester", "part": "changes", "about": "single-pr-publish"}
+{"ts": 1793650458.472503, "kind": "amigos_resolved", "role": "tester", "part": "changes", "about": "single-pr-state-bench"}
+{"ts": 1793650458.472617, "kind": "amigos_resolved", "role": "tester", "part": "changes", "about": "airlie-yaml-single-docs"}
+{"ts": 1793650458.605163, "kind": "amigos_turn", "role": "airlie", "turn": 50, "verdict": null, "problems": [], "verdict_asked": false, "prompt_tokens": 0, "completion_tokens": 0, "wall_ms": 129}
+{"ts": 1793650490.2366788, "kind": "amigos_turn", "role": "product", "turn": 54, "verdict": {"requirements": "agree", "changes": "agree", "proof": "agree"}, "problems": [], "verdict_asked": false, "prompt_tokens": 53365, "completion_tokens": 418, "wall_ms": 31617}
+{"ts": 1793650490.236911, "kind": "amigos_resolved", "role": "product", "part": "changes", "about": "story-publish-field"}
+{"ts": 1793650490.237071, "kind": "amigos_resolved", "role": "product", "part": "changes", "about": "publish-mode-thread"}
+{"ts": 1793650490.237203, "kind": "amigos_resolved", "role": "product", "part": "changes", "about": "single-pr-publish"}
+{"ts": 1793650490.2373388, "kind": "amigos_resolved", "role": "product", "part": "changes", "about": "single-pr-state-bench"}
+{"ts": 1793650490.237479, "kind": "amigos_resolved", "role": "product", "part": "changes", "about": "airlie-yaml-single-docs"}
+{"ts": 1793650542.045759, "kind": "amigos_turn", "role": "architect", "turn": 56, "verdict": {"requirements": "agree", "changes": "agree", "proof": "agree"}, "problems": [], "verdict_asked": false, "prompt_tokens": 54472, "completion_tokens": 1132, "wall_ms": 51796}
+{"ts": 1793650542.0459929, "kind": "amigos_resolved", "role": "architect", "part": "proof", "about": "AC5"}
+{"ts": 1793650542.1656058, "kind": "amigos_agreed", "turns": 10}
+{"ts": 1793650542.166677, "kind": "stage", "stage": "layers"}
+{"ts": 1793650542.1676002, "kind": "story_planned", "layers": 5}
+{"ts": 1793650542.167647, "kind": "story_done", "stage": "layers", "blocked": null}
+{"ts": 1793650576.567157, "kind": "story_start", "card": "Publish one draft PR per story; layers stay build steps", "stage": "layers", "resumed": true, "build": "e8146e0"}
+{"ts": 1793650578.2744162, "kind": "packages_drafting", "layers": 5}
+{"ts": 1793650578.2783859, "kind": "run", "stage": "packages", "studio_run": "20261102-151618-a040", "base": "e8146e0986784f7cb0c58147263e8f9b935353f4", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"}
+{"ts": 1793652110.614688, "kind": "run", "stage": "critic", "studio_run": "20261102-154150-1f01", "base": "137d6a0605638b78995ee3c8fde396b34a5945b9", "base_sha": "137d6a0605638b78995ee3c8fde396b34a5945b9"}
+{"ts": 1793652176.234803, "kind": "amigos_critic", "layer": "01", "verdict": "agree", "objections": 0}
+{"ts": 1793652176.2350101, "kind": "package_drafted", "layer": "01", "studio_run": "20261102-151618-a040"}
+{"ts": 1793653844.297662, "kind": "run", "stage": "critic", "studio_run": "20261102-161044-1fa8", "base": "499f3974e3515acd0b252edc9ee84c11c5199c11", "base_sha": "499f3974e3515acd0b252edc9ee84c11c5199c11"}
+{"ts": 1793653978.650134, "kind": "amigos_critic", "layer": "02", "verdict": "agree", "objections": 0}
+{"ts": 1793653978.650362, "kind": "package_drafted", "layer": "02", "studio_run": "20261102-151618-a040"}
+{"ts": 1793656010.702695, "kind": "retry", "stage": "package"}
+{"ts": 1793656010.7027571, "kind": "package_returned", "layer": "03", "attempt": 1, "kinds": ["package_unusable"], "studio_run": "20261102-151618-a040"}
+{"ts": 1793656010.705316, "kind": "package_start", "layer": "01", "attempt": 1}
+{"ts": 1793656264.4590452, "kind": "package_ready", "layer": "01", "attempt": 1, "studio_run": "20261102-151618-a040", "files": ["src/airlie/config/schema.py", "tests/unit/test_config.py"], "beyond_proof": []}
+{"ts": 1793656264.472631, "kind": "layer_start", "layer": "01", "branch": "AIR-47-publish-one-draft-pr-per-story-01-story-publish-field", "base": "origin/main", "base_sha": "e8146e0986784f7cb0c58147263e8f9b935353f4", "studio_run": "20261102-165104-4888", "attempt": 1}
+{"ts": 1793656264.518353, "kind": "brief", "brief": "layer-build", "layer": "01", "chars": 15686}
+{"ts": 1793656265.059581, "kind": "package_placed", "layer": "01", "studio_run": "20261102-165104-4888", "paths": ["tests/unit/test_config.py"]}
+{"ts": 1793656520.5169542, "kind": "layer_built", "layer": "01", "branch": "AIR-47-publish-one-draft-pr-per-story-01-story-publish-field", "sha": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0"}
+{"ts": 1793656520.583589, "kind": "package_start", "layer": "02", "attempt": 1}
+{"ts": 1793656725.238836, "kind": "package_ready", "layer": "02", "attempt": 1, "studio_run": "20261102-151618-a040", "files": ["src/airlie/story/publish.py", "src/airlie/story/factory.py", "tests/unit/test_story_publish.py"], "beyond_proof": []}
+{"ts": 1793656725.251698, "kind": "layer_start", "layer": "02", "branch": "AIR-47-publish-one-draft-pr-per-story-02-publish-mode-thread", "base": "AIR-47-publish-one-draft-pr-per-story-01-story-publish-field", "base_sha": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0", "studio_run": "20261102-165845-c5a7", "attempt": 1}
+{"ts": 1793656725.333212, "kind": "brief", "brief": "layer-build", "layer": "02", "chars": 50405}
+{"ts": 1793656725.897467, "kind": "package_placed", "layer": "02", "studio_run": "20261102-165845-c5a7", "paths": ["tests/unit/test_story_publish.py"]}
+{"ts": 1793657307.538678, "kind": "steer", "id": "no-more-tools", "role": "supervisor", "subtask": "build", "layer": "02"}
+{"ts": 1793657349.366373, "kind": "supervisor_triage", "trigger": "gate_retry", "category": "wrong_acceptance_test", "owner": "coder", "ledger_id": 45, "layer": "02"}
+{"ts": 1793657349.45122, "kind": "gate_tail", "layer": "02", "studio_run": "20261102-165845-c5a7"}
+{"ts": 1793657349.452087, "kind": "lesson_recorded", "layer": "02", "ending": "gate_red"}
+{"ts": 1793657349.452152, "kind": "layer_replanned", "layer": "02", "attempt": 1, "why": "gate_red"}
+{"ts": 1793657349.452252, "kind": "steer", "id": "package-test-wrong", "role": "architect", "layer": "02"}
+{"ts": 1793657349.452302, "kind": "steer", "id": "package-replan", "role": "architect", "layer": "02"}
+{"ts": 1793657351.761991, "kind": "package_start", "layer": "02", "attempt": 1}
+{"ts": 1793657351.8162491, "kind": "package_resumed", "layer": "02", "studio_run": "20261102-151618-a040"}
+{"ts": 1793657638.001162, "kind": "retry", "stage": "package"}
+{"ts": 1793657638.001257, "kind": "package_returned", "layer": "02", "attempt": 1, "kinds": ["package_unusable"], "studio_run": "20261102-165845-c5a7"}
+{"ts": 1793657638.00133, "kind": "package_start", "layer": "02", "attempt": 2}
+{"ts": 1793657638.085958, "kind": "package_resumed", "layer": "02", "studio_run": "20261102-151618-a040"}
+{"ts": 1793659281.3634272, "kind": "run", "stage": "critic", "studio_run": "20261102-174121-827f", "base": "0e17238f900fdbd9aea5e55cf876f28da58d3407", "base_sha": "0e17238f900fdbd9aea5e55cf876f28da58d3407"}
+{"ts": 1793659478.126506, "kind": "amigos_critic", "layer": "02", "verdict": "agree", "objections": 0}
+{"ts": 1793659696.5993652, "kind": "lint_fails", "layer": "02", "attempt": 2, "studio_run": "20261102-151618-a040"}
+{"ts": 1793659696.5998, "kind": "package_returned", "layer": "02", "attempt": 2, "kinds": ["lint_fails"], "studio_run": "20261102-151618-a040"}
+{"ts": 1793659696.600422, "kind": "lesson_recorded", "layer": "02", "ending": "package_rejected"}
+{"ts": 1793659734.5382268, "kind": "supervisor_triage", "trigger": "block", "category": "wrong_acceptance_test", "owner": "coder", "ledger_id": 46, "layer": "02"}
+{"ts": 1793659734.540885, "kind": "blocked", "stage": "layers", "reason": "layer 02 (Thread the publish mode into Publisher and skip the gh-stack probe for single): its package still fails the readiness check after 2 tries (lint_fails)", "n": 1, "class": "transient", "block_kind": "engine_error", "signature": "transient:engine_error:architect"}
+{"ts": 1793659734.545387, "kind": "story_done", "stage": "layers", "blocked": "layer 02 (Thread the publish mode into Publisher and skip the gh-stack probe for single): its package still fails the readiness check after 2 tries (lint_fails)"}
+{"ts": 1793661069.016928, "kind": "story_start", "card": "Publish one draft PR per story; layers stay build steps", "stage": "layers", "resumed": true, "build": "120d3df"}
+{"ts": 1793661070.304579, "kind": "package_start", "layer": "02", "attempt": 1}
+{"ts": 1793661070.522368, "kind": "run", "stage": "package", "studio_run": "20261102-181110-3ace", "base": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0", "base_sha": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0"}
+{"ts": 1793663890.063532, "kind": "run", "stage": "critic", "studio_run": "20261102-185810-417a", "base": "87843e8e17fe1ab4ab2c8a141af89ee42c24a6bd", "base_sha": "87843e8e17fe1ab4ab2c8a141af89ee42c24a6bd"}
+{"ts": 1793664065.523523, "kind": "amigos_critic", "layer": "02", "verdict": "agree", "objections": 0}
+{"ts": 1793664298.492609, "kind": "package_ready", "layer": "02", "attempt": 1, "studio_run": "20261102-181110-3ace", "files": ["src/airlie/story/publish.py", "src/airlie/story/factory.py", "tests/unit/test_story_publish.py", "tests/unit/test_story_factory.py", "tests/unit/test_story_tick_epics.py"], "beyond_proof": []}
+{"ts": 1793664298.5036259, "kind": "layer_start", "layer": "02", "branch": "AIR-47-publish-one-draft-pr-per-story-02-publish-mode-thread", "base": "AIR-47-publish-one-draft-pr-per-story-01-story-publish-field", "base_sha": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0", "studio_run": "20261102-190458-02f5", "attempt": 1}
+{"ts": 1793664298.6269069, "kind": "brief", "brief": "layer-build", "layer": "02", "chars": 56404}
+{"ts": 1793664299.0755389, "kind": "package_placed", "layer": "02", "studio_run": "20261102-190458-02f5", "paths": ["tests/unit/test_story_publish.py"]}
+{"ts": 1793665151.83349, "kind": "layer_built", "layer": "02", "branch": "AIR-47-publish-one-draft-pr-per-story-02-publish-mode-thread", "sha": "33005946e0f316e89d6c158116d13840c5d351b7"}
+{"ts": 1793665151.908923, "kind": "package_start", "layer": "03", "attempt": 2}
+{"ts": 1793665152.184754, "kind": "run", "stage": "package", "studio_run": "20261102-191912-7a89", "base": "33005946e0f316e89d6c158116d13840c5d351b7", "base_sha": "33005946e0f316e89d6c158116d13840c5d351b7"}

@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from airlie.serve.flow_parts import (
     STAGE_ROLES,
@@ -15,6 +15,7 @@ from airlie.serve.flow_parts import (
     detail,
     job,
     run_events,
+    shaped,
     squares,
     step_row,
     tag,
@@ -23,8 +24,6 @@ from airlie.serve.flow_parts import (
     votes,
 )
 from airlie.story.state import STAGES
-
-Shape = Literal["code", "model", "milestone"]
 
 MEETING_ROUND = ("product", "architect", "tester", "airlie")
 """The order the three amigos and airlie's checker take their turns in."""
@@ -41,20 +40,6 @@ def _span(start: Any, end: Any) -> float | None:
     if isinstance(start, float | int) and isinstance(end, float | int):
         return round(end - start, 1)
     return None
-
-
-def _shaped(
-    box: dict[str, Any],
-    shape: Shape,
-    *,
-    live: str | None = None,
-    tags: Sequence[dict[str, Any]] = (),
-    card: dict[str, Any] | None = None,
-    **fields: Any,
-) -> dict[str, Any]:
-    """`box` (a job) with the fields the workflow screen draws a plan box by."""
-    box.update(shape=shape, live=live, tags=list(tags), card=card, **fields)
-    return box
 
 
 def stage_node(
@@ -134,7 +119,7 @@ def _code_job(
     box = job(id, label, None, status)
     ts = events[-1].get("ts") if events else None
     box.update(started=ts, ended=ts if status == "passed" else None)
-    return _shaped(box, "code", **fields)
+    return shaped(box, "code", **fields)
 
 
 def _intake_node(st: dict[str, Any], events: list[dict[str, Any]], blocked: bool) -> dict[str, Any]:
@@ -221,7 +206,7 @@ def _survey_node(
 ) -> dict[str, Any]:
     node = stage_node("survey", "Survey", st, events, state_dir, blocked)
     for box in node["jobs"]:
-        _shaped(box, "model", card=_run_card("Survey", box, [], ()))
+        shaped(box, "model", card=_run_card("Survey", box, [], ()))
     return _decorated(node, group="same-time")
 
 
@@ -230,7 +215,7 @@ def _refine_node(
 ) -> dict[str, Any]:
     node = stage_node("refine", "Refine", st, events, state_dir, blocked)
     for box in node["jobs"]:
-        _shaped(box, "model", card=_run_card("Refine", box, [], ()))
+        shaped(box, "model", card=_run_card("Refine", box, [], ()))
     return _decorated(node, group="same-time")
 
 
@@ -255,7 +240,7 @@ def _layers_node(
     if done is not None:
         rows.append(text_row("result", f"{done.get('reason')} after {done.get('rounds')} round(s)"))
     for box in node["jobs"]:
-        _shaped(box, "model", tags=tags, card=_run_card("Plan layers", box, rows, tags))
+        shaped(box, "model", tags=tags, card=_run_card("Plan layers", box, rows, tags))
     return _decorated(node)
 
 
@@ -352,7 +337,7 @@ def _meeting_job(events: list[dict[str, Any]], blocked: bool) -> dict[str, Any] 
         owner_decided=list(decided[-1].get("parts") or []) if decided else [],
     )
     tags = [tag("owner decided", "warn")] if box["owner_decided"] else []
-    return _shaped(
+    return shaped(
         box,
         "model",
         live=_next_in_round(turns) if status == "running" else None,
@@ -380,7 +365,7 @@ def _planned_node(st: dict[str, Any], events: list[dict[str, Any]]) -> dict[str,
     box.update(started=ts, ended=ts)
     if isinstance(ts, float | int):
         box["sub"] = time.strftime("%H:%M", time.localtime(ts))
-    return _plan_node("planned", "Planned", status, [_shaped(box, "milestone")])
+    return _plan_node("planned", "Planned", status, [shaped(box, "milestone")])
 
 
 def plan_nodes(state_dir: Path, st: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:

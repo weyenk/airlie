@@ -12,20 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from airlie.board import BoardStore
-from airlie.serve.flow_parts import (
-    STAGE_ROLES,
-    StoryNotFound,
-    detail,
-    job,
-    load,
-    name,
-    run_events,
-    safe,
-    status_of,
-    timing,
-    tokens,
-)
-from airlie.serve.flow_plan import plan_nodes, stage_node
+from airlie.serve.flow_build import build_nodes
+from airlie.serve.flow_parts import StoryNotFound, load, name, safe
+from airlie.serve.flow_plan import plan_nodes
 from airlie.story.budgets import stage_figures
 from airlie.story.costs import queue_hours
 from airlie.story.diagnosis import latest
@@ -35,219 +24,16 @@ from airlie.story.initiative import Initiative
 from airlie.story.initiative_state import waiting_on
 from airlie.story.model import StoryError
 
-CHECK_KINDS = frozenset(
-    {
-        "test_checks_passed",
-        "package_returned",
-        "package_ready",
-        "package_placed",
-        "file_exists",
-        "file_missing",
-        "covers_missing",
-        "import_unresolved",
-        "unknown_method",
-        "test_too_large",
-        "assertion_free_test",
-        "unparseable_test",
-        "test_type_error",
-        "existing_test_changed",
-        "suite_did_not_run",
-        "test_checks_retry",
-        "test_checks_skipped",
-        "tester_lint_fixed",
-        "tester_lint_round",
-        "lint_fails",
-        "no_new_test",
-        "passes_before_code",
-        "test_not_run",
-        "existing_test_fails",
-        "existing_tests_fail_at_base",
-        "locked_tests_fail",
-        "tests_not_mended",
-        "tests_mend_undone",
-        "tests_mended",
-    }
-)
-"""What the story's events say about the readiness check on a layer's package (and, in a story recorded
-before P1, the pre-code check on the tester's tests)."""
-
-CHECK_DONE = frozenset({"test_checks_passed", "package_ready", "package_placed"})
-"""The check events that are no retry: the outcome."""
-
-BUILD_KINDS = frozenset({"fix_round", "gate_failed", "write_deadline"})
-"""What a layer's studio run says about its coder having to be sent back."""
-
 OBSERVATION_CHARS = 2000
-
-
-def _subtask(run_events: list[dict[str, Any]], team: str, kind: str) -> dict[str, Any] | None:
-    found = [e for e in run_events if e.get("kind") == kind and e.get("subtask") == team]
-    return found[-1] if found else None
-
-
-def _package_job(events: list[dict[str, Any]], built: bool, failed: bool, state_dir: Path) -> dict[str, Any]:
-    """The architect's package for a layer: one attempt per `package_start`, passed on `package_ready`, failed
-    when every attempt came back and the layer stopped, running while one is out; its tokens are the last
-    attempt's ask (the studio run its `package_ready` or `package_returned` names)."""
-    starts = [e for e in events if e["kind"] == "package_start"]
-    ready = [e for e in events if e["kind"] == "package_ready"]
-    returned = [e for e in events if e["kind"] == "package_returned"]
-    ended = (ready or returned)[-1] if ready or returned else None
-    run = ended.get("studio_run") if ended else None
-    if ready or built:
-        status = "passed"
-    elif not starts:
-        status = "pending"
-    elif len(returned) >= len(starts) and failed:
-        status = "failed"
-    else:
-        status = "running"
-    first = starts[0].get("ts") if starts else None
-    last = ready[-1].get("ts") if ready else None
-    took = (
-        round(last - first, 1) if isinstance(first, float | int) and isinstance(last, float | int) else None
-    )
-    used = tokens(run_events(state_dir, run), "package")
-    return job(
-        "package",
-        "Package",
-        (used or {}).get("role") or STAGE_ROLES["package"],
-        status,
-        attempts=len(starts),
-        studio_run=run,
-        tokens=used,
-        started=first,
-        ended=last,
-        duration_s=took,
-        retries=[{"kind": e["kind"], "detail": ", ".join(e.get("kinds") or [])} for e in returned],
-    )
-
-
-def _layer_node(
-    i: int,
-    layer: dict[str, Any],
-    st: dict[str, Any],
-    events: list[dict[str, Any]],
-    state_dir: Path,
-    first_open: int | None,
-    blocked: bool,
-) -> dict[str, Any]:
-    nn = f"{i + 1:02d}"
-    mine = [e for e in events if e.get("layer") == nn]
-    starts = [e for e in mine if e.get("kind") == "layer_start"]
-    built = nn in (st.get("built") or {})
-    if built:
-        status = "passed"
-    elif first_open == i:
-        status = "failed" if blocked else "running" if starts else "pending"
-    else:
-        status = "pending"
-    run = starts[-1]["studio_run"] if starts else (st.get("built") or {}).get(nn, {}).get("run_id")
-    run_log = run_events(state_dir, run)
-    jobs: list[dict[str, Any]] = []
-
-    package_events = [
-        e for e in mine if e.get("kind") in ("package_start", "package_returned", "package_ready")
-    ]
-    legacy = (
-        not package_events and bool(run_log) and any(e.get("kind") == "subtask_start" for e in run_log)
-    )  # a layer run before P1: the tester's `tests` subtask, or none (the coder wrote its own tests)
-    if legacy:
-        t_start, t_done = (
-            _subtask(run_log, "tests", "subtask_start"),
-            _subtask(run_log, "tests", "subtask_done"),
-        )
-        tests_status = status_of(t_start, t_done)
-        if t_start is None and _subtask(run_log, "build", "subtask_start") is not None:
-            tests_status = (
-                "skipped"  # a run with no tester (before story.tester_role): the coder wrote its own
-            )
-        jobs.append(
-            job(
-                "tests",
-                "Tests",
-                "tester",
-                tests_status,
-                studio_run=run,
-                tokens=tokens(run_log, "tests"),
-                **timing(t_start, t_done),
-            )
-        )
-    else:
-        jobs.append(_package_job(package_events, built, status == "failed", state_dir))
-
-    checks = [e for e in mine if e.get("kind") in CHECK_KINDS]
-    attempts = max((int(e["attempt"]) for e in checks if isinstance(e.get("attempt"), int)), default=0)
-    passed = any(e["kind"] in ("test_checks_passed", "package_ready") for e in checks)
-    checks_status = (
-        "passed"
-        if passed or built
-        else "failed"
-        if checks and status == "failed"
-        else "running"
-        if checks
-        else "pending"
-    )
-    jobs.append(
-        job(
-            "checks",
-            "Test checks",
-            None,
-            checks_status,
-            attempts=attempts or (1 if passed else 0),
-            retries=[{"kind": e["kind"], "detail": detail(e)} for e in checks if e["kind"] not in CHECK_DONE],
-        )
-    )
-
-    b_start, b_done = (
-        _subtask(run_log, "build", "subtask_start"),
-        _subtask(run_log, "build", "subtask_done"),
-    )
-    build_status = "passed" if built else status_of(b_start, b_done)
-    jobs.append(
-        job(
-            "build",
-            "Build",
-            "coder",
-            build_status,
-            studio_run=run,
-            tokens=tokens(run_log, "build"),
-            fix_rounds=int((b_done or {}).get("fix_rounds") or 0),
-            retries=[
-                {"kind": e["kind"], "detail": detail(e)} for e in run_log if e.get("kind") in BUILD_KINDS
-            ],
-            **timing(b_start, b_done),
-        )
-    )
-    return {
-        "id": f"layer-{nn}",
-        "label": f"Layer {nn}",
-        "kind": "layer",
-        "title": layer.get("title"),
-        "scope": layer.get("scope"),
-        "acceptance": list(layer.get("acceptance") or []),
-        "attempts": len(starts),
-        "status": status,
-        "jobs": jobs,
-    }
 
 
 def story_flow(state_dir: Path, key: str) -> dict[str, Any]:
     """The pipeline of one story: `nodes` left to right, each with its `jobs`; the acceptance criteria and
     the reason it stopped, if it did."""
     _, st, events = load(state_dir, key)
-    blocked = bool(st.get("blocked"))
     card = st["card"] if isinstance(st.get("card"), dict) else {}
     story = st["story"] if isinstance(st.get("story"), dict) else {}
-    layers = [x for x in st.get("layers") or [] if isinstance(x, dict)]
-    built = st.get("built") or {}
-    first_open = next((i for i in range(len(layers)) if f"{i + 1:02d}" not in built), None)
-    nodes = plan_nodes(state_dir, st, events)
-    nodes += [_layer_node(i, x, st, events, state_dir, first_open, blocked) for i, x in enumerate(layers)]
-    nodes += [
-        stage_node("publish", "Publish", st, events, state_dir, blocked),
-        stage_node("review", "Review", st, events, state_dir, blocked),
-    ]
+    nodes = plan_nodes(state_dir, st, events) + build_nodes(state_dir, st, events)
     return {
         "key": key,
         "title": card.get("title") or story.get("title"),

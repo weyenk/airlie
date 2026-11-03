@@ -133,6 +133,25 @@ def timing(start: dict[str, Any] | None, done: dict[str, Any] | None) -> dict[st
     return {"started": a, "ended": b, "duration_s": took}
 
 
+Shape = Literal["code", "model", "milestone"]
+"""How a box is drawn: a step that asks a model, a step airlie takes itself, or a moment."""
+
+
+def shaped(
+    box: dict[str, Any],
+    shape: Shape,
+    *,
+    live: str | None = None,
+    tags: Sequence[dict[str, Any]] = (),
+    card: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """`box` (a job) with the fields the workflow screen draws a box by: its shape, the live inner step while
+    it runs, its warn tags and its hover card."""
+    box.update(shape=shape, live=live, tags=list(tags), card=card, **fields)
+    return box
+
+
 Tone = Literal["warn", "info", "ok", "danger", "chip"]
 
 
