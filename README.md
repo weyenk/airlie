@@ -1,7 +1,6 @@
-# airlie
 
 <p align="center">
-  <img src="web/public/logo.png" alt="airlie" width="96" height="96" />
+  <img src="docs/readme/wordart.png" alt="airlie" width="420" />
 </p>
 
 airlie is an agentic workflow platform. Today it runs development workflows end to end — from a board card
