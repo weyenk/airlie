@@ -303,11 +303,17 @@ class Publisher:
     """The publish steps, as the person or, with `app`, as that GitHub App's bot."""
 
     def __init__(
-        self, *, remote: str = "origin", run: Runner = run_cmd, app: GitHubApp | None = None
+        self,
+        *,
+        remote: str = "origin",
+        run: Runner = run_cmd,
+        app: GitHubApp | None = None,
+        publish: str = "stack",
     ) -> None:
         self.remote = remote
         self.run = run
         self.app = app
+        self.publish = publish
         self.repository: str | None = None
         """The "owner/name" every publish step must fetch from and push to (prepare): the one the remote names
         as written, which prepare holds to a story's pin when it has one; as the bot, the one every token
@@ -487,10 +493,12 @@ class Publisher:
         the installation, the token's permissions; not gh's login: gh uses the token). Without gh there is
         nothing to say about its login or its extension."""
         no_remote = f"{repo} has no remote '{self.remote}' (story.remote)"
-        needs = [
-            (["gh", "stack", "--help"], "gh-stack is missing: `gh extension install github/gh-stack`"),
-            (["git", "remote", "get-url", self.remote], no_remote),
-        ]
+        needs: list[tuple[list[str], str]] = []
+        if self.publish != "single":  # a single draft PR is opened with plain gh: no gh-stack
+            needs.append(
+                (["gh", "stack", "--help"], "gh-stack is missing: `gh extension install github/gh-stack`")
+            )
+        needs.append((["git", "remote", "get-url", self.remote], no_remote))
         if self.app is None:
             needs.insert(0, (["gh", "auth", "status"], "gh is not logged in: run `gh auth login`"))
             self.prepare(repo)

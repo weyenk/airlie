@@ -250,7 +250,9 @@ async def test_run_one_builds_the_story_with_the_pipeline_and_lets_go_of_the_loc
     gh = RecordedGh()
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
     monkeypatch.setattr(
-        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+        factory,
+        "Publisher",
+        lambda *, remote, app, publish: Publisher(remote=remote, run=gh, app=app, publish=publish),
     )
     card = text_card("Let users upload an avatar")
     st = await run_one(cfg, board=NullBoard(stories_dir(cfg)), card=card, repo=repo, test_cmd="./check.sh")
@@ -675,7 +677,9 @@ def queue_setup(
     monkeypatch.setattr(factory, "make_board", lambda cfg: board)
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
     monkeypatch.setattr(
-        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+        factory,
+        "Publisher",
+        lambda *, remote, app, publish: Publisher(remote=remote, run=gh, app=app, publish=publish),
     )
     github_answers(monkeypatch)
     return cfg, gh
@@ -1129,7 +1133,9 @@ async def test_a_story_topology_that_does_not_load_is_a_setup_problem_not_a_cras
 
 def fake_publisher(problems: list[str], seen: list[tuple[str, Path]], notes: list[str] | None = None) -> Any:
     class Fake:
-        def __init__(self, *, remote: str = "origin", app: GitHubApp | None = None) -> None:
+        def __init__(
+            self, *, remote: str = "origin", app: GitHubApp | None = None, publish: str = "stack"
+        ) -> None:
             self.remote = remote
 
         async def check(self, repo: Path) -> Checked:
@@ -1462,7 +1468,9 @@ async def test_story_describe_re_describes_every_published_pr_and_refuses_an_unp
     gh = ReadingGh()
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
     monkeypatch.setattr(
-        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+        factory,
+        "Publisher",
+        lambda *, remote, app, publish: Publisher(remote=remote, run=gh, app=app, publish=publish),
     )
     board = NullBoard(stories_dir(cfg))
     card = text_card("Let users upload an avatar")
@@ -1480,7 +1488,9 @@ async def test_story_describe_re_describes_every_published_pr_and_refuses_an_unp
 
     failing = FailingGh("the network fell over")
     monkeypatch.setattr(
-        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=failing, app=app)
+        factory,
+        "Publisher",
+        lambda *, remote, app, publish: Publisher(remote=remote, run=failing, app=app, publish=publish),
     )
     two = tmp_path / "second"  # a repository of its own: the first story's branches are taken in the first
     two.mkdir()
@@ -1507,7 +1517,9 @@ async def test_body_one_reads_a_built_layers_body_without_the_network(
     gh = RecordedGh()
     monkeypatch.setattr(factory, "_engine", lambda cfg: happy_engine())
     monkeypatch.setattr(
-        factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=gh, app=app)
+        factory,
+        "Publisher",
+        lambda *, remote, app, publish: Publisher(remote=remote, run=gh, app=app, publish=publish),
     )
     board = NullBoard(stories_dir(cfg))
     card = text_card("Let users upload an avatar")

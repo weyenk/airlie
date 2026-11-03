@@ -65,7 +65,9 @@ class TickRig:
         self.gh = RecordedGh()
         monkeypatch.setattr(factory, "_engine", lambda cfg: self.engine)
         monkeypatch.setattr(
-            factory, "Publisher", lambda *, remote, app: Publisher(remote=remote, run=self.gh, app=app)
+            factory,
+            "Publisher",
+            lambda *, remote, app, publish: Publisher(remote=remote, run=self.gh, app=app, publish=publish),
         )
         github_answers(monkeypatch)
         self.store = BoardStore(self.cfg.observability.state_dir / "board.sqlite")
