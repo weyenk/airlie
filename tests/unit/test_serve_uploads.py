@@ -126,6 +126,17 @@ def user_parts(body: dict[str, Any]) -> list[dict[str, Any]]:
     return [p for m in body["messages"] if m["role"] == "user" for p in m["content"]]
 
 
+def case_id(value: object) -> str:
+    """A parametrized case's id without the bytes in it: five cases named by their file's raw bytes made ids
+    of 1.93M characters, and pytest's -rA summary ran past the output a package check reads (AIR-47 layer 04,
+    2026-11-03), so a test that passed there counted as red."""
+    if isinstance(value, bytes):
+        return f"{len(value)}B"
+    if isinstance(value, str):
+        return value
+    return type(value).__name__
+
+
 # ---- the kind comes from the bytes ----
 @pytest.mark.parametrize(
     ("data", "name", "kind", "mime"),
@@ -141,6 +152,7 @@ def user_parts(body: dict[str, Any]) -> list[dict[str, Any]]:
         (ZIP, "shot.png", "file", "image/png"),  # a .png name on zip bytes is a file
         (HEIC, "IMG_0003.HEIC", "file", "image/heic"),
     ],
+    ids=case_id,
 )
 def test_the_kind_is_read_from_the_bytes_not_the_name(data: bytes, name: str, kind: str, mime: str) -> None:
     assert sniff(data, name) == (kind, mime)
@@ -182,6 +194,7 @@ def test_ids_are_random_not_a_hash_of_the_content(tmp_path: Path) -> None:
         ),  # past the 64 KB head
         (b"x" * 5000, {"max_file_mb": 0.001}, "a file may be up to 0.001 MB"),
     ],
+    ids=case_id,
 )
 def test_a_file_past_its_kinds_limit_is_413_naming_it_and_leaves_nothing(
     tmp_path: Path, data: bytes, limit: dict[str, float], what: str
@@ -300,6 +313,7 @@ def test_a_picture_that_fits_reaches_the_engine_as_it_is(tmp_path: Path) -> None
         (picture(60, 40, fmt="GIF", mode="P"), "image/jpeg", (60, 40)),  # a GIF's first frame
         (picture(60, 40, fmt="WEBP"), "image/jpeg", (60, 40)),
     ],
+    ids=case_id,
 )
 def test_a_picture_is_scaled_to_max_image_px_and_the_file_is_kept(
     tmp_path: Path, data: bytes, mime: str, size: tuple[int, int]

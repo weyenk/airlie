@@ -8,6 +8,8 @@ import shlex
 import sys
 from pathlib import Path
 
+import pytest
+
 from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import (
     Finding,
@@ -173,6 +175,60 @@ async def test_a_new_test_that_passes_before_the_code_is_caught(tmp_path: Path) 
     assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_mul.py::test_add_again")]
     assert "passes before the layer's code is written" in found[0].why
     assert "def test_add_again" in found[0].source
+
+
+async def test_a_test_that_passes_before_the_code_is_caught_however_long_the_suites_output_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AIR-47 layer 04 (2026-11-03): the suite's output ran past the cap the check reads it up to, the -rA
+    summary with it, and a test that passed on the base counted as red. The JUnit report has every case."""
+    from airlie.story import layer_checks
+
+    monkeypatch.setattr(layer_checks, "_OUTPUT_CHARS", 300)  # far below the summary's end
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL + "\n\n" + TEST_ADD_AGAIN})
+    found = await findings(root, base)
+    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_mul.py::test_add_again")]
+
+
+async def test_a_test_the_suite_reports_no_outcome_for_is_a_finding_not_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from airlie.story import layer_checks
+
+    monkeypatch.setattr(layer_checks, "_junit_outcomes", lambda report: {})  # nothing reported at all
+    root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
+    [found] = await findings(root, base)
+    assert (found.kind, found.test) == ("test_not_run", "tests/test_mul.py::test_mul")
+    assert "no outcome" in found.why
+
+
+def test_the_junit_report_names_each_test_as_its_id_with_its_outcome(tmp_path: Path) -> None:
+    from airlie.story.layer_checks import _junit_outcomes
+
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        '<testsuites><testsuite name="pytest">'
+        '<testcase file="tests/test_b.py" classname="" name="tests.test_b"><error message="x"/></testcase>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_ok"/>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_bad"><failure/></testcase>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_p[1]"/>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_p[2]"><failure/></testcase>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a.TestC.Inner" name="test_m"/>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_s"><skipped/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    assert _junit_outcomes(report) == {
+        "tests/test_b.py": "ERROR",
+        "tests/test_a.py::test_ok": "PASSED",
+        "tests/test_a.py::test_bad": "FAILED",
+        "tests/test_a.py::test_p": "FAILED",  # one case failed: the test is not PASSED
+        "tests/test_a.py::TestC::Inner::test_m": "PASSED",
+        "tests/test_a.py::test_s": "SKIPPED",
+    }
+    report.write_text("<not xml")
+    assert _junit_outcomes(report) is None
 
 
 async def test_a_new_module_that_cannot_import_its_feature_yet_counts_as_red_and_the_rest_still_runs(

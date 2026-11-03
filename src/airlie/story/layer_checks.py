@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 import re
 import shlex
+import tempfile
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +34,7 @@ from airlie.tools.shell import run_cmd
 
 Kind = Literal[
     "passes_before_code",
+    "test_not_run",
     "existing_test_changed",
     "existing_test_fails",
     "assertion_free_test",
@@ -60,6 +63,12 @@ Kind = Literal[
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
+NOT_RUN = (
+    "pytest reported no outcome for it, so it was not run: check that it is collected (a test_ name, in a "
+    "module pytest finds, not skipped by a mark)"
+)
+"""A test the suite never reported: before 2026-11-03 it counted as red, unseen (AIR-47 layer 04 passed on
+its base, its PASSED line cut off with the capped output, and two builds changed nothing)."""
 EXISTING_CHANGED = (
     "it was already there on the layer's base and still passes, so your edit changed it without testing "
     "anything new. An edit anchored inside a test splits it: the rest of its body ends up under your new "
@@ -84,6 +93,8 @@ worktree, and every module run when a new one cannot be imported yet (the name i
 NO_BYTECODE = "export PYTHONDONTWRITEBYTECODE=1; "
 """Before the step: the run writes no __pycache__ into the worktree, where it would be the package's work
 (committed, and locked to the coder) in a repository that does not ignore it."""
+JUNIT = "-o junit_family=xunit1"
+"""The JUnit report's family that names each case's file, so a case maps back to its test id."""
 _OUTCOME = re.compile(r"^(PASSED|FAILED|ERROR) (\S+)", re.MULTILINE)
 _SUMMARY = re.compile(r"^=+ short test summary info =+$", re.MULTILINE)
 """The header of pytest's -rA summary. The suite's is the last one: a test that runs pytest on a fixture
@@ -265,6 +276,43 @@ def _outcomes(output: str) -> dict[str, str]:
     return out
 
 
+def _junit_outcomes(report: Path) -> dict[str, str] | None:
+    """Each test id in pytest's JUnit report (xunit1: each case names its file), with PASSED, FAILED, ERROR
+    or SKIPPED, read as `_outcomes` reads -rA (a parametrized test's cases are one id; any case that did not
+    pass makes it so; a module that could not be collected is an ERROR on its path). None when the report
+    cannot be read. The report holds every case whatever the output's length: the -rA summary is at the end
+    of an output the check caps, and AIR-47 layer 04's PASSED line was past the cap (2026-11-03)."""
+    try:
+        root = ET.parse(report).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    out: dict[str, str] = {}
+    for case in root.iter("testcase"):
+        path, cls, name = case.get("file") or "", case.get("classname") or "", case.get("name") or ""
+        if not path:
+            continue
+        kids = {c.tag for c in case}
+        outcome = (
+            "FAILED"
+            if "failure" in kids
+            else "ERROR"
+            if "error" in kids
+            else "SKIPPED"
+            if "skipped" in kids
+            else "PASSED"
+        )
+        if not cls:  # a module that could not be collected
+            key = path
+        else:
+            module = path.removesuffix(".py").replace("/", ".")
+            inner = cls.removeprefix(module).strip(".")
+            classes = inner.split(".") if inner else []  # a test's class, nested classes in turn
+            key = "::".join([path, *classes, _PARAMS.sub("", name)])
+        if out.get(key) in (None, "PASSED"):
+            out[key] = outcome
+    return out
+
+
 def _same(test_id: str, reported: str) -> bool:
     """`reported` (from pytest's rootdir, which can be below the repository's root) names `test_id`."""
     return test_id == reported or test_id.endswith("/" + reported)
@@ -300,7 +348,12 @@ class PytestChecks:
             return [*findings, Finding("suite_did_not_run", self.step, why, "")]
         modules = {t.path for t in tests} | {f.test for f in findings if f.kind == "unparseable_test"}
         for t in tests:
-            if any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
+            reported = any(_same(t.id, k) for k in outcomes) or any(
+                o == "ERROR" and _same(t.path, k) for k, o in outcomes.items()
+            )  # a module that cannot be imported yet is red for each of its tests
+            if not reported:
+                findings.append(Finding("test_not_run", t.id, NOT_RUN, t.source))
+            elif any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
                 if t.before:  # it was there: a test the edit changed, not a new one that is not red
                     findings.append(
                         Finding("existing_test_changed", t.id, EXISTING_CHANGED, t.source, t.before)
@@ -351,13 +404,19 @@ class PytestChecks:
     async def _suite(self, worktree: Path, tests: Sequence[str] = ()) -> tuple[dict[str, str] | None, str]:
         """The gate's pytest step run on the worktree with PYTEST_FLAGS (on `tests` alone when given): each
         test's outcome (None when the suite did not run its tests), and the output."""
-        ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
         only = f" {shlex.join(tests)}" if tests else ""
-        result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {PYTEST_FLAGS}{only}", ctx, shell=True)
-        code = _EXIT.search(result.output)
-        if not result.ok and (code is None or int(code.group(1)) not in _RAN):
-            return None, result.output
-        return _outcomes(result.output), result.output
+        with tempfile.TemporaryDirectory(prefix="airlie-checks-") as where:
+            report = Path(where) / "junit.xml"
+            confinement = dict(self.confinement)  # the report is written outside the worktree, confined too
+            confinement["writable"] = (*confinement.get("writable", ()), Path(where))
+            ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **confinement)
+            flags = f"{PYTEST_FLAGS} {JUNIT} --junitxml={shlex.quote(str(report))}"
+            result = await run_cmd(f"{NO_BYTECODE}{self.step.rstrip()} {flags}{only}", ctx, shell=True)
+            code = _EXIT.search(result.output)
+            if not result.ok and (code is None or int(code.group(1)) not in _RAN):
+                return None, result.output
+            outcomes = _junit_outcomes(report) if report.is_file() else None
+        return (outcomes if outcomes is not None else _outcomes(result.output)), result.output
 
 
 def checks_for(

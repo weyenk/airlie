@@ -57,6 +57,7 @@ CHECK_KINDS = frozenset(
         "lint_fails",
         "no_new_test",
         "passes_before_code",
+        "test_not_run",
         "existing_test_fails",
         "existing_tests_fail_at_base",
         "locked_tests_fail",
