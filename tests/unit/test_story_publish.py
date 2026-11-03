@@ -44,6 +44,7 @@ from airlie.story.publish import (
 from airlie.story.state import StoryState  # noqa: E402
 from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
+from tests.unit import github_helpers
 from tests.unit.git_helpers import git
 from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
@@ -814,6 +815,56 @@ async def test_as_the_bot_a_step_refuses_a_remote_that_does_not_lead_to_its_repo
     ):
         await p.submit(repo)
     assert rec.calls == [] and github.minted_for() == []
+
+
+PUBLISHES_WITH_WORKFLOWS = {"contents": "write", "pull_requests": "write", "workflows": "write"}
+
+
+def _branch_with(repo: Path, branch: str, path: str) -> None:
+    """`branch`, one commit on the repository's own that adds `path`; the checkout stays where it was."""
+    head = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    git(repo, "checkout", "-q", "-b", branch)
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("on: push\n")
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", f"add {path}")
+    git(repo, "checkout", "-q", head)
+
+
+async def test_as_the_bot_a_push_that_changes_workflows_gets_a_token_with_workflows_write(
+    tmp_path: Path, own_git: Path
+) -> None:
+    """GitHub refuses an app's push that creates or updates .github/workflows/ without the workflows
+    permission (AIR-52): a push whose commits the remote has not got change a workflow asks for it; any other
+    keeps contents and pull_requests write alone; both for the one PR's top branch and a stack's submit."""
+    repo = repo_on_github(tmp_path)
+    _branch_with(repo, "ci-01", ".github/workflows/release.yml")
+    _branch_with(repo, "docs-01", "docs/release.md")
+    github = FakeGitHub(permissions={**github_helpers.WRITE, "workflows": "write"})
+    p = Publisher(run=Recorded(), app=fake_app(tmp_path, github))
+    p.prepare(repo)
+    await p.push_top(repo, "ci-01")
+    await p.push_top(repo, "docs-01")
+    git(repo, "checkout", "-q", "ci-01")
+    await p.submit(repo)  # gh stack submit pushes the stack the checkout is on
+    assert github.minted_with() == [
+        PUBLISHES_WITH_WORKFLOWS,
+        dict(github_app.PUBLISHES),
+        PUBLISHES_WITH_WORKFLOWS,
+    ]
+
+
+async def test_as_the_bot_a_workflow_push_the_app_cannot_make_names_the_permission(
+    tmp_path: Path, own_git: Path
+) -> None:
+    repo = repo_on_github(tmp_path)
+    _branch_with(repo, "ci-01", ".github/workflows/release.yml")
+    rec = Recorded()
+    p = Publisher(run=rec, app=fake_app(tmp_path, FakeGitHub()))
+    p.prepare(repo)
+    with pytest.raises(PublishError, match="Workflows"):
+        await p.push_top(repo, "ci-01")
+    assert rec.calls == []  # nothing ran: the push GitHub would refuse is not tried
 
 
 async def test_as_the_bot_a_step_refuses_a_remote_rewritten_after_prepare(
