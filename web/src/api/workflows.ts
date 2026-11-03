@@ -53,7 +53,20 @@ export type JobRow = {
 
 export type JobStart = { job_id: string; kind: "story" | "run" | "plan" };
 
-export type FlowStatus = "pending" | "running" | "passed" | "failed" | "skipped";
+export type FlowStatus = "pending" | "running" | "passed" | "failed" | "skipped" | "stopped";
+
+/** A small label on a box or a card (the tone picks its color). */
+export type FlowTag = { text: string; tone: "warn" | "info" | "ok" | "danger" | "chip" };
+
+/** One row of a hover card. A square mark is a status, "warn", or "code-passed". */
+export type CardRow =
+  | { kind: "squares"; label: string; marks: string[]; text: string | null }
+  | { kind: "step"; status: FlowStatus; text: string; seconds: number | null }
+  | { kind: "text"; label: string; text: string }
+  | { kind: "votes"; votes: { role: string; requirements: string | null; changes: string | null; proof: string | null }[] };
+
+/** What a box shows when hovered (or in the phone's bottom sheet). */
+export type FlowCard = { title: string; tags: FlowTag[]; rows: CardRow[]; foot: string | null };
 
 export type Tokens = {
   steps: number;
@@ -84,6 +97,42 @@ export type FlowJob = {
   tokens: Tokens | null;
   /** A run's job: the agent that won the fork. */
   won?: boolean;
+  /** How the box draws: an agent, a code step or a milestone. */
+  shape?: "model" | "code" | "milestone";
+  /** What a running job is on right now. */
+  live?: string | null;
+  tags?: FlowTag[];
+  card?: FlowCard | null;
+};
+
+/** A row of a lane: one build cycle, or a divider between them. */
+export type LaneRow =
+  | { kind: "cycle"; id: string; label: string; status: FlowStatus; jobs: FlowJob[] }
+  | { kind: "divider"; text: string; card: FlowCard | null };
+
+/** Where the story is right now. */
+export type FlowNow = {
+  status: "running" | "stopped" | "idle";
+  path: string[];
+  node: string | null;
+  job: string | null;
+  inner: string | null;
+  role: string | null;
+  steps: number | null;
+  started: number | null;
+  last_event: number | null;
+  text: string | null;
+};
+
+/** Why a story ended where it did. */
+export type FlowExit = {
+  kind: "blocked" | "waiting" | "cancelled";
+  where: string | null;
+  times: number;
+  at: number | null;
+  reason: string | null;
+  on: string | null;
+  jobs: FlowJob[];
 };
 
 export type FlowNode = {
@@ -97,6 +146,10 @@ export type FlowNode = {
   scope?: string | null;
   acceptance?: string[];
   attempts?: number;
+  lane?: "plan" | "build";
+  group?: string | null;
+  rows?: LaneRow[];
+  tags?: FlowTag[];
 };
 
 /** One acceptance criterion of a story, as the refine stage wrote it. */
@@ -121,6 +174,8 @@ export type Flow = {
   progress?: number | null;
   job?: string | null;
   plan?: Record<string, unknown> | null;
+  now?: FlowNow;
+  exit?: FlowExit | null;
 };
 
 export type FlowStep = {
