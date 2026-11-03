@@ -273,3 +273,50 @@ test("a live status line outside the job names what is on show", async () => {
   await flushPromises();
   expect(w.get("[aria-live=polite]").text()).toBe("Layer 01 / tests: passed");
 });
+
+function phone(on: boolean) {
+  vi.stubGlobal("matchMedia", (q: string) => ({ matches: on, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+}
+const withCard = () => {
+  const f = structuredClone(RUNNING);
+  f.nodes[4].jobs[2].card = { title: "Build", tags: [], rows: [], foot: null };
+  return f;
+};
+
+describe("on a phone", () => {
+  beforeEach(() => phone(true));
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("the sheet stays closed until a row is tapped, and nothing is drawn below the pipeline", async () => {
+    const { w } = await open("/workflows/AIR-17", withCard());
+    expect(document.body.querySelector("[data-sheet]")).toBeNull();
+    expect(w.find("section[aria-label=Job]").exists()).toBe(false);
+  });
+
+  test("tapping a row opens the sheet with the card and the detail", async () => {
+    const { w, router } = await open("/workflows/AIR-17", withCard());
+    await w.get("[data-node=layer-02] [data-job=build]").trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/workflows/AIR-17/layer-02/build");
+    const sheet = document.body.querySelector("[data-sheet]")!;
+    expect(sheet.querySelector("[data-card]")).not.toBeNull();
+    expect(sheet.querySelector("section[aria-label=Job]")).not.toBeNull();
+  });
+
+  test("closing the sheet clears the selection", async () => {
+    const { router } = await open("/workflows/AIR-17/layer-02/build", withCard());
+    expect(document.body.querySelector("[data-sheet]")).not.toBeNull();
+    (document.body.querySelector("[data-slot=dialog-close]") as HTMLElement).click();
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/workflows/AIR-17");
+    expect(document.body.querySelector("[data-sheet]")).toBeNull();
+  });
+});
+
+test("on a laptop the detail stays below the pipeline and no sheet opens", async () => {
+  phone(false);
+  const { w } = await open("/workflows/AIR-17/layer-02/build", withCard());
+  expect(document.body.querySelector("[data-sheet]")).toBeNull();
+  expect(w.find("section[aria-label=Job]").exists()).toBe(true);
+  vi.unstubAllGlobals();
+});

@@ -54,17 +54,14 @@ test("a pick from a box is passed up", async () => {
   expect(w.emitted("pick")).toEqual([["layer-02", "build"]]);
 });
 
-test("on a phone the pipeline runs top to bottom, each layer's three jobs side by side", async () => {
+test("on a phone the pipeline is the folding list: no flow row, a built layer is one row, the running layer opens", async () => {
   phone(true);
-  const w = draw();
+  const w = draw(WITH_LAYERS, { now: now() });
   expect(w.find("[data-flow]").exists()).toBe(false);
-  const rows = w.findAll("[data-vlane]");
-  expect(rows).toHaveLength(2);
-  expect(rows[0].findAll("[data-job]").map((b) => b.text())).toEqual(["Tests", "Checks", "Build"]);
-  expect(rows[0].get("[data-jobs]").classes()).toContain("flex");
-  expect(w.findAll("[data-vstage]").map((s) => s.attributes("data-job"))).toEqual(["intake", "refine", "layers", "publish", "review"]);
-  expect(rows[1].get("[data-job=checks]").text()).toBe("Checks 2x");
-  await rows[1].get("[data-job=build]").trigger("click");
+  expect(w.find("[data-phone-list]").exists()).toBe(true);
+  expect(w.get("[data-now]").classes()).toContain("sticky");
+  expect(w.find("button[data-node=layer-01]").exists()).toBe(true);
+  await w.get("[data-open][data-node=layer-02] [data-job=build]").trigger("click");
   expect(w.emitted("pick")).toEqual([["layer-02", "build"]]);
 });
 
@@ -153,26 +150,12 @@ test("a not-started layer is its header only; a resumed one shows both builds an
   expect(w.findAll("[data-lane][data-node=layer-02] [data-job=build], [data-lane][data-node=layer-02] [data-job=c1-build]")).toHaveLength(2);
 });
 
-test("the phone branch keeps its list", () => {
-  phone(true);
-  const w = draw(FULL(), { now: now() });
-  expect(w.find("[data-flow]").exists()).toBe(false);
-  expect(w.findAll("[data-vlane]").length).toBeGreaterThan(0);
-});
-
 test("on a phone the meeting gets its own row under Plan layers", async () => {
   phone(true);
   const w = draw(WITH_MEETING());
-  const rows = w.findAll("[data-vstage]");
-  expect(rows.map((r) => [r.attributes("data-node"), r.attributes("data-job")])).toEqual([
-    ["intake", "intake"],
-    ["refine", "refine"],
-    ["layers", "layers"],
-    ["layers", "meeting"],
-    ["publish", "publish"],
-  ]);
-  expect(rows[2].text()).toContain("Plan layers");
-  expect(rows[3].text()).toContain("Three amigos");
-  await rows[3].trigger("click");
+  const open = w.get("[data-open][data-node=layers]");
+  expect(open.findAll("[data-job]").map((r) => r.attributes("data-job"))).toEqual(["layers", "meeting"]);
+  expect(open.get("[data-job=meeting]").text()).toContain("Three amigos");
+  await open.get("[data-job=meeting]").trigger("click");
   expect(w.emitted("pick")).toEqual([["layers", "meeting"]]);
 });

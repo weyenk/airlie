@@ -2,13 +2,12 @@
 import { useMediaQuery } from "@vueuse/core";
 import { computed } from "vue";
 import { PHONE_QUERY } from "@/lib/breakpoints";
-import type { FlowExit, FlowJob, FlowNode, FlowNow } from "@/api/workflows";
+import type { FlowExit, FlowNode, FlowNow } from "@/api/workflows";
 import ExitRow from "./ExitRow.vue";
 import FlowBox from "./FlowBox.vue";
-import { briefSpan } from "./format";
 import LayerLane from "./LayerLane.vue";
 import NowBar from "./NowBar.vue";
-import { BOX, DOT } from "./style";
+import PhoneList from "./PhoneList.vue";
 
 defineOptions({ name: "AirlieWorkflowPipeline" });
 
@@ -44,9 +43,6 @@ const items = computed<Item[]>(() => {
   return out.map((it) => (it.kind === "group" && it.nodes.length === 1 ? { kind: "stage", node: it.nodes[0] } : it));
 });
 
-// the phone list is unchanged: its stages one by one
-const phoneItems = computed<Item[]>(() => items.value.flatMap((it) => (it.kind === "group" ? it.nodes.map((node) => ({ kind: "stage" as const, node })) : [it])));
-
 const layers = computed(() => props.nodes.filter((n) => n.kind === "layer"));
 const figure = computed(() => {
   if (!layers.value.length) return null;
@@ -56,8 +52,6 @@ const figure = computed(() => {
 });
 
 const isSelected = (node: string, job: string) => props.selected?.[0] === node && props.selected?.[1] === job;
-const SHORT: Record<string, string> = { tests: "Tests", checks: "Checks", build: "Build" };
-const sub = (j: FlowJob) => [j.role, j.duration_s ? briefSpan(j.duration_s) : null].filter(Boolean).join(" · ") || j.status;
 </script>
 
 <template>
@@ -91,57 +85,6 @@ const sub = (j: FlowJob) => [j.role, j.duration_s ? briefSpan(j.duration_s) : nu
     <ExitRow v-if="exit" :exit="exit" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
     </template>
 
-    <div v-else class="flex flex-col px-3 pt-2 pb-3">
-      <template v-for="item in phoneItems" :key="keyOf(item)">
-        <template v-if="item.kind === 'stage'">
-          <button
-            v-for="(j, k) in item.node.jobs"
-            :key="j.id"
-            type="button"
-            data-vstage
-            :data-job="j.id"
-            :data-node="item.node.id"
-            :data-status="j.status"
-            :aria-pressed="isSelected(item.node.id, j.id) ? 'true' : 'false'"
-            :class="['flex items-center gap-2.5 border-b border-border py-[9px] text-left last:border-b-0', k ? 'pr-1 pl-5' : 'px-1', isSelected(item.node.id, j.id) ? 'ring-2 ring-ring' : '', j.status === 'running' ? 'motion-safe:animate-pulse' : '']"
-            @click="emit('pick', item.node.id, j.id)"
-          >
-            <span :class="['size-2 flex-none rounded-full', DOT[j.status]]" />
-            <span :class="['font-semibold', j.status === 'pending' ? 'text-muted-foreground' : '']">{{ k ? j.label : item.node.label }}</span>
-            <span class="ml-auto font-mono text-xs text-muted-foreground">{{ sub(j) }}</span>
-          </button>
-        </template>
-        <template v-else>
-          <div
-            v-for="n in item.nodes"
-            :key="n.id"
-            data-vlane
-            :data-node="n.id"
-            :data-status="n.status"
-            :class="['my-2 min-w-0 rounded-[10px] border px-2.5 py-2', n.status === 'running' ? 'border-info-foreground' : 'border-border']"
-          >
-            <div class="flex min-w-0 items-center gap-2">
-              <span :class="['size-2 flex-none rounded-full', DOT[n.status]]" />
-              <strong :class="['flex-none', n.status === 'pending' ? 'text-muted-foreground' : '']">{{ n.label }}</strong>
-              <span :title="n.title ?? ''" class="min-w-0 truncate text-xs text-muted-foreground">{{ n.title }}</span>
-            </div>
-            <div data-jobs class="mt-1.5 flex gap-1.5">
-              <button
-                v-for="j in n.jobs"
-                :key="j.id"
-                type="button"
-                :data-job="j.id"
-                :data-status="j.status"
-                :aria-pressed="isSelected(n.id, j.id) ? 'true' : 'false'"
-                :class="['min-w-0 flex-1 truncate rounded-md border bg-card py-[5px] text-center text-xs', BOX[j.status], isSelected(n.id, j.id) ? 'ring-2 ring-ring' : '', j.status === 'running' ? 'motion-safe:animate-pulse' : '']"
-                @click="emit('pick', n.id, j.id)"
-              >
-                {{ (SHORT[j.id] ?? j.label) + (j.attempts > 1 ? ` ${j.attempts}x` : "") }}
-              </button>
-            </div>
-          </div>
-        </template>
-      </template>
-    </div>
+    <PhoneList v-else :nodes="nodes" :now="now" :exit="exit" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
   </section>
 </template>
