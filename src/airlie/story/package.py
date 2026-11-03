@@ -207,13 +207,8 @@ def joined_tests(existing: str, added: str) -> str:
     if not imports:
         return appended
     lines = added.split("\n")
-    have = {line.strip() for line in existing.split("\n")}
-    taken = [
-        line
-        for s in imports
-        for line in lines[s.lineno - 1 : s.end_lineno]
-        if line.strip() and line.strip() not in have
-    ]
+    have = {key for s in old if _is_import(s) for key in _import_keys(s)}
+    taken = [line for s in imports for line in _missing_import(s, have, lines)]
     rest = "\n".join(lines[imports[-1].end_lineno or 0 :]).strip("\n")
     file_lines = existing.rstrip().split("\n")
     at = max((s.end_lineno or 0 for s in old if _is_import(s)), default=_docstring_end(old))
@@ -226,6 +221,32 @@ def joined_tests(existing: str, added: str) -> str:
 
 def _is_import(s: ast.stmt) -> bool:
     return isinstance(s, ast.Import | ast.ImportFrom)
+
+
+def _import_keys(s: ast.stmt) -> list[tuple[str, str, str | None]]:
+    """Each name an import statement imports, as (where from, name, as): `from m import a` is ("m", "a",
+    None), `from . import a` is (".", "a", None), `import m.n as k` is ("", "m.n", "k")."""
+    if isinstance(s, ast.ImportFrom):
+        where = "." * s.level + (s.module or "")
+        return [(where, a.name, a.asname) for a in s.names]
+    if isinstance(s, ast.Import):
+        return [("", a.name, a.asname) for a in s.names]
+    return []
+
+
+def _missing_import(s: ast.stmt, have: set[tuple[str, str, str | None]], lines: list[str]) -> list[str]:
+    """The lines an added import statement contributes to a file whose imports are `have`: none when the file
+    imports every name it does, the statement as written when it imports none of them, else one import of
+    the names the file lacks. Judged by statement, not by line: AIR-47 layer 03 (2026-11-02) lost the `)` of
+    an added multi-line import because the file had a `)` line of its own, and the test did not parse."""
+    keys = _import_keys(s)
+    missing = [k for k in keys if k not in have]
+    if not missing:
+        return []
+    if len(missing) == len(keys):
+        return lines[s.lineno - 1 : s.end_lineno]
+    names = ", ".join(name + (f" as {alias}" if alias else "") for _, name, alias in missing)
+    return [f"from {missing[0][0]} import {names}" if isinstance(s, ast.ImportFrom) else f"import {names}"]
 
 
 def _docstring_end(body: list[ast.stmt]) -> int:
