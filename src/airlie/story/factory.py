@@ -251,7 +251,7 @@ def make_pipeline(
         cfg,
         board=board,
         studio=lambda: StudioOrchestrator(cfg, engine),
-        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg)),
+        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg), publish=cfg.story.publish),
         repo=repo,
         test_cmd=test_cmd,
         github_repo=github_repo,
@@ -414,7 +414,7 @@ def make_epic_pipeline(cfg: AirlieConfig, board: LocalBoard) -> EpicPipeline:
         board=board,
         studio=lambda: StudioOrchestrator(cfg, engine),
         repo_of=lambda repository: epic_checkout(cfg, repository),
-        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg)),
+        publisher=Publisher(remote=cfg.story.remote, app=github_app(cfg), publish=cfg.story.publish),
         costs=make_costs(cfg),
     )
 
@@ -697,7 +697,7 @@ async def _moved_base(
     saved = _saved(cfg, dep) or {}
     if dep not in merged:
         numbers = [int(p["number"]) for p in saved.get("prs") or () if isinstance(p, dict) and "number" in p]
-        publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg))
+        publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish=cfg.story.publish)
         try:
             merged[dep] = await publisher.landed(repo, numbers)
         except (PublishError, ValueError, KeyError, TypeError):
@@ -1205,7 +1205,9 @@ async def check(
     if path is not None and remote_ok and not _unusable_ref(cfg.story.trunk):
         _check_trunk_and_gate(cfg, path, who, test_cmd, blocked, out)
     if path is not None and remote_ok:
-        found_publishing = await Publisher(remote=cfg.story.remote, app=github_app(cfg)).check(path)
+        found_publishing = await Publisher(
+            remote=cfg.story.remote, app=github_app(cfg), publish=cfg.story.publish
+        ).check(path)
         out.problems.extend(found_publishing.problems)
         out.notes.extend(found_publishing.notes)
     if no_board:

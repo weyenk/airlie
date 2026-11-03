@@ -1534,3 +1534,37 @@ async def test_a_gh_that_fails_reading_a_pull_request_is_a_publish_error(tmp_pat
 
     with pytest.raises(PublishError, match="502"):
         await Publisher(run=down).landed(tmp_path, [11])
+
+
+# ---- the publish mode: single opens one PR on the top branch; stack is today's gh stack ----
+
+
+def _no_ghstack(
+    asked: list[list[str]],
+) -> Callable[[list[str], Path, Mapping[str, str]], Awaitable[str]]:
+    """A run in which gh is installed but its stack extension is not: `gh stack --help` fails with a plain
+    PublishError (gh itself started, so it is not a CannotStart); every other probe (gh auth, git remote)
+    succeeds. Records what was asked, so a test can see whether the gh-stack probe ran."""
+
+    async def run(args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        asked.append(args)
+        if args[:3] == ["gh", "stack", "--help"]:
+            raise PublishError("`gh stack --help` exited 1: gh: unknown command")
+        return ""
+
+    return run
+
+
+async def test_check_single_no_ghstack_probe(tmp_path: Path) -> None:
+    """AC4: a story that publishes single needs no gh-stack, so `check` must not probe for it; a story that
+    stacks does. The two differ only in `publish`, in the same environment where `gh stack --help` fails
+    (gh is installed, its extension is not) and the remote resolves: the single check omits the probe, the
+    stack check reports it."""
+    single_asked: list[list[str]] = []
+    stack_asked: list[list[str]] = []
+    single = await Publisher(publish="single", run=_no_ghstack(single_asked)).check(tmp_path)
+    stack = await Publisher(publish="stack", run=_no_ghstack(stack_asked)).check(tmp_path)
+    assert not any("gh-stack is missing" in p for p in single.problems)  # single: the probe is not run
+    assert any("gh-stack is missing" in p for p in stack.problems)  # stack: the probe runs and fails
+    assert not any(a[:3] == ["gh", "stack", "--help"] for a in single_asked)  # single never asked for it
+    assert any(a[:3] == ["gh", "stack", "--help"] for a in stack_asked)  # stack did
