@@ -171,6 +171,7 @@ observability:
 story:
   topology: studio                 # the profile story runs load (start it with `task restart -- --topology studio`)
   trunk: main                      # the stack's base branch
+  publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default
   max_layers: 5
   # 12 (the schema's default) until 2026-11-02: AIR-47 layer 02's architect ran out of its read steps three times
   # before writing a package (the layer touches the publisher, the pipeline and a 160k-char test module, and
