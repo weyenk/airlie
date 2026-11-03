@@ -193,6 +193,7 @@ class StudioOrchestrator:
         self.sem = asyncio.Semaphore(cfg.studio.parallel)
         self.preamble: str | None = None
         self.runs: dict[str, SubtaskRun] = {}
+        self._gate_runs = 0  # the final gate's runs so far: 1 the first, 2 after the follow-up
         self.images: list[Path] = []
         self.base_sha = ""
         self.worktree: Path | None = None
@@ -1006,9 +1007,13 @@ class StudioOrchestrator:
         """The test gate, and its output. The test command loads the code the roles wrote, so it runs as
         run_tests runs it (tools.shell.run_cmd): with the agent environment, and killed with all it started
         on a timeout or a cancel. Locked files are put back first (`lock`). A tree that passed it already
-        (`gate_memo`) passes without running it again."""
+        (`gate_memo`) passes without running it again. Each run logs `gate_start` and, on a pass,
+        `gate_passed` (with `n`, its count), so the events show the gate whether it fails or not."""
         if not test_cmd or self.worktree is None or not self.runs:
             return None, ""
+        self._gate_runs += 1
+        n = self._gate_runs
+        self.sink.emit("gate_start", n=n)
         self._restore_locked()
         if self.scope_base:  # the last edit may have come after the last run_tests: mend its style too
             fix = ToolContext(
@@ -1020,6 +1025,7 @@ class StudioOrchestrator:
             await run_steps(autofix_steps(self.test_steps), fix)
         passed = self.gate_memo.passed  # fingerprinted only when there is a pass to compare with
         if passed is not None and tree_fingerprint(self.worktree) == passed:
+            self.sink.emit("gate_passed", n=n)
             return True, "the whole gate already passed on exactly this tree"
         tools = self.cfg.tools
         ctx = ToolContext(
@@ -1028,6 +1034,7 @@ class StudioOrchestrator:
         result = await run_cmd(test_cmd, ctx, shell=True)
         if result.ok:
             self.gate_memo.passed = tree_fingerprint(self.worktree)
+            self.sink.emit("gate_passed", n=n)
         return result.ok, result.output
 
     def _report(self, goal: str, final: str, t0: float, branch: str, passed: bool | None) -> RunReport:

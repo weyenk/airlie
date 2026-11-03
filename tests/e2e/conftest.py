@@ -120,7 +120,8 @@ def _seed(state: Path) -> None:
 
 
 STORY_KEY = "AIR-4"
-"""The board card ("Board: panel width") with a story behind it: layer 01 built, layer 02 stopped."""
+"""The board card ("Board: panel width") with a story behind it: layer 01 built, layer 02 stopped after two
+try cycles (the first returned for a test that tests nothing, the second red at its gate)."""
 
 
 def _seed_story(state: Path) -> None:
@@ -144,7 +145,7 @@ def _seed_story(state: Path) -> None:
             "completion_tokens": 100,
             "prefill_ms": 500.0,
             "gen_ms": 2000.0,
-            "role": "tester" if team == "tests" else "coder",
+            "role": "architect" if team == "package" else "coder",
             "model": "base",
         }
 
@@ -179,6 +180,20 @@ def _seed_story(state: Path) -> None:
             "then": "the panel fills the window",
         },
     ]
+
+    def build_run(run: str, t0: float, *, ok: bool) -> list[dict[str, Any]]:
+        """A layer's studio run: the coder, the reviewer's hand-off, then the gate (red when not `ok`)."""
+        done = {"ok": True, "stop_reason": "done", "steps": 1, "fix_rounds": 0}
+        return [
+            {"ts": t0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+            step(run, "build", 1),
+            {"ts": t0 + 60, "kind": "handoff", "src": "coder", "dst": "reviewer"},
+            {"ts": t0 + 90, "kind": "subtask_done", "subtask": "build", "role": "coder", **done},
+            {"ts": t0 + 91, "kind": "gate_start"},
+            {"ts": t0 + 120, "kind": "gate_passed" if ok else "gate_failed"},
+            {"ts": t0 + 121, "kind": "run_done", "ok": ok},
+        ]
+
     (story).mkdir(parents=True)
     (story / "state.json").write_text(
         json.dumps(
@@ -189,7 +204,7 @@ def _seed_story(state: Path) -> None:
                 "story": {"title": "Board: panel width", "summary": "s", "acceptance": criteria},
                 "layers": layers,
                 "built": {"01": {"branch": "b1", "sha": "abc", "run_id": "run-l1"}},
-                "blocked": "layer 02 (Full screen toggle): its tests still do not test its change",
+                "blocked": "layer 02 (Full screen toggle): the gate stays red after the coder's fix rounds",
                 "runs": ["run-l1", "run-l2"],
             }
         )
@@ -202,89 +217,71 @@ def _seed_story(state: Path) -> None:
             {"ts": 40.0, "kind": "stage", "stage": "refine"},
             {"ts": 41.0, "kind": "run", "stage": "layers", "studio_run": "run-layers"},
             {"ts": 90.0, "kind": "stage", "stage": "layers"},
-            {"ts": 91.0, "kind": "layer_start", "layer": "01", "studio_run": "run-l1"},
-            {"ts": 150.0, "kind": "test_checks_passed", "layer": "01", "attempt": 1},
+            {"ts": 90.5, "kind": "story_planned"},
+            # layer 01: one clean try cycle
+            {"ts": 91.0, "kind": "package_start", "layer": "01", "attempt": 1},
+            {"ts": 120.0, "kind": "package_checks_start", "layer": "01"},
+            {"ts": 130.0, "kind": "package_ready", "layer": "01", "studio_run": "run-p1"},
+            {"ts": 131.0, "kind": "layer_start", "layer": "01", "studio_run": "run-l1"},
+            {"ts": 140.0, "kind": "package_placed", "layer": "01", "paths": ["tests/board.test.js"]},
             {"ts": 300.0, "kind": "layer_built", "layer": "01", "branch": "b1", "sha": "abc"},
-            {"ts": 301.0, "kind": "layer_start", "layer": "02", "studio_run": "run-l2"},
+            # layer 02, first cycle: the package came back for a test that tests nothing; the story stopped
+            {"ts": 301.0, "kind": "package_start", "layer": "02", "attempt": 1},
+            {"ts": 330.0, "kind": "package_checks_start", "layer": "02"},
             {"ts": 340.0, "kind": "no_new_test", "layer": "02", "attempt": 1, "why": "no new test"},
-            {"ts": 341.0, "kind": "test_checks_retry", "layer": "02", "findings": 1},
-            {"ts": 380.0, "kind": "no_new_test", "layer": "02", "attempt": 2, "why": "no new test"},
-            {"ts": 381.0, "kind": "blocked", "stage": "layers", "reason": "layer 02 stopped"},
+            {"ts": 341.0, "kind": "package_returned", "layer": "02", "kinds": ["no_new_test"]},
+            {"ts": 345.0, "kind": "blocked", "stage": "layers", "reason": "layer 02: its tests do not test"},
+            {"ts": 400.0, "kind": "story_start", "resumed": True},
+            # second cycle: a package that passes its checks, then a build the gate sends back
+            {"ts": 401.0, "kind": "package_start", "layer": "02", "attempt": 1},
+            {"ts": 420.0, "kind": "package_checks_start", "layer": "02"},
+            {"ts": 430.0, "kind": "package_ready", "layer": "02", "studio_run": "run-p2"},
+            {"ts": 431.0, "kind": "layer_start", "layer": "02", "studio_run": "run-l2"},
+            {"ts": 440.0, "kind": "package_placed", "layer": "02", "paths": ["tests/full.test.js"]},
+            {"ts": 581.0, "kind": "blocked", "stage": "layers", "reason": "layer 02 stopped"},
         ],
     )
     runs = state / "runs"
     events(runs / "run-refine" / "events.jsonl", [step("run-refine", "refine", 1)])
     events(runs / "run-layers" / "events.jsonl", [step("run-layers", "layers", 1)])
-    events(
-        runs / "run-l1" / "events.jsonl",
-        [
-            {"ts": 91.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
-            step("run-l1", "tests", 1),
-            {
-                "ts": 150.0,
-                "kind": "subtask_done",
-                "subtask": "tests",
-                "role": "tester",
-                "ok": True,
-                "stop_reason": "done",
-                "steps": 1,
-                "fix_rounds": 0,
-            },
-            {"ts": 151.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
-            step("run-l1", "build", 1),
-            {
-                "ts": 290.0,
-                "kind": "subtask_done",
-                "subtask": "build",
-                "role": "coder",
-                "ok": True,
-                "stop_reason": "done",
-                "steps": 1,
-                "fix_rounds": 0,
-            },
-        ],
-    )
-    events(
-        runs / "run-l2" / "events.jsonl",
-        [
-            {"ts": 301.0, "kind": "subtask_start", "subtask": "tests", "role": "tester"},
-            {
-                "ts": 340.0,
-                "kind": "subtask_done",
-                "subtask": "tests",
-                "role": "tester",
-                "ok": True,
-                "stop_reason": "done",
-                "steps": 3,
-                "fix_rounds": 0,
-            },
-        ],
-    )
-    tests = runs / "run-l1" / "trace" / "tests"
-    tests.mkdir(parents=True)
-    (tests / "prompt.json").write_text(
-        json.dumps(
-            {
-                "role": "tester",
-                "attempt": 0,
-                "messages": [
-                    {"role": "system", "content": "You are the tester."},
-                    {"role": "user", "content": "Goal: write the failing tests for the drag handle"},
-                ],
-            }
+    events(runs / "run-p1" / "events.jsonl", [step("run-p1", "package", 1)])
+    events(runs / "run-p2" / "events.jsonl", [step("run-p2", "package", 1)])
+    events(runs / "run-l1" / "events.jsonl", build_run("run-l1", 141.0, ok=True))
+    events(runs / "run-l2" / "events.jsonl", build_run("run-l2", 441.0, ok=False))
+    for run, team, ask, thought in (
+        (
+            "run-p1",
+            "package",
+            "write the failing tests for the drag handle",
+            "start from the existing board tests",
+        ),
+        ("run-l2", "build", "make the full screen toggle pass its tests", "the toggle needs the panel width"),
+    ):
+        trace = runs / run / "trace" / team
+        trace.mkdir(parents=True)
+        (trace / "prompt.json").write_text(
+            json.dumps(
+                {
+                    "role": "architect" if team == "package" else "coder",
+                    "attempt": 0,
+                    "messages": [
+                        {"role": "system", "content": "You are the role."},
+                        {"role": "user", "content": f"Goal: {ask}"},
+                    ],
+                }
+            )
         )
-    )
-    (tests / "step-001.json").write_text(
-        json.dumps(
-            {
-                "u_t": {"name": "read_file", "arguments": "{}"},
-                "o_t": "1: x",
-                "ok": True,
-                "assistant_text": "",
-                "reasoning": "start from the existing board tests",
-            }
+        (trace / "step-001.json").write_text(
+            json.dumps(
+                {
+                    "u_t": {"name": "read_file", "arguments": "{}"},
+                    "o_t": "1: x",
+                    "ok": True,
+                    "assistant_text": "",
+                    "reasoning": thought,
+                }
+            )
         )
-    )
 
 
 TOPO_DONE = "20261023-100000-done"

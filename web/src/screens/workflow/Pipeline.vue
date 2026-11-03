@@ -2,11 +2,12 @@
 import { useMediaQuery } from "@vueuse/core";
 import { computed } from "vue";
 import { PHONE_QUERY } from "@/lib/breakpoints";
-import type { FlowJob, FlowNode } from "@/api/workflows";
-import { briefSpan } from "./format";
-import JobBox from "./JobBox.vue";
+import type { FlowExit, FlowNode, FlowNow } from "@/api/workflows";
+import ExitRow from "./ExitRow.vue";
+import FlowBox from "./FlowBox.vue";
 import LayerLane from "./LayerLane.vue";
-import { BOX, DOT } from "./style";
+import NowBar from "./NowBar.vue";
+import PhoneList from "./PhoneList.vue";
 
 defineOptions({ name: "AirlieWorkflowPipeline" });
 
@@ -15,23 +16,31 @@ const props = defineProps<{
   selected: [string, string] | null;
   /** 0 to 100 when the server knows (the running list); else it is worked out from the layers built. */
   progress?: number | null;
+  now?: FlowNow;
+  exit?: FlowExit | null;
 }>();
 const emit = defineEmits<{ pick: [node: string, job: string] }>();
 
 const phone = useMediaQuery(PHONE_QUERY);
 
-type Item = { kind: "stage"; node: FlowNode } | { kind: "lanes"; nodes: FlowNode[] };
-/** The nodes in order, the layers gathered into one block of lanes; a stage that never ran is left out. */
+type Item = { kind: "stage"; node: FlowNode } | { kind: "group"; name: string; nodes: FlowNode[] } | { kind: "lanes"; nodes: FlowNode[] };
+const keyOf = (item: Item) => (item.kind === "stage" ? item.node.id : item.kind === "group" ? `group-${item.nodes[0].id}` : "lanes");
+/** The nodes in order: layers gathered into one block of lanes, neighbors with the same group into one bracket; a stage that never ran is left out. */
 const items = computed<Item[]>(() => {
   const out: Item[] = [];
   for (const node of props.nodes) {
+    const last = out[out.length - 1];
     if (node.kind === "layer") {
-      const last = out[out.length - 1];
       if (last?.kind === "lanes") last.nodes.push(node);
       else out.push({ kind: "lanes", nodes: [node] });
-    } else if (node.jobs.length) out.push({ kind: "stage", node });
+    } else if (!node.jobs.length) continue;
+    else if (node.group) {
+      if (last?.kind === "group" && last.name === node.group) last.nodes.push(node);
+      else out.push({ kind: "group", name: node.group, nodes: [node] });
+    } else out.push({ kind: "stage", node });
   }
-  return out;
+  // a bracket around one box is just the box
+  return out.map((it) => (it.kind === "group" && it.nodes.length === 1 ? { kind: "stage", node: it.nodes[0] } : it));
 });
 
 const layers = computed(() => props.nodes.filter((n) => n.kind === "layer"));
@@ -43,8 +52,6 @@ const figure = computed(() => {
 });
 
 const isSelected = (node: string, job: string) => props.selected?.[0] === node && props.selected?.[1] === job;
-const SHORT: Record<string, string> = { tests: "Tests", checks: "Checks", build: "Build" };
-const sub = (j: FlowJob) => [j.role, j.duration_s ? briefSpan(j.duration_s) : null].filter(Boolean).join(" · ") || j.status;
 </script>
 
 <template>
@@ -55,76 +62,29 @@ const sub = (j: FlowJob) => [j.role, j.duration_s ? briefSpan(j.duration_s) : nu
       <span v-if="figure && !phone" data-progress class="text-xs text-muted-foreground">{{ figure }}</span>
     </div>
 
-    <div v-if="!phone" data-flow class="flex items-center overflow-x-auto p-[18px] [mask-image:linear-gradient(to_right,#000_96%,transparent)]">
-      <template v-for="(item, i) in items" :key="item.kind === 'stage' ? item.node.id : 'lanes'">
+    <template v-if="!phone">
+    <NowBar v-if="now" :now="now" />
+
+    <div data-flow class="flex items-center overflow-x-auto p-[18px] [mask-image:linear-gradient(to_right,#000_96%,transparent)]">
+      <template v-for="(item, i) in items" :key="keyOf(item)">
         <span v-if="i" class="flex-none px-2 text-muted-foreground" aria-hidden="true">→</span>
         <div v-if="item.kind === 'stage'" data-stage :data-node="item.node.id" class="flex flex-none flex-col gap-2">
-          <JobBox
-            v-for="j in item.node.jobs"
-            :key="j.id"
-            :node-id="item.node.id"
-            :job="j"
-            :selected="isSelected(item.node.id, j.id)"
-            @pick="(n, jb) => emit('pick', n, jb)"
-          />
+          <FlowBox v-for="j in item.node.jobs" :key="j.id" :node-id="item.node.id" :job="j" :selected="isSelected(item.node.id, j.id)" @pick="(n, jb) => emit('pick', n, jb)" />
         </div>
-        <div v-else class="flex flex-none flex-col gap-2">
+        <div v-else-if="item.kind === 'group'" data-group class="flex flex-none flex-col gap-1.5 rounded-xl border border-dashed border-border px-2 pt-1 pb-2">
+          <span class="text-[11px] tracking-[0.06em] text-muted-foreground">same time</span>
+          <div v-for="n in item.nodes" :key="n.id" data-stage :data-node="n.id" class="flex flex-col gap-2">
+            <FlowBox v-for="j in n.jobs" :key="j.id" :node-id="n.id" :job="j" :selected="isSelected(n.id, j.id)" @pick="(a, b) => emit('pick', a, b)" />
+          </div>
+        </div>
+        <div v-else data-lanes class="flex flex-none flex-col gap-2">
           <LayerLane v-for="n in item.nodes" :key="n.id" :node="n" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
         </div>
       </template>
     </div>
+    <ExitRow v-if="exit" :exit="exit" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
+    </template>
 
-    <div v-else class="flex flex-col px-3 pt-2 pb-3">
-      <template v-for="item in items" :key="item.kind === 'stage' ? item.node.id : 'lanes'">
-        <template v-if="item.kind === 'stage'">
-          <button
-            v-for="(j, k) in item.node.jobs"
-            :key="j.id"
-            type="button"
-            data-vstage
-            :data-job="j.id"
-            :data-node="item.node.id"
-            :data-status="j.status"
-            :aria-pressed="isSelected(item.node.id, j.id) ? 'true' : 'false'"
-            :class="['flex items-center gap-2.5 border-b border-border py-[9px] text-left last:border-b-0', k ? 'pr-1 pl-5' : 'px-1', isSelected(item.node.id, j.id) ? 'ring-2 ring-ring' : '', j.status === 'running' ? 'motion-safe:animate-pulse' : '']"
-            @click="emit('pick', item.node.id, j.id)"
-          >
-            <span :class="['size-2 flex-none rounded-full', DOT[j.status]]" />
-            <span :class="['font-semibold', j.status === 'pending' ? 'text-muted-foreground' : '']">{{ k ? j.label : item.node.label }}</span>
-            <span class="ml-auto font-mono text-xs text-muted-foreground">{{ sub(j) }}</span>
-          </button>
-        </template>
-        <template v-else>
-          <div
-            v-for="n in item.nodes"
-            :key="n.id"
-            data-vlane
-            :data-node="n.id"
-            :data-status="n.status"
-            :class="['my-2 min-w-0 rounded-[10px] border px-2.5 py-2', n.status === 'running' ? 'border-info-foreground' : 'border-border']"
-          >
-            <div class="flex min-w-0 items-center gap-2">
-              <span :class="['size-2 flex-none rounded-full', DOT[n.status]]" />
-              <strong :class="['flex-none', n.status === 'pending' ? 'text-muted-foreground' : '']">{{ n.label }}</strong>
-              <span :title="n.title ?? ''" class="min-w-0 truncate text-xs text-muted-foreground">{{ n.title }}</span>
-            </div>
-            <div data-jobs class="mt-1.5 flex gap-1.5">
-              <button
-                v-for="j in n.jobs"
-                :key="j.id"
-                type="button"
-                :data-job="j.id"
-                :data-status="j.status"
-                :aria-pressed="isSelected(n.id, j.id) ? 'true' : 'false'"
-                :class="['min-w-0 flex-1 truncate rounded-md border bg-card py-[5px] text-center text-xs', BOX[j.status], isSelected(n.id, j.id) ? 'ring-2 ring-ring' : '', j.status === 'running' ? 'motion-safe:animate-pulse' : '']"
-                @click="emit('pick', n.id, j.id)"
-              >
-                {{ (SHORT[j.id] ?? j.label) + (j.attempts > 1 ? ` ${j.attempts}x` : "") }}
-              </button>
-            </div>
-          </div>
-        </template>
-      </template>
-    </div>
+    <PhoneList v-else :nodes="nodes" :now="now" :exit="exit" :selected="selected" @pick="(a, b) => emit('pick', a, b)" />
   </section>
 </template>

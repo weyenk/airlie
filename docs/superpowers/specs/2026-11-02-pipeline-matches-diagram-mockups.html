@@ -1,0 +1,730 @@
+<title>Pipeline Matches the Diagram</title>
+<style>
+/* Layout: one reading column of mockups in the airlie app's own look (its tokens, its boxes, its dots). */
+:root {
+  --bg: #f8fafc; --fg: #334155; --card: #ffffff; --muted: #f1f5f9; --muted-fg: #64748b;
+  --border: #e2e8f0; --primary: #10b981; --primary-45: rgba(16,185,129,.45); --track: #e2e8f0;
+  --chip: #f1f5f9; --chip-fg: #475569; --code: #f8fafc;
+  --info-bg: #e0f2fe; --info-fg: #0369a1; --warn-bg: #ffedd5; --warn-fg: #c2410c;
+  --danger-bg: #fee2e2; --danger-fg: #b91c1c; --ok-bg: #dcfce7; --ok-fg: #15803d;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #09090b; --fg: #f4f4f5; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+  --border: #27272a; --primary: #34d399; --primary-45: rgba(52,211,153,.45); --track: #3f3f46;
+  --chip: #27272a; --chip-fg: #d4d4d8; --code: #111113;
+  --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+  --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #09090b; --fg: #f4f4f5; --card: #18181b; --muted: #27272a; --muted-fg: #a1a1aa;
+  --border: #27272a; --primary: #34d399; --primary-45: rgba(52,211,153,.45); --track: #3f3f46;
+  --chip: #27272a; --chip-fg: #d4d4d8; --code: #111113;
+  --info-bg: rgba(14,165,233,.16); --info-fg: #7dd3fc; --warn-bg: rgba(249,115,22,.16); --warn-fg: #fdba74;
+  --danger-bg: rgba(239,68,68,.16); --danger-fg: #fca5a5; --ok-bg: rgba(34,197,94,.16); --ok-fg: #86efac;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 64px; display: flex; flex-direction: column; gap: 36px; }
+h1 { font-size: 22px; margin: 0 0 6px; text-wrap: balance; }
+h2 { font-size: 16px; margin: 0 0 4px; text-wrap: balance; }
+p { margin: 0; max-width: 72ch; }
+.lead { color: var(--muted-fg); }
+.eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-fg); font-weight: 600; }
+section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.panel { border: 1px solid var(--border); background: var(--card); border-radius: 12px; min-width: 0; }
+.panel-h { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.panel-h h3 { font-size: 15px; margin: 0; }
+.panel-h .grow { flex: 1; }
+.panel-b { padding: 18px; min-width: 0; }
+.scroll { overflow-x: auto; }
+.muted { color: var(--muted-fg); }
+.mono { font-family: var(--mono); font-size: 12px; }
+.tag { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 1px 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.tag.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.tag.info { background: var(--info-bg); color: var(--info-fg); }
+.tag.danger { background: var(--danger-bg); color: var(--danger-fg); }
+.tag.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.tag.chip { background: var(--chip); color: var(--chip-fg); font-weight: 600; }
+.note { border-left: 3px solid var(--info-fg); padding: 2px 0 2px 12px; color: var(--fg); max-width: 80ch; }
+.note b { font-weight: 600; }
+
+/* status dot */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--track); }
+.dot.passed { background: var(--ok-fg); }
+.dot.running { background: var(--info-fg); box-shadow: 0 0 0 3px var(--info-bg); }
+.dot.failed { background: var(--danger-fg); }
+
+/* ---- 1. model job: today's box ---- */
+.box { flex: none; width: 132px; display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 7px 10px; }
+.box .t { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; min-width: 0; }
+.box .t span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.box .s { font-family: var(--mono); font-size: 11.5px; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.box.passed { border-color: var(--primary-45); }
+.box.running { border-color: var(--info-fg); box-shadow: 0 0 0 3px var(--info-bg); }
+.box.failed { border-color: var(--danger-fg); background: var(--danger-bg); }
+.box.pending { border-style: dashed; color: var(--muted-fg); }
+.box.wide { width: 190px; }
+
+/* ---- 2. code step: airlie's own, no model ---- */
+.code { flex: none; width: 96px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: 4px; background: var(--code); padding: 6px 8px; }
+.code .t { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.code .t::before { content: ""; width: 7px; height: 7px; border-radius: 1px; background: var(--muted-fg); flex: none; }
+.code .s { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code.passed { border-color: var(--primary-45); } .code.passed .t::before { background: var(--ok-fg); }
+.code.running { border-color: var(--info-fg); box-shadow: 0 0 0 3px var(--info-bg); } .code.running .t::before { background: var(--info-fg); }
+.code.failed { border-color: var(--danger-fg); background: var(--danger-bg); } .code.failed .t::before { background: var(--danger-fg); }
+.code.pending { border-style: dashed; color: var(--muted-fg); } .code.pending .t::before { background: var(--track); }
+
+/* ---- 3. rounds / turns pips ---- */
+.pips { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
+.pip { width: 9px; height: 9px; border-radius: 2px; background: var(--track); }
+.pip.passed { background: var(--ok-fg); } .pip.failed { background: var(--danger-fg); } .pip.running { background: var(--info-fg); }
+.pip.warn { background: var(--warn-fg); }
+.pip.code { border-radius: 50%; width: 7px; height: 7px; }
+
+/* ---- 4. inner chain (Build's steps, Package's asks) ---- */
+.chain { display: flex; gap: 2px; margin-top: 3px; }
+.chain i { flex: 1; height: 5px; border-radius: 2px; background: var(--track); }
+.chain i.passed { background: var(--ok-fg); } .chain i.running { background: var(--info-fg); } .chain i.failed { background: var(--danger-fg); }
+.chain-l { display: flex; gap: 2px; font-family: var(--mono); font-size: 9.5px; color: var(--muted-fg); }
+.chain-l span { flex: 1; text-align: center; overflow: hidden; white-space: nowrap; }
+
+/* ---- 5. parallel group ---- */
+.par { flex: none; display: flex; flex-direction: column; gap: 6px; border-left: 2px solid var(--muted-fg); border-right: 2px solid var(--muted-fg); border-radius: 8px; padding: 4px 6px; position: relative; }
+.par-l { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-fg); text-align: center; font-weight: 600; }
+
+/* ---- 6. milestone ---- */
+.ms { flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ms .d { width: 14px; height: 14px; transform: rotate(45deg); background: var(--ok-fg); border-radius: 2px; }
+.ms .d.pending { background: var(--track); }
+.ms b { font-size: 11px; letter-spacing: .06em; }
+.ms span { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); }
+
+/* flows */
+.flow { display: flex; align-items: center; gap: 0; width: max-content; }
+.ar { flex: none; padding: 0 7px; color: var(--muted-fg); }
+.lane { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 7px; width: max-content; }
+.lane.running { border-color: var(--info-fg); }
+.lane-h { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.lane-h strong { font-weight: 600; }
+.lanes { display: flex; flex-direction: column; gap: 8px; }
+
+/* now bar */
+.now { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 18px; background: var(--info-bg); border-bottom: 1px solid var(--border); }
+.now .what { font-weight: 600; color: var(--info-fg); }
+.now .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.now .crumbs .sep { color: var(--muted-fg); }
+.now .mono { color: var(--fg); }
+
+/* vertical option */
+.vt { display: grid; grid-template-columns: 150px minmax(0,1fr); }
+.vt .rail { border-right: 2px solid var(--border); padding: 10px 14px 10px 0; display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: 600; justify-content: flex-end; text-align: right; position: relative; }
+.vt .rail .dot { margin-top: 5px; position: absolute; right: -5px; }
+.vt .rail .lbl { padding-right: 12px; }
+.vt .rail small { display: block; font-weight: 400; font-family: var(--mono); font-size: 11px; color: var(--muted-fg); }
+.vt .body { padding: 8px 0 8px 18px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vt .sep-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 14px 0 8px; }
+.vt .sep-row::before, .vt .sep-row::after { content: ""; height: 2px; background: var(--border); flex: 1; }
+.vt .sep-row span { font-size: 11px; letter-spacing: .1em; font-weight: 700; color: var(--muted-fg); }
+
+/* draft-all conversation */
+.convo { border: 1px solid var(--info-fg); border-radius: 10px; background: var(--card); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.convo-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.turn { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--border); }
+.turn:first-of-type { border-top: 0; }
+.turn .n { font-family: var(--mono); font-weight: 600; }
+.turn .steps { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.turn .steps .st { font-family: var(--mono); font-size: 11px; border-radius: 5px; padding: 1px 6px; border: 1px solid var(--border); }
+.st.passed { border-color: var(--primary-45) !important; }
+.st.running { border-color: var(--info-fg) !important; color: var(--info-fg); }
+.st.pending { border-style: dashed !important; color: var(--muted-fg); }
+.st.failed { border-color: var(--danger-fg) !important; color: var(--danger-fg); }
+.st.code { border-radius: 2px; background: var(--code); }
+.turn .when { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); }
+
+/* exits */
+.exit { display: flex; align-items: center; flex-wrap: wrap; gap: 0; border: 1px solid var(--danger-fg); background: var(--danger-bg); border-radius: 12px; padding: 10px 12px; width: max-content; max-width: 100%; }
+.exit .lbl { font-weight: 700; color: var(--danger-fg); margin-right: 10px; font-size: 13px; }
+
+/* key */
+.key { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+.key > div { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.key h4 { margin: 0; font-size: 13px; }
+.key p { font-size: 12.5px; color: var(--muted-fg); }
+.key .demo { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 52px; }
+
+.opts { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.opt-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.opt-h .letter { font-weight: 800; font-size: 15px; width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; background: var(--chip); color: var(--chip-fg); }
+.rec { color: var(--ok-fg); font-weight: 700; font-size: 12px; }
+
+
+
+/* ---- option C: hover cards ---- */
+[data-hover] { cursor: default; outline: none; }
+[data-hover]:hover, [data-hover]:focus-visible { box-shadow: 0 0 0 2px var(--ring, var(--primary)); }
+.hcard { width: 290px; max-width: calc(100vw - 32px); background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.hcard h5 { margin: 0; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hcard .row { display: flex; align-items: center; gap: 8px; }
+.hcard .k { font-family: var(--mono); font-size: 10.5px; color: var(--muted-fg); width: 54px; flex: none; }
+.hcard .foot { font-size: 11.5px; color: var(--muted-fg); border-top: 1px solid var(--border); padding-top: 6px; }
+.hcard .vote { display: grid; grid-template-columns: 54px repeat(3, 1fr); gap: 2px 6px; font-family: var(--mono); font-size: 11px; }
+.hcard .vote .h { color: var(--muted-fg); font-size: 10px; }
+.hcard .steps { display: flex; flex-direction: column; gap: 3px; }
+.hcard .steps div { display: grid; grid-template-columns: 10px 1fr auto; gap: 7px; align-items: center; font-size: 12px; }
+.hcard .steps .sq { width: 8px; height: 8px; border-radius: 1px; background: var(--track); }
+.hcard .steps .sq.passed { background: var(--ok-fg); } .hcard .steps .sq.running { background: var(--info-fg); } .hcard .steps .sq.failed { background: var(--danger-fg); }
+.hcard .steps .rt { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); }
+#hpop { position: fixed; z-index: 50; pointer-events: none; }
+.cards-open { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+.cards-open .hcard { width: auto; box-shadow: none; }
+.cards-open .from { font-size: 11px; color: var(--muted-fg); font-family: var(--mono); }
+
+/* ---- phone frames ---- */
+.phones { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+.phone-col { display: flex; flex-direction: column; gap: 10px; width: 360px; max-width: 100%; }
+.phone-cap { font-size: 13px; color: var(--muted-fg); }
+.phone-cap b { color: var(--fg); }
+.phone { width: 360px; max-width: 100%; border: 1px solid var(--border); border-radius: 30px; background: var(--bg); padding: 10px; box-shadow: 0 1px 0 var(--border); }
+.screen { border-radius: 22px; overflow: hidden; background: var(--bg); border: 1px solid var(--border); }
+.appbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--border); font-size: 14px; }
+.appbar b { font-weight: 700; }
+.pnow { padding: 8px 14px; background: var(--info-bg); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.pnow .l1 { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--info-fg); min-width: 0; }
+.pnow .l1 span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pnow .l2 { font-family: var(--mono); font-size: 11px; color: var(--fg); padding-left: 15px; }
+.pnow .l2 .muted { color: var(--muted-fg); }
+.pstick { font-size: 10px; color: var(--muted-fg); padding: 2px 14px 0; background: var(--bg); text-align: right; font-family: var(--mono); }
+.plane { font-size: 10.5px; letter-spacing: .1em; font-weight: 700; color: var(--muted-fg); padding: 12px 14px 4px; }
+.prow { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 13px; }
+.prow .nm { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow .nm small { font-weight: 400; color: var(--muted-fg); }
+.prow .rt { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+.prow.pending .nm { color: var(--muted-fg); }
+.prow.collapsed { background: var(--bg); }
+.chev { color: var(--muted-fg); font-size: 12px; }
+.mini { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 4px; margin-top: -2px; }
+.mini .st { font-family: var(--mono); font-size: 10.5px; border-radius: 5px; padding: 0 5px; border: 1px solid var(--border); background: var(--card); }
+.mini .st.code { border-radius: 2px; background: var(--code); }
+.pexp { background: var(--card); border-bottom: 1px solid var(--border); border-left: 3px solid var(--info-fg); }
+.pexp .prow { border-bottom: 0; background: transparent; }
+.psteps { display: flex; flex-direction: column; padding: 0 14px 10px 33px; gap: 0; }
+.pstep { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 8px; align-items: center; font-size: 12.5px; padding: 5px 0; border-top: 1px dashed var(--border); }
+.pstep:first-child { border-top: 0; }
+.pstep .sq { width: 8px; height: 8px; border-radius: 1px; background: var(--track); }
+.pstep .sq.passed { background: var(--ok-fg); } .pstep .sq.running { background: var(--info-fg); box-shadow: 0 0 0 3px var(--info-bg); } .pstep .sq.failed { background: var(--danger-fg); }
+.pstep .rt { font-family: var(--mono); font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+.pstep.sub { padding-left: 16px; }
+.pstep .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pexit { margin: 10px 14px 14px; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 10px; font-size: 12px; color: var(--muted-fg); }
+.pdetail { border-top: 1px solid var(--border); background: var(--card); padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.pdetail .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--track); align-self: center; margin-bottom: 4px; }
+.pdetail pre { margin: 0; font-family: var(--mono); font-size: 11px; background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; color: var(--fg); }
+
+@media (max-width: 640px) {
+  .vt { grid-template-columns: 1fr; }
+  .vt .rail { border-right: 0; justify-content: flex-start; text-align: left; padding: 10px 0 0; }
+  .vt .rail .dot { position: static; }
+  .vt .rail .lbl { padding: 0; }
+  .vt .body { padding: 6px 0 10px; }
+  .turn { grid-template-columns: 36px 1fr; }
+  .turn .when { grid-column: 2; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .running.pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .6; } }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">airlie · workflow screen · mockups for Noah</div>
+    <h1>The pipeline screen, matched to the diagram</h1>
+    <p class="lead">Every step your diagram names gets a box, and whichever box is lit tells you what airlie is doing right now. The examples use AIR-47 as it stands at 16:20 on 2026-11-02, drafting its packages: today's screen shows that moment as five "pending" layers and nothing running.</p>
+  </header>
+
+  <!-- ===================== NOW BAR ===================== -->
+  <section>
+    <div class="eyebrow">New on every story · the "now" bar</div>
+    <h2>One line that always says what's running</h2>
+    <p class="lead">It sits at the top of the Pipeline panel and names the deepest step that's running, from the story's last event, with how long it has been going and the last sign of life. If nothing has happened for a while, it turns amber, so a stall can't hide behind a box that looks busy.</p>
+    <div class="panel">
+      <div class="now">
+        <span class="dot running pulse"></span>
+        <div class="crumbs">
+          <span class="what">Running</span>
+          <span>Build lane</span><span class="sep">›</span>
+          <span>Draft all packages</span><span class="sep">›</span>
+          <span>L03 single-pr-publish</span><span class="sep">›</span>
+          <span><b>package</b> · architect</span>
+        </div>
+        <span class="mono">step 6 · 7m 40s</span>
+        <span class="mono muted">last event 41s ago</span>
+      </div>
+      <div class="now" style="background: var(--warn-bg)">
+        <span class="dot" style="background: var(--warn-fg)"></span>
+        <div class="crumbs">
+          <span class="what" style="color: var(--warn-fg)">Quiet for 14 min</span>
+          <span>Layer 02</span><span class="sep">›</span><span>Build</span><span class="sep">›</span><span><b>coder</b> · gate follow-up</span>
+        </div>
+        <span class="mono">step 19 · 31m</span>
+        <span class="mono muted">no step since 16:03</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== KEY ===================== -->
+  <section>
+    <div class="eyebrow">The new box types</div>
+    <h2>Six shapes, each with one job</h2>
+    <p class="lead">Status colors stay as they are today: green done, blue running, red failed, dashed not yet. What's new is the shape, which says what kind of step it is.</p>
+    <div class="key">
+      <div>
+        <h4>Model step</h4>
+        <div class="demo">
+          <div class="box passed"><div class="t"><span>Survey</span></div><div class="s">architect · 3m</div></div>
+        </div>
+        <p>Today's box, unchanged: a model did the work. It shows the role, steps and time, and opens the trace when clicked.</p>
+      </div>
+      <div>
+        <h4>Code step</h4>
+        <div class="demo">
+          <div class="code passed"><div class="t">gate</div><div class="s">6 cmds</div></div>
+          <div class="code running"><div class="t">checks</div><div class="s">ruff…</div></div>
+          <div class="code failed"><div class="t">place</div><div class="s">locked</div></div>
+        </div>
+        <p>airlie's own work, no model: base, gate, package checks, place, squash, publish. Square corners, monospace, a small square mark.</p>
+      </div>
+      <div>
+        <h4>Rounds and turns</h4>
+        <div class="demo" style="flex-direction:column; align-items:flex-start; gap:4px">
+          <div class="pips"><span class="mono muted" style="width:52px">rounds</span><span class="pip passed"></span><span class="pip failed"></span><span class="pip"></span></div>
+          <div class="pips"><span class="mono muted" style="width:52px">fixes</span><span class="pip warn"></span><span class="pip warn"></span><span class="pip warn"></span></div>
+          <div class="pips"><span class="mono muted" style="width:52px">turns</span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip"></span><span class="pip"></span></div>
+        </div>
+        <p>One square per round or turn, under the box, so a step that is going round in circles shows it. Amber marks a fix or retry; a dot is the airlie checker's turn.</p>
+      </div>
+      <div>
+        <h4>Steps inside a box</h4>
+        <div class="demo">
+          <div class="box running wide">
+            <div class="t"><span>Build</span><span class="tag chip">1 of 2</span></div>
+            <div class="s">coder · follow-up · 31m</div>
+            <div class="chain"><i class="passed"></i><i class="passed"></i><i class="passed"></i><i class="failed"></i><i class="running"></i></div>
+            <div class="chain-l"><span>coder</span><span>check</span><span>review</span><span>gate</span><span>follow</span></div>
+          </div>
+        </div>
+        <p>A segmented bar for a step with stages inside it. Build becomes coder → done-check → reviewer → gate → gate follow-up, so "done" can't show while the follow-up is still running.</p>
+      </div>
+      <div>
+        <h4>At the same time</h4>
+        <div class="demo">
+          <div class="par">
+            <div class="par-l">same time</div>
+            <div class="box passed"><div class="t"><span>Survey</span></div><div class="s">architect · 3m</div></div>
+            <div class="box passed"><div class="t"><span>Refine</span></div><div class="s">product · 3m</div></div>
+          </div>
+        </div>
+        <p>Brackets around steps that run together. Today that's only Survey and Refine, the pipeline's one concurrent spot.</p>
+      </div>
+      <div>
+        <h4>Milestone and exits</h4>
+        <div class="demo">
+          <div class="ms"><div class="d"></div><b>PLANNED</b><span>15:15</span></div>
+          <span class="ar">·</span>
+          <span class="tag danger">BLOCKED</span><span class="tag warn">WAITING</span><span class="tag chip">CANCELLED</span>
+        </div>
+        <p>A diamond where the plan lane hands over to the build lane. An exit shows as its own red row at the end, not just a line of text above the screen.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== OPTIONS ===================== -->
+  <section>
+    <div class="eyebrow">Pick a layout</div>
+    <h2>Same boxes, three ways to lay them out</h2>
+    <div class="opts">
+
+      <!-- ===== A: horizontal ===== -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="opt-h"><span class="letter">A</span><h3>Left to right, like today</h3></div>
+          <span class="grow"></span><span class="mono muted">scrolls sideways</span>
+        </div>
+        <div class="now"><span class="dot running pulse"></span><div class="crumbs"><span class="what">Running</span><span>Draft all packages</span><span class="sep">›</span><span>L03</span><span class="sep">›</span><span><b>package</b> · architect</span></div><span class="mono">step 6 · 7m 40s</span></div>
+        <div class="panel-b scroll">
+          <div class="flow">
+            <div class="code passed"><div class="t">intake</div><div class="s">14:12</div></div><span class="ar">→</span>
+            <div class="code passed"><div class="t">base</div><div class="s">e8146e0</div></div><span class="ar">→</span>
+            <div class="code passed"><div class="t">gate</div><div class="s">6 cmds</div></div><span class="ar">→</span>
+            <div class="par"><div class="par-l">same time</div>
+              <div class="box passed"><div class="t"><span>Survey</span></div><div class="s">architect · 3m</div></div>
+              <div class="box passed"><div class="t"><span>Refine</span></div><div class="s">product · 3m</div></div>
+            </div><span class="ar">→</span>
+            <div class="box passed"><div class="t"><span>Plan layers</span><span class="tag warn">over budget</span></div><div class="s">architect · 39m</div>
+              <div class="pips"><span class="pip passed"></span><span class="pip failed"></span><span class="pip"></span><span style="width:6px"></span><span class="pip warn"></span><span class="pip warn"></span><span class="pip warn"></span></div></div><span class="ar">→</span>
+            <div class="box passed"><div class="t"><span>Three amigos</span></div><div class="s">agreed · 19m</div>
+              <div class="pips"><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span></div></div><span class="ar">→</span>
+            <div class="ms"><div class="d"></div><b>PLANNED</b><span>15:15</span></div><span class="ar">→</span>
+            <div class="box running wide pulse"><div class="t"><span>Draft packages</span><span class="tag info">L03</span></div><div class="s">architect · 1h 04m</div>
+              <div class="pips"><span class="pip passed"></span><span class="pip passed"></span><span class="pip running"></span><span class="pip"></span><span class="pip"></span></div></div><span class="ar">→</span>
+            <div class="lanes">
+              <div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">Layer 01 · story-publish-field</strong><span class="tag ok">drafted</span></div>
+                <div class="flow"><div class="box pending"><div class="t"><span>Package</span></div><div class="s">drafted · critic ok</div></div><span class="ar">→</span><div class="code pending"><div class="t">checks</div></div><span class="ar">→</span><div class="code pending"><div class="t">place</div></div><span class="ar">→</span><div class="box pending"><div class="t"><span>Build</span></div><div class="s">coder</div></div><span class="ar">→</span><div class="code pending"><div class="t">squash</div></div></div></div>
+              <div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">Layer 02 · publish-mode-thread</strong><span class="tag ok">drafted</span></div>
+                <div class="flow"><div class="box pending"><div class="t"><span>Package</span></div><div class="s">drafted · critic ok</div></div><span class="ar">→</span><div class="code pending"><div class="t">checks</div></div><span class="ar">→</span><div class="code pending"><div class="t">place</div></div><span class="ar">→</span><div class="box pending"><div class="t"><span>Build</span></div><div class="s">coder</div></div><span class="ar">→</span><div class="code pending"><div class="t">squash</div></div></div></div>
+              <div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">Layers 03–05</strong><span class="mono muted">not drafted yet</span></div></div>
+            </div><span class="ar">→</span>
+            <div class="code pending"><div class="t">publish</div><div class="s">gh stack</div></div><span class="ar">→</span>
+            <div class="code pending"><div class="t">review</div></div>
+          </div>
+        </div>
+        <div class="panel-b" style="border-top:1px solid var(--border)">
+          <p class="muted" style="font-size:13px">The least change: today's row gets longer. On a laptop, the draft box and the layers already sit off screen to the right, so you'd rely on the now bar to see what's running.</p>
+        </div>
+      </div>
+
+      <!-- ===== B: vertical, like the diagram ===== -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="opt-h"><span class="letter">B</span><h3>Top to bottom, like your diagram</h3><span class="rec">my pick</span></div>
+          <span class="grow"></span><span class="mono muted">no sideways scroll</span>
+        </div>
+        <div class="now"><span class="dot running pulse"></span><div class="crumbs"><span class="what">Running</span><span>Build lane</span><span class="sep">›</span><span>Draft all packages</span><span class="sep">›</span><span>L03 single-pr-publish</span><span class="sep">›</span><span><b>package</b> · architect</span></div><span class="mono">step 6 · 7m 40s</span><span class="mono muted">last event 41s ago</span></div>
+        <div class="panel-b">
+          <div class="vt">
+            <div class="sep-row"><span>PLAN LANE · airlie plan</span></div>
+
+            <div class="rail"><span class="lbl">Intake<small>14:12</small></span><span class="dot passed"></span></div>
+            <div class="body">
+              <div class="code passed"><div class="t">intake</div><div class="s">→ building</div></div><span class="ar">→</span>
+              <div class="code passed"><div class="t">base</div><div class="s">e8146e0</div></div><span class="ar">→</span>
+              <div class="code passed"><div class="t">gate</div><div class="s">6 cmds</div></div>
+            </div>
+
+            <div class="rail"><span class="lbl">Survey + Refine<small>3m 33s</small></span><span class="dot passed"></span></div>
+            <div class="body">
+              <div class="par" style="flex-direction:row; align-items:center; padding:6px 8px">
+                <div class="par-l" style="writing-mode: vertical-rl; transform: rotate(180deg)">same time</div>
+                <div class="box passed"><div class="t"><span>Survey</span></div><div class="s">architect · 8 steps</div></div>
+                <div class="box passed"><div class="t"><span>Refine</span></div><div class="s">product · 1 try</div></div>
+              </div>
+            </div>
+
+            <div class="rail"><span class="lbl">Plan layers<small>38m 17s</small></span><span class="dot passed"></span></div>
+            <div class="body">
+              <div class="box passed wide"><div class="t"><span>Plan layers</span><span class="tag warn">over budget</span></div><div class="s">architect · 2 asks</div>
+                <div class="pips" style="margin-top:3px"><span class="mono muted" style="font-size:10px;width:40px">rounds</span><span class="pip passed"></span><span class="pip failed"></span><span class="pip"></span></div>
+                <div class="pips"><span class="mono muted" style="font-size:10px;width:40px">fixes</span><span class="pip warn"></span><span class="pip warn"></span><span class="pip warn"></span></div>
+              </div>
+              <span class="mono muted" style="font-size:12px; max-width:36ch">round 2 unusable → kept round 1's 5 layers · 2 JSON fixes · 1 retry</span>
+            </div>
+
+            <div class="rail"><span class="lbl">Three amigos<small>19m 24s</small></span><span class="dot passed"></span></div>
+            <div class="body">
+              <div class="code passed"><div class="t">skill</div><div class="s">picked</div></div><span class="ar">→</span>
+              <div class="box passed wide"><div class="t"><span>Meeting</span><span class="tag ok">agreed</span></div><div class="s">10 turns · 11 obj · 11 resolved</div>
+                <div class="pips" style="margin-top:3px"><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip"></span><span class="pip"></span></div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:3px; font-size:11.5px" class="mono">
+                <span><span class="tag ok">P</span> req ✓ chg ✓ proof ✓</span>
+                <span><span class="tag ok">A</span> req ✓ chg ✓ proof ✓</span>
+                <span><span class="tag ok">T</span> req ✓ chg ✓ proof ✓</span>
+                <span><span class="tag chip">airlie</span> no findings</span>
+              </div>
+            </div>
+
+            <div class="rail"><span class="lbl">Planned<small>15:15</small></span><span class="dot passed"></span></div>
+            <div class="body"><div class="ms" style="flex-direction:row; gap:8px"><div class="d"></div><b>PLANNED</b><span>story_planned · 5 layers</span></div></div>
+
+            <div class="sep-row"><span>BUILD LANE · airlie build</span></div>
+
+            <div class="rail"><span class="lbl">Draft all packages<small>1h 04m · running</small></span><span class="dot running"></span></div>
+            <div class="body">
+              <div class="convo" style="flex:1; max-width: 640px">
+                <div class="convo-h"><span>One architect chat</span><span class="tag info">turn 3 of 5</span><span class="mono muted" style="font-weight:400">run 20261102-151618-a040</span></div>
+                <div class="turn"><span class="n">L01</span><span class="steps"><span class="st passed">package</span>→<span class="st passed">critic · agree</span>→<span class="st passed" style="opacity:.6">no revision</span></span><span class="when">15:16–15:42</span></div>
+                <div class="turn"><span class="n">L02</span><span class="steps"><span class="st passed">package</span>→<span class="st passed">critic · agree</span>→<span class="st passed" style="opacity:.6">no revision</span></span><span class="when">15:42–16:12</span></div>
+                <div class="turn"><span class="n" style="color:var(--info-fg)">L03</span><span class="steps"><span class="st running">package · step 6</span>→<span class="st pending">critic</span>→<span class="st pending">revision</span></span><span class="when">16:12–</span></div>
+                <div class="turn"><span class="n muted">L04</span><span class="steps"><span class="st pending">package</span></span><span class="when"></span></div>
+                <div class="turn"><span class="n muted">L05</span><span class="steps"><span class="st pending">package</span></span><span class="when"></span></div>
+              </div>
+            </div>
+
+            <div class="rail"><span class="lbl">Layers<small>0 of 5 built</small></span><span class="dot"></span></div>
+            <div class="body" style="flex-direction:column; align-items:stretch">
+              <div class="lane" style="width:auto"><div class="lane-h"><span class="dot"></span><strong class="muted">L01 · story-publish-field</strong><span class="tag ok">draft ready</span></div>
+                <div class="flow" style="flex-wrap:wrap; row-gap:6px; width:auto"><div class="box pending"><div class="t"><span>Package</span></div><div class="s">architect · critic</div><div class="chain"><i class="passed"></i><i class="passed"></i><i></i></div><div class="chain-l"><span>draft</span><span>critic</span><span>proof</span></div></div><span class="ar">→</span><div class="code pending"><div class="t">checks</div><div class="s">7 checks</div></div><span class="ar">→</span><div class="code pending"><div class="t">place</div><div class="s">lock tests</div></div><span class="ar">→</span><div class="box pending wide"><div class="t"><span>Build</span></div><div class="s">coder</div><div class="chain"><i></i><i></i><i></i><i></i><i></i></div><div class="chain-l"><span>coder</span><span>check</span><span>review</span><span>gate</span><span>follow</span></div></div><span class="ar">→</span><div class="code pending"><div class="t">squash</div><div class="s">1 commit</div></div></div></div>
+              <div class="lane" style="width:auto"><div class="lane-h"><span class="dot"></span><strong class="muted">L02 · publish-mode-thread</strong><span class="tag ok">draft ready</span></div></div>
+              <div class="lane" style="width:auto"><div class="lane-h"><span class="dot"></span><strong class="muted">L03 · single-pr-publish</strong><span class="tag info">drafting</span></div></div>
+              <div class="lane" style="width:auto"><div class="lane-h"><span class="dot"></span><strong class="muted">L04 · single-pr-state-bench</strong></div></div>
+              <div class="lane" style="width:auto"><div class="lane-h"><span class="dot"></span><strong class="muted">L05 · airlie-yaml-single-docs</strong></div></div>
+            </div>
+
+            <div class="rail"><span class="lbl">Publish<small>—</small></span><span class="dot"></span></div>
+            <div class="body"><div class="code pending"><div class="t">publish</div><div class="s">gh stack</div></div><span class="ar">→</span><div class="code pending"><div class="t">review</div><div class="s">human merges</div></div></div>
+          </div>
+        </div>
+        <div class="panel-b" style="border-top:1px solid var(--border)">
+          <p class="muted" style="font-size:13px">Reads like your diagram: two lanes, a row per stage, timings down the left. The layers not being worked on fold to one line and open when they start. It also works on a phone without the separate phone layout we have today.</p>
+        </div>
+      </div>
+
+      <!-- ===== C: A with hover cards ===== -->
+      <div class="panel" id="opt-c">
+        <div class="panel-h">
+          <div class="opt-h"><span class="letter">C</span><h3>A's row, with B's detail in hover cards</h3><span class="rec">new · from your note</span></div>
+          <span class="grow"></span><span class="mono muted">hover a box with a ring</span>
+        </div>
+        <div class="now"><span class="dot running pulse"></span><div class="crumbs"><span class="what">Running</span><span>Draft packages</span><span class="sep">›</span><span>L03</span><span class="sep">›</span><span><b>package</b> · architect</span></div><span class="mono">step 6 · 7m 40s</span><span class="mono muted">last event 41s ago</span></div>
+        <div class="panel-b scroll"><div class="flow"><div class="code passed"><div class="t">intake</div><div class="s">14:12</div></div><span class="ar">→</span><div class="code passed"><div class="t">base</div><div class="s">e8146e0</div></div><span class="ar">→</span><div tabindex="0" data-hover="gate" class="code passed"><div class="t">gate</div><div class="s">6 cmds</div></div><span class="ar">→</span><div class="par"><div class="par-l">same time</div><div class="box passed"><div class="t"><span>Survey</span></div><div class="s">architect · 3m</div></div><div class="box passed"><div class="t"><span>Refine</span></div><div class="s">product · 3m</div></div></div><span class="ar">→</span><div tabindex="0" data-hover="plan" class="box passed"><div class="t"><span>Plan layers</span><span class="tag warn">!</span></div><div class="s">architect · 38m</div></div><span class="ar">→</span><div tabindex="0" data-hover="amigos" class="box passed"><div class="t"><span>Three amigos</span></div><div class="s">agreed · 19m</div></div><span class="ar">→</span><div class="ms"><div class="d"></div><b>PLANNED</b><span>15:15</span></div><span class="ar">→</span><div tabindex="0" data-hover="draft" class="box running pulse"><div class="t"><span>Draft packages</span></div><div class="s">L03 · package</div></div><span class="ar">→</span><div class="lanes"><div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">L01 · story-publish-field</strong><span class="tag ok">drafted</span></div><div class="flow"><div class="box pending"><div class="t"><span>Package</span></div><div class="s">drafted</div></div><span class="ar">→</span><div class="code pending"><div class="t">checks</div></div><span class="ar">→</span><div class="code pending"><div class="t">place</div></div><span class="ar">→</span><div class="box pending"><div class="t"><span>Build</span></div><div class="s">coder</div></div><span class="ar">→</span><div class="code pending"><div class="t">squash</div></div></div></div><div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">L02 · publish-mode-thread</strong><span class="tag ok">drafted</span></div></div><div class="lane"><div class="lane-h"><span class="dot"></span><strong class="muted">L03–L05</strong><span class="mono muted">not drafted yet</span></div></div></div><span class="ar">→</span><div class="code pending"><div class="t">publish</div><div class="s">gh stack</div></div><span class="ar">→</span><div class="code pending"><div class="t">review</div></div></div></div>
+        <div class="panel-b scroll" style="border-top:1px solid var(--border)"><div class="eyebrow" style="margin-bottom:8px">Same style · a layer mid-build (AIR-48 L02, rebuilt from its log; times and counts illustrative)</div><div class="lane running"><div class="lane-h"><span class="dot running"></span><strong>L02 · publish-mode-thread</strong><span class="tag warn">build 2 of 2</span><span class="tag chip">re-planned once</span></div><div class="flow"><div tabindex="0" data-hover="package" class="box passed"><div class="t"><span>Package</span></div><div class="s">architect · critic ok</div></div><span class="ar">→</span><div class="code passed"><div class="t">checks</div><div class="s">pass</div></div><span class="ar">→</span><div class="code passed"><div class="t">place</div><div class="s">3 tests</div></div><span class="ar">→</span><div tabindex="0" data-hover="build" class="box running pulse wide"><div class="t"><span>Build</span><span class="tag warn">2x</span></div><div class="s">coder · gate follow-up</div></div><span class="ar">→</span><div class="code pending"><div class="t">squash</div></div></div></div></div>
+        <div class="panel-b" style="border-top:1px solid var(--border); display:flex; flex-direction:column; gap:12px">
+          <p class="muted" style="font-size:13px">The boxes stay as plain as A's: a name, who's doing it, and a short line saying what it's on right now ("coder · gate follow-up"), so no graphic is needed to see where it is. The squares, votes and step lists move into a card that appears when you hover. Clicking still opens the full trace below, as today. On a phone, tapping a box opens the same card at the top of the bottom sheet, with the trace under it.</p>
+          <div class="eyebrow">The hover cards, laid open</div>
+          <div class="cards-open"><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · Draft packages (AIR-47)</span><div class="hcard"><h5>Draft all packages <span class="tag info">turn 3 of 5</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>L01 · package → critic agree</span><span class="rt">26m</span></div>
+<div><span class="sq passed"></span><span>L02 · package → critic agree</span><span class="rt">30m</span></div>
+<div><span class="sq running"></span><span style="color:var(--info-fg)">L03 · package · step 6</span><span class="rt">7m</span></div>
+<div><span class="sq"></span><span class="muted">L04 · L05</span><span class="rt">waiting</span></div></div>
+<div class="foot">One architect chat · run 20261102-151618-a040. A bad reply stops drafting; those layers get asked one at a time later.</div></div></div><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · Build (AIR-48 L02)</span><div class="hcard"><h5>Build <span class="tag warn">2 of 2</span><span class="tag info">running</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>coder</span><span class="rt">22m</span></div>
+<div><span class="sq passed"></span><span class="mono">done-check</span><span class="rt">0s</span></div>
+<div><span class="sq passed"></span><span>reviewer · no fix round</span><span class="rt">5m</span></div>
+<div><span class="sq failed"></span><span class="mono">gate · 2 tests red</span><span class="rt">2m</span></div>
+<div><span class="sq running"></span><span style="color:var(--info-fg)">coder · gate follow-up · step 9</span><span class="rt">12m</span></div></div>
+<div class="row"><span class="k">beside</span><span>supervisor: 3 triages this build</span></div>
+<div class="foot">Build 1 was red and the layer was re-planned. Click the box for the full trace.</div></div></div><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · Three amigos</span><div class="hcard"><h5>Three amigos <span class="tag ok">agreed</span></h5>
+<div class="row"><span class="k">turns</span><span class="pips"><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip"></span><span class="pip"></span></span><span class="mono muted">10 of 12</span></div>
+<div class="vote"><span></span><span class="h">req</span><span class="h">changes</span><span class="h">proof</span>
+<span>product</span><span>✓</span><span>✓</span><span>✓</span><span>architect</span><span>✓</span><span>✓</span><span>✓</span><span>tester</span><span>✓</span><span>✓</span><span>✓</span><span>airlie</span><span class="muted" style="grid-column: span 3">no findings</span></div>
+<div class="row"><span class="k">objected</span><span>11 raised · 11 resolved</span></div>
+<div class="foot">Final votes shown. 19m 24s · ended 15:15</div></div></div><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · Plan layers</span><div class="hcard"><h5>Plan layers <span class="tag warn">over budget</span></h5>
+<div class="row"><span class="k">rounds</span><span class="pips"><span class="pip passed"></span><span class="pip failed"></span><span class="pip"></span></span><span class="mono muted">1 ok · 2 unusable</span></div>
+<div class="row"><span class="k">fixes</span><span class="pips"><span class="pip warn"></span><span class="pip warn"></span><span class="pip warn"></span></span><span class="mono muted">2 JSON fixes · 1 retry</span></div>
+<div class="row"><span class="k">result</span><span>5 layers, kept from round 1</span></div>
+<div class="foot">architect · 2 asks · 38m 17s · 14:16–14:55</div></div></div><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · gate</span><div class="hcard"><h5>Gate <span class="tag chip">code</span><span class="tag ok">passed</span></h5>
+<div class="row"><span class="k">from</span><span class="mono">AGENTS.md at e8146e0</span></div>
+<div class="steps"><div><span class="sq passed"></span><span class="mono">uv sync --frozen</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run ruff check .</span><span></span></div><div><span class="sq passed"></span><span class="mono">ruff format --check</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run mypy</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run pytest …</span><span></span></div><div><span class="sq passed"></span><span class="mono">task web:gate</span><span></span></div></div>
+<div class="foot">Read once at 14:13. Every layer has to pass these.</div></div></div><div style="display:flex;flex-direction:column;gap:5px"><span class="from">hover · Package</span><div class="hcard"><h5>Package <span class="tag ok">ready</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>architect · draft taken</span><span class="rt"></span></div>
+<div><span class="sq passed"></span><span>critic (tester) · agree</span><span class="rt">2m</span></div>
+<div><span class="sq"></span><span class="muted">proof revision · not needed</span><span class="rt"></span></div></div>
+<div class="row"><span class="k">tries</span><span>1 of 2 this build</span></div></div></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== LAYER CLOSE-UP ===================== -->
+  <section>
+    <div class="eyebrow">Close-up · a layer that had to go round again</div>
+    <h2>AIR-48 layer 02, the way it really ran</h2>
+    <p class="lead">Today this lane shows a "Package 3x" count and a single Build box. This is what happened: the package went back for a lint finding, the first build was red, the layer was re-planned, and the second build's gate failed and sent the coder on a follow-up.</p>
+    <div class="panel"><div class="panel-b scroll">
+      <div class="lane running" style="gap:10px">
+        <div class="lane-h"><span class="dot failed"></span><strong>Layer 02 · publish-mode-thread</strong><span class="tag warn">build 2 of 2</span><span class="tag chip">re-planned once</span></div>
+        <div class="flow">
+          <span class="mono muted" style="width:62px">build 1</span>
+          <div class="box passed"><div class="t"><span>Package</span><span class="tag warn">2 tries</span></div><div class="s">architect · critic</div><div class="chain"><i class="passed"></i><i class="passed"></i><i></i></div><div class="chain-l"><span>draft</span><span>critic</span><span>proof</span></div></div><span class="ar">→</span>
+          <div class="code passed"><div class="t">checks</div><div class="s">try 1: lint</div></div><span class="ar">→</span>
+          <div class="code passed"><div class="t">place</div><div class="s">3 tests</div></div><span class="ar">→</span>
+          <div class="box failed wide"><div class="t"><span>Build</span></div><div class="s">red · 3 triages</div><div class="chain"><i class="passed"></i><i class="passed"></i><i class="passed"></i><i class="failed"></i><i class="failed"></i></div><div class="chain-l"><span>coder</span><span>check</span><span>review</span><span>gate</span><span>follow</span></div></div><span class="ar">↩</span>
+          <span class="tag warn">re-plan · branch deleted</span>
+        </div>
+        <div class="flow">
+          <span class="mono muted" style="width:62px">build 2</span>
+          <div class="box passed"><div class="t"><span>Package</span></div><div class="s">architect · critic</div><div class="chain"><i class="passed"></i><i class="passed"></i><i></i></div><div class="chain-l"><span>draft</span><span>critic</span><span>proof</span></div></div><span class="ar">→</span>
+          <div class="code passed"><div class="t">checks</div><div class="s">pass</div></div><span class="ar">→</span>
+          <div class="code passed"><div class="t">place</div><div class="s">3 tests</div></div><span class="ar">→</span>
+          <div class="box failed wide"><div class="t"><span>Build</span></div><div class="s">gate red after follow-up</div><div class="chain"><i class="passed"></i><i class="passed"></i><i class="passed"></i><i class="failed"></i><i class="failed"></i></div><div class="chain-l"><span>coder</span><span>check</span><span>review</span><span>gate</span><span>follow</span></div></div><span class="ar">→</span>
+          <div class="code pending"><div class="t">squash</div></div>
+        </div>
+        <div class="flow" style="flex-wrap:wrap; row-gap:4px">
+          <span class="mono muted" style="width:62px">beside</span>
+          <span class="tag chip">supervisor · 7 triages across both builds</span><span class="ar"></span>
+          <span class="tag chip">lesson recorded</span>
+        </div>
+      </div>
+    </div></div>
+    <p class="note">Each try gets its own row, so "3x" turns into what actually happened. Clicking any box still opens that run's trace, as today. The build's inner bar is also what fixes the bug where the box showed done while the gate follow-up was still running.</p>
+  </section>
+
+  <!-- ===================== EXIT ===================== -->
+  <section>
+    <div class="eyebrow">Close-up · how a story stops</div>
+    <h2>Exits get their own row</h2>
+    <p class="lead">Today a block is a line of text above the pipeline. It becomes the last row of the pipeline, with the diagnosis and the fix card as steps you can click.</p>
+    <div class="panel"><div class="panel-b" style="display:flex; flex-direction:column; gap:10px">
+      <div class="exit">
+        <span class="lbl">BLOCKED</span>
+        <span class="mono" style="font-size:12px; max-width:34ch">at L02 build 2 of 2 · gate red</span><span class="ar">→</span>
+        <div class="box passed" style="background:var(--card)"><div class="t"><span>Diagnose</span></div><div class="s">muse</div></div><span class="ar">→</span>
+        <div class="code passed" style="background:var(--card)"><div class="t">fix card</div><div class="s">filed</div></div><span class="ar">→</span>
+        <div class="code passed" style="background:var(--card)"><div class="t">card</div><div class="s">→ blocked</div></div>
+      </div>
+      <div class="exit" style="border-color:var(--warn-fg); background:var(--warn-bg)">
+        <span class="lbl" style="color:var(--warn-fg)">WAITING</span>
+        <span class="mono" style="font-size:12px">on AIR-46: its pull requests are not open yet · card → To Do</span>
+      </div>
+      <div class="exit" style="border-color:var(--border); background:var(--muted)">
+        <span class="lbl" style="color:var(--fg)">CANCELLED</span>
+        <span class="mono" style="font-size:12px">stop pressed during L03 build · card → To Do</span>
+      </div>
+    </div></div>
+  </section>
+
+
+  <!-- ===================== PHONE ===================== -->
+  <section>
+    <div class="eyebrow">On a phone</div>
+    <h2>A list you can scroll with your thumb, with the now bar pinned on top</h2>
+    <p class="lead">On a phone, A and B come out the same: one column, a row per step. So the A/B pick only matters on a laptop. Three rules make it fit: the now bar stays pinned while you scroll, a finished lane folds to one row of chips, and only the running step opens up, with its inner steps listed under it. Tapping any row opens its trace in a sheet from the bottom, the same detail the laptop shows below the pipeline.</p>
+    <div class="phones">
+
+      <!-- phone 1: AIR-47 now -->
+      <div class="phone-col">
+        <div class="phone-cap"><b>AIR-47, now.</b> Drafting L03. The plan lane is finished, so it's one row.</div>
+        <div class="phone"><div class="screen">
+          <div class="appbar"><span class="muted">‹</span><b>AIR-47</b><span class="muted" style="font-size:12px">building</span></div>
+          <div class="pnow">
+            <div class="l1"><span class="dot running pulse"></span><span>Draft packages › L03 › package</span></div>
+            <div class="l2">architect · step 6 · 7m 40s <span class="muted">· 41s ago</span></div>
+          </div>
+          <div class="pstick">pinned while you scroll</div>
+
+          <div class="plane">PLAN LANE</div>
+          <div class="prow collapsed">
+            <span class="dot passed"></span><span class="nm">Planned <small>· 1h 03m</small></span><span class="chev">▸</span>
+            <div class="mini"><span class="st code passed">intake</span><span class="st code passed">base</span><span class="st code passed">gate</span><span class="st passed">survey‖refine</span><span class="st passed">layers <b style="color:var(--warn-fg)">!</b></span><span class="st passed">amigos</span><span class="st passed" style="border:0">◆</span></div>
+          </div>
+
+          <div class="plane">BUILD LANE</div>
+          <div class="pexp">
+            <div class="prow"><span class="dot running"></span><span class="nm">Draft all packages <small>· turn 3 of 5</small></span><span class="rt">1h 04m</span></div>
+            <div class="psteps">
+              <div class="pstep"><span class="sq passed"></span><span class="nm">L01 · package → critic agree</span><span class="rt">26m</span></div>
+              <div class="pstep"><span class="sq passed"></span><span class="nm">L02 · package → critic agree</span><span class="rt">30m</span></div>
+              <div class="pstep"><span class="sq running"></span><span class="nm" style="color:var(--info-fg)">L03 · package · step 6</span><span class="rt">7m</span></div>
+              <div class="pstep sub"><span class="sq"></span><span class="nm muted">critic</span><span class="rt"></span></div>
+              <div class="pstep"><span class="sq"></span><span class="nm muted">L04 · L05</span><span class="rt">waiting</span></div>
+            </div>
+          </div>
+          <div class="prow pending"><span class="dot"></span><span class="nm">L01 <small>story-publish-field</small></span><span class="rt">draft ready</span>
+            <div class="mini"><span class="st pending">pkg</span><span class="st code pending">checks</span><span class="st code pending">place</span><span class="st pending">build</span><span class="st code pending">squash</span></div></div>
+          <div class="prow pending"><span class="dot"></span><span class="nm">L02 <small>publish-mode-thread</small></span><span class="rt">draft ready</span></div>
+          <div class="prow pending"><span class="dot"></span><span class="nm">L03 <small>single-pr-publish</small></span><span class="rt">drafting</span></div>
+          <div class="prow pending"><span class="dot"></span><span class="nm">L04–L05</span><span class="rt">not drafted</span></div>
+          <div class="prow pending"><span class="dot"></span><span class="nm">Publish → Review</span><span class="rt">gh stack</span></div>
+          <div class="pexit">No exit yet. A block, wait or cancel shows here as the last row.</div>
+        </div></div>
+      </div>
+
+      <!-- phone 2: AIR-48 L02 mid build, detail sheet open -->
+      <div class="phone-col">
+        <div class="phone-cap"><b>AIR-48 layer 02, second build.</b> The gate failed and the coder is on its follow-up; the coder row is tapped. The moment is rebuilt from its log, and the step counts and last tool call are illustrative.</div>
+        <div class="phone"><div class="screen">
+          <div class="appbar"><span class="muted">‹</span><b>AIR-48</b><span class="muted" style="font-size:12px">building</span></div>
+          <div class="pnow">
+            <div class="l1"><span class="dot running pulse"></span><span>L02 › Build › coder · gate follow-up</span></div>
+            <div class="l2">coder · step 9 · 12m <span class="muted">· 20s ago</span></div>
+          </div>
+
+          <div class="prow collapsed"><span class="dot passed"></span><span class="nm">Planned <small>· plan lane</small></span><span class="chev">▸</span></div>
+          <div class="prow collapsed"><span class="dot passed"></span><span class="nm">Draft all packages <small>· 2 turns</small></span><span class="chev">▸</span></div>
+          <div class="prow"><span class="dot passed"></span><span class="nm">L01 <small>built · 1 commit</small></span><span class="rt">38m</span></div>
+          <div class="pexp">
+            <div class="prow"><span class="dot running"></span><span class="nm">L02 <small>build 2 of 2</small></span><span class="tag chip">re-planned</span></div>
+            <div class="psteps">
+              <div class="pstep"><span class="sq failed"></span><span class="nm muted">build 1 · red → re-planned</span><span class="chev">▸</span></div>
+              <div class="pstep"><span class="sq passed"></span><span class="nm">Package · critic agree</span><span class="rt">9m</span></div>
+              <div class="pstep"><span class="sq passed"></span><span class="nm mono">checks · place 3 tests</span><span class="rt">1m</span></div>
+              <div class="pstep"><span class="sq running"></span><span class="nm">Build</span><span class="rt">41m</span></div>
+              <div class="pstep sub"><span class="sq passed"></span><span class="nm">coder → done-check → reviewer</span><span class="rt">27m</span></div>
+              <div class="pstep sub"><span class="sq failed"></span><span class="nm mono">gate · 2 tests red</span><span class="rt">2m</span></div>
+              <div class="pstep sub" style="outline:2px solid var(--info-fg); outline-offset:-1px; border-radius:6px; padding-right:6px"><span class="sq running"></span><span class="nm" style="color:var(--info-fg)">coder · follow-up</span><span class="rt">12m</span></div>
+              <div class="pstep"><span class="sq"></span><span class="nm muted mono">squash</span><span class="rt"></span></div>
+            </div>
+          </div>
+          <div class="pdetail">
+            <div class="grab"></div>
+            <div style="display:flex; justify-content:space-between; gap:8px"><b>Coder · gate follow-up</b><span class="mono muted">step 9</span></div>
+            <span class="muted">Last tool call</span>
+            <pre>edit_file src/airlie/story/publish.py</pre>
+            <span class="muted">Steps · reasoning · prompt, as on the laptop ›</span>
+          </div>
+        </div></div>
+      </div>
+
+    </div>
+    <p class="note">This replaces today's separate phone layout, where a stage is one row and a layer is a strip of chips, with the same list the laptop's option B uses, only narrower. If you pick A for the laptop, the phone still gets this list.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">What to tell me</div>
+    <h2>Four things to react to</h2>
+    <p>1. Option C: what should stay on the box and what goes in the card. &nbsp; 2. The phone list: whether folding finished lanes and opening only the running step is right. &nbsp; 3. Any box type that's wrong, missing, or more than you need. &nbsp; 4. Whether the now bar's "quiet for N min" warning is useful, and after how long it should trigger.</p>
+  </section>
+</div>
+<template id="h-gate"><div class="hcard"><h5>Gate <span class="tag chip">code</span><span class="tag ok">passed</span></h5>
+<div class="row"><span class="k">from</span><span class="mono">AGENTS.md at e8146e0</span></div>
+<div class="steps"><div><span class="sq passed"></span><span class="mono">uv sync --frozen</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run ruff check .</span><span></span></div><div><span class="sq passed"></span><span class="mono">ruff format --check</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run mypy</span><span></span></div><div><span class="sq passed"></span><span class="mono">uv run pytest …</span><span></span></div><div><span class="sq passed"></span><span class="mono">task web:gate</span><span></span></div></div>
+<div class="foot">Read once at 14:13. Every layer has to pass these.</div></div></template><template id="h-plan"><div class="hcard"><h5>Plan layers <span class="tag warn">over budget</span></h5>
+<div class="row"><span class="k">rounds</span><span class="pips"><span class="pip passed"></span><span class="pip failed"></span><span class="pip"></span></span><span class="mono muted">1 ok · 2 unusable</span></div>
+<div class="row"><span class="k">fixes</span><span class="pips"><span class="pip warn"></span><span class="pip warn"></span><span class="pip warn"></span></span><span class="mono muted">2 JSON fixes · 1 retry</span></div>
+<div class="row"><span class="k">result</span><span>5 layers, kept from round 1</span></div>
+<div class="foot">architect · 2 asks · 38m 17s · 14:16–14:55</div></div></template><template id="h-amigos"><div class="hcard"><h5>Three amigos <span class="tag ok">agreed</span></h5>
+<div class="row"><span class="k">turns</span><span class="pips"><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip code passed"></span><span class="pip passed"></span><span class="pip passed"></span><span class="pip"></span><span class="pip"></span></span><span class="mono muted">10 of 12</span></div>
+<div class="vote"><span></span><span class="h">req</span><span class="h">changes</span><span class="h">proof</span>
+<span>product</span><span>✓</span><span>✓</span><span>✓</span><span>architect</span><span>✓</span><span>✓</span><span>✓</span><span>tester</span><span>✓</span><span>✓</span><span>✓</span><span>airlie</span><span class="muted" style="grid-column: span 3">no findings</span></div>
+<div class="row"><span class="k">objected</span><span>11 raised · 11 resolved</span></div>
+<div class="foot">Final votes shown. 19m 24s · ended 15:15</div></div></template><template id="h-draft"><div class="hcard"><h5>Draft all packages <span class="tag info">turn 3 of 5</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>L01 · package → critic agree</span><span class="rt">26m</span></div>
+<div><span class="sq passed"></span><span>L02 · package → critic agree</span><span class="rt">30m</span></div>
+<div><span class="sq running"></span><span style="color:var(--info-fg)">L03 · package · step 6</span><span class="rt">7m</span></div>
+<div><span class="sq"></span><span class="muted">L04 · L05</span><span class="rt">waiting</span></div></div>
+<div class="foot">One architect chat · run 20261102-151618-a040. A bad reply stops drafting; those layers get asked one at a time later.</div></div></template><template id="h-build"><div class="hcard"><h5>Build <span class="tag warn">2 of 2</span><span class="tag info">running</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>coder</span><span class="rt">22m</span></div>
+<div><span class="sq passed"></span><span class="mono">done-check</span><span class="rt">0s</span></div>
+<div><span class="sq passed"></span><span>reviewer · no fix round</span><span class="rt">5m</span></div>
+<div><span class="sq failed"></span><span class="mono">gate · 2 tests red</span><span class="rt">2m</span></div>
+<div><span class="sq running"></span><span style="color:var(--info-fg)">coder · gate follow-up · step 9</span><span class="rt">12m</span></div></div>
+<div class="row"><span class="k">beside</span><span>supervisor: 3 triages this build</span></div>
+<div class="foot">Build 1 was red and the layer was re-planned. Click the box for the full trace.</div></div></template><template id="h-package"><div class="hcard"><h5>Package <span class="tag ok">ready</span></h5>
+<div class="steps">
+<div><span class="sq passed"></span><span>architect · draft taken</span><span class="rt"></span></div>
+<div><span class="sq passed"></span><span>critic (tester) · agree</span><span class="rt">2m</span></div>
+<div><span class="sq"></span><span class="muted">proof revision · not needed</span><span class="rt"></span></div></div>
+<div class="row"><span class="k">tries</span><span>1 of 2 this build</span></div></div></template>
+<div id="hpop" hidden></div>
+<script>
+(function(){
+  var pop = document.getElementById('hpop');
+  function show(el){
+    var t = document.getElementById('h-' + el.getAttribute('data-hover'));
+    if(!t) return;
+    pop.innerHTML = ''; pop.appendChild(t.content.cloneNode(true)); pop.hidden = false;
+    var r = el.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    var x = Math.min(Math.max(16, r.left), window.innerWidth - w - 16);
+    var y = r.bottom + 8; if (y + h > window.innerHeight - 8) y = Math.max(8, r.top - h - 8);
+    pop.style.left = x + 'px'; pop.style.top = y + 'px';
+  }
+  function hide(){ pop.hidden = true; }
+  document.querySelectorAll('[data-hover]').forEach(function(el){
+    el.addEventListener('mouseenter', function(){ show(el); });
+    el.addEventListener('mouseleave', hide);
+    el.addEventListener('focus', function(){ show(el); });
+    el.addEventListener('blur', hide);
+  });
+  document.querySelectorAll('.scroll').forEach(function(sc){ sc.addEventListener('scroll', hide, {passive:true}); });
+  window.addEventListener('scroll', hide, {passive:true});
+})();
+</script>

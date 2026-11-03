@@ -1,0 +1,105 @@
+{
+ "card": {
+  "key": "AIR-47",
+  "title": "Publish one draft PR per story; layers stay build steps"
+ },
+ "repo": "/r",
+ "stage": "layers",
+ "story": {
+  "title": "Publish one draft PR per story; layers stay build steps",
+  "acceptance": []
+ },
+ "layers": [
+  {
+   "slug": "story-publish-field",
+   "title": "Add the story.publish config field (single | stack, default stack)",
+   "scope": "src/airlie/config/schema.py and its config tests",
+   "acceptance": []
+  },
+  {
+   "slug": "publish-mode-thread",
+   "title": "Thread the publish mode into Publisher and skip the gh-stack probe for single",
+   "scope": "src/airlie/story/publish.py, src/airlie/story/factory.py, and the publish/factory tests",
+   "acceptance": [
+    "AC4"
+   ]
+  },
+  {
+   "slug": "single-pr-publish",
+   "title": "Open one draft PR on the top branch with a per-layer body (single path)",
+   "scope": "src/airlie/story/publish.py, src/airlie/story/pipeline.py, and the publish tests",
+   "acceptance": [
+    "AC1",
+    "AC2",
+    "AC3"
+   ]
+  },
+  {
+   "slug": "single-pr-state-bench",
+   "title": "Record one PR in state; the bench close already closes whatever is in state.prs",
+   "scope": "src/airlie/story/pipeline.py, src/airlie/bench/story_bench.py, and the bench tests",
+   "acceptance": [
+    "AC5"
+   ]
+  },
+  {
+   "slug": "airlie-yaml-single-docs",
+   "title": "Set story.publish: single in airlie.yaml and document the key",
+   "scope": "airlie.yaml, config/ fragments, docs/integrations/story.md",
+   "acceptance": [
+    "AC6"
+   ]
+  }
+ ],
+ "agreement": {
+  "trimmed": true
+ },
+ "built": {
+  "01": {
+   "branch": "AIR-47-publish-one-draft-pr-per-story-01-story-publish-field",
+   "sha": "22640ef2fbe893b4d1315a0edbd5dc6cb42c5bf0",
+   "run_id": "20261102-165104-4888"
+  },
+  "02": {
+   "branch": "AIR-47-publish-one-draft-pr-per-story-02-publish-mode-thread",
+   "sha": "33005946e0f316e89d6c158116d13840c5d351b7",
+   "run_id": "20261102-190458-02f5"
+  }
+ },
+ "drafted": true,
+ "drafts": {},
+ "base": {
+  "ref": "origin/main",
+  "sha": "e8146e0986784f7cb0c58147263e8f9b935353f4"
+ },
+ "gate": {
+  "commands": [
+   "uv sync --frozen",
+   "uv run ruff check .",
+   "uv run ruff format --check .",
+   "uv run mypy",
+   "uv run pytest -q -n auto --maxprocesses 8",
+   "task web:gate"
+  ],
+  "agents_md": "29021b8c65cdf504126cd48abf9c69ea9dabbf4b"
+ },
+ "prs": [],
+ "runs": [
+  "20261102-141300-a629",
+  "20261102-141301-355e",
+  "20261102-141643-b5f1",
+  "20261102-143823-9bb7",
+  "20261102-145500-3a55",
+  "20261102-151618-a040",
+  "20261102-154150-1f01",
+  "20261102-161044-1fa8",
+  "20261102-165104-4888",
+  "20261102-165845-c5a7",
+  "20261102-174121-827f",
+  "20261102-181110-3ace",
+  "20261102-185810-417a",
+  "20261102-190458-02f5",
+  "20261102-191912-7a89"
+ ],
+ "blocked": null
+}

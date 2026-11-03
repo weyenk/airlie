@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, Square } from "lucide-vue-next";
+import { useMediaQuery } from "@vueuse/core";
 import { computed, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError } from "@/api";
@@ -10,8 +11,10 @@ import ItemKey from "@/components/ItemKey.vue";
 import StatusChip from "@/components/StatusChip.vue";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/composables/useConfirm";
+import { PHONE_QUERY } from "@/lib/breakpoints";
 import { liveResource } from "@/stores/live";
 import JobDetailView from "./workflow/JobDetail.vue";
+import JobSheet from "./workflow/JobSheet.vue";
 import Pipeline from "./workflow/Pipeline.vue";
 import { useJobSelection } from "./workflow/selection";
 
@@ -48,7 +51,28 @@ const shown = computed(() => {
   const d = detail.data.value;
   return d && selected.value && d.node === selected.value[0] && d.job.id === selected.value[1] ? d : null;
 });
-const nodeLabel = computed(() => flow.data.value?.nodes.find((n) => n.id === selected.value?.[0])?.label);
+const EXIT_LABEL = { blocked: "Blocked", waiting: "Waiting", cancelled: "Cancelled" } as const;
+const nodeLabel = computed(() => {
+  const f = flow.data.value;
+  const id = selected.value?.[0];
+  if (id === "exit" && f?.exit) return EXIT_LABEL[f.exit.kind];
+  return f?.nodes.find((n) => n.id === id)?.label;
+});
+
+// On a phone a tap opens the sheet (the address names the job); closing it goes back to the story's own address.
+const phone = useMediaQuery(PHONE_QUERY);
+const sheetOpen = computed(() => phone.value && !!route.params.job && !!selected.value);
+const sheetJob = computed(() => {
+  const sel = selected.value;
+  const f = flow.data.value;
+  if (!sel || !f) return null;
+  const n = f.nodes.find((x) => x.id === sel[0]);
+  const jobs = sel[0] === "exit" ? (f.exit?.jobs ?? []) : [...(n?.jobs ?? []), ...(n?.rows ?? []).flatMap((r) => (r.kind === "cycle" ? r.jobs : []))];
+  return jobs.find((j) => j.id === sel[1]) ?? shown.value?.job ?? null;
+});
+function closeSheet() {
+  void router.push({ path: `/workflows/${encodeURIComponent(key.value)}` });
+}
 
 function pick(node: string, job: string) {
   void router.push({ path: `/workflows/${encodeURIComponent(key.value)}/${encodeURIComponent(node)}/${encodeURIComponent(job)}` });
@@ -99,12 +123,13 @@ async function stop() {
       </section>
       <ErrorBanner v-if="stopError" :error="stopError" />
 
-      <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" @pick="pick" />
+      <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" :now="flow.data.value.now" :exit="flow.data.value.exit" @pick="pick" />
 
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
       <p aria-live="polite" class="sr-only">{{ shown ? `${nodeLabel ? nodeLabel + " / " : ""}${shown.job.label}: ${shown.job.status}` : "" }}</p>
-      <JobDetailView v-if="shown" :detail="shown" :node-label="nodeLabel" />
-      <section v-else-if="selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
+      <JobSheet :open="sheetOpen" :job="sheetJob" :detail="shown" :node-label="nodeLabel" @close="closeSheet" />
+      <JobDetailView v-if="!phone && shown" :detail="shown" :node-label="nodeLabel" />
+      <section v-else-if="!phone && selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
       <section v-else-if="!selected" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>
     </template>
   </div>

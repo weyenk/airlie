@@ -33,7 +33,8 @@ from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
-from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
+from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
+from airlie.serve.flow_parts import StoryNotFound
 from airlie.serve.jobs import Job, Jobs
 from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page
@@ -913,14 +914,20 @@ def create_app(
     @app.get("/v1/airlie/stories/{key}/flow")
     async def story_flow_get(key: str) -> dict[str, Any]:
         try:
-            return story_flow(cfg.observability.state_dir.expanduser(), key)
+            return story_flow(cfg.observability.state_dir.expanduser(), key, held=job_running(f"story-{key}"))
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 
     @app.get("/v1/airlie/stories/{key}/flow/{node_id}/{job_id}")
     async def story_job_get(key: str, node_id: str, job_id: str) -> dict[str, Any]:
         try:
-            return job_detail(cfg.observability.state_dir.expanduser(), key, node_id, job_id)
+            return job_detail(
+                cfg.observability.state_dir.expanduser(),
+                key,
+                node_id,
+                job_id,
+                held=job_running(f"story-{key}"),
+            )
         except StoryNotFound as e:
             raise HTTPException(404, str(e)) from None
 

@@ -1,0 +1,83 @@
+{
+ "card": {
+  "key": "AIR-48",
+  "title": "Line: AIR-47 blocked at layers: cut_off"
+ },
+ "repo": "/r",
+ "stage": "layers",
+ "story": {
+  "title": "Surface a cut_off stop with an actionable reason",
+  "acceptance": []
+ },
+ "layers": [
+  {
+   "slug": "cut-off-diagnosis",
+   "title": "The cut_off rule names the cap and a next step",
+   "scope": "src/airlie/story/diagnosis.py, tests/unit/test_story_diagnosis.py",
+   "acceptance": [
+    "AC1",
+    "AC2"
+   ]
+  },
+  {
+   "slug": "cut-off-fix-card",
+   "title": "Guard the cut_off fix card's generic criteria and out-of-scope",
+   "scope": "tests/unit/test_story_fixes.py",
+   "acceptance": [
+    "AC3"
+   ]
+  }
+ ],
+ "agreement": {
+  "trimmed": true
+ },
+ "built": {
+  "01": {
+   "branch": "AIR-48-surface-a-cut-off-stop-with-an-01-cut-off-diagnosis",
+   "sha": "16d8c6551fdd566861275067c3f9a4c798c2b603",
+   "run_id": "20261101-085817-b980"
+  }
+ },
+ "drafted": true,
+ "drafts": {},
+ "base": {
+  "ref": "origin/main",
+  "sha": "f3cdfc69d2423b2e4601da405bac46a3d62a70f0"
+ },
+ "gate": {
+  "commands": [
+   "uv sync --frozen",
+   "uv run ruff check .",
+   "uv run ruff format --check .",
+   "uv run mypy",
+   "uv run pytest -q -n auto --maxprocesses 8",
+   "task web:gate"
+  ],
+  "agents_md": "29021b8c65cdf504126cd48abf9c69ea9dabbf4b"
+ },
+ "prs": [],
+ "runs": [
+  "20261101-073703-b831",
+  "20261101-073704-cac0",
+  "20261101-074336-fc9e",
+  "20261101-075726-11c3",
+  "20261101-081445-f9fa",
+  "20261101-083618-033b",
+  "20261101-085154-aec2",
+  "20261101-085817-b980",
+  "20261101-125221-0f79",
+  "20261101-130826-5b7d",
+  "20261101-131332-bd9e",
+  "20261101-132552-f44e",
+  "20261101-133103-33d2",
+  "20261101-134401-1926",
+  "20261101-140301-b1c7",
+  "20261101-140822-8efc",
+  "20261101-144700-5f33",
+  "20261101-150404-b954",
+  "20261101-150920-7ac5",
+  "20261101-152709-dd7a",
+  "20261101-152849-7d05"
+ ],
+ "blocked": "layer 02 (Guard the cut_off fix card's generic criteria and out-of-scope): its package still fails the readiness check after 2 tries (package_unusable)"
+}

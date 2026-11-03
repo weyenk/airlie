@@ -2,17 +2,22 @@
 import { computed } from "vue";
 import type { FlowJob } from "@/api/workflows";
 import { briefSpan } from "./format";
-import { BOX } from "./style";
+import { BOX, TAG } from "./style";
 
 const props = defineProps<{ nodeId: string; job: FlowJob; selected?: boolean; narrow?: boolean }>();
 const emit = defineEmits<{ pick: [node: string, job: string] }>();
 
-const sub = computed(() => [props.job.role, props.job.duration_s ? briefSpan(props.job.duration_s) : null].filter(Boolean).join(" · ") || props.job.status);
+const sub = computed(() => {
+  if (props.job.status === "running" && props.job.live) return props.job.live;
+  return [props.job.role, props.job.duration_s ? briefSpan(props.job.duration_s) : null].filter(Boolean).join(" · ") || props.job.sub || props.job.status;
+});
+const mono = computed(() => (props.job.status === "running" && props.job.live) || props.job.role || props.job.duration_s);
 </script>
 
 <template>
   <button
     type="button"
+    data-shape="model"
     :data-node="nodeId"
     :data-job="job.id"
     :data-status="job.status"
@@ -30,7 +35,8 @@ const sub = computed(() => [props.job.role, props.job.duration_s ? briefSpan(pro
       <span class="truncate">{{ job.label }}</span>
       <span v-if="job.won" data-won class="shrink-0 text-xs font-bold text-warn-foreground">★ won</span>
       <span v-if="job.attempts > 1" class="shrink-0 rounded-md bg-warn px-1.5 py-px text-xs font-bold text-warn-foreground">{{ job.attempts }}x</span>
+      <span v-for="(t, i) in job.tags ?? []" :key="i" data-tag :class="['shrink-0 rounded-md px-1.5 py-px text-xs font-bold', TAG[t.tone]]">{{ t.text }}</span>
     </span>
-    <span :class="['w-full truncate text-xs text-muted-foreground', job.role || job.duration_s ? 'font-mono' : '']">{{ sub }}</span>
+    <span :class="['w-full truncate text-xs text-muted-foreground', mono ? 'font-mono' : '']">{{ sub }}</span>
   </button>
 </template>

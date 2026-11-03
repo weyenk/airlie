@@ -12,6 +12,7 @@ import asyncio
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,6 +29,10 @@ from airlie.topology.studio import StudioOrchestrator
 from airlie.topology.studio_plan import Plan, Subtask
 
 StudioFactory = Callable[[], StudioOrchestrator]
+
+ASK_LAYER: ContextVar[str | None] = ContextVar("ask_layer", default=None)
+"""The layer (`"02"`) whose package the asks being made are for: they name it on their `run` event, so the
+workflow screen puts each studio run under its layer. None for an ask outside a layer's package."""
 
 
 class Say(Protocol):
@@ -159,8 +164,14 @@ class Asker:
             base = {"ref": at, "sha": at}
         st.runs.append(orch.run_dir.run_id)  # on record before it starts: a run that dies is still named
         st.save()
+        layer = ASK_LAYER.get()
         st.emit(
-            "run", stage=stage, studio_run=orch.run_dir.run_id, base=base.get("ref"), base_sha=base.get("sha")
+            "run",
+            stage=stage,
+            studio_run=orch.run_dir.run_id,
+            base=base.get("ref"),
+            base_sha=base.get("sha"),
+            **({"layer": layer} if layer else {}),
         )
         return orch, base
 

@@ -5,7 +5,7 @@ import { ApiError } from "@/api";
 import type { Flow, JobRow } from "@/api/workflows";
 import { useFeedStore } from "@/stores/feed";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, flow, job, layer, stage, step } from "@/test-utils/workflow-fixtures";
+import { cycle, detail, exitRow, flow, job, lane as laneNode, layer, now, stage, step } from "@/test-utils/workflow-fixtures";
 import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));
@@ -59,6 +59,35 @@ test("the head: back to Workflows, the key, the stage in progress, the Board car
   expect(w.find("[role=alert]").exists()).toBe(false);
 });
 
+test("the flow's now bar and exit row reach the pipeline", async () => {
+  const { w } = await open("/workflows/AIR-17", flow(STAGES, { now: now({ status: "stopped", text: "Stopped at L02" }), exit: exitRow() }));
+  expect(w.get("[data-now]").text()).toContain("Stopped at L02");
+  expect(w.get("[data-exit=blocked]").text()).toContain("L02 build 2 of 2");
+});
+
+const TRIED = () =>
+  flow(
+    [
+      ...STAGES,
+      laneNode("02", "Comment edit", "failed", [cycle("c1", "build 1", "failed", "c1-"), { kind: "divider", text: "re-planned", card: null }, cycle("c2", "build 2", "failed")]),
+    ],
+    { exit: exitRow() },
+  );
+
+test("an earlier try's box opens its own detail and shows pressed", async () => {
+  const { w } = await open("/workflows/AIR-17/layer-02/c1-build", TRIED());
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-02", "c1-build"]);
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=c1-build]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=build]").attributes("aria-pressed")).toBe("false");
+});
+
+test("an exit row's box opens its detail, labeled by the exit", async () => {
+  const { w } = await open("/workflows/AIR-17/exit/diagnose", TRIED());
+  expect(lastDetailCall()).toEqual(["AIR-17", "exit", "diagnose"]);
+  expect(w.get("[data-exit] [data-job=diagnose]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[aria-live=polite]").text()).toContain("Blocked / ");
+});
+
 test("a blocked story says blocked and shows its reason", async () => {
   const { w } = await open();
   expect(w.text()).toContain("blocked");
@@ -76,6 +105,25 @@ test("else the running job, else the last that ran", async () => {
   expect(lastDetailCall()).toEqual(["AIR-17", "layer-02", "build"]);
   await open("/workflows/AIR-17", DONE);
   expect(lastDetailCall()).toEqual(["AIR-17", "publish", "publish"]);
+});
+
+// AIR-47 killed mid-package: L02 built, L03's package stopped, nothing after it run
+const KILLED = flow([...STAGES, layer("01", "Comment id store", "passed", ["passed", "passed", "passed"]), layer("02", "Comment edit", "passed", ["passed", "passed", "passed"]), layer("03", "More", "stopped", ["stopped", "pending", "pending"])]);
+
+test("a killed story opens on its stopped box, not the last that passed, and keeps it pinned", async () => {
+  const { w } = await open("/workflows/AIR-17", KILLED);
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-03", "tests"]);
+  api.storyFlow.mockResolvedValue(FAILED_FLOW_SAME);
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(pressed(w)).toEqual(["layer-03/tests"]);
+});
+
+test("a live story opens on its running box, not an old Survey failure it went on past", async () => {
+  const f = flow([stage("intake", "Intake"), stage("survey", "Survey", "failed"), stage("refine", "Refine"), layer("01", "Comment id store", "running", ["passed", "passed", "running"])]);
+  const { w } = await open("/workflows/AIR-17", f);
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-01", "build"]);
+  expect(pressed(w)).toEqual(["layer-01/build"]);
 });
 
 test("a job named in the address is the one that opens; one that does not exist falls back", async () => {
@@ -243,4 +291,56 @@ test("a live status line outside the job names what is on show", async () => {
   await w.get("[data-lane][data-node=layer-01] [data-job=tests]").trigger("click");
   await flushPromises();
   expect(w.get("[aria-live=polite]").text()).toBe("Layer 01 / tests: passed");
+});
+
+function phone(on: boolean) {
+  vi.stubGlobal("matchMedia", (q: string) => ({ matches: on, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+}
+const withCard = () => {
+  const f = structuredClone(RUNNING);
+  f.nodes[4].jobs[2].card = { title: "Build", tags: [], rows: [], foot: null };
+  return f;
+};
+
+describe("on a phone", () => {
+  beforeEach(() => phone(true));
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("the sheet stays closed until a row is tapped, and nothing is drawn below the pipeline", async () => {
+    const { w } = await open("/workflows/AIR-17", withCard());
+    expect(document.body.querySelector("[data-sheet]")).toBeNull();
+    expect(w.find("section[aria-label=Job]").exists()).toBe(false);
+  });
+
+  test("tapping a row opens the sheet with the card and the detail", async () => {
+    const { w, router } = await open("/workflows/AIR-17", withCard());
+    await w.get("[data-node=layer-02] [data-job=build]").trigger("click");
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/workflows/AIR-17/layer-02/build");
+    const sheet = document.body.querySelector("[data-sheet]")!;
+    expect(sheet.querySelector("[data-card]")).not.toBeNull();
+    expect(sheet.querySelector("section[aria-label=Job]")).not.toBeNull();
+  });
+
+  test("a story with nothing run says so on a phone too", async () => {
+    await open("/workflows/AIR-17", flow([]));
+    expect(document.body.textContent).toContain("Nothing has run yet.");
+  });
+
+  test("closing the sheet clears the selection", async () => {
+    const { router } = await open("/workflows/AIR-17/layer-02/build", withCard());
+    expect(document.body.querySelector("[data-sheet]")).not.toBeNull();
+    (document.body.querySelector("[data-slot=dialog-close]") as HTMLElement).click();
+    await flushPromises();
+    expect(router.currentRoute.value.path).toBe("/workflows/AIR-17");
+    expect(document.body.querySelector("[data-sheet]")).toBeNull();
+  });
+});
+
+test("on a laptop the detail stays below the pipeline and no sheet opens", async () => {
+  phone(false);
+  const { w } = await open("/workflows/AIR-17/layer-02/build", withCard());
+  expect(document.body.querySelector("[data-sheet]")).toBeNull();
+  expect(w.find("section[aria-label=Job]").exists()).toBe(true);
+  vi.unstubAllGlobals();
 });
