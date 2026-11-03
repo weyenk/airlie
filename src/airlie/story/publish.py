@@ -378,11 +378,12 @@ class Publisher:
         return misdirected(self.repository, self.remote, fetch, push, as_bot=False)
 
     @asynccontextmanager
-    async def _step(self, cwd: Path) -> AsyncIterator[dict[str, str]]:
+    async def _step(self, cwd: Path, *, workflows: bool = False) -> AsyncIterator[dict[str, str]]:
         """The environment of one publish step in `cwd`, once where git would fetch from and push to has been
         found to be the story's repository (anywhere else is refused before any command runs). As the bot: a
         token minted now, for this step alone, and revoked when the step ends however it ends (best effort:
-        GitHubApp.revoke), and gh pointed at an empty directory made for it and removed after it. As you:
+        GitHubApp.revoke), and gh pointed at an empty directory made for it and removed after it; with
+        `workflows`, the token may also push a change to .github/workflows/ (changes_workflows). As you:
         person_env."""
         if self.app is None:
             if self._person is None:
@@ -401,7 +402,7 @@ class Publisher:
             wrong = misdirected(repository, self.remote, fetch, push, as_bot=True)
             if wrong:
                 raise PublishError(wrong[0])
-            token = await self._token(app, repository)
+            token = await self._token(app, repository, workflows)
             urls = dict.fromkeys([*fetch, *push])
             try:
                 yield bot_env(token, Path(gh_dir), self.remote, urls=urls, repository=repository)
@@ -409,9 +410,9 @@ class Publisher:
                 await app.revoke(token)
 
     @staticmethod
-    async def _token(app: GitHubApp, repository: str) -> str:
+    async def _token(app: GitHubApp, repository: str, workflows: bool = False) -> str:
         try:
-            return (await app.token(repository)).token
+            return (await app.token(repository, workflows=workflows)).token
         except GitHubAppError as e:
             failure = str(e)
         raise PublishError(failure)  # outside the handler: nothing is chained
@@ -457,16 +458,37 @@ class Publisher:
                 return
             await self.run(["gh", "stack", "init", "--base", base, *branches], wt, env)
 
+    def changes_workflows(self, cwd: Path, ref: str) -> bool:
+        """Whether a commit of `ref` the remote has none of (no remote-tracking branch of it holds) changes
+        .github/workflows/: GitHub refuses an app's push of one without the workflows permission. Only as the
+        bot (as you, your own login decides). Asked of git directly, with no hooks and no credentials; git
+        that cannot say is taken as yes, so the token asks for workflows and GitHub's answer decides."""
+        if self.app is None:
+            return False
+        args = ["log", "--format=%H", ref, "--not", f"--remotes={self.remote}", "--", ".github/workflows"]
+        try:
+            done = subprocess.run(
+                ["git", *args],
+                cwd=cwd,
+                env=without_hooks({**agent_env(), **QUIET}),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return done.returncode != 0 or bool(done.stdout.strip())
+
     async def submit(self, wt: Path) -> None:
         """Push every layer and open the missing PRs as drafts (`--auto`: no editor; never `--open`)."""
-        async with self._step(wt) as env:
+        async with self._step(wt, workflows=self.changes_workflows(wt, "HEAD")) as env:
             await self.run(["gh", "stack", "submit", "--auto", "--remote", self.remote], wt, env)
 
     async def push_top(self, wt: Path, branch: str) -> None:
         """Push the top layer's branch to the remote (a single draft PR is opened on it; its commits are the
         layers' in layer order)."""
         _refuse_option_like(branch)
-        async with self._step(wt) as env:
+        async with self._step(wt, workflows=self.changes_workflows(wt, f"refs/heads/{branch}")) as env:
             await self.run(["git", "push", "-q", self.remote, branch], wt, env)
 
     async def create_draft(self, wt: Path, branch: str, base: str, title: str) -> None:

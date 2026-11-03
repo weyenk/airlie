@@ -291,6 +291,24 @@ async def test_a_token_is_asked_for_with_contents_and_pull_requests_write_alone(
     assert dict(token.permissions) == {"contents": "write", "pull_requests": "write", "metadata": "read"}
 
 
+async def test_a_token_for_a_push_that_changes_workflows_adds_workflows_write(tmp_path: Path) -> None:
+    """GitHub refuses an app's push that creates or updates .github/workflows/ without `workflows`: a step
+    that pushes such a change asks for it as well, and nothing else more."""
+    github = FakeGitHub(permissions={**WRITE, "workflows": "write", "administration": "write"})
+    token = await fake_app(tmp_path, github).token("o/r", workflows=True)
+    assert github.minted_with() == [{"contents": "write", "pull_requests": "write", "workflows": "write"}]
+    assert token.permissions["workflows"] == "write"
+
+
+async def test_an_app_without_workflows_cannot_push_a_workflow_change_and_is_told_so(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    with pytest.raises(GitHubAppError) as e:
+        await fake_app(tmp_path, github).token("o/r", workflows=True)
+    assert "with contents, pull_requests and workflows write" in str(e.value)
+    assert "Workflows" in str(e.value)  # the setting to change, as GitHub's page names it
+    no_secret_in(e.value, github)
+
+
 async def test_an_app_without_a_permission_publishing_uses_cannot_get_a_token(tmp_path: Path) -> None:
     github = FakeGitHub(permissions={"contents": "write", "metadata": "read"})
     with pytest.raises(GitHubAppError) as e:
@@ -602,9 +620,9 @@ async def test_check_warns_of_what_the_app_holds_beyond_what_publishing_uses(tmp
     held = {**WRITE, "workflows": "write", "administration": "read"}
     problems, notes = await fake_app(tmp_path, FakeGitHub(permissions=held)).check("o/r")
     assert problems == [] and notes == [
-        "warning: the app holds permissions publishing does not use (administration: read, workflows: "
-        "write); its tokens are minted with contents and pull_requests write alone, but its key could mint "
-        "more",
+        "warning: the app holds permissions publishing does not use (administration: read); its tokens are "
+        "minted with contents and pull_requests write alone (and workflows write for a push that changes "
+        ".github/workflows/), but its key could mint more",
         f"publishing to o/r as {SLUG}[bot]",
     ]
 

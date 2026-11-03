@@ -39,6 +39,9 @@ _SAID = 200
 """How much of GitHub's own message an error keeps."""
 PUBLISHES = {"contents": "write", "pull_requests": "write"}
 """What every token is minted with, whatever more the app holds: pushing the layers and opening the PRs."""
+WORKFLOWS = {"workflows": "write"}
+"""What a token for a push that creates or updates .github/workflows/ adds: GitHub refuses an app's such push
+without it."""
 REVOKE_S = 3.0
 """How long a revocation may take before it is let go. A publish step revokes its token even while the story
 is being cancelled (launchd's SIGTERM), and the story must still post its cancel note before launchd kills it,
@@ -263,20 +266,33 @@ class GitHubApp:
             self._installations[repo] = (found, str(body.get("repository_selection") or ""))
         return self._installations[repo]
 
-    async def token(self, repo: str) -> InstallationToken:
+    async def token(self, repo: str, *, workflows: bool = False) -> InstallationToken:
         """A token of the app's installation for `repo` ("owner/name") and no other repository, with
-        PUBLISHES and nothing more (POST /app/installations/{id}/access_tokens, as the app). It lasts an
-        hour; whoever asked for it revokes it once done with it (revoke)."""
+        PUBLISHES and nothing more, or with WORKFLOWS too for a push that changes .github/workflows/ (POST
+        /app/installations/{id}/access_tokens, as the app). It lasts an hour; whoever asked for it revokes it
+        once done with it (revoke)."""
         installation, _ = await self._installation(repo)
         slug = await self.slug()
         path, bearer = f"app/installations/{installation}/access_tokens", self._jwt()
-        wanted = {"repositories": [repo.split("/", 1)[1]], "permissions": PUBLISHES}
+        asked = {**PUBLISHES, **WORKFLOWS} if workflows else PUBLISHES
+        wanted = {"repositories": [repo.split("/", 1)[1]], "permissions": asked}
         r = await self._call("POST", path, bearer, json=wanted)
         if r.status_code == 422:
+            what = (
+                "contents, pull_requests and workflows write"
+                if workflows
+                else "contents and pull_requests write"
+            )
+            # a push that changes .github/workflows/ needs the one permission an app is least likely to hold
+            which = (
+                " (Workflows: read and write, for a push that changes .github/workflows/)"
+                if workflows
+                else ""
+            )
             raise GitHubAppError(
-                f"the GitHub App {slug} cannot get a token for {repo} with contents and pull_requests write "
-                f"({self._said(r, bearer)}): give the app those permissions, and add {repo} to its "
-                f"installation at https://github.com/apps/{slug}/installations/new"
+                f"the GitHub App {slug} cannot get a token for {repo} with {what} ({self._said(r, bearer)}): "
+                f"give the app those permissions{which}, and add {repo} to its installation at "
+                f"https://github.com/apps/{slug}/installations/new"
             )
         if not r.is_success:
             raise self._refused(r, "POST", path, bearer)
@@ -342,12 +358,13 @@ class GitHubApp:
                 f"the app's token for {repo} lacks write on {' and '.join(lacking)} (it has {have}): give "
                 "the app Contents and Pull requests write, then approve that on its installation"
             ], notes
-        more = {k: v for k, v in sorted(self._holds.items()) if k not in (*PUBLISHES, "metadata")}
+        more = {k: v for k, v in sorted(self._holds.items()) if k not in (*PUBLISHES, *WORKFLOWS, "metadata")}
         if more:
             held = ", ".join(f"{k}: {v}" for k, v in more.items())
             notes.append(
                 f"warning: the app holds permissions publishing does not use ({held}); its tokens are minted "
-                "with contents and pull_requests write alone, but its key could mint more"
+                "with contents and pull_requests write alone (and workflows write for a push that changes "
+                ".github/workflows/), but its key could mint more"
             )
         if (await self._installation(repo))[1] == "all":
             notes.append(f"warning: the bot can reach all your repositories; publishing is pinned to {repo}")
