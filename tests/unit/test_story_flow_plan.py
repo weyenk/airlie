@@ -185,3 +185,31 @@ def test_planned_passes_on_its_event_and_carries_the_time(tmp_path: Path) -> Non
     make_story(tmp_path, [{"ts": 90.0, "kind": "story_planned", "layers": 2}], stage="layers")
     job = by_id(nodes_of(tmp_path), "planned")["jobs"][0]
     assert job["status"] == "passed" and job["ended"] == 90.0
+
+
+def test_an_old_finished_story_with_no_base_or_gate_draws_base_not_recorded_and_no_gate(
+    tmp_path: Path,
+) -> None:
+    make_story(tmp_path, [{"ts": 1.0, "kind": "story_start", "stage": "new"}], stage="review")
+    nodes = nodes_of(tmp_path)
+    base = by_id(nodes, "base")["jobs"][0]
+    assert base["status"] == "passed" and base["sub"] == "not recorded"
+    assert by_id(nodes, "gate")["jobs"] == []
+
+
+def test_a_story_at_intake_with_no_base_yet_shows_base_running(tmp_path: Path) -> None:
+    make_story(tmp_path, [{"ts": 1.0, "kind": "story_start", "stage": "new"}], stage="intake")
+    assert by_id(nodes_of(tmp_path), "base")["jobs"][0]["status"] == "running"
+
+
+def test_plan_layers_runs_while_its_run_is_out_and_passes_on_plan_done_before_the_stage_moves(
+    tmp_path: Path,
+) -> None:
+    run = {"ts": 10.0, "kind": "run", "stage": "layers", "studio_run": "r1"}
+    make_story(tmp_path, [run], stage="refine")
+    assert by_id(nodes_of(tmp_path), "layers")["jobs"][0]["status"] == "running"
+    write_events(
+        tmp_path / "stories" / KEY / "events.jsonl",
+        [run, {"ts": 20.0, "kind": "plan_done", "stage": "layers", "reason": "converged", "rounds": 1}],
+    )
+    assert by_id(nodes_of(tmp_path), "layers")["jobs"][0]["status"] == "passed"

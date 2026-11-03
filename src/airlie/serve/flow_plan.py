@@ -102,8 +102,6 @@ def stage_node(
             ended=end,
             duration_s=_span(start, end),
         )
-    elif name == "intake" and status == "passed":
-        box["attempts"] = 1
     return {
         "id": name,
         "label": label,
@@ -170,12 +168,13 @@ def _plan_node(id: str, label: str, status: str, jobs: list[dict[str, Any]], **f
 
 def _base_node(st: dict[str, Any], events: list[dict[str, Any]], blocked: bool) -> dict[str, Any]:
     base = st.get("base") if isinstance(st.get("base"), dict) else None
-    intake_done = _stage_index(st) >= STAGES.index("intake")
-    if base:
-        status = "passed"
-    elif blocked and intake_done:
+    index = _stage_index(st)
+    at_intake = index == STAGES.index("intake")
+    if base or index > STAGES.index("intake"):
+        status = "passed"  # a story past intake with no base on record was logged before bases were
+    elif blocked and at_intake:
         status = "failed"
-    elif intake_done:
+    elif at_intake:
         status = "running"
     else:
         status = "pending"
@@ -185,6 +184,8 @@ def _base_node(st: dict[str, Any], events: list[dict[str, Any]], blocked: bool) 
         box["card"] = card(
             "Base", [text_row("ref", str(base.get("ref", ""))), text_row("commit", str(base.get("sha", "")))]
         )
+    elif status == "passed":
+        box["sub"] = "not recorded"
     return _plan_node("base", "Base", status, [box])
 
 
@@ -195,6 +196,8 @@ def _gate_node(st: dict[str, Any], events: list[dict[str, Any]], blocked: bool) 
         status = "passed"
     elif blocked and st.get("stage") == "intake":
         status = "failed"
+    elif _stage_index(st) > STAGES.index("intake"):
+        return _plan_node("gate", "Gate", "pending", [])  # past intake with none: no gate box, as no survey
     else:
         status = "pending"
     box = _code_job("gate", "Gate", status, logged)
