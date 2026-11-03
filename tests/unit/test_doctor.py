@@ -505,10 +505,10 @@ def test_committed_studio_profiles_project_from_the_coders_corrected_kv_constant
     projected, unknown = project_memory_gb(studio, "main")
     # 41.5 GB of weights (small, generalist, reviewer, Kev) + the build lane's one sequence at the coder's
     # 65.536k × 64 MB/1k = 4.1 GB + 4 asks at 8.192k = 2.0 GB + 12 GB reserve = 59.6 GB, and the prefix cache
-    # the profile sets aside (24576 MB = 24 GB since 2026-10-27; 44 GB filled the machine beside the gate's
-    # own test runs): 20 GB of the wired limit left over for them
-    assert cache_memory_gb(studio.engines["main"]) == 24.0
-    assert (round(projected, 1), unknown) == (83.6, [])
+    # the profile sets aside (12288 MB = 12 GB since 2026-11-02; 44 GB filled the machine beside the gate's
+    # own test runs, and 24 GB ran the engine out of GPU memory under macOS's default wired limit)
+    assert cache_memory_gb(studio.engines["main"]) == 12.0
+    assert (round(projected, 1), unknown) == (71.6, [])
     assert projected < studio.memory.wired_limit_mb / 1024  # 104 GB
     coder8 = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio-coder8")
     projected, unknown = project_memory_gb(coder8, "main")
@@ -535,7 +535,7 @@ def test_the_memory_projection_counts_the_two_lanes_sequences() -> None:
     wider = studio.model_copy(deep=True)
     wider.line.fanout = 8
     assert live_kv_gb(wider, e) > live_kv_gb(studio, e)  # more asks, more KV
-    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 24 GB prefix cache" in projection_detail(
+    assert "the build lane's 1 sequence at 65536 + 4 asks at 8192 + 12 GB prefix cache" in projection_detail(
         studio, e
     )
     teams = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="teams")
@@ -581,7 +581,7 @@ def test_an_engine_running_other_flags_than_the_story_profile_is_a_mismatch_nami
     assert wrong.status == "fail"
     named = (
         "--max-kv-size 65536 (profile: 131072)",
-        "--cache-memory-mb (unset) (profile: 24576)",
+        "--cache-memory-mb (unset) (profile: 12288)",
         "--kv-cache-quantization off (profile: on)",
     )
     for flag in named:
