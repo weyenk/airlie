@@ -52,6 +52,7 @@ dev = [
     "mutmut>=3.8.0",
     "pytest-xdist>=3.8.0",
     "pytest-playwright>=0.10.0",
+    "pytest-timeout>=2.3",
 ]
 
 [build-system]
@@ -95,7 +96,13 @@ pytest_add_cli_args_test_selection = ["tests/unit/"]
 #   whose stderr is closed under mutmut's runner ("ValueError: I/O operation on closed file");
 # - the torch/peft/safetensors tests are not fork-safe: mutmut forks a worker per mutant, and on macOS torch's
 #   BLAS thread pool and Metal buffers segfault in a forked, multi-threaded process (a crash dialog per mutant).
+# --timeout: a test that waits on a command forever fails after 120 s, so its mutant counts as caught. PR 212's
+# shard 7 (2026-11-02) made no progress for 57 minutes on shell._run's mutants 38 (wait_for's timeout=None) and
+# 41 (kill_group(None) on the timeout): mutmut's own limit is CPU time, and a test blocked on a pipe uses none.
+# The thread method ends the stuck test's process outright and prints every thread's stack, naming the test.
 pytest_add_cli_args = [
+    "--timeout=120",
+    "--timeout-method=thread",
     "--deselect",
     "tests/unit/test_mcp_tools.py::test_mcp_tools_are_listed_and_callable",
     "--deselect",
@@ -144,4 +151,12 @@ enrolled = [
     "src/airlie/engine/http_engine.py",
     "src/airlie/engine/parsers/qwen3_xml_raw.py",
     "src/airlie/engine/vllm_mlx_serve.py",
+]
+# Functions whose code runs only on macOS (module:function, or module:Class.method): their mutants are run on
+# the mac job (scripts/mutate_changed.py --mac-only), as a file that imports vllm-mlx or mlx is. On Linux no
+# test reaches them, so each mutant passed every test of its caller before it counted as survived (shell's
+# confined spawn: 5.5 minutes a mutant, PRs 207 and 208, 2026-11-02).
+mac_functions = [
+    "airlie.tools.shell:_spawn_confined",
+    "airlie.tools.shell:_explained",
 ]

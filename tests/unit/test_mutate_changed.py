@@ -38,6 +38,61 @@ def test_the_mac_job_mutates_only_the_mac_sources_and_a_runner_without_vllm_muta
     assert mc.platform_sources(sources, mac_only=False) == (sources, [])
 
 
+def test_each_listed_macos_only_function_is_a_function_of_its_module() -> None:
+    """[tool.airlie.mutation] mac_functions: a name that is no function would leave its mutants nowhere. Read
+    by import: under mutmut the source is its mutated copy, but each function keeps its name."""
+    import importlib
+
+    refs = mc.mac_functions()
+    assert {"airlie.tools.shell:_spawn_confined", "airlie.tools.shell:_explained"} <= set(refs)
+    for ref in refs:
+        module, _, name = ref.partition(":")
+        found: object = importlib.import_module(module)
+        for part in name.split("."):
+            found = getattr(found, part)
+        assert callable(found), ref
+
+
+def test_a_listed_function_names_the_glob_mutmut_gives_its_mutants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    known = {g for g, *_ in mc.functions_of(module_root(tmp_path, monkeypatch))}
+    assert mc.function_glob("airlie.m:plain") == "airlie.m.x_plain__mutmut_*"
+    assert mc.function_glob("airlie.m:Tool.run") == "airlie.m.xǁToolǁrun__mutmut_*"
+    assert {"airlie.m.x_plain__mutmut_*", "airlie.m.xǁToolǁrun__mutmut_*"} <= known
+
+
+def test_macos_only_functions_go_to_the_mac_job_and_the_rest_of_their_file_stays_on_linux(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PRs 207 and 208 (2026-11-02): shell's confined spawn runs only under macOS's sandbox. On Linux no test
+    reached it, so each of its mutants passed every test of `_run` (5.5 minutes each): the shard ran out.
+    The modules are tmp_path's own: under mutmut the real src/ is the mutated copy."""
+    plain_file = module_root(tmp_path, monkeypatch)
+    (tmp_path / "src" / "airlie" / "v.py").write_text("import mlx\n\n\ndef f(a):\n    return a\n")
+    monkeypatch.setattr(mc, "mac_functions", lambda: ["airlie.m:plain"])
+    monkeypatch.setattr(mc, "enrolled_files", lambda: [plain_file, "src/airlie/v.py"])
+
+    def globs(argv: list[str], vllm: bool) -> set[str]:
+        fake = FakeMutmut()
+        monkeypatch.setattr(mc, "mutmut", fake.run)
+        monkeypatch.setattr(mc, "mutmut_out", lambda *a: "")
+        monkeypatch.setattr(mc, "HAS_VLLM", vllm)
+        monkeypatch.setattr(
+            mc.sys, "argv", ["mutate_changed.py", "--scope", "enrolled", "--gate-only", *argv]
+        )
+        mc.main()
+        [ran] = [r for r in fake.runs if r[0] == "run"]
+        return set(ran[1:]) - {"--max-children"}
+
+    linux = globs([], vllm=False)
+    mac_job = globs(["--mac-only"], vllm=True)
+    assert linux == {"airlie.m.xǁToolǁrun__mutmut_*", "airlie.m.xǁToolǁmake__mutmut_*"}
+    assert mac_job == {"airlie.m.x_plain__mutmut_*", "airlie.v.x_f__mutmut_*"}
+    assert "macOS-only functions (mac_functions) mutated on the mac job:" in capsys.readouterr().out
+    assert globs([], vllm=True) == linux | mac_job  # a Mac without --mac-only runs them all
+
+
 def test_only_changed_enrolled_files_are_impacted_in_scope_order() -> None:
     changed = {"src/airlie/lts/bank.py", "src/airlie/engine/sse.py", "src/airlie/cli.py", "README.md"}
     assert mc.impacted_sources(changed, SCOPE) == ["src/airlie/engine/sse.py", "src/airlie/lts/bank.py"]

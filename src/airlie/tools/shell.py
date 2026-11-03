@@ -56,12 +56,8 @@ async def _run(
     )
     try:
         if confined:
-            command = [SH, "-c", str(cmd)] if shell else [str(c) for c in cmd]
-            if not shell and shutil.which(command[0], path=env.get("PATH")) is None:
-                # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
-                raise FileNotFoundError(2, "No such file or directory", command[0])
-            roots = confine.writable_roots(ctx.worktree, ctx.writable)
-            proc = await started(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
+            # not mutated: what it passes is read only where the sandbox runs (see _spawn_confined)
+            proc = await _spawn_confined(cmd, ctx, env, spawn, shell=shell)  # pragma: no mutate
         elif shell:
             proc = await started(asyncio.create_subprocess_shell(str(cmd), **spawn))
         else:
@@ -78,7 +74,29 @@ async def _run(
         raise
     text = out.decode("utf-8", "replace")  # pragma: no mutate  (codec names are case-insensitive)
     rc = proc.returncode or 0
-    return rc, confine.explain(text, rc) if confined else text
+    return rc, _explained(text, rc, confined=confined)  # pragma: no mutate  (rc is read only when confined)
+
+
+# The confined path runs only where macOS's sandbox does (confine.available()): its mutants are run on the
+# mac job ([tool.airlie.mutation] mac_functions). On Linux every one of them passed each test of _run, about
+# 5.5 minutes a mutant, and a whole-module shard ran past its 90 minutes (PRs 207 and 208, 2026-11-02).
+
+
+async def _spawn_confined(
+    cmd: list[str] | str, ctx: ToolContext, env: dict[str, str], spawn: dict[str, Any], *, shell: bool
+) -> asyncio.subprocess.Process:
+    """`_run`'s command started under the sandbox, which may write only to the worktree's writable roots."""
+    command = [SH, "-c", str(cmd)] if shell else [str(c) for c in cmd]
+    if not shell and shutil.which(command[0], path=env.get("PATH")) is None:
+        # as an unconfined exec fails (sandbox-exec would say it with exit 71 instead)
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+    roots = confine.writable_roots(ctx.worktree, ctx.writable)
+    return await started(asyncio.create_subprocess_exec(*confine.argv(command, roots), **spawn))
+
+
+def _explained(text: str, rc: int, *, confined: bool) -> str:
+    """A command's output, with the sandbox's refusals explained when it ran confined."""
+    return confine.explain(text, rc) if confined else text
 
 
 async def run_steps(steps: Sequence[str], ctx: ToolContext) -> ToolResult:
