@@ -110,6 +110,9 @@ pytest_add_cli_args = [
     "--ignore=tests/unit/test_trainer.py",
     "--ignore=tests/unit/test_learned_controller.py",
     "--ignore=tests/unit/test_cli_controller.py",
+    # the release test reads .github/workflows/pipeline.yml, which mutmut does not copy into the mutant dir
+    # (it still runs in the unit stage)
+    "--ignore=tests/unit/test_pipeline_release.py",
 ]
 # Taskfile.yml and docs/integrations: tests read the task definitions, the launchd plist and OpenCode's files.
 # ops: scripts/searxng_vm.py reads ops/searxng/version (AIR-7, 2026-10-18: mutmut's baseline run went red on it,

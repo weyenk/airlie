@@ -228,3 +228,27 @@ jobs:
         if: hashFiles('tests/security/**/test_*.py') != ''
       - run: task test:security
         if: hashFiles('tests/security/**/test_*.py') != ''
+
+  # ---- release: a green push to main publishes a GitHub Release of airlie ----
+  release:
+    needs: [static, unit, mutation-gate, functional, contract, integration, e2e, journey, performance, security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # this job alone: it creates the tag and the release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Build the release package
+        run: uv build
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # one release per merged commit: the version from pyproject.toml, the commit as build metadata, so
+        # the next merge does not collide with this one's tag
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          TAG="v${VERSION}+${GITHUB_SHA::7}"
+          gh release create "$TAG" dist/*.whl --target "$GITHUB_SHA" --title "airlie $TAG" \
+            --notes "airlie $VERSION built from $GITHUB_SHA"
