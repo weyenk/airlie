@@ -32,10 +32,13 @@ topology:
           # projected (41.7 GB weights + the coder's 65536-token sequence + 4 asks at 8192 + 12 GB reserve)
           # = 44.4 GB, 44 GB kept (`task doctor` counts it); 24 GB since 2026-10-27 (Noah): the wiki run filled
           # the 44 GB with long conversations and the machine swapped once the gate's pytest, Node and the
-          # person's own apps ran beside it (a 30k-token conversation is ~2 GB, so 24 GB keeps ~12). They take
-          # effect at the next `task restart -- --topology studio`, which this change never runs.
+          # person's own apps ran beside it (a 30k-token conversation is ~2 GB, so 24 GB keeps ~12). 12 GB since
+          # 2026-11-02: with iogpu.wired_limit_mb unset (macOS's default, below the 104 GB this budget assumes)
+          # the engine reached 103 GB and failed 50-75k-token package prefills on "Insufficient Memory", which
+          # cost AIR-47 three package tries; 12 GB keeps ~6 long conversations. They take effect at the next
+          # `task restart -- --topology studio`, which this change never runs.
           kv_cache_quantization: true
-          extra_args: ["--cache-memory-mb", "24576"]
+          extra_args: ["--cache-memory-mb", "12288"]
           # MLX keeps freed GPU buffers for reuse up to this many MB (vllm-mlx's own cap is device-scaled: 103.9
           # GB here). 2026-11-01 (AIR-47 layer 02): after six hours the engine failed two 52-56k-token prefills
           # with "Insufficient Memory" beside 36 GB of weights and the 24 GB prefix cache; a prefill's buffers
