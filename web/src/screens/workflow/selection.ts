@@ -6,6 +6,13 @@ import type { Flow } from "@/api/workflows";
 type Pick = readonly [string, string, string];
 const param = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 const jobsOf = (nodes: Flow["nodes"]) => nodes.flatMap((n) => n.jobs.map((j) => [n.id, j.id, j.status] as const));
+/** Every [node, job] a box can open: the shown jobs, each earlier try cycle's jobs, and the exit row's (under node "exit"). */
+function pickable(d: Flow | null | undefined): (readonly [string, string])[] {
+  if (!d) return [];
+  const out: (readonly [string, string])[] = d.nodes.flatMap((n) => [...n.jobs, ...(n.rows ?? []).flatMap((r) => (r.kind === "cycle" ? r.jobs : []))].map((j) => [n.id, j.id] as const));
+  for (const j of d.exit?.jobs ?? []) out.push(["exit", j.id]);
+  return out;
+}
 /** The failed job, else the running one, else the last that passed (with its status). */
 function interesting(nodes: Flow["nodes"]): Pick | null {
   const all = jobsOf(nodes);
@@ -47,7 +54,8 @@ export function useJobSelection(id: Ref<string>, data: Ref<Flow | null | undefin
     const all = jobsOf(nodes.value);
     const node = param(route.params.node);
     const job = param(route.params.job);
-    if (node && job && all.some((x) => x[0] === node && x[1] === job)) return [node, job];
+    const d = data.value && data.value.key === id.value ? data.value : null;
+    if (node && job && pickable(d).some((x) => x[0] === node && x[1] === job)) return [node, job];
     const p = pinned.value;
     if (p && all.some((x) => x[0] === p[0] && x[1] === p[1])) return p;
     const fallback = interesting(nodes.value);

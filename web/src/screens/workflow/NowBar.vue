@@ -17,7 +17,7 @@ const stepText = computed(() => {
   const parts = [n.steps ? `step ${n.steps}` : null, n.started ? briefSpan(Math.max(0, secs.value - n.started)) : null].filter(Boolean);
   return parts.join(" · ");
 });
-const quiet = computed(() => (props.now.last_event ? `last event ${Math.max(0, Math.round(secs.value - props.now.last_event))} s ago` : ""));
+const quiet = computed(() => (props.now.last_event ? `last event ${Math.max(0, Math.round(secs.value - props.now.last_event))}s ago` : ""));
 </script>
 
 <template>

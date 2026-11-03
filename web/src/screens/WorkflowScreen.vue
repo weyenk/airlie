@@ -48,7 +48,13 @@ const shown = computed(() => {
   const d = detail.data.value;
   return d && selected.value && d.node === selected.value[0] && d.job.id === selected.value[1] ? d : null;
 });
-const nodeLabel = computed(() => flow.data.value?.nodes.find((n) => n.id === selected.value?.[0])?.label);
+const EXIT_LABEL = { blocked: "Blocked", waiting: "Waiting", cancelled: "Cancelled" } as const;
+const nodeLabel = computed(() => {
+  const f = flow.data.value;
+  const id = selected.value?.[0];
+  if (id === "exit" && f?.exit) return EXIT_LABEL[f.exit.kind];
+  return f?.nodes.find((n) => n.id === id)?.label;
+});
 
 function pick(node: string, job: string) {
   void router.push({ path: `/workflows/${encodeURIComponent(key.value)}/${encodeURIComponent(node)}/${encodeURIComponent(job)}` });

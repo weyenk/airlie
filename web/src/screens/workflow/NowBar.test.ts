@@ -12,7 +12,7 @@ test("a running story names its step path, inner step, step count and last event
   expect(bar.text()).toContain("Build lane › Draft packages");
   expect(bar.text()).toContain("L03 · package");
   expect(bar.text()).toContain("step 6 · 2 min");
-  expect(bar.text()).toMatch(/last event \d+ s ago/);
+  expect(bar.text()).toMatch(/last event \d+s ago/);
 });
 
 test("quiet time changes no color", () => {

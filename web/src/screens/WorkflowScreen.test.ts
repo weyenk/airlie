@@ -5,7 +5,7 @@ import { ApiError } from "@/api";
 import type { Flow, JobRow } from "@/api/workflows";
 import { useFeedStore } from "@/stores/feed";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, exitRow, flow, job, layer, now, stage, step } from "@/test-utils/workflow-fixtures";
+import { cycle, detail, exitRow, flow, job, lane as laneNode, layer, now, stage, step } from "@/test-utils/workflow-fixtures";
 import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));
@@ -63,6 +63,29 @@ test("the flow's now bar and exit row reach the pipeline", async () => {
   const { w } = await open("/workflows/AIR-17", flow(STAGES, { now: now({ status: "stopped", text: "Stopped at L02" }), exit: exitRow() }));
   expect(w.get("[data-now]").text()).toContain("Stopped at L02");
   expect(w.get("[data-exit=blocked]").text()).toContain("L02 build 2 of 2");
+});
+
+const TRIED = () =>
+  flow(
+    [
+      ...STAGES,
+      laneNode("02", "Comment edit", "failed", [cycle("c1", "build 1", "failed", "c1-"), { kind: "divider", text: "re-planned", card: null }, cycle("c2", "build 2", "failed")]),
+    ],
+    { exit: exitRow() },
+  );
+
+test("an earlier try's box opens its own detail and shows pressed", async () => {
+  const { w } = await open("/workflows/AIR-17/layer-02/c1-build", TRIED());
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-02", "c1-build"]);
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=c1-build]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[data-lane][data-node=layer-02] [data-job=build]").attributes("aria-pressed")).toBe("false");
+});
+
+test("an exit row's box opens its detail, labeled by the exit", async () => {
+  const { w } = await open("/workflows/AIR-17/exit/diagnose", TRIED());
+  expect(lastDetailCall()).toEqual(["AIR-17", "exit", "diagnose"]);
+  expect(w.get("[data-exit] [data-job=diagnose]").attributes("aria-pressed")).toBe("true");
+  expect(w.get("[aria-live=polite]").text()).toContain("Blocked / ");
 });
 
 test("a blocked story says blocked and shows its reason", async () => {
