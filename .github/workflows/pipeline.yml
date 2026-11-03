@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write # the release job needs it to create the tag and release
+  contents: read
 
 jobs:
   # ---- stage 1: static ----
@@ -235,6 +235,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write # this job alone: it creates the tag and the release
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -243,6 +245,10 @@ jobs:
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          VERSION=$(uv run python -c 'import tomllib;print(tomllib.loads(open("pyproject.toml").read())["project"]["version"])')
-          gh release create "v$VERSION" dist/*.whl --title "airlie $VERSION" --notes "airlie $VERSION"
+        # one release per merged commit: the version from pyproject.toml, the commit as build metadata, so
+        # the next merge does not collide with this one's tag
+        run: |
+          VERSION=$(python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          TAG="v${VERSION}+${GITHUB_SHA::7}"
+          gh release create "$TAG" dist/*.whl --target "$GITHUB_SHA" --title "airlie $TAG" \
+            --notes "airlie $VERSION built from $GITHUB_SHA"
