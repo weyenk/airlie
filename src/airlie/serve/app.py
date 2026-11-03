@@ -33,7 +33,8 @@ from airlie.metrics import summary as metrics_summary
 from airlie.prompts import text as hub_text
 from airlie.report import RunReport
 from airlie.serve.feed import Feed, event_stream
-from airlie.serve.flow import StoryNotFound, epic_flow, initiative_flow, job_detail, story_flow
+from airlie.serve.flow import epic_flow, initiative_flow, job_detail, story_flow
+from airlie.serve.flow_parts import StoryNotFound
 from airlie.serve.jobs import Job, Jobs
 from airlie.serve.line_rows import line_events_tail, line_row
 from airlie.serve.listing import epics, initiatives, recent_runs, repo_names, repos, stories, story_page

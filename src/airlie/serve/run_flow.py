@@ -11,7 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from airlie.serve.flow import _job, final_text, trace_of
+from airlie.serve.flow import final_text, trace_of
+from airlie.serve.flow_parts import job as make_job
 from airlie.serve.running import run_progress
 from airlie.serve.tree import RunNotFound, run_tree
 
@@ -97,7 +98,7 @@ def run_flow(
     nodes: list[dict[str, Any]] = []
     for stage_id, label, members in _stages(tree):
         jobs = [
-            _job(
+            make_job(
                 n["id"],
                 n["label"],
                 n["role"],

@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 
-from airlie.serve.flow import StoryNotFound, epic_flow, job_detail, story_flow
+from airlie.serve.flow import epic_flow, job_detail, story_flow
+from airlie.serve.flow_parts import StoryNotFound
 from tests.unit.test_story_epic import fenced
 from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
 
@@ -181,7 +182,8 @@ def test_the_flow_lists_the_stages_in_order_with_their_status(state_dir: Path) -
     flow = story_flow(state_dir, KEY)
     assert flow["key"] == KEY and flow["title"] == "Do the thing"
     assert [n["id"] for n in flow["nodes"]] == [
-        "intake", "refine", "survey", "layers", "layer-01", "layer-02", "publish", "review",
+        "intake", "base", "gate", "survey", "refine", "layers", "amigos", "planned",
+        "layer-01", "layer-02", "publish", "review",
     ]  # fmt: skip
     status = {n["id"]: n["status"] for n in flow["nodes"]}
     assert status["intake"] == status["refine"] == status["layers"] == status["layer-01"] == "passed"
@@ -681,9 +683,9 @@ MEETING_EVENTS = [
 
 def test_a_story_shows_its_meeting_with_turns_and_objections(state_dir: Path) -> None:
     add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
-    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
-    assert [j["id"] for j in layers["jobs"]] == ["layers", "meeting"]
-    meeting = by_id(layers["jobs"], "meeting")
+    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    assert [j["id"] for j in amigos["jobs"]] == ["meeting"]
+    meeting = by_id(amigos["jobs"], "meeting")
     assert (meeting["role"], meeting["status"]) == ("amigos", "passed")
     assert (meeting["turns"], meeting["objections"]) == (
         4,
@@ -703,7 +705,7 @@ def test_a_meeting_that_ran_out_of_turns_says_which_parts_their_owners_decided(s
             {"ts": 85.5, "kind": "amigos_unresolved", "role": "product", "part": "proof", "about": "AC1"},
         ],
     )
-    meeting = by_id(by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"], "meeting")
+    meeting = by_id(by_id(story_flow(state_dir, KEY)["nodes"], "amigos")["jobs"], "meeting")
     assert (
         meeting["status"] == "passed" and meeting["owner_decided"] == ["proof"] and meeting["unresolved"] == 1
     )
@@ -715,22 +717,24 @@ def test_a_meeting_in_progress_is_running_and_one_the_story_stopped_in_is_failed
     state = json.loads(state_file.read_text())
     state.update(stage="refine", blocked=None, built={})
     state_file.write_text(json.dumps(state))
-    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
-    assert by_id(layers["jobs"], "meeting")["status"] == "running" and layers["status"] == "running"
+    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    assert by_id(amigos["jobs"], "meeting")["status"] == "running" and amigos["status"] == "running"
     state["blocked"] = "the engine went away"
     state_file.write_text(json.dumps(state))
-    layers = by_id(story_flow(state_dir, KEY)["nodes"], "layers")
-    assert by_id(layers["jobs"], "meeting")["status"] == "failed"
+    amigos = by_id(story_flow(state_dir, KEY)["nodes"], "amigos")
+    assert by_id(amigos["jobs"], "meeting")["status"] == "failed"
 
 
 def test_a_story_without_a_meeting_has_no_meeting_job_and_the_job_has_a_detail(state_dir: Path) -> None:
-    assert [j["id"] for j in by_id(story_flow(state_dir, KEY)["nodes"], "layers")["jobs"]] == ["layers"]
+    nodes = story_flow(state_dir, KEY)["nodes"]
+    assert [j["id"] for j in by_id(nodes, "layers")["jobs"]] == ["layers"]
+    assert by_id(nodes, "amigos")["jobs"] == []
     add_events(state_dir, [*MEETING_EVENTS, {"ts": 85.0, "kind": "amigos_agreed", "turns": 4}])
     state_file = state_dir / "stories" / KEY / "state.json"
     state = json.loads(state_file.read_text())
     state["agreement"] = {"turns": 4, "proof": []}
     state_file.write_text(json.dumps(state))
-    detail = job_detail(state_dir, KEY, "layers", "meeting")
+    detail = job_detail(state_dir, KEY, "amigos", "meeting")
     assert detail["output"]["agreement"] == {"turns": 4, "proof": []} and "meeting" in detail["input_note"]
 
 
