@@ -119,6 +119,13 @@ test("a killed story opens on its stopped box, not the last that passed, and kee
   expect(pressed(w)).toEqual(["layer-03/tests"]);
 });
 
+test("a live story opens on its running box, not an old Survey failure it went on past", async () => {
+  const f = flow([stage("intake", "Intake"), stage("survey", "Survey", "failed"), stage("refine", "Refine"), layer("01", "Comment id store", "running", ["passed", "passed", "running"])]);
+  const { w } = await open("/workflows/AIR-17", f);
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-01", "build"]);
+  expect(pressed(w)).toEqual(["layer-01/build"]);
+});
+
 test("a job named in the address is the one that opens; one that does not exist falls back", async () => {
   await open("/workflows/AIR-17/layer-01/tests");
   expect(lastDetailCall()).toEqual(["AIR-17", "layer-01", "tests"]);

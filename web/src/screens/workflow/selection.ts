@@ -16,13 +16,14 @@ function pickable(d: Flow | null | undefined): (readonly [string, string])[] {
 /** The order a box in one node is worth opening in: what runs, what a killed process left open, what failed. */
 const WORTH = ["running", "stopped", "failed"] as const;
 /**
- * The failed job, else the running one, else the stopped one (a killed process: settle never leaves running and
- * stopped side by side), else the last that passed (with its status). Failed stays first: a run's failed chief
- * stays open while its forks go on.
+ * The job a flow opens on: in a story, the running one, else the stopped one (a killed process), else the failed
+ * one, else the last that passed (with its status) — a Survey that failed is gone past by design and stays
+ * "failed", so failed-first would open a live story on it. A run keeps failed first: its failed chief stays open
+ * while its forks go on.
  */
-function interesting(nodes: Flow["nodes"]): Pick | null {
-  const all = jobsOf(nodes);
-  for (const s of ["failed", "running", "stopped"]) {
+function interesting(d: Flow | null | undefined): Pick | null {
+  const all = jobsOf(d?.nodes ?? []);
+  for (const s of d?.kind === "run" ? ["failed", "running", "stopped"] : WORTH) {
     const hit = all.find((x) => x[2] === s);
     if (hit) return hit;
   }
@@ -61,7 +62,7 @@ export function useJobSelection(id: Ref<string>, data: Ref<Flow | null | undefin
       const have = jobsOf(d.nodes);
       const p = pinned.value;
       if (p && have.some((x) => x[0] === p[0] && x[1] === p[1])) return;
-      const pick = interesting(d.nodes);
+      const pick = interesting(d);
       pinned.value = pick && pick[2] !== "passed" ? [pick[0], pick[1]] : null;
       pinnedFor = k;
     },
@@ -76,7 +77,7 @@ export function useJobSelection(id: Ref<string>, data: Ref<Flow | null | undefin
     if (node && job && pickable(d).some((x) => x[0] === node && x[1] === job)) return [node, job];
     const p = pinned.value;
     if (p && all.some((x) => x[0] === p[0] && x[1] === p[1])) return p;
-    const fallback = interesting(nodes.value);
+    const fallback = interesting(d);
     return fallback ? [fallback[0], fallback[1]] : null;
   });
   return { selected, nodes };
