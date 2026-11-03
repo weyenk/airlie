@@ -9,7 +9,7 @@ const emit = defineEmits<{ pick: [node: string, job: string] }>();
 
 const sub = computed(() => {
   if (props.job.status === "running" && props.job.live) return props.job.live;
-  return [props.job.role, props.job.duration_s ? briefSpan(props.job.duration_s) : null].filter(Boolean).join(" · ") || props.job.status;
+  return [props.job.role, props.job.duration_s ? briefSpan(props.job.duration_s) : null].filter(Boolean).join(" · ") || props.job.sub || props.job.status;
 });
 const mono = computed(() => (props.job.status === "running" && props.job.live) || props.job.role || props.job.duration_s);
 </script>

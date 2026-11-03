@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { FlowJob } from "@/api/workflows";
 import { BOX, DOT } from "./style";
 
-defineProps<{ nodeId: string; job: FlowJob; selected?: boolean; narrow?: boolean }>();
+const props = defineProps<{ nodeId: string; job: FlowJob; selected?: boolean; narrow?: boolean }>();
 const emit = defineEmits<{ pick: [node: string, job: string] }>();
+/** The second line: what it is on right now, else the server's sub, else its tags. */
+const line = computed(() => props.job.live || props.job.sub || (props.job.tags ?? []).map((t) => t.text).join(" · "));
 </script>
 
 <template>
@@ -27,6 +30,6 @@ const emit = defineEmits<{ pick: [node: string, job: string] }>();
       <span data-square :class="['size-[7px] flex-none rounded-[1px]', DOT[job.status]]"></span>
       <span class="truncate">{{ job.label }}</span>
     </span>
-    <span v-if="job.live || job.tags?.length" class="w-full truncate text-[11px] text-muted-foreground">{{ job.live ?? job.tags?.map((t) => t.text).join(" · ") }}</span>
+    <span v-if="line" data-sub class="w-full truncate text-[11px] text-muted-foreground">{{ line }}</span>
   </button>
 </template>

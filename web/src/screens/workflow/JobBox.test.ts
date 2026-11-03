@@ -37,6 +37,18 @@ test("a box that is not running keeps its role line, and a model box says so", (
   expect(w.attributes("data-shape")).toBe("model");
 });
 
+test("a box with no role or time says its sub instead of its status", () => {
+  const w = box({ job: job({ status: "pending", role: null, duration_s: null, sub: "drafted" }) });
+  expect(w.text()).toContain("drafted");
+  expect(w.text()).not.toContain("pending");
+});
+
+test("a box with a role keeps its role line over its sub", () => {
+  const w = box({ job: job({ sub: "drafted" }) });
+  expect(w.text()).toContain("coder · 2 min");
+  expect(w.text()).not.toContain("drafted");
+});
+
 test("a box shows its tags as chips", () => {
   const w = box({ job: job({ tags: [{ text: "2 of 2", tone: "warn" }] }) });
   expect(w.find("[data-tag]").text()).toBe("2 of 2");

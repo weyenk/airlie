@@ -101,6 +101,8 @@ export type FlowJob = {
   shape?: "model" | "code" | "milestone";
   /** What a running job is on right now. */
   live?: string | null;
+  /** The box's second line from the server: a base's ref and sha, "1 test file", a fix card's key. */
+  sub?: string | null;
   tags?: FlowTag[];
   card?: FlowCard | null;
 };

@@ -107,6 +107,18 @@ test("else the running job, else the last that ran", async () => {
   expect(lastDetailCall()).toEqual(["AIR-17", "publish", "publish"]);
 });
 
+// AIR-47 killed mid-package: L02 built, L03's package stopped, nothing after it run
+const KILLED = flow([...STAGES, layer("01", "Comment id store", "passed", ["passed", "passed", "passed"]), layer("02", "Comment edit", "passed", ["passed", "passed", "passed"]), layer("03", "More", "stopped", ["stopped", "pending", "pending"])]);
+
+test("a killed story opens on its stopped box, not the last that passed, and keeps it pinned", async () => {
+  const { w } = await open("/workflows/AIR-17", KILLED);
+  expect(lastDetailCall()).toEqual(["AIR-17", "layer-03", "tests"]);
+  api.storyFlow.mockResolvedValue(FAILED_FLOW_SAME);
+  useFeedStore().generation += 1;
+  await flushPromises();
+  expect(pressed(w)).toEqual(["layer-03/tests"]);
+});
+
 test("a job named in the address is the one that opens; one that does not exist falls back", async () => {
   await open("/workflows/AIR-17/layer-01/tests");
   expect(lastDetailCall()).toEqual(["AIR-17", "layer-01", "tests"]);

@@ -79,6 +79,8 @@ test("the now bar stays pinned at the top", () => {
   const w = draw(BUILD(), { now: now() });
   expect(w.get("[data-now]").classes()).toContain("sticky");
   expect(w.get("[data-now]").classes().join(" ")).toContain("safe-area-inset-top");
+  // below the app's sticky top bar, not over it: the document scrolls under both
+  expect(w.get("[data-now]").classes()).toContain("top-[calc(var(--header-h)+env(safe-area-inset-top,0px))]");
 });
 
 test("an 8-layer story with 120-character titles keeps one line per layer", () => {
@@ -126,6 +128,28 @@ test("a failed job opens its node when nothing runs", () => {
   const nodes = [{ ...stage("packages", "Draft packages", "failed"), lane: "build" as const }, laneNode("01", "Store", "pending", [])];
   nodes[0].jobs[0] = job({ id: "packages", label: "Draft packages", status: "failed" });
   expect(draw(nodes).find("[data-open][data-node=packages]").exists()).toBe(true);
+});
+
+/** A one-try layer whose jobs have these statuses (package, checks, build). */
+const tried = (nn: string, status: FlowNode["status"], states: [string, string, string]) => {
+  const row = cycle("c1", "build 1", status);
+  if (row.kind === "cycle") row.jobs.forEach((j, i) => (j.status = states[i] as FlowNode["status"]));
+  return laneNode(nn, "L", status, [row]);
+};
+
+test("a stopped job opens its node, before an earlier failed one", () => {
+  const w = draw([tried("01", "failed", ["passed", "failed", "pending"]), tried("02", "stopped", ["stopped", "pending", "pending"])]);
+  expect(w.find("[data-open][data-node=layer-02]").exists()).toBe(true);
+  expect(w.findAll("[data-open]")).toHaveLength(1);
+});
+
+test("a closed layer row opens its stopped or failed job, not its last", async () => {
+  const w = draw([tried("01", "failed", ["passed", "failed", "pending"]), tried("02", "stopped", ["stopped", "pending", "pending"])]);
+  await w.get("[data-node=layer-01]").trigger("click");
+  expect(w.emitted("pick")).toEqual([["layer-01", "checks"]]);
+  const run = draw([tried("01", "stopped", ["passed", "stopped", "pending"]), laneNode("02", "L", "running", [cycle("c1", "build 1", "running")])]);
+  await run.get("[data-node=layer-01]").trigger("click");
+  expect(run.emitted("pick")).toEqual([["layer-01", "checks"]]);
 });
 
 test("a finished layer with several tries is one row with a tries tag that unfolds every try and divider", async () => {

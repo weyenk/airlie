@@ -4,6 +4,7 @@ import type { CardRow, FlowExit, FlowJob, FlowNode, FlowNow, LaneRow } from "@/a
 import ExitRow from "./ExitRow.vue";
 import { briefSpan } from "./format";
 import NowBar from "./NowBar.vue";
+import { interestingJob } from "./selection";
 import { DOT, MARK, TAG } from "./style";
 
 /**
@@ -36,10 +37,11 @@ const liveJobs = (n: FlowNode): FlowJob[] => {
   const r = rowsOf(n)[lastCycleIndex(rowsOf(n))];
   return r?.kind === "cycle" ? r.jobs : [];
 };
-/** The node holding the running job, else the last with a failed one. */
+/** The node holding the running job, else the stopped one (a killed process), else the last with a failed one. */
 const openId = computed(() => {
   const all = drawn.value;
-  return (all.find((n) => liveJobs(n).some((j) => j.status === "running")) ?? [...all].reverse().find((n) => liveJobs(n).some((j) => j.status === "failed")))?.id ?? null;
+  const has = (s: string) => (n: FlowNode) => liveJobs(n).some((j) => j.status === s);
+  return (all.find(has("running")) ?? all.find(has("stopped")) ?? [...all].reverse().find(has("failed")))?.id ?? null;
 });
 
 const isSelected = (node: string, job: string) => props.selected?.[0] === node && props.selected?.[1] === job;
@@ -69,7 +71,7 @@ const rowCls = "flex w-full min-w-0 items-center gap-2.5 border-b border-border 
 
 <template>
   <div data-phone-list class="flex flex-col pb-3">
-    <NowBar v-if="now" :now="now" class="sticky top-[env(safe-area-inset-top,0px)] z-10 bg-card" />
+    <NowBar v-if="now" :now="now" class="sticky top-[calc(var(--header-h)+env(safe-area-inset-top,0px))] z-10 bg-card" />
 
     <div class="flex flex-col px-3">
       <template v-for="lane in lanes" :key="lane.id">
@@ -133,7 +135,7 @@ const rowCls = "flex w-full min-w-0 items-center gap-2.5 border-b border-border 
                 :aria-expanded="tryCount(n) > 1 ? !!triesOpen[n.id] : undefined"
                 :aria-pressed="n.jobs.length && tryCount(n) <= 1 ? (selected?.[0] === n.id ? 'true' : 'false') : undefined"
                 :class="[rowCls, 'truncate', selected?.[0] === n.id ? 'ring-2 ring-ring' : '']"
-                @click="tryCount(n) > 1 ? toggleTries(n.id) : n.jobs.length && pick(n.id, tail(n.jobs).id)"
+                @click="tryCount(n) > 1 ? toggleTries(n.id) : n.jobs.length && pick(n.id, interestingJob(n.jobs)!.id)"
               >
                 <span :class="['size-2 flex-none rounded-full', DOT[n.status]]" />
                 <strong :class="['flex-none', n.status === 'pending' ? 'text-muted-foreground' : '']">{{ n.label }}</strong>

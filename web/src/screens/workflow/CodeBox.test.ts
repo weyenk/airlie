@@ -22,6 +22,18 @@ test("a stopped box is dashed amber", () => {
   for (const c of BOX.stopped.split(" ")) expect(w.classes()).toContain(c);
 });
 
+test("its second line is the server's sub: a ref and sha, a test file count, a fix card's key", () => {
+  expect(box({ sub: "origin/main e8146e0" }).text()).toContain("origin/main e8146e0");
+  expect(box({ sub: "AIR-48", tags: [{ text: "later", tone: "warn" }] }).text()).not.toContain("later");
+});
+
+test("a running box's live step wins over its sub, and tags show when there is no sub", () => {
+  const running = box({ status: "running", live: "try 2", sub: "1 test file" });
+  expect(running.text()).toContain("try 2");
+  expect(running.text()).not.toContain("1 test file");
+  expect(box({ tags: [{ text: "2 of 2", tone: "warn" }] }).text()).toContain("2 of 2");
+});
+
 test("a click picks the job", async () => {
   const w = box();
   await w.trigger("click");

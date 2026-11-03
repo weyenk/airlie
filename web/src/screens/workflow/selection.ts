@@ -1,7 +1,7 @@
 import { computed, ref, watch } from "vue";
 import type { Ref } from "vue";
 import { useRoute } from "vue-router";
-import type { Flow } from "@/api/workflows";
+import type { Flow, FlowJob } from "@/api/workflows";
 
 type Pick = readonly [string, string, string];
 const param = (v: unknown) => (typeof v === "string" && v ? v : undefined);
@@ -13,15 +13,33 @@ function pickable(d: Flow | null | undefined): (readonly [string, string])[] {
   for (const j of d.exit?.jobs ?? []) out.push(["exit", j.id]);
   return out;
 }
-/** The failed job, else the running one, else the last that passed (with its status). */
+/** The order a box in one node is worth opening in: what runs, what a killed process left open, what failed. */
+const WORTH = ["running", "stopped", "failed"] as const;
+/**
+ * The failed job, else the running one, else the stopped one (a killed process: settle never leaves running and
+ * stopped side by side), else the last that passed (with its status). Failed stays first: a run's failed chief
+ * stays open while its forks go on.
+ */
 function interesting(nodes: Flow["nodes"]): Pick | null {
   const all = jobsOf(nodes);
-  return all.find((x) => x[2] === "failed") ?? all.find((x) => x[2] === "running") ?? [...all].reverse().find((x) => x[2] === "passed") ?? null;
+  for (const s of ["failed", "running", "stopped"]) {
+    const hit = all.find((x) => x[2] === s);
+    if (hit) return hit;
+  }
+  return [...all].reverse().find((x) => x[2] === "passed") ?? null;
+}
+/** Of one node's jobs, the one a tap opens: running, else stopped, else failed, else the last that ran. */
+export function interestingJob(jobs: FlowJob[]): FlowJob | undefined {
+  for (const s of WORTH) {
+    const hit = jobs.find((j) => j.status === s);
+    if (hit) return hit;
+  }
+  return [...jobs].reverse().find((j) => j.status !== "pending") ?? jobs[jobs.length - 1];
 }
 
 /**
  * Which job of a flow (a story's or a run's) is open in the view: the one in the address, else the pinned default,
- * else the last that passed. With no job in the address, a failed or running default is pinned once chosen, so the
+ * else the last that passed. With no job in the address, a running, stopped or failed default is pinned once chosen, so the
  * view does not jump under a reader as live updates arrive. The last-passed fallback is not pinned: it follows the
  * latest job until something fails or runs. A pinned job that a refresh no longer has (layers re-planned) is
  * dropped and re-picked. Another story or run starts afresh. `data`: undefined while loading, null for none.

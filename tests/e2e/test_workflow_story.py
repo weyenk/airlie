@@ -333,6 +333,23 @@ def test_on_a_phone_the_list_folds_what_is_done_and_opens_the_step_that_stopped(
     assert doc_width <= PHONE["width"]
 
 
+def test_on_a_phone_the_pinned_now_bar_stays_below_the_top_bar_as_the_list_scrolls(
+    app_page: Page, server: Server, evidence: Evidence
+) -> None:
+    app_page.set_viewport_size(PHONE)
+    app_page.goto(f"{server.url}/workflows/{STORY_KEY}")
+    app_page.locator("[data-folded=plan]").click()  # the plan lane unfolded: a list long enough to scroll
+    now, bar = app_page.locator("[data-now]"), app_page.locator("header").first
+    evidence.expect(now, "the now bar is drawn").to_be_visible()
+    app_page.evaluate("window.scrollBy(0, 400)")
+    app_page.wait_for_function("window.scrollY > 0")
+    top, below = now.bounding_box(), bar.bounding_box()
+    assert top is not None and below is not None
+    clear = top["y"] >= below["y"] + below["height"] - 0.5
+    evidence.shot("the scrolled now bar sits under the top bar, not over it", held=clear)
+    assert clear, (top, below)
+
+
 def test_on_a_phone_a_tap_on_layer_02s_build_opens_the_sheet_and_closing_returns_to_the_list(
     app_page: Page, server: Server, evidence: Evidence
 ) -> None:
