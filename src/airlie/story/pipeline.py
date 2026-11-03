@@ -362,6 +362,7 @@ class StoryPipeline:
         """The engine of the latest studio run: Muse's reading of a block is asked on it."""
         self.studio: StudioFactory = self._remembering(studio)
         self.publisher = publisher
+        self.publisher.publish = self.s.publish  # story.publish: how the story's PRs are opened
         # One spelling of the path for the state and every git call: StoryState.open compares it verbatim,
         # so a second spelling of the same repository would refuse a legitimate resume.
         self.repo = repo.resolve()
@@ -2042,25 +2043,44 @@ class StoryPipeline:
         # gh stack init switches the checkout it runs in: never the person's own
         checkout_worktree(self.repo, wt, branches[-1])
         try:
-            stacks_on = st.base.get("story") if st.base else None
-            # a dependent story's stack sits on its dependency's top branch; any other on the trunk
-            await self.publisher.stack(
-                wt, st.base["ref"] if stacks_on and st.base else self.s.trunk, branches
-            )
-            await self.publisher.submit(wt)
-            prs = [await self.publisher.pr(wt, b) for b in branches]
-            for i, b in enumerate(branches):
-                body = st.path / f"pr-{i + 1:02d}.md"
-                # the gate this layer passed: a state from before layers kept theirs has none to name
-                gate = st.built[f"{i + 1:02d}"].get("gate")
-                text = pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
+            if self.publisher.publish == "single":
+                # one draft PR on the top branch: its commits are the layers' in layer order; no gh stack
+                top = branches[-1]
+                base = st.base["ref"] if st.base else self.s.trunk
+                await self.publisher.create_draft(wt, top, base, story.title)
+                (n, u) = await self.publisher.pr(wt, top)
+                prs = [(n, u)]
+                body = st.path / "pr.md"
+                text = "\n\n".join(
+                    pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
+                    for i, gate in enumerate(st.built[f"{i + 1:02d}"].get("gate") for i in range(len(layers)))
+                )
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
                 body.write_text(text, encoding="utf-8")
-                await self.publisher.describe(wt, b, pr_title(story, layers, i), body)
+                await self.publisher.describe(wt, top, story.title, body)
+            else:
+                stacks_on = st.base.get("story") if st.base else None
+                # a dependent story's stack sits on its dependency's top branch; any other on the trunk
+                await self.publisher.stack(
+                    wt, st.base["ref"] if stacks_on and st.base else self.s.trunk, branches
+                )
+                await self.publisher.submit(wt)
+                prs = [await self.publisher.pr(wt, b) for b in branches]
+                for i, b in enumerate(branches):
+                    body = st.path / f"pr-{i + 1:02d}.md"
+                    # the gate this layer passed: a state from before layers kept theirs has none to name
+                    gate = st.built[f"{i + 1:02d}"].get("gate")
+                    text = pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
+                    # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not
+                    # as whatever encoding the locale makes the default.
+                    body.write_text(text, encoding="utf-8")
+                    await self.publisher.describe(wt, b, pr_title(story, layers, i), body)
         finally:
             remove_worktree(self.repo, wt)
-        st.prs = [{"branch": b, "number": n, "url": u} for b, (n, u) in zip(branches, prs, strict=True)]
+        # single: one PR on the top branch; stack: one per layer branch, in order
+        pr_branches = [branches[-1]] if self.publisher.publish == "single" else branches
+        st.prs = [{"branch": b, "number": n, "url": u} for b, (n, u) in zip(pr_branches, prs, strict=True)]
         st.emit("published", prs=st.prs)
         st.finish("publish")
 
