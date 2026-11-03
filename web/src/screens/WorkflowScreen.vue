@@ -128,9 +128,8 @@ async function stop() {
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
       <p aria-live="polite" class="sr-only">{{ shown ? `${nodeLabel ? nodeLabel + " / " : ""}${shown.job.label}: ${shown.job.status}` : "" }}</p>
       <JobSheet :open="sheetOpen" :job="sheetJob" :detail="shown" :node-label="nodeLabel" @close="closeSheet" />
-      <template v-if="phone" />
-      <JobDetailView v-else-if="shown" :detail="shown" :node-label="nodeLabel" />
-      <section v-else-if="selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
+      <JobDetailView v-if="!phone && shown" :detail="shown" :node-label="nodeLabel" />
+      <section v-else-if="!phone && selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
       <section v-else-if="!selected" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>
     </template>
   </div>

@@ -61,6 +61,9 @@ const lastCycleIndex = (rows: LaneRow[]) => {
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i].kind === "cycle") return i;
   return -1;
 };
+const tryCount = (n: FlowNode) => rowsOf(n).filter((r) => r.kind === "cycle").length;
+const triesOpen = ref<Record<string, boolean>>({});
+const toggleTries = (id: string) => (triesOpen.value = { ...triesOpen.value, [id]: !triesOpen.value[id] });
 const rowCls = "flex w-full min-w-0 items-center gap-2.5 border-b border-border py-[9px] text-left outline-none focus-visible:ring-2 focus-visible:ring-ring";
 </script>
 
@@ -120,22 +123,35 @@ const rowCls = "flex w-full min-w-0 items-center gap-2.5 border-b border-border 
               </template>
             </div>
 
-            <!-- a layer closed: one row -->
-            <component
-              :is="n.jobs.length ? 'button' : 'div'"
-              v-else-if="n.kind === 'layer'"
-              :type="n.jobs.length ? 'button' : undefined"
-              :data-node="n.id"
-              :data-status="n.status"
-              :aria-pressed="n.jobs.length ? (selected?.[0] === n.id ? 'true' : 'false') : undefined"
-              :class="[rowCls, 'truncate', selected?.[0] === n.id ? 'ring-2 ring-ring' : '']"
-              @click="n.jobs.length && pick(n.id, tail(n.jobs).id)"
-            >
-              <span :class="['size-2 flex-none rounded-full', DOT[n.status]]" />
-              <strong :class="['flex-none', n.status === 'pending' ? 'text-muted-foreground' : '']">{{ n.label }}</strong>
-              <span :title="n.title ?? ''" class="min-w-0 truncate text-xs text-muted-foreground">{{ n.title }}</span>
-              <span v-for="(t, i) in n.tags ?? []" :key="i" :class="['flex-none rounded-md px-1.5 py-px text-[11px] font-bold', TAG[t.tone]]">{{ t.text }}</span>
-            </component>
+            <!-- a layer closed: one row; with several tries, a tap unfolds every try and divider -->
+            <template v-else-if="n.kind === 'layer'">
+              <component
+                :is="n.jobs.length ? 'button' : 'div'"
+                :type="n.jobs.length ? 'button' : undefined"
+                :data-node="n.id"
+                :data-status="n.status"
+                :aria-expanded="tryCount(n) > 1 ? !!triesOpen[n.id] : undefined"
+                :aria-pressed="n.jobs.length && tryCount(n) <= 1 ? (selected?.[0] === n.id ? 'true' : 'false') : undefined"
+                :class="[rowCls, 'truncate', selected?.[0] === n.id ? 'ring-2 ring-ring' : '']"
+                @click="tryCount(n) > 1 ? toggleTries(n.id) : n.jobs.length && pick(n.id, tail(n.jobs).id)"
+              >
+                <span :class="['size-2 flex-none rounded-full', DOT[n.status]]" />
+                <strong :class="['flex-none', n.status === 'pending' ? 'text-muted-foreground' : '']">{{ n.label }}</strong>
+                <span :title="n.title ?? ''" class="min-w-0 truncate text-xs text-muted-foreground">{{ n.title }}</span>
+                <span v-if="tryCount(n) > 1" data-tries class="flex-none rounded-md bg-chip px-1.5 py-px text-[11px] font-bold text-chip-foreground">{{ tryCount(n) }} tries</span>
+                <span v-for="(t, i) in n.tags ?? []" :key="i" :class="['flex-none rounded-md px-1.5 py-px text-[11px] font-bold', TAG[t.tone]]">{{ t.text }}</span>
+              </component>
+              <div v-if="tryCount(n) > 1 && triesOpen[n.id]" data-tries-list class="flex flex-col pl-3">
+                <template v-for="(r, i) in rowsOf(n)" :key="i">
+                  <button v-if="r.kind === 'cycle'" type="button" data-try :data-row-id="r.id" :class="[rowCls, 'text-muted-foreground']" @click="pick(n.id, tail(r.jobs)?.id ?? 'build')">
+                    <span :class="['size-2 flex-none rounded-[2px]', MARK[r.status]]" />
+                    <span class="min-w-0 truncate">{{ r.label }} · {{ WORD[r.status] ?? r.status }}</span>
+                    <span class="ml-auto flex-none" aria-hidden="true">▸</span>
+                  </button>
+                  <div v-else data-divider class="truncate py-1 text-xs text-muted-foreground">{{ r.text }}</div>
+                </template>
+              </div>
+            </template>
 
             <!-- a stage closed: a row per job -->
             <template v-else>

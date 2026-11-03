@@ -127,3 +127,26 @@ test("a failed job opens its node when nothing runs", () => {
   nodes[0].jobs[0] = job({ id: "packages", label: "Draft packages", status: "failed" });
   expect(draw(nodes).find("[data-open][data-node=packages]").exists()).toBe(true);
 });
+
+test("a finished layer with several tries is one row with a tries tag that unfolds every try and divider", async () => {
+  const done = laneNode("02", "Edit", "passed", [cycle("c1", "build 1", "failed", "c1-"), { kind: "divider", text: "↩ re-planned", card: null }, cycle("c2", "build 2", "passed")]);
+  const w = draw([done, ...BUILD().slice(0, 1)]);
+  expect(w.findAll("[data-node=layer-02]")).toHaveLength(1);
+  expect(w.get("[data-tries]").text()).toBe("2 tries");
+  expect(w.find("[data-try]").exists()).toBe(false);
+  await w.get("[data-node=layer-02]").trigger("click");
+  expect(w.findAll("[data-try]")).toHaveLength(2);
+  expect(w.get("[data-divider]").text()).toBe("↩ re-planned");
+  await w.get("[data-try]").trigger("click");
+  expect(w.emitted("pick")).toEqual([["layer-02", "c1-build"]]);
+  await w.get("[data-node=layer-02]").trigger("click");
+  expect(w.find("[data-try]").exists()).toBe(false);
+  expect(w.find("[data-divider]").exists()).toBe(false);
+});
+
+test("a finished layer with one try is one row that opens the sheet", async () => {
+  const w = draw([laneNode("01", "Store", "passed", [cycle("c1", "build 1", "passed")]), ...BUILD().slice(0, 1)]);
+  expect(w.find("[data-tries]").exists()).toBe(false);
+  await w.get("[data-node=layer-01]").trigger("click");
+  expect(w.emitted("pick")).toEqual([["layer-01", "build"]]);
+});

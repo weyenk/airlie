@@ -303,6 +303,11 @@ describe("on a phone", () => {
     expect(sheet.querySelector("section[aria-label=Job]")).not.toBeNull();
   });
 
+  test("a story with nothing run says so on a phone too", async () => {
+    await open("/workflows/AIR-17", flow([]));
+    expect(document.body.textContent).toContain("Nothing has run yet.");
+  });
+
   test("closing the sheet clears the selection", async () => {
     const { router } = await open("/workflows/AIR-17/layer-02/build", withCard());
     expect(document.body.querySelector("[data-sheet]")).not.toBeNull();
