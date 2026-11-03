@@ -1145,15 +1145,18 @@ async def test_the_final_gate_remembers_the_tree_it_passed_and_does_not_run_on_i
     """GateMemo (kept, Noah 2026-10-19): the final gate is the only whole run now, and it writes the memo."""
     from airlie.tools.scope import tree_fingerprint
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tree = tmp_path / "tree"  # beside the state dir: the gate's own events are not an edit to the tree
+    tree.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
     orch = gate(tmp_path, 30)
+    orch.worktree = tree
     assert (await orch._tests_pass("exit 1"))[0] is False  # no memo: it runs, and fails
     assert orch.gate_memo.passed is None  # a failure is not remembered
     assert (await orch._tests_pass("true"))[0] is True
-    assert orch.gate_memo.passed == tree_fingerprint(tmp_path)  # a pass is
+    assert orch.gate_memo.passed == tree_fingerprint(tree)  # a pass is
     passed, said = await orch._tests_pass("exit 1")
     assert passed is True and "already passed on exactly this tree" in said  # the same tree: not run
-    (tmp_path / "new.txt").write_text("edit")
+    (tree / "new.txt").write_text("edit")
     assert (await orch._tests_pass("exit 1"))[0] is False  # an edit since: it runs
 
 
@@ -1407,6 +1410,20 @@ async def test_a_failing_final_gate_sends_the_named_subtask_its_output_once(tmp_
     assert [e["follow_up"] for e in events(report) if e["kind"] == "gate_failed"] == ["build"]
     assert steers(report) == [{"id": "gate-failed", "role": "coder", "subtask": "build"}]
     assert sum(t.startswith(hub_text("gate-failed")) for t in told) == 1
+    gates = [(e["kind"], e["n"]) for e in events(report) if e["kind"] in ("gate_start", "gate_passed")]
+    assert gates == [("gate_start", 1), ("gate_start", 2), ("gate_passed", 2)]
+
+
+async def test_a_gate_that_passes_at_once_logs_its_start_and_its_pass(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"coder": [WRITE_PASS, DONE], "reviewer": [APPROVE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    report = await orch.execute_task(
+        "g", repo=repo, test_cmd="./check.sh", plan=ONE_BUILD, synthesise=False, gate_follow_up="build"
+    )
+    assert report.tests == {"studio": True}
+    gates = [(e["kind"], e["n"]) for e in events(report) if e["kind"] in ("gate_start", "gate_passed")]
+    assert gates == [("gate_start", 1), ("gate_passed", 1)]
 
 
 async def gate_follow_up_with(tmp_path: Path, advisor: Any) -> tuple[Any, list[str], StudioOrchestrator]:
