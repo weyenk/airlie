@@ -86,6 +86,33 @@ def test_the_build_lane_takes_only_a_planned_story_and_the_planning_lane_plans_t
     assert board.next_planned_story() is None
 
 
+def test_the_planning_lane_takes_back_a_story_whose_planning_was_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planning lane moves a story's card to doing when it picks it up. A serve restarted (or killed)
+    while it plans leaves the card in doing, short of the boundary, with nothing running it (AIR-54,
+    2026-11-03): every planning job holds the planning lane's lock, and the lane picks only while that lock
+    is free, so such a story is taken again, after any approved one, as the build lane takes a killed
+    build."""
+    rig = TickRig(tmp_path, monkeypatch)
+    killed, waiting, building = (
+        rig.store.create(level="story", title=t, labels=["repo:o/r"]).key
+        for t in ("killed", "waiting", "built")
+    )
+    rig.store.update(killed, status="doing")
+    story_record(rig, killed, "refine")  # cut off in refine
+    rig.store.update(building, status="doing")
+    story_record(rig, building, "layers")  # planned: the build lane's, never the planning lane's
+    rig.store.update(waiting, status="approved")
+    board = factory.make_board(rig.cfg)
+    assert isinstance(board, LocalBoard)
+    assert getattr(board.next_unplanned_story(), "key", None) == waiting  # an approved story first
+    rig.store.update(waiting, status="todo")
+    assert getattr(board.next_unplanned_story(), "key", None) == killed  # then the one left in doing
+    rig.store.update(killed, status="todo")  # a person parked it
+    assert board.next_unplanned_story() is None
+
+
 async def test_the_planning_lanes_order_is_initiative_epic_revision_epic_plan_then_story(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
