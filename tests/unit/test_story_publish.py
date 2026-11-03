@@ -21,9 +21,15 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml  # noqa: E402
 
+from airlie.config import load_config  # noqa: E402
+from airlie.engine import FakeEngine, FakeReply  # noqa: E402
 from airlie.story import github_app, publish
+from airlie.story.board import NullBoard, text_card  # noqa: E402
 from airlie.story.github_app import GitHubApp
+from airlie.story.model import Criterion, Layer, Story  # noqa: E402
+from airlie.story.pipeline import StoryPipeline  # noqa: E402
 from airlie.story.publish import (
     BOT_GIT,
     PINNED,
@@ -35,12 +41,20 @@ from airlie.story.publish import (
     person_env,
     run_cmd,
 )
+from airlie.story.state import StoryState  # noqa: E402
 from airlie.subproc import NO_HOOKS, url_credential_helpers, with_git_config
 from airlie.teams.worktree import add_worktree, checkout_worktree, commit_wip, remove_worktree
 from tests.unit.git_helpers import git
 from tests.unit.github_helpers import BOT, FakeGitHub, app_spec, fake_app, fake_gh
 from tests.unit.proc_helpers import StartGate, cancel_phases, eventually, running, unique_sleep
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
+from tests.unit.test_studio_orchestrator import (  # noqa: E402
+    APPROVE,
+    DONE,
+    ROLES,
+    RUN,
+    WRITE_PASS,
+)
 
 
 class Recorded:
@@ -1568,3 +1582,308 @@ async def test_check_single_no_ghstack_probe(tmp_path: Path) -> None:
     assert any("gh-stack is missing" in p for p in stack.problems)  # stack: the probe runs and fails
     assert not any(a[:3] == ["gh", "stack", "--help"] for a in single_asked)  # single never asked for it
     assert any(a[:3] == ["gh", "stack", "--help"] for a in stack_asked)  # stack did
+
+
+_PUBLISH_ROLES = {
+    **ROLES,
+    "product": ("---\nsummary: Stories and acceptance criteria\n---\n# product", ["read_file", "list_dir"]),
+    "architect": ("---\nsummary: Layered plans for a change\n---\n# architect", ["read_file", "list_dir"]),
+}
+
+
+def _fenced(obj: dict[str, object]) -> FakeReply:
+    return FakeReply(text="I read the README.\n```json\n" + json.dumps(obj) + "\n```")
+
+
+def _package_reply(tests: dict[str, str], covers: dict[str, list[str]]) -> FakeReply:
+    parts = ["I read the code.\n"]
+    for path, text in tests.items():
+        parts.append(f"### test file: {path}\n```python\n{text}```\n")
+    obj = {
+        "type": "package",
+        "files": [{"path": "feature.py", "action": "create"}],
+        "interfaces": [],
+        "steps": ["write the feature"],
+        "covers": covers,
+        "done_when": "run_tests passes",
+    }
+    parts.append("```json\n" + json.dumps(obj) + "\n```")
+    return FakeReply(text="\n".join(parts))
+
+
+def _publish_cfg(tmp_path: Path, *, publish: str | None) -> object:
+    """A studio config whose story has `publish` set (None: the key absent, the code default)."""
+    d = tmp_path / "cfg"
+    d.mkdir(exist_ok=True)
+    role_cfg: dict[str, dict[str, object]] = {}
+    for name, (text, tools) in _PUBLISH_ROLES.items():
+        (d / f"{name}.md").write_text(text)
+        role_cfg[name] = {"prompt": f"{name}.md", "model": "base", "thinking": False}
+        if tools is not None:
+            role_cfg[name]["tools"] = tools
+    story: dict[str, object] = {
+        "trunk": "main",
+        "plan_round_steps": 0,
+        "survey": False,
+        "layer_attempts": 1,
+        "amigos": {"enabled": False},
+    }
+    if publish is not None:
+        story["publish"] = publish
+    data = {
+        "version": 1,
+        "engines": {"main": {"kind": "openai_http", "base_url": "http://x/v1", "models": ["base"]}},
+        "models": {"base": {"repo": "org/m", "revision": "r"}},
+        "roles": role_cfg,
+        "teams": {"orchestrator": "native", "max_steps": 6},
+        "tools": {"builtin": ["read_file", "write_file", "list_dir", "run_tests"]},
+        "topology": {"kind": "studio"},
+        "router": {"kind": "chief"},
+        "studio": {
+            "parallel": 2,
+            "review": {"enabled": True, "roles": ["coder"], "rounds": 1},
+            "done_check": False,
+        },
+        "repo_map": {"enabled": False},
+        "observability": {"state_dir": str(tmp_path / "state")},
+        "story": story,
+    }
+    (d / "airlie.yaml").write_text(yaml.safe_dump(data))
+    return load_config(d / "airlie.yaml")
+
+
+def _publish_repo(tmp_path: Path) -> tuple[Path, list[str], list[str]]:
+    """A real repository: trunk `main`, then three layer branches, each one commit on the one before,
+    bottom first. Returns the repo, the branches bottom first and the three commit shas in layer order."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.name", "airlie")
+    git(repo, "config", "user.email", "airlie@local")
+    (repo / "check.sh").write_text("#!/bin/sh\nexit 0\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    branches: list[str] = []
+    shas: list[str] = []
+    for n in range(1, 4):
+        branch = f"story-{n:02d}"
+        git(repo, "checkout", "-q", "-b", branch)
+        (repo / f"layer-{n}").write_text(f"layer {n}\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", f"layer {n}")
+        branches.append(branch)
+        shas.append(git(repo, "rev-parse", "HEAD"))
+    git(repo, "checkout", "-q", "main")
+    return repo, branches, shas
+
+
+def _publish_pipeline(
+    tmp_path: Path,
+    repo: Path,
+    engine: FakeEngine,
+    run: object,
+    *,
+    publish: str | None,
+) -> StoryPipeline:
+    return StoryPipeline(
+        _publish_cfg(tmp_path, publish=publish),
+        board=NullBoard(tmp_path / "state" / "stories"),
+        studio=lambda: None,  # type: ignore[return-value]
+        publisher=Publisher(run=run),  # type: ignore[arg-type]
+        repo=repo,
+        test_cmd="./check.sh",
+    )
+
+
+def _publish_state(tmp_path: Path, repo: Path, branches: list[str], shas: list[str]) -> StoryState:
+    """A state that has built all three layers (one commit each) and is ready to publish: `built` holds
+    each layer's branch, commit, tests and gate; `base` is the trunk."""
+    st = StoryState(
+        path=tmp_path / "state" / "stories" / "req",
+        card={"key": "req", "ref": "", "title": "Three layers"},
+        repo=str(repo),
+        stage="build",
+        base={"ref": "main", "sha": git(repo, "rev-parse", "main")},
+    )
+    st.path.mkdir(parents=True, exist_ok=True)
+    for n, (branch, sha) in enumerate(zip(branches, shas, strict=True), 1):
+        st.built[f"{n:02d}"] = {
+            "branch": branch,
+            "sha": sha,
+            "run_id": f"run-{n:02d}",
+            "tests": [f"tests/unit/test_layer_{n}.py::test_layer_{n}"],
+            "gate": "./check.sh",
+            "subtasks": [],
+        }
+    return st
+
+
+class PublishRun:
+    """A publish `run` that records every command and answers the gh calls a publish makes: `gh pr view`
+    with a numbered PR, `gh pr create` with the PR it opened, everything else empty. Git commands run for
+    real, so a push lands on the local repository."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], Path]] = []
+        self.numbers: dict[str, int] = {}
+
+    async def __call__(self, args: list[str], cwd: Path, env: Mapping[str, str]) -> str:
+        self.calls.append((args, cwd))
+        if args[0] == "git":
+            return await run_cmd(args, cwd, env)
+        if args[:3] == ["gh", "stack", "view"]:
+            raise PublishError("not a stack")
+        if args[:3] == ["gh", "pr", "view"]:
+            n = self.numbers.setdefault(args[3], 11 + len(self.numbers))
+            return json.dumps({"number": n, "url": f"https://github.com/o/r/pull/{n}"})
+        if args[:3] == ["gh", "pr", "create"]:
+            n = 11 + len(self.numbers)
+            self.numbers[args[args.index("--head") + 1]] = n
+            return f"https://github.com/o/r/pull/{n}"
+        return ""
+
+
+def _happy_engine() -> FakeEngine:
+    story = _fenced(
+        {
+            "type": "story",
+            "title": "Three layers",
+            "summary": "A story of three layers.",
+            "acceptance": [
+                {"id": "AC1", "given": "a user", "when": "they ask for one", "then": "they get one"},
+                {"id": "AC2", "given": "a user", "when": "they ask for two", "then": "they get two"},
+                {"id": "AC3", "given": "a user", "when": "they ask for three", "then": "they get three"},
+            ],
+        }
+    )
+    layers = _fenced(
+        {
+            "layers": [
+                {
+                    "slug": f"layer-{n}",
+                    "title": f"Layer {n}",
+                    "scope": f"layer-{n}",
+                    "acceptance": [f"AC{n}"],
+                    "brief": f"Build layer {n}.",
+                }
+                for n in (1, 2, 3)
+            ]
+        }
+    )
+    pkgs = [
+        _package_reply(
+            {f"tests/unit/test_layer_{n}.py": f"def test_layer_{n}():\n    assert True\n"},
+            {f"AC{n}": [f"tests/unit/test_layer_{n}.py::test_layer_{n}"]},
+        )
+        for n in (1, 2, 3)
+    ]
+    return FakeEngine(
+        {
+            "product": [story],
+            "architect": [layers, *pkgs],
+            "coder": [
+                WRITE_PASS,
+                RUN,
+                DONE,
+                DONE,
+                WRITE_PASS,
+                RUN,
+                DONE,
+                DONE,
+                WRITE_PASS,
+                RUN,
+                DONE,
+                DONE,
+            ],
+            "reviewer": [APPROVE, APPROVE, APPROVE],
+        }
+    )
+
+
+def _story_and_layers() -> tuple[Story, tuple[Layer, ...]]:
+    story = Story(
+        "Three layers",
+        "A story of three layers.",
+        (
+            Criterion("AC1", "a user", "they ask for one", "they get one"),
+            Criterion("AC2", "a user", "they ask for two", "they get two"),
+            Criterion("AC3", "a user", "they ask for three", "they get three"),
+        ),
+    )
+    layers = tuple(
+        Layer(f"layer-{n}", f"Layer {n}", f"layer-{n}", f"Build layer {n}.", (f"AC{n}",)) for n in (1, 2, 3)
+    )
+    return story, layers
+
+
+def _args(run: PublishRun) -> list[list[str]]:
+    return [args for args, _ in run.calls]
+
+
+async def test_single_publish_one_draft_pr_top_branch_commit_sequence(tmp_path: Path) -> None:
+    """AC1: `story.publish: single` opens exactly one draft PR, on the top layer's branch against the
+    trunk, whose commits are the three layer commits in layer order; no `gh stack init`, no per-layer PR."""
+    repo, branches, shas = _publish_repo(tmp_path)
+    run = PublishRun()
+    pipe = _publish_pipeline(tmp_path, repo, _happy_engine(), run, publish="single")
+    st = _publish_state(tmp_path, repo, branches, shas)
+    story, layers = _story_and_layers()
+    await pipe._publish(st, text_card("Three layers"), story, layers)
+    assert st.stage == "publish"
+    args = _args(run)
+    creates = [a for a in args if a[:3] == ["gh", "pr", "create"]]
+    assert len(creates) == 1  # exactly one draft PR
+    assert "--draft" in creates[0]
+    assert creates[0][creates[0].index("--head") + 1] == branches[-1]  # the top layer's branch
+    assert creates[0][creates[0].index("--base") + 1] == "main"  # the trunk
+    assert not any(a[:3] == ["gh", "stack", "init"] for a in args)  # no gh stack
+    assert not any(a[:3] == ["gh", "stack", "submit"] for a in args)
+    assert [a for a in args if a[:3] == ["gh", "pr", "view"]] == [
+        ["gh", "pr", "view", branches[-1], "--json", "number,url"]
+    ]  # the one PR, read back on the top branch
+    # the top branch holds the three layer commits, in layer order
+    assert git(repo, "rev-list", "--reverse", f"main..{branches[-1]}").splitlines() == shas
+    # the one PR is recorded, on the top branch
+    assert [p["branch"] for p in st.prs] == [branches[-1]]
+
+
+async def test_single_publish_body_one_section_per_layer_in_order(tmp_path: Path) -> None:
+    """AC2: the one PR's body has one section per layer, in layer order, each naming that layer's title and
+    the criteria it owns."""
+    repo, branches, _shas = _publish_repo(tmp_path)
+    run = PublishRun()
+    pipe = _publish_pipeline(tmp_path, repo, _happy_engine(), run, publish="single")
+    st = _publish_state(tmp_path, repo, branches, _shas)
+    story, layers = _story_and_layers()
+    await pipe._publish(st, text_card("Three layers"), story, layers)
+    edits = [a for a in _args(run) if a[:3] == ["gh", "pr", "edit"]]
+    assert len(edits) == 1
+    body = (st.path / Path(edits[0][edits[0].index("--body-file") + 1])).read_text(encoding="utf-8")
+    positions = []
+    for n in (1, 2, 3):
+        title = f"**Layer {n} of 3:** Layer {n}"
+        assert title in body  # one section per layer, each naming its title
+        assert f"**AC{n}**" in body  # and the criterion it owns
+        positions.append(body.index(title))
+    assert positions == sorted(positions)  # in layer order
+
+
+async def test_stack_publish_n_prs_each_own_branch(tmp_path: Path) -> None:
+    """AC3: `story.publish` unset (the default `stack`) keeps today's gh stack: one draft PR per layer, each
+    on its own branch; no `gh pr create` at all, so this cannot pass on a single-PR story."""
+    repo, branches, _shas = _publish_repo(tmp_path)
+    run = PublishRun()
+    pipe = _publish_pipeline(tmp_path, repo, _happy_engine(), run, publish=None)
+    st = _publish_state(tmp_path, repo, branches, _shas)
+    story, layers = _story_and_layers()
+    await pipe._publish(st, text_card("Three layers"), story, layers)
+    args = _args(run)
+    assert ["gh", "stack", "init", "--base", "main", *branches] in args  # the stack, bottom first
+    assert ["gh", "stack", "submit", "--auto", "--remote", "origin"] in args  # the PRs open via submit
+    assert [a for a in args if a[:3] == ["gh", "pr", "view"]] == [
+        ["gh", "pr", "view", b, "--json", "number,url"] for b in branches
+    ]  # one per layer branch, in order
+    edits = [a for a in args if a[:3] == ["gh", "pr", "edit"]]
+    assert [a[3] for a in edits] == branches  # one per layer, each on its own branch, in order
+    assert not any(a[:3] == ["gh", "pr", "create"] for a in args)  # zero creates: N PRs, each own branch
+    assert [p["branch"] for p in st.prs] == branches

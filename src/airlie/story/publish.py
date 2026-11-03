@@ -462,6 +462,24 @@ class Publisher:
         async with self._step(wt) as env:
             await self.run(["gh", "stack", "submit", "--auto", "--remote", self.remote], wt, env)
 
+    async def push_top(self, wt: Path, branch: str) -> None:
+        """Push the top layer's branch to the remote (a single draft PR is opened on it; its commits are the
+        layers' in layer order)."""
+        _refuse_option_like(branch)
+        async with self._step(wt) as env:
+            await self.run(["git", "push", "-q", self.remote, branch], wt, env)
+
+    async def create_draft(self, wt: Path, branch: str, base: str, title: str) -> None:
+        """Open one draft PR on `branch` against `base`: plain gh, no gh-stack (a single-PR story opens its
+        one PR this way)."""
+        _refuse_option_like(branch)
+        async with self._step(wt) as env:
+            await self.run(
+                ["gh", "pr", "create", "--draft", "--base", base, "--head", branch, "--title", title],
+                wt,
+                env,
+            )
+
     async def pr(self, wt: Path, branch: str) -> tuple[int, str]:
         _refuse_option_like(branch)
         async with self._step(wt) as env:
