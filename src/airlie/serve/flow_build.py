@@ -520,7 +520,8 @@ def _package_job(c: _Cycle, tries: list[_Try], runs: RunLog) -> dict[str, Any]:
         rows.append(text_row("proof", f"revised {_plural(proofs, 'time')}"))
     if any(e.get("kind") == "story_criteria_revised" for e in c.events):
         rows.append(text_row("criteria", "revised"))
-    tags = [tag(f"{len(tries)}x", "warn")] if len(tries) > 1 else []
+    # the try count is the card's: the box draws its own attempts badge
+    tried = [tag(f"{len(tries)}x", "warn")] if len(tries) > 1 else []
     k = len(tries)
     live = rows[k - 1]["text"] if status == "running" and k else None
     took = box["duration_s"]
@@ -529,8 +530,7 @@ def _package_job(c: _Cycle, tries: list[_Try], runs: RunLog) -> dict[str, Any]:
         box,
         "model",
         live=live,
-        tags=tags,
-        card=card("Package", rows, tags=tags, foot=foot) if rows else None,
+        card=card("Package", rows, tags=tried, foot=foot) if rows else None,
         sub="drafted" if taken and status == "pending" else None,
     )
 

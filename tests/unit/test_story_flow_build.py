@@ -153,6 +153,8 @@ def test_air47_now_takes_l03s_unusable_draft_as_its_first_try(tmp_path: Path) ->
     package = only["jobs"][0]
     assert only["kind"] == "cycle" and only["label"] == "package"
     assert package["attempts"] == 2 and package["status"] == "running"
+    assert package["tags"] == []  # the box draws its attempts badge; a "2x" tag would say it twice
+    assert {"text": "2x", "tone": "warn"} in package["card"]["tags"]  # the card keeps the try count
     assert [r["text"] for r in steps_of(package)][:2] == [
         "try 1 · returned: package_unusable",
         "try 2 · architect",
@@ -270,6 +272,36 @@ def test_the_build_card_lists_coder_reviewer_gate_and_follow_up(tmp_path: Path) 
     ]
     assert build["status"] == "failed" and build["studio_run"] == "20261101-140822-8efc"
     assert "supervisor: 3 triages" in texts_of(build)
+
+
+def test_a_failing_gate_then_its_follow_up_then_a_passing_gate_is_built_only_on_layer_built(
+    tmp_path: Path,
+) -> None:
+    run = [
+        {"ts": 3.0, "kind": "subtask_start", "subtask": "build", "role": "coder"},
+        {"ts": 20.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
+        {"ts": 21.0, "kind": "gate_start", "n": 1},
+        {"ts": 30.0, "kind": "gate_failed", "n": 1, "follow_up": "build"},
+        {"ts": 31.0, "kind": "follow_up", "subtask": "build", "role": "coder"},
+        {"ts": 50.0, "kind": "subtask_done", "subtask": "build", "ok": True, "fix_rounds": 0},
+        {"ts": 51.0, "kind": "gate_start", "n": 2},
+        {"ts": 60.0, "kind": "gate_passed", "n": 2},
+    ]
+    run_story(tmp_path, run)
+    _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
+    assert [(r["text"], r["status"]) for r in steps_of(build)] == [
+        ("coder", "passed"),
+        ("gate", "failed"),
+        ("coder · gate follow-up", "passed"),
+        ("gate", "passed"),
+    ]
+    assert build["status"] == "running" and squash["status"] == "pending"  # the run has not ended
+    log = tmp_path / "stories" / KEY / "events.jsonl"
+    built = {"ts": 70.0, "kind": "layer_built", "layer": "01", "branch": "b", "sha": "s"}
+    write_events(log, [*(json.loads(x) for x in log.read_text().splitlines()), built])
+    _, _, _, build, squash = by_id(nodes_of(tmp_path), "layer-01")["jobs"]
+    assert build["status"] == "passed" and squash["status"] == "passed"
+    assert [s["status"] for s in steps_of(build)] == ["passed", "failed", "passed", "passed"]
 
 
 def run_story(root: Path, run: list[dict[str, Any]], *more: dict[str, Any]) -> Path:
