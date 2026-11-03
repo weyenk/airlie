@@ -298,6 +298,19 @@ async def test_a_suite_that_does_not_run_its_tests_is_a_finding_with_its_output(
     assert "no-such-flag" in found[0].why
 
 
+def test_a_test_module_that_parses_but_does_not_compile_is_a_finding(tmp_path: Path) -> None:
+    """AIR-47 layer 04 (2026-11-03): the architect's test had `await` in a function that was not async. It
+    parses, so the checks took it; pytest's collection failed on it, and the coder could not edit it."""
+    from airlie.story.layer_checks import unparseable_tests
+
+    root, base = repo(tmp_path, {"calc.py": CALC})
+    awaits = "from calc import add\n\n\ndef test_add():\n    await add(1, 2)\n"
+    commit(root, "layer", {"tests/test_calc.py": awaits, "tests/test_ok.py": "def test_ok():\n    pass\n"})
+    [found] = unparseable_tests(root, base)
+    assert (found.kind, found.test) == ("unparseable_test", "tests/test_calc.py")
+    assert "'await' outside async function at line 5" in found.why
+
+
 async def test_a_test_module_that_does_not_parse_is_a_finding_with_the_error(tmp_path: Path) -> None:
     """HDS-5, 2026-10-17: the coder left `["web_search]` in its test module. The checks skipped the file and
     said passed, so the coder got no retry and the gate blocked the layer."""

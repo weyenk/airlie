@@ -168,12 +168,14 @@ def _layer_test_modules(worktree: Path, base: str) -> list[str]:
 def unparseable_tests(worktree: Path, base: str) -> list[Finding]:
     """A finding for each test module the layer changed that does not parse, with the error and its line: the
     coder gets a retry to fix it (HDS-5, 2026-10-17: a missing quote left the checks with nothing to check,
-    and the gate blocked the layer with no retry)."""
+    and the gate blocked the layer with no retry). Compiled, not only parsed: AIR-47 layer 04 (2026-11-03) had
+    an `await` in a function that was not async, which parses and then fails pytest's collection, and the
+    coder spent two rounds on a locked test that could never run."""
     found = []
     for path in _layer_test_modules(worktree, base):
         text = (worktree / path).read_text(encoding="utf-8", errors="replace")
         try:
-            ast.parse(text)
+            compile(text, path, "exec", dont_inherit=True)  # pytest compiles it: a parse alone passes `await`
         except SyntaxError as e:
             found.append(
                 Finding("unparseable_test", path, f"it does not parse: {e.msg} at line {e.lineno}", "")
