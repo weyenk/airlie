@@ -108,6 +108,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.repo` | none | the repository a written request (`--text`) is built in (`--repo` wins); an issue's comes from its label, never from here |
 | `story.test_cmd` | none | not a story's: a story's gate is its repository's `AGENTS.md` (or `--test-cmd`); this is the command `airlie_run` accepts (`local-agents.md`) |
 | `story.trunk`, `story.remote` | `main`, `origin` | the branch the stack is based on, and the remote it is pushed to |
+| `story.publish` | `stack` | how the layers are published: `single` = one draft PR on the top layer's branch holding every layer's commit in layer order; `stack` = one draft PR per layer via `gh stack`. The committed `airlie.yaml` picks `single` |
 | `story.max_layers` | 5 | the most layers the architect may plan |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |

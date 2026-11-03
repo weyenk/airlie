@@ -1328,3 +1328,11 @@ def test_story_spec_publish_single_parses() -> None:
 def test_story_spec_publish_invalid_rejected() -> None:
     with pytest.raises(ValidationError, match="Input should be 'single' or 'stack'"):
         StorySpec(**_story(publish="banana"))
+
+
+def test_schema_default_stack_and_yaml_single() -> None:
+    """AC6: the code default for story.publish stays `stack` (existing tests keep the stack path)
+    while the committed airlie.yaml picks `single`. Two separate assertions: changing the schema
+    default to `single` to satisfy the yaml side would fail the first."""
+    assert StorySpec(**_story()).publish == "stack"  # the schema default, no publish key set
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).story.publish == "single"  # the committed config
