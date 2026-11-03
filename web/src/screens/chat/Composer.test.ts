@@ -212,3 +212,60 @@ test("an Enter that confirms an IME composition does not choose a command or sen
   await box(w).trigger("keydown", { key: "Enter", isComposing: true });
   expect(chatApi.stream).not.toHaveBeenCalled();
 });
+
+
+/**
+ * The font size the class list declares, in px: a Tailwind font-size utility (text-base = 1rem = 16px at the
+ * app's 16px root, or an arbitrary text-[16px]) wins over the 14px body font it would otherwise inherit.
+ * Read from the class list, not getComputedStyle: jsdom has no CSS processing, so a computed read would not
+ * exercise the class the fix adds.
+ */
+const FONT_SIZES: Record<string, number> = {
+  "text-xs": 12,
+  "text-sm": 14,
+  "text-base": 16,
+  "text-lg": 18,
+  "text-xl": 20,
+  "text-2xl": 24,
+  "text-3xl": 30,
+  "text-4xl": 36,
+  "text-5xl": 48,
+};
+const NAMED_SIZE = /^text-(xs|sm|base|lg|xl|2xl|3xl|4xl|5xl)$/;
+const ARBITRARY_SIZE = /^text-\[(\d+)px\]$/;
+function declaredFontSize(el: HTMLElement): number {
+  let size = 14; // the body font in web/src/style.css, inherited when the class list declares none
+  for (const c of el.classList) {
+    if (NAMED_SIZE.test(c)) size = FONT_SIZES[c];
+    else {
+      const m = ARBITRARY_SIZE.exec(c);
+      if (m) size = Number(m[1]);
+    }
+  }
+  return size;
+}
+
+test("focusing the chat textbox leaves the page unzoomed: the textarea carries a 16px font-size class", async () => {
+  const { w } = await open();
+  const el = w.get("textarea#msg").element as HTMLTextAreaElement;
+  el.focus(); // the tap that triggers mobile auto-zoom of a focused input
+  expect(document.activeElement).toBe(el);
+  expect(declaredFontSize(el)).toBe(16); // at the 16px threshold, so the page does not magnify
+});
+
+test("the chat textbox's font-size is at least 16px in any viewport", async () => {
+  const { w } = await open();
+  const el = w.get("textarea#msg").element as HTMLTextAreaElement;
+  expect(declaredFontSize(el)).toBeGreaterThanOrEqual(16); // the 16px auto-zoom threshold, unscoped to any viewport
+});
+
+test("focusing, typing and sending a message never magnifies the page: the textarea keeps its 16px font-size class through the send", async () => {
+  const { w } = await open();
+  const el = w.get("textarea#msg").element as HTMLTextAreaElement;
+  el.focus();
+  await box(w).setValue("hello");
+  await w.get("form").trigger("submit");
+  await flushPromises();
+  expect(chatApi.stream).toHaveBeenCalledTimes(1); // the send went through
+  expect(declaredFontSize(el)).toBe(16); // the property that keeps the visual-viewport scale unchanged after the send
+});
