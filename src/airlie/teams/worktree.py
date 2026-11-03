@@ -319,6 +319,9 @@ def cherry_pick(worktree: Path, commit: str) -> list[str] | None:
 
 def move_branches(repo: Path, moves: Mapping[str, tuple[str, str]]) -> None:
     """Each branch in `moves` from its old commit to its new one ({branch: (old, new)}), in one transaction:
-    all move or, when any is not at its old commit any more, none does (a CalledProcessError)."""
+    all move or, when any is not at its old commit any more, none does (a CalledProcessError). Nothing to
+    move is nothing to do: git refuses an empty transaction."""
+    if not moves:
+        return
     lines = [f"update refs/heads/{b} {new} {old}" for b, (old, new) in moves.items()]
     _git(repo, "update-ref", "--stdin", stdin="start\n" + "\n".join(lines) + "\nprepare\ncommit\n")

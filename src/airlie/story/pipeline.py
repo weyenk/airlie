@@ -1162,7 +1162,15 @@ class StoryPipeline:
             output_chars=self.cfg.tools.output_cap_chars,
             confinement=self.cfg.tools.confinement(),
         )
-        move_branches(self.repo, {str(st.built[nn]["branch"]): (layers[nn], moved[nn]) for nn in moved})
+        branches = {str(st.built[nn]["branch"]): (layers[nn], moved[nn]) for nn in moved}
+        try:
+            move_branches(self.repo, branches)
+        except subprocess.CalledProcessError as e:  # a branch is not where the state says: none moved
+            why = (e.stderr or "").strip()[-300:]
+            raise RestackError(
+                f"a layer branch of {card.key} ({', '.join(branches)}) moved since it was built, so none was "
+                f"moved: {why}"
+            ) from None
         for nn, sha in moved.items():
             st.built[nn]["sha"] = sha
         self._clear_attempt(st)

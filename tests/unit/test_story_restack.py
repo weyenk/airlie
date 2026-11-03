@@ -108,6 +108,36 @@ async def test_a_layer_whose_gate_fails_on_the_new_trunk_changes_nothing(tmp_pat
     assert git(repo, "worktree", "list", "--porcelain").count("worktree ") == 2
 
 
+async def test_a_planned_story_with_no_layer_built_moves_only_its_base(tmp_path: Path) -> None:
+    """A dependent story planned but not built when the story it stacks on merges (AIR-55, 2026-11-03): no
+    branch moves, and its base becomes the trunk, so the build starts on today's code. An empty move used
+    to hand git an empty transaction (`fatal: empty command in input`), which killed the line's build job
+    every minute."""
+    repo, st = await stopped_after_layer_01(tmp_path)
+    st.built.clear()
+    st.save()
+    news = trunk_commit(repo, {"NEWS": "news\n"})
+    line = await pipeline(tmp_path, repo, FakeEngine({})).restack(CARD)
+    st = StoryState.open(st.path, CARD, repo)
+    assert st.base is not None and st.base["sha"] == news
+    assert news[:12] in line
+    [moved] = kinds(st.path / "events.jsonl", "restacked")
+    assert moved["layers"] == {}
+
+
+async def test_a_layer_branch_moved_by_someone_else_changes_nothing(tmp_path: Path) -> None:
+    """The branches move only from where the state says they are: one moved since (a person, a model) is a
+    RestackError, which the line turns into a blocked story with the reason, and nothing changes."""
+    repo, st = await stopped_after_layer_01(tmp_path)
+    git(repo, "branch", "-f", B1, f"{st.built['01']['sha']}^")  # moved under the story
+    before = state_on_disk(st)
+    trunk_commit(repo, {"NEWS": "news\n"})
+    with pytest.raises(RestackError, match=f"{B1}.* moved"):
+        await pipeline(tmp_path, repo, FakeEngine({})).restack(CARD)
+    assert state_on_disk(st) == before
+    assert kinds(st.path / "events.jsonl", "restacked") == []
+
+
 async def test_a_story_already_on_the_trunk_is_left_alone(tmp_path: Path) -> None:
     repo, st = await stopped_after_layer_01(tmp_path)
     before = state_on_disk(st)
