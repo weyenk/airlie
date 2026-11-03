@@ -99,7 +99,7 @@ async function stop() {
       </section>
       <ErrorBanner v-if="stopError" :error="stopError" />
 
-      <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" @pick="pick" />
+      <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" :now="flow.data.value.now" :exit="flow.data.value.exit" @pick="pick" />
 
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
       <p aria-live="polite" class="sr-only">{{ shown ? `${nodeLabel ? nodeLabel + " / " : ""}${shown.job.label}: ${shown.job.status}` : "" }}</p>

@@ -5,7 +5,7 @@ import { ApiError } from "@/api";
 import type { Flow, JobRow } from "@/api/workflows";
 import { useFeedStore } from "@/stores/feed";
 import { answerConfirm, confirmState } from "@/composables/useConfirm";
-import { detail, flow, job, layer, stage, step } from "@/test-utils/workflow-fixtures";
+import { detail, exitRow, flow, job, layer, now, stage, step } from "@/test-utils/workflow-fixtures";
 import WorkflowScreen from "./WorkflowScreen.vue";
 
 const api = vi.hoisted(() => ({ storyFlow: vi.fn(), storyJob: vi.fn(), listJobs: vi.fn(), listRunning: vi.fn(), cancelJob: vi.fn() }));
@@ -57,6 +57,12 @@ test("the head: back to Workflows, the key, the stage in progress, the Board car
   expect(w.text()).toContain("building"); // layers is the last stage finished: building is next
   expect(w.get("a[href='/board/AIR-17']").text()).toBe("Board card");
   expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
+test("the flow's now bar and exit row reach the pipeline", async () => {
+  const { w } = await open("/workflows/AIR-17", flow(STAGES, { now: now({ status: "stopped", text: "Stopped at L02" }), exit: exitRow() }));
+  expect(w.get("[data-now]").text()).toContain("Stopped at L02");
+  expect(w.get("[data-exit=blocked]").text()).toContain("L02 build 2 of 2");
 });
 
 test("a blocked story says blocked and shows its reason", async () => {
