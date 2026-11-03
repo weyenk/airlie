@@ -387,6 +387,30 @@ def test_test_additions_join_the_file_on_the_base_with_their_imports_in_its_impo
     assert "test additions" in PACKAGE_CONTRACT
 
 
+def test_added_multi_line_imports_are_joined_by_statement_so_the_file_still_parses() -> None:
+    """AIR-47 layer 03 (2026-11-02): the join dropped each added line the file already had, the `)` of a
+    multi-line import among them, and the package came back unparseable twice until the story blocked."""
+    import ast
+
+    from airlie.story.package import joined_tests
+
+    existing = (
+        "from store import (\n    load,\n    save,\n)\nfrom helpers import RUN\n\n\n"
+        "def test_old():\n    assert load() and save() and RUN\n"
+    )
+    added = (
+        "from helpers import (\n    RUN,\n    cfg_for,\n)\nfrom store import (\n    load,\n    save,\n)\n"
+        "from other import (\n    a,\n    b,\n)\n\n\ndef test_new():\n    assert cfg_for() and a and b\n"
+    )
+    whole = joined_tests(existing, added)
+    ast.parse(whole)
+    assert whole.startswith(
+        "from store import (\n    load,\n    save,\n)\nfrom helpers import RUN\n"
+        "from helpers import cfg_for\nfrom other import (\n    a,\n    b,\n)\n\n\ndef test_old"
+    )
+    assert whole.count("save,") == 1 and whole.endswith("assert cfg_for() and a and b\n")
+
+
 def test_test_additions_to_a_file_the_base_lacks_are_refused_in_words_the_architect_acts_on() -> None:
     with pytest.raises(StoryError, match=r"not on the layer's base.*### test file:"):
         parse_package(additions(PATH, ADDED), LAYER, STORY, base={}.get)
