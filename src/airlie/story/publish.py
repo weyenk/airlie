@@ -470,12 +470,20 @@ class Publisher:
             await self.run(["git", "push", "-q", self.remote, branch], wt, env)
 
     async def create_draft(self, wt: Path, branch: str, base: str, title: str) -> None:
-        """Open one draft PR on `branch` against `base`: plain gh, no gh-stack (a single-PR story opens its
-        one PR this way)."""
-        _refuse_option_like(branch)
+        """Open one draft PR on `branch`, already pushed (push_top), against `base`, a branch on the remote
+        (not a remote-tracking ref such as origin/main): plain gh, no gh-stack (a single-PR story opens its
+        one PR this way). An open PR on `branch` (an interrupted publish) is left as it is. gh without a
+        terminal needs a body as well as a title: a placeholder, which describe replaces."""
+        _refuse_option_like(branch, base)
         async with self._step(wt) as env:
+            listed = ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"]
+            if json.loads(await self.run(listed, wt, env) or "[]"):
+                return
             await self.run(
-                ["gh", "pr", "create", "--draft", "--base", base, "--head", branch, "--title", title],
+                [
+                    *("gh", "pr", "create", "--draft", "--base", base, "--head", branch),
+                    *("--title", title, "--body", "The description follows."),
+                ],
                 wt,
                 env,
             )

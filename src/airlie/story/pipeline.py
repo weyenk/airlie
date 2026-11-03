@@ -2121,7 +2121,11 @@ class StoryPipeline:
             if self.publisher.publish == "single":
                 # one draft PR on the top branch: its commits are the layers' in layer order; no gh stack
                 top = branches[-1]
-                base = st.base["ref"] if st.base else self.s.trunk
+                stacks_on = st.base.get("story") if st.base else None
+                # a dependent story's PR sits on its dependency's top branch; any other on the trunk: a
+                # branch name gh reads as one, never the remote-tracking ref (origin/main) it was built on
+                base = st.base["ref"] if stacks_on and st.base else self.s.trunk
+                await self.publisher.push_top(wt, top)
                 await self.publisher.create_draft(wt, top, base, story.title)
                 (n, u) = await self.publisher.pr(wt, top)
                 prs = [(n, u)]
