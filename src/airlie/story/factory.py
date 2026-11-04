@@ -7,7 +7,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable, Coroutine
+import time
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -45,7 +46,8 @@ from airlie.story.model import (
 from airlie.story.pipeline import StoryPipeline, _cap, _redact_urls
 from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
-from airlie.story.state import STAGES, StoryState, lane_lock, lock_held
+from airlie.story.restart import FRESH, Restarted, restart
+from airlie.story.state import STAGES, StoryState, lane_lock, lane_record, lock_held
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -264,18 +266,21 @@ async def run_one(
     """Build, or resume, the story of `card`: where `placed` says (`repo` is a person's --repo), gated by
     `test_cmd` (a person's --test-cmd), else by the test gate of the repository's AGENTS.md. It plans under
     the planning lane's lock and then builds under the build lane's, in turn (a job holds one lane): a
-    planning job or a build already running is StoryBusy, naming the lane."""
+    planning job or a build already running is StoryBusy, naming the lane. Each lane it holds names the story
+    (`lane_record`), as the line's jobs do, so the line's row and a restart's running check see it."""
     pipe: StoryPipeline | None = None
+    state = cfg.observability.state_dir.expanduser()
     with lane_lock(stories_dir(cfg), "plan") as held:
         if not held:
             raise StoryBusy(
                 "the planning lane is in use (one planning job at a time); try again when it ends"
             )
-        where = await placed(cfg, board, card, repo)
-        pipe = make_pipeline(
-            cfg, board=board, repo=where.repo, test_cmd=test_cmd, github_repo=where.github_repo
-        )
-        st = await pipe.plan(card)
+        with lane_record(state, "plan", card.key, "plan", time.time()):
+            where = await placed(cfg, board, card, repo)
+            pipe = make_pipeline(
+                cfg, board=board, repo=where.repo, test_cmd=test_cmd, github_repo=where.github_repo
+            )
+            st = await pipe.plan(card)
         if st.blocked is not None or not st.done(PLANNED):
             return st  # a stop, or a wait for the story it stacks on: nothing to build yet
     with lane_lock(stories_dir(cfg), "build") as held:
@@ -284,7 +289,8 @@ async def run_one(
                 "another story is in flight (one at a time); it is planned, and the tick builds it when "
                 "the build lane is free"
             )
-        return await pipe.build(card)
+        with lane_record(state, "build", card.key, "story", time.time()):
+            return await pipe.build(card)
 
 
 async def restack_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path | None = None) -> str:
@@ -297,6 +303,42 @@ async def restack_one(cfg: AirlieConfig, *, board: Board, card: Card, repo: Path
         where = await placed(cfg, board, card, repo)
         pipe = make_pipeline(cfg, board=board, repo=where.repo, github_repo=where.github_repo)
         return await pipe.restack(card)
+
+
+async def restart_one(
+    cfg: AirlieConfig,
+    key: str,
+    point: str = FRESH,
+    *,
+    by: str = "person",
+    running: Callable[[str], bool] | None = None,
+) -> Restarted:
+    """Start the story `key` over from `point` (restart.restart: its PRs closed, its branches and worktrees
+    removed, its record archived, the card back in approved), as `by` asked. An item that is not a story is
+    the board's BoardError; a story running now (its serve job, by `running`, or a lane) is StoryRunning; a
+    merged PR, a point not reached or kept layers that do not replay on the trunk is a RestartError. It takes
+    no lane: the story's own job is what must not run, and any other may."""
+    board = make_board(cfg)
+    card = await board.card(key)
+    publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish=cfg.story.publish)
+
+    async def replay(c: Card, onto: str, layers: Mapping[str, str]) -> dict[str, str]:
+        # in the checkout the story was built in, as its record says (its branches are there)
+        saved = _recorded(cfg, c)
+        pipe = make_pipeline(cfg, board=board, repo=Path(saved["repo"]), github_repo=saved.get("github_repo"))
+        return await pipe.replay_layers(c, onto, layers)
+
+    return await restart(
+        card,
+        point,
+        board=board,
+        publisher=publisher,
+        stories_dir=stories_dir(cfg),
+        trunk=cfg.story.trunk,
+        by=by,
+        running=running,
+        replay=replay,
+    )
 
 
 async def body_one(cfg: AirlieConfig, *, board: Board, card: Card, nn: str, repo: Path | None = None) -> str:

@@ -1393,6 +1393,43 @@ def story_restack(
     console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
 
 
+@story_app.command("restart")
+def story_restart(
+    ref: Annotated[str | None, typer.Argument(metavar="ISSUE", help="the story's key (AIR-7)")] = None,
+    point: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="the step to start over from: refine (from scratch), layers, amigos, packages or layer-NN",
+        ),
+    ] = "refine",
+    config: ConfigOpt = None,
+) -> None:
+    """Start a story over from a step, on the trunk as it is now: its open PRs are closed and their branches
+    deleted, the branches and worktrees of the layers that go are removed, its record is archived under
+    archive/stories/ in the state directory, the layers a `layer-NN` keeps are replayed on the trunk and held
+    to the story's gate there, and the card goes back to approved for the line. A story that is running, has
+    a merged PR, has not reached the step, or whose kept layers do not replay is refused, with nothing
+    changed."""
+    from airlie.story import factory
+    from airlie.story.board import BoardError
+    from airlie.story.model import StoryRunning, StorySetupError
+    from airlie.story.publish import PublishError
+    from airlie.story.restart import RestartError, RestartIncomplete
+
+    if ref is None:
+        err.print("[red]pass the story's key (AIR-7)[/red]")
+        raise typer.Exit(2)
+    cfg = _story_cfg(config)
+    try:
+        done = _run_stoppable(factory.restart_one(cfg, ref, point))
+    except (BoardError, StorySetupError, StoryRunning, RestartError, RestartIncomplete, PublishError) as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(1) from None
+    line = done.note or f"{done.key}: back in approved (it had no record to set aside)"
+    console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+
+
 @story_app.command("pr-body")
 def story_pr_body(
     ref: Annotated[

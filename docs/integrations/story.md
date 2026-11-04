@@ -525,8 +525,10 @@ the stopped stage runs again. A failed layer's kept worktree and branch are remo
 from its base, so copy anything you want from them before you run it. The refined story, the layer plan, the commit
 the story builds on (the trunk as fetched when it started) and its test gate are kept, so editing the issue after
 the refine, or `AGENTS.md` after the start, changes nothing: to start over, delete the story's `state.json` (its
-events, notes and PR bodies stay beside it) and the layer branches it made. To make the tick retry a blocked story,
-move the issue back to *To Do*.
+events, notes and PR bodies stay beside it) and the layer branches it made. To make the line retry a blocked story
+on the local board, move its card to *approved*: the line picks up only *approved* and *doing* stories, and a card
+in *todo* or *blocked* holds itself and everything under it. With Jira, move the issue back to *To Do*, which the
+tick takes.
 
 **Restack** a stopped story when the trunk has moved on with something it needs (a fix to a test its gate runs,
 say): `task story:restack -- AIR-7`. Its built layers are replayed in order on the trunk, fetched now, in a checkout
@@ -535,6 +537,32 @@ branches move (together), the stopped layer's kept worktree and branch are remov
 layers), and the story's base becomes the trunk: the next `task story -- AIR-7` builds the stopped layer on today's
 code. A conflict or a failing gate names the layer and changes nothing. A story that has published its PRs is not
 moved, and the story keeps its test gate.
+
+**Restart from a step** when a story went wrong somewhere and you want the line to do it again from there,
+on today's trunk: *Restart from here* on that step of the story's pipeline (the workflow screen; the hover card,
+or the bottom sheet on a phone), `task story:restart -- AIR-7 [--from STEP]`, or
+`POST /v1/airlie/stories/AIR-7/restart {"from": "STEP"}`. The steps are `refine` (from scratch: the default),
+`layers` (the story as refine wrote it, before the meeting reworded it, is kept), `amigos` (the layer plan as the
+architect split it too), `packages` (the agreed plan) and `layer-NN` (the layers below NN too). Those two go back
+to what the story kept when its meeting started (`refined_story`, `refined_layers` in `state.json`); a story
+recorded before airlie kept them is refused them, and is started over from `refine`. The trunk is fetched first; the layers a `layer-NN` keeps are replayed on it
+in a checkout of their own and held to the story's gate there, as a restack holds them. Then the story's open PRs
+are closed with a comment (`started over from <step>; this PR is superseded`) and their branches deleted on
+GitHub, as the story published them (as the bot or as you); the branches and kept worktrees of the layers that go
+are removed; the story's directory is archived under `archive/stories/` in the state directory (moved whole
+from scratch, `<KEY>-fresh-<time>`; copied otherwise, `<KEY>-from-<step>-<time>`, and the record kept in place
+with the steps from there cleared, the trunk as its base and, with no layer kept, its test gate read there
+again); the card gets a note naming the trunk's commit and the archive, and goes back to *approved*, moved by
+whoever asked. The line's next beat plans or builds it from there; from scratch it is refined from the card as
+it reads then. It is refused, with nothing changed, while the story runs (its serve job, a line's job, or a
+`task story`, each of which names its lane in `line/lanes/`: a `409` over HTTP, and the button says to stop it
+first), once a PR of it is merged, for a step it has not reached, when another story holds the build lane (the
+replay runs in it), and when a kept layer conflicts with the trunk or fails its gate there (the message names the
+layer and says to start over from an earlier step: each a `422`). From the running check to the end the card
+waits out of the line, in *todo* (with Jira, in *Blocked* when it was in *To Do*), so no beat picks it while the
+gate runs on the replay; a refusal puts it back where it was. A run that fails once the first PR is closed (gh
+refusing a close, the board, git: a `502`) leaves the card out of the line and is finished by asking again: a
+closed PR, a deleted branch, a removed worktree or a kept branch already moved onto the trunk is taken as done.
 
 **See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
 from the story's state and the board: no network, nothing published, so a body can be read before the stack is
@@ -546,7 +574,8 @@ airlie build and a test count as git trailers (`git log --format=%(trailers)`), 
 **A signal or a cancel** (Ctrl-C, SIGTERM, SIGHUP, or `DELETE` on a `task serve` job) stops the story at once. airlie
 kills the `gh` it started so nothing keeps pushing, comments `stopped by a signal or a cancel during '<stage>'; it
 is back in To Do and the next run resumes it`, moves the issue to *To Do* (waiting at most 10 s for Jira) and
-exits. The tick takes *To Do* issues, so its next beat resumes the story from its last finished stage.
+exits. With Jira the tick takes *To Do* issues, so its next beat resumes the story from its last finished stage; on
+the local board *todo* holds the card, and the story resumes once a person moves it to *approved* again.
 
 **A killed airlie** (SIGKILL, a crash, a power cut) cannot say so: the issue stays where the last step left it
 (normally *In Progress*), with no stop comment. Run the same command to resume.

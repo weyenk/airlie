@@ -364,6 +364,18 @@ class JiraBoard:
             if page.get("isLast", True) or not token:
                 return issues
 
+    async def column_of(self, card: Card) -> Column | None:
+        """The column the issue's status is (story.jira.statuses, in any case), or None for a status no column
+        names: where a restart's hold finds it, to put it back (airlie.story.restart)."""
+        now = await self._send("GET", _issue(card), params={"fields": "status"})
+        name = str(now["fields"]["status"]["name"]).casefold()
+        columns: tuple[Column, ...] = ("intake", "building", "review", "blocked")
+        for column in columns:
+            want: str | None = getattr(self.spec.statuses, column)
+            if want is not None and want.casefold() == name:
+                return column
+        return None
+
     async def move(self, card: Card, column: Column) -> None:
         """Transition the issue to the column's status: nothing for a switched-off column (blocked: null) or
         an issue already there; BoardError names the wanted status and the ones its workflow offers."""

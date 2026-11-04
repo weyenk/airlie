@@ -889,3 +889,29 @@ def test_story_describe_names_the_prs_it_edited_and_says_why_it_refused(
     monkeypatch.setattr(factory, "describe_one", refused)
     r = runner.invoke(cli.app, ["story", "describe", "AIR-7", "--config", p])
     assert r.exit_code == 1 and "published no PRs" in r.output
+
+
+def test_restart_moves_a_story_with_no_record_to_approved_and_says_so(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+
+    p = story_cfg(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
+    store = BoardStore(cfg.observability.state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    story = store.create(level="story", title="Avatars")
+    r = runner.invoke(cli.app, ["story", "restart", story.key, "--config", str(p)])
+    assert r.exit_code == 0, r.output
+    assert f"{story.key}: back in approved" in r.output
+    assert store.get(story.key).status == "approved"
+
+
+def test_restart_from_a_step_a_story_has_not_reached_is_a_message_and_exit_one(tmp_path: Path) -> None:
+    from airlie.board import BoardStore
+
+    p = story_cfg(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES)
+    store = BoardStore(cfg.observability.state_dir / "board.sqlite", prefix=cfg.board.prefix)
+    story = store.create(level="story", title="Avatars")
+    r = runner.invoke(cli.app, ["story", "restart", story.key, "--from", "layer-02", "--config", str(p)])
+    assert r.exit_code == 1 and "has not started" in r.output
+    assert store.get(story.key).status == "todo"
+    assert runner.invoke(cli.app, ["story", "restart", "--config", str(p)]).exit_code == 2

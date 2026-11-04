@@ -52,6 +52,8 @@ from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
 from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
+from airlie.story.publish import PublishError
+from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
 from airlie.teams.worktree import rev_parse
@@ -279,6 +281,15 @@ class LineRequest(BaseModel):
     paused: bool
 
 
+class RestartRequest(BaseModel):
+    """Where to start a story over from (`from`): `refine` (from scratch, the default), a later step
+    (`layers`, `amigos`, `packages`) or `layer-NN` (airlie.story.restart)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    point: str = Field(default=FRESH, alias="from")
+
+
 class PickRequest(BaseModel):
     """A person's pick among an epic's mockup pages (D4): the option's number, 1 to 9."""
 
@@ -300,6 +311,12 @@ def _initiative_job_factory() -> Callable[..., Any]:
     from airlie.story.factory import initiative_job
 
     return initiative_job
+
+
+def _story_restart_factory() -> Callable[..., Any]:
+    from airlie.story.factory import restart_one
+
+    return restart_one
 
 
 def _story_job_factory() -> Callable[..., Any]:
@@ -373,6 +390,7 @@ def create_app(
     api_key: str | None = None,
     story_job: Callable[..., Any] | None = None,
     initiative_job: Callable[..., Any] | None = None,
+    story_restart: Callable[..., Any] | None = None,
     auth_store: AuthStore | None = None,
     now: Callable[[], float] = time.time,
     next_dir: Path | None = None,
@@ -382,7 +400,9 @@ def create_app(
     """`api_key`: when set, `Authorization: Bearer <key>` is the admin; every /v1 route needs a principal
     (the key, a Tailscale identity or a passkey session: airlie.auth.principal).
     `story_job` builds the job `POST /v1/airlie/stories` starts (default: airlie.story.factory.story_job);
-    `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job).
+    `initiative_job` the one the initiative routes start (default: airlie.story.factory.initiative_job);
+    `story_restart` what `POST /v1/airlie/stories/{key}/restart` runs (default:
+    airlie.story.factory.restart_one).
     `auth_store` (default: observability.state_dir/auth.sqlite), `now` and `next_dir` (the Vue app's build,
     default NEXT_DIR), `tick_s` (the line's beat interval, default line.tick_s) and `line_beat` (replaces the
     line's beat, given the function that starts a lane's job) are for tests."""
@@ -400,6 +420,7 @@ def create_app(
     app.state.watcher = watcher
     make_story = story_job or _story_job_factory()
     make_initiative = initiative_job or _initiative_job_factory()
+    restart_story = story_restart or _story_restart_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board, feed.publish))
 
@@ -792,6 +813,36 @@ def create_app(
         except ValueError as e:
             raise HTTPException(409, str(e)) from e
         return JSONResponse({"job_id": job.id, "kind": job.kind}, status_code=202)
+
+    @app.post("/v1/airlie/stories/{key}/restart")
+    async def story_restart_post(
+        key: str, request: Request, req: RestartRequest | None = None
+    ) -> dict[str, Any]:
+        """Start the story `key` over from a step (airlie.story.restart), as the person signed in: its open
+        PRs closed, the branches and worktrees of what goes removed, its record archived, the rest moved onto
+        the trunk fetched now, the card back in approved. 409 while it runs; 422 for an item that is not a
+        story, a merged PR, a step it has not reached or kept layers that do not replay on the trunk, each
+        refused before anything changed. 502 when gh cannot read the PRs (nothing changed), and for any
+        failure once the first PR was closed (RestartIncomplete, whatever raised it: the card waits out of the
+        line, and the same request again finishes it)."""
+        principal = owner_of(request)
+        by = principal.name if principal is not None else "person"
+        try:
+            point = (req or RestartRequest()).point  # no body: from scratch
+            done = await restart_story(cfg, key, point, by=by, running=job_running)
+        except RestartIncomplete as e:
+            feed.publish("board", key)  # the card moved out of the line
+            raise HTTPException(502, str(e)) from e
+        except StoryRunning as e:
+            raise HTTPException(409, str(e)) from e
+        except (RestartError, BoardError) as e:
+            raise HTTPException(422, str(e)) from e
+        except StorySetupError as e:
+            raise HTTPException(400, str(e)) from e
+        except PublishError as e:
+            raise HTTPException(502, f"{e}; nothing was changed: send it again") from e
+        feed.publish("board", key)
+        return dict(done.to_dict())
 
     @app.post("/v1/airlie/initiatives", status_code=202)
     async def start_initiative(req: InitiativeRequest, request: Request) -> Response:

@@ -529,6 +529,28 @@ class Publisher:
                     return False
         return True
 
+    async def pr_state(self, repo: Path, number: int) -> str:
+        """The state of pull request `number` as gh says it (OPEN, CLOSED or MERGED). Only reads; a gh that
+        fails is a PublishError."""
+        async with self._step(repo) as env:
+            out = await self.run(["gh", "pr", "view", str(int(number)), "--json", "state"], repo, env)
+        try:
+            return str(json.loads(out)["state"])
+        except (ValueError, KeyError, TypeError):
+            raise PublishError(
+                f"gh said no state for pull request #{number}: {out.strip()[:200]!r}"
+            ) from None
+
+    async def close(self, repo: Path, number: int, comment: str) -> None:
+        """Close pull request `number` with `comment` and delete its branch on the remote. The repository is
+        named with -R, so gh deletes only the remote's branch (it deletes the local one too when it picks the
+        repository itself): the caller removes the local branch, after the worktrees that may hold it."""
+        args = ["gh", "pr", "close", str(int(number)), "--comment", comment, "--delete-branch"]
+        async with self._step(repo) as env:
+            if self.repository is not None:
+                args += ["-R", self.repository]
+            await self.run(args, repo, env)
+
     async def describe(self, wt: Path, branch: str, title: str, body: Path) -> None:
         _refuse_option_like(branch)
         async with self._step(wt) as env:

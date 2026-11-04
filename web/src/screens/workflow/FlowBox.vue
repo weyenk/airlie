@@ -14,7 +14,7 @@ const pick = () => emit("pick", props.nodeId, props.job.id);
 </script>
 
 <template>
-  <JobHover :card="job.card">
+  <JobHover :card="job.card" :node-id="nodeId">
     <button
       v-if="job.shape === 'milestone'"
       type="button"

@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
@@ -53,7 +52,7 @@ from airlie.story.phase import (
     write_phase,
 )
 from airlie.story.pipeline import StoryPipeline
-from airlie.story.state import Lane, StoryState, lane_lock, lock_held
+from airlie.story.state import Lane, StoryState, lane_lock, lane_record, lock_held
 
 Spawn = Callable[["Job"], None]
 """Starts a lane's job in the background and returns at once (the serve process registers it in its jobs)."""
@@ -289,18 +288,9 @@ class Line:
 
     @contextlib.contextmanager
     def _working(self, lane: Lane, key: str, what: str) -> Iterator[None]:
-        """`line/lanes/<lane>.json` names what the lane is doing (and since when) for as long as its job runs;
-        taken only by the holder of the lane's lock, so a job that found the lane held leaves the holder's
-        record alone. The row believes it only while the lock is held."""
-        path = self.state_dir / "line" / "lanes" / f"{lane}.json"
-        with contextlib.suppress(OSError):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"key": key, "what": what, "started": self.now(), "pid": os.getpid()}))
-        try:
+        """The lane's record of what it is doing for as long as its job runs (`lane_record`)."""
+        with lane_record(self.state_dir, lane, key, what, self.now()):
             yield
-        finally:
-            with contextlib.suppress(OSError):
-                path.unlink(missing_ok=True)
 
     async def run_job(self, job: Job) -> str:
         """Run a job to its end. A failure is that lane's line, never the other lane's."""
