@@ -122,9 +122,14 @@ roles:
     max_context: 131072
     # 16384 until 2026-11-01: AIR-47 layer 02's package (8 tests added to test_story_pipeline.py, 40k chars of
     # tests + 13k of files, steps and covers) was cut off at the cap; the reply was the package, not a copied file
-    max_tokens: 24576
+    # 24576 until 2026-11-04, raised with the thinking budget so the answer keeps its 22528
+    max_tokens: 28672
     thinking: true
-    thinking_budget: 2048            # 8192 until 2026-10-26: the roman bench's architect wrote to the cap on nearly every call (lever 1 of 3, Noah)
+    # 8192 until 2026-10-26 (the roman bench's architect wrote to the cap on nearly every call: lever 1 of 3,
+    # Noah); 2048 until 2026-11-04: a package step's design was cut at the cap, only 1500 chars of it carried,
+    # and the architect re-derived it behind a filler read until the repeat guard or max_steps stopped it
+    # (AIR-54, AIR-55, AIR-59; 20 unusable packages against 17 ready since 2026-10-26)
+    thinking_budget: 6144
     last_turn_thinking: false
     nudge_stuck: true
     max_steps: 20
