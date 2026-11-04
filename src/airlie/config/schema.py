@@ -181,6 +181,14 @@ class RoleSpec(Strict):
         "characters of its reasoning back after the tool result, to continue from rather than start over "
         "(AIR-30); one such message at a time, replaced by the next; 0 = off",
     )
+    answer_after_cuts: int = Field(
+        default=0,
+        ge=0,
+        description="after this many reads in a row whose thinking reached thinking_budget, the next turn is "
+        "the final answer (no tools, as after max_steps) with the whole of the last reasoning sent back, not "
+        "its carried tail: the architect began each cut package step's design again and never answered "
+        "(AIR-54, AIR-55, AIR-59, 2026-11-04); 0 = off",
+    )
     nudge_stuck: bool = Field(
         default=False,
         description="the first time the role repeats the same action it is told to do something different "
