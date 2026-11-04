@@ -80,10 +80,11 @@ def _git(worktree: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 
 def changed_test_files(worktree: Path, base: str) -> list[str]:
-    """The test modules the worktree has added or changed since `base`, committed or not, that still exist."""
+    """The test files the worktree has added or changed since `base`, committed or not, that still exist:
+    pytest modules and JS/TS test files alike (the web-tests design, 2026-10-27)."""
     names = set(_git(worktree, "diff", "--name-only", "--diff-filter=d", base).splitlines())
     names |= set(_git(worktree, "ls-files", "--others", "--exclude-standard").splitlines())
-    return sorted(n for n in names if is_test_module(n) and (worktree / n).is_file())
+    return sorted(n for n in names if is_test_file(n) and (worktree / n).is_file())
 
 
 def tree_fingerprint(worktree: Path) -> str | None:
