@@ -328,11 +328,12 @@ def test_the_thinking_roles_of_the_committed_config_have_8192_tokens_to_answer_w
     for name in ("chief", "research"):
         role = cfg.roles[name]
         assert (role.thinking, role.thinking_budget, role.max_tokens) == (True, 8192, 16384), name
-    # the architect thinks in 6,144 since 2026-11-04 (at 2,048, from 2026-10-26, nearly every package step's
-    # design was cut short: AIR-54, AIR-55 and AIR-59 blocked on repeated reads) and keeps the 22,528 tokens
-    # to answer in it has had since 2026-11-01 (AIR-47 layer 02's package was cut off at 16,384)
+    # the architect thinks in 2,048 since 2026-10-26 (the roman bench, lever 1; 6,144 on 2026-11-04 only made
+    # its loop slower) and answers in up to 24,576 since 2026-11-01 (AIR-47 layer 02's package was cut off at
+    # 16,384); after three cut reads in a row it answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
     architect = cfg.roles["architect"]
-    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 6144, 28672)
+    assert (architect.thinking, architect.thinking_budget, architect.max_tokens) == (True, 2048, 24576)
+    assert (architect.answer_after_cuts, architect.last_turn_thinking) == (3, False)
     coder = load_config(ROOT / "airlie.yaml", NO_LOCAL, topology="studio").roles["coder"]
     assert (coder.model, coder.thinking, coder.max_tokens) == ("generalist", False, 10240)  # no thinking
 

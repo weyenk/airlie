@@ -201,6 +201,13 @@ tokens, each step slower than the last) and then spent 14-20 minutes thinking it
   budget: … Do not start over: continue from here and decide." Each stays where it was sent: removing one would
   miss the engine's prefix cache and re-prefill the whole conversation. Each is a `reasoning_carried` event
   (`step`, `chars`) (AIR-30).
+- **A deliberation cut again and again answers.** The carried tail was not enough for a package: each cut step
+  began the design again ("I've been going in circles"), read once more and was cut, until the repeat guard or
+  `max_steps` ended the drafting (AIR-54, AIR-55, AIR-59, 2026-11-04; a 6,144-token budget only made each lap
+  four minutes long). After `answer_after_cuts` such reads in a row (the architect: 3; 0 is off) the whole of
+  the last reasoning goes back in place of its tail, with "No more tools: … give your final answer now", and the
+  next turn is the final answer, as after the last step above. It is an `answer_after_cuts` event (`step`,
+  `cuts`, `chars`).
 - **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
   from the story's base commit, and the architect is told not to read them again.
 - **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then

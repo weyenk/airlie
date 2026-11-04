@@ -180,8 +180,13 @@ def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall
 
 
 _STALE_BUDGET = tuple(
-    re.compile("^" + re.escape(t).replace(re.escape("{n}"), r"\d+") + "$", re.DOTALL)
-    for t in (entry(i).body for i in ("last-step", "one-step-left", "last-turn-retry", "no-tools"))
+    re.compile(
+        "^" + re.escape(t).replace(re.escape("{n}"), r"\d+").replace(re.escape("{reasoning}"), ".*") + "$",
+        re.DOTALL,
+    )
+    for t in (
+        entry(i).body for i in ("last-step", "one-step-left", "last-turn-retry", "no-tools", "answer-now")
+    )
 )
 """The end-of-budget messages, from the hub's text, as a resumed run finds them in the last run's history."""
 
@@ -431,6 +436,8 @@ class NativeTeam:
         reads_seen: dict[str, tuple[str, int]] = {}  # a read's key -> (its path, the step that read it)
         has_run_tests = "run_tests" in ctx.tools.names()
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
+        cuts = 0  # reads in a row whose thinking reached the budget (answer_after_cuts)
+        answer_now = False  # answer_after_cuts reached: the next turn is the last one
         while True:
             step_num = steps + 1
             injected = await observer.before_step(ctx.team_id, step_num)
@@ -636,7 +643,27 @@ class NativeTeam:
                     Message(role="tool", content=result.output, tool_call_id=call.id, name=call.name)
                 )
                 tail = _carried_tail(ctx.role, bool(req.thinking), res, call)
-                if tail:  # after the observation, before any nudge; the earlier carries stay: removing one
+                cuts = cuts + 1 if tail else 0
+                if tail and ctx.role.answer_after_cuts and cuts >= ctx.role.answer_after_cuts:
+                    # the design began again on each cut turn: all of the last one goes back, and the
+                    # next turn answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
+                    reasoning = res.reasoning.strip()
+                    messages.append(
+                        Message(
+                            role="user", content=_steer(ctx, steps, "answer-now", n=cuts, reasoning=reasoning)
+                        )
+                    )
+                    answer_now = True
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "answer_after_cuts",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            cuts=cuts,
+                            chars=len(reasoning),
+                        )
+                elif tail:  # after the observation, before any nudge; the earlier carries stay: removing one
                     # mid-history misses the engine's prefix cache and re-prefills the whole conversation
                     carried = _steer(ctx, steps, "reasoning-carried", tail=tail)
                     messages.append(Message(role="user", content=carried))
@@ -783,6 +810,9 @@ class NativeTeam:
                 final_text = f"stopped: a test I may not change is wrong.\n{said[-3000:]}"
                 stop = "test_wrong"
                 break
+            if answer_now and not last_turn:  # told to answer: the turn after is the tool-less last one
+                last_turn = True
+                continue
             cycle = _loop(recent, ctx.repeat_limit)
             if cycle is not None:
                 tool = ", ".join(dict.fromkeys(cycle))

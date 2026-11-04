@@ -1846,6 +1846,77 @@ async def test_a_resumed_conversation_keeps_the_reasoning_its_last_run_carried(t
     assert carried(engine, 2) == [a, b]
 
 
+def answering_team(tmp_path: Path, engine: FakeEngine, **role_fields: Any) -> tuple[NativeTeam, TeamContext]:
+    """A thinking role told to answer after two cut reads in a row, without thinking on its last turn (the
+    architect's settings)."""
+    return thinking_team(tmp_path, engine, answer_after_cuts=2, last_turn_thinking=False, **role_fields)
+
+
+async def test_cut_reads_in_a_row_end_in_the_answer_with_all_of_the_last_reasoning(tmp_path: Path) -> None:
+    """AIR-54, AIR-55, AIR-59 (2026-11-04): the architect's every package step thought to its budget, kept the
+    carried tail, began the design again ("I've been going in circles"), was cut, read once more, until the
+    repeat guard or max_steps stopped it; a larger budget only made each lap longer. After answer_after_cuts
+    cut reads in a row the next turn is the answer: no tools, and the whole of the last reasoning, not its
+    tail."""
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
+    team, ctx = answering_team(tmp_path, engine, carried_reasoning_chars=5)
+    result = await team.run(ctx, Recorder())
+    assert (result.ok, result.stop_reason, result.final_text, result.steps) == (
+        True,
+        "done",
+        "The package.",
+        2,
+    )
+    answer = engine.requests[2]
+    assert answer.tools is None and not answer.thinking
+    assert answer.messages[-1].content == text("answer-now", n=2, reasoning=thought(8, "b"))
+    assert [m.role for m in answer.messages[-2:]] == ["tool", "user"]  # right after the observation
+    assert carried(engine, 3) == [text("reasoning-carried", tail=thought(8, "a")[-5:])]  # b's is in the ask
+
+
+async def test_a_turn_under_the_budget_starts_the_count_of_cut_reads_again(tmp_path: Path) -> None:
+    under = FakeReply(reasoning=thought(3, "u"), tool_calls=[ToolCall("u", "read_file", '{"path": "u"}')])
+    engine = FakeEngine({"coder": [cut_read("a"), under, cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = answering_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert engine.requests[3].tools is not None
+    assert text("answer-now", n=2, reasoning=thought(8, "b")) not in user_said(engine)
+
+
+async def test_cut_reads_go_on_as_before_when_answer_after_cuts_is_off(tmp_path: Path) -> None:
+    engine = FakeEngine(
+        {"coder": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="Done.")]}
+    )
+    team, ctx = thinking_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    assert all(r.tools is not None for r in engine.requests)
+
+
+async def test_answering_after_cuts_is_an_event_and_a_steer(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="Done.")]})
+    team, ctx = answering_team(tmp_path, engine)
+    ctx.emit = events = Events()
+    await team.run(ctx, Recorder())
+    assert [s["id"] for s in steers(events)] == ["reasoning-carried", "answer-now"]
+    assert [
+        {k: v for k, v in e.items() if k != "kind"}
+        for e in events.records
+        if e["kind"] == "answer_after_cuts"
+    ] == [{"team_id": "team-1", "role": "coder", "step": 2, "cuts": 2, "chars": len(thought(8, "b"))}]
+
+
+async def test_a_tool_call_on_the_answer_turn_after_cuts_gets_the_last_turns_one_retry(
+    tmp_path: Path,
+) -> None:
+    engine = FakeEngine(
+        {"coder": [cut_read("a"), cut_read("b", "b"), cut_read("c", "c"), FakeReply(text="The package.")]}
+    )
+    team, ctx = answering_team(tmp_path, engine)
+    result = await team.run(ctx, Recorder())
+    assert (result.ok, result.final_text) == (True, "The package.")
+    assert engine.requests[3].messages[-1].content == text("last-turn-retry")
+
+
 # ---- each steering text the loop sends comes from the prompt hub and is a steer event (2026-10-22) ----
 
 
@@ -1923,6 +1994,9 @@ def test_a_resumed_run_drops_hub_end_of_budget_messages() -> None:
         Message(role="user", content=text("last-step", n=40)),
         Message(role="user", content=text("last-turn-retry")),
         Message(role="user", content=text("no-tools")),
+        Message(
+            role="user", content=text("answer-now", n=3, reasoning="So the sentinel\nlives in localStorage.")
+        ),
     ]
     kept, dropped = _without_stale_budget(load_messages(dump_messages(history)))
     assert dropped
