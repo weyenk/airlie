@@ -47,6 +47,7 @@ export function inline(text: string, linkKeys: boolean): (VNode | string)[] {
 }
 
 const HEADING = /^(#{1,6})\s+(.*)$/;
+const GWT = /^(Given|When|Then)(\s.*)?$/;
 const BULLET = /^\s*[-*]\s+(.*)$/;
 const NUMBERED = /^\s*\d+[.)]\s+(.*)$/;
 
@@ -82,8 +83,14 @@ export function blocks(text: string, linkKeys: boolean): VNode[] {
       out.push(h(list === BULLET ? "ul" : "ol", { class: list === BULLET ? "list-disc pl-5" : "list-decimal pl-5" }, items));
       continue;
     }
+    const gwt = GWT.exec(line);
+    if (gwt) {
+      out.push(h("p", [h("span", { class: "font-semibold text-primary" }, gwt[1]), ...inline(line.slice(gwt[1].length), linkKeys)]));
+      i++;
+      continue;
+    }
     const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !lines[i].trimStart().startsWith("```") && !HEADING.test(lines[i]) && !BULLET.test(lines[i]) && !NUMBERED.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !lines[i].trimStart().startsWith("```") && !HEADING.test(lines[i]) && !BULLET.test(lines[i]) && !NUMBERED.test(lines[i]) && !GWT.test(lines[i])) {
       para.push(lines[i++]);
     }
     out.push(h("p", inline(para.join(" "), linkKeys)));
