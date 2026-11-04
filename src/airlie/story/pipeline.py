@@ -989,6 +989,10 @@ class StoryPipeline:
             if not st.done("layers"):
                 st.finish("layers")
             return Agreement.from_dict(st.agreement)
+        # the story and the plan as refine and the split left them, before the agreement (and later a reworded
+        # criterion) replaces them: a restart from the layer plan or the meeting goes back to these
+        st.refined_story, st.refined_layers = story.to_dict(), [x.to_dict() for x in layers]
+        st.save()
         if st.done("layers") or not self.s.amigos.enabled:
             plain = Agreement(story, layers, ())
             st.agreement = plain.to_dict()

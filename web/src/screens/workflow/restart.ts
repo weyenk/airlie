@@ -20,8 +20,10 @@ export function restartPoint(node: FlowNode): string | null {
 /** What a restart from `point` keeps, in words for the confirm dialog. */
 export function restartKeeps(point: string): string {
   if (point === "refine") return "Nothing: the story is refined again from the card as it reads now.";
-  if (point === "layers") return "The refined story.";
-  if (point === "amigos") return "The refined story and its layer plan.";
+  // the meeting's agreement (and a criterion reworded in the build) replaced them; the server keeps them as they
+  // stood before the meeting and restores those
+  if (point === "layers") return "The story as refine wrote it, before the meeting changed it.";
+  if (point === "amigos") return "The story and its layer plan as they stood before the meeting.";
   if (point === "packages" || point === "layer-01") return "The agreed plan: the story, its layers and their proof.";
   const below = String(Number(point.slice("layer-".length)) - 1).padStart(2, "0");
   return `The agreed plan and layers 01 to ${below}, replayed on the latest main and checked by the story's gate there.`;

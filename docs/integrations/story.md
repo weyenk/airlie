@@ -535,8 +535,10 @@ moved, and the story keeps its test gate.
 on today's trunk: *Restart from here* on that step of the story's pipeline (the workflow screen; the hover card,
 or the bottom sheet on a phone), `task story:restart -- AIR-7 [--from STEP]`, or
 `POST /v1/airlie/stories/AIR-7/restart {"from": "STEP"}`. The steps are `refine` (from scratch: the default),
-`layers` (the refined story is kept), `amigos` (the layer plan too), `packages` (the agreed plan too) and
-`layer-NN` (the layers below NN too). The trunk is fetched first; the layers a `layer-NN` keeps are replayed on it
+`layers` (the story as refine wrote it, before the meeting reworded it, is kept), `amigos` (the layer plan as the
+architect split it too), `packages` (the agreed plan) and `layer-NN` (the layers below NN too). Those two go back
+to what the story kept when its meeting started (`refined_story`, `refined_layers` in `state.json`); a story
+recorded before airlie kept them is refused them, and is started over from `refine`. The trunk is fetched first; the layers a `layer-NN` keeps are replayed on it
 in a checkout of their own and held to the story's gate there, as a restack holds them. Then the story's open PRs
 are closed with a comment (`started over from <step>; this PR is superseded`) and their branches deleted on
 GitHub, as the story published them (as the bot or as you); the branches and kept worktrees of the layers that go
@@ -545,13 +547,17 @@ from scratch, `<KEY>-fresh-<time>`; copied otherwise, `<KEY>-from-<step>-<time>`
 with the steps from there cleared, the trunk as its base and, with no layer kept, its test gate read there
 again); the card gets a note naming the trunk's commit and the archive, and goes back to *approved*, moved by
 whoever asked. The line's next beat plans or builds it from there; from scratch it is refined from the card as
-it reads then. It is refused, with nothing changed, while the story runs (its serve job, or a lane of the line:
-a `409` over HTTP, and the button says to stop it first), once a PR of it is merged, for a step it has not
-reached, and when a kept layer conflicts with the trunk or fails its gate there (the message names the layer
-and says to start over from an earlier step: each a `422`). A run that fails part-way (gh refusing a close,
-a `502`) is finished by asking again: a closed PR, a deleted branch or a removed worktree is skipped.
+it reads then. It is refused, with nothing changed, while the story runs (its serve job, a line's job, or a
+`task story`, each of which names its lane in `line/lanes/`: a `409` over HTTP, and the button says to stop it
+first), once a PR of it is merged, for a step it has not reached, when another story holds the build lane (the
+replay runs in it), and when a kept layer conflicts with the trunk or fails its gate there (the message names the
+layer and says to start over from an earlier step: each a `422`). From the running check to the end the card
+waits out of the line, in *todo* (with Jira, in *Blocked* when it was in *To Do*), so no beat picks it while the
+gate runs on the replay; a refusal puts it back where it was. A run that fails once the first PR is closed (gh
+refusing a close, the board, git: a `502`) leaves the card out of the line and is finished by asking again: a
+closed PR, a deleted branch, a removed worktree or a kept branch already moved onto the trunk is taken as done.
 
-**See or refresh a layer's PR text.****See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
+**See or refresh a layer's PR text.** `task story:pr-body -- AIR-7 2` prints the body layer 2 would get now,
 from the story's state and the board: no network, nothing published, so a body can be read before the stack is
 opened. `task story:describe -- AIR-7` rebuilds the title and body of every PR a published story has and edits
 them with `gh pr edit` (as you, or as the bot). It changes PRs on GitHub, so it runs only when you ask; the tick

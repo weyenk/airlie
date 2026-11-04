@@ -53,7 +53,7 @@ from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupEr
 from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
 from airlie.story.publish import PublishError
-from airlie.story.restart import FRESH, RestartError
+from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
 from airlie.teams.worktree import rev_parse
@@ -822,12 +822,17 @@ def create_app(
         PRs closed, the branches and worktrees of what goes removed, its record archived, the rest moved onto
         the trunk fetched now, the card back in approved. 409 while it runs; 422 for an item that is not a
         story, a merged PR, a step it has not reached or kept layers that do not replay on the trunk, each
-        with nothing changed; 502 when gh or git fails part-way (the same request again finishes it)."""
+        refused before anything changed. 502 when gh cannot read the PRs (nothing changed), and for any
+        failure once the first PR was closed (RestartIncomplete, whatever raised it: the card waits out of the
+        line, and the same request again finishes it)."""
         principal = owner_of(request)
         by = principal.name if principal is not None else "person"
         try:
             point = (req or RestartRequest()).point  # no body: from scratch
             done = await restart_story(cfg, key, point, by=by, running=job_running)
+        except RestartIncomplete as e:
+            feed.publish("board", key)  # the card moved out of the line
+            raise HTTPException(502, str(e)) from e
         except StoryRunning as e:
             raise HTTPException(409, str(e)) from e
         except (RestartError, BoardError) as e:
@@ -835,7 +840,7 @@ def create_app(
         except StorySetupError as e:
             raise HTTPException(400, str(e)) from e
         except PublishError as e:
-            raise HTTPException(502, f"{e}; send it again to finish") from e
+            raise HTTPException(502, f"{e}; nothing was changed: send it again") from e
         feed.publish("board", key)
         return dict(done.to_dict())
 

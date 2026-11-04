@@ -81,6 +81,13 @@ class StoryState:
     meeting: dict[str, Any] | None = None
     """The meeting's team state after its latest turn, saved every turn so a killed story resumes it; None
     outside a meeting and once the agreement is stored."""
+    refined_story: dict[str, Any] | None = None
+    """The story as refine left it, written when the meeting starts: the agreement, and a criterion reworded
+    while a layer is built, replace `story`, and a restart from the layer plan or the meeting goes back to
+    this one (airlie.story.restart). None: no meeting has started since it was kept (or before it was)."""
+    refined_layers: list[dict[str, Any]] | None = None
+    """The layer plan as the architect split it, written beside `refined_story` for a restart from the
+    meeting."""
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
     drafted: bool = False
     """Whether the architect's conversation that drafts every layer's package has been held (amendment of
@@ -256,3 +263,20 @@ def lock_held(stories_dir: Path, lane: Lane) -> bool:
     takes it with `lane_lock` and may still lose it."""
     with lane_lock(stories_dir, lane) as held:
         return not held
+
+
+@contextmanager
+def lane_record(state_dir: Path, lane: Lane, key: str, what: str, now: float) -> Iterator[None]:
+    """`line/lanes/<lane>.json` in the state directory names what the lane is doing (and since when, `now`)
+    for as long as its job runs. Only the holder of the lane's lock writes it (the line's jobs, and
+    `task story`'s run_one), so a job that found the lane held leaves the holder's record alone; the line's
+    row and a restart's running check believe it only while the lock is held."""
+    path = state_dir / "line" / "lanes" / f"{lane}.json"
+    with suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"key": key, "what": what, "started": now, "pid": os.getpid()}))
+    try:
+        yield
+    finally:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)

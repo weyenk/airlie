@@ -14,7 +14,7 @@ from airlie.serve.app import create_app
 from airlie.story.board import BoardError
 from airlie.story.model import StoryRunning
 from airlie.story.publish import PublishError
-from airlie.story.restart import Restarted, RestartError
+from airlie.story.restart import Restarted, RestartError, RestartIncomplete
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_serve import FakeUpstream
 from tests.unit.test_studio_orchestrator import cfg_for
@@ -50,17 +50,21 @@ def test_what_a_restart_refuses_is_a_409_or_a_422_and_gh_failing_part_way_a_502(
         RestartError("story AIR-7's PR #12 is merged"),
         BoardError("AIR-3 is an epic; only stories are built"),
         RestartError("layer 01 conflicts with the trunk; start it over from an earlier step"),
-        PublishError("`gh pr close 12` exited 1: HTTP 502"),
+        PublishError("`gh pr view 12` exited 1: HTTP 502"),  # reading the PRs: nothing changed yet
+        # part-way: a board or git failing after the PRs were closed is no refusal, whatever it raised
+        RestartIncomplete("the board is down; the restart stopped part-way ...: run it again to finish"),
+        RestartIncomplete("`git update-ref` exited 128; ...: run it again to finish"),
     ]
 
     async def restart(cfg: Any, key: str, point: str, *, by: str, running: Any) -> Restarted:
         raise failures.pop(0)
 
     with TestClient(app_with(tmp_path, restart)) as client:
-        got = [client.post("/v1/airlie/stories/AIR-7/restart", json={"from": "refine"}) for _ in range(5)]
-    assert [r.status_code for r in got] == [409, 422, 422, 422, 502]
+        got = [client.post("/v1/airlie/stories/AIR-7/restart", json={"from": "refine"}) for _ in range(7)]
+    assert [r.status_code for r in got] == [409, 422, 422, 422, 502, 502, 502]
     assert "is merged" in got[1].json()["detail"] and "earlier step" in got[3].json()["detail"]
-    assert "send it again" in got[4].json()["detail"]
+    assert "nothing was changed" in got[4].json()["detail"]
+    assert all("run it again to finish" in r.json()["detail"] for r in got[5:])
 
 
 def test_a_restart_needs_a_sign_in(tmp_path: Path) -> None:

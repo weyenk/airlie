@@ -31,7 +31,7 @@ from airlie.story.local_board import LocalBoard
 from airlie.story.model import PLANNED, StoryRunning, StorySetupError
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError
-from airlie.story.state import Lane, StoryState, lock_held
+from airlie.story.state import Lane, StoryState, lane_lock, lock_held
 from airlie.teams.worktree import delete_branch, move_branches, remove_worktree, rev_parse
 
 FRESH = "refine"
@@ -45,8 +45,8 @@ POINTS = (FRESH, "layers", "amigos", "packages")
 _LAYER = re.compile(r"layer-(\d\d)")
 
 _KEEPS = {
-    "layers": "the refined story is kept",
-    "amigos": "the refined story and its layer plan are kept",
+    "layers": "the story as refine wrote it, before the meeting, is kept",
+    "amigos": "the story and its layer plan as they stood before the meeting are kept",
     "packages": "the agreed plan is kept",
 }
 """What a note says each later point keeps (a layer's is worded where it is made)."""
@@ -59,6 +59,11 @@ there, with nothing moved: their new commits, or a RestackError naming the layer
 
 class RestartError(Exception):
     """The story cannot be started over from there; nothing was changed."""
+
+
+class RestartIncomplete(RuntimeError):
+    """A step failed after the first one that changes anything (closing the PRs): the restart is part-way,
+    the card waits out of the line, and running the restart again finishes it. The cause is chained."""
 
 
 @dataclass(frozen=True)
@@ -124,6 +129,13 @@ def _checked(key: str, point: str, saved: dict[str, Any] | None) -> int | None:
         raise RestartError(f"story {key} has not been refined yet: start it fresh instead")
     if point == "amigos" and saved.get("layers") is None:
         raise RestartError(f"story {key} has no layer plan yet: start it over from layers instead")
+    if point in ("layers", "amigos") and saved.get("agreement") is not None:
+        wanted = ("refined_story",) if point == "layers" else ("refined_story", "refined_layers")
+        if any(saved.get(k) is None for k in wanted):
+            raise RestartError(
+                f"story {key} was recorded before airlie kept its story and layer plan as they stood "
+                "before the meeting, so they cannot be restored: start it over from refine instead"
+            )
     if (point == "packages" or nn is not None) and saved.get("agreement") is None:
         raise RestartError(f"story {key} has not been planned yet: start it over from an earlier stage")
     if nn is None:
@@ -207,8 +219,14 @@ def _cleared(
         st.gate = None
     if point in ("layers", "amigos"):
         st.stage = FRESH  # refined; the layer split and the meeting run again
+        # the story (and for the meeting the plan) as they stood before the meeting: the agreement and a
+        # reworded criterion had replaced them. A story that never met has them as they are.
+        if st.refined_story is not None:
+            st.story = st.refined_story
         if point == "layers":
-            st.layers = None
+            st.layers = st.refined_layers = None
+        elif st.refined_layers is not None:
+            st.layers = st.refined_layers
         st.agreement = None
         st.meeting = None
     else:
@@ -224,6 +242,36 @@ def _cleared(
     st.prs = []
     st.blocked = None
     st.save()
+
+
+async def _nothing() -> None:
+    return None
+
+
+async def _hold(board: Board, card: Card, by: str) -> Callable[[], Awaitable[None]]:
+    """Take the card out of the line while the story is set aside, so no beat picks it between the running
+    check and the end (the replay can hold the gate for minutes): todo on airlie's own board (as `by` moved
+    it), blocked on a board that says where a card is (`column_of`: Jira's) when it is in intake, the status
+    the tick takes. Returns what puts it back where it was, for a refusal."""
+    if isinstance(board, LocalBoard):
+        before = board.status_of(card)
+        if before == "todo":
+            return _nothing
+        board.store.update(card.key, status="todo", by=by)
+
+        async def local_back() -> None:
+            board.store.update(card.key, status=before, by=by)  # type: ignore[arg-type]
+
+        return local_back
+    column_of = getattr(board, "column_of", None)
+    if column_of is None or await column_of(card) != "intake":
+        return _nothing
+    await board.move(card, "blocked")
+
+    async def back() -> None:
+        await board.move(card, "intake")
+
+    return back
 
 
 async def _approve(board: Board, card: Card, by: str) -> None:
@@ -258,31 +306,62 @@ async def _fetched(publisher: Publisher, repo: Path, trunk: str) -> str:
     raise RestartError(f"the trunk {trunk} could not be fetched from {publisher.remote}: {failure}")
 
 
+def _replayed_already(repo: Path, branches: Mapping[str, str], sha: str) -> dict[str, str] | None:
+    """The kept layers' commits when an earlier run of this restart moved their branches onto `sha` and then
+    stopped before it recorded them: each branch one commit on the one below it (the bottom one on `sha`).
+    None when they are not."""
+    found: dict[str, str] = {}
+    below = sha
+    for nn, branch in branches.items():
+        tip = rev_parse(repo, f"refs/heads/{branch}")
+        if tip is None or rev_parse(repo, f"{tip}^") != below:
+            return None
+        found[nn] = below = tip
+    return found
+
+
 async def _onto(
-    card: Card, saved: dict[str, Any], kept: dict[str, str], sha: str, replay: Replay | None
+    card: Card,
+    saved: dict[str, Any],
+    kept: dict[str, str],
+    sha: str,
+    replay: Replay | None,
+    stories_dir: Path,
 ) -> dict[str, str]:
     """The kept layers' new commits on `sha` (the trunk fetched now), found before anything changes: each kept
-    branch must be where the record says, and the layers must replay there and pass the story's gate. Nothing
-    to replay when no layer is kept or the story is on `sha` already."""
+    branch must be where the record says (or where an earlier, interrupted run of this restart moved it), and
+    the layers must replay there and pass the story's gate, in the build lane (as a restack replays: another
+    story building is a refusal, not a wait). Nothing to replay when no layer is kept or the story is on `sha`
+    already."""
     if not kept or (saved.get("base") or {}).get("sha") == sha:
         return {}
     repo, built = Path(saved["repo"]), saved.get("built") or {}
-    for nn, at in kept.items():
-        branch = str(built[nn]["branch"])
-        if rev_parse(repo, f"refs/heads/{branch}") != at:
-            raise RestartError(
-                f"layer {nn}'s branch {branch} is not where the story left it ({at[:12]}), so nothing was "
-                "changed: put it back, or start the story over from an earlier step"
-            )
+    branches = {nn: str(built[nn]["branch"]) for nn in kept}
+    moved = [nn for nn, at in kept.items() if rev_parse(repo, f"refs/heads/{branches[nn]}") != at]
+    if moved:
+        again = _replayed_already(repo, branches, sha)
+        if again is not None:
+            return again
+        nn = moved[0]
+        raise RestartError(
+            f"layer {nn}'s branch {branches[nn]} is not where the story left it ({kept[nn][:12]}), so "
+            "nothing was changed: put it back, or start the story over from an earlier step"
+        )
     if replay is None:
         raise RestartError("the kept layers cannot be replayed here: no replay was given")
-    try:
-        return await replay(card, sha, kept)
-    except RestackError as e:
-        raise RestartError(
-            f"{e}; nothing was changed. Start the story over from an earlier step (layer-{min(kept)} or "
-            "packages) instead"
-        ) from None
+    with lane_lock(stories_dir, "build") as held:
+        if not held:
+            raise RestartError(
+                "the build lane is busy with another story, and the kept layers are replayed in it: start "
+                "this one over when it ends"
+            )
+        try:
+            return await replay(card, sha, kept)
+        except RestackError as e:
+            raise RestartError(
+                f"{e}; nothing was changed. Start the story over from an earlier step (layer-{min(kept)} or "
+                "packages) instead"
+            ) from None
 
 
 async def restart(
@@ -307,7 +386,11 @@ async def restart(
     kept layers' branches onto their replayed commits; archive its record (moved whole for a fresh start;
     copied for a later one, whose record is kept with the stages from `point` on cleared and the fetched
     trunk as its base); a note on the card; the card to approved. A story with no record is only moved to
-    approved. A step that fails raises (a PublishError from gh, say) and running it again finishes the job."""
+    approved.
+
+    From the running check to the end the card waits out of the line (`_hold`), and a refusal puts it back.
+    A step that fails once the first PR is closed is a RestartIncomplete (its cause chained): the card stays
+    out of the line, and running the restart again finishes the job."""
     key = card.key
     path = stories_dir / key
     saved = _saved(path)
@@ -322,27 +405,67 @@ async def restart(
     repo = Path(saved["repo"]) if isinstance(saved.get("repo"), str) else None
     prs = [int(p["number"]) for p in saved.get("prs") or []]
     states: dict[int, str] = {}
-    if repo is not None and prs:
-        publisher.prepare(repo, expected=saved.get("github_repo"))
-        for n in prs:
-            states[n] = await publisher.pr_state(repo, n)
-        merged = [n for n, s in states.items() if s == "MERGED"]
-        if merged:
-            raise RestartError(
-                f"story {key}'s PR #{merged[0]} is merged, and what is merged stays: make a new story for "
-                "what is left instead"
-            )
     kept = _kept(saved, layer)
     moved: dict[str, str] = {}
-    if point == FRESH:
-        sha = await _trunk_sha(publisher, repo, trunk) if repo is not None else None
-        said = f"started fresh from {trunk}"
-    else:
-        if repo is None:
-            raise RestartError(f"story {key}'s record names no repository: start it fresh instead")
-        sha = await _fetched(publisher, repo, trunk)
-        moved = await _onto(card, saved, kept, sha, replay)
-        said = f"started over from {point}"
+    back = await _hold(board, card, by)
+    try:
+        if repo is not None and prs:
+            publisher.prepare(repo, expected=saved.get("github_repo"))
+            for n in prs:
+                states[n] = await publisher.pr_state(repo, n)
+            merged = [n for n, s in states.items() if s == "MERGED"]
+            if merged:
+                raise RestartError(
+                    f"story {key}'s PR #{merged[0]} is merged, and what is merged stays: make a new story "
+                    "for what is left instead"
+                )
+        if point == FRESH:
+            sha = await _trunk_sha(publisher, repo, trunk) if repo is not None else None
+            said = f"started fresh from {trunk}"
+        else:
+            if repo is None:
+                raise RestartError(f"story {key}'s record names no repository: start it fresh instead")
+            sha = await _fetched(publisher, repo, trunk)
+            moved = await _onto(card, saved, kept, sha, replay, stories_dir)
+            said = f"started over from {point}"
+    except BaseException:
+        with contextlib.suppress(Exception):  # the refusal is what the person needs to read
+            await back()
+        raise
+    try:
+        return await _set_aside(
+            card, point, layer, saved, repo, prs, states, kept, moved, sha, said,
+            board=board, publisher=publisher, stories_dir=stories_dir, trunk=trunk, by=by,
+        )  # fmt: skip
+    except Exception as e:
+        raise RestartIncomplete(
+            f"{e}; the restart stopped part-way and the card waits out of the line: run it again to finish"
+        ) from e
+
+
+async def _set_aside(
+    card: Card,
+    point: str,
+    layer: int | None,
+    saved: dict[str, Any],
+    repo: Path | None,
+    prs: list[int],
+    states: Mapping[int, str],
+    kept: Mapping[str, str],
+    moved: Mapping[str, str],
+    sha: str | None,
+    said: str,
+    *,
+    board: Board,
+    publisher: Publisher,
+    stories_dir: Path,
+    trunk: str,
+    by: str,
+) -> Restarted:
+    """restart's steps that change things, once nothing refused it: close the open PRs, remove the worktrees
+    and the branches of what goes, move the kept layers' branches onto their replayed commits, archive the
+    record (and clear it in place for a later point), the note, the card to approved."""
+    key, path = card.key, stories_dir / card.key
     closed: list[int] = []
     for n in prs:
         if states.get(n) == "OPEN" and repo is not None:
@@ -370,8 +493,14 @@ async def restart(
             )
         prune_stale_stacks(repo)
         built = saved.get("built") or {}
-        # where _onto found them before anything changed, so they move together
-        move_branches(repo, {str(built[nn]["branch"]): (kept[nn], new) for nn, new in moved.items()})
+        # from where they are, together; one an interrupted run of this restart already moved stays put
+        moves: dict[str, tuple[str, str]] = {}
+        for nn, new in moved.items():
+            branch = str(built[nn]["branch"])
+            now = rev_parse(repo, f"refs/heads/{branch}")
+            if now != new:
+                moves[branch] = (str(now), new)
+        move_branches(repo, moves)
     dest = _archive(stories_dir, key, point)
     done = {"from": point, "closed": closed, "branches": deleted, "worktrees": removed, "archive": str(dest)}
     at = f" @ {sha[:12]}" if sha else ""

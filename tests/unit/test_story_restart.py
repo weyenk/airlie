@@ -16,11 +16,12 @@ import pytest
 from airlie.board import BoardStore
 from airlie.engine import FakeEngine
 from airlie.story import factory
+from airlie.story import restart as restart_module
 from airlie.story.board import BoardError, Card
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import StoryRunning
 from airlie.story.publish import Publisher, PublishError
-from airlie.story.restart import FRESH, Restarted, RestartError, restart
+from airlie.story.restart import FRESH, Restarted, RestartError, RestartIncomplete, restart
 from airlie.story.state import StoryState, lane_lock
 from tests.unit.git_helpers import git
 from tests.unit.test_fork_orchestrator import repo_with_marker_tests
@@ -223,9 +224,11 @@ async def test_a_rerun_after_a_partial_failure_finishes_the_job(tmp_path: Path) 
     repo, board, store, card, st = await published(tmp_path)
     top = str(st.prs[-1]["branch"])
     gh = GitHubPrs(fail_close={12})
-    with pytest.raises(PublishError, match="HTTP 502"):
+    with pytest.raises(RestartIncomplete, match="HTTP 502.*run it again to finish") as failed:
         await start_over(tmp_path, card, board, gh)
+    assert isinstance(failed.value.__cause__, PublishError)
     assert gh.states == {11: "CLOSED"} and (st.path / "state.json").is_file()
+    assert store.get(card.key).status == "todo"  # held out of the line until the restart finishes
     git(repo, "branch", "-D", top)  # gone already: not an error
     done = await start_over(tmp_path, card, board, gh)
     assert gh.closes() == [11, 12, 12]  # #11 is not closed twice
@@ -360,6 +363,181 @@ async def test_a_point_that_is_none_or_not_reached_is_refused(tmp_path: Path) ->
     fresh = store.create(level="story", title="Not started")
     with pytest.raises(RestartError, match="has not started"):
         await start_over(tmp_path, await board.card(fresh.key), board, GitHubPrs(), "packages")
+
+
+# ---- review fixes: the hold, the lane, the refined story, a re-run after the branches moved ----
+
+
+async def test_the_card_is_held_out_of_the_line_while_the_kept_layers_replay(tmp_path: Path) -> None:
+    """Between the running check and the end the card waits in todo, so no beat picks it while the gate runs
+    on the replay; it goes to approved only at the end."""
+    repo, board, store, card, st = await published(tmp_path)
+    trunk_commit(repo, {"NEWS": "news\n"})
+    seen: list[str] = []
+    gh = GitHubPrs()
+    real = pipeline(tmp_path, repo, FakeEngine({}), gh, board=board).replay_layers
+
+    async def watching(c: Card, onto: str, layers: Mapping[str, str]) -> dict[str, str]:
+        seen.append(store.get(card.key).status)
+        return await real(c, onto, layers)
+
+    await start_over(tmp_path, card, board, gh, "layer-02", replay=watching)
+    assert seen == ["todo"] and store.get(card.key).status == "approved"
+
+
+async def test_a_refusal_after_the_hold_puts_the_card_back_where_it_was(tmp_path: Path) -> None:
+    repo, board, store, card, st = await published(tmp_path)
+    trunk_commit(repo, {"PASS": "the trunk's own PASS\n"})  # layer 01 conflicts
+    with pytest.raises(RestartError, match="conflicts"):
+        await start_over(tmp_path, card, board, GitHubPrs(), "layer-02")
+    assert store.get(card.key).status == "review"
+    assert [m.to_status for m in store.moves(card.key)][-2:] == ["todo", "review"]
+
+
+async def test_a_replay_waits_for_no_other_story_the_build_lane_is_busy_is_a_refusal(tmp_path: Path) -> None:
+    repo, board, store, card, st = await published(tmp_path)
+    before = (st.path / "state.json").read_text()
+    trunk_commit(repo, {"NEWS": "news\n"})
+    gh = GitHubPrs()
+    with lane_lock(tmp_path / "state" / "stories", "build") as held:
+        assert held
+        with pytest.raises(RestartError, match="build lane is busy"):
+            await start_over(tmp_path, card, board, gh, "layer-02")
+    assert gh.closes() == [] and (st.path / "state.json").read_text() == before
+    assert store.get(card.key).status == "review"
+
+
+class HeldBoard:
+    """A board that says which column a card is in, as Jira's does (`column_of`), and keeps its moves."""
+
+    def __init__(self, column: str) -> None:
+        self.column = column
+        self.moved: list[str] = []
+
+    async def column_of(self, card: Card) -> str:
+        return self.column
+
+    async def move(self, card: Card, column: str) -> None:
+        self.moved.append(column)
+
+
+async def test_a_board_that_is_not_the_local_one_holds_a_card_in_intake_in_blocked() -> None:
+    """On Jira the tick takes the intake status (To Do): the card waits in blocked, and a refusal puts it
+    back."""
+    card = Card("HDS-7", "1", "HDS-7", "x", "")
+    board = HeldBoard("intake")
+    back = await restart_module._hold(board, card, "noah")  # type: ignore[arg-type]
+    await back()
+    assert board.moved == ["blocked", "intake"]
+    board = HeldBoard("review")  # not a column the tick takes: nothing to hold
+    await (await restart_module._hold(board, card, "noah"))()  # type: ignore[arg-type]
+    assert board.moved == []
+
+
+async def test_a_story_run_from_the_cli_names_its_lane_so_a_restart_sees_it_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = cfg_for(tmp_path, roles={})
+    stories = factory.stories_dir(cfg)
+    card = Card("AIR-7", "AIR-7", "AIR-7", "x", "")
+    seen: list[str | None] = []
+
+    class Pipe:
+        async def plan(self, c: Card) -> Any:
+            seen.append(restart_module._running_now("AIR-7", stories, None))
+            return type("St", (), {"blocked": None, "done": lambda self, s: True})()
+
+        async def build(self, c: Card) -> Any:
+            seen.append(restart_module._running_now("AIR-7", stories, None))
+            return "built"
+
+    async def placed(*a: Any, **k: Any) -> Any:
+        return factory.Place(tmp_path, None)
+
+    monkeypatch.setattr(factory, "placed", placed)
+    monkeypatch.setattr(factory, "make_pipeline", lambda *a, **k: Pipe())
+    assert await factory.run_one(cfg, board=None, card=card) == "built"  # type: ignore[arg-type]
+    assert seen == ["the plan lane is running it", "the build lane is running it"]
+    assert restart_module._running_now("AIR-7", stories, None) is None
+    assert not list((cfg.observability.state_dir / "line" / "lanes").glob("*.json"))
+
+
+async def test_layers_and_amigos_restore_the_story_and_plan_as_they_stood_before_the_meeting(
+    tmp_path: Path,
+) -> None:
+    """The meeting's agreement, and a criterion reworded in the build, replace the story and the layers; the
+    refined ones are kept from the meeting's start, and a restart from layers or amigos goes back to them."""
+    repo, board, store, card, st = await stopped(tmp_path)
+    data = json.loads((st.path / "state.json").read_text())
+    assert data["refined_story"] == data["story"] and data["refined_layers"] == data["layers"]
+    refined_story, refined_layers = data["refined_story"], data["refined_layers"]
+    data["story"] = {**data["story"], "title": "as the meeting worded it"}
+    data["layers"] = data["layers"][:1]
+    (st.path / "state.json").write_text(json.dumps(data))
+    await start_over(tmp_path, card, board, GitHubPrs(), "amigos")
+    now = json.loads((st.path / "state.json").read_text())
+    assert now["story"] == refined_story and now["layers"] == refined_layers
+    data = {
+        **now,
+        "story": {**now["story"], "title": "again"},
+        "agreement": data["agreement"],
+        "stage": "layers",
+    }
+    (st.path / "state.json").write_text(json.dumps(data))
+    await start_over(tmp_path, card, board, GitHubPrs(), "layers")
+    now = json.loads((st.path / "state.json").read_text())
+    assert now["story"] == refined_story and now["layers"] is None and now["refined_layers"] is None
+
+
+async def test_layers_and_amigos_are_refused_for_a_story_recorded_before_the_refined_one_was_kept(
+    tmp_path: Path,
+) -> None:
+    repo, board, store, card, st = await stopped(tmp_path)
+    data = json.loads((st.path / "state.json").read_text())
+    data.pop("refined_story")
+    data.pop("refined_layers")
+    (st.path / "state.json").write_text(json.dumps(data))
+    for point in ("layers", "amigos"):
+        with pytest.raises(RestartError, match="before the meeting.*refine"):
+            await start_over(tmp_path, card, board, GitHubPrs(), point)
+    assert archived(tmp_path, card.key) == [] and store.get(card.key).status == "blocked"
+
+
+async def test_a_rerun_after_the_branches_moved_and_the_record_failed_finishes_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, board, store, card, st = await published(tmp_path)
+    b1 = str(st.built["01"]["branch"])
+    news = trunk_commit(repo, {"NEWS": "news\n"})
+    real = restart_module._cleared
+    calls: list[int] = []
+
+    def fails_once(*a: Any, **k: Any) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        real(*a, **k)
+
+    monkeypatch.setattr(restart_module, "_cleared", fails_once)
+    with pytest.raises(RestartIncomplete, match="disk full"):
+        await start_over(tmp_path, card, board, GitHubPrs(), "layer-02")
+    moved = git(repo, "rev-parse", b1)
+    assert git(repo, "rev-parse", f"{b1}^") == news  # moved, and the record still names the old commit
+    await start_over(tmp_path, card, board, GitHubPrs(), "layer-02")
+    now = StoryState.open(st.path, card, repo, github_repo="o/r")
+    assert now.built["01"]["sha"] == moved == git(repo, "rev-parse", b1) and now.base is not None
+    assert now.base["sha"] == news and store.get(card.key).status == "approved"
+
+
+async def test_a_board_that_fails_after_the_prs_are_closed_is_an_incomplete_restart(tmp_path: Path) -> None:
+    repo, board, store, card, st = await published(tmp_path)
+
+    class Refuses(LocalBoard):
+        async def comment(self, c: Card, text: str, role: str | None = None) -> None:
+            raise BoardError("the board is down")
+
+    with pytest.raises(RestartIncomplete, match="the board is down.*run it again to finish"):
+        await start_over(tmp_path, card, Refuses(store), GitHubPrs())
 
 
 # ---- the front door: restart_one, from the config ----

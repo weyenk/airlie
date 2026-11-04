@@ -69,6 +69,9 @@ test("each step restarts from its own point; a step not reached, and the steps a
   expect(point("layer-03", "pending")).toBeNull();
   expect(restartKeeps("layer-03")).toContain("layers 01 to 02, replayed on the latest main");
   expect(restartKeeps("refine")).toContain("Nothing");
+  // the meeting's agreement replaced them: the restart goes back to them as they stood before it
+  expect(restartKeeps("layers")).toBe("The story as refine wrote it, before the meeting changed it.");
+  expect(restartKeeps("amigos")).toBe("The story and its layer plan as they stood before the meeting.");
 });
 
 describe("on a laptop, in a step's hover card", () => {

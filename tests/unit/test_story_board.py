@@ -201,6 +201,15 @@ async def test_move_takes_the_transition_to_the_wanted_status() -> None:
     assert [r.method for r in there.requests] == ["GET"]  # already in review: nothing to do
 
 
+async def test_the_column_an_issue_is_in_is_read_from_its_status() -> None:
+    """For a restart's hold: where the issue is, as the columns name the statuses (any case); None for a
+    status no column names."""
+    card = await board(FakeJira()).card("AIR-7")
+    assert await board(FakeJira(current="to do")).column_of(card) == "intake"
+    assert await board(FakeJira(current="In Review")).column_of(card) == "review"
+    assert await board(FakeJira(current="Won't Do")).column_of(card) is None
+
+
 async def test_an_issue_is_put_back_in_the_intake_status_for_story_tick_to_find() -> None:
     working = FakeJira(current="In Progress")
     card = await board(working).card("AIR-7")

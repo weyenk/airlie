@@ -1415,7 +1415,7 @@ def story_restart(
     from airlie.story.board import BoardError
     from airlie.story.model import StoryRunning, StorySetupError
     from airlie.story.publish import PublishError
-    from airlie.story.restart import RestartError
+    from airlie.story.restart import RestartError, RestartIncomplete
 
     if ref is None:
         err.print("[red]pass the story's key (AIR-7)[/red]")
@@ -1423,7 +1423,7 @@ def story_restart(
     cfg = _story_cfg(config)
     try:
         done = _run_stoppable(factory.restart_one(cfg, ref, point))
-    except (BoardError, StorySetupError, StoryRunning, RestartError, PublishError) as e:
+    except (BoardError, StorySetupError, StoryRunning, RestartError, RestartIncomplete, PublishError) as e:
         err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(1) from None
     line = done.note or f"{done.key}: back in approved (it had no record to set aside)"
