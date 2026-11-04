@@ -277,3 +277,20 @@ export function startRun(body: {
 export function cancelJob(id: string): Promise<{ job_id: string; cancelled: boolean }> {
   return request(`/v1/airlie/jobs/${seg(id)}`, { method: "DELETE" });
 }
+
+/** What starting a story over did (airlie.story.restart.Restarted): the PRs closed, the local branches and worktrees
+ * removed, where the old run is archived (null: it had none) and the note left on the card. */
+export type Restarted = {
+  key: string;
+  point: string;
+  closed: number[];
+  branches: string[];
+  worktrees: string[];
+  archive: string | null;
+  note: string | null;
+};
+
+/** Start the story over from a step (`refine`, `layers`, `amigos`, `packages` or `layer-NN`), on the latest trunk. */
+export function restartStory(key: string, from: string): Promise<Restarted> {
+  return request<Restarted>(`/v1/airlie/stories/${seg(key)}/restart`, { method: "POST", body: { from } });
+}

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ChevronLeft, Square } from "lucide-vue-next";
 import { useMediaQuery } from "@vueuse/core";
-import { computed, ref, watch } from "vue";
+import { computed, provide, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { ApiError } from "@/api";
 import { cancelJob, listJobs, listRunning, storyFlow, storyJob } from "@/api/workflows";
-import type { Flow } from "@/api/workflows";
+import type { Flow, Restarted } from "@/api/workflows";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import ItemKey from "@/components/ItemKey.vue";
 import StatusChip from "@/components/StatusChip.vue";
@@ -16,6 +16,8 @@ import { liveResource } from "@/stores/live";
 import JobDetailView from "./workflow/JobDetail.vue";
 import JobSheet from "./workflow/JobSheet.vue";
 import Pipeline from "./workflow/Pipeline.vue";
+import RestartDialog from "./workflow/RestartDialog.vue";
+import { RESTART, restartPoint } from "./workflow/restart";
 import { useJobSelection } from "./workflow/selection";
 
 const route = useRoute();
@@ -97,6 +99,28 @@ async function stop() {
   }
   await jobs.refresh();
 }
+
+// "Restart from here" on a step's card (or the phone's sheet): the step's point, never while the story runs
+const nodeOf = (id: string) => flow.data.value?.nodes.find((n) => n.id === id);
+const asking = ref<{ point: string; label: string } | null>(null);
+const restarted = ref<string | null>(null);
+provide(RESTART, {
+  pointOf: (id) => {
+    const node = nodeOf(id);
+    return node ? restartPoint(node) : null;
+  },
+  running: computed(() => !!live.value || flow.data.value?.now?.status === "running"),
+  ask: (id) => {
+    const node = nodeOf(id);
+    const point = node ? restartPoint(node) : null;
+    if (node && point) asking.value = { point, label: node.label };
+  },
+});
+async function onRestarted(result: Restarted) {
+  asking.value = null;
+  restarted.value = result.note ?? `${result.key} is back in Approved.`;
+  await Promise.all([flow.refresh(), jobs.refresh()]);
+}
 </script>
 
 <template>
@@ -122,12 +146,14 @@ async function stop() {
         <Button v-if="live" type="button" data-stop variant="destructive" size="sm" class="font-semibold" @click="stop"><Square class="size-4" />Stop</Button>
       </section>
       <ErrorBanner v-if="stopError" :error="stopError" />
+      <p v-if="restarted" data-restarted role="status" class="break-words rounded-lg border border-border bg-card px-3 py-2 text-xs">{{ restarted }}</p>
+      <RestartDialog :story-key="key" :ask="asking" @close="asking = null" @done="onRestarted" />
 
       <Pipeline :nodes="flow.data.value.nodes" :selected="selected" :progress="progress" :now="flow.data.value.now" :exit="flow.data.value.exit" @pick="pick" />
 
       <ErrorBanner v-if="detail.error.value" :error="detail.error.value" />
       <p aria-live="polite" class="sr-only">{{ shown ? `${nodeLabel ? nodeLabel + " / " : ""}${shown.job.label}: ${shown.job.status}` : "" }}</p>
-      <JobSheet :open="sheetOpen" :job="sheetJob" :detail="shown" :node-label="nodeLabel" @close="closeSheet" />
+      <JobSheet :open="sheetOpen" :job="sheetJob" :detail="shown" :node-label="nodeLabel" :node-id="selected?.[0]" @close="closeSheet" />
       <JobDetailView v-if="!phone && shown" :detail="shown" :node-label="nodeLabel" />
       <section v-else-if="!phone && selected && !detail.error.value" aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Loading…</section>
       <section v-else-if="!selected" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground shadow-sm">Nothing has run yet.</section>

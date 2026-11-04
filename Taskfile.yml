@@ -101,6 +101,11 @@ tasks:
     cmds:
       - '{{.RUN}} airlie story restack {{.CLI_ARGS}}'
 
+  story:restart:
+    desc: "Start a story over from a step on the trunk as it is now: its PRs closed, the branches of what goes deleted, its run archived, the layers it keeps replayed and gated on the trunk, the card back in approved (task story:restart -- AIR-54 [--from refine|layers|amigos|packages|layer-NN])"
+    cmds:
+      - '{{.RUN}} airlie story restart {{.CLI_ARGS}}'
+
   story:pr-body:
     desc: "Print the PR body a built layer would get now: the chain, the layer's package, its tests as the contract, the checks, the cost and the stack; no network, nothing published (task story:pr-body -- AIR-9 2)"
     cmds:

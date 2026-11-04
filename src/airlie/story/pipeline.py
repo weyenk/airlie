@@ -1188,6 +1188,31 @@ class StoryPipeline:
         await self.board.comment(card, note(line))
         return f"story {card.key} {line}"
 
+    async def replay_layers(self, card: Card, onto: str, layers: Mapping[str, str]) -> dict[str, str]:
+        """`layers` of the story of `card` ({"01": commit, ...}, bottom first) replayed in order on `onto`
+        in a checkout of their own, each held to the story's gate there as a restack holds them, with nothing
+        moved: their new commits. A conflict or a red gate is a RestackError naming the layer (restart's
+        check before it changes anything)."""
+        here = self.github_repo or self.publisher.github_repo_of(self.repo)
+        st = StoryState.open(self.stories_dir / card.key, card, self.repo, github_repo=here)
+        if st.base is None:
+            raise RestackError(f"story {card.key} has no base yet (it has not started): run it instead")
+        try:
+            self._gate(st, st.base)  # the story's own gate, the one every layer was held to
+        except StoryBlocked as e:
+            raise RestackError(str(e)) from None
+        return await replay(
+            self.repo,
+            st.path / "restack",
+            onto,
+            layers,
+            gate=self.test_cmd,
+            shown=self._shown_cmd,
+            timeout_s=self.timeout_s,
+            output_chars=self.cfg.tools.output_cap_chars,
+            confinement=self.cfg.tools.confinement(),
+        )
+
     def _coder_budget(self) -> tuple[int, int]:
         """The coder's steps and context (tokens) per layer: what the architect sizes a layer and its package
         to (`brief-layers-sizing`)."""

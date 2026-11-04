@@ -3,9 +3,11 @@ import type { FlowJob, JobDetail } from "@/api/workflows";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import FlowCardView from "./FlowCardView.vue";
 import JobDetailView from "./JobDetail.vue";
+import RestartAction from "./RestartAction.vue";
 
-/** A job's card and trace in a sheet from the bottom of the screen (the phone's stand-in for hover and the detail below). */
-defineProps<{ open: boolean; job: FlowJob | null; detail: JobDetail | null; nodeLabel?: string }>();
+/** A job's card and trace in a sheet from the bottom of the screen (the phone's stand-in for hover and the detail below),
+ * with "Restart from here" for its step (`nodeId`) when it has one. */
+defineProps<{ open: boolean; job: FlowJob | null; detail: JobDetail | null; nodeLabel?: string; nodeId?: string }>();
 const emit = defineEmits<{ close: [] }>();
 </script>
 
@@ -21,6 +23,7 @@ const emit = defineEmits<{ close: [] }>();
       <div v-if="job?.card" class="[&>[data-card]]:w-full [&>[data-card]]:max-w-full [&>[data-card]]:shadow-none">
         <FlowCardView :card="job.card" />
       </div>
+      <RestartAction v-if="nodeId" :node-id="nodeId" />
       <JobDetailView v-if="detail" :detail="detail" :node-label="nodeLabel" />
       <section v-else aria-label="Job" class="rounded-xl border border-border bg-card p-[18px] text-muted-foreground">Loading…</section>
     </DialogContent>
