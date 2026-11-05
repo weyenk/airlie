@@ -19,6 +19,7 @@ from airlie.story.briefs import (
     imagine_brief,
     layer_goal,
     layer_plan,
+    layer_size_brief,
     layers_brief,
     package_brief,
     plan_brief,
@@ -171,6 +172,24 @@ def test_refine_brief_quotes_the_card_as_data_and_carries_feedback() -> None:
 def test_layers_brief_states_the_rules_and_the_criteria() -> None:
     text = layers_brief(STORY, 4)
     assert "at most 4 layers" in text and "AC2" in text and "cropping" in text and '"layers"' in text
+
+
+def test_layers_brief_caps_the_criteria_of_a_layer_unless_the_cap_is_off() -> None:
+    """2026-11-05: a layer's whole package is one reply; layers of 6 criteria ran out of room (AIR-62, AIR-55,
+    AIR-61)."""
+    text = layers_brief(STORY, 4, max_criteria=3)
+    assert "at most 3 acceptance criteria" in text and "about 4 proof tests" in text and "one reply" in text
+    assert "at most 1 acceptance criterion and" in layers_brief(STORY, 4, max_criteria=1)
+    assert "acceptance criteria and about" not in layers_brief(STORY, 4, max_criteria=0)
+
+
+def test_the_layer_size_brief_asks_the_reviewer_about_each_layer_over_the_cap() -> None:
+    """2026-11-05: the cap is soft; the reviewer (another model family) rules on each layer over it."""
+    big = Layer("big", "Big", "a.py", "store and show it", ("AC1", "AC2"))
+    text = layer_size_brief(STORY, (big,), (big,), 1)
+    assert "not a code review" in text and "at most 1 acceptance criterion" in text
+    assert "big (2 criteria: AC1, AC2)" in text and "store and show it" in text and "AC2" in text
+    assert '"verdict": "split" | "keep"' in text and "no prose before or after it" in text
 
 
 def test_the_layers_contract_asks_for_files_and_interfaces() -> None:

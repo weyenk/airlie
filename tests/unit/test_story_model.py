@@ -14,7 +14,9 @@ from airlie.story.model import (
     StoryError,
     StorySetupError,
     branch_name,
+    oversized_layers,
     parse_layers,
+    parse_size_verdict,
     parse_story,
     slugify,
 )
@@ -81,6 +83,33 @@ def test_parse_layers_checks_count_slugs_and_coverage() -> None:
         parse_layers({"layers": [{**one, "acceptance": ["AC9"]}]}, story, 3)
     with pytest.raises(StoryError, match=r"no layer covers acceptance \['AC2'\]"):
         parse_layers({"layers": [{**one, "acceptance": ["AC1"]}]}, story, 3)
+
+
+def test_oversized_layers_are_those_over_the_criteria_cap_and_a_cap_of_0_has_none() -> None:
+    """story.max_layer_criteria (2026-11-05): a soft cap; the plan parses whatever the sizes."""
+    c = lambda cid: {"id": cid, "given": "g", "when": "w", "then": cid}  # noqa: E731
+    story = parse_story({**GOOD, "acceptance": [c(f"AC{n}") for n in range(1, 5)]})
+    small = {"slug": "small", "title": "Small", "scope": "a.py", "brief": "b", "acceptance": ["AC1"]}
+    big = {**small, "slug": "big", "title": "Big", "acceptance": ["AC2", "AC3", "AC4"]}
+    layers = parse_layers({"layers": [small, big]}, story, 3)
+    assert [x.slug for x in oversized_layers(layers, 2)] == ["big"]
+    assert oversized_layers(layers, 3) == () and oversized_layers(layers, 0) == ()  # at the cap; no cap
+    assert oversized_layers(layers[:1], 1) == ()  # one criterion is never over a cap: it cannot be split
+
+
+def test_parse_size_verdict_reads_a_verdict_per_layer_asked_about() -> None:
+    reply = (
+        '```json\n{"layers": [{"slug": "big", "verdict": "split", "why": "storage, then the profile"},'
+        ' {"slug": "huge", "verdict": "keep", "why": "one form"}]}\n```'
+    )
+    verdicts = parse_size_verdict(extract_json_block(reply), ["big", "huge"])
+    assert verdicts == {"big": ("split", "storage, then the profile"), "huge": ("keep", "one form")}
+    with pytest.raises(StoryError, match="no JSON object"):
+        parse_size_verdict(None, ["big"])
+    with pytest.raises(StoryError, match=r"no verdict on layer 'huge'"):
+        parse_size_verdict({"layers": [{"slug": "big", "verdict": "keep", "why": "w"}]}, ["big", "huge"])
+    with pytest.raises(StoryError, match="verdict"):
+        parse_size_verdict({"layers": [{"slug": "big", "verdict": "maybe", "why": "w"}]}, ["big"])
 
 
 def _one_layer(**extra: object) -> dict[str, object]:

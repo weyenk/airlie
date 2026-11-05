@@ -8,7 +8,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | --- | --- | --- |
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
-| layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned |
+| layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned, each aiming at `story.max_layer_criteria` criteria or fewer (a soft cap the reviewer rules on) |
 | meeting | product, the architect and the tester (all on the generalist since 2026-10-26), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
 | build, per layer | the architect writes the layer's package (its tests as code, files, interfaces, steps), airlie places the tests in a scratch worktree and checks them (they fail on the base, lint, imports, covers), then the studio: the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
@@ -110,6 +110,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.trunk`, `story.remote` | `main`, `origin` | the branch the stack is based on, and the remote it is pushed to |
 | `story.publish` | `stack` | how the layers are published: `single` = one draft PR on the top layer's branch holding every layer's commit in layer order; `stack` = one draft PR per layer via `gh stack`. The committed `airlie.yaml` picks `single` |
 | `story.max_layers` | 5 | the most layers the architect may plan |
+| `story.max_layer_criteria` | 3 | the most acceptance criteria the architect aims to put in one layer, with about 4 proof tests, since a layer's whole package is written in one reply (2026-11-05: layers of 6 criteria could not be packaged, AIR-62, AIR-55, AIR-61). A soft cap: a plan with a layer over it goes once to the studio's reviewer (Muse Glimmer), which says per layer `split` (the plan goes back to the architect with its suggested split) or `keep` (it stands); a second plan still over it, or a review that fails, stands. Each ruling is a `layer_size_review` event. 0 = no cap |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |

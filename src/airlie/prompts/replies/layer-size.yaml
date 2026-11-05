@@ -1,0 +1,24 @@
+why: |
+  The reviewer's ruling on the layers of a plan over story.max_layer_criteria (2026-11-05): a layer's whole
+  package of tests is written in one reply, and layers of 6 criteria could not be packaged (AIR-62 layer 01,
+  AIR-55 and AIR-61 layer 02); a story that cannot be cut further keeps its layer, so the cap is soft and a
+  model of another family than the architect's says which. Its parser is model.parse_size_verdict.
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [layers]
+  properties:
+    layers:
+      type: array
+      items:
+        type: object
+        required: [slug, verdict, why]
+        properties:
+          slug: {type: string}
+          verdict: {enum: [split, keep]}
+          why: {type: string}
+shape: |
+  {"layers": [{"slug": "the layer's slug", "verdict": "split" | "keep",
+   "why": "one line: the split you suggest (which criteria go in each smaller layer), or why it stays whole"}]}
+rules: |
+  Give one entry for each layer you were asked about.

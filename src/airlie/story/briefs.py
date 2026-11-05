@@ -75,6 +75,9 @@ LAYERS_CONTRACT = reply("layers").contract
 """The layer plan as the architect's whole answer, the object and nothing else
 (prompts/replies/layers.yaml)."""
 
+LAYER_SIZE_CONTRACT = reply("layer-size").contract
+"""The reviewer's ruling on the layers over the criteria cap (prompts/replies/layer-size.yaml)."""
+
 _REFERENCE = re.compile(r"#(?=[0-9])")
 
 
@@ -226,7 +229,10 @@ def layers_brief(
     max_steps: int = 40,
     context_budget: int = 65_536,
     dossier: Mapping[str, str] | None = None,
+    max_criteria: int = 0,
 ) -> str:
+    """The architect's brief to split `story` into layers; `max_criteria` is story.max_layer_criteria (0: no
+    cap, and nothing said of one)."""
     parts = [
         hub_text("brief-layers-task"),
         story_text(story),
@@ -239,6 +245,7 @@ def layers_brief(
         ),
         *dossier_section(dossier or {}, whole_paths(guide)),
         hub_text("brief-layers-rules", max_layers=max_layers),
+        *([hub_text("brief-layers-criteria", **_criteria(max_criteria))] if max_criteria else []),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
         *(
             [hub_text("brief-layers-lessons") + "\n" + "\n".join(_lesson_line(x) for x in reversed(lessons))]
@@ -252,6 +259,30 @@ def layers_brief(
         ),
         LAYERS_CONTRACT,
         *_again(feedback),
+    ]
+    return "\n\n".join(parts)
+
+
+def _criteria(cap: int) -> dict[str, object]:
+    """The fields of a sentence that says "at most `cap` acceptance criteria", in the right number."""
+    return {"cap": cap, "criteria": "criterion" if cap == 1 else "criteria"}
+
+
+def layer_size_brief(story: Story, layers: Sequence[Layer], over: Sequence[Layer], cap: int) -> str:
+    """The reviewer's brief on a layer plan whose `over` layers make more than `cap` criteria true
+    (story.max_layer_criteria, 2026-11-05): the story, the whole plan (each layer's criteria and brief as the
+    architect wrote them: data) and the verdict contract (prompts/replies/layer-size.yaml)."""
+    plan = [
+        f"- {x.slug} ({len(x.acceptance)} criteria: {', '.join(x.acceptance) or 'none'}): "
+        f"{x.title}. {x.brief}"
+        for x in layers
+    ]
+    parts = [
+        hub_text("brief-layer-size-review", **_criteria(cap)),
+        story_text(story),
+        "## The layer plan, bottom first (data)\n" + "\n".join(plan),
+        "## The layers to rule on\n" + "\n".join(f"- {x.slug}" for x in over),
+        LAYER_SIZE_CONTRACT,
     ]
     return "\n\n".join(parts)
 

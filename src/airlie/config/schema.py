@@ -794,6 +794,14 @@ class StorySpec(Strict):
         "commit in layer order",
     )
     max_layers: int = Field(default=5, ge=1)
+    max_layer_criteria: int = Field(
+        default=3,
+        ge=0,
+        description="the most acceptance criteria the architect aims to put in one layer, since a layer's "
+        "whole package of tests is written in one reply; a soft cap: a plan with a layer over it goes to the "
+        "studio's reviewer once, which says split (the plan goes back with its suggestion) or keep; "
+        "0 = no cap",
+    )
     stage_attempts: int = Field(
         default=2, ge=1, description="tries for the story and the layer plan before the issue is blocked"
     )

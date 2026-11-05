@@ -354,17 +354,23 @@ class Asker:
         attempts: int | None = None,
         at: str | None = None,
         ask: Callable[..., Awaitable[str]] | None = None,
+        check: Callable[[T], Awaitable[None]] | None = None,
     ) -> T:
         """Ask `role` until `parse` accepts the reply: an unusable one (StoryError) goes back with the reason,
         story.stage_attempts tries in all (or `attempts`), then StoryBlocked with the last reason. A reply
         cut off at max_tokens is not asked again (`ask`): it blocks at once. `at` is the commit the role
-        reads (default the record's base). `ask` replaces `Asker.ask` (planning in rounds)."""
+        reads (default the record's base). `ask` replaces `Asker.ask` (planning in rounds). `check` is a
+        further judgement of the parsed reply that may ask another role (the layer plan's size review,
+        2026-11-05); its StoryError goes back as the parser's does."""
         feedback: str | None = None
         for _ in range(attempts or self.s.stage_attempts):
             reply = ""
             try:
                 reply = await (ask or self.ask)(st, stage, role, brief(feedback), at)
-                return parse(reply)
+                value = parse(reply)
+                if check is not None:
+                    await check(value)
+                return value
             except StoryError as e:
                 feedback = unusable_why(e, reply)
                 st.emit("retry", stage=stage, error=feedback, reply=reply[-REPLY_TAIL:])
