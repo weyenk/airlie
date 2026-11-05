@@ -1,10 +1,13 @@
 """Scoped test runs for a story layer: its own tests, not the whole suite.
 
 A story layer's tester and coder call run_tests after every change, and the repository's gate runs the whole
-suite each time (minutes). Scoped, run_tests runs the gate with pytest limited to the test files the layer
+suite each time (minutes). Scoped, run_tests runs the gate with the layer's own tests limited to the files it
 added or changed (seconds), and that is the subtask's measure of done. The whole gate is the studio's, once
 the subtasks are done and reviewed; it remembers the tree that last passed it (`GateMemo`), so a gate asked
 again of the same files does not run again.
+
+A layer's tests may be pytest modules or JS/TS test files (the web-tests design, 2026-10-27): a pytest step
+runs only the Python modules, and a JS/TS test file runs under vitest in its own package.
 """
 
 from __future__ import annotations
@@ -99,19 +102,49 @@ def tree_fingerprint(worktree: Path) -> str | None:
     return out or None
 
 
-def scope_step(step: str, files: Sequence[str]) -> str | None:
-    """`step` with pytest limited to `files`; the step unchanged when it does not run pytest. None when it
-    does and there are no files: nothing to run."""
+def _js_package_dir(worktree: Path, path: str) -> str | None:
+    """The nearest directory of `path` that holds a package.json, walking up to the worktree root. None when
+    there is none: vitest has no package to run in."""
+    current = worktree / path
+    for directory in [current.parent, *current.parents]:
+        if (directory / "package.json").is_file():
+            return str(directory.relative_to(worktree)) or "."
+    return None
+
+
+def scope_step(step: str, files: Sequence[str], worktree: Path | None = None) -> str | None:
+    """`step` limited to the layer's own tests in `files`; the step unchanged when it does not run pytest.
+
+    A pytest step runs everything in `files` that is not a JS/TS test file — a JS/TS test file is not a
+    pytest module and would make pytest collect nothing (exit 5, "no tests ran") — and when there is no
+    module to run the step becomes a vitest run of the JS/TS tests in their package, so a layer whose only
+    tests are JS/TS still runs them (the web-tests design, 2026-10-27)."""
     if pytest_runner([step]) is None:
         return step
-    if not files:
+    py_files = [f for f in files if not is_js_test(f)]
+    js_files = [f for f in files if is_js_test(f)]
+    if py_files:
+        return f"{step.rstrip()} {shlex.join(py_files)}"
+    if not js_files:
         return None
-    return f"{step.rstrip()} {shlex.join(files)}"
+    # No pytest module to run, but the layer's tests are JS/TS: run them under vitest in their package.
+    by_dir: dict[str, list[str]] = {}
+    for f in js_files:
+        d = _js_package_dir(worktree, f) if worktree is not None else None
+        if d is None:
+            continue  # no package.json up the tree: vitest has nowhere to run
+        rel = f[len(d) + 1 :] if d != "." else f  # the file, relative to its package
+        by_dir.setdefault(d, []).append(rel)
+    if not by_dir:
+        return None
+    return " && ".join(
+        f"cd {d} && npx vitest run --reporter=basic {shlex.join(rels)}" for d, rels in by_dir.items()
+    )
 
 
-def scoped_steps(steps: Sequence[str], files: Sequence[str]) -> list[str]:
-    """`steps` with pytest limited to `files`; a pytest step with no file to run is left out."""
-    return [scoped for step in steps if (scoped := scope_step(step, files)) is not None]
+def scoped_steps(steps: Sequence[str], files: Sequence[str], worktree: Path | None = None) -> list[str]:
+    """`steps` with the layer's own tests in `files`; a pytest step with no test file to run is left out."""
+    return [scoped for step in steps if (scoped := scope_step(step, files, worktree)) is not None]
 
 
 def autofix_steps(steps: Sequence[str]) -> list[str]:

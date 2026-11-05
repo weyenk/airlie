@@ -176,7 +176,7 @@ async def _run_scoped(ctx: ToolContext) -> ToolResult:
         autofix_steps(ctx.test_steps), ctx
     )  # formatting and safe lint fixes: the result is not news
     files = changed_test_files(ctx.worktree, ctx.scope_base)
-    result = await run_steps(scoped_steps(ctx.test_steps, files), ctx)
+    result = await run_steps(scoped_steps(ctx.test_steps, files, ctx.worktree), ctx)
     if not files:
         return ToolResult(
             False, result.output + "\nno test file of yours to run yet: write the layer's tests first."

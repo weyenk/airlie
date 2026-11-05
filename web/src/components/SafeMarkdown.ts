@@ -46,6 +46,16 @@ export function inline(text: string, linkKeys: boolean): (VNode | string)[] {
   return out;
 }
 
+// A paragraph's lines: a single newline becomes a <br>, a blank line a paragraph break.
+function paraLines(lines: string[], linkKeys: boolean): (VNode | string)[] {
+  const out: (VNode | string)[] = [];
+  lines.forEach((line, i) => {
+    if (i > 0) out.push(h("br"));
+    out.push(...inline(line, linkKeys));
+  });
+  return out;
+}
+
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const GWT = /^(Given|When|Then)(\s.*)?$/;
 const BULLET = /^\s*[-*]\s+(.*)$/;
@@ -85,15 +95,24 @@ export function blocks(text: string, linkKeys: boolean): VNode[] {
     }
     const gwt = GWT.exec(line);
     if (gwt) {
-      out.push(h("p", [h("span", { class: "font-semibold text-primary" }, gwt[1]), ...inline(line.slice(gwt[1].length), linkKeys)]));
-      i++;
+      const run: string[] = [];
+      while (i < lines.length && GWT.test(lines[i])) {
+        run.push(lines[i++]);
+      }
+      const first = GWT.exec(run[0])!;
+      const children: (VNode | string)[] = [h("span", { class: "font-semibold text-primary" }, first[1])];
+      run.forEach((l, j) => {
+        if (j > 0) children.push(h("br"));
+        children.push(...inline(j === 0 ? l.slice(first[1].length) : l, linkKeys));
+      });
+      out.push(h("p", children));
       continue;
     }
     const para: string[] = [];
     while (i < lines.length && lines[i].trim() && !lines[i].trimStart().startsWith("```") && !HEADING.test(lines[i]) && !BULLET.test(lines[i]) && !NUMBERED.test(lines[i]) && !GWT.test(lines[i])) {
       para.push(lines[i++]);
     }
-    out.push(h("p", inline(para.join(" "), linkKeys)));
+    out.push(h("p", paraLines(para, linkKeys)));
   }
   return out;
 }
