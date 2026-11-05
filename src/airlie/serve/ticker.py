@@ -21,6 +21,7 @@ from typing import Any
 from airlie.config import AirlieConfig, ConfigError
 from airlie.serve.jobs import Jobs
 from airlie.story import factory
+from airlie.story.board import Board
 from airlie.story.fixes import line_event
 from airlie.story.line import Job, Line, Spawn
 from airlie.story.phase import paused
@@ -52,6 +53,23 @@ class LineTicker:
         self.last_tick: float | None = None
         self.last_line: str | None = None
         self._task: asyncio.Task[None] | None = None
+        self._board: Board | None = None
+        self._board_for = ""  # the config the board was made from (_board_key)
+
+    def _board_of(self, scfg: AirlieConfig) -> Board:
+        """The board every beat uses: made once, and again only when the board's config changes (the old one
+        closed; a job still holding it reopens its store on its next read). A board per beat was a SQLite
+        connection per beat that nothing closed (a beat's job can outlive the beat, so the beat cannot close
+        it), and an idle serve rarely runs the cycle collector that would: over the night of 2026-11-04 serve
+        reached launchd's 256 open files and every /health and tick failed with EMFILE."""
+        key = _board_key(scfg)
+        if self._board is None or key != self._board_for:
+            if self._board is not None:
+                close = getattr(self._board, "close", None)
+                if close is not None:
+                    close()
+            self._board, self._board_for = factory.make_board(scfg), key
+        return self._board
 
     # ---- the beat ----
 
@@ -83,7 +101,7 @@ class LineTicker:
             if problems:
                 return "not ticking: " + "; ".join(problems)
             state_dir = self.cfg.observability.state_dir.expanduser()
-            line = Line(scfg, board=factory.make_board(scfg), state_dir=state_dir, serve_commit=self.commit)
+            line = Line(scfg, board=self._board_of(scfg), state_dir=state_dir, serve_commit=self.commit)
             return await line.beat(self._spawn(line.run_job))
         except asyncio.CancelledError:
             raise
@@ -145,3 +163,15 @@ class LineTicker:
             "paused": paused(self.cfg.observability.state_dir.expanduser()),
             "lanes": self.lanes(),
         }
+
+
+def _board_key(scfg: AirlieConfig) -> str:
+    """What `factory.make_board` reads from the config: a change to any of it is a different board."""
+    return "|".join(
+        (
+            scfg.story.model_dump_json(),
+            scfg.board.model_dump_json(),
+            str(scfg.observability.state_dir.expanduser()),
+            ",".join(sorted(scfg.roles)),
+        )
+    )
