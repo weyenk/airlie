@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from airlie.tools.protocol import ToolContext
 from airlie.tools.scope import (
     autofix_steps,
@@ -135,6 +137,30 @@ async def test_the_scoped_run_still_runs_the_gates_other_steps_on_everything(tmp
     (repo / "tests/test_new.py").write_text(PASS.replace("ok", "new_ok"))
     result = await RunTests().run({}, ctx(repo, base, steps=("echo lint-ok", "false", PYTEST)))
     assert not result.ok and "lint-ok" in result.output and "FAIL (exit 1): false" in result.output
+
+
+async def test_run_tests_runs_a_layers_js_tests_under_vitest_in_their_package_of_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scoped run hands the worktree to scoped_steps: it is where each JS/TS test's package.json is found,
+    and without it a layer whose only tests are JS/TS runs nothing (AIR-63's PR #237, 2026-11-05: two mutants
+    that dropped it survived)."""
+    from airlie.tools import shell
+    from airlie.tools.protocol import ToolResult
+
+    repo, base = repo_with(tmp_path, {"web/package.json": '{"name": "web"}\n'})
+    (repo / "web/src").mkdir()
+    (repo / "web/src/x.test.ts").write_text("test('x', () => {})\n")
+    ran: list[list[str]] = []
+
+    async def run_steps(steps: list[str], ctx: ToolContext) -> ToolResult:
+        ran.append(list(steps))
+        return ToolResult(True, "ok")
+
+    monkeypatch.setattr(shell, "run_steps", run_steps)
+    result = await RunTests().run({}, ctx(repo, base))
+    assert result.ok, result.output
+    assert ran[-1] == ["cd web && npx vitest run --reporter=basic src/x.test.ts"]
 
 
 async def test_with_no_test_file_of_its_own_run_tests_fails_and_says_to_write_them(tmp_path: Path) -> None:
