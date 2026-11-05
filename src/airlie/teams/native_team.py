@@ -168,6 +168,28 @@ def _loop(recent: list[tuple[str, ...]], limit: int) -> tuple[str, ...] | None:
     return None
 
 
+def _in_text(messages: list[Message]) -> list[Message]:
+    """The conversation as plain text: the system prompt, then one user message holding every other message in
+    order, a call as "You called <tool> <arguments>" and its result after it. The answer turn after
+    answer_after_cuts is asked this way: told "No more tools" on a turn that offered none, the architect went
+    on writing tool calls after its long run of them (AIR-55, AIR-62, 2026-11-04: 4 of 11 such turns, twice
+    each, so the run ended with no package). Only the text of a message is kept (the architect has no
+    pictures)."""
+    system = [m for m in messages if m.role == "system"]
+    said: list[str] = []
+    for m in messages:
+        if m.role == "system":
+            continue
+        if m.role == "tool":
+            said.append(f"What {m.name or 'the tool'} returned:\n{m.content}")
+            continue
+        if m.content.strip():
+            said.append(m.content)
+        for call in m.tool_calls or ():
+            said.append(f"You called {call.name} {call.arguments}")
+    return [*system, Message(role="user", content="\n\n".join(said))]
+
+
 def _carried_tail(role: RoleSpec, thinking: bool, res: GenResult, call: ToolCall) -> str:
     """The tail of a turn's reasoning to carry to the next: the turn thought, its completion reached the
     role's thinking_budget (vllm-mlx closes the think block there), and its action was a read rather than a
@@ -445,7 +467,8 @@ class NativeTeam:
                 messages.append(Message(role="user", content=injected))
             req = GenRequest(
                 role=ctx.role_name,
-                messages=list(messages),
+                # the answer turn answer_after_cuts asked for is the conversation as text, no tool calls in it
+                messages=_in_text(messages) if answer_now and last_turn else list(messages),
                 sampling=ctx.role.sampling,
                 max_tokens=ctx.role.max_tokens,
                 stop=list(ctx.role.stop),

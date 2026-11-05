@@ -1869,9 +1869,41 @@ async def test_cut_reads_in_a_row_end_in_the_answer_with_all_of_the_last_reasoni
     )
     answer = engine.requests[2]
     assert answer.tools is None and not answer.thinking
-    assert answer.messages[-1].content == text("answer-now", n=2, reasoning=thought(8, "b"))
-    assert [m.role for m in answer.messages[-2:]] == ["tool", "user"]  # right after the observation
-    assert carried(engine, 3) == [text("reasoning-carried", tail=thought(8, "a")[-5:])]  # b's is in the ask
+    said = str(answer.messages[-1].content)
+    assert said.endswith(text("answer-now", n=2, reasoning=thought(8, "b")))
+    assert (
+        said.count(CUT) == 1 and text("reasoning-carried", tail=thought(8, "a")[-5:]) in said
+    )  # b's: the ask
+
+
+async def test_the_answer_after_cuts_is_asked_as_one_conversation_in_text_without_tool_calls(
+    tmp_path: Path,
+) -> None:
+    """AIR-55 and AIR-62 (2026-11-04): told "No more tools" on a turn that offered none, the architect wrote a
+    tool call anyway (4 of 11 answer turns, twice each, so the run ended): its history was a long run of tool
+    calls and their results, and it went on with one. The answer turn is asked as the same conversation in
+    plain text: the system prompt, then one message with the goal, each call and what it returned, the ask."""
+    engine = FakeEngine({"coder": [cut_read("a"), cut_read("b", "b"), FakeReply(text="The package.")]})
+    team, ctx = answering_team(tmp_path, engine)
+    await team.run(ctx, Recorder())
+    before, answer = engine.requests[1].messages, engine.requests[2].messages
+    assert [m.role for m in answer] == ["system", "user"]
+    assert all(m.tool_calls is None and m.tool_call_id is None for m in answer)
+    assert answer[0] == before[0]
+    said = answer[1].content
+    seen = next(m.content for m in before if m.role == "tool")
+    ask = text("answer-now", n=2, reasoning=thought(8, "b"))
+    assert said.count("You called read_file") == said.count("What read_file returned:") == 2
+    assert said.index(before[1].content) < said.index(seen) < said.index(ask)
+
+
+async def test_a_last_turn_after_max_steps_keeps_its_conversation_as_it_was(tmp_path: Path) -> None:
+    engine = FakeEngine({"coder": [cut_read("a"), FakeReply(text="The package.")]})
+    team, ctx = answering_team(tmp_path, engine, max_steps=1)
+    await team.run(ctx, Recorder())
+    last = engine.requests[1].messages
+    assert any(m.tool_calls for m in last) and any(m.role == "tool" for m in last)
+    assert last[-1].content == text("last-step", n=1)
 
 
 async def test_a_turn_under_the_budget_starts_the_count_of_cut_reads_again(tmp_path: Path) -> None:
@@ -1914,7 +1946,9 @@ async def test_a_tool_call_on_the_answer_turn_after_cuts_gets_the_last_turns_one
     team, ctx = answering_team(tmp_path, engine)
     result = await team.run(ctx, Recorder())
     assert (result.ok, result.final_text) == (True, "The package.")
-    assert engine.requests[3].messages[-1].content == text("last-turn-retry")
+    retry = engine.requests[3].messages
+    assert [m.role for m in retry] == ["system", "user"]  # still in text
+    assert retry[-1].content.endswith(text("last-turn-retry"))
 
 
 # ---- each steering text the loop sends comes from the prompt hub and is a steer event (2026-10-22) ----
