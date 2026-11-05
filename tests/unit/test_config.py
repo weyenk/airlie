@@ -656,7 +656,7 @@ def test_named_variant_inherits_the_kind_of_the_profile_it_extends(tmp_path: Pat
 def test_story_defaults(tmp_path: Path) -> None:
     s = load_config(write(tmp_path, MINIMAL)).story
     assert (s.topology, s.trunk, s.remote) == ("studio", "main", "origin")
-    assert (s.max_layers, s.stage_attempts) == (5, 2)
+    assert (s.max_layers, s.stage_attempts, s.max_layer_criteria) == (5, 2, 3)
     roles = (s.product_role, s.architect_role, s.build_role)
     assert roles == ("product", "architect", "coder")
     assert s.repo is None and s.test_cmd is None
@@ -725,6 +725,17 @@ def test_the_committed_config_publishes_as_airlies_bot() -> None:
     root = Path(__file__).resolve().parents[2]
     app = load_config(root / "airlie.yaml", root / "no-local-overrides.yaml").story.github_app
     assert app.app_id == 5332832 and app.key_file == Path("~/.config/airlie/github-app.pem")
+
+
+def test_the_committed_config_caps_a_layer_at_three_criteria(tmp_path: Path) -> None:
+    """2026-11-05: layers of 6 criteria could not be packaged in one reply (AIR-62, AIR-55, AIR-61); 0 is
+    no cap."""
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).story.max_layer_criteria == 3
+    off = load_config(write(tmp_path, {**MINIMAL, "story": {"max_layer_criteria": 0}}))
+    assert off.story.max_layer_criteria == 0
+    with pytest.raises(ConfigError) as err:
+        load_config(write(tmp_path, {**MINIMAL, "story": {"max_layer_criteria": -1}}))
+    assert "story.max_layer_criteria" in str(err.value)
 
 
 def test_story_repos_root_is_your_git_directory_unless_set_and_resolves_like_a_path_of_the_config(

@@ -26,6 +26,7 @@ from typing import Any, Literal
 from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
+from airlie.engine.types import GenRequest, Message
 from airlie.prompts import text as hub_text
 from airlie.skills import Skill, load_skills, prompt_text, skill_criteria
 from airlie.story.amigos import (
@@ -55,6 +56,7 @@ from airlie.story.briefs import (
     drafts_brief,
     layer_goal,
     layer_plan,
+    layer_size_brief,
     layer_sources,
     layers_brief,
     next_package_brief,
@@ -99,7 +101,9 @@ from airlie.story.model import (
     StoryError,
     StorySetupError,
     branch_name,
+    oversized_layers,
     parse_layers,
+    parse_size_verdict,
     parse_story,
 )
 from airlie.story.package import Package, ProofChange, parse_package
@@ -179,6 +183,8 @@ keeps finding the proof wrong is not asked for another."""
 
 SURVEY_STEPS = 8
 """Steps the architect gets for the survey: enough to read a handful of files."""
+SIZE_REVIEW_TIMEOUT_S = 300
+"""How long the reviewer may take to rule on a layer plan's sizes before the plan stands unreviewed."""
 
 
 MAPPED_STAGES = frozenset({"survey", "layers"})
@@ -717,10 +723,13 @@ class StoryPipeline:
         attempts: int | None = None,
         at: str | None = None,
         ask: Callable[..., Awaitable[str]] | None = None,
+        check: Callable[[T], Awaitable[None]] | None = None,
     ) -> T:
         """Ask `role` until `parse` accepts the reply (`Asker.usable`). `ask` replaces `_ask` (planning in
-        rounds)."""
-        return await self.asker.usable(st, stage, role, what, brief, parse, attempts, at, ask or self._ask)
+        rounds); `check` judges what parsed (the layer plan's size review)."""
+        return await self.asker.usable(
+            st, stage, role, what, brief, parse, attempts, at, ask or self._ask, check=check
+        )
 
     async def _survey(self, st: StoryState, card: Card) -> None:
         """The architect reads the code the request touches and takes notes, while product refines it: the
@@ -797,6 +806,73 @@ class StoryPipeline:
         await self.board.comment(card, note(_story_note(story)), role=self.s.product_role)
         return story
 
+    async def _size_review(
+        self, st: StoryState, story: Story, layers: tuple[Layer, ...], *, asked: list[bool]
+    ) -> None:
+        """The soft cap on a layer's criteria (story.max_layer_criteria, 2026-11-05: AIR-62 layer 01's package
+        of 18 tests over 6 criteria was cut off, AIR-55's and AIR-61's layer 02 of 6 over 6 ran out of room).
+        A plan with layers over it goes to the studio's reviewer (another model family than the architect's)
+        once per planning (`asked`): a layer it would split sends the plan back with its suggestion, a
+        StoryError on `_usable`'s retry path; one it would keep stands. A later plan still over the cap
+        stands, so this cannot loop, and a review that fails (an engine error, a verdict that cannot be read)
+        lets the plan stand: never a reason to stop a story. Each ruling is a `layer_size_review` event."""
+        over = oversized_layers(layers, self.s.max_layer_criteria)
+        if not over:
+            return
+
+        def emit(x: Layer, verdict: str, reason: str) -> None:
+            st.emit(
+                "layer_size_review", layer=x.slug, criteria=len(x.acceptance), verdict=verdict, reason=reason
+            )
+
+        if asked:
+            for x in over:
+                emit(x, "accepted", "the reviewer was asked once already: the plan after its split stands")
+            return
+        asked.append(True)
+        cap = self.s.max_layer_criteria
+        try:
+            text = await self._ask_reviewer(layer_size_brief(story, layers, over, cap))
+            verdicts = parse_size_verdict(extract_json_block(text), [x.slug for x in over])
+        except Exception as e:  # noqa: BLE001 - an advisory check: whatever fails, the plan stands
+            for x in over:
+                emit(x, "unreviewed", _cap(_reason(e), 300))
+            return
+        for x in over:
+            emit(x, *verdicts[x.slug])
+        split = [x for x in over if verdicts[x.slug][0] == "split"]
+        if split:
+            raise StoryError(
+                "; ".join(
+                    f"layer '{x.slug}' covers {len(x.acceptance)} acceptance criteria "
+                    f"({', '.join(x.acceptance)}), more than the {cap} a layer's package of tests holds in "
+                    f"its one reply, and the reviewer would split it: {verdicts[x.slug][1]}"
+                    for x in split
+                )
+                + f". Split it into layers of at most {cap} criteria each, keeping each criterion whole"
+            )
+
+    async def _ask_reviewer(self, brief: str) -> str:
+        """One plain reply of the studio's review role (studio.review.role) to `brief`, on the engine of this
+        process's latest studio run: not a studio ask, since the reviewer is not a role the studio routes to,
+        and not with its code-review prompt, whose verdict is another object. Its model, sampling and token
+        room are its role's; SIZE_REVIEW_TIMEOUT_S bounds it."""
+        if self._engine is None:
+            raise StoryError("no studio has run in this process, so there is no engine to ask")
+        name = self.cfg.studio.review.role
+        role = self.cfg.roles[name]
+        req = GenRequest(
+            role=name,
+            messages=[Message(role="user", content=brief)],
+            sampling=role.sampling,
+            max_tokens=role.max_tokens,
+            thinking=role.thinking,
+        )
+        res = await asyncio.wait_for(self._engine.generate(req), SIZE_REVIEW_TIMEOUT_S)
+        if res.finish_reason == "length":
+            raise StoryError(cut_off_text(name, role, thinking=bool(res.reasoning.strip())))
+        return res.text
+
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
@@ -809,6 +885,11 @@ class StoryPipeline:
 
         def parse(text: str) -> tuple[Layer, ...]:
             return parse_layers(extract_json_block(text), story, self.s.max_layers)
+
+        reviewed: list[bool] = []  # the size review is asked once in this planning (`_size_review`)
+
+        async def sized(layers: tuple[Layer, ...]) -> None:
+            await self._size_review(st, story, layers, asked=reviewed)
 
         coder_steps, coder_context = self._coder_budget()
 
@@ -840,9 +921,11 @@ class StoryPipeline:
                 max_steps=coder_steps,
                 context_budget=coder_context,
                 dossier=self._dossier(st, (st.base or {}).get("sha")),
+                max_criteria=self.s.max_layer_criteria,
             ),
             parse,
             ask=ask,
+            check=sized,
         )
         st.layers = [x.to_dict() for x in layers]
         st.save()  # the stage finishes once the layers are agreed (`_agree`), not when they are split

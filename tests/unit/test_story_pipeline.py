@@ -1036,6 +1036,99 @@ async def test_a_layer_plan_that_leaves_a_criterion_unowned_is_sent_back_once(tm
     assert "no layer covers acceptance ['AC2']" in asked[1].messages[1].content
 
 
+BOTH = fenced(
+    {
+        "layers": [
+            {
+                **layer("avatars", "Avatars", "store.py", "AC1", "Store and show."),
+                "acceptance": ["AC1", "AC2"],
+            }
+        ]
+    }
+)
+"""A one-layer plan of the story's two criteria: over a cap of 1."""
+
+
+def size_verdict(verdict: str, why: str) -> FakeReply:
+    return fenced({"layers": [{"slug": "avatars", "verdict": verdict, "why": why}]})
+
+
+async def test_a_layer_over_the_criteria_cap_the_reviewer_would_split_goes_back_to_the_architect(
+    tmp_path: Path,
+) -> None:
+    """story.max_layer_criteria (2026-11-05, AIR-62, AIR-55, AIR-61): a soft cap; the reviewer rules once."""
+    repo = repo_with_marker_tests(tmp_path)
+    split = size_verdict("split", "storage first, then the profile that shows it")
+    engine = happy_engine(architect=[BOTH, LAYERS, *PKGS], reviewer=[split, APPROVE, APPROVE])
+    st = await pipeline(tmp_path, repo, engine, story={"max_layer_criteria": 1}).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    assert [x["slug"] for x in st.layers] == ["storage", "profile"]
+    [review] = kinds(st.path / "events.jsonl", "layer_size_review")
+    assert review == {**review, "layer": "avatars", "criteria": 2, "verdict": "split"}
+    assert review["reason"] == "storage first, then the profile that shows it"
+    [retry] = kinds(st.path / "events.jsonl", "retry")
+    says = "layer 'avatars' covers 2 acceptance criteria (AC1, AC2)"
+    assert retry["stage"] == "layers" and says in retry["error"]
+    asked = [r for r in engine.requests if r.role == "architect"]
+    assert "at most 1 acceptance criterion" in asked[0].messages[1].content  # what the architect aims for
+    again = asked[1].messages[1].content
+    assert says in again and "storage first, then the profile that shows it" in again
+    sized = [r for r in engine.requests if r.role == "reviewer"][0].messages[-1].content
+    assert "not a code review" in sized and "avatars (2 criteria: AC1, AC2)" in sized
+
+
+async def _over_cap_plan_accepted(
+    tmp_path: Path, architect: list[FakeReply], reviewer: list[FakeReply]
+) -> tuple[StoryState, FakeEngine]:
+    """A story whose layer plan is over a cap of 1 and accepted: it stops at the package (no script left)."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(architect=architect, reviewer=reviewer)
+    st = await pipeline(tmp_path, repo, engine, story={"max_layer_criteria": 1}).run(text_card("avatars"))
+    assert [x["slug"] for x in st.layers] == ["avatars"]
+    return st, engine
+
+
+async def test_a_layer_over_the_cap_the_reviewer_would_keep_is_accepted(tmp_path: Path) -> None:
+    st, engine = await _over_cap_plan_accepted(tmp_path, [BOTH], [size_verdict("keep", "one form, one save")])
+    [review] = kinds(st.path / "events.jsonl", "layer_size_review")
+    assert (review["layer"], review["criteria"], review["verdict"]) == ("avatars", 2, "keep")
+    assert review["reason"] == "one form, one save"
+    assert [r for r in kinds(st.path / "events.jsonl", "retry") if r["stage"] == "layers"] == []
+
+
+async def test_a_plan_still_over_the_cap_after_a_split_request_is_accepted_and_the_reviewer_asked_once(
+    tmp_path: Path,
+) -> None:
+    st, engine = await _over_cap_plan_accepted(tmp_path, [BOTH, BOTH], [size_verdict("split", "two layers")])
+    reviews = kinds(st.path / "events.jsonl", "layer_size_review")
+    assert [(r["layer"], r["verdict"]) for r in reviews] == [("avatars", "split"), ("avatars", "accepted")]
+    assert "asked once" in reviews[1]["reason"]
+    assert len([r for r in engine.requests if r.role == "reviewer"]) == 1
+
+
+@pytest.mark.parametrize("reply", [FakeReply(text="It is fine as it is."), None])
+async def test_a_size_review_that_fails_accepts_the_plan_and_says_so(
+    tmp_path: Path, reply: FakeReply | None
+) -> None:
+    """Never a block: an unreadable verdict, or a reviewer that does not answer at all (no script)."""
+    st, _ = await _over_cap_plan_accepted(tmp_path, [BOTH], [reply] if reply else [])
+    [review] = kinds(st.path / "events.jsonl", "layer_size_review")
+    assert (review["layer"], review["criteria"], review["verdict"]) == ("avatars", 2, "unreviewed")
+    assert review["reason"]
+
+
+@pytest.mark.parametrize("cap", [0, 2])
+async def test_a_plan_at_or_under_the_cap_or_with_no_cap_never_asks_the_reviewer(
+    tmp_path: Path, cap: int
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(architect=[BOTH], reviewer=[])
+    st = await pipeline(tmp_path, repo, engine, story={"max_layer_criteria": cap}).run(text_card("avatars"))
+    assert [x["slug"] for x in st.layers] == ["avatars"]
+    assert kinds(st.path / "events.jsonl", "layer_size_review") == []
+    assert [r for r in engine.requests if r.role == "reviewer"] == []
+
+
 async def test_layer_one_builds_on_the_fetched_remote_trunk(tmp_path: Path, local_remotes: None) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")

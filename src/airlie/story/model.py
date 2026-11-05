@@ -4,6 +4,7 @@ errors a role can act on; slugs, branch names, the issue-key pattern and the sto
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
@@ -390,3 +391,39 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
             f"no layer covers acceptance {missing}; give each criterion to the layer that makes it true"
         )
     return tuple(layers)
+
+
+def oversized_layers(layers: Sequence[Layer], cap: int) -> tuple[Layer, ...]:
+    """The layers of a plan that make more than `cap` acceptance criteria true (story.max_layer_criteria);
+    none when `cap` is 0. A soft cap (2026-11-05): a layer's whole package of tests is written in one reply,
+    and layers of 6 criteria could not be packaged in it (AIR-62 layer 01, AIR-55 and AIR-61 layer 02), but
+    a story that cannot be cut further keeps its layer, so the reviewer rules on these, not the parser."""
+    return tuple(x for x in layers if cap and len(x.acceptance) > cap)
+
+
+SIZE_VERDICTS = ("split", "keep")
+
+
+def parse_size_verdict(obj: dict[str, Any] | None, slugs: Sequence[str]) -> dict[str, tuple[str, str]]:
+    """The reviewer's ruling on each layer of `slugs` (the plan's layers over the cap): slug -> (split or
+    keep, its one line: the suggested split or the reason to keep). A StoryError when the object is missing
+    or names no usable verdict for one of them; the pipeline then accepts the plan, the check is advisory."""
+    if obj is None:
+        raise StoryError(NO_JSON)
+    raw = obj.get("layers")
+    if not isinstance(raw, list):
+        raise StoryError(
+            'the JSON object needs a "layers" list, a verdict for each layer you were asked about'
+        )
+    out: dict[str, tuple[str, str]] = {}
+    for d in raw:
+        if not isinstance(d, dict) or str(d.get("slug") or "") not in slugs:
+            continue  # a layer it was not asked about says nothing
+        slug, verdict = str(d["slug"]), d.get("verdict")
+        if verdict not in SIZE_VERDICTS:
+            raise StoryError(f"layer '{slug}': 'verdict' must be split or keep, not {verdict!r}")
+        out[slug] = (verdict, _one_line(_text(d, "why", f"layer '{slug}'"), f"layer '{slug}': 'why'", 400))
+    missing = [s for s in slugs if s not in out]
+    if missing:
+        raise StoryError(f"no verdict on layer '{missing[0]}'; give one for each layer you were asked about")
+    return out

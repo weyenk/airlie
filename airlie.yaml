@@ -174,6 +174,10 @@ story:
   trunk: main                      # the stack's base branch
   publish: single                  # one draft PR on the top layer's branch; stack = one per layer, the schema default
   max_layers: 5
+  # 2026-11-05: the architect's package step failed on big layers (AIR-62 layer 01: 18 tests over 6 criteria, its
+  # reply cut off; AIR-55 and AIR-61 layer 02: 6 over 6) and packaged fine at 0-5 criteria (mostly ~4 tests). Soft:
+  # a layer over it goes to the reviewer once, which says split or keep (a story that cannot be cut keeps it)
+  max_layer_criteria: 3
   # 12 (the schema's default) until 2026-11-02: AIR-47 layer 02's architect ran out of its read steps three times
   # before writing a package (the layer touches the publisher, the pipeline and a 160k-char test module, and
   # brief-package-existing-tests asks it to grep for the existing tests it breaks)
