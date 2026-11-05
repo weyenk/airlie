@@ -657,6 +657,51 @@ def test_serve_ticks_on_its_timer_and_registers_the_lane_jobs(tmp_path: Path) ->
         assert done["kind"] == "line" and done["result"] == {"line": "AIR-9 Avatars: review"}
 
 
+async def test_every_beat_uses_one_board_and_a_changed_board_replaces_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-04: each beat made its own board, and so its own SQLite connection to board.sqlite, and closed
+    none; a beat's job can outlive it, so nothing closed it but the cycle collector, which an idle serve
+    rarely runs. Over a night serve reached launchd's 256 open files and every /health and tick failed with
+    EMFILE. One board now serves every beat; a change to the board's config replaces it, the old one
+    closed."""
+    from airlie.serve.jobs import Jobs
+    from airlie.serve.ticker import LineTicker
+    from airlie.story import factory
+    from airlie.story.line import Line
+
+    class Board:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    made: list[Board] = []
+    used: list[object] = []
+
+    def make_board(scfg: Any) -> Board:
+        made.append(Board())
+        return made[-1]
+
+    async def beat(self: Line, spawn: Any) -> str:
+        used.append(self.board)
+        return "idle"
+
+    c = cfg(tmp_path)
+    monkeypatch.setattr(factory, "story_config", lambda cfg: cfg)
+    monkeypatch.setattr(factory, "story_problems", lambda cfg: [])
+    monkeypatch.setattr(factory, "make_board", make_board)
+    monkeypatch.setattr(Line, "beat", beat)
+    ticker = LineTicker(c, Jobs(), commit=None)
+    for _ in range(3):
+        assert await ticker.beat() == "idle"
+    assert len(made) == 1 and used == [made[0]] * 3
+    ticker.cfg = c.model_copy(update={"board": c.board.model_copy(update={"prefix": "HDS"})})
+    await ticker.beat()
+    assert len(made) == 2 and made[0].closed and not made[1].closed and used[-1] is made[1]
+
+
 def test_a_serve_with_ticks_off_never_ticks(tmp_path: Path) -> None:
     import time
 

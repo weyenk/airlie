@@ -52,6 +52,10 @@ class LocalBoard:
         self.epics_dir = epics_dir
         self.stories_dir = stories_dir
 
+    def close(self) -> None:
+        """Closes the store's connection (a later read opens it again)."""
+        self.store.close()
+
     def is_note(self, author: str, text: str) -> bool:
         """Airlie's and the configured roles' notes, by author or by the **airlie** · prefix (legacy)."""
         return author in self.role_names or author == "airlie" or text.startswith(NOTE_PREFIX)
