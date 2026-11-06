@@ -92,9 +92,10 @@ One seat, read-only tools, one prompt rendered from the inputs, one reply parsed
 format. The step count is the number of tries until the reply parses (today `stage_attempts`, 2, via
 `Asker.usable` at `src/airlie/story/asking.py:389`). The model never sees its earlier failed tries.
 
-Today's boxes that are asks: survey, refine, plan layers (each round is one ask; rounds are a loop
-wire), size review, package ask, package critic, proof revision, criteria revision, skill pick, the
-reviewer's review, the supervisor's reading when the final gate fails, and Muse's reading at a block.
+Today's boxes that are asks: survey, refine, size review, package ask, package critic, proof revision,
+criteria revision, skill pick, the reviewer's review, the supervisor's reading when the final gate
+fails, and Muse's reading at a block. Plan layers is not an ask: its rounds are follow-ups on one held
+orchestrator run (`ask_in_rounds`, `asking.py:335`), so it is a conversation.
 
 ### conversation
 
@@ -103,8 +104,9 @@ turn's inputs; each turn yields one artifact. The step count is the maximum numb
 conversation ends early when `done` says so (today: the first unusable draft or a proof change). Today's
 implementation is the held conversation at `asking.py:258`.
 
-Today's boxes that are conversations: draft packages (one turn per layer). The initiative's imagine
-step and the epic plan are conversations too, for later.
+Today's boxes that are conversations: draft packages (one turn per layer) and plan layers (one turn
+per round, with the size review after each). The initiative's imagine step and the epic plan are
+conversations too, for later.
 
 ### write
 
@@ -198,7 +200,8 @@ So there is one more artifact format, **`session`**, and it is the only run-scop
 - A later node of the same type names that session as an input and continues it: same transcript,
   same tools, same worktree, one more turn. The node's prompt is that turn's nudge.
 - A session lives in the process. It is never written to `state.json`. If the run dies, the next node
-  that names it starts a fresh one from the persisted artifacts, which is what `_resumed` does today.
+  that names it starts a fresh one from the persisted artifacts, which is what `_package` does today
+  when no drafting conversation is held in memory (`_resumed` only reuses one that still is).
 - Continuing a session is config, not a type: the node names an input. Which model sees what is still
   fixed by the type.
 
@@ -252,7 +255,7 @@ these nodes. Nothing a box does changes.
 | gate | `gate` | check | |
 | survey | `survey` | ask | parallel with refine; `on_fail: continue` |
 | refine | `refine` | ask | skipped for epic story cards |
-| plan layers | `layers` | ask | loop over rounds; `size_review` ask on the branch where a layer is too big, "split" loops back |
+| plan layers | `layers` | conversation | one turn per round; `size_review` ask after a turn where a layer is too big, "split" is the next turn's feedback |
 | skill pick | `skill` | ask | the Kev router is a role |
 | three amigos | `amigos` | meeting | off when `amigos.enabled` is false |
 | planned | milestone | event only | the lane hands over here |
