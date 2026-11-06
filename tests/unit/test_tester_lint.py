@@ -3,11 +3,20 @@ finding where it cannot, and no file the layer did not change touched."""
 
 from __future__ import annotations
 
+import ast
 import shlex
 import sys
 from pathlib import Path
 
-from airlie.story.tester_lint import LayerLint, RuffStep, lint_for, lint_note, ruff_steps, wrap_long_lines
+from airlie.story.tester_lint import (
+    LayerLint,
+    RuffStep,
+    async_awaiting_defs,
+    lint_for,
+    lint_note,
+    ruff_steps,
+    wrap_long_lines,
+)
 from tests.unit.git_helpers import git
 from tests.unit.test_story_layer_checks import commit, repo
 
@@ -281,4 +290,95 @@ async def test_the_fixer_wraps_a_long_docstring_or_comment_at_the_repositorys_li
     assert await lint().fix(root, base) == ["tests/test_refine.py"]
     fixed = (root / "tests" / "test_refine.py").read_text()
     assert max(len(x) for x in fixed.splitlines()) <= 110 and 'write."""' in fixed
+    assert await lint().check(root, base) == []
+
+
+AWAITING = '''"""Refine tests."""
+
+import asyncio
+
+
+class Board:
+    def __init__(self):
+        self.sections = []
+
+
+async def plan(board):
+    await asyncio.sleep(0)
+    board.sections.append("refined")
+    return board
+
+
+def _refined(board):
+    """The board after a refine.
+
+def not_this_one():
+    """
+    with open(__file__):
+        st = await plan(
+            board,
+        )
+    return st
+
+
+async def test_refine_posts_no_comment():
+    board = _refined(Board())
+    assert board.sections == ["refined"]
+
+
+async def test_refine_writes_the_section():
+    _refined(Board())
+    assert len(_refined(Board()).sections) == 1
+
+
+def test_a_plain_caller():
+    assert _refined
+'''
+"""AIR-59 layer 01, 2026-11-04 and 2026-11-06: a test helper written as a plain `def` whose body awaits the
+pipeline's plan, so the module did not parse ("'await' outside async function") and the package came back
+unparseable_test, a whole try each time."""
+
+
+def test_a_plain_def_that_awaits_becomes_async_and_its_whole_statement_calls_are_awaited() -> None:
+    fixed = async_awaiting_defs(AWAITING)
+    ast.parse(fixed)
+    assert "\nasync def _refined(board):\n" in fixed
+    assert '\ndef not_this_one():\n    """' in fixed  # in the docstring: not a def
+    assert "    board = await _refined(Board())\n" in fixed
+    assert "    await _refined(Board())\n" in fixed
+    assert "    assert len(_refined(Board()).sections) == 1\n" in fixed  # not a whole statement: left
+    assert "\ndef test_a_plain_caller():\n    assert _refined\n" in fixed  # not an async caller: left
+    assert fixed.count("async def") == AWAITING.count("async def") + 1
+
+
+def test_an_async_def_and_a_file_that_parses_or_breaks_otherwise_are_left_unchanged() -> None:
+    parses = "async def helper():\n    return await thing()\n\n\ndef test_x():\n    assert helper\n"
+    assert async_awaiting_defs(parses) == parses
+    unrelated = "def test_x(:\n    assert 1\n"
+    assert async_awaiting_defs(unrelated) == unrelated
+    also_broken = "def helper():\n    return await thing()\n\n\ndef test_x():\n    assert (1\n"
+    assert async_awaiting_defs(also_broken) == also_broken
+    in_a_lambda = "async def outer():\n    f = lambda: await thing()\n    return f\n"
+    assert async_awaiting_defs(in_a_lambda) == in_a_lambda
+    lambda_in_a_def = "def outer():\n    f = lambda: await thing()\n    return f\n"
+    assert async_awaiting_defs(lambda_in_a_def) == lambda_in_a_def  # async outer would not mend the lambda
+
+
+def test_only_the_def_whose_own_body_awaits_becomes_async() -> None:
+    inner = "def outer():\n    def inner():\n        return await thing()\n\n    return inner\n"
+    assert async_awaiting_defs(inner) == inner.replace("    def inner", "    async def inner")
+    outer = (
+        "def outer():\n    async def inner():\n        return await thing()\n\n"
+        "    if True:\n        x = 1\n    else:\n        await inner()\n"
+    )
+    assert async_awaiting_defs(outer) == "async " + outer
+
+
+async def test_the_fixer_makes_an_awaiting_helper_async_before_anything_else(tmp_path: Path) -> None:
+    toml = '[tool.ruff]\nline-length = 110\n\n[tool.ruff.lint]\nselect = ["E", "F"]\n'
+    root, base = repo(tmp_path, {"pyproject.toml": toml})
+    commit(root, "tests", {"tests/test_refine.py": AWAITING})
+    assert await lint().fix(root, base) == ["tests/test_refine.py"]
+    fixed = (root / "tests" / "test_refine.py").read_text()
+    assert "async def _refined(board):" in fixed and "board = await _refined(Board())" in fixed
     assert await lint().check(root, base) == []

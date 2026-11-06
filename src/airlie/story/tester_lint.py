@@ -361,6 +361,94 @@ def wrap_long_lines(source: str, width: int) -> str:
     return wrapped
 
 
+_AWAIT_OUTSIDE = "'await' outside async function"
+
+
+def _compile_error(source: str) -> str | None:
+    """What stops `source` compiling, as `unparseable_tests` compiles a test module (a parse alone passes an
+    `await` in a plain def); None when it compiles."""
+    try:
+        compile(source, "<test>", "exec", dont_inherit=True)
+    except SyntaxError as e:
+        return e.msg
+    except ValueError as e:
+        return str(e)
+    return None
+
+
+def _own_await(fn: ast.FunctionDef) -> bool:
+    """Whether `fn`'s own body awaits: not a nested def's, lambda's or class's, nor a default or decorator,
+    which run in the scope around it."""
+    todo: list[ast.AST] = list(fn.body)
+    while todo:
+        node = todo.pop()
+        if isinstance(node, ast.Await):
+            return True
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            todo += ast.iter_child_nodes(node)
+    return False
+
+
+def _inserted(lines: list[str], spots: Sequence[tuple[int, int]], text: str) -> str:
+    """`lines` joined, with `text` put in at each (1-based line, `col_offset`) of `spots`."""
+    for row, col in sorted(spots, reverse=True):
+        line = lines[row - 1]
+        at = len(line.encode("utf-8")[:col].decode("utf-8"))  # col_offset counts UTF-8 bytes
+        lines[row - 1] = f"{line[:at]}{text}{line[at:]}"
+    return "".join(lines)
+
+
+def _awaited_calls(source: str, names: set[str]) -> str:
+    """`source` with `await` before each call of one of `names` that is a whole statement or the whole value
+    of an assignment in an async function's own body (not a nested def's or lambda's); any other call is left
+    as written."""
+    spots: list[tuple[int, int]] = []
+
+    def visit(node: ast.AST, in_async: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.AsyncFunctionDef):
+                visit(child, True)
+                continue
+            if isinstance(child, ast.FunctionDef | ast.Lambda | ast.ClassDef):
+                visit(child, False)
+                continue
+            call = child.value if isinstance(child, ast.Expr | ast.Assign | ast.AnnAssign) else None
+            if (
+                in_async
+                and isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id in names
+            ):
+                spots.append((call.lineno, call.col_offset))
+            visit(child, in_async)
+
+    visit(ast.parse(source), False)
+    return _inserted(source.splitlines(keepends=True), spots, "await ")
+
+
+def async_awaiting_defs(source: str) -> str:
+    """`source`, when it does not compile for an `await` outside an async function, with each plain `def`
+    whose own body awaits (`_own_await`) made an `async def`, and each call of one by its name that is a whole
+    statement or a whole assigned value in an async function's own body awaited (AIR-59 layer 01, 2026-11-04
+    and 2026-11-06: a test helper written as `def _refined(...)` around `await pipeline(...).plan(...)` sent
+    the package back unparseable_test twice; AIR-47 layer 04, 2026-11-03, had the same slip). The module
+    parses, so the defs are read from its syntax tree: one already async, or one that holds the await only
+    through a nested def or lambda, is never changed. Source that compiles, stops on anything else, or still
+    would not compile after, comes back unchanged."""
+    if _compile_error(source) != _AWAIT_OUTSIDE:
+        return source
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return source
+    defs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and _own_await(n)]
+    if not defs:
+        return source
+    made = _inserted(source.splitlines(keepends=True), [(d.lineno, d.col_offset) for d in defs], "async ")
+    fixed = _awaited_calls(made, {d.name for d in defs})
+    return fixed if _compile_error(fixed) is None else source
+
+
 class LayerLint:
     """The gate's ruff steps, run on the files a worktree's HEAD changed since `base`."""
 
@@ -375,16 +463,17 @@ class LayerLint:
         return [p for p in changed_files(worktree, base) if p.endswith(_PYTHON) and (worktree / p).is_file()]
 
     async def fix(self, worktree: Path, base: str) -> list[str]:
-        """Run each step's fixer on the changed files, with the renames, imports and wrapping of over-long
-        docstring and comment lines at the line length of the ruff configuration on `base`
-        (`wrap_long_lines`) that no ruff fix makes; return the files it changed (left uncommitted)."""
+        """Run each step's fixer on the changed files, with the async helpers (`async_awaiting_defs`),
+        renames, imports and wrapping of over-long docstring and comment lines at the line length of the ruff
+        configuration on `base` (`wrap_long_lines`) that no ruff fix makes; return the files it changed
+        (left uncommitted)."""
         files = self._files(worktree, base)
         if not files:
             return []
         for f in files:  # before ruff, which then formats what the rename lengthened
             path = worktree / f
             text = path.read_text(encoding="utf-8")
-            if (renamed := rename_ambiguous(text)) != text:
+            if (renamed := rename_ambiguous(async_awaiting_defs(text))) != text:  # async first: it compiles
                 path.write_text(renamed, encoding="utf-8")
         quoted = " ".join(shlex.quote(f) for f in files)
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
