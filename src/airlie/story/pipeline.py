@@ -107,7 +107,13 @@ from airlie.story.model import (
     parse_story,
 )
 from airlie.story.package import Package, ProofChange, parse_package
-from airlie.story.package_checks import PackageChecker, beyond_proof, package_feedback_said, place_package
+from airlie.story.package_checks import (
+    PackageChecker,
+    as_checked,
+    beyond_proof,
+    package_feedback_said,
+    place_package,
+)
 from airlie.story.phase import decoding, write_phase
 from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
@@ -2047,9 +2053,12 @@ class StoryPipeline:
         """A package for layer `i` that passes the readiness check (package_checks): up to
         story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
         base; what a try left (a reply that could not be parsed, or the findings) goes back to the architect
-        as the next brief's feedback, with a `steer` event per hub text in it. Events: package_start,
-        package_returned (kinds), package_ready, and each finding. Exhausted: a `package_rejected` lesson and
-        StoryBlocked. A gate that does not run pytest gets no red check, and an event says so."""
+        as the next brief's feedback, with a `steer` event per hub text in it, and with findings the package
+        as checked (`as_checked`), so the retry edits it whether or not its conversation was started fresh. A
+        try whose findings are all lint_fails is not charged, once a layer (`charged` on its event). Events:
+        package_start, package_returned (kinds, charged), package_ready, and each finding. Exhausted: a
+        `package_rejected` lesson and StoryBlocked. A gate that does not run pytest gets no red check, and an
+        event says so."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
             self.commands,
@@ -2067,6 +2076,7 @@ class StoryPipeline:
         package: Package | None = None
         attempt = revisions = 0
         revised = False  # the layer's proof was revised: the next ask resumes the drafting conversation
+        lint_turn_used = False  # the one uncharged fix turn for a package back for lint alone
         # the layer's draft, taken once (a re-plan after a red gate comes with feedback and asks afresh)
         draft = st.drafts.pop(nn, None) if feedback is None else None
         if draft is not None:
@@ -2154,9 +2164,19 @@ class StoryPipeline:
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))
-            st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run)
+            # lint alone gets one fix turn a layer that is not charged (AIR-47, AIR-48, AIR-59, AIR-61: a
+            # one-character E501 used half the tries, so what mattered landed on the last with no feedback)
+            free = not lint_turn_used and kinds == ["lint_fails"]
+            st.emit(
+                "package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run, charged=not free
+            )
+            if free:
+                lint_turn_used = True
+                attempt -= 1
             if attempt < self.s.package_attempts:
-                feedback, ids = package_feedback_said(found)
+                # the package as checked, so a retry started fresh edits it rather than writing it from
+                # memory (AIR-59, AIR-61, 2026-11-05)
+                feedback, ids = package_feedback_said(found, as_checked(package, self._files_at(base_sha)))
                 self._steer(st, ids, self.s.architect_role, nn)
         self._lesson(st, nn, layer, package, None, "package_rejected", ", ".join(kinds))
         raise StoryBlocked(

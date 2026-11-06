@@ -13,8 +13,10 @@ the tests' imports of the names the layer adds are meant to fail them."""
 from __future__ import annotations
 
 import ast
+import io
 import re
 import shlex
+import tokenize
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -243,6 +245,122 @@ def with_imports(source: str, lines: Sequence[str]) -> str:
     return "".join([*body[:at], *(x + "\n" for x in new), *body[at:]])
 
 
+_DIRECTIVES = re.compile(
+    r"^#\s*(?:noqa|type:|pragma|fmt:|ruff:|pyright:|mypy:|isort:|pylint:)|^#!|noqa", re.I
+)
+"""A comment a tool reads (`# noqa: E501`, `# type: ignore`, a shebang): never wrapped, as moving it would
+change what it applies to."""
+
+
+def _docstring_lines(tree: ast.Module, lines: Sequence[str]) -> set[int]:
+    """The 0-based lines inside the module's string-literal statements (docstrings, a module's, a class's,
+    a function's, an attribute's), each of which starts and ends a line of its own: no code beside it."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+        first, last = node.lineno - 1, (node.end_lineno or node.lineno) - 1
+        if lines[first][: node.col_offset].strip() or lines[last][node.end_col_offset or 0 :].strip():
+            continue
+        found |= set(range(first, last + 1))
+    return found
+
+
+def _greedy(words: Sequence[str], first: int, rest: int) -> list[str] | None:
+    """`words` filled into lines of at most `first` characters, then `rest`; None when a word cannot fit."""
+    out: list[str] = []
+    for w in words:
+        room = first if len(out) <= 1 else rest
+        if out and len(out[-1]) + 1 + len(w) <= room:
+            out[-1] += f" {w}"
+        elif len(w) <= (first if not out else rest):
+            out.append(w)
+        else:
+            return None
+    return out
+
+
+def _wrapped_docstring_line(line: str, width: int) -> list[str] | None:
+    """A docstring's line re-broken at word boundaries within `width`, its indentation kept on each, or None
+    when it cannot be (a word too long, a doctest, a backslash a break would turn into a continuation)."""
+    indent = line[: len(line) - len(line.lstrip())]
+    body = line.strip()
+    if body.startswith((">>>", "...")) or "\\" in body:
+        return None
+    room = width - len(indent)
+    chunks = _greedy(body.split(), room, room)
+    return None if chunks is None else [indent + c for c in chunks]
+
+
+def _wrapped_comment_line(line: str, col: int, width: int) -> list[str] | None:
+    """A line whose `#` comment starts at `col`, the comment re-broken within `width`: a comment on a line of
+    its own keeps its indentation on each line; a trailing one keeps as many words as fit after its code and
+    continues on comment lines below at the code's indentation. None when it cannot be."""
+    comment = line[col:]
+    if _DIRECTIVES.search(comment):
+        return None
+    indent = line[: len(line) - len(line.lstrip())]
+    words = comment.lstrip("#").split()
+    if not words:
+        return None
+    rest = width - len(indent) - 2
+    if not line[:col].strip():  # a comment on a line of its own
+        chunks = _greedy(words, rest, rest)
+        return None if chunks is None else [f"{indent}# {c}" for c in chunks]
+    head = line[:col] + "# "
+    chunks = _greedy(words, width - len(head), rest)
+    if chunks is None or not chunks[0]:
+        return None
+    return [head + chunks[0], *(f"{indent}# {c}" for c in chunks[1:])]
+
+
+def wrap_long_lines(source: str, width: int) -> str:
+    """`source` with each line longer than `width` whose overflow is in a docstring or a `#` comment re-broken
+    at word boundaries, keeping its indentation (AIR-47, AIR-48, AIR-59, AIR-61: an E501 on a docstring or
+    comment line, which no ruff fix wraps, sent a package back a whole try, 17 times; AIR-59's was a
+    docstring's `carries "type": "story" so ... the section write.`, 111 characters against 110). A docstring
+    is a string-literal statement on lines of its own (`_docstring_lines`); a comment is what `tokenize` says
+    is one, a trailing one wrapped only when its code fits. Code, any other string, a directive comment
+    (`_DIRECTIVES`) and a doctest are never touched; a line that cannot be wrapped is left for the check to
+    report. Source that does not parse, or that would not after, comes back unchanged."""
+    try:
+        tree = ast.parse(source)
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (SyntaxError, tokenize.TokenError, IndentationError):
+        return source
+    lines = source.splitlines(keepends=True)
+    bare = [x.rstrip("\r\n") for x in lines]
+    docs = _docstring_lines(tree, bare)
+    comments = {t.start[0] - 1: t.start[1] for t in tokens if t.type == tokenize.COMMENT}
+    out: list[str] = []
+    changed = False
+    for n, line in enumerate(bare):
+        ending = lines[n][len(line) :]
+        got = None
+        if len(line) > width:
+            if n in comments and comments[n] < width:
+                got = _wrapped_comment_line(line, comments[n], width)
+            elif n in docs:
+                got = _wrapped_docstring_line(line, width)
+        if got is None:
+            out.append(lines[n])
+        else:
+            changed = True
+            out += [g + (ending or "\n") for g in got[:-1]] + [got[-1] + ending]
+    if not changed:
+        return source
+    wrapped = "".join(out)
+    try:
+        ast.parse(wrapped)
+    except SyntaxError:
+        return source
+    return wrapped
+
+
 class LayerLint:
     """The gate's ruff steps, run on the files a worktree's HEAD changed since `base`."""
 
@@ -257,7 +375,9 @@ class LayerLint:
         return [p for p in changed_files(worktree, base) if p.endswith(_PYTHON) and (worktree / p).is_file()]
 
     async def fix(self, worktree: Path, base: str) -> list[str]:
-        """Run each step's fixer on the changed files; return the files it changed (left uncommitted)."""
+        """Run each step's fixer on the changed files, with the renames, imports and wrapping of over-long
+        docstring and comment lines at the line length of the ruff configuration on `base`
+        (`wrap_long_lines`) that no ruff fix makes; return the files it changed (left uncommitted)."""
         files = self._files(worktree, base)
         if not files:
             return []
@@ -269,9 +389,26 @@ class LayerLint:
         quoted = " ".join(shlex.quote(f) for f in files)
         ctx = ToolContext(worktree, self.timeout_s, _OUTPUT_CHARS, **self.confinement)
         await self._import_undefined(worktree, files, quoted, ctx)
+        width = ruff_line_length(worktree, base)
+        self._wrap(worktree, files, width)
         for s in self.steps:
             await run_cmd(s.fixer(quoted), ctx, shell=True)  # what it could not fix, check() reports
+        if self._wrap(worktree, files, width):  # ruff's indenting of a comment took it over again
+            for s in self.steps:
+                await run_cmd(s.fixer(quoted), ctx, shell=True)
         return differs_from(worktree, "HEAD", files)
+
+    @staticmethod
+    def _wrap(worktree: Path, files: Sequence[str], width: int) -> bool:
+        """Wrap each file's over-long docstring and comment lines (`wrap_long_lines`); whether any changed."""
+        changed = False
+        for f in files:
+            path = worktree / f
+            text = path.read_text(encoding="utf-8")
+            if (wrapped := wrap_long_lines(text, width)) != text:
+                path.write_text(wrapped, encoding="utf-8")
+                changed = True
+        return changed
 
     async def _import_undefined(
         self, worktree: Path, files: list[str], quoted: str, ctx: ToolContext
