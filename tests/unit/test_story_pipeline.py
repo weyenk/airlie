@@ -20,7 +20,15 @@ from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.report import RunReport
 from airlie.router import ChiefRouter
 from airlie.story import pipeline as pipeline_module
-from airlie.story.amigos import Agreement, Meeting, ProofTest
+from airlie.story.amigos import (
+    Agreement,
+    Meeting,
+    Objection,
+    ProofTest,
+    agreement_note,
+    criteria_note,
+    unresolved_note,
+)
 from airlie.story.asking import MapUse
 from airlie.story.board import NOTE_PREFIX, Board, BoardError, Card, Column, NullBoard, note, text_card
 from airlie.story.briefs import pr_body
@@ -2985,17 +2993,11 @@ async def test_a_story_is_agreed_between_its_layers_and_its_first_build_and_the_
     assert st.layers is not None and st.layers[0]["brief"] == "Store avatars as PNG files."
     # the card hears it, after the layers and before the first layer is built
     heads = [n.removeprefix(NOTE_PREFIX).splitlines()[0] for n in board.notes]
-    assert heads[2:5] == [
+    assert heads[2:4] == [
         "layers, bottom first:",
-        "agreement of product, the architect and the tester (6 turns)",
         "the meeting changed the criteria:",
     ]
-    agreed = board.notes[3]
-    assert (
-        "it is shown with its alt text" in agreed
-        and "| AC1 | storage | unit | tests/unit/test_storage.py" in agreed
-    )
-    assert "reworded: **AC2**" in board.notes[4]
+    assert "reworded: **AC2**" in board.notes[3]
     # the layers are built from the agreement: the architect's package ask carries the agreed brief
     asked = [r.messages[1].content for r in engine.requests if r.role == "architect"]
     assert "Store avatars as PNG files." in asked[1]
@@ -3193,7 +3195,6 @@ async def test_a_meeting_that_ends_by_owner_decides_records_a_lesson_and_the_obj
     heads = [n.removeprefix(NOTE_PREFIX).splitlines()[0] for n in board.notes]
     assert "objections still open when the meeting ended (each owner's part stands):" in heads
     assert any("product on proof (AC2): thin" in n for n in board.notes)
-    assert "decided by their owner at the turn cap: proof" in board.notes[3]
 
 
 async def test_a_blocked_reply_from_product_in_the_meeting_stops_the_story(tmp_path: Path) -> None:
@@ -3492,3 +3493,74 @@ async def test_a_pinned_base_the_repository_lacks_is_fetched_for_and_one_still_m
     st = await pipeline(tmp_path, repo, happy_engine(), gh, pinned_base="0" * 40).run(text_card("avatars"))
     assert st.blocked is not None and "the pinned base 000000000000 is not in" in st.blocked
     assert [c[:2] for c in gh.calls] == [["git", "fetch"]]
+
+
+async def test_no_agreement_comment_after_meeting_settles(tmp_path: Path) -> None:
+    """AC1: when the meeting settles, the agreement (which carries the acceptance criteria in full) is not
+    posted as a comment on the card; the criteria remain in the story's acceptance field, and the
+    criteria-delta and unresolved-objections comments still post."""
+    repo = repo_with_levels(tmp_path)
+    original_story = Story.from_dict(
+        {
+            "type": "story",
+            "title": "Add avatar upload",
+            "summary": "Users upload an avatar and see it.",
+            "acceptance": [
+                {"id": "AC1", "given": "a user", "when": "they upload a PNG", "then": "it is stored"},
+                {"id": "AC2", "given": "a stored avatar", "when": "the profile loads", "then": "it is shown"},
+            ],
+        }
+    )
+    agreement_story = Story.from_dict(
+        {
+            "type": "story",
+            "title": "Add avatar upload",
+            "summary": "Users upload an avatar and see it.",
+            "acceptance": [
+                {"id": "AC1", "given": "a user", "when": "they upload a PNG", "then": "it is stored"},
+                {
+                    "id": "AC2",
+                    "given": "a stored avatar",
+                    "when": "the profile loads",
+                    "then": "it is shown with alt text",
+                },
+            ],
+        }
+    )
+    agreement = Agreement(
+        agreement_story,
+        tuple(Layer.from_dict(x) for x in AGREED_SPLIT["layers"]),
+        tuple(ProofTest.from_dict(t) for t in AGREED_PROOF["tests"]),
+        turns=3,
+        unresolved=(Objection("proof", "AC2", "the proof is thin", "assert the alt text", "tester"),),
+    )
+
+    def make_meeting(cfg: Any, tools: Any, on_turn: Any) -> FakeMeeting:
+        return FakeMeeting(agreement)
+
+    board = RecordingBoard()
+    engine = happy_engine()
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        engine,
+        board=board,
+        story={"amigos": {"enabled": True}},
+        roles={**STORY_ROLES, "tester": ("---\nsummary: Proof\n---\n# tester", ["read_file", "list_dir"])},
+        meeting=make_meeting,
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+
+    # the agreement comment (which carries the acceptance criteria in full) is not posted
+    assert note(agreement_note(agreement)) not in board.notes
+
+    # the criteria are still in the story's acceptance field
+    assert st.story is not None
+    assert [c["id"] for c in st.story["acceptance"]] == ["AC1", "AC2"]
+
+    # the criteria-delta comment still posts (AC2 was reworded by the meeting)
+    assert note(criteria_note(original_story, agreement)) in board.notes
+
+    # the unresolved-objections comment still posts
+    assert note(unresolved_note(agreement)) in board.notes
