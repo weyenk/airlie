@@ -399,7 +399,8 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
 4. **Tests and covers:** a test with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
    `raise`, or call to a helper of its module that has one is an `assertion_free_test` finding. A test id a
    criterion is covered by that is not a new or changed test of its file (compared with the base by syntax tree: a
-   reformat is not a change) is a `covers_missing` finding.
+   reformat is not a change) is a `covers_missing` finding, unless it is a test already on the base that the
+   package lists in `guards` or the agreed proof names: that one is a regression guard (below).
 5. **Imports:** every import in the tests of a module of this repository (under the worktree or its `src/`) must
    resolve to a file that is there or one the package creates, and every name imported from it must be defined at
    that file's top level or declared by one of the package's `interfaces` for it: else `import_unresolved`. A module
@@ -422,7 +423,14 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   red check lets a guard pass on the base, the final gate holds it to passing after the code, the coder's brief
   marks it, and `package_ready` names the guards. Every test that is not a guard must still fail on the base. A
   guard must be a covered test and have a reason, and a package whose every test is a guard is refused: that layer
-  has nothing to build, and its answer is the satisfied reply. The architect's package brief says so up front, and
+  has nothing to build, and its answer is the satisfied reply. A guard may be a test already on the base, left as
+  it is: when the agreed proof names an existing test as the proof of a criterion that already holds (AIR-62 layer
+  01, 2026-11-06: tests of `SafeMarkdown.test.ts` on main proved its "unchanged" criteria; covered, they were
+  `covers_missing`, left out, `proof_mismatch`, so no package could pass), the package covers it and it is taken
+  as a guard, with the reason "existing test the agreed proof names" when the package gives none. An unchanged
+  existing test that is neither a declared guard nor in the proof is still `covers_missing`, and the proof's
+  tests must still be covered. The test's file must be one of the package's test files (one it adds to will do).
+  The architect's package brief says so up front, and
   the `passes-before-code-choice` steer under a `passes_before_code` finding points at a guard (or the satisfied
   reply) rather than at editing the test away.
 - **A layer that is already satisfied:** when every criterion a layer owns already holds, it is not built. Either

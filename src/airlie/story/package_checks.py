@@ -3,10 +3,10 @@ line, 2026-10-24). The architect writes the layer's tests as code; before anyone
 pipeline checks them with no model, in a scratch worktree detached at the layer's base, so a rejected package
 costs no branch: the files the package says it creates or modifies, the gate's ruff steps (fixer first, and
 what it fixes is carried into the package, so the lock commit holds the text that was checked), that the test
-modules parse, that each test a criterion is covered by is a new or changed test, that every import of this
-repository's modules in the tests resolves, and that every new test is red on the base with every old test
-still green (`layer_checks.PytestChecks`). Python and pytest only, as the pre-code check was: a gate without
-pytest gets no red check and the caller logs that, as before.
+modules parse, that each test a criterion is covered by is a new or changed test (or a regression guard
+already there), that every import of this repository's modules in the tests resolves, and that every new
+test is red on the base with every old test still green (`layer_checks.PytestChecks`). Python and pytest
+only, as the pre-code check was: a gate without pytest gets no red check and the caller logs that, as before.
 
 The test text is model output: written only inside the worktree (a path that leaves it is refused), parsed
 with `ast` and never imported here; the tests run as the gate runs them, confined. Findings go back to the
@@ -37,7 +37,7 @@ from airlie.story.layer_checks import (
     test_functions,
     unparseable_tests,
 )
-from airlie.story.package import Package, PackageFile
+from airlie.story.package import Package, PackageFile, _checked_id, _test_named
 from airlie.story.tester_lint import lint_for
 from airlie.teams.worktree import add_worktree, commit_wip, find_file, remove_worktree
 from airlie.tools.scope import is_js_test
@@ -50,7 +50,13 @@ PROOF_MISMATCH = (
     "the agreed proof names it, but your package does not cover it: cover it, or, if the agreed test is "
     "wrong or cannot run (too large a sweep, a false bound), reply with a proof_change naming it instead"
 )
-NOT_NEW = "it is not a new or changed test of that file, so it was there before this layer"
+NOT_NEW = (
+    "it is not a new or changed test of that file, so it was there before this layer: an existing test that "
+    'pins what already holds is covered only as a regression guard, listed in the package\'s "guards" (or '
+    "named by the agreed proof)"
+)
+PROOF_GUARD = "existing test the agreed proof names"
+"""The reason an existing test the agreed proof names is a regression guard when the package gives none."""
 NO_MODULE = "the module is not in the worktree and the package creates no such file"
 NO_NAME = "the name is defined neither in the file nor in the package's interfaces for it"
 SWEEP_LIMIT = 10_000_000
@@ -444,7 +450,9 @@ class PackageChecker:
         """The package with ruff's fixes applied to its test text, and the findings. The package is placed
         and committed in a detached worktree of `repo` at `base` under `scratch`, removed after.
         `proof_ids` are the tests the story meeting agreed for the layer (None: no agreed proof): the
-        package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`). A file the
+        package must cover each of them (`proof_mismatch`), and may add more (`beyond_proof`). A covered test
+        that is on the base unchanged is `covers_missing` unless it is a guard or the proof names it; one the
+        proof names is made a guard (`PROOF_GUARD`) in the package returned (AIR-62, 2026-11-06). A file the
         package's interfaces name that its files leave out, and that is not on the base, is one it creates; so
         is a test file it writes in full and calls a change when the base lacks it."""
         # a test file the package writes in full and calls a change is a new one when its base lacks it
@@ -509,11 +517,26 @@ class PackageChecker:
                 if not t.asserts
             ]
             changed = {t.id for t in tests} | {t.id for t in web}
+            agreed = _against_proof(package, proof_ids)[1] if proof_ids is not None else set()
+            proven: dict[str, str] = {}
             for tid in package.test_ids:
                 path, _, name = tid.partition("::")
-                key = tid if is_js_test(path) else f"{path}::{_PARAMS.sub('', name)}"
-                if key not in changed:
-                    found.append(Finding("covers_missing", tid, NOT_NEW, ""))
+                bare = name if is_js_test(path) else _PARAMS.sub("", name)
+                key = tid if is_js_test(path) else f"{path}::{bare}"
+                if key in changed:
+                    continue
+                # an existing test, unchanged, pins what the base already does: it is covered as a regression
+                # guard when the package declares it one or the agreed proof names it (AIR-62 layer 01,
+                # 2026-11-06: covered, the proof's existing tests were refused; left out, a proof_mismatch)
+                there = _test_named(path, package.tests.get(path, ""), bare) not in (False, None)
+                if there and package.is_guard(tid):
+                    continue
+                if there and _PARAMS.sub("", tid) in agreed:
+                    proven[_checked_id(tid)] = PROOF_GUARD
+                    continue
+                found.append(Finding("covers_missing", tid, NOT_NEW, ""))
+            if proven:  # named with the declared guards in the coder's brief and in package_ready
+                package = replace(package, guards={**proven, **package.guards})
             found += imports_unresolved(scratch, package)
             found += unknown_methods(scratch, package)
             found += sweeps_too_large(scratch, package)
