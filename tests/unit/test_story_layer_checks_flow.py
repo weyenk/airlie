@@ -154,9 +154,13 @@ UNSORTED = package(
     "from calc import mul\nimport os\n\n\ndef test_mul():\n    assert mul(2,3)==6 and os.sep\n"
 )
 TOO_LONG = package(
+    'from calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6, "' + "words " * 12 + 'end"\n'
+)
+"""A string too long for the line length: neither ruff nor airlie splits it, so only the architect can."""
+LONG_COMMENT = package(
     "from calc import mul\n\n\ndef test_mul():\n    # " + "words " * 12 + "end\n    assert mul(2, 3) == 6\n"
 )
-"""A comment too long for the line length: ruff format does not wrap comments, so only the architect can."""
+"""A comment too long for the line length: ruff does not wrap it, airlie does."""
 
 
 # ---- red before the code ----
@@ -202,11 +206,60 @@ async def test_the_architects_retry_is_a_steer_event_per_hub_text_it_holds(tmp_p
     assert steers(st) == [
         ("checks-found", "architect", "01"),
         ("passes-before-code-choice", "architect", "01"),
+        ("package-as-checked", "architect", "01"),
         ("package-fix", "architect", "01"),
     ]
     [retry] = [p for p in prompts(engine, "architect") if "tests/test_calc.py::test_add_again" in p]
     assert hub_text("checks-found") in retry and hub_text("package-fix") in retry
     assert hub_text("passes-before-code-choice") in retry
+
+
+async def test_the_architects_retry_holds_its_package_as_checked(tmp_path: Path) -> None:
+    """AIR-59 and AIR-61, 2026-11-05: on a conversation started fresh the retry did not hold the package, and
+    the architect wrote its tests again from memory. The retry now carries them as checked (after ruff's
+    fixes) and its JSON object, whether the conversation was started fresh or not."""
+    vacuous_unsorted = package(
+        "from calc import add\nimport os\n\n\ndef test_add_again():\n    assert add(2,2)==4 and os.sep\n",
+        "test_add_again",
+    )
+    st, engine = await run(tmp_path, [FEATURE, DONE], [vacuous_unsorted, RED], gate=RUFF_GATE)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    [retry] = [p for p in prompts(engine, "architect") if hub_text("package-as-checked") in p]
+    held = retry.split(hub_text("package-as-checked"))[1]
+    assert "### test file: tests/test_calc.py" in held
+    assert "import os\n\nfrom calc import add\n" in held and "add(2, 2) == 4" in held  # as ruff fixed it
+    assert '"type": "package"' in held and "tests/test_calc.py::test_add_again" in held
+    assert held.index("### test file") < held.index(hub_text("package-fix"))
+
+
+async def test_a_package_back_for_lint_alone_is_not_charged_a_try_once_a_layer(tmp_path: Path) -> None:
+    """AIR-47, AIR-48, AIR-59, AIR-61: lint_fails was the most common reason a package came back (17 times),
+    and a one-character E501 used half the tries, so the finding that mattered landed on the last one."""
+    st, engine = await run(tmp_path, [FEATURE, DONE], [TOO_LONG, VACUOUS, RED], gate=RUFF_GATE)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    events = st.path / "events.jsonl"
+    returned = kinds(events, "package_returned")
+    assert [(e["kinds"], e["charged"]) for e in returned] == [
+        (["lint_fails"], False),
+        (["passes_before_code"], True),
+    ]
+    assert [e["attempt"] for e in kinds(events, "package_start")] == [1, 1, 2]
+
+
+async def test_a_second_package_back_for_lint_alone_is_charged(tmp_path: Path) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE], [TOO_LONG, TOO_LONG, TOO_LONG], gate=RUFF_GATE)
+    assert st.blocked is not None and "after 2 tries (lint_fails)" in st.blocked
+    returned = kinds(st.path / "events.jsonl", "package_returned")
+    assert [e["charged"] for e in returned] == [False, True, True]
+    assert prompts(engine, "coder") == []
+
+
+async def test_a_long_comment_in_the_package_is_wrapped_and_costs_no_try(tmp_path: Path) -> None:
+    st, engine = await run(tmp_path, [FEATURE, DONE], [LONG_COMMENT], gate=RUFF_GATE)
+    assert st.blocked is None and "01" in st.built, st.blocked
+    assert kinds(st.path / "events.jsonl", "package_returned") == []
+    built = built_file(tmp_path, st, "tests/test_calc.py")
+    assert max(len(x) for x in built.splitlines()) <= 60 and "# words" in built
 
 
 async def test_an_existing_test_already_red_on_the_base_does_not_send_the_package_back(

@@ -4,6 +4,7 @@ red on the base. Real git repositories, with pytest and ruff as the gate."""
 
 from __future__ import annotations
 
+import json
 import shlex
 import sys
 from dataclasses import replace
@@ -13,9 +14,10 @@ import pytest
 
 from airlie.prompts import text as hub_text
 from airlie.story.layer_checks import Finding
-from airlie.story.package import Interface, Package, PackageFile
+from airlie.story.package import Interface, Package, PackageFile, joined_tests
 from airlie.story.package_checks import (
     PackageChecker,
+    as_checked,
     imports_unresolved,
     package_feedback_said,
     place_package,
@@ -308,9 +310,7 @@ async def test_what_ruff_fixes_is_carried_into_the_package(tmp_path: Path) -> No
 
 async def test_what_ruff_cannot_fix_is_a_lint_finding_with_the_rule(tmp_path: Path) -> None:
     root, base = calc(tmp_path, {"ruff.toml": RUFF_TOML})
-    long = (
-        TEST_MUL + "\n\n# a comment that is much too long for a line of sixty characters, and ruff keeps it\n"
-    )
+    long = TEST_MUL + '\n\nNOTE = "a string that is much too long for a line of sixty characters"\n'
     _, found = await check(tmp_path, root, base, package({"tests/test_mul.py": long}), (*RUFF_GATE, PYTEST))
     assert [f.kind for f in found] == ["lint_fails"]
     assert "E501" in found[0].why
@@ -431,3 +431,43 @@ def test_an_agreed_vitest_id_without_its_describe_is_the_package_test_it_names()
     assert [f.test for f in proof_mismatches(p, {"web/src/TopBar.test.ts::a Wiki link"})] == [
         "web/src/TopBar.test.ts::a Wiki link",  # only a whole title after the describe is the same test
     ]
+
+
+BASE_TESTS = "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+ADDED = "import os\n\nfrom calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6 and os.sep\n"
+
+
+def test_the_package_as_checked_holds_its_test_files_and_only_the_additions_to_an_existing_one() -> None:
+    """AIR-59, 2026-11-05: a retry on a conversation started fresh did not hold the package it was to fix
+    ("I don't have the exact text of the middle tests!") and the architect wrote it again from memory, with
+    the same 111-character line; AIR-61 changed a test's meaning doing so."""
+    whole = joined_tests(BASE_TESTS, ADDED)
+    p = replace(
+        package({"tests/test_base.py": whole, "tests/test_new.py": TEST_MUL}),
+        added={"tests/test_base.py": ADDED},
+    )
+    text = as_checked(p, {"tests/test_base.py": BASE_TESTS}.get)
+    assert "### test file: tests/test_new.py\n```python\n" + TEST_MUL + "```" in text
+    additions = text.split("### test additions: tests/test_base.py\n")[1].split("```")[1]
+    assert "def test_mul():" in additions and "import os" in additions and "from calc import mul" in additions
+    assert "def test_add():" not in additions  # the base's own tests are not copied out
+    obj = json.loads(text.split("```json\n")[1].split("```")[0])
+    assert obj["type"] == "package" and obj["covers"] == {"AC1": ["tests/test_mul.py::test_mul"]}
+    assert obj["steps"] == ["add mul to calc.py"] and obj["files"][0]["path"] == "calc.py"
+
+
+def test_a_package_too_long_to_carry_says_which_test_file_it_leaves_out() -> None:
+    big = "def test_a():\n    assert True\n" + "# filler\n" * 2000
+    p = package({"tests/test_big.py": big, "tests/test_mul.py": TEST_MUL})
+    text = as_checked(p, lambda _: None, 5_000)
+    assert "### test file: tests/test_mul.py" in text and "# filler" not in text
+    assert "tests/test_big.py" in text and "left out" in text
+    assert "```json" in text
+
+
+def test_package_feedback_with_the_package_as_checked_puts_it_before_package_fix() -> None:
+    found = [Finding("lint_fails", "ruff check .", "E501 Line too long (111 > 110)", "", "")]
+    told, ids = package_feedback_said(found, previous="### test file: tests/test_a.py\n```python\nx\n```")
+    assert ids == ("checks-found", "package-as-checked", "package-fix")
+    assert told.index("E501") < told.index(hub_text("package-as-checked")) < told.index("### test file")
+    assert told.endswith(hub_text("package-fix"))

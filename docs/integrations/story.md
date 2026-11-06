@@ -116,7 +116,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
-| `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings (*The package check*) |
+| `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings and the package as checked; a try back for lint alone is not charged, once a layer (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
 | `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
 | `story.amigos.enabled` | true | hold the story meeting before any layer is built; false: the split is the agreement and there is no proof plan |
@@ -383,7 +383,11 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
 2. **Lint:** before anything else is read, the gate's ruff steps fix what they can in the package's test files
    (the fixed text is carried into the package, so the lock commit holds what was checked), and what they cannot is
    a `lint_fails` finding with ruff's output and rule (AIR-22 layer 03, 2026-10-24: a loop variable named `l` cost
-   2.5 hours).
+   2.5 hours). Before them airlie makes the fixes ruff has none for: an ambiguous name (`l`) renamed, an undefined
+   standard-library or single-definer name imported, and a docstring or `#` comment line over the line length of
+   the repository's ruff configuration wrapped at a word, its indentation kept (`wrap_long_lines`; code, any other
+   string, a `# noqa`-style directive and a doctest are never touched; AIR-59, 2026-11-05: a 111-character
+   docstring line against 110 sent the package back twice).
 3. **Parse:** a test module that does not parse is an `unparseable_test` finding, and the checks below do not run.
 4. **Tests and covers:** a test with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
    `raise`, or call to a helper of its module that has one is an `assertion_free_test` finding. A test id a
@@ -403,9 +407,17 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run` finding, and a package with no new test a
    `no_new_test` one.
 - **One retry, for the architect:** with findings, the architect is asked for the whole package again (every test
-  file in full and the JSON object) with each finding and why, the hub's `package-fix` last; a `steer` event names
-  each hub text sent. `story.package_attempts` tries in all; findings after the last stop the layer before the
-  coder starts, with a `package_rejected` lesson. A reply that cannot be parsed as a package counts as a try. The
+  file in full and the JSON object) with each finding and why, then its package as checked (`package-as-checked`:
+  each test file after ruff's fixes, only the additions for a file it added tests to, and its JSON object, up to
+  60,000 characters of test text, a file past that named as left out), the hub's `package-fix` last; a `steer` event
+  names each hub text sent. The package is carried in the ask itself, so a retry on a conversation started fresh
+  (over `teams.fresh_continuation_tokens`) edits it rather than writing it again from memory (AIR-59 and AIR-61,
+  2026-11-05: the fresh start's diff was empty, as a package is a reply, and the tests were rewritten, one with the
+  same long line, one with another meaning). `story.package_attempts` tries in all; findings after the last stop
+  the layer before the coder starts, with a `package_rejected` lesson. A reply that cannot be parsed as a package
+  counts as a try. A try whose findings are all `lint_fails` is not charged, once a layer (`charged: false` on its
+  `package_returned`; a second is charged): a one-character E501 used to cost half the tries (AIR-47, AIR-48,
+  AIR-59, AIR-61). The
   supervisor is not asked about a package (its evidence is a layer run's trace, and there is none yet).
 - **Then placed and locked:** the tests are written into the layer's worktree (a path outside it is refused),
   committed, and locked by definition: only the test functions and classes the package added or changed are
