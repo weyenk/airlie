@@ -1350,3 +1350,11 @@ def test_schema_default_stack_and_yaml_single() -> None:
     default to `single` to satisfy the yaml side would fail the first."""
     assert StorySpec(**_story()).publish == "stack"  # the schema default, no publish key set
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL).story.publish == "single"  # the committed config
+
+
+def test_tool_written_packages_are_off_until_the_package_asks_write() -> None:
+    """The tool-written packages design (2026-11-06): the flag ships off, in the schema and in the committed
+    config, until the package asks get the write tools (build step 3)."""
+    assert StorySpec(**_story()).package_tools is False
+    assert StorySpec(**_story(package_tools=True)).package_tools is True
+    assert load_config(ROOT / "airlie.yaml", NO_LOCAL).story.package_tools is False
