@@ -295,6 +295,25 @@ class BoardStore:
                 raise
             return self._get(key)
 
+    def delete_comment(self, key: str, comment_id: int) -> Item:
+        """The comment `comment_id` of the item `key` removed; KeyError for an unknown item or a comment id
+        that is not one of its comments."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._get(key)
+                cur = self._db.execute(
+                    "DELETE FROM comments WHERE item_key = ? AND id = ?", (key, comment_id)
+                )
+                if cur.rowcount == 0:
+                    raise KeyError(comment_id)
+                self._db.execute("UPDATE items SET updated_at = ? WHERE key = ?", (time.time(), key))
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            return self._get(key)
+
     # ---- inside the lock -----------------------------------------------------------------------------------
 
     def _check_parent(self, level: Level, parent: str | None) -> None:
