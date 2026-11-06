@@ -1,0 +1,44 @@
+# AIR-55 as its card read on 2026-11-06, rerun from scratch until it goes through first try (the reliability
+# loop: task bench:sweep -- air55 air59 air61 air62). Built in a clone of its own on the main commit where none
+# of the four stories is merged, published nowhere: its layers are built and gated, and nothing reaches GitHub.
+id: air55
+request: |-
+  Update the running airlie to the newest release tag when idle
+
+  Fast follow to AIR-52 (release tags on merge to main): the running airlie on this Mac updates itself to the newest release tag, but only while nothing is using it. airlie must never restart while it is in use.
+
+  ## Idle: all of these hold, or there is no check
+  - Both line lanes (plan, build) are free: `line/status.json` is not `busy: ...`.
+  - No serve job (studio or story) is `running`.
+  - The bridge holds no claimed hub job.
+  - No `/v1` request (chat, OpenCode, web app) is in flight and none started in the last quiet window (default 10 min, configurable).
+  - The line is not paused by a person (a person's pause means someone is working).
+
+  ## On each line tick
+  1. Not idle: skip; do not even fetch. Try again next tick.
+  2. Idle: `git fetch --tags`; compare the newest release tag with the build serve runs. Nothing newer: stop.
+  3. Newer tag: close the door before restarting: pause the line (an update pause, separate from a person's), make serve answer new work with 503 "updating, retry shortly", and stop the bridge from claiming jobs. Then check idle again; if anything started in between, reopen everything and try next tick.
+  4. Update: check out the tag in the home checkout, `uv sync --frozen`, `task web:build`, then `launchctl kickstart -k` for dev.airlie.serve and dev.airlie.bridge.
+  5. Check `/health` on 8090 after the restart. Pass: reopen (unpause the line, accept work, let the bridge claim). Fail at any step: roll back to the previous tag, restart again, reopen, and record the failed update so the tick does not retry the same tag on a loop.
+
+  ## Also
+  - Restart the vllm-mlx engine (8080) only when the engine code or its config changed between the two tags; most updates leave the loaded model alone.
+  - Status shows a pending update ("update vX pending, waiting for idle") on the line row and the web app, plus the last update's result.
+  - `task update` does the same thing by hand: it still waits for idle (or `--now` after asking), and it uses the same code path.
+  - Every update and rollback goes to the line's events log.
+
+  ## Done when
+  - With a story running, a new tag is not applied; it lands on the first idle tick after.
+  - A request that arrives while the door is closed gets 503, and nothing that was running is killed.
+  - A broken tag (failing sync, build or health) rolls back to the previous tag, and serve comes back healthy.
+repo: weyenk/airlie             # the clone below; its origin must name this repository
+clone: ~/.local/state/airlie-bench/repos/airlie   # not repos_root/airlie: that is the home checkout serve runs from
+base: c0399cdf5c2ee2d1d8eddc08812ea5e0a4a4ebb0   # main at #244, before any of AIR-55/59/61/62 merged
+pin_base: true                  # every run builds on that commit, however far main has moved
+publish: false                  # built and gated, never pushed: no PR, no GitHub call
+oracle: null                    # no exact answer: quality is the gate and the layers' own tests
+mutate: null
+gate_timeout_s: 1800            # airlie's own gate: uv sync, ruff, mypy, pytest and the web build
+budgets:
+  wall_min: 240
+  first_try: true               # every layer packaged and built on its first try, no block

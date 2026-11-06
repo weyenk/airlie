@@ -441,11 +441,14 @@ class StoryPipeline:
         test_cmd: str | None = None,
         github_repo: str | None = None,
         meeting: MeetingFactory | None = None,
+        pinned_base: str | None = None,
     ) -> None:
         """`meeting` makes the story meeting (default: `amigos.default_meeting`, on the engine); tests pass
         one over replayed models. `test_cmd` is a person's (--test-cmd): it wins over the repository's test
         gate, and a blank one is none. `github_repo` is the "owner/name" an issue's repo: label names (None
-        for a written request): the story is pinned to it and publishes there only."""
+        for a written request): the story is pinned to it and publishes there only. `pinned_base` is a
+        commit the story builds on in place of the remote's trunk (`_pinned`): the story bench's, so every
+        run of a case builds on the same code (2026-11-06)."""
         self.cfg = cfg
         self.s = cfg.story
         self.board = board
@@ -454,6 +457,9 @@ class StoryPipeline:
         self.studio: StudioFactory = self._remembering(studio)
         self.publisher = publisher
         self.publisher.publish = self.s.publish  # story.publish: how the story's PRs are opened
+        if self.s.publish == "none":  # nothing is published: GitHub is never asked, not even who commits
+            self.publisher.app = None
+        self.pinned_base = pinned_base
         # One spelling of the path for the state and every git call: StoryState.open compares it verbatim,
         # so a second spelling of the same repository would refuse a legitimate resume.
         self.repo = repo.resolve()
@@ -655,13 +661,18 @@ class StoryPipeline:
         full name, refs/remotes/<remote>/<trunk>. For the short name <remote>/<trunk> (the one kept, to
         show), git reads a tag or a local branch of that name first, and a model's shell can make either.
         Refine and layers read the code at it and its test gate is read from it, layer 01 is built on it, and
-        a resume reads and builds on that same commit whatever the remote has moved on to."""
+        a resume reads and builds on that same commit whatever the remote has moved on to. A pipeline made
+        with `pinned_base` builds on that commit instead (`_pinned`)."""
         if st.base is None:
             stacked = self._stacked_base(card) if card is not None else None
             if stacked is not None:
                 st.base = stacked
                 st.save()
                 st.emit("stacked_base", **stacked)
+                return st.base
+            if self.pinned_base is not None:
+                st.base = await self._pinned(st, self.pinned_base)
+                st.save()
                 return st.base
             ref = await self._trunk_ref(st)
             sha = rev_parse(self.repo, f"refs/remotes/{self.s.remote}/{self.s.trunk}")
@@ -673,6 +684,22 @@ class StoryPipeline:
             st.base = {"ref": ref, "sha": sha}
             st.save()
         return st.base
+
+    async def _pinned(self, st: StoryState, pin: str) -> dict[str, str]:
+        """The base of a story pinned to commit `pin` (the story bench's case base, 2026-11-06): that commit,
+        by its full name, as both ref and sha. A repository that lacks it fetches the remote's trunk once
+        (`_trunk_ref`) and looks again; still missing, the story stops. Event: pinned_base."""
+        sha, fetched = rev_parse(self.repo, pin), False
+        if sha is None:
+            await self._trunk_ref(st)
+            sha, fetched = rev_parse(self.repo, pin), True
+        if sha is None:
+            raise StoryBlocked(
+                f"the pinned base {pin[:12]} is not in {self.repo}, even after fetching {self.s.trunk} from "
+                f"{self.s.remote}"
+            )
+        st.emit("pinned_base", sha=sha, fetched=fetched)
+        return {"ref": sha, "sha": sha}
 
     def _stacked_base(self, card: Card) -> dict[str, str] | None:
         """The base of a dependent story: {"ref": the top layer branch of the story it stacks on, "sha": its
@@ -2394,6 +2421,11 @@ class StoryPipeline:
         # a satisfied layer has no branch and no PR: each PR's stack names it (provenance)
         shown = [i for i in range(len(layers)) if f"{i + 1:02d}" in st.built]
         branches = [str(st.built[f"{i + 1:02d}"]["branch"]) for i in shown]
+        if self.s.publish == "none":  # built and gated, kept local: nothing is pushed or opened
+            st.prs = []
+            st.emit("publish_skipped", branches=branches)
+            st.finish("publish")
+            return
         if not branches:  # every layer already held on its base: nothing to publish (`_finish` says so)
             st.prs = []
             st.emit("published", prs=[])
@@ -2528,6 +2560,8 @@ class StoryPipeline:
             f"stacked draft PRs, bottom layer first:\n{links}\n"
             "Review and merge bottom-up; only a human merges."
             if st.prs
+            else "nothing was published (story.publish: none): the built layers' branches are local"
+            if self.s.publish == "none"
             else "every layer of this story already held on its base, so there is no pull request: "
             "check the satisfied layers' reasons and close the story"
         )

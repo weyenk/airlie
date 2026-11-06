@@ -7,7 +7,13 @@ what it cost from the story's events and the studio runs' steps (phases, tokens 
 grades the top layer's branch (its gate, the oracle, the mutation score of its own tests, its tests and
 assertions), closes the PRs it published and deletes their branches, and writes one JSON record. Two records
 compare (`compare`): the deltas, and the case's budgets as regression lines. Born of the planning-line
-benchmark of 2026-10-25/26 (docs/bench/2026-10-26-planning-line.md)."""
+benchmark of 2026-10-25/26 (docs/bench/2026-10-26-planning-line.md).
+
+For the reliability loop (2026-11-06: real stories rerun from scratch until each goes through first try) a
+case can publish nothing (`publish: false`: story.publish none, no GitHub), build on its own pinned base
+(`pin_base`), in a clone of its own (`clone`), with no oracle; each record says whether the story went
+through first try and what kept it from that (`tries`), and a sweep runs cases one after another
+(`run_case`, `sweep_lines`)."""
 
 from __future__ import annotations
 
@@ -21,15 +27,19 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from airlie.story.cleanup import local_branches as local_branches
 from airlie.story.cleanup import prune_stale_stacks as prune_stale_stacks
+
+if TYPE_CHECKING:
+    from airlie.config import AirlieConfig
+    from airlie.story.state import StoryState
 
 PHASE_MARKS = ("survey_done", "plan_done", "amigos_agreed", "amigos_owner_decided", "packages_drafting",
                "layer_built", "published", "story_done")  # fmt: skip
@@ -48,31 +58,51 @@ class StoryCase:
     request: str
     repo: str
     base: str
-    oracle: Path
+    oracle: Path | None
+    """The script that holds the top branch to the written spec; None for a story with no exact answer (the
+    reliability cases of 2026-11-06): its quality is then the gate and the layers' own tests."""
     mutate: str | None
     """The Python file the mutation score plants its bugs in; None for a case built in another language (the
     score's mutants are Python's)."""
     budgets: dict[str, Any] = field(default_factory=dict)
     gate_timeout_s: float = 300
     """How long grading waits for the gate: airlie's own (pytest and the web build) takes minutes."""
+    publish: bool = True
+    """False: the run ends once every layer is built (or satisfied) and gated; nothing is pushed, no PR is
+    opened and GitHub is never asked (story.publish: none), so a case can be rerun as often as it takes."""
+    pin_base: bool = False
+    """True: the story builds on `base` itself, not on the remote's trunk as it is when the run starts, so
+    every run of the case builds on the same code however far the trunk has moved."""
+    clone: Path | None = None
+    """The checkout the story is built in; None: story.repos_root / name. A case in airlie itself names one of
+    its own: repos_root / airlie is the home checkout serve runs from."""
 
     @property
     def name(self) -> str:
-        """The repository's name: its clone is story.repos_root / name."""
+        """The repository's name: its clone is story.repos_root / name unless the case names one."""
         return self.repo.split("/")[-1]
+
+    def checkout(self, repos_root: Path) -> Path:
+        """Where the case is built: its own clone, else story.repos_root / name; ~ expanded."""
+        return (self.clone or repos_root / self.name).expanduser()
 
 
 def load_case(path: Path) -> StoryCase:
+    """The case in `path`. Its request is kept as written (a folded `>-` request is one line; a literal `|`
+    one keeps its lines, as a card's description does), stripped at both ends."""
     data = yaml.safe_load(path.read_text())
     return StoryCase(
         id=str(data["id"]),
-        request=" ".join(str(data["request"]).split()),
+        request=str(data["request"]).strip(),
         repo=str(data["repo"]),
         base=str(data["base"]),
-        oracle=path.parent / str(data["oracle"]),
+        oracle=path.parent / str(data["oracle"]) if data.get("oracle") else None,
         mutate=str(data["mutate"]) if data.get("mutate") else None,
         budgets=dict(data.get("budgets") or {}),
         gate_timeout_s=float(data.get("gate_timeout_s") or 300),
+        publish=bool(data.get("publish", True)),
+        pin_base=bool(data.get("pin_base", False)),
+        clone=Path(str(data["clone"])) if data.get("clone") else None,
     )
 
 
@@ -217,6 +247,95 @@ def measure(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
     }
 
 
+TRY_COUNTS = ("package_tries", "packages_returned", "layer_builds", "replans", "gate_failures", "blocks",
+              "answer_after_cuts", "last_turn_tool_calls")  # fmt: skip
+"""The story-wide counts of `tries`, in the order a comparison shows them."""
+
+
+def tries(story_dir: Path, runs_dir: Path) -> dict[str, Any]:
+    """How far the story at `story_dir` was from going through first try (the reliability loop of
+    2026-11-06), from its events and its studio runs': per layer, the package tries (a draft's try counts,
+    `package_returned` or not), the kinds of each package returned, the builds, why each re-plan was asked
+    and the gate failures inside its builds; story-wide, those summed, the blocks and the steering events
+    (`answer_after_cuts`, `last_turn_tool_call`); and `first_try`: every layer packaged on try 1 (none
+    returned), built on build 1 (no re-plan, no gate failure) or satisfied, no block, and the story reached
+    review. `why_not` says, one line each, what kept it from that."""
+    ev = _events(story_dir / "events.jsonl")
+    layers: dict[str, dict[str, Any]] = {}
+    open_try: dict[str, bool] = {}
+    builds: dict[str, str] = {}  # a layer build's studio run -> its layer
+
+    def layer(e: dict[str, Any]) -> dict[str, Any]:
+        return layers.setdefault(
+            str(e.get("layer") or "?"),
+            {"package_tries": 0, "returned": [], "builds": 0, "replanned": [], "gate_failures": 0,
+             "built": False, "satisfied": False},
+        )  # fmt: skip
+
+    for e in ev:
+        kind, nn = e["kind"], str(e.get("layer") or "?")
+        if kind == "package_start":
+            layer(e)["package_tries"] += 1
+            open_try[nn] = True
+        elif kind == "package_returned":
+            if not open_try.get(nn):  # the drafting conversation's try: no package_start of its own
+                layer(e)["package_tries"] += 1
+            layer(e)["returned"].append([str(k) for k in e.get("kinds") or []])
+            open_try[nn] = False
+        elif kind in ("package_ready", "layer_satisfied"):
+            open_try[nn] = False
+            layer(e)["satisfied"] |= kind == "layer_satisfied"
+        elif kind == "layer_start":
+            layer(e)["builds"] += 1
+            if e.get("studio_run"):
+                builds[str(e["studio_run"])] = nn
+        elif kind == "layer_replanned":
+            layer(e)["replanned"].append(str(e.get("why")))
+        elif kind == "layer_built":
+            layer(e)["built"] = True
+    steering = Counter[str]()
+    runs = dict.fromkeys(
+        str(e["studio_run"]) for e in ev if e["kind"] in ("run", "layer_start") and e.get("studio_run")
+    )
+    for run in runs:
+        for row in _events(runs_dir / run / "events.jsonl"):
+            steering[row["kind"]] += 1
+            if row["kind"] == "gate_failed" and run in builds:
+                layers[builds[run]]["gate_failures"] += 1
+    done = [e for e in ev if e["kind"] == "story_done"]
+    reached_end = bool(done) and done[-1].get("blocked") is None and done[-1].get("stage") == "review"
+    blocks = sum(e["kind"] == "blocked" for e in ev)
+    why_not: list[str] = []
+    for nn, x in sorted(layers.items()):
+        for kinds in x["returned"]:
+            why_not.append(f"layer {nn}: package returned ({', '.join(kinds) or 'no kind'})")
+        if x["builds"] > 1 or x["replanned"]:
+            why_not.append(
+                f"layer {nn}: {x['builds']} builds (re-planned: {', '.join(x['replanned']) or '-'})"
+            )
+        if x["gate_failures"]:
+            why_not.append(f"layer {nn}: {x['gate_failures']} gate failure(s) in its builds")
+    if blocks:
+        why_not.append(f"blocked {blocks} time(s)")
+    if not reached_end:
+        why_not.append("the story did not reach review")
+    return {
+        "first_try": not why_not,
+        "why_not": why_not,
+        "reached_end": reached_end,
+        "package_tries": sum(x["package_tries"] for x in layers.values()),
+        "packages_returned": sum(len(x["returned"]) for x in layers.values()),
+        "returned_kinds": dict(Counter(k for x in layers.values() for kinds in x["returned"] for k in kinds)),
+        "layer_builds": sum(x["builds"] for x in layers.values()),
+        "replans": sum(len(x["replanned"]) for x in layers.values()),
+        "gate_failures": sum(x["gate_failures"] for x in layers.values()),
+        "blocks": blocks,
+        "answer_after_cuts": steering["answer_after_cuts"],
+        "last_turn_tool_calls": steering["last_turn_tool_call"],
+        "layers": dict(sorted(layers.items())),
+    }
+
+
 def _thinking(step: dict[str, Any]) -> int:
     """A step's thinking tokens: its completion tokens in the share its reasoning has of what it wrote."""
     thought, said = int(step.get("reasoning_chars") or 0), int(step.get("answer_chars") or 0)
@@ -339,16 +458,29 @@ def count_tests(checkout: Path) -> dict[str, int]:
     return {"tests": tests, "asserts": asserts}
 
 
-def grade(case: StoryCase, clone: Path, sha: str, gate: Sequence[str]) -> dict[str, Any]:
-    """The quality of commit `sha` of `clone`, in a throwaway checkout of it."""
+def grade(
+    case: StoryCase,
+    clone: Path,
+    sha: str,
+    gate: Sequence[str],
+    layer_tests: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """The quality of commit `sha` of `clone`, in a throwaway checkout of it. `layer_tests` are the tests each
+    built layer's package wrote (by layer). A case with no oracle is graded by its gate and those tests
+    only."""
+    tests = {nn: list(ids) for nn, ids in sorted((layer_tests or {}).items())}
     with tempfile.TemporaryDirectory(prefix=f"bench-{case.id}-") as tmp:
         checkout = Path(tmp) / case.name
         subprocess.run(["git", "clone", "-q", str(clone), str(checkout)], check=True)
         subprocess.run(["git", "-C", str(checkout), "checkout", "-q", sha], check=True)
+        gate_passes = _passes(checkout, gate, timeout_s=case.gate_timeout_s)
+        if case.oracle is None:
+            return {"gate_passes": gate_passes, "layer_tests": tests}
         target = checkout / case.mutate if case.mutate else None
         mutable = target is not None and target.is_file()
         return {
-            "gate_passes": _passes(checkout, gate, timeout_s=case.gate_timeout_s),
+            "gate_passes": gate_passes,
+            "layer_tests": tests,
             "oracle": oracle(case.oracle, checkout),
             "mutation": mutation_score(checkout, case.mutate, gate) if case.mutate and mutable else None,
             **count_tests(checkout),
@@ -368,10 +500,15 @@ def verdict(case: StoryCase, record: dict[str, Any]) -> list[str]:
     if wall is not None and record["cost"]["wall_min"] > float(wall):
         lines.append(f"wall time {record['cost']['wall_min']} min is over its budget of {wall}")
     quality = record.get("quality")
-    if case.budgets.get("oracle") == "all" and quality is not None:
+    if case.budgets.get("oracle") == "all" and quality is not None and quality.get("oracle") is not None:
         passed, total = quality["oracle"]["spec"]
         if passed < total or total == 0:
             lines.append(f"the oracle passes {passed}/{total} of the spec: {quality['oracle']['failed']}")
+    if quality is not None and quality.get("gate_passes") is False:
+        lines.append("the top branch fails its gate")
+    if case.budgets.get("first_try") and record.get("first_try") is False:
+        why = (record.get("tries") or {}).get("why_not") or []
+        lines.append(f"not first try: {'; '.join(why)}")
     return lines
 
 
@@ -383,6 +520,10 @@ def compare(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
         return f"{x:g} -> {y:g} ({(y - x) / x * 100:+.0f}%)" if x else f"{x:g} -> {y:g}"
 
     lines = [f"wall min: {delta(a['cost']['wall_min'], b['cost']['wall_min'])}"]
+    if "first_try" in a and "first_try" in b:  # side by side whether or not they changed: the loop's measure
+        lines.append(f"first_try: {_yes(a['first_try'])} -> {_yes(b['first_try'])}")
+        ta, tb = a.get("tries") or {}, b.get("tries") or {}
+        lines += [f"{key}: {ta.get(key, 0)} -> {tb.get(key, 0)}" for key in TRY_COUNTS]
     pa = {p["at"]: p["min"] for p in a["cost"]["phases"]}
     lines += [
         f"{p['at']} at min: {delta(pa[p['at']], p['min'])}" for p in b["cost"]["phases"] if p["at"] in pa
@@ -405,12 +546,18 @@ def compare(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     for key in ("tests", "asserts", "source_lines"):
         if key in qa and key in qb and qa[key] != qb[key]:
             lines.append(f"{key}: {qa[key]} -> {qb[key]}")
+    if "gate_passes" in qa and "gate_passes" in qb and qa["gate_passes"] != qb["gate_passes"]:
+        lines.append(f"gate passes: {_yes(qa['gate_passes'])} -> {_yes(qb['gate_passes'])}")
     if qa.get("oracle") and qb.get("oracle"):
         lines.append(f"oracle spec: {qa['oracle']['spec']} -> {qb['oracle']['spec']}")
     if qa.get("mutation") and qb.get("mutation"):
         ma, mb = qa["mutation"], qb["mutation"]
         lines.append(f"mutation: {ma['killed']}/{ma['total']} -> {mb['killed']}/{mb['total']}")
     return lines
+
+
+def _yes(flag: object) -> str:
+    return "yes" if flag else "no"
 
 
 def close_prs(repo: str, prs: Sequence[dict[str, Any]], clone: Path) -> list[str]:
@@ -460,3 +607,237 @@ def fresh_state_dir(root: Path, case_id: str) -> Path:
         shutil.rmtree(path)
     path.mkdir(parents=True)
     return path
+
+
+def remove_run_worktrees(clone: Path, under: Path) -> list[str]:
+    """Remove the clone's worktrees under `under` (the run's state directory): a layer that stopped keeps its
+    worktree for inspection, and a branch checked out there cannot be deleted. The paths removed."""
+    out = subprocess.run(
+        ["git", "-C", str(clone), "worktree", "list", "--porcelain"], capture_output=True, text=True
+    )
+    root = under.resolve()
+    gone: list[str] = []
+    for line in out.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = Path(line.removeprefix("worktree "))
+        if path.resolve().is_relative_to(root):
+            subprocess.run(
+                ["git", "-C", str(clone), "worktree", "remove", "--force", str(path)], capture_output=True
+            )
+            gone.append(str(path))
+    subprocess.run(["git", "-C", str(clone), "worktree", "prune"], capture_output=True)
+    return gone
+
+
+def _common_dir(path: Path) -> Path | None:
+    """The git directory every worktree of the repository at `path` shares; None outside one."""
+    out = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True,
+    )  # fmt: skip
+    found = out.stdout.strip()
+    return Path(found).resolve() if out.returncode == 0 and found else None
+
+
+def clone_problems(
+    case: StoryCase, clone: Path, running: Sequence[Path], source: str | None = None
+) -> list[str]:
+    """What keeps `clone` from building `case`, after making it when it is missing (`git clone` of `source`,
+    by default the case's repository on GitHub over HTTPS: a fetch, never a push). It must not be a checkout
+    of the airlie that runs the bench (`running`: its working directory and its source), whose branches and
+    worktrees a run would share with serve (2026-11-06: a case in weyenk/airlie resolves to repos_root /
+    airlie, the home checkout), and its origin must name the case's repository."""
+    from airlie.story.github_app import GitHubAppError, repo_slug
+    from airlie.teams.worktree import remote_url
+
+    if not clone.exists():
+        clone.parent.mkdir(parents=True, exist_ok=True)
+        url = source or f"https://github.com/{case.repo}.git"
+        made = subprocess.run(["git", "clone", "-q", url, str(clone)], capture_output=True, text=True)
+        if made.returncode != 0:
+            return [f"could not clone {url} into {clone}: {made.stderr.strip()[-300:]}"]
+    mine = _common_dir(clone)
+    if mine is None:
+        return [f"{clone} is not a git repository: the case {case.id} is built in a clone of {case.repo}"]
+    for path in running:
+        if _common_dir(path) == mine:
+            return [
+                f"{clone} is the airlie checkout this bench runs from ({path}): a run would share its "
+                "branches and worktrees with serve; give the case a clone of its own (clone: in "
+                f"evals/stories/{case.id}.yaml)"
+            ]
+    origin = remote_url(clone, "origin")
+    try:
+        named = repo_slug(origin) if origin is not None else None
+    except GitHubAppError:
+        named = None
+    if named is None or named.lower() != case.repo.lower():
+        return [f"{clone}'s origin names {named or 'no github.com repository'}, not {case.repo}"]
+    return []
+
+
+def previous_record(out_dir: Path, case_id: str) -> Path | None:
+    """The latest record of `case_id` in `out_dir` (story-<case>-<YYYYmmdd-HHMMSS>.json; a hand-named
+    baseline is not one); None when there is none."""
+    pattern = re.compile(rf"story-{re.escape(case_id)}-\d{{8}}-\d{{6}}\.json")
+    found = sorted(p for p in out_dir.glob(f"story-{case_id}-*.json") if pattern.fullmatch(p.name))
+    return found[-1] if found else None
+
+
+class BenchSetupError(Exception):
+    """A case that cannot run: what is wrong, one line each."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = list(problems)
+
+
+def run_case(
+    cfg: AirlieConfig,
+    case: StoryCase,
+    *,
+    state_root: Path,
+    out_dir: Path,
+    run: Callable[[Coroutine[Any, Any, StoryState]], StoryState],
+    keep_prs: bool = False,
+    publish: bool | None = None,
+    say: Callable[[str], None] = print,
+) -> tuple[dict[str, Any], Path]:
+    """One run of `case`, written as a record in `out_dir`: built end to end on a fresh state directory under
+    `state_root` (`cfg` is changed to it), measured, graded, its PRs closed and its branches and worktrees
+    deleted unless `keep_prs`. `publish` (None: the case's) False runs with story.publish: none, so nothing
+    reaches GitHub. `run` drives the story's coroutine (the CLI's stoppable asyncio.run). A case that cannot
+    start is a BenchSetupError; a run that is stopped is cleared up and raised again. Moved here from the CLI
+    for the sweep (2026-11-06)."""
+    from airlie.story import factory
+    from airlie.story.model import StorySetupError
+
+    publish = case.publish if publish is None else publish
+    state = fresh_state_dir(state_root.expanduser(), case.id)
+    cfg.observability.state_dir = state  # no lessons, board or runs of an earlier run
+    if not publish:
+        cfg.story.publish = "none"
+    clone = case.checkout(cfg.story.repos_root)
+    problems = factory.story_problems(cfg)
+    problems += clone_problems(case, clone, [Path.cwd(), Path(__file__).parent])
+    if not problems:
+        try:
+            clone = factory.written_repo(cfg, clone)
+        except StorySetupError as e:
+            problems.append(str(e))
+    if problems:
+        raise BenchSetupError(problems)
+    pin = case.base if case.pin_base else None
+    say(f"{case.id}: building in {clone}, state in {state}" + ("" if publish else ", publishing nothing"))
+
+    async def go() -> StoryState:
+        board, card = await factory.card_for(cfg, None, case.request)
+        return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None, pinned_base=pin)
+
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    # the build that runs, read before it does: a commit made during an hour-long run is not this run's code
+    # (2026-10-31: two runs were stamped with commits made while they ran)
+    head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
+    build = head.stdout.strip()
+    if publish:
+        prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
+    prune_stale_stacks(clone)  # nor of a stack whose branches an earlier run deleted
+    before = local_branches(clone)
+    cleared: dict[str, list[str]] = {}
+    done = False
+    try:
+        st = run(go())
+        record = _record(case, st, clone, state, started, build, publish, pin, keep_prs)
+        done = True
+    finally:
+        # however the run or its grading ended (a stop, a grading clone that fails, the oracle's timeout, gh):
+        # its branches and worktrees go, or the next run of the case, with the same branch names, stops at its
+        # first layer (PR #247's review, 2026-11-06); an error is raised again after
+        if not keep_prs or not done:
+            cleared["worktrees_removed"] = remove_run_worktrees(clone, state)
+            cleared["branches_deleted"] = delete_new_branches(clone, before)
+            prune_stale_stacks(clone)
+    record.update(cleared)
+    return record, save(record, out_dir)
+
+
+def _record(
+    case: StoryCase,
+    st: StoryState,
+    clone: Path,
+    state: Path,
+    started: str,
+    build: str,
+    publish: bool,
+    pin: str | None,
+    keep_prs: bool,
+) -> dict[str, Any]:
+    """`run_case`'s record of the story `st` it ran: measured, graded and, unless kept, its PRs closed."""
+    gate = " && ".join((st.gate or {}).get("commands") or [])
+    top = st.built[max(st.built)]["sha"] if st.built else None
+    built_on = (st.base or {}).get("sha")
+    layer_tests = {nn: [str(t) for t in b.get("tests") or []] for nn, b in st.built.items()}
+    measured = tries(st.path, state / "runs")
+    record: dict[str, Any] = {
+        "case": case.id,
+        "started": started,
+        "airlie_build": build,
+        "publish": publish,
+        "base": {
+            "expected": case.base,
+            "built_on": built_on,
+            "same": built_on == case.base,
+            "pinned": pin is not None,
+        },
+        "stage": st.stage,
+        "blocked": st.blocked,
+        "first_try": measured["first_try"],
+        "tries": measured,
+        "layers_built": len(st.built),
+        "layers_satisfied": len(st.satisfied),
+        "prs": [p.get("url") for p in st.prs],
+        "cost": measure(st.path, state / "runs"),
+        "quality": grade(case, clone, top, ["sh", "-c", gate], layer_tests) if top and gate else None,
+    }
+    record["closed"] = close_prs(case.repo, st.prs, clone) if publish and not keep_prs else []
+    return record
+
+
+@dataclass
+class SweepRow:
+    """One case of a sweep: its record (None when it could not run, `error` says why) and the record before
+    it, if any."""
+
+    case: str
+    record: dict[str, Any] | None
+    error: str | None = None
+    previous: dict[str, Any] | None = None
+    previous_name: str | None = None
+
+
+def sweep_lines(rows: Sequence[SweepRow]) -> list[str]:
+    """A sweep's summary: one row per case (first try, wall minutes, package tries, builds, blocks, gate
+    failures and the first try of its previous record), then each case's comparison with that record."""
+    head = ("case", "first_try", "wall_min", "tries", "builds", "blocks", "gate_fails", "before")
+    table: list[tuple[str, ...]] = [head]
+    for row in rows:
+        before = _yes(row.previous["first_try"]) if row.previous and "first_try" in row.previous else "-"
+        if row.record is None:
+            table.append((row.case, "error", "-", "-", "-", "-", "-", before))
+            continue
+        t = row.record.get("tries") or {}
+        table.append((
+            row.case, _yes(row.record.get("first_try")), f"{row.record['cost']['wall_min']:g}",
+            str(t.get("package_tries", "-")), str(t.get("layer_builds", "-")), str(t.get("blocks", "-")),
+            str(t.get("gate_failures", "-")), before,
+        ))  # fmt: skip
+    widths = [max(len(r[i]) for r in table) for i in range(len(head))]
+    lines = ["  ".join(cell.ljust(w) for cell, w in zip(r, widths, strict=True)).rstrip() for r in table]
+    for row in rows:
+        if row.error is not None:
+            lines.append(f"{row.case}: {row.error}")
+        elif row.record is not None and row.previous is not None:
+            lines.append(f"{row.case} vs {row.previous_name}:")
+            lines += [f"  {line}" for line in compare(row.previous, row.record)]
+    return lines

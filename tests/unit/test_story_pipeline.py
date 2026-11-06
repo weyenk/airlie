@@ -185,6 +185,7 @@ def pipeline(
     github_repo: str | None = None,
     done_check: bool = False,
     meeting: Any = None,
+    pinned_base: str | None = None,
 ) -> StoryPipeline:
     """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
     `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
@@ -207,6 +208,7 @@ def pipeline(
         test_cmd=test_cmd,
         github_repo=github_repo,
         meeting=meeting,
+        pinned_base=pinned_base,
     )
 
 
@@ -3438,3 +3440,55 @@ async def test_the_architects_package_brief_carries_the_files_its_layer_changes(
     first = [r for r in engine.requests if r.role == "architect"][1].messages[1].content
     assert "## The files this layer changes, as they are on its base" in first and "### README.md" in first
     assert "hi" in first.split("### README.md")[1][:40]
+
+
+async def test_a_story_that_publishes_nothing_builds_every_layer_and_asks_github_nothing(
+    tmp_path: Path,
+) -> None:
+    """story.publish: none (the story bench's no-publish runs, 2026-11-06): every layer is built and gated on
+    its branch, then nothing is pushed or opened and no bot token is minted, not even for the bot's identity:
+    the layers are airlie's commits and the story ends at review with no PRs."""
+    repo = on_github(tmp_path)
+    github, gh = FakeGitHub(), RecordedGh()
+    pipe = pipeline(
+        tmp_path, repo, happy_engine(), gh, story={"publish": "none"}, app=fake_app(tmp_path, github)
+    )
+    st = await pipe.run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review" and st.prs == []
+    assert github.requests == []  # no token, no identity, no installation lookup
+    assert [c[:2] for c in gh.calls] == [["git", "fetch"]]  # the trunk, fetched from the remote; no gh
+    assert git(repo, "log", "-1", "--format=%an", B2) == "airlie"
+    git(repo, "merge-base", "--is-ancestor", B1, B2)  # both layers kept, local
+    events = st.path / "events.jsonl"
+    assert kinds(events, "published") == []
+    [skipped] = kinds(events, "publish_skipped")
+    assert skipped["branches"] == [B1, B2]
+    assert "nothing was published (story.publish: none)" in (st.path / "notes.md").read_text()
+
+
+async def test_a_pinned_base_is_built_on_and_nothing_is_fetched_while_the_repository_has_it(
+    tmp_path: Path,
+) -> None:
+    """The story bench pins a case to the commit its runs compare on (2026-11-06): layer 01 builds on it,
+    not on the remote's trunk, and nothing is fetched while it is already in the repository."""
+    repo = repo_with_marker_tests(tmp_path)
+    old = git(repo, "rev-parse", "HEAD")
+    commit_file(repo, "NEWS", "news\n", "the trunk moved on")
+    gh = RecordedGh()
+    st = await pipeline(tmp_path, repo, happy_engine(), gh, pinned_base=old).run(text_card("avatars"))
+    assert st.blocked is None and st.stage == "review"
+    assert st.base == {"ref": old, "sha": old}
+    assert not any(c[:2] == ["git", "fetch"] for c in gh.calls)
+    assert git(repo, "rev-parse", f"{B1}~1") == old  # layer 01's one commit sits on the pin
+    [pinned] = kinds(st.path / "events.jsonl", "pinned_base")
+    assert pinned["sha"] == old and pinned["fetched"] is False
+
+
+async def test_a_pinned_base_the_repository_lacks_is_fetched_for_and_one_still_missing_stops_the_story(
+    tmp_path: Path,
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    gh = RecordedGh()  # its fetch mirrors the local trunk: it brings nothing new
+    st = await pipeline(tmp_path, repo, happy_engine(), gh, pinned_base="0" * 40).run(text_card("avatars"))
+    assert st.blocked is not None and "the pinned base 000000000000 is not in" in st.blocked
+    assert [c[:2] for c in gh.calls] == [["git", "fetch"]]

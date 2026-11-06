@@ -72,6 +72,47 @@ mutation score of its own tests, its tests and assertions). It closes the PRs it
 branches, and prints the case's budgets as regression lines and, with `--baseline`, the deltas
 (`task bench:story-compare -- a.json b.json` for two saved records).
 
+### The reliability loop (`task bench:sweep`, from 2026-11-06)
+
+Four real stories rerun from scratch, again and again, until each goes through first try, with every fix
+checked against all four so none gets worse: `air55`, `air59`, `air61` and `air62` in `evals/stories/`, each the
+card's title and description as they read on 2026-11-06 (the title is the request's first line).
+
+```bash
+task bench:sweep -- air55 air59 air61 air62
+```
+
+runs them one after another (hours each: it holds the engine), writes each record here, and prints a row per case
+(`first_try`, wall minutes, package tries, layer builds, blocks, gate failures, and the previous record's
+`first_try`) and then each case's comparison with its previous record in this directory (the latest
+`story-<case>-<time>.json`; a hand-named baseline is not one). A case that cannot start (its clone, its config)
+is a row of its own and the sweep goes on; it exits 1 when any case did not go through first try.
+
+What the four cases set, and any case can:
+
+- `publish: false` (or `--no-publish` on `bench:story` and `bench:sweep`): the story runs with
+  `story.publish: none`. It ends once every layer is built and gated (or satisfied): nothing is pushed, no PR
+  is opened, and GitHub is never asked, not even for the bot's token or identity; the only network call is a
+  fetch from `origin` when the pinned base is not in the clone yet. The record says `"publish": false`, and the
+  run's local branches and kept worktrees are deleted after it as a published run's are.
+- `pin_base: true`: the story builds on `base` itself (`c0399cd`, main at #244, before any of the four merged),
+  not on the remote's trunk as it is when the run starts, so every run builds on the same code.
+- `clone:`: the checkout the story is built in. A case in `weyenk/airlie` would otherwise resolve to
+  `story.repos_root/airlie`, which is the home checkout serve runs from; these cases (and `wiki`) use
+  `~/.local/state/airlie-bench/repos/airlie`, cloned from GitHub over HTTPS the first time. The bench refuses a
+  clone that is the checkout it runs from (or a worktree of it), or whose `origin` names another repository.
+- `oracle: null`: there is no exact answer, so `quality` is the top branch's gate and the tests each layer's
+  package wrote (`layer_tests`) only.
+
+Every record (any case) now carries `first_try` and `tries`, read from the story's events and its studio runs':
+per layer the package tries (a drafted package's try counts too), the kinds of each `package_returned`, the
+builds, why each re-plan was asked and the gate failures inside its builds; story-wide those summed, the
+blocks and the steering events (`answer_after_cuts`, `last_turn_tool_call`). `first_try` is true when every
+layer was packaged on try 1 (none returned), built on build 1 (no re-plan, no gate failure) or satisfied, the
+story never blocked and it reached review; `tries.why_not` says what kept it from that, and a case whose
+budgets say `first_try: true` prints those lines as its verdict. `bench:story-compare` shows `first_try` and
+each count side by side, changed or not.
+
 ## Method (`task bench`)
 
 - Prompt = a random nonce **first**, then repository text, sized to the target token count (the server's reported

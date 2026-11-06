@@ -1339,8 +1339,9 @@ def test_story_spec_publish_single_parses() -> None:
 
 
 def test_story_spec_publish_invalid_rejected() -> None:
-    with pytest.raises(ValidationError, match="Input should be 'single' or 'stack'"):
+    with pytest.raises(ValidationError, match="Input should be 'single', 'stack' or 'none'"):
         StorySpec(**_story(publish="banana"))
+    assert StorySpec(**_story(publish="none")).publish == "none"  # the story bench's no-publish runs
 
 
 def test_schema_default_stack_and_yaml_single() -> None:
