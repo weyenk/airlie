@@ -33,6 +33,10 @@ STEP_FILES = 5
 _STEP = re.compile(r"step-(\d+)\.json$")
 _ROUND = re.compile(r"round-(\d+)$")
 _LAYER = re.compile(r"\blayer (\d\d)\b")
+_GATE_FAILURE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)
+"""A test pytest's short summary names as failed: `FAILED <id> - <why>`, or `ERROR <path>` for a module that
+could not be collected."""
+_PARAMS = re.compile(r"\[.*\]$")
 FAILURE_KINDS = ("error", "engine_error", "fetch_failed")
 """Event kinds that are a failure in themselves. `engine_error` is not emitted as an event today; a subtask
 that stops with that reason is recorded as a failure line in its place (`gather`)."""
@@ -79,10 +83,17 @@ class Pack:
     """One line per `error`, `engine_error` or `fetch_failed` event, and per subtask that stopped with
     `engine_error`."""
     base_gate_failed: bool | None
-    """True when the layer's package check saw existing tests fail on the base; None when nothing says."""
+    """True when every test the gate failed on fails on the base as well (`red_on_base`); False when the
+    package check named tests failing on the base but the gate failed on something else; None when nothing
+    says. Until 2026-11-06 it was True whenever any test was named, and AIR-55's own regression was classed
+    environment / gate_on_base for the sandbox-skipped tests the check had named (2026-11-05)."""
     base_failing: tuple[str, ...]
     diff_stat: str
     paths: Paths
+    finding: str = ""
+    """What the blocking layer's last try was told when it was not the gate: the error of a reply that could
+    not be read as a package (`retry`), else the kinds of its last `package_returned`; "" when there is
+    none."""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -204,6 +215,26 @@ def _failure_line(ev: dict[str, Any]) -> str:
     return f"{kind}: {json.dumps(rest, default=str)}"[:300]
 
 
+def gate_failures(gate_tail: str) -> list[str]:
+    """The test ids pytest's short summary in `gate_tail` names FAILED or ERROR, in order and each once (a
+    parametrized case as its test, as the package check names it; a module that could not be collected as its
+    path). None of a step that is not pytest (lint, the web gate)."""
+    return list(dict.fromkeys(_PARAMS.sub("", t) for t in _GATE_FAILURE.findall(gate_tail)))
+
+
+def _names(a: str, b: str) -> bool:
+    """`a` and `b` are one test id, one of them perhaps from a pytest rootdir below the repository's root."""
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def red_on_base(gate_tail: str, base_failing: tuple[str, ...] | list[str]) -> bool:
+    """The gate was red on the base already: it failed on pytest tests, and every one of them is among the
+    tests the package check found failing on the base. A gate that failed on anything else (the layer's own
+    regression, a lint step) is the layer's, whatever failed on the base (AIR-55, 2026-11-05)."""
+    failed = gate_failures(gate_tail)
+    return bool(failed and base_failing) and all(any(_names(f, b) for b in base_failing) for f in failed)
+
+
 def blocks_of(events: list[dict[str, Any]]) -> list[int]:
     """Indexes of the `blocked` events in a story's event list."""
     return [i for i, e in enumerate(events) if e.get("kind") == "blocked"]
@@ -214,11 +245,15 @@ def gather(
 ) -> Pack:
     """The evidence pack of the `n`th block of story `key` (the latest by default; 1 is the first).
 
-    The run is the last event before the block that names a studio run (`run`, `layer_start`, the package
-    events); its subtask, stop reason and role are those of the run's last `subtask_done`. Counts come from
-    that run's events; the gate's tail from the layer's last `gate_tail` event, else the run's last
-    `gate_failed`; tracebacks and failures from the story's events since the block before. StoryError when
-    the story has no such block.
+    The blocking layer is the one the block's reason opens with (`layer 02 (...)`), else the last to start
+    (`layer_start`, `package_start`); its attempt is that start's. Only that layer's events are read (and
+    those that name no layer): AIR-62 blocked on layer 02's package (2026-11-05) and was diagnosed from layer
+    01's stale gate tail. The run is the last of them before the block that names a studio run (`run`,
+    `layer_start`, the package events); its subtask, stop reason and role are those of the run's last
+    `subtask_done`. Counts come from that run's events; the gate's tail from a `gate_tail` event of the
+    layer's last attempt, else the run's last `gate_failed`; the finding from that attempt's `retry` or
+    `package_returned`; tracebacks and failures from the story's events since the block before. StoryError
+    when the story has no such block.
 
     `pending` is a block the pipeline is about to record, as (stage, reason): its `blocked` event is written
     after the diagnosis (it carries the class), so the pack is gathered as if it were the log's last line."""
@@ -239,18 +274,22 @@ def gather(
     window = events[start:end]
     reason = str(blocked.get("reason") or "")
 
+    starts = [e for e in window if e.get("kind") in ("layer_start", "package_start") and e.get("layer")]
+    named = _LAYER.match(reason) or (None if starts else _LAYER.search(reason))
+    layer = named.group(1) if named else str(starts[-1]["layer"]) if starts else None
+    if layer is not None:
+        window = [e for e in window if e.get("layer") in (layer, None)]
     run_id: str | None = None
-    layer: str | None = None
     attempt = 1
+    since = 0  # where the layer's last attempt starts in the window
     branch = base_sha = None
-    for ev in window:
+    for i, ev in enumerate(window):
         if isinstance(ev.get("studio_run"), str):
             run_id = ev["studio_run"]
-        if ev.get("kind") == "layer_start":
-            layer, attempt = str(ev.get("layer")), int(ev.get("attempt") or 1)
-            branch, base_sha = ev.get("branch"), ev.get("base_sha")
-    if layer is None and (m := _LAYER.search(reason)):
-        layer = m.group(1)
+        if ev.get("kind") in ("layer_start", "package_start") and ev.get("layer"):
+            attempt, since = int(ev.get("attempt") or 1), i
+            if ev.get("kind") == "layer_start":
+                branch, base_sha = ev.get("branch"), ev.get("base_sha")
 
     run_dir = run_dir_of(state_dir, key, run_id) if run_id else None
     run_events = _events(run_dir / "events.jsonl") if run_dir else []
@@ -274,10 +313,14 @@ def gather(
     stamps = [float(e["ts"]) for e in run_events if isinstance(e.get("ts"), int | float)]
     minutes = round((max(stamps) - min(stamps)) / 60.0, 1) if len(stamps) > 1 else 0.0
 
-    gate_tail = ""
-    for ev in window:
-        if ev.get("kind") == "gate_tail" and ev.get("layer") in (layer, None):
+    gate_tail = finding = ""
+    for ev in window[since:]:
+        if ev.get("kind") == "gate_tail":
             gate_tail = _tail_lines(str(ev.get("output") or ""))
+        elif ev.get("kind") == "retry" and ev.get("stage") == "package":
+            finding = str(ev.get("error") or "")
+        elif ev.get("kind") == "package_returned" and (kinds := ev.get("kinds")) != ["package_unusable"]:
+            finding = f"the package check found: {', '.join(str(k) for k in kinds or ())}"
     if not gate_tail:
         failed = [e for e in run_events if e.get("kind") == "gate_failed" and e.get("output")]
         gate_tail = _tail_lines(str(failed[-1]["output"])) if failed else ""
@@ -295,7 +338,7 @@ def gather(
     ]
     base_failing: list[str] = []
     for ev in window:
-        if ev.get("kind") == "existing_tests_fail_at_base" and ev.get("layer") in (layer, None):
+        if ev.get("kind") == "existing_tests_fail_at_base":
             base_failing = [str(t) for t in ev.get("tests") or []]
 
     repo = None
@@ -327,7 +370,7 @@ def gather(
         gate_tail=gate_tail,
         tracebacks=tracebacks,
         failures=tuple(failures),
-        base_gate_failed=True if base_failing else None,
+        base_gate_failed=red_on_base(gate_tail, base_failing) if base_failing else None,
         base_failing=tuple(base_failing),
         diff_stat=_diff_stat(repo, str(base_sha) if base_sha else None, str(branch) if branch else None),
         paths=Paths(
@@ -336,6 +379,7 @@ def gather(
             trace=folder or (trace if trace and trace.is_dir() else None),
             steps=step_files(run_dir, subtask) if run_dir else (),
         ),
+        finding=finding,
     )
 
 
@@ -354,6 +398,8 @@ def render_pack(pack: Pack, *, paths: bool = True) -> str:
     ]
     if pack.base_gate_failed:
         lines.append(f"- tests failing on the base already: {', '.join(pack.base_failing)}")
+    if pack.finding:
+        lines.append(f"- the layer's last finding: {pack.finding}")
     if pack.failures:
         lines.append("- failures:\n" + "\n".join(f"  - {f}" for f in pack.failures))
     parts = ["\n".join(lines)]
@@ -441,11 +487,13 @@ def _exception_type(traceback: str) -> str:
 
 
 def _failing_test(pack: Pack) -> str | None:
-    for text in (pack.gate_tail, pack.reason):
-        m = _TEST_ID.search(text)
-        if m:
-            return m.group(1)
-    return None
+    """The gate's first failed test, else a test id the reason names. Any id in the gate's tail is not one: a
+    pytest warning names its test too, and AIR-62's signature was a warning's (2026-11-05)."""
+    failed = gate_failures(pack.gate_tail)
+    if failed:
+        return failed[0]
+    m = _TEST_ID.search(pack.reason)
+    return m.group(1) if m else None
 
 
 def _content_kind(pack: Pack) -> str:
@@ -474,7 +522,8 @@ def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
        or a role that ended `repeated_action` after three or more refused calls (a hold that trapped it),
        or any other `error` (unhandled);
     3. config: a role cut off at its token cap, or a planning role out of steps;
-    4. environment: the gate was red on the base already;
+    4. environment: the gate was red on the base already: every test it failed on fails on the base as well
+       (`red_on_base`; that some test fails on the base is not enough, AIR-55 2026-11-05);
     5. content: the model's work. kind is Muse's category when it has one, else read from the reason.
 
     The signature is `<class>:<kind>:<where>`. Dated 2026-10-25 (P5a), calibrated on the blocks recorded on
@@ -534,12 +583,14 @@ def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
             f"{who} stopped: max_steps at stage {pack.stage}",
         )
     kind = _content_kind(pack)
-    if pack.base_gate_failed and kind == "gate_failed":
+    if kind == "gate_failed" and red_on_base(pack.gate_tail, pack.base_failing):
+        failed = gate_failures(pack.gate_tail)
         return _made(
             "environment",
             "gate_on_base",
-            pack.base_failing[0] if pack.base_failing else "gate",
+            failed[0],
             "gate_on_base",
+            f"the gate failed on: {', '.join(failed)}",
             f"tests failing on the base: {', '.join(pack.base_failing)}",
         )
     return _made(
@@ -548,6 +599,7 @@ def classify(pack: Pack, *, muse_category: str | None = None) -> Classified:
         _failing_test(pack) or pack.stage,
         "default",
         f"reason: {pack.reason[:200]}",
+        *([f"finding: {pack.finding[:200]}"] if pack.finding else []),
         *([f"muse category: {muse_category}"] if muse_category else []),
     )
 
