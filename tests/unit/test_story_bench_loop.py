@@ -293,6 +293,7 @@ def fake_run(tmp_path: Path, seen: list[dict[str, Any]]) -> Any:
             {"publish": cfg.story.publish, "pinned_base": pinned_base, "repo": repo, "title": card.title}
         )
         git(repo, "worktree", "add", "-q", "-b", f"{card.key}-01-a", str(state / "runs" / "r1" / "studio"))
+        git(repo, "update-ref", f"refs/airlie/{card.key}/draft-01", "HEAD")  # a drafted layer's snapshot
         path = state / "stories" / card.key
         write_events(
             path / "events.jsonl",
@@ -339,6 +340,10 @@ def test_bench_story_no_publish_builds_on_the_pin_asks_github_nothing_and_clears
     assert record["first_try"] is True and record["tries"]["layer_builds"] == 1
     assert len(record["worktrees_removed"]) == 1 and record["branches_deleted"][0].endswith("-01-a")
     assert local_branches(clone) == {"main"} and "verdict: within its budgets" in r.output
+    # a draft's snapshot ref goes too, as at publish and restart (review of PR #251)
+    [dropped] = record["draft_refs_dropped"]
+    assert dropped.startswith("refs/airlie/") and dropped.endswith("/draft-01")
+    assert git(clone, "for-each-ref", "refs/airlie/") == ""
 
 
 def test_bench_sweep_runs_each_case_in_turn_and_a_case_that_cannot_start_is_a_row(

@@ -229,6 +229,11 @@ class ToolTurns:
         self.placed: StoryError | None = None
         self.stop: str | None = None
 
+    def fresh(self) -> None:
+        """Forget what the last turn left, at the start of a layer: a turn that fails before its checkout is
+        harvested must not leave the layer before's files as this layer's (review of PR #251)."""
+        self.tests, self.deleted, self.placed, self.stop = {}, [], None, None
+
     def collect(self, wt: Path, team: Any) -> None:
         self.tree = wt
         self.stop = team.stop_reason if team is not None else None
@@ -2060,6 +2065,8 @@ class StoryPipeline:
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
                 token = ASK_LAYER.set(nn)
                 prev = turns.since if turns is not None else sha
+                if turns is not None:
+                    turns.fresh()
                 try:
                     try:
                         st.emit("package_draft_start", layer=nn)
@@ -2074,7 +2081,7 @@ class StoryPipeline:
                         got = await self._drafted(st, story, layers, i, proof, say, asked, turns, at)
                         if isinstance(got, Package) and proof:
                             snap = self._snapshot(turns, nn) if turns is not None else None
-                            told = await self._objections(st, layers, i, sha, got, proof, at=snap)
+                            told = await self._objections(st, layers, i, sha, got, proof, at=snap, since=prev)
                             if told is not None:
                                 got = await self._drafted(st, story, layers, i, proof, say, told, turns, at)
                     except StoryError as e:
@@ -2202,12 +2209,14 @@ class StoryPipeline:
         proof: tuple[ProofTest, ...],
         *,
         at: str | None = None,
+        since: str | None = None,
     ) -> str | None:
         """The critic's read of `package` (see `_critique`): what to tell the architect, ending with
         `package-fix` (`package-fix-tools` with story.package_tools), or None when it agrees or cannot be
         read. The critic reads at commit `at`, where the package's files are (a tool-written draft's
         snapshot), or at a commit made of `base_sha` with them; the existing tests the package changes are
-        shown before and after."""
+        shown before and after, as they were at `since` (a draft's own start: the snapshot of the layer
+        before; review of PR #251), else at `base_sha`."""
         nn, layer = f"{i + 1:02d}", layers[i]
         brief = critic_brief(
             layer,
@@ -2215,7 +2224,7 @@ class StoryPipeline:
             proof,
             self._conventions_text(base_sha),
             dossier=self._dossier(st, base_sha),
-            edited=edited_tests(package.tests, self._files_at(base_sha)),
+            edited=edited_tests(package.tests, self._files_at(since or base_sha)),
         )
         try:
             at = at or self._with_tests(st, base_sha, package.tests)
@@ -2474,9 +2483,12 @@ class StoryPipeline:
             if "unusable" in draft:  # its first try, already on record
                 attempt, feedback, kinds = 1, str(draft["unusable"]), ["package_unusable"]
                 if draft.get("tests") and draft.get("at"):  # what it wrote, for the retry to start on
-                    self._tests_before, _ = rebase_draft(
+                    self._tests_before, conflicts = rebase_draft(
                         draft["tests"], self._files_at(str(draft["at"])), self._files_at(base_sha)
                     )
+                    if conflicts:  # not placed: the retry is told to make those changes again
+                        st.emit("draft_conflict", layer=nn, attempt=attempt, paths=conflicts)
+                        feedback = f"{feedback}\n\n{DRAFT_CONFLICT.format(paths=', '.join(conflicts))}"
                     if self._tests_before:
                         said = Said()
                         paths = "\n".join(f"- {p}" for p in sorted(self._tests_before))

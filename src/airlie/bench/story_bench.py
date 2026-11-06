@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from airlie.story.cleanup import drop_every_draft_ref
 from airlie.story.cleanup import local_branches as local_branches
 from airlie.story.cleanup import prune_stale_stacks as prune_stale_stacks
 
@@ -757,6 +758,9 @@ def run_case(
         if not keep_prs or not done:
             cleared["worktrees_removed"] = remove_run_worktrees(clone, state)
             cleared["branches_deleted"] = delete_new_branches(clone, before)
+            cleared["draft_refs_dropped"] = drop_every_draft_ref(
+                clone
+            )  # the drafts' snapshots, as at publish
             prune_stale_stacks(clone)
     record.update(cleared)
     return record, save(record, out_dir)

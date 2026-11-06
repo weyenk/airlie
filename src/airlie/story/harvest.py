@@ -144,7 +144,22 @@ def _sources(path: str, text: str) -> dict[str, str] | None:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return None
-    return {name: ast.get_source_segment(text, fn) or "" for name, fn in test_functions(tree)}
+    lines = text.splitlines()
+    classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+
+    def whole(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
+        """`node`'s source with its decorators: dropping a parametrize case changes only them (review of
+        PR #251, 2026-11-06)."""
+        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        return "\n".join(lines[start - 1 : node.end_lineno])
+
+    out: dict[str, str] = {}
+    for name, fn in test_functions(tree):
+        cls = classes.get(name.partition("::")[0]) if "::" in name else None
+        # a method's class decorators (a mark, a parametrize) are part of what the test checks
+        context = "".join(f"@{ast.get_source_segment(text, d)}\n" for d in cls.decorator_list) if cls else ""
+        out[name] = context + whole(fn)
+    return out
 
 
 def edited_tests(tests: Mapping[str, str], base: Callable[[str], str | None]) -> list[EditedTest]:

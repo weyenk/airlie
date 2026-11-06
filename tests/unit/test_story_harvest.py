@@ -190,3 +190,21 @@ def test_a_draft_whose_change_conflicts_with_the_real_bases_is_named() -> None:
     )
     assert conflicts == [OLD] and out == {"tests/test_n.py": "x\n"}
     assert merged("a\n", "b\n", "c\n") is None and merged("a\n", "a\n", "c\n") == "c\n"
+
+
+def test_a_test_whose_decorator_alone_changed_is_an_edited_test() -> None:
+    """Review of PR #251: dropping cases from @pytest.mark.parametrize is the commonest way to weaken a test,
+    and the function's own source does not hold its decorators."""
+    before = (
+        "import pytest\n\n\n@pytest.mark.parametrize('n', [1, 2, 3])\ndef test_n(n):\n    assert n\n\n\n"
+        "@pytest.mark.slow\nclass TestBox:\n    def test_box(self):\n        assert 1\n"
+    )
+    fewer = before.replace("[1, 2, 3]", "[1]")
+    [edited] = edited_tests({OLD: fewer}, {OLD: before}.get)
+    assert edited.id == f"{OLD}::test_n"
+    assert edited.before.startswith("@pytest.mark.parametrize('n', [1, 2, 3])\ndef test_n(n):")
+    assert edited.after.startswith("@pytest.mark.parametrize('n', [1])\ndef test_n(n):")
+    # a method's class decorators are its context too
+    unmarked = before.replace("@pytest.mark.slow\n", "")
+    [method] = edited_tests({OLD: unmarked}, {OLD: before}.get)
+    assert method.id == f"{OLD}::TestBox::test_box" and method.before.startswith("@pytest.mark.slow\n")

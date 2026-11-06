@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -44,12 +45,24 @@ def draft_ref(story: str, nn: str) -> str:
 def drop_draft_refs(clone: Path, story: str) -> int:
     """Delete story `story`'s draft refs (`draft_ref`) from the clone: once it publishes, or is set aside or
     started over. How many were deleted."""
+    return len(
+        _drop_refs(clone, f"refs/airlie/{story}/", lambda ref: ref.startswith(f"refs/airlie/{story}/draft-"))
+    )
+
+
+def drop_every_draft_ref(clone: Path) -> list[str]:
+    """Delete every story's draft refs from the clone, and return them: the story bench clears its sandbox
+    with this after every run, whatever story the run was (review of PR #251, 2026-11-06)."""
+    return _drop_refs(clone, "refs/airlie/", lambda ref: ref.rpartition("/")[2].startswith("draft-"))
+
+
+def _drop_refs(clone: Path, prefix: str, wanted: Callable[[str], bool]) -> list[str]:
     out = subprocess.run(
-        ["git", "-C", str(clone), "for-each-ref", "--format=%(refname)", f"refs/airlie/{story}/"],
+        ["git", "-C", str(clone), "for-each-ref", "--format=%(refname)", prefix],
         capture_output=True,
         text=True,
     )
-    refs = [r for r in out.stdout.splitlines() if r.startswith(f"refs/airlie/{story}/draft-")]
+    refs = [r for r in out.stdout.splitlines() if wanted(r)]
     for ref in refs:
         subprocess.run(["git", "-C", str(clone), "update-ref", "-d", ref], capture_output=True)
-    return len(refs)
+    return refs

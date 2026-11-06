@@ -16,7 +16,7 @@ from airlie.story.package import PACKAGE_TOOLS_CONTRACT
 from airlie.story.state import StoryState
 from tests.unit.git_helpers import git
 from tests.unit.test_story_layer_checks_flow import PYTEST, calc_repo, write
-from tests.unit.test_story_pipeline import STORY, fenced, kinds, package_reply, pipeline
+from tests.unit.test_story_pipeline import MEETING_ROLES, STORY, fenced, kinds, package_reply, pipeline
 from tests.unit.test_studio_orchestrator import APPROVE, DONE
 
 PATH = "tests/test_calc.py"
@@ -174,3 +174,98 @@ async def test_each_layers_draft_snapshot_is_kept_under_a_ref_until_the_story_pu
     snap = git(repo, "rev-parse", draft_ref(key, "01"))
     assert git(repo, "show", f"{snap}:{PATH}") == T01.rstrip("\n")  # layer 01's files as drafted
     assert drop_draft_refs(repo, key) == 2 and refs(repo) == []
+
+
+# ---- review of PR #251 (2026-11-06) ----
+
+NO_JSON = FakeReply(text="Still thinking about the divide layer.")
+
+
+async def test_an_unusable_drafts_conflicting_files_are_named_to_the_retry_not_dropped_silently(
+    tmp_path: Path,
+) -> None:
+    """Layer 02's draft wrote a change beside one layer 01's coder made, then gave no JSON: the files it
+    keeps for its retry cannot be merged onto its real base, and the retry is told to make that change again
+    rather than finding it gone."""
+    clash = edit(PATH, "FACTOR = 2\n", "FACTOR = 2\nDIVISOR = 3\n")
+    st, engine, repo = await two_layers(
+        tmp_path,
+        [
+            write(PATH, T01),
+            json_only("AC1", "test_mul"),
+            clash,
+            NO_JSON,
+            NO_JSON,
+            ADD_DIV,
+            json_only("AC2", "test_div"),
+        ],
+        [write("calc.py", CALC + MUL), CODER_FAKE, DONE, write("calc.py", CALC + MUL + DIV), DONE],
+    )
+    assert st.blocked is None and set(st.built) == {"01", "02"}, st.blocked
+    retry = [r for r in engine.requests if r.role == "architect"][-2].messages[-1].content
+    assert "changed tests/test_calc.py where the layers below it changed the same lines" in retry
+    assert kinds(st.path / "events.jsonl", "package_files_placed") == []  # nothing of it merged cleanly
+
+
+async def test_a_drafting_turn_that_fails_before_it_is_read_keeps_no_other_layers_files(
+    tmp_path: Path,
+) -> None:
+    """A turn can fail before its checkout is harvested; what the last harvest held was the layer before's,
+    and it must not become this layer's draft, nor its retry's previous try."""
+    from airlie.story.model import Criterion, Layer, Story, StoryError
+    from airlie.story.pipeline import ToolTurns
+
+    repo = calc_repo(tmp_path)
+    pipe = pipeline(tmp_path, repo, FakeEngine({}), test_cmd=PYTEST, story={"package_tools": True})
+    st = StoryState(path=tmp_path / "story", card=text_card("divide").to_dict(), repo=str(repo))
+    st.path.mkdir()
+    sha = git(repo, "rev-parse", "HEAD")
+    turns = ToolTurns(st, sha, lambda tests: None)
+    turns.tests = {PATH: T01}  # what the layer before's turn left
+
+    async def say(nudge: str | None = None, /, *, at: str | None = None, steps: int | None = None) -> str:
+        raise StoryError("the architect did not finish (engine_error)")
+
+    story = Story("Divide", "Divide.", (Criterion("AC2", "a calculator", "it divides", "it gives 2"),))
+    layers = (Layer("div", "Divide", "calc.py", "Add div.", ("AC2",)),)
+    await pipe._draft_each(st, story, layers, sha, say, "run-1", turns)
+    assert st.drafts["01"] == {"unusable": "the architect did not finish (engine_error)"}
+
+
+async def test_the_critic_of_a_later_draft_sees_the_tests_it_changes_as_the_draft_before_left_them(
+    tmp_path: Path,
+) -> None:
+    """Layer 02's draft weakens a test layer 01's draft added: compared with the story's base, which has no
+    such file, the critic would never see it before and after."""
+    from airlie.story.model import Layer
+    from airlie.story.package import Package
+
+    repo = calc_repo(tmp_path)
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "draft")
+    (repo / PATH).write_text(T01)
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "layer 01 draft")
+    snap = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-")
+    agree = FakeReply(text='Fine.\n```json\n{"type": "verdict", "proof": "agree", "objections": []}\n```')
+    engine = FakeEngine({"tester": [agree]})
+    pipe = pipeline(
+        tmp_path, repo, engine, test_cmd=PYTEST, story={"package_tools": True}, roles=MEETING_ROLES
+    )
+    st = StoryState(path=tmp_path / "story", card=text_card("divide").to_dict(), repo=str(repo))
+    st.path.mkdir()
+    weakened = T01.replace("== 6", "> 0") + TEST_DIV
+    package = Package("div", {PATH: weakened}, (), (), ("add div",), {"AC2": (f"{PATH}::test_div",)}, "done")
+    layers = (
+        Layer("mul", "Multiply", "calc.py", "Add mul.", ("AC1",)),
+        Layer("div", "Divide", "calc.py", "Add div.", ("AC2",)),
+    )
+    from airlie.story.amigos import ProofTest
+
+    proof = (ProofTest("AC2", "div", PATH, "test_div", "tests", None, "div(6, 3) is 2", ""),)
+    told = await pipe._objections(st, layers, 1, base, package, proof, at=snap, since=snap)
+    assert told is None
+    brief = next(r for r in engine.requests if r.role == "tester").messages[-1].content
+    section = brief.split("## Existing tests this package changes (data; check none is weakened)\n")[1]
+    assert section.startswith(f"### {PATH}::test_mul\nBefore:") and "assert mul(FACTOR, 3) > 0" in section
