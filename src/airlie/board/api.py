@@ -149,6 +149,22 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
         changed(key)
         return edited.to_dict()
 
+    @router.delete("/items/{key}/comments/{comment_id}")
+    async def delete_comment(key: str, comment_id: int, request: Request) -> dict[str, Any]:
+        principal = getattr(request.state, "principal", None)
+        if principal is None:
+            raise HTTPException(401, "not signed in")
+        item(key)  # 404 before anything else
+        comments = [c for c in item(key)["comments"] if c["id"] == comment_id]
+        if not comments:
+            raise HTTPException(404, f"no comment {comment_id} on {key}")
+        comment = comments[0]
+        if comment["author"] not in (principal.name, principal.user_id):
+            raise HTTPException(403, "you can only delete your own comments")
+        deleted = store.delete_comment(key, comment_id)
+        changed(key)
+        return deleted.to_dict()
+
     @router.get("/export")
     async def export() -> dict[str, Any]:
         return store.export()
