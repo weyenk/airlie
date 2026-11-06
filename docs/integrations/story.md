@@ -212,7 +212,13 @@ tokens, each step slower than the last) and then spent 14-20 minutes thinking it
   next turn is the final answer, as after the last step above. It is an `answer_after_cuts` event (`step`,
   `cuts`, `chars`). That turn is asked as the conversation in plain text (the system prompt, then one message
   with each call as "You called …", what it returned, and the ask), with no tool calls in it: asked in the
-  usual history, the architect wrote another tool call on 4 of 11 such turns (AIR-55, AIR-62, 2026-11-04).
+  usual history, the architect wrote another tool call on 4 of 11 such turns (AIR-55, AIR-62, 2026-11-04). A role
+  that can write and has written (the architect writing its package's tests with `story.package_tools`) gets no
+  such turn: asked in text, it went on with the transcript ("What edit_file returned: …", "You called run_tests
+  …"), and the first object in its reply was a `write_file` call's arguments (AIR-55, 2026-11-06, try 1). Its run
+  ends there (stop `answer_after_cuts`; the event has `ends_run: true`), its last reasoning carried, and the
+  package conversation asks for the JSON alone in its short turn (`package-json-only`, a `package_answer_turn`
+  event), as after a turn out of steps.
 - **Handed, not found.** The layers brief carries the repository's `AGENTS.md` and the files the story names, read
   from the story's base commit, and the architect is told not to read them again.
 - **Rounds** (`story.plan_round_steps`): the architect reads `plan_round_steps` steps and writes the plan, then
@@ -373,6 +379,11 @@ attempt is not charged against `story.package_attempts`. A check finding on a te
 `amigos_critic`, `amigos_critic_unreadable`, `amigos_proof_revised`, `amigos_borne_out`. The flow API shows the meeting
 as a `meeting` job of the `layers` stage with its turns, objections and tokens.
 
+**A package object with no `"type"`.** An object holding a package's `files`, `steps` and `covers` and no key of
+the other replies (`changes`, `by`, `why`) is read as `"type": "package"` (AIR-55, 2026-11-06); one that could be
+another reply, or is not a whole package (a tool call's arguments, say), is still refused with `the JSON object needs
+"type": "package"`.
+
 ## The package check
 
 After the architect writes a layer's package and before the coder starts, airlie places its test files in a scratch
@@ -422,8 +433,12 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   keeps its test in `covers` and lists it in the package's `"guards": {"<test id>": "<what already holds it>"}`; the
   red check lets a guard pass on the base, the final gate holds it to passing after the code, the coder's brief
   marks it, and `package_ready` names the guards. Every test that is not a guard must still fail on the base. A
-  guard must be a covered test and have a reason, and a package whose every test is a guard is refused: that layer
-  has nothing to build, and its answer is the satisfied reply. A guard may be a test already on the base, left as
+  guard must be a test of the package and have a reason, and a package whose every test is a guard is refused: that
+  layer has nothing to build, and its answer is the satisfied reply. A guard `covers` leaves out that names a test
+  in the package's test files (by its id, or by a bare name one test there has) is covered under `behaviour`: the
+  architect edited an existing test in place, declared it a guard and did not repeat it in `covers`, and the
+  package was refused over that alone (AIR-55, 2026-11-06, try 2). A guard naming no test of the package is still
+  refused. A guard may be a test already on the base, left as
   it is: when the agreed proof names an existing test as the proof of a criterion that already holds (AIR-62 layer
   01, 2026-11-06: tests of `SafeMarkdown.test.ts` on main proved its "unchanged" criteria; covered, they were
   `covers_missing`, left out, `proof_mismatch`, so no package could pass), the package covers it and it is taken

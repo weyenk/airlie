@@ -1859,7 +1859,8 @@ async def test_a_writer_cut_before_it_wrote_anything_is_held_to_writing_not_aske
 ) -> None:
     """Noah's decision 4 (tool-written packages, 2026-11-06): the architect that writes its tests as files and
     is cut reading before it has written anything gets the write-only hold, with tools, not the tool-less
-    answer turn, where it could only reply in text. Once it has written, the answer turn is as before."""
+    answer turn, where it could only reply in text. Once it has written, the cut reads end the run: its answer
+    is asked by its caller (`test_a_writer_that_wrote_ends_its_run_after_cuts_for_its_caller_to_ask_...`)."""
     write = FakeReply(
         tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "t.py", "content": "x\n"}))]
     )
@@ -1878,19 +1879,59 @@ async def test_a_writer_cut_before_it_wrote_anything_is_held_to_writing_not_aske
     team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"))
     ctx.emit = events = Events()
     result = await team.run(ctx, Recorder())
-    assert result.ok and result.final_text == "Done."
+    assert result.stop_reason == "answer_after_cuts"
     assert engine.requests[2].tools is not None  # held to writing, tools still offered
     held = [str(m.content) for m in engine.requests[2].messages if m.role == "user"]
     assert held[-1] == text("write-only", what="nothing", n=2, k=3)
     assert [e["step"] for e in events.records if e["kind"] == "write_after_cuts"] == [2]
-    # after the write, two more cut reads: the answer turn, with no tools
-    assert engine.requests[5].tools is None
+    # after the write, two more cut reads end the run: no tool-less answer turn
+    assert len(engine.requests) == 5 and all(r.tools is not None for r in engine.requests)
     assert [s["id"] for s in steers(events)] == [
         "reasoning-carried",
         "reasoning-carried",
         "write-only",
         "reasoning-carried",
-        "answer-now",
+        "reasoning-carried",
+    ]
+
+
+async def test_a_writer_that_wrote_ends_its_run_after_cuts_for_its_caller_to_ask_the_json(
+    tmp_path: Path,
+) -> None:
+    """AIR-55 (2026-11-06, try 1): the architect writing its package's tests with the file tools was cut on
+    reads after it had written, and its answer turn was the conversation as text (`_in_text`); it went on
+    with the transcript ("What edit_file returned: ...", "You called run_tests ..."), and the first object in
+    it was a write_file call's arguments, refused as a package. A role that can write and has written ends
+    its run there instead (stop answer_after_cuts, not ok), its history whole with the last carried
+    reasoning, and the package conversation asks for the JSON alone (`ToolTurns.ask`, package-json-only)."""
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "t.py", "content": "x\n"}))]
+    )
+    engine = FakeEngine({"coder": [write, cut_read("a"), cut_read("b", "b"), FakeReply(text="Never asked.")]})
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"))
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert (result.ok, result.stop_reason, result.steps) == (False, "answer_after_cuts", 3)
+    assert len(engine.requests) == 3
+    assert text("answer-now", n=2, reasoning=thought(8, "b")) not in user_said(engine)
+    assert [
+        {k: v for k, v in e.items() if k != "kind"}
+        for e in events.records
+        if e["kind"] == "answer_after_cuts"
+    ] == [
+        {
+            "team_id": "team-1",
+            "role": "coder",
+            "step": 3,
+            "cuts": 2,
+            "chars": len(thought(8, "b")),
+            "ends_run": True,
+        }
+    ]
+    # its last reasoning is carried at the end of its history, which the caller's next turn goes on from
+    assert [(s["id"], s["step"]) for s in steers(events)] == [
+        ("reasoning-carried", 2),
+        ("reasoning-carried", 3),
     ]
 
 

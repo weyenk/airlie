@@ -201,6 +201,9 @@ keeps finding the proof wrong is not asked for another."""
 ANSWER_TURN_STEPS = 4
 """Steps of the turn that asks a package written with the file tools for its JSON alone (`package-json-only`):
 its tests are written, so it needs at most a read or two to recall a name (2026-11-06)."""
+UNANSWERED = frozenset({"max_steps", "answer_after_cuts"})
+"""How a turn that wrote its tests may end with no answer and still get the JSON-only turn
+(`ToolTurns.ask`)."""
 DRAFT_CONFLICT = (
     "your draft of this layer changed {paths} where the layers below it changed the same lines since it was "
     "drafted, so it cannot be taken as it is: the files are in the repository as the layers below left them; "
@@ -266,13 +269,15 @@ class ToolTurns:
     ) -> tuple[str, dict[str, str]]:
         """One turn (`say(nudge)`) and its test files. A turn out of steps with its tests written is no
         failure: what is missing is the JSON, asked for in one short turn (`package-json-only`), as it is
-        after a reply with no JSON block. Event: package_answer_turn."""
+        after a reply with no JSON block. So is a turn ended after answer_after_cuts: its answer is that turn,
+        not one asked as the conversation in text, which the architect went on as a transcript (AIR-55,
+        2026-11-06). Event: package_answer_turn."""
         try:
             text = await say(nudge)
         except StoryError:
-            if not (self.tests and self.stop == "max_steps"):
+            if not (self.tests and self.stop in UNANSWERED):
                 raise
-            text = ""  # out of steps with its tests written: what is missing is the JSON
+            text = ""  # out of steps, or cut, with its tests written: what is missing is the JSON
         tests = self.harvested()
         if tests and extract_json_block(text) is None:
             self.st.emit("package_answer_turn", layer=self.layer, stop_reason=self.stop, paths=sorted(tests))
