@@ -36,7 +36,6 @@ from airlie.story.amigos import (
     MeetingFactory,
     ProofTest,
     Turn,
-    agreement_note,
     criteria_note,
     default_meeting,
     opening_message,
@@ -1260,7 +1259,6 @@ class StoryPipeline:
         self._keep_transcript(st)
         # after the finish, so a note that cannot be posted never has the meeting held again
         role = self.s.product_role
-        await self.board.comment(card, note(agreement_note(agreement)), role=role)
         for text in (criteria_note(story, agreement), unresolved_note(agreement)):
             if text is not None:
                 await self.board.comment(card, note(text), role=role)
