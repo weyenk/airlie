@@ -30,8 +30,10 @@ from airlie.story.briefs import (
     criteria_revision_brief,
     critic_brief,
     directions_brief,
+    drafts_brief,
     imagine_brief,
     layers_brief,
+    next_package_brief,
     package_blocks,
     package_brief,
     plan_brief,
@@ -310,6 +312,12 @@ CASES["fn:briefs.package_brief:agreed"] = partial(
     context_budget=65_536,
     proof=AGREED,
 )
+# written with the file tools (the tool-written packages design, 2026-11-06)
+CASES["fn:briefs.package_brief:tools"] = partial(_package_brief, 1, tools=True)
+CASES["fn:briefs.drafts_brief:tools"] = partial(
+    drafts_brief, STORY, LAYERS, tools=True, max_steps=40, context_budget=65_536
+)
+CASES["fn:briefs.next_package_brief:tools"] = partial(next_package_brief, STORY, LAYERS, 1, tools=True)
 CASES["fn:briefs.critic_brief:plain"] = partial(
     critic_brief, PROFILE, SAMPLE_PACKAGE.tests, AGREED, "## The repository's test gate\n- uv run pytest"
 )

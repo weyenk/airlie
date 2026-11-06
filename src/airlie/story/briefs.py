@@ -40,7 +40,7 @@ from airlie.story.initiative import (
 from airlie.story.lessons import Lesson
 from airlie.story.mockups import DIRECTIONS_CONTRACT, Direction
 from airlie.story.model import CONTROL, SURROGATE, Layer, Story, change_criteria
-from airlie.story.package import AGREED_PROOF_CONTRACT, PACKAGE_CONTRACT, Package
+from airlie.story.package import AGREED_PROOF_CONTRACT, PACKAGE_CONTRACT, PACKAGE_TOOLS_CONTRACT, Package
 from airlie.story.provenance import Provenance
 from airlie.story.rounds import REFINE_FIELD
 from airlie.teams.worktree import find_file, read_blob
@@ -686,11 +686,12 @@ def _package_layer(
     ]
 
 
-def drafts_brief(story: Story, layers: tuple[Layer, ...], **kw: Any) -> str:
+def drafts_brief(story: Story, layers: tuple[Layer, ...], *, tools: bool = False, **kw: Any) -> str:
     """The first turn of the conversation that drafts every layer's package (amendment of 2026-10-26 to the
-    planning-line design): what the conversation is, then layer 01's package brief (`package_brief`)."""
-    opening = hub_text("brief-package-drafts", layers=len(layers))
-    return opening + "\n\n" + package_brief(story, layers, 0, **kw)
+    planning-line design): what the conversation is, then layer 01's package brief (`package_brief`).
+    `tools`: the packages are written with the file tools (`package_brief`)."""
+    opening = hub_text("brief-package-drafts-tools" if tools else "brief-package-drafts", layers=len(layers))
+    return opening + "\n\n" + package_brief(story, layers, 0, tools=tools, **kw)
 
 
 def next_package_brief(
@@ -699,10 +700,14 @@ def next_package_brief(
     i: int,
     proof: Sequence[ProofTest] = (),
     sources: Mapping[str, str] | None = None,
+    *,
+    tools: bool = False,
 ) -> str:
-    """A later turn of that conversation: layer `i`'s own part (`_package_layer`) and `brief-package-next`;
-    the story, the rules and the contract are the first turn's."""
-    return "\n\n".join([*_package_layer(story, layers, i, proof, sources), hub_text("brief-package-next")])
+    """A later turn of that conversation: layer `i`'s own part (`_package_layer`) and `brief-package-next`
+    (`brief-package-next-tools` when the packages are written with the file tools); the story, the rules and
+    the contract are the first turn's."""
+    nxt = hub_text("brief-package-next-tools" if tools else "brief-package-next")
+    return "\n\n".join([*_package_layer(story, layers, i, proof, sources), nxt])
 
 
 def package_brief(
@@ -720,6 +725,7 @@ def package_brief(
     sources: Mapping[str, str] | None = None,
     dossier: Mapping[str, str] | None = None,
     lint: str = "",
+    tools: bool = False,
 ) -> str:
     """The architect's brief for layer `i`'s package, asked on the branch the layers below it produced (P1,
     2026-10-24): the layer's tests as code, the files, the interfaces and the steps (`PACKAGE_CONTRACT`).
@@ -728,9 +734,11 @@ def package_brief(
     the repository, the guide and `built` are carried when there are any; `feedback` is why the last try
     came back. `proof` is the layer's tests as the story meeting agreed them (three-amigos D9, 2026-10-24):
     listed, with the layer's files and interfaces from the split, and the package must cover exactly them
-    (or answer with a `proof_change` when they are wrong)."""
+    (or answer with a `proof_change` when they are wrong). `tools` (story.package_tools): the tests are
+    written into the repository with write_file and edit_file and the reply is the package JSON alone
+    (`brief-package-task-tools`, `PACKAGE_TOOLS_CONTRACT`; the tool-written packages design, 2026-11-06)."""
     parts = [
-        hub_text("brief-package-task"),
+        hub_text("brief-package-task-tools" if tools else "brief-package-task"),
         story_text(story),
         *epic_section(story),
         *_package_layer(story, layers, i, proof, sources),
@@ -747,7 +755,7 @@ def package_brief(
         hub_text("test-rules"),
         *([lint] if lint else []),
         hub_text("brief-layers-sizing", max_steps=max_steps, context_budget=context_budget),
-        PACKAGE_CONTRACT,
+        PACKAGE_TOOLS_CONTRACT if tools else PACKAGE_CONTRACT,
         *([AGREED_PROOF_CONTRACT] if proof else []),
         *_again(feedback),
     ]

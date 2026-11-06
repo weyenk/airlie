@@ -119,6 +119,7 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings and the package as checked; a try back for lint alone is not charged, once a layer (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
 | `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
+| `story.package_tools` | false | the architect writes a layer's tests into its checkout with `write_file` and `edit_file` (test files only, a capped size per call, no test deleted) and replies with the package JSON alone; off until the package asks get the write tools (`docs/superpowers/specs/2026-11-06-tool-written-packages-design.md`, build step 3) |
 | `story.amigos.enabled` | true | hold the story meeting before any layer is built; false: the split is the agreement and there is no proof plan |
 | `story.amigos.max_turns` | 12 | the most turns the meeting takes (at least 4); at the cap each owner's part stands |
 | `story.amigos.max_scope_files` | 5 | the most files a layer may name (the sizing rule as a number) |

@@ -27,16 +27,35 @@ from airlie.story.model import NO_JSON, REPLY_TAIL, Layer, Story, StoryError, _e
 from airlie.tools.scope import is_js_test, is_test_file
 from airlie.topology.studio_plan import extract_json_block
 
-PACKAGE_CONTRACT = """Reply with, for each new test file, a line `### test file: <path from the repository root>` followed by one fenced block (```python for a pytest module, ```ts for a Vitest *.test.ts) holding that file's whole text. For a test file that already exists, do not copy it out: write a line `### test additions: <path from the repository root>` followed by one fenced block holding only the tests you add and the imports they need; they are appended to the file as it is on the layer's base, the imports joining its imports. Then end your reply with one ```json block holding exactly one object:
-{"type": "package",
+_PACKAGE_OBJECT = """{"type": "package",
  "files": [{"path": "src/pkg/mod.py", "action": "create" | "modify", "why": "one line"}],
  "interfaces": [{"file": "src/pkg/mod.py", "signature": "def name(arg: T) -> R", "behaviour": "one line: what it does, the exact message or value the tests assert"}],
  "steps": ["ordered, one change each, naming the file and the function"],
  "covers": {"AC1": ["tests/unit/test_x.py::test_name"]},
  "guards": {"tests/unit/test_x.py::test_other": "one line: what on the base already makes it hold"},
- "done_when": "one sentence"}
+ "done_when": "one sentence"}"""  # noqa: E501
+_GUARDS_AND_SATISFIED = """A criterion that is already true on the layer's base (the code there already does it, so no correct test of it can fail before this layer's code) is not forced into a failing test: keep its test in covers and list it in "guards" (leave guards out when there is none), with one line naming what already makes it hold. A guard is a regression guard: airlie lets it pass on the base, and it must still pass after the code; every test that is not a guard must fail on the base. When every criterion this layer owns is already true there, the layer has nothing to build: write no tests and reply instead with one ```json block holding {"type": "satisfied", "by": ["01", "tests/unit/test_x.py::test_name"], "why": "one sentence"}: in by, each earlier layer that builds it, by its number, and each test on the base (path::name, from the repository root) that already proves it. airlie runs those tests on the base and takes the reply only when every one of them passes there."""  # noqa: E501
+"""The package object and the guards and satisfied paragraph, shared by both contracts below."""
+
+PACKAGE_CONTRACT = f"""Reply with, for each new test file, a line `### test file: <path from the repository root>` followed by one fenced block (```python for a pytest module, ```ts for a Vitest *.test.ts) holding that file's whole text. For a test file that already exists, do not copy it out: write a line `### test additions: <path from the repository root>` followed by one fenced block holding only the tests you add and the imports they need; they are appended to the file as it is on the layer's base, the imports joining its imports. Then end your reply with one ```json block holding exactly one object:
+{_PACKAGE_OBJECT}
 Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files.
-A criterion that is already true on the layer's base (the code there already does it, so no correct test of it can fail before this layer's code) is not forced into a failing test: keep its test in covers and list it in "guards" (leave guards out when there is none), with one line naming what already makes it hold. A guard is a regression guard: airlie lets it pass on the base, and it must still pass after the code; every test that is not a guard must fail on the base. When every criterion this layer owns is already true there, the layer has nothing to build: write no tests and reply instead with one ```json block holding {"type": "satisfied", "by": ["01", "tests/unit/test_x.py::test_name"], "why": "one sentence"}: in by, each earlier layer that builds it, by its number, and each test on the base (path::name, from the repository root) that already proves it. airlie runs those tests on the base and takes the reply only when every one of them passes there."""  # noqa: E501
+{_GUARDS_AND_SATISFIED}"""  # noqa: E501
+"""The package as one reply: its tests in fenced blocks, then the package JSON (P1, 2026-10-24)."""
+
+PACKAGE_TOOLS_CONTRACT = f"""Write each test file with write_file, one file per call, and add tests to a test file that is there with edit_file, one or a few tests per call: a call that holds too much is refused, so write a long file with its first tests and add the rest. You write test files only (no helper module, no conftest.py). An existing test whose expectation this layer changes is edited in place with edit_file; no test is deleted. Write no test code in your reply. When the tests are written, end your reply with one ```json block holding exactly one object:
+{_PACKAGE_OBJECT}
+Every criterion this layer owns appears in covers with at least one test; every test id names a test in a test file you wrote or changed for this layer.
+{_GUARDS_AND_SATISFIED}"""  # noqa: E501
+"""The package written with the file tools (the tool-written packages design, 2026-11-06): the tests are
+files in the architect's checkout, harvested from there (`harvest`), and the reply is the package JSON
+alone, a few thousand characters where a reply holding an 18-test layer ran past 40k. The package object,
+the regression guards and the satisfied reply are the same as `PACKAGE_CONTRACT`'s. Edited existing tests
+are allowed, deleted ones are refused, and only test files are writable (Noah, 2026-11-06)."""
+NO_TESTS_WRITTEN = (
+    "you wrote no test file for this layer: write each with write_file (add to a test file that is there "
+    "with edit_file), then end your reply with the package JSON"
+)
 
 AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test asserts what the layer cannot do, or cannot be made red in this layer for a reason other than that what it checks already holds on the base, which makes it a guard), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package. When an acceptance criterion itself is false (it states something untrue about the domain, or no correct code could meet it), name it in the same block as {"criterion": "<its id>", "why": "one sentence"}: product rewords it, then the tester revises the tests."""  # noqa: E501
 BEHAVIOUR = "behaviour"
@@ -417,34 +436,54 @@ def parse_package(
     story: Story,
     gated: Collection[str] = (),
     base: Callable[[str], str | None] | None = None,
+    tests: Mapping[str, str] | None = None,
 ) -> Package | ProofChange | Satisfied:
     """The architect's reply as a Package, as a ProofChange when it says the agreed proof is wrong and
     writes no package, or as Satisfied when it says the layer's criteria already hold on its base. A
     StoryError says what to fix, in words the architect acts on, and keeps the reply's end (`reply`). `gated`
     are the criteria the agreed proof leaves to the gate: they need no covers. `base` reads a file on the base
-    the reply was written at (path -> text, None when absent): test additions are joined to it."""
+    the reply was written at (path -> text, None when absent): test additions are joined to it.
+
+    `tests` are the test files the architect wrote with the file tools (`harvest.harvest`; the tool-written
+    packages design, 2026-11-06): given, the reply is read for its JSON alone, its test blocks having been
+    written into the checkout before the harvest (`harvest.place_reply_tests`), and covers name tests in
+    those files. None: the tests are the reply's blocks, as before."""
     try:
-        return _parse_package(text, layer, story, gated, base or (lambda _: None))
+        return _parse_package(text, layer, story, gated, base or (lambda _: None), tests)
     except StoryError as e:
         e.reply = text[-REPLY_TAIL:]
         raise
 
 
 def _parse_package(
-    text: str, layer: Layer, story: Story, gated: Collection[str], base: Callable[[str], str | None]
+    text: str,
+    layer: Layer,
+    story: Story,
+    gated: Collection[str],
+    base: Callable[[str], str | None],
+    harvested: Mapping[str, str] | None,
 ) -> Package | ProofChange | Satisfied:
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
         return _proof_change(obj, story)
     if obj is not None and obj.get("type") == "satisfied":
         return _satisfied(obj, base)
-    raw_tests = _test_blocks(text)
+    raw_tests = _test_blocks(text) if harvested is None else {p: ("file", t) for p, t in harvested.items()}
     if obj is None:
         raise StoryError(NO_JSON)
     if obj.get("type") != "package":
         raise StoryError('the JSON object needs "type": "package"')
     if not raw_tests:
-        raise StoryError("the reply holds no test file: write each as `### test file: <path>` and a block")
+        raise StoryError(
+            "the reply holds no test file: write each as `### test file: <path>` and a block"
+            if harvested is None
+            else NO_TESTS_WRITTEN
+        )
+    nowhere = (
+        "no test file of this reply"
+        if harvested is None
+        else "no test file you wrote or changed for this layer"
+    )
     tests: dict[str, str] = {}
     added: dict[str, str] = {}
     for raw_path, (kind, body) in raw_tests.items():
@@ -525,7 +564,7 @@ def _parse_package(
             if text_of is None or not name or found is False:
                 if cid in gated:  # words about the gate, for a criterion the agreed proof leaves to it
                     continue
-                raise StoryError(f"covers {cid}: {tid} names a test in no test file of this reply")
+                raise StoryError(f"covers {cid}: {tid} names a test in {nowhere}")
             # stored as the test's full id, its parameters kept
             full.append(f"{where}::{found}{name[len(bare) :]}" if isinstance(found, str) else tid)
         covers[cid] = tuple(full)

@@ -549,3 +549,100 @@ def test_the_coders_list_of_tests_marks_a_guard_as_one_that_passes_already() -> 
     shown = package_blocks(STORY, (GUARDED,), 0, p)
     assert f"  - {PATH}::test_b{GUARD_NOTE}" in shown
     assert f"  - {PATH}::test_a\n" in shown
+
+
+# ---- tool-written packages: the tests are files in the checkout, the reply is the JSON (2026-11-06) ----
+
+
+def json_only(**kw: Any) -> str:
+    """A package reply with no test block: the tests were written with write_file and edit_file."""
+    return reply(tests={}, **kw)
+
+
+def test_a_json_only_reply_takes_its_tests_from_the_harvest() -> None:
+    """The tool-written packages design (2026-11-06): the reply is the package JSON, and the tests are the
+    files the architect wrote into its checkout, harvested from there."""
+    p = parse_package(json_only(), LAYER, STORY, tests={PATH: TEST_TEXT})
+    assert isinstance(p, Package)
+    assert p.tests == {PATH: TEST_TEXT} and p.added == {}
+    assert p.covers == {"AC1": (f"{PATH}::test_a",)}
+    assert p.steps == ("create src/store.py with store() returning 1",)
+
+
+def test_with_a_harvest_the_replys_test_blocks_are_not_read() -> None:
+    """A reply that writes test blocks anyway has them placed in the checkout before the harvest
+    (`harvest.place_reply_tests`): what the harvest found is the package's, and a block the old path
+    refuses is no matter here."""
+    other = reply(tests={PATH: "def test_other():\n    assert 0\n"})
+    p = parse_package(other, LAYER, STORY, tests={PATH: TEST_TEXT})
+    assert isinstance(p, Package) and p.tests == {PATH: TEST_TEXT}
+    broken = "### test file: tests/unit/test_x.py\nno block\n" + json_only()
+    q = parse_package(broken, LAYER, STORY, tests={PATH: TEST_TEXT})
+    assert isinstance(q, Package) and q.tests == {PATH: TEST_TEXT}
+
+
+def test_covers_are_resolved_against_the_harvested_files() -> None:
+    in_class = {PATH: "class TestStore:\n    def test_a(self):\n        assert store() == 1\n"}
+    p = parse_package(json_only(), LAYER, STORY, tests=in_class)
+    assert isinstance(p, Package) and p.covers == {"AC1": (f"{PATH}::TestStore::test_a",)}
+    with pytest.raises(StoryError) as e:
+        parse_package(json_only(covers={"AC1": [f"{PATH}::test_b"]}), LAYER, STORY, tests={PATH: TEST_TEXT})
+    assert str(e.value) == (
+        f"covers AC1: {PATH}::test_b names a test in no test file you wrote or changed for this layer"
+    )
+    with pytest.raises(
+        StoryError, match="names a test in no test file of this reply"
+    ):  # the old form's words
+        parse_package(reply(covers={"AC1": [f"{PATH}::test_b"]}), LAYER, STORY)
+
+
+def test_a_json_only_reply_with_nothing_harvested_is_told_to_write_its_tests() -> None:
+    from airlie.story.package import NO_TESTS_WRITTEN
+
+    with pytest.raises(StoryError) as e:
+        parse_package(json_only(), LAYER, STORY, tests={})
+    assert (
+        str(e.value)
+        == NO_TESTS_WRITTEN
+        == (
+            "you wrote no test file for this layer: write each with write_file (add to a test file that is "
+            "there with edit_file), then end your reply with the package JSON"
+        )
+    )
+    assert e.value.reply.endswith("```\n")  # the reply's end is kept for the retry event, as before
+
+
+def test_a_harvested_package_keeps_its_guards_and_a_satisfied_reply_needs_no_tests() -> None:
+    """Noah, 2026-11-06: the JSON-only contract keeps #244's regression guards and the satisfied reply."""
+    text = json_only(covers={"AC1": [f"{PATH}::test_a"], "AC2": [f"{PATH}::test_b"]})
+    head, _, tail = text.rpartition("```json\n")
+    obj = json.loads(tail.removesuffix("\n```\n"))
+    obj["guards"] = {"test_b": "the auth middleware already answers 401"}
+    guarded = f"{head}```json\n{json.dumps(obj)}\n```\n"
+    p = parse_package(guarded, GUARDED, STORY, tests={PATH: TWO_TESTS})
+    assert isinstance(p, Package)
+    assert p.guards == {f"{PATH}::test_b": "the auth middleware already answers 401"}
+    by = ["01", "tests/unit/test_auth.py::TestDelete::test_unsigned_is_401"]
+    got = parse_package(satisfied_reply(by), LAYER, STORY, base=AUTH_BASE, tests={})
+    assert got == Satisfied(tuple(by), "the auth middleware answers 401 for every unsigned /v1 call")
+
+
+def test_a_harvested_file_that_is_not_a_test_file_is_refused() -> None:
+    with pytest.raises(StoryError, match="src/store.py is not a test file"):
+        parse_package(json_only(), LAYER, STORY, tests={PATH: TEST_TEXT, "src/store.py": "x = 1\n"})
+
+
+def test_the_tools_contract_asks_for_test_files_by_tool_and_keeps_the_json_guards_and_satisfied() -> None:
+    from airlie.story.package import PACKAGE_TOOLS_CONTRACT as tools
+
+    assert "write_file" in tools and "edit_file" in tools and "Write no test code in your reply" in tools
+    assert "### test file:" not in tools and "### test additions:" not in tools
+    assert "no test is deleted" in tools and "conftest.py" in tools  # Noah's decisions 1 and 2
+    assert '"guards"' in tools and '{"type": "satisfied"' in tools
+    # the same package object, and the same guards and satisfied paragraph, as the reply-blocks contract
+    obj = "exactly one object:\n"
+    shape = tools.split(obj)[1].split("\nEvery criterion")[0]
+    assert shape == PACKAGE_CONTRACT.split(obj)[1].split("\nEvery criterion")[0]
+    guards = "\nA criterion that is already true"
+    assert tools.split(guards)[1] == PACKAGE_CONTRACT.split(guards)[1]
+    assert "every test id names a test in a test file you wrote or changed for this layer." in tools

@@ -216,6 +216,31 @@ def pbrief(**kw: Any) -> str:
     return package_brief(STORY, LAYERS, 1, max_steps=40, context_budget=65_536, **kw)
 
 
+def test_the_package_briefs_carry_the_tools_contract_only_with_tools() -> None:
+    """The tool-written packages design (2026-11-06): with story.package_tools on, the architect writes its
+    tests with write_file and edit_file and replies with the package JSON alone; off, every brief is as it
+    was."""
+    from airlie.story.briefs import drafts_brief, next_package_brief
+    from airlie.story.package import PACKAGE_TOOLS_CONTRACT
+
+    plain, tools = pbrief(), pbrief(tools=True)
+    task, task_tools = hub_text("brief-package-task"), hub_text("brief-package-task-tools")
+    assert PACKAGE_CONTRACT in plain and PACKAGE_TOOLS_CONTRACT not in plain and task_tools not in plain
+    assert PACKAGE_TOOLS_CONTRACT in tools and PACKAGE_CONTRACT not in tools and task not in tools
+    assert "### test file:" not in tools and "write_file" in task_tools
+    # nothing else differs
+    assert tools.replace(task_tools, task).replace(PACKAGE_TOOLS_CONTRACT, PACKAGE_CONTRACT) == plain
+    kw: dict[str, Any] = {"max_steps": 40, "context_budget": 65_536}
+    assert drafts_brief(STORY, LAYERS, **kw).startswith(hub_text("brief-package-drafts", layers=3) + "\n\n")
+    drafted = drafts_brief(STORY, LAYERS, tools=True, **kw)
+    assert drafted.startswith(hub_text("brief-package-drafts-tools", layers=3) + "\n\n")
+    assert PACKAGE_TOOLS_CONTRACT in drafted and PACKAGE_CONTRACT not in drafted
+    assert "write it whole" not in drafted and "edit_file" in hub_text("brief-package-drafts-tools", layers=3)
+    assert next_package_brief(STORY, LAYERS, 1).endswith("\n\n" + hub_text("brief-package-next"))
+    later = next_package_brief(STORY, LAYERS, 1, tools=True)
+    assert later.endswith("\n\n" + hub_text("brief-package-next-tools")) and "test files and" not in later
+
+
 def test_the_package_brief_carries_the_gates_lint_note_only_when_given() -> None:
     """AIR-47 and AIR-48, 2026-11-01: four package tries lost to E501 and E741 the fixer cannot mend."""
     note = hub_text("brief-package-lint", line_length=110)
