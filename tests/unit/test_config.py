@@ -1352,13 +1352,13 @@ def test_schema_default_stack_and_yaml_single() -> None:
     assert load_config(ROOT / "airlie.yaml", NO_LOCAL).story.publish == "single"  # the committed config
 
 
-def test_tool_written_packages_are_off_by_default_and_on_in_the_committed_config() -> None:
-    """The tool-written packages design (2026-11-06): the schema keeps the reply-blocks path, and the
-    committed config turns the file tools on, with 12k characters a call and 32 package steps (Noah's
-    decision 3)."""
+def test_tool_written_packages_stay_off_in_the_schema_and_the_committed_config() -> None:
+    """The tool-written packages design (2026-11-06): until the drafting conversation writes with the tools
+    too (build step 4) a tool-written retry starts fresh and re-reads, so the committed config keeps the flag
+    off, and the package steps at 24, until step 4 and a bench comparison."""
     spec = StorySpec(**_story())
     assert (spec.package_tools, spec.package_write_chars) == (False, 12_000)
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL).story
-    assert (cfg.package_tools, cfg.package_write_chars, cfg.package_steps) == (True, 12_000, 32)
+    assert (cfg.package_tools, cfg.package_write_chars, cfg.package_steps) == (False, 12_000, 24)
     with pytest.raises(ValidationError, match="greater than or equal to 1000"):
         StorySpec(**_story(package_write_chars=999))
