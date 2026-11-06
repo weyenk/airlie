@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,14 @@ class ToolContext:
     """Paths (from the worktree's root) mapped to the tester's definitions in them: write_file and edit_file
     refuse only a change that touches one of those names, so the coder may still fix a fake in the same file
     (AIR-9 layer 05, 2026-10-22; studio.lock). `read_only` locks whole files."""
+    write_scope: Literal["any", "tests"] = "any"
+    """What write_file and edit_file may write. "tests": test files only (`tools.scope.is_test_file`), the
+    architect's package ask, which writes the layer's tests and nothing else (the tool-written packages
+    design, 2026-11-06). "any": any file in the worktree."""
+    write_max_chars: int | None = None
+    """The most text one write_file (its content) or edit_file (its `new`) call takes; None: no cap. A whole
+    layer's tests in one reply ran past max_tokens (10 package tries cut off, 2026-10-31 to 11-05): capped,
+    a file is written with its first tests and the rest go in with edit_file."""
     sandbox: bool = True
     """Commands run where they cannot write outside the worktree (airlie.tools.confine; macOS only)."""
     writable: tuple[Path, ...] = ()

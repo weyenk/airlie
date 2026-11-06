@@ -287,17 +287,30 @@ class StudioOrchestrator:
         return "\n\n".join(lines)
 
     # ---- specialists ----
-    def _tool_names(self, role: RoleSpec) -> list[str]:
-        return list(self.cfg.tools.builtin) if role.tools is None else list(role.tools)
+    def _tool_names(self, role: RoleSpec, subtask: Subtask | None = None) -> list[str]:
+        """The role's tools, then a pinned subtask's own (`Subtask.tools`) that the role does not have."""
+        names = list(self.cfg.tools.builtin) if role.tools is None else list(role.tools)
+        granted = subtask.tools if subtask is not None and subtask.pinned else ()
+        return names + [t for t in granted if t not in names]
 
-    def _tools(self, role: RoleSpec, test_cmd: str | None, role_name: str | None = None) -> ToolRegistry:
+    def _tools(
+        self,
+        role: RoleSpec,
+        test_cmd: str | None,
+        role_name: str | None = None,
+        subtask: Subtask | None = None,
+    ) -> ToolRegistry:
+        """The tools of `role` for `subtask`: a pinned subtask adds its own (`Subtask.tools`) and sets the
+        file tools' scope and size per call (the architect's package ask, the tool-written packages design,
+        2026-11-06)."""
         assert self.worktree is not None
         role_name = role_name or ""
         names = [
             t
-            for t in self._tool_names(role)
+            for t in self._tool_names(role, subtask)
             if t not in ("decide", "search_knowledge", "retrieve_value", "web_search", "web_fetch")
         ]
+        pinned = subtask if subtask is not None and subtask.pinned else None
         ctx = ToolContext(
             self.worktree,
             self.cfg.tools.shell_timeout_s,
@@ -310,6 +323,8 @@ class StudioOrchestrator:
             role=role_name,
             read_only=self.locked_whole if role_name != self.lock_owner else frozenset(),
             locked_tests=self.locked_tests if role_name != self.lock_owner else {},
+            write_scope=pinned.write_scope if pinned else "any",
+            write_max_chars=pinned.write_max_chars if pinned else None,
             **self.cfg.tools.confinement(),
         )
         reg = ToolRegistry.builtin(names, ctx)
@@ -332,8 +347,8 @@ class StudioOrchestrator:
             return None
         return self._tools(role, None, role_name)
 
-    def _writes(self, role: RoleSpec) -> bool:
-        return bool(WRITE_TOOLS & set(self._tool_names(role)))
+    def _writes(self, role: RoleSpec, subtask: Subtask | None = None) -> bool:
+        return bool(WRITE_TOOLS & set(self._tool_names(role, subtask)))
 
     def _brief_with_deps(self, s: Subtask) -> str:
         parts = [s.brief]
@@ -459,7 +474,7 @@ class StudioOrchestrator:
             team_id=run.subtask.id,
             goal=goal,
             role=role,
-            tools=self._tools(role, test_cmd, run.role),
+            tools=self._tools(role, test_cmd, run.role, run.subtask),
             worktree=self.worktree,
             role_name=run.role,
             max_steps=self.step_limit or role.max_steps or self.cfg.teams.max_steps,
@@ -482,7 +497,7 @@ class StudioOrchestrator:
         role = self.cfg.roles[run.role]
         run.skill, skill_text = await self._skill(run.subtask, role)
         preamble = run.preamble = "\n\n".join(x for x in (self.preamble or "", skill_text) if x)
-        writes = self._writes(role)
+        writes = self._writes(role, run.subtask)
         self._handoff("chief", run.subtask.id, "brief", run.subtask.brief)
         for d in run.subtask.depends_on:
             dep = self.runs.get(d)

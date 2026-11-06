@@ -11,6 +11,7 @@ from typing import Any
 
 from airlie.tools.protocol import ToolContext, ToolResult
 from airlie.tools.sandbox import cap, resolve, secret_like
+from airlie.tools.scope import is_test_file
 from airlie.tools.test_lock import touched
 
 SKIP_DIRS = {
@@ -222,6 +223,35 @@ UNPARSEABLE = (
 )
 
 
+NOT_A_TEST_FILE = (
+    "error: {path} is not a test file, and this task writes only test files: a pytest module named test_*.py "
+    "or *_test.py, or a JS/TS test file named *.test.ts, *.spec.ts or kin. Write the tests there."
+)
+WRITE_TOO_LONG = (
+    "error: this content for {path} is {n} chars, over the {limit} one write_file call takes. Write the file "
+    "with its first tests, then add the rest with edit_file, one or a few tests per call."
+)
+EDIT_TOO_LONG = (
+    "error: `new` for {path} is {n} chars, over the {limit} one edit_file call takes. Add one or a few tests "
+    "per call."
+)
+
+
+def _refused_by_scope(ctx: ToolContext, p: Path, shown: str, new: str, too_long: str) -> str | None:
+    """The error that refuses writing `new` to `p` (`shown` as the model spelled it) for this context's scope
+    or size per call, else None: with write_scope "tests" a path that is not a test file, judged where it is
+    in the worktree; with write_max_chars a longer `new`. The architect writes a package's tests with the
+    file tools (the tool-written packages design, 2026-11-06), and nothing else. `p` comes from `resolve`,
+    in the worktree."""
+    if ctx.write_scope == "tests" and not is_test_file(
+        p.resolve().relative_to(ctx.worktree.resolve()).as_posix()
+    ):
+        return NOT_A_TEST_FILE.format(path=shown)
+    if ctx.write_max_chars is not None and len(new) > ctx.write_max_chars:
+        return too_long.format(path=shown, n=len(new), limit=ctx.write_max_chars)
+    return None
+
+
 def _refused_by_definition(ctx: ToolContext, p: Path, shown: str, before: str, after: str) -> str | None:
     """The error that refuses changing `before` to `after` in `p` when that touches the tester's definitions
     in it (`ctx.locked_tests`; AIR-9 layer 05, 2026-10-22: a whole-file lock kept the coder from fixing the
@@ -254,6 +284,8 @@ class WriteFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if refused := _refused_by_scope(ctx, p, str(args["path"]), str(args["content"]), WRITE_TOO_LONG):
+                return ToolResult(False, refused)
             if _locked(ctx, p):
                 return ToolResult(False, LOCKED.format(path=args["path"]))
             if p.is_file() and (
@@ -358,6 +390,8 @@ class EditFile:
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             p = resolve(ctx, str(args["path"]))
+            if refused := _refused_by_scope(ctx, p, str(args["path"]), str(args["new"]), EDIT_TOO_LONG):
+                return ToolResult(False, refused)
             if _locked(ctx, p):
                 return ToolResult(False, LOCKED.format(path=args["path"]))
             text = p.read_text()

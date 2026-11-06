@@ -8,7 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from airlie.tools.fs import LOCKED, LOCKED_TESTS, UNPARSEABLE, EditFile, Grep, ListDir, ReadFile, WriteFile
+from airlie.tools.fs import (
+    EDIT_TOO_LONG,
+    LOCKED,
+    LOCKED_TESTS,
+    NOT_A_TEST_FILE,
+    UNPARSEABLE,
+    WRITE_TOO_LONG,
+    EditFile,
+    Grep,
+    ListDir,
+    ReadFile,
+    WriteFile,
+)
 from airlie.tools.protocol import ToolContext
 from tests.unit.test_tools import ctx
 
@@ -810,3 +822,86 @@ async def test_a_loose_edit_that_touches_the_testers_test_names_the_file(tmp_pat
     )
     assert (r.ok, r.output) == (False, LOCKED_TESTS.format(path="tests/test_p.py", names="test_new"))
     assert (c.worktree / "tests/test_p.py").read_text() == BOARD_FILE
+
+
+# ---- a test writer's scope and size per call (tool-written packages, 2026-11-06) ----
+
+
+async def test_a_tests_only_writer_may_write_and_edit_only_test_files(tmp_path: Path) -> None:
+    """The architect writes its package's tests with the file tools (the tool-written packages design,
+    2026-11-06): with write_scope "tests" it writes test files of either kind and nothing else, the rule
+    `parse_package` applies to the reply's blocks. Helpers and conftest.py stay out of reach in v1."""
+    c = replace(ctx(tmp_path), write_scope="tests")
+    for path in ("tests/test_calc.py", "calc_test.py", "web/src/a.test.ts", "web/src/b.spec.tsx"):
+        assert (await WriteFile().run({"path": path, "content": "x = 1\n"}, c)).ok, path
+        assert (await EditFile().run({"path": path, "old": "x = 1", "new": "x = 2"}, c)).ok, path
+    put(c, "src/calc.py", "x = 1\n")
+    for tool, args in (
+        (WriteFile(), {"path": "src/calc.py", "content": "x = 2\n"}),
+        (WriteFile(), {"path": "tests/conftest.py", "content": "x = 2\n"}),
+        (WriteFile(), {"path": "tests/helpers.py", "content": "x = 2\n"}),
+        (EditFile(), {"path": "src/calc.py", "old": "x = 1", "new": "x = 2"}),
+    ):
+        r = await tool.run(args, c)
+        assert (r.ok, r.output) == (False, NOT_A_TEST_FILE.format(path=args["path"]))
+    assert NOT_A_TEST_FILE.format(path="src/calc.py") == (
+        "error: src/calc.py is not a test file, and this task writes only test files: a pytest module "
+        "named test_*.py or *_test.py, or a JS/TS test file named *.test.ts, *.spec.ts or kin. Write the "
+        "tests there."
+    )
+    assert (c.worktree / "src/calc.py").read_text() == "x = 1\n"
+    assert not (c.worktree / "tests/conftest.py").exists()
+
+
+async def test_a_tests_only_writer_is_judged_by_the_path_in_the_worktree_not_as_spelled(
+    tmp_path: Path,
+) -> None:
+    c = replace(ctx(tmp_path), write_scope="tests")
+    assert (await WriteFile().run({"path": "./tests/../tests/test_a.py", "content": "x\n"}, c)).ok
+    r = await WriteFile().run({"path": "tests/test_dir/../calc.py", "content": "x\n"}, c)
+    assert (r.ok, r.output) == (False, NOT_A_TEST_FILE.format(path="tests/test_dir/../calc.py"))
+    r = await WriteFile().run({"path": "../test_out.py", "content": "x\n"}, c)
+    assert (r.ok, r.output) == (False, "error: path escapes the worktree: ../test_out.py")
+
+
+async def test_any_scope_and_no_cap_write_any_file_of_any_size_as_before(tmp_path: Path) -> None:
+    c = ctx(tmp_path)
+    assert c.write_scope == "any" and c.write_max_chars is None
+    assert (await WriteFile().run({"path": "src/calc.py", "content": "x" * 50_000}, c)).ok
+    assert (await EditFile().run({"path": "src/calc.py", "old": "x" * 50_000, "new": "y" * 50_000}, c)).ok
+
+
+async def test_write_file_refuses_content_over_the_per_call_cap(tmp_path: Path) -> None:
+    """A whole layer's tests in one reply ran past max_tokens (10 cut-off package tries, 2026-10-31 to
+    11-05): with write_max_chars, one write holds a file's first tests and edit_file adds the rest."""
+    c = replace(ctx(tmp_path), write_max_chars=100)
+    assert (await WriteFile().run({"path": "tests/test_a.py", "content": "x" * 100}, c)).ok
+    r = await WriteFile().run({"path": "tests/test_b.py", "content": "x" * 101}, c)
+    assert (r.ok, r.output) == (False, WRITE_TOO_LONG.format(path="tests/test_b.py", n=101, limit=100))
+    assert r.output == (
+        "error: this content for tests/test_b.py is 101 chars, over the 100 one write_file call takes. "
+        "Write the file with its first tests, then add the rest with edit_file, one or a few tests per call."
+    )
+    assert not (c.worktree / "tests/test_b.py").exists()
+
+
+async def test_edit_file_refuses_new_text_over_the_per_call_cap(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), write_max_chars=100)
+    put(c, "tests/test_a.py", "# end\n")
+    assert (await EditFile().run({"path": "tests/test_a.py", "old": "# end", "new": "y" * 100}, c)).ok
+    r = await EditFile().run({"path": "tests/test_a.py", "old": "y" * 100, "new": "z" * 101}, c)
+    assert (r.ok, r.output) == (False, EDIT_TOO_LONG.format(path="tests/test_a.py", n=101, limit=100))
+    assert r.output == (
+        "error: `new` for tests/test_a.py is 101 chars, over the 100 one edit_file call takes. Add one or "
+        "a few tests per call."
+    )
+    assert (c.worktree / "tests/test_a.py").read_text() == "y" * 100 + "\n"
+
+
+async def test_the_scope_is_checked_before_the_size(tmp_path: Path) -> None:
+    c = replace(ctx(tmp_path), write_scope="tests", write_max_chars=10)
+    for tool, args in (
+        (WriteFile(), {"path": "src/a.py", "content": "x" * 11}),
+        (EditFile(), {"path": "src/a.py", "old": "x", "new": "y" * 11}),
+    ):
+        assert (await tool.run(args, c)).output == NOT_A_TEST_FILE.format(path="src/a.py")
