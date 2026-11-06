@@ -744,13 +744,36 @@ def run_case(
         prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
     prune_stale_stacks(clone)  # nor of a stack whose branches an earlier run deleted
     before = local_branches(clone)
+    cleared: dict[str, list[str]] = {}
+    done = False
     try:
         st = run(go())
-    except BaseException:
-        remove_run_worktrees(clone, state)  # a stopped run leaves nothing for the next one to trip on
-        delete_new_branches(clone, before)
-        prune_stale_stacks(clone)
-        raise
+        record = _record(case, st, clone, state, started, build, publish, pin, keep_prs)
+        done = True
+    finally:
+        # however the run or its grading ended (a stop, a grading clone that fails, the oracle's timeout, gh):
+        # its branches and worktrees go, or the next run of the case, with the same branch names, stops at its
+        # first layer (PR #247's review, 2026-11-06); an error is raised again after
+        if not keep_prs or not done:
+            cleared["worktrees_removed"] = remove_run_worktrees(clone, state)
+            cleared["branches_deleted"] = delete_new_branches(clone, before)
+            prune_stale_stacks(clone)
+    record.update(cleared)
+    return record, save(record, out_dir)
+
+
+def _record(
+    case: StoryCase,
+    st: StoryState,
+    clone: Path,
+    state: Path,
+    started: str,
+    build: str,
+    publish: bool,
+    pin: str | None,
+    keep_prs: bool,
+) -> dict[str, Any]:
+    """`run_case`'s record of the story `st` it ran: measured, graded and, unless kept, its PRs closed."""
     gate = " && ".join((st.gate or {}).get("commands") or [])
     top = st.built[max(st.built)]["sha"] if st.built else None
     built_on = (st.base or {}).get("sha")
@@ -778,11 +801,7 @@ def run_case(
         "quality": grade(case, clone, top, ["sh", "-c", gate], layer_tests) if top and gate else None,
     }
     record["closed"] = close_prs(case.repo, st.prs, clone) if publish and not keep_prs else []
-    if not keep_prs:
-        record["worktrees_removed"] = remove_run_worktrees(clone, state)
-        record["branches_deleted"] = delete_new_branches(clone, before)
-        prune_stale_stacks(clone)
-    return record, save(record, out_dir)
+    return record
 
 
 @dataclass

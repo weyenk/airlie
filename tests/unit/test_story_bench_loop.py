@@ -403,3 +403,36 @@ def test_a_stopped_sweep_stops_at_the_case_it_was_in_and_clears_its_clone(
     r = runner.invoke(cli.app, args)
     assert r.exit_code == 143 and len(asked) == 1
     assert local_branches(clone) == {"main"}  # the stopped run's worktree and branch are gone
+
+
+def test_a_run_whose_grading_fails_still_clears_its_branches_and_worktrees_and_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #247's review: grading (a git clone, the oracle's timeout), closing PRs or saving can raise after
+    the run; a sweep then went on with the run's layer branches left in the shared clone, and the next run of
+    the case (the same branch names) stopped at its first layer."""
+    clone = repo(tmp_path / "clone")
+    sha = git(clone, "rev-parse", "HEAD")
+    case = {"id": "c", "request": "x", "repo": "o/r", "base": sha, "pin_base": True, "publish": False,
+            "clone": str(clone)}  # fmt: skip
+    config, cases_dir = bench_setup(tmp_path, case)
+    seen: list[dict[str, Any]] = []
+    stub = fake_run(tmp_path, seen)
+
+    async def built(cfg, **kwargs):  # type: ignore[no-untyped-def]
+        st = await stub(cfg, **kwargs)
+        st.gate = {"commands": ["true"]}
+        st.built = {"01": {"sha": sha, "branch": f"{st.card['key']}-01-a", "tests": []}}
+        return st
+
+    def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("the grading clone failed")
+
+    monkeypatch.setattr(factory, "run_one", built)
+    monkeypatch.setattr("airlie.bench.story_bench.grade", broken)
+    out = tmp_path / "records"
+    where = ["--cases-dir", str(cases_dir), "--out-dir", str(out), "--state-root", str(tmp_path / "s")]
+    r = runner.invoke(cli.app, ["bench", "story", "c", *where, "--config", str(config)])
+    assert isinstance(r.exception, RuntimeError) and "the grading clone failed" in str(r.exception)
+    assert local_branches(clone) == {"main"} and "r1" not in git(clone, "worktree", "list", "--porcelain")
+    assert not out.exists()  # no record of a run that could not be graded
