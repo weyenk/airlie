@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 from airlie.tools.jsonargs import repair_json_args
 
@@ -23,6 +23,15 @@ class Subtask:
     inputs: tuple[str, ...] = ()
     pinned: bool = False
     """The role was chosen by a person or a pipeline: the router does not override it."""
+    tools: tuple[str, ...] = ()
+    """Builtin tools this subtask has beside its role's, when it is pinned: the pipeline's grant for one
+    ask, never the chief's (its plans do not carry it). The architect reads in every other ask and writes
+    its package's tests with write_file and edit_file (the tool-written packages design, 2026-11-06)."""
+    write_scope: Literal["any", "tests"] = "any"
+    """`ToolContext.write_scope` for a pinned subtask: "tests" lets its file tools write test files only."""
+    write_max_chars: int | None = None
+    """`ToolContext.write_max_chars` for a pinned subtask: the most text one write_file or edit_file call
+    takes (None: no cap)."""
 
 
 @dataclass(frozen=True)

@@ -1793,3 +1793,88 @@ async def test_a_mypy_cache_that_cannot_be_copied_whole_is_left_out_not_left_hal
         (cache / "3.12" / "cache.1.db").chmod(0o644)
     assert not (orch.run_dir.path / "studio" / ".mypy_cache").exists()
     assert report.teams[0].ok and report.teams[0].final_text == "done"  # the run itself is unaffected
+
+
+# ---- a pinned subtask's extra tools (tool-written packages, 2026-11-06) ----
+
+PACKAGE = Subtask(
+    "package",
+    "write the layer's tests",
+    "docs",
+    tools=("write_file", "edit_file"),
+    write_scope="tests",
+    write_max_chars=12_000,
+)
+WRITE_TEST_A = FakeReply(
+    tool_calls=[
+        ToolCall(
+            "a", "write_file", json.dumps({"path": "tests/test_a.py", "content": "def test_a():\n    pass\n"})
+        )
+    ]
+)
+WRITE_SRC_A = FakeReply(
+    tool_calls=[ToolCall("s", "write_file", json.dumps({"path": "src_a.py", "content": "x = 1\n"}))]
+)
+
+
+async def test_a_pinned_subtask_writes_tests_with_its_extra_tools_and_is_not_reviewed(tmp_path: Path) -> None:
+    """The architect's package ask (the tool-written packages design, 2026-11-06): its role reads only, and
+    the pipeline's subtask adds write_file and edit_file, confined to test files and capped per call. The
+    architect is not in studio.review.roles, so its writes get no review and no done-check."""
+    from airlie.tools.fs import NOT_A_TEST_FILE
+
+    repo = repo_with_marker_tests(tmp_path)
+    engine = FakeEngine({"docs": [WRITE_TEST_A, WRITE_SRC_A, DONE]})
+    orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+    seen: list[Any] = []
+    real_run = orch.team.run
+
+    async def run(ctx: Any, observer: Any) -> Any:
+        seen.append(ctx)
+        return await real_run(ctx, observer)
+
+    orch.team.run = run  # type: ignore[method-assign]
+    report = await orch.execute_task("g", repo=repo, plan=Plan((), (PACKAGE,)), detach=True, synthesise=False)
+    assert report.teams[0].ok
+    assert seen[0].tools.names() == ["read_file", "list_dir", "write_file", "edit_file"]
+    assert (seen[0].tools.ctx.write_scope, seen[0].tools.ctx.write_max_chars) == ("tests", 12_000)
+    worktree = orch.run_dir.path / "studio"
+    assert (worktree / "tests/test_a.py").exists() and not (worktree / "src_a.py").exists()
+    told = [m.content for m in engine.requests[-1].messages if m.role == "tool"]
+    assert NOT_A_TEST_FILE.format(path="src_a.py") in told
+    assert [r.role for r in engine.requests] == ["docs", "docs", "docs"]  # no reviewer, no done-check
+    kinds = [e["kind"] for e in events(report)]
+    assert "review" not in kinds and "done_check" not in kinds
+    assert [e["writes"] for e in events(report) if e["kind"] == "subtask_start"] == [True]
+
+
+def test_only_a_pinned_subtask_gets_its_extra_tools_scope_and_cap(tmp_path: Path) -> None:
+    """A subtask's tools are the pipeline's grant: a chief's plan never carries them, and a subtask that is
+    not pinned gets its role's tools alone."""
+    from dataclasses import replace
+
+    orch = StudioOrchestrator(cfg_for(tmp_path), FakeEngine({}), router=ChiefRouter())
+    orch.worktree = tmp_path
+    docs, qa = orch.cfg.roles["docs"], orch.cfg.roles["qa"]
+    pinned = replace(PACKAGE, pinned=True)
+    granted = orch._tools(docs, None, "docs", pinned)
+    assert granted.names() == ["read_file", "list_dir", "write_file", "edit_file"]
+    assert (granted.ctx.write_scope, granted.ctx.write_max_chars) == ("tests", 12_000)
+    loose = orch._tools(docs, None, "docs", PACKAGE)
+    assert loose.names() == ["read_file", "list_dir"]
+    assert (loose.ctx.write_scope, loose.ctx.write_max_chars) == ("any", None)
+    plain = orch._tools(docs, None, "docs")
+    assert plain.names() == ["read_file", "list_dir"] and plain.ctx.write_scope == "any"
+    assert orch._writes(docs, pinned) and not orch._writes(docs, PACKAGE) and not orch._writes(docs)
+    # a tool the role has already is not listed twice
+    assert orch._tools(qa, None, "qa", pinned).names() == [
+        "read_file",
+        "write_file",
+        "run_tests",
+        "edit_file",
+    ]
+    assert (Subtask("s", "b").tools, Subtask("s", "b").write_scope, Subtask("s", "b").write_max_chars) == (
+        (),
+        "any",
+        None,
+    )
