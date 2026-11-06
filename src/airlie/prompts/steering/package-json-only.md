@@ -1,7 +1,7 @@
 ---
 kind: steering
 roles: [architect]
-when: The architect wrote test files for a layer's package with the file tools (story.package_tools) and its turn ended with no package JSON (it ran out of steps, or replied without the block); one short turn asks for the JSON alone.
+when: The architect wrote test files for a layer's package with the file tools (story.package_tools) and its turn ended with no package JSON (it ran out of steps, its thinking was cut on answer_after_cuts reads in a row, or it replied without the block); one short turn asks for the JSON alone.
 governs:
   package.json: after-the-files
 why: |

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.prompts import text as hub_text
 from airlie.story.package import PACKAGE_CONTRACT, PACKAGE_TOOLS_CONTRACT
@@ -174,3 +176,56 @@ def test_a_satisfied_reply_that_does_not_hold_asks_for_files_with_the_tools() ->
     assert satisfied_feedback(found)[1] == ("checks-found", "satisfied-unproven")
     told, ids = satisfied_feedback(found, tools=True)
     assert ids == ("checks-found", "satisfied-unproven-tools") and "write_file" in told
+
+
+class Said:
+    """The story state a `ToolTurns` is built with, as far as `ask` uses it: the events it emits."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def emit(self, kind: str, **fields: object) -> None:
+        self.events.append((kind, fields))
+
+
+@pytest.mark.parametrize("stop", ["answer_after_cuts", "max_steps"])
+async def test_a_turn_ended_after_cuts_with_its_tests_written_gets_the_turn_for_the_json(stop: str) -> None:
+    """AIR-55 (2026-11-06, try 1): the package conversation's architect, cut on reads after it had written
+    its tests, was asked its answer as the conversation in text and went on with the transcript. Its run now
+    ends unanswered (answer_after_cuts), and that is no failure here, as max_steps is not: the tests are
+    written, and the JSON is asked for in the one short turn (package-json-only)."""
+    from airlie.story.model import StoryError
+    from airlie.story.pipeline import ANSWER_TURN_STEPS, ToolTurns
+
+    st = Said()
+    turns = ToolTurns(st, "base", lambda _: None)  # type: ignore[arg-type]
+    turns.layer = "01"
+    asked: list[tuple[str | None, int | None]] = []
+    steered: list[str] = []
+
+    async def say(nudge: str | None = None, /, *, steps: int | None = None, **_: object) -> str:
+        asked.append((nudge, steps))
+        if len(asked) == 1:
+            turns.tests, turns.stop = {PATH: TEST_MUL}, stop  # what `collect` finds after the turn
+            raise StoryError(f"the architect did not finish ({stop})")
+        return JSON_ONLY.text
+
+    text, tests = await turns.ask(say, None, steered.append)  # type: ignore[arg-type]
+    assert (text, tests) == (JSON_ONLY.text, {PATH: TEST_MUL})
+    assert asked == [(None, None), (hub_text("package-json-only"), ANSWER_TURN_STEPS)]
+    assert steered == ["package-json-only"]
+    assert st.events == [("package_answer_turn", {"layer": "01", "stop_reason": stop, "paths": [PATH]})]
+
+
+async def test_a_turn_ended_after_cuts_with_no_tests_written_is_still_a_failed_turn() -> None:
+    from airlie.story.model import StoryError
+    from airlie.story.pipeline import ToolTurns
+
+    turns = ToolTurns(Said(), "base", lambda _: None)  # type: ignore[arg-type]
+
+    async def say(nudge: str | None = None, /, **_: object) -> str:
+        turns.stop = "answer_after_cuts"
+        raise StoryError("the architect did not finish (answer_after_cuts)")
+
+    with pytest.raises(StoryError, match="answer_after_cuts"):
+        await turns.ask(say, None, lambda _: None)  # type: ignore[arg-type]

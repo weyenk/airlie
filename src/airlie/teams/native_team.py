@@ -460,6 +460,7 @@ class NativeTeam:
         last_turn = False  # max_steps reached: one more turn, with no tools, for the final answer
         cuts = 0  # reads in a row whose thinking reached the budget (answer_after_cuts)
         answer_now = False  # answer_after_cuts reached: the next turn is the last one
+        asked_back = False  # answer_after_cuts reached by a writer that has written: the run ends, unanswered
         while True:
             step_num = steps + 1
             injected = await observer.before_step(ctx.team_id, step_num)
@@ -682,7 +683,24 @@ class NativeTeam:
                     reading_off, reads_left, cuts = True, READS_UNDER_HOLD, 0
                     if ctx.emit is not None:
                         ctx.emit("write_after_cuts", team_id=ctx.team_id, role=ctx.role_name, step=steps)
-                elif cut_out and not unwritten:
+                elif cut_out and can_write:
+                    # a writer that has written ends here, its last reasoning carried, and its caller asks
+                    # for the answer in a turn of its own with tools (the package conversation's JSON-only
+                    # turn): asked as text, it went on with the transcript (AIR-55, 2026-11-06, try 1)
+                    carried = _steer(ctx, steps, "reasoning-carried", tail=tail)
+                    messages.append(Message(role="user", content=carried))
+                    answer_now = asked_back = True
+                    if ctx.emit is not None:
+                        ctx.emit(
+                            "answer_after_cuts",
+                            team_id=ctx.team_id,
+                            role=ctx.role_name,
+                            step=steps,
+                            cuts=cuts,
+                            chars=len(res.reasoning.strip()),
+                            ends_run=True,
+                        )
+                elif cut_out:
                     # the design began again on each cut turn: all of the last one goes back, and the
                     # next turn answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
                     reasoning = res.reasoning.strip()
@@ -847,6 +865,10 @@ class NativeTeam:
                 said = str(messages[-1].content) if messages else ""
                 final_text = f"stopped: a test I may not change is wrong.\n{said[-3000:]}"
                 stop = "test_wrong"
+                break
+            if asked_back:
+                final_text = f"stopped: thinking was cut at its budget on {cuts} reads in a row; answer asked"
+                stop = "answer_after_cuts"
                 break
             if answer_now and not last_turn:  # told to answer: the turn after is the tool-less last one
                 last_turn = True

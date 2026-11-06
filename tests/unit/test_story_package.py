@@ -468,12 +468,92 @@ def test_a_guard_named_by_its_bare_name_resolves_to_the_covered_test() -> None:
     [
         (["x"], "'guards' must map each guard's test id to a one-line reason"),
         ({f"{PATH}::test_b": ""}, "needs a one-line reason"),
-        ({f"{PATH}::test_c": "x"}, "names no test in covers"),
+        ({f"{PATH}::test_c": "x"}, "names no test of this package"),
+        ({"test_c": "x"}, "names no test of this package"),
+        ({"tests/unit/test_other.py::test_a": "x"}, "names no test of this package"),
     ],
 )
-def test_a_guard_that_is_not_a_covered_test_with_a_reason_is_refused(guards: Any, says: str) -> None:
+def test_a_guard_that_is_not_a_test_of_the_package_with_a_reason_is_refused(guards: Any, says: str) -> None:
     with pytest.raises(StoryError, match=says):
         parse_package(guarded_reply(guards), GUARDED, STORY)
+
+
+THREE_TESTS = TWO_TESTS + "\n\ndef test_c():\n    assert store() is not None\n"
+
+
+def test_a_guard_in_a_test_file_of_the_package_but_not_in_covers_is_covered_as_a_behaviour() -> None:
+    """AIR-55 (2026-11-06, try 2): the architect edited an existing test in place, declared it a guard and did
+    not repeat it in covers; the package was refused over that alone. A guard that names a test of the
+    package's test files is what the architect meant to cover: it is added under "behaviour" (a test that
+    proves no criterion it named), by its full id or its bare name as covers resolve them."""
+    tests = {PATH: THREE_TESTS}
+    for named in (f"{PATH}::test_c", "test_c"):
+        text = guarded_reply({named: "the paused line already starts no job"})
+        p = parse_package(text, GUARDED, STORY, tests=tests)
+        assert isinstance(p, Package)
+        assert p.covers == {
+            "AC1": (f"{PATH}::test_a",),
+            "AC2": (f"{PATH}::test_b",),
+            "behaviour": (f"{PATH}::test_c",),
+        }
+        assert p.guards == {f"{PATH}::test_c": "the paused line already starts no job"}
+        assert p.test_ids == (f"{PATH}::test_a", f"{PATH}::test_b", f"{PATH}::test_c")
+
+
+def test_a_guard_named_by_a_bare_name_two_test_files_define_names_no_one_test() -> None:
+    other = "tests/unit/test_other.py"
+    tests = {PATH: THREE_TESTS, other: "def test_c():\n    assert 1\n"}
+    with pytest.raises(StoryError, match="names no test of this package"):
+        parse_package(guarded_reply({"test_c": "x"}), GUARDED, STORY, tests=tests)
+    p = parse_package(guarded_reply({f"{other}::test_c": "x"}), GUARDED, STORY, tests=tests)
+    assert isinstance(p, Package) and p.covers["behaviour"] == (f"{other}::test_c",)
+
+
+def test_a_package_whose_tests_with_its_added_guards_are_all_guards_is_still_refused() -> None:
+    """#244's rule holds with a guard added to covers: a layer of guards alone has nothing to build."""
+    guards = {"test_a": "x", "test_b": "x", "test_c": "x"}
+    with pytest.raises(StoryError, match='"type": "satisfied"'):
+        parse_package(guarded_reply(guards), GUARDED, STORY, tests={PATH: THREE_TESTS})
+
+
+def without_type(text: str, **more: Any) -> str:
+    """`text` with its JSON block's "type" key dropped, and `more` keys set on it."""
+    head, _, tail = text.rpartition("```json\n")
+    obj = json.loads(tail.removesuffix("\n```\n"))
+    del obj["type"]
+    obj.update(more)
+    return f"{head}```json\n{json.dumps(obj)}\n```\n"
+
+
+def test_a_package_object_that_left_out_its_type_is_read_as_a_package() -> None:
+    """AIR-55 (2026-11-06): a try was refused with 'the JSON object needs "type": "package"'. An object that
+    holds a package's files, steps and covers and no key of another reply can mean nothing else: it is read as
+    a package, not refused over the one key."""
+    p = parse_package(without_type(reply()), LAYER, STORY)
+    assert isinstance(p, Package) and p == parse_package(reply(), LAYER, STORY)
+    q = parse_package(without_type(json_only()), LAYER, STORY, tests={PATH: TEST_TEXT})
+    assert isinstance(q, Package) and q.covers == {"AC1": (f"{PATH}::test_a",)}
+
+
+@pytest.mark.parametrize(
+    "obj",
+    [
+        {"changes": [{"test": f"{PATH}::test_a", "why": "x"}]},  # a proof change's key alone
+        {"by": ["01"], "why": "x"},  # a satisfied reply's keys alone
+        {"path": PATH, "content": TEST_TEXT},  # a write_file call's arguments (AIR-55 try 1's reply)
+        {"files": [], "steps": ["x"]},  # no covers: not a whole package
+    ],
+)
+def test_an_object_with_no_type_that_is_not_plainly_a_package_is_still_refused(obj: dict[str, Any]) -> None:
+    text = "```json\n" + json.dumps(obj) + "\n```\n"
+    with pytest.raises(StoryError, match='needs "type": "package"'):
+        parse_package(f"### test file: {PATH}\n```python\n{TEST_TEXT}```\n{text}", LAYER, STORY)
+
+
+def test_a_package_object_with_no_type_and_a_key_of_another_reply_is_refused() -> None:
+    for more in ({"changes": [{"test": f"{PATH}::test_a", "why": "x"}]}, {"by": ["01"]}, {"why": "x"}):
+        with pytest.raises(StoryError, match='needs "type": "package"'):
+            parse_package(without_type(reply(), **more), LAYER, STORY)
 
 
 def test_a_package_whose_tests_are_all_guards_is_refused_as_a_layer_with_nothing_to_build() -> None:

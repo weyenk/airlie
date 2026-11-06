@@ -464,14 +464,15 @@ def _parse_package(
     harvested: Mapping[str, str] | None,
 ) -> Package | ProofChange | Satisfied:
     obj = extract_json_block(text)
-    if obj is not None and obj.get("type") == "proof_change":
+    kind = None if obj is None else _reply_type(obj)
+    if obj is not None and kind == "proof_change":
         return _proof_change(obj, story)
-    if obj is not None and obj.get("type") == "satisfied":
+    if obj is not None and kind == "satisfied":
         return _satisfied(obj, base)
     raw_tests = _test_blocks(text) if harvested is None else {p: ("file", t) for p, t in harvested.items()}
     if obj is None:
         raise StoryError(NO_JSON)
-    if obj.get("type") != "package":
+    if kind != "package":
         raise StoryError('the JSON object needs "type": "package"')
     if not raw_tests:
         raise StoryError(
@@ -569,6 +570,9 @@ def _parse_package(
             full.append(f"{where}::{found}{name[len(bare) :]}" if isinstance(found, str) else tid)
         covers[cid] = tuple(full)
     covers = {cid: ids for cid, ids in covers.items() if ids}
+    guards, uncovered = _guards(obj.get("guards"), covers, tests)
+    if uncovered:
+        covers[BEHAVIOUR] = (*covers.get(BEHAVIOUR, ()), *uncovered)
     return Package(
         layer.slug,
         tests,
@@ -578,21 +582,46 @@ def _parse_package(
         covers,
         str(obj.get("done_when") or "").strip(),
         added,
-        _guards(obj.get("guards"), covers),
+        guards,
     )
 
 
-def _guards(raw: Any, covers: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
+_PACKAGE_KEYS = frozenset({"files", "steps", "covers"})
+"""The keys an object with no "type" holds to be read as a package (`_reply_type`)."""
+_OTHER_REPLY_KEYS = frozenset({"changes", "by", "why"})
+"""The keys of the proof change and the satisfied reply: an object with no "type" and one of them is no
+plain package."""
+
+
+def _reply_type(obj: Mapping[str, Any]) -> str | None:
+    """The reply type of the architect's JSON object: its "type"; with none, "package" when it holds a
+    package's files, steps and covers and no key of the other replies, else None. AIR-55 (2026-11-06, try
+    1): a package object refused for its missing "type" alone is a whole try lost over what nothing else
+    could mean; an object that could be another reply, or is not a whole package, is still refused."""
+    if "type" in obj:
+        return str(obj["type"])
+    keys = set(obj)
+    return "package" if keys >= _PACKAGE_KEYS and not keys & _OTHER_REPLY_KEYS else None
+
+
+def _guards(
+    raw: Any, covers: Mapping[str, tuple[str, ...]], tests: Mapping[str, str]
+) -> tuple[dict[str, str], tuple[str, ...]]:
     """The package's regression guards, each a covered test (by its id, or by its bare name when one covered
     test has it) with a one-line reason, keyed by its id as the red check names it (a pytest id without
-    parameters). A package whose every test is a guard is refused: such a layer has nothing to build, and its
-    answer is the satisfied reply (AIR-62 layer 02, 2026-11-05)."""
+    parameters), and the guards covers did not list, by their full ids. A guard covers does not list that
+    names one test of the package's `tests` (by its id, or by a bare name one test of them has, as covers
+    resolve them) is that test, covered as a behaviour: the architect that edited an existing test in place
+    and declared it a guard meant it to be one of the package's tests (AIR-55, 2026-11-06, try 2). A guard
+    naming no test of the package is refused. A package whose every test is a guard is refused: such a layer
+    has nothing to build, and its answer is the satisfied reply (AIR-62 layer 02, 2026-11-05)."""
     if raw is None or raw == {}:
-        return {}
+        return {}, ()
     if not isinstance(raw, dict):
         raise StoryError("'guards' must map each guard's test id to a one-line reason it already holds")
     covered = {_checked_id(t) for ids in covers.values() for t in ids}
     guards: dict[str, str] = {}
+    uncovered: list[str] = []
     for raw_id, why in raw.items():
         tid = _test_id(str(raw_id).strip())
         if not isinstance(why, str) or not why.strip():
@@ -611,18 +640,43 @@ def _guards(raw: Any, covers: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
                 and t.endswith((f"::{_PARAMS.sub('', name)}", f" > {name}"))
             ]
         )
+        if not named:
+            found = _test_in(tid, tests)
+            if found is not None:
+                uncovered += [] if found in uncovered else [found]
+                named = [_checked_id(found)]
         if len(named) != 1:
             raise StoryError(
-                f"guards {tid}: it names no test in covers; a guard is one of the tests covers lists"
+                f"guards {tid}: it names no test of this package; a guard is one of the tests in its test "
+                "files, listed in covers"
             )
         guards[named[0]] = _encodable(" ".join(why.split()), "a guard's reason")
+    covered |= {_checked_id(t) for t in uncovered}
     if covered and set(guards) >= covered:
         raise StoryError(
             "every test of this package is a regression guard, so the layer has nothing to build: when every "
             'criterion it owns already holds on its base, reply with {"type": "satisfied", "by": [...], '
             '"why": "..."} instead; else add the tests of what it changes'
         )
-    return guards
+    return guards, tuple(uncovered)
+
+
+def _test_in(tid: str, tests: Mapping[str, str]) -> str | None:
+    """The full id of the one test of `tests` (path -> text) that `tid` names: "path::name" in that file, or
+    a bare name that one test of all the files has, as covers resolve a name (its parameters kept); None for
+    no such test, or more than one."""
+    where, sep, name = tid.partition("::")
+    if not sep:
+        where, name = "", tid
+    files = [where] if where else list(tests)
+    found: list[str] = []
+    for path in files:
+        text = tests.get(path)
+        bare = name if is_js_test(path) else _PARAMS.sub("", name)
+        hit = None if text is None or not name else _test_named(path, text, bare)
+        if isinstance(hit, str):
+            found.append(f"{path}::{hit}{name[len(bare) :]}")
+    return found[0] if len(found) == 1 else None
 
 
 def _checked_id(tid: str) -> str:

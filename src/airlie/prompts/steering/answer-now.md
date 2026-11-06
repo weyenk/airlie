@@ -2,7 +2,7 @@
 kind: steering
 roles: [any]
 fields: [n, reasoning]
-when: The role's last answer_after_cuts reads in a row each thought until thinking_budget cut it; sent after the last read's observation, and the turn after offers no tools.
+when: The role's last answer_after_cuts reads in a row each thought until thinking_budget cut it; sent after the last read's observation, and the turn after offers no tools. Not sent to a role that can write and has written, whose run ends there (stop answer_after_cuts) for its caller to ask the answer (package-json-only, AIR-55, 2026-11-06).
 governs:
   answer.when: now
   reasoning: continue
