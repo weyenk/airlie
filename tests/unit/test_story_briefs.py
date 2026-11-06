@@ -192,6 +192,18 @@ def test_the_layer_size_brief_asks_the_reviewer_about_each_layer_over_the_cap() 
     assert '"verdict": "split" | "keep"' in text and "no prose before or after it" in text
 
 
+def test_unchanged_criteria_are_shown_apart_and_never_split_off_alone() -> None:
+    """AIR-62, 2026-11-05: the reviewer split three "unchanged from before" criteria off the one change, into
+    a layer with nothing to build. They ride with the change, in both briefs, and are not counted."""
+    big = Layer("big", "Big", "a.py", "store and show it", ("AC1", "AC2"), unchanged=("AC2",))
+    text = layer_size_brief(STORY, (big,), (big,), 1)
+    assert "big (1 criteria: AC1; unchanged, riding with them: AC2)" in text
+    assert "never suggest a split that leaves a layer with only such criteria" in text
+    layers = layers_brief(STORY, 4, max_criteria=3)
+    assert "rides with the layer whose change could break it, never in a layer of its own" in layers
+    assert 'also under its "unchanged"' in layers and 'List under "unchanged"' in layers
+
+
 def test_the_layers_contract_asks_for_files_and_interfaces() -> None:
     text = layers_brief(STORY, 4)
     assert '"files": [{"path": "src/pkg/mod.py", "new": false}]' in text
