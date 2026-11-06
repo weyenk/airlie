@@ -64,6 +64,8 @@ class Contract:
     red_at: str | None
     green_at: str
     criteria: Mapping[str, str]
+    edited: tuple[str, ...] = ()
+    """The existing tests the package changed in place (Noah, 2026-11-06: allowed, and named in the PR)."""
 
 
 @dataclass(frozen=True)
@@ -300,6 +302,14 @@ def gather_provenance(
         base_sha[:SHORT] if ready and not skipped and base_sha else None,
         sha[:SHORT],
         owned,
+        next(
+            (
+                tuple(str(t) for t in e.get("edited") or ())
+                for e in reversed(mine)
+                if e.get("kind") == "package_ready"
+            ),
+            (),
+        ),
     )
 
     returned = {k for e in mine if e.get("kind") == "package_returned" for k in e.get("kinds") or ()}

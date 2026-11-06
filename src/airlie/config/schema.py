@@ -854,8 +854,7 @@ class StorySpec(Strict):
         default=False,
         description="the architect writes a layer's tests into its checkout with write_file and edit_file "
         "and replies with the package JSON alone, where off it writes every test file into one reply (the "
-        "tool-written packages design, 2026-11-06); the drafting conversation stays one reply per layer "
-        "until it gets the tools too",
+        "tool-written packages design, 2026-11-06), in the drafting conversation and in each retry",
     )
     package_write_chars: int = Field(
         default=12_000,

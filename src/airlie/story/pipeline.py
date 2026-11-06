@@ -69,6 +69,7 @@ from airlie.story.briefs import (
     survey_brief,
 )
 from airlie.story.budgets import StageMeter, check, run_dir_of
+from airlie.story.cleanup import draft_ref, drop_draft_refs
 from airlie.story.context import CHARS_PER_TOKEN, guide_budget, named_paths, repo_guide
 from airlie.story.diagnosis import (
     GATE_TAIL_LINES,
@@ -86,7 +87,14 @@ from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
-from airlie.story.harvest import DELETED_TESTS, harvest_files, place_reply_tests, place_tests
+from airlie.story.harvest import (
+    DELETED_TESTS,
+    edited_tests,
+    harvest_files,
+    place_reply_tests,
+    place_tests,
+    rebase_draft,
+)
 from airlie.story.layer_checks import Finding, Said, checks_for
 from airlie.story.lessons import Lesson, LessonsStore
 from airlie.story.local_board import LocalBoard
@@ -137,6 +145,7 @@ from airlie.teams.worktree import (
     checkout_worktree,
     commit_wip,
     delete_branch,
+    detach_at,
     diff_commits,
     find_file,
     move_branches,
@@ -193,6 +202,81 @@ keeps finding the proof wrong is not asked for another."""
 ANSWER_TURN_STEPS = 4
 """Steps of the turn that asks a package written with the file tools for its JSON alone (`package-json-only`):
 its tests are written, so it needs at most a read or two to recall a name (2026-11-06)."""
+DRAFT_CONFLICT = (
+    "your draft of this layer changed {paths} where the layers below it changed the same lines since it was "
+    "drafted, so it cannot be taken as it is: the files are in the repository as the layers below left them; "
+    "make your changes to them again with edit_file"
+)
+"""Why a tool-written draft goes back to the architect when its rebase onto the layer's real base conflicts
+(`harvest.rebase_draft`; the tool-written packages design, 2026-11-06)."""
+
+
+class ToolTurns:
+    """The turns of an architect conversation that writes a package's test files (story.package_tools; the
+    tool-written packages design, 2026-11-06), and what the last one left: its checkout (`tree`), the test
+    files changed there since `since` and the tests deleted, a reply's blocks that could not be placed, and
+    how the turn stopped. `collect` is the conversation's hook after every turn; `ask` is one turn, with the
+    JSON-only turn after it when the tests are written and the JSON is not. `layer` names the events."""
+
+    def __init__(self, st: StoryState, since: str, keep: Callable[[dict[str, str]], None]) -> None:
+        self.st = st
+        self.since = since
+        self.keep = keep
+        self.layer = ""
+        self.tree: Path | None = None
+        self.tests: dict[str, str] = {}
+        self.deleted: list[str] = []
+        self.placed: StoryError | None = None
+        self.stop: str | None = None
+
+    def collect(self, wt: Path, team: Any) -> None:
+        self.tree = wt
+        self.stop = team.stop_reason if team is not None else None
+        try:
+            place_reply_tests(wt, str(team.final_text or "") if team is not None else "")
+            self.placed = None
+        except StoryError as e:
+            self.placed = e
+        self.tests, self.deleted = harvest_files(wt, self.since)
+        if self.tests:  # a try that ends unusable keeps its files for the next
+            self.keep(dict(self.tests))
+        self.st.emit(
+            "package_written",
+            layer=self.layer,
+            paths=sorted(self.tests),
+            chars=sum(len(t) for t in self.tests.values()),
+            deleted=list(self.deleted),
+        )
+
+    def harvested(self) -> dict[str, str]:
+        """The last turn's test files; a StoryError when a reply's blocks could not be placed, or when a test
+        that was there at `since` is gone."""
+        if self.placed is not None:
+            raise self.placed
+        if self.deleted:
+            raise StoryError(DELETED_TESTS.format(ids=", ".join(self.deleted)))
+        return dict(self.tests)
+
+    async def ask(
+        self, say: Say, nudge: str | None, steer: Callable[[str], None]
+    ) -> tuple[str, dict[str, str]]:
+        """One turn (`say(nudge)`) and its test files. A turn out of steps with its tests written is no
+        failure: what is missing is the JSON, asked for in one short turn (`package-json-only`), as it is
+        after a reply with no JSON block. Event: package_answer_turn."""
+        try:
+            text = await say(nudge)
+        except StoryError:
+            if not (self.tests and self.stop == "max_steps"):
+                raise
+            text = ""  # out of steps with its tests written: what is missing is the JSON
+        tests = self.harvested()
+        if tests and extract_json_block(text) is None:
+            self.st.emit("package_answer_turn", layer=self.layer, stop_reason=self.stop, paths=sorted(tests))
+            steer("package-json-only")
+            text = await say(hub_text("package-json-only"), steps=ANSWER_TURN_STEPS)
+            tests = self.harvested()
+        return text, tests
+
 
 SURVEY_STEPS = 8
 """Steps the architect gets for the survey: enough to read a handful of files."""
@@ -481,6 +565,8 @@ class StoryPipeline:
         self.asker = Asker(cfg, self.studio, self.repo, lane=None)
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self._tests_before: dict[str, str] = {}
+        self._draft_turns: ToolTurns | None = None
+        """The held drafting conversation's turns when it writes the tests as files (story.package_tools)."""
         """The test files a layer's last package try left (story.package_tools): the next try starts there."""
         self._held: contextlib.AsyncExitStack | None = None
         """Open while a story's layers are built: the drafting conversation is held in it, for retries."""
@@ -592,7 +678,7 @@ class StoryPipeline:
                         await self._build(st, card, _current(st, story), layers, i)
                         await self._costed(st, card, "package", "layer", "review")
                 finally:
-                    self._held, self._drafting = None, None
+                    self._held, self._drafting, self._draft_turns = None, None, None
             if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
                 st.finish("build")
             await self._publish(st, card, _current(st, story), layers)
@@ -1738,11 +1824,12 @@ class StoryPipeline:
         layer's proof was `revised`, while the drafting conversation is held is a turn of it (`_resumed`),
         not a new ask.
 
-        With story.package_tools the ask writes the tests as files (`_tool_package`), and a retry is always
-        such an ask: the drafting conversation writes no files yet, and its retry would be a whole reply
-        again (the tool-written packages design, 2026-11-06)."""
+        With story.package_tools the ask writes the tests as files (`_tool_package`), and a retry resumes
+        the drafting conversation only when it writes them too (the tool-written packages design,
+        2026-11-06)."""
         tools = self.s.package_tools
-        if (feedback is not None or revised) and self._drafting is not None and not tools:
+        held = self._drafting is not None and (not tools or self._draft_turns is not None)
+        if (feedback is not None or revised) and held:
             return await self._resumed(st, story, layers, i, base_sha, feedback, proof)
         max_steps, context = self._coder_budget()
         brief = package_brief(
@@ -1783,54 +1870,18 @@ class StoryPipeline:
         """Layer `i`'s package written with the file tools (the tool-written packages design, 2026-11-06): a
         conversation at the layer's base whose subtask may write test files only, `story.package_write_chars`
         a call. The last try's test files (`self._tests_before`: as checked, with ruff's fixes, or as an
-        unusable try left them) are placed and committed first as "previous try", for this one to edit. After
-        each turn a reply's test blocks are written in (the old form still works) and the test files changed
-        since the base are harvested; they are kept for the next try whether or not this one is usable. A
-        turn that wrote tests and ended without the JSON (no block, or out of steps) gets one short turn that
-        asks for the JSON alone (`package-json-only`). A test deleted since the base is refused. Events:
-        package_written, package_answer_turn."""
+        unusable try left them) are placed and committed first as "previous try", for this one to edit. Each
+        turn is a `ToolTurns` turn: its files are harvested since the base and kept for the next try. Events:
+        package_files_placed, package_written, package_answer_turn."""
         nn = f"{i + 1:02d}"
         before = dict(self._tests_before)
-        seen: dict[str, Any] = {"tests": {}, "deleted": [], "placed": None, "stop": None}
+        turns = ToolTurns(st, base_sha, self._keep_tests)
+        turns.layer = nn
 
         async def prepare(wt: Path) -> None:
             if before:
-                paths = place_tests(wt, before)
-                commit_wip(wt, "previous try")
-                st.emit("package_files_placed", layer=nn, paths=paths)
+                self._place_previous(st, wt, before, nn)
 
-        def collect(wt: Path, team: Any) -> None:
-            seen["stop"] = team.stop_reason if team is not None else None
-            try:
-                place_reply_tests(wt, str(team.final_text or "") if team is not None else "")
-                seen["placed"] = None
-            except StoryError as e:
-                seen["placed"] = e
-            seen["tests"], seen["deleted"] = harvest_files(wt, base_sha)
-            if seen["tests"]:  # a try that ends unusable keeps its files for the next
-                self._tests_before = dict(seen["tests"])
-            st.emit(
-                "package_written",
-                layer=nn,
-                paths=sorted(seen["tests"]),
-                chars=sum(len(t) for t in seen["tests"].values()),
-                deleted=list(seen["deleted"]),
-            )
-
-        def harvested() -> dict[str, str]:
-            if seen["placed"] is not None:
-                raise seen["placed"]
-            if seen["deleted"]:
-                raise StoryError(DELETED_TESTS.format(ids=", ".join(seen["deleted"])))
-            return dict(seen["tests"])
-
-        writes = Writes(
-            tools=("write_file", "edit_file"),
-            scope="tests",
-            max_chars=self.s.package_write_chars,
-            prepare=prepare,
-            collect=collect,
-        )
         talk = self.asker.conversation(
             st,
             "package",
@@ -1839,23 +1890,36 @@ class StoryPipeline:
             steps=self.s.package_steps,
             at=base_sha,
             repo_map=self._map("package", brief),
-            writes=writes,
+            writes=self._writes(turns, prepare),
         )
         async with decoding(self.stories_dir, None), talk as say:  # a long turn of the build lane's own
             self._package_run = st.runs[-1]
-            try:
-                text = await say()
-            except StoryError:
-                if not (seen["tests"] and seen["stop"] == "max_steps"):
-                    raise
-                text = ""  # out of steps with its tests written: what is missing is the JSON
-            tests = harvested()
-            if tests and extract_json_block(text) is None:
-                st.emit("package_answer_turn", layer=nn, stop_reason=seen["stop"], paths=sorted(tests))
-                self._steer(st, ("package-json-only",), self.s.architect_role, nn)
-                text = await say(hub_text("package-json-only"), steps=ANSWER_TURN_STEPS)
-                tests = harvested()
+            text, tests = await turns.ask(say, None, self._steer_one(st, nn))
         return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha), tests=tests)
+
+    def _keep_tests(self, tests: dict[str, str]) -> None:
+        self._tests_before = tests
+
+    def _writes(self, turns: ToolTurns, prepare: Callable[[Path], Awaitable[None]] | None = None) -> Writes:
+        """What an architect conversation that writes a package's tests may write (story.package_tools)."""
+        return Writes(
+            tools=("write_file", "edit_file"),
+            scope="tests",
+            max_chars=self.s.package_write_chars,
+            prepare=prepare,
+            collect=turns.collect,
+        )
+
+    @staticmethod
+    def _place_previous(st: StoryState, wt: Path, tests: Mapping[str, str], nn: str) -> None:
+        """The last try's test files written into the checkout `wt` and committed as "previous try", for the
+        next try to edit (the tool-written packages design, 2026-11-06). Event: package_files_placed."""
+        paths = place_tests(wt, tests)
+        commit_wip(wt, "previous try")
+        st.emit("package_files_placed", layer=nn, paths=paths)
+
+    def _steer_one(self, st: StoryState, nn: str) -> Callable[[str], None]:
+        return lambda id: self._steer(st, (id,), self.s.architect_role, nn)
 
     def _files_at(self, commit: str) -> Callable[[str], str | None]:
         """A file's text in `commit` (None when it has none): the base a package's test additions join."""
@@ -1889,9 +1953,15 @@ class StoryPipeline:
         performance plan): it still holds the files, the agreement and its drafts, so it does not read them
         again (2026-10-29: a cold retry spent 60 of its 68 calls reading, ~104 s each; a gate re-plan cost
         ~47 minutes). With no `feedback` the turn follows a proof revision (`brief-proof-revised`). The
-        conversation's checkout moves to the layer's real base first. Event: package_resumed."""
+        conversation's checkout moves to the layer's real base first. Event: package_resumed.
+
+        A conversation that writes the tests as files (story.package_tools) has its checkout committed, so it
+        moves clean, then the last try's test files placed and committed as "previous try"; the turn's files
+        are harvested since the layer's base (the tool-written packages design, 2026-11-06)."""
         assert self._drafting is not None
         say, run = self._drafting
+        nn = f"{i + 1:02d}"
+        turns = self._draft_turns
         sources = layer_sources(self.repo, base_sha, layers[i])
         # worded as a cold retry's brief words it
         again = (
@@ -1899,12 +1969,20 @@ class StoryPipeline:
             if feedback is not None
             else hub_text("brief-proof-revised")
         )
-        told = f"{again}\n\n{next_package_brief(story, layers, i, proof, sources)}"
-        st.emit("package_resumed", layer=f"{i + 1:02d}", studio_run=run)
+        told = f"{again}\n\n{next_package_brief(story, layers, i, proof, sources, tools=turns is not None)}"
+        st.emit("package_resumed", layer=nn, studio_run=run)
         self._package_run = run  # before the turn: a reply that cannot be used is still this run's
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
-            text = await say(told, at=base_sha)
-        return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha))
+            if turns is None or turns.tree is None:
+                text = await say(told, at=base_sha)
+                return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha))
+            commit_wip(turns.tree, f"airlie: before layer {nn}'s retry")
+            detach_at(turns.tree, base_sha)
+            if self._tests_before:
+                self._place_previous(st, turns.tree, self._tests_before, nn)
+            turns.since, turns.layer = base_sha, nn
+            text, tests = await turns.ask(say, told, self._steer_one(st, nn))
+        return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha), tests=tests)
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
         """Every layer's package drafted in one architect conversation at the story's base, before the first
@@ -1935,8 +2013,10 @@ class StoryPipeline:
             sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
             dossier=self._dossier(st, sha),
             lint=lint_note(self.repo, sha, self.commands),
+            tools=self.s.package_tools,
         )
         st.emit("packages_drafting", layers=len(layers))
+        turns = ToolTurns(st, sha, self._keep_tests) if self.s.package_tools else None
         talk = self.asker.conversation(
             st,
             "packages",
@@ -1945,38 +2025,62 @@ class StoryPipeline:
             steps=self.s.package_steps,
             at=sha,
             repo_map=self._map("packages", first),
+            writes=self._writes(turns) if turns is not None else None,
         )
         async with contextlib.AsyncExitStack() as here:
             # held for the story's layers when there is a hold (P9), else closed with the drafting
             say = await (self._held or here).enter_async_context(talk)
             run = st.runs[-1]
             if self._held is not None:
-                self._drafting = (say, run)
-            await self._draft_each(st, story, layers, sha, say, run)
+                self._drafting, self._draft_turns = (say, run), turns
+            await self._draft_each(st, story, layers, sha, say, run, turns)
         st.drafted = True
         st.save()
 
     async def _draft_each(
-        self, st: StoryState, story: Story, layers: tuple[Layer, ...], sha: str, say: Say, run: str
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        sha: str,
+        say: Say,
+        run: str,
+        turns: ToolTurns | None = None,
     ) -> None:
-        """The drafting conversation's turns: each layer's package, the critic's objections to it once."""
+        """The drafting conversation's turns: each layer's package, the critic's objections to it once.
+
+        With `turns` (story.package_tools) the drafts are files in the conversation's checkout (the
+        tool-written packages design, 2026-11-06): layer NN's tests are those changed since the snapshot of
+        the layer before (or the story's base), the critic reads them at a commit of the checkout, and once
+        the layer is drafted its files are committed as its snapshot, kept from git's garbage collection under
+        `draft_ref`. Its draft records the commit its edits were made on (`at`), which its rebase onto its
+        real base reads; an unusable draft keeps its files (`tests`) for its layer's first retry."""
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             for i, layer in enumerate(layers):
                 nn, proof = f"{i + 1:02d}", self._layer_proof(st, layer)
                 token = ASK_LAYER.set(nn)
+                prev = turns.since if turns is not None else sha
                 try:
                     try:
                         st.emit("package_draft_start", layer=nn)
                         sources = layer_sources(self.repo, sha, layer)
-                        asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
+                        tools = turns is not None
+                        asked = (
+                            None
+                            if i == 0
+                            else next_package_brief(story, layers, i, proof, sources, tools=tools)
+                        )
                         at = self._files_at(sha)
-                        got = _layer_reply(await say(asked), story, layers, i, proof, at)
+                        got = await self._drafted(st, story, layers, i, proof, say, asked, turns, at)
                         if isinstance(got, Package) and proof:
-                            told = await self._objections(st, layers, i, sha, got, proof)
+                            snap = self._snapshot(turns, nn) if turns is not None else None
+                            told = await self._objections(st, layers, i, sha, got, proof, at=snap)
                             if told is not None:
-                                got = _layer_reply(await say(told), story, layers, i, proof, at)
+                                got = await self._drafted(st, story, layers, i, proof, say, told, turns, at)
                     except StoryError as e:
                         st.drafts[nn] = {"unusable": str(e)}
+                        if turns is not None and turns.tests:
+                            st.drafts[nn] |= {"tests": dict(turns.tests), "at": prev}
                         st.emit("retry", stage="package", error=str(e), reply=e.reply)
                         st.emit(
                             "package_returned",
@@ -1999,10 +2103,45 @@ class StoryPipeline:
                         st.emit("package_drafted", layer=nn, studio_run=run, tests=[], satisfied=True)
                     else:
                         st.drafts[nn] = {"package": got.to_dict(), "run": run}
+                        if turns is not None:
+                            st.drafts[nn]["at"] = prev
                         st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
+                    if turns is not None:
+                        turns.since = self._snapshot(turns, nn, ref=st.path.name) or turns.since
                     st.save()
                 finally:
                     ASK_LAYER.reset(token)
+
+    async def _drafted(
+        self,
+        st: StoryState,
+        story: Story,
+        layers: tuple[Layer, ...],
+        i: int,
+        proof: tuple[ProofTest, ...],
+        say: Say,
+        nudge: str | None,
+        turns: ToolTurns | None,
+        at: Callable[[str], str | None],
+    ) -> Package | ProofChange | Satisfied:
+        """One drafting turn for layer `i`, parsed: the reply's blocks, or with `turns` its files."""
+        if turns is None:
+            return _layer_reply(await say(nudge), story, layers, i, proof, at)
+        turns.layer = f"{i + 1:02d}"
+        text, tests = await turns.ask(say, nudge, self._steer_one(st, turns.layer))
+        return _layer_reply(text, story, layers, i, proof, at, tests=tests)
+
+    def _snapshot(self, turns: ToolTurns, nn: str, *, ref: str | None = None) -> str | None:
+        """The drafting checkout committed as layer `nn`'s draft, its commit, kept under `draft_ref` when
+        `ref` names the story; None when the conversation has no checkout yet."""
+        if turns.tree is None:
+            return None
+        commit = commit_wip(turns.tree, f"airlie: layer {nn} draft")
+        if ref is not None:
+            subprocess.run(
+                ["git", "-C", str(self.repo), "update-ref", draft_ref(ref, nn), commit], capture_output=True
+            )
+        return commit
 
     def _layer_proof(self, st: StoryState, layer: Layer) -> tuple[ProofTest, ...]:
         """The tests the agreement holds for `layer`, as it stands now (a revision changes it)."""
@@ -2061,15 +2200,25 @@ class StoryPipeline:
         base_sha: str,
         package: Package,
         proof: tuple[ProofTest, ...],
+        *,
+        at: str | None = None,
     ) -> str | None:
         """The critic's read of `package` (see `_critique`): what to tell the architect, ending with
-        `package-fix`, or None when it agrees or cannot be read."""
+        `package-fix` (`package-fix-tools` with story.package_tools), or None when it agrees or cannot be
+        read. The critic reads at commit `at`, where the package's files are (a tool-written draft's
+        snapshot), or at a commit made of `base_sha` with them; the existing tests the package changes are
+        shown before and after."""
         nn, layer = f"{i + 1:02d}", layers[i]
         brief = critic_brief(
-            layer, package.tests, proof, self._conventions_text(base_sha), dossier=self._dossier(st, base_sha)
+            layer,
+            package.tests,
+            proof,
+            self._conventions_text(base_sha),
+            dossier=self._dossier(st, base_sha),
+            edited=edited_tests(package.tests, self._files_at(base_sha)),
         )
         try:
-            at = self._with_tests(st, base_sha, package.tests)
+            at = at or self._with_tests(st, base_sha, package.tests)
             objections = parse_critic_verdict(
                 await self._ask(st, "critic", "tester", brief, at=at, steps=CRITIC_STEPS)
             )
@@ -2100,7 +2249,7 @@ class StoryPipeline:
                     f"- {o.about}: {o.claim}" + (f" Suggested: {o.suggest}" if o.suggest else "")
                     for o in objections
                 ),
-                said("package-fix"),
+                said("package-fix-tools" if self.s.package_tools else "package-fix"),
             ]
         )
         self._steer(st, said.ids, self.s.architect_role, nn)
@@ -2324,6 +2473,15 @@ class StoryPipeline:
             st.save()
             if "unusable" in draft:  # its first try, already on record
                 attempt, feedback, kinds = 1, str(draft["unusable"]), ["package_unusable"]
+                if draft.get("tests") and draft.get("at"):  # what it wrote, for the retry to start on
+                    self._tests_before, _ = rebase_draft(
+                        draft["tests"], self._files_at(str(draft["at"])), self._files_at(base_sha)
+                    )
+                    if self._tests_before:
+                        said = Said()
+                        paths = "\n".join(f"- {p}" for p in sorted(self._tests_before))
+                        feedback = f"{feedback}\n\n{said('package-files-placed')}\n{paths}"
+                        self._steer(st, said.ids, self.s.architect_role, nn)
                 draft = None
         while attempt < self.s.package_attempts:
             attempt += 1
@@ -2334,6 +2492,28 @@ class StoryPipeline:
             try:
                 if draft is not None:  # drafted with the others and read by the critic: the checks follow
                     self._package_run = str(draft["run"])
+                    if "package" in draft and draft.get("at"):  # tool-written: merged onto this base
+                        drafted = Package.from_dict(draft["package"])
+                        tests, conflicts = rebase_draft(
+                            drafted.tests, self._files_at(str(draft["at"])), self._files_at(base_sha)
+                        )
+                        draft = None
+                        if conflicts:  # the draft is stale, not wrong: the try it took is not charged
+                            self._tests_before = tests
+                            st.emit("draft_conflict", layer=nn, attempt=attempt, paths=conflicts)
+                            feedback = DRAFT_CONFLICT.format(paths=", ".join(conflicts))
+                            kinds = ["draft_conflict"]
+                            st.emit(
+                                "package_returned",
+                                layer=nn,
+                                attempt=attempt,
+                                kinds=kinds,
+                                studio_run=self._package_run,
+                                charged=False,
+                            )
+                            attempt -= 1
+                            continue
+                        draft = {"package": drafted.with_tests(tests).to_dict(), "run": self._package_run}
                     got = (
                         # drafted at the story's base: its test additions join the files of this one
                         Package.from_dict(draft["package"]).rebased(self._files_at(base_sha))
@@ -2437,6 +2617,8 @@ class StoryPipeline:
                     files=[f.path for f in package.files],
                     beyond_proof=beyond_proof(package, [t.id for t in proof if not t.gate]) if proof else [],
                     guards=dict(package.guards),
+                    # existing tests the package changes in place (Noah, 2026-11-06): the PR names them
+                    edited=[e.id for e in edited_tests(package.tests, self._files_at(base_sha))],
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))
@@ -2671,6 +2853,7 @@ class StoryPipeline:
     async def _finish(self, st: StoryState, card: Card) -> None:
         if st.done("review"):
             return
+        drop_draft_refs(self.repo, st.path.name)  # published: no layer will read a draft again
         links = "\n".join(f"{i + 1}. {p['url']}" for i, p in enumerate(st.prs))
         text = (
             f"stacked draft PRs, bottom layer first:\n{links}\n"

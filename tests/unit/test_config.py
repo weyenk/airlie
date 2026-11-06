@@ -1353,9 +1353,8 @@ def test_schema_default_stack_and_yaml_single() -> None:
 
 
 def test_tool_written_packages_stay_off_in_the_schema_and_the_committed_config() -> None:
-    """The tool-written packages design (2026-11-06): until the drafting conversation writes with the tools
-    too (build step 4) a tool-written retry starts fresh and re-reads, so the committed config keeps the flag
-    off, and the package steps at 24, until step 4 and a bench comparison."""
+    """The tool-written packages design (2026-11-06): the committed config keeps the flag off, and the package
+    steps at 24, until a bench comparison against the one-reply path shows the line does not get worse."""
     spec = StorySpec(**_story())
     assert (spec.package_tools, spec.package_write_chars) == (False, 12_000)
     cfg = load_config(ROOT / "airlie.yaml", NO_LOCAL).story

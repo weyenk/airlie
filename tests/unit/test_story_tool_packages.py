@@ -1,8 +1,8 @@
 """A layer's package written with the file tools (the tool-written packages design, 2026-11-06, build step 3):
 with story.package_tools on, a package ask may write test files only, its reply is the package JSON, a try
 that fails keeps its files for the next, and a turn that wrote its tests but gave no JSON gets one short turn
-for it. The drafting conversation stays one reply per layer (build step 4). On FakeEngine, the calc layer of
-test_story_layer_checks_flow."""
+for it. The drafting conversation writes with the tools too (build step 4), so a retry is a turn of it. On
+FakeEngine, the calc layer of test_story_layer_checks_flow."""
 
 from __future__ import annotations
 
@@ -59,9 +59,9 @@ def tool_names(engine: FakeEngine) -> list[list[str]]:
 async def test_a_retry_writes_its_tests_with_the_file_tools_and_replies_with_the_json_alone(
     tmp_path: Path,
 ) -> None:
-    """The drafted package (one reply, as before) passes before the code; its retry is a package ask with
-    write_file and edit_file, which starts on the draft's test file as checked and is told so, not shown
-    it."""
+    """The drafted package, a reply in the old form (its blocks are written into the drafting checkout),
+    passes before the code; its retry is a turn of the drafting conversation, which writes with write_file
+    and edit_file, starts on the draft's test file as checked and is told so, not shown it."""
     st, engine = await run(tmp_path, [FEATURE, DONE], [VACUOUS, WRITE_MUL, JSON_ONLY], story=TOOLS)
     assert st.blocked is None and "01" in st.built, st.blocked
     [ready] = events(st, "package_ready")
@@ -71,12 +71,13 @@ async def test_a_retry_writes_its_tests_with_the_file_tools_and_replies_with_the
     assert placed["paths"] == [PATH]
     asks = architect_asks(engine)
     drafted, retry = asks[1][-1], asks[2][-1]  # after the layer plan: the drafting turn, then the retry
-    assert PACKAGE_CONTRACT in drafted and PACKAGE_TOOLS_CONTRACT not in drafted
-    assert PACKAGE_TOOLS_CONTRACT in retry and hub_text("package-files-placed") in retry
+    assert PACKAGE_TOOLS_CONTRACT in drafted and PACKAGE_CONTRACT not in drafted
+    assert hub_text("brief-package-next-tools") in retry and hub_text("package-files-placed") in retry
+    assert [e["layer"] for e in events(st, "package_resumed")] == ["01"]
     assert f"- {PATH}" in retry and "def test_add_again" not in retry  # named, not pasted
     assert hub_text("package-fix-tools") in retry and hub_text("package-as-checked") not in retry
     tools = tool_names(engine)
-    assert "write_file" not in tools[1] and {"write_file", "edit_file"} <= set(tools[2])
+    assert {"write_file", "edit_file"} <= set(tools[1]) and {"write_file", "edit_file"} <= set(tools[2])
     assert [s[0] for s in steers(st)] == [
         "checks-found",
         "passes-before-code-choice",
@@ -84,7 +85,7 @@ async def test_a_retry_writes_its_tests_with_the_file_tools_and_replies_with_the
         "package-fix-tools",
     ]
     written = events(st, "package_written")
-    assert [w["paths"] for w in written] == [[PATH]]  # one turn: the write, then the JSON
+    assert [w["paths"] for w in written] == [[PATH], [PATH]]  # the draft's blocks, then the retry's write
     assert events(st, "package_answer_turn") == []
 
 

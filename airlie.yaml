@@ -184,11 +184,10 @@ story:
   # goes to 32 with package_tools (Noah's decision 3, 2026-11-06: each test file, or each few tests added to one,
   # is a step of its own); more read steps for a one-reply package are not wanted before then
   package_steps: 24
-  # off (2026-11-06): with it on the architect writes a layer's tests as files with write_file/edit_file and replies
-  # with the package JSON alone (the tool-written packages design). Until build step 4 the drafting conversation
-  # still writes one reply per layer and a tool-written retry starts fresh, re-reading the code (the 2026-10-29 cold
-  # retry spent 60 of 68 calls reading), so retries could get worse. It goes on after step 4 and a bench
-  # comparison against the one-reply path
+  # off (2026-11-06): with it on the architect writes a layer's tests as files with write_file/edit_file, in the
+  # drafting conversation and in each retry, and replies with the package JSON alone (the tool-written packages
+  # design). It goes on, with package_steps 32, after a bench comparison against the one-reply path: the line is
+  # not to get worse on the way
   package_tools: false
   amigos:                          # P2 (2026-10-24): product, the architect and the tester agree requirements, changes and proof before any layer is built
     enabled: true

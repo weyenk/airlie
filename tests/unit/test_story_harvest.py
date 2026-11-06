@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from airlie.story.harvest import DELETED_TESTS, harvest, place_reply_tests
+from airlie.story.harvest import (
+    DELETED_TESTS,
+    EditedTest,
+    edited_tests,
+    harvest,
+    merged,
+    place_reply_tests,
+    rebase_draft,
+)
 from airlie.story.model import StoryError
 from airlie.story.package import joined_tests
 from tests.unit.git_helpers import git
@@ -138,3 +146,47 @@ def test_a_reply_block_that_cannot_be_placed_is_refused_and_nothing_is_written(
         place_reply_tests(root, block + '```json\n{"type": "package"}\n```\n')
     assert e.value.reply.endswith("```\n")
     assert git(root, "status", "--porcelain") == "" and harvest(root, base) == {}
+
+
+# ---- edited existing tests, and a draft rebased onto its layer's real base (build step 4) ----
+
+
+def test_an_existing_test_changed_in_place_is_listed_with_its_source_before_and_after() -> None:
+    """Noah, 2026-11-06: editing an existing test is allowed, and the critic and the PR see it."""
+    changed = OLD_TEXT.replace("assert 2", "assert 2 == 2")
+    new_file = "def test_new():\n    assert 3\n"
+    found = edited_tests(
+        {OLD: changed + "\n\ndef test_three():\n    pass\n", "tests/test_n.py": new_file}, {OLD: OLD_TEXT}.get
+    )
+    assert found == [
+        EditedTest(f"{OLD}::test_two", "def test_two():\n    assert 2", "def test_two():\n    assert 2 == 2")
+    ]
+    assert edited_tests({OLD: OLD_TEXT}, {OLD: OLD_TEXT}.get) == []
+    assert edited_tests({OLD: "def test_one(:\n"}, {OLD: OLD_TEXT}.get) == []
+    web = WEB_TEXT.replace("toBe(1)", "toBe(2)")
+    assert [e.id for e in edited_tests({WEB: web}, {WEB: WEB_TEXT}.get)] == [f"{WEB}::adds"]
+
+
+def test_a_draft_takes_what_the_real_base_changed_in_its_file_by_a_three_way_merge() -> None:
+    """Layer 02's draft edits layer 01's test file, drafted at the story's base; by the time layer 02 is
+    built, layer 01's checks reformatted the top of that file. Both changes are kept."""
+    drafted = "import os\n\n\ndef test_one():\n    assert 1\n"  # layer 01's file as drafted
+    real = "import os\nimport sys\n\n\ndef test_one():\n    assert 1\n"  # as layer 01 built it
+    draft = drafted + "\n\ndef test_two():\n    assert 2\n"  # layer 02's draft added a test
+    out, conflicts = rebase_draft({OLD: draft}, {OLD: drafted}.get, {OLD: real}.get)
+    assert conflicts == [] and out == {OLD: real + "\n\ndef test_two():\n    assert 2\n"}
+    # the real base unchanged since the draft: the draft as it is
+    assert rebase_draft({OLD: draft}, {OLD: drafted}.get, {OLD: drafted}.get) == ({OLD: draft}, [])
+    # a new file: no ancestor and nothing on the base
+    assert rebase_draft({"tests/test_n.py": "x\n"}, {}.get, {}.get) == ({"tests/test_n.py": "x\n"}, [])
+
+
+def test_a_draft_whose_change_conflicts_with_the_real_bases_is_named() -> None:
+    drafted = "def test_one():\n    assert 1\n"
+    out, conflicts = rebase_draft(
+        {OLD: "def test_one():\n    assert 10\n", "tests/test_n.py": "x\n"},
+        {OLD: drafted}.get,
+        {OLD: "def test_one():\n    assert 11\n"}.get,
+    )
+    assert conflicts == [OLD] and out == {"tests/test_n.py": "x\n"}
+    assert merged("a\n", "b\n", "c\n") is None and merged("a\n", "a\n", "c\n") == "c\n"

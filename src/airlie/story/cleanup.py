@@ -32,3 +32,24 @@ def prune_stale_stacks(clone: Path) -> int:
     if len(kept) != len(stacks):
         path.write_text(json.dumps({**data, "stacks": kept}, indent=2) + "\n")
     return len(stacks) - len(kept)
+
+
+def draft_ref(story: str, nn: str) -> str:
+    """The ref that keeps story `story`'s drafted snapshot of layer `nn` from git's garbage collection (the
+    tool-written packages design, 2026-11-06): the commit a later layer's draft was made on, which its
+    rebase reads."""
+    return f"refs/airlie/{story}/draft-{nn}"
+
+
+def drop_draft_refs(clone: Path, story: str) -> int:
+    """Delete story `story`'s draft refs (`draft_ref`) from the clone: once it publishes, or is set aside or
+    started over. How many were deleted."""
+    out = subprocess.run(
+        ["git", "-C", str(clone), "for-each-ref", "--format=%(refname)", f"refs/airlie/{story}/"],
+        capture_output=True,
+        text=True,
+    )
+    refs = [r for r in out.stdout.splitlines() if r.startswith(f"refs/airlie/{story}/draft-")]
+    for ref in refs:
+        subprocess.run(["git", "-C", str(clone), "update-ref", "-d", ref], capture_output=True)
+    return len(refs)
