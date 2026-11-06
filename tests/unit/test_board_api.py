@@ -139,3 +139,50 @@ def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) ->
     moves = BoardStore(tmp_path / "state" / "board.sqlite").moves(key)
     assert [(m.from_status, m.to_status) for m in moves] == [("todo", "approved"), ("approved", "doing")]
     assert {m.by for m in moves} == {moves[0].by} and moves[0].by != "line"
+
+
+def test_delete_removes_the_principals_comment_and_leaves_the_other_unchanged(tmp_path: Path) -> None:
+    """DELETE the signed-in user's own comment: 200, the deleted id gone, the other comment untouched
+    (AC1)."""
+    with client(tmp_path, api_key="k") as c:
+        auth = {"Authorization": "Bearer k"}
+        key = c.post("/v1/board/items", json={"level": "initiative", "title": "i"}, headers=auth).json()[
+            "key"
+        ]
+        store = BoardStore(tmp_path / "state" / "board.sqlite")
+        try:
+            # the api-key principal's name and user_id are both 'api-key'
+            store.comment(key, "api-key", "mine")
+            store.comment(key, "airlie", "theirs")
+        finally:
+            store.close()
+        before = c.get(f"/v1/board/items/{key}", headers=auth).json()["comments"]
+        assert [(c_["id"], c_["author"]) for c_ in before] == [(1, "api-key"), (2, "airlie")]
+        r = c.delete(f"/v1/board/items/{key}/comments/1", headers=auth)
+        assert r.status_code == 200, r.text
+        comments = r.json()["comments"]
+        assert [c_["id"] for c_ in comments] == [2]  # the deleted id is gone, the other remains
+        assert comments[0] == before[1]  # the other comment, id, author, text and at, unchanged
+        got = c.get(f"/v1/board/items/{key}", headers=auth).json()
+        assert got["comments"] == comments  # the delete is stored, not just echoed
+
+
+def test_deleting_one_of_two_comments_leaves_the_other_byte_for_byte(tmp_path: Path) -> None:
+    """The remaining comment is byte-for-byte the other author's: id, author, text and at all unchanged
+    (AC6)."""
+    with client(tmp_path, api_key="k") as c:
+        auth = {"Authorization": "Bearer k"}
+        key = c.post("/v1/board/items", json={"level": "initiative", "title": "i"}, headers=auth).json()[
+            "key"
+        ]
+        store = BoardStore(tmp_path / "state" / "board.sqlite")
+        try:
+            store.comment(key, "api-key", "mine")
+            store.comment(key, "airlie", "theirs")
+        finally:
+            store.close()
+        [other] = c.get(f"/v1/board/items/{key}", headers=auth).json()["comments"][1:]
+        r = c.delete(f"/v1/board/items/{key}/comments/1", headers=auth)
+        assert r.status_code == 200, r.text
+        [remaining] = r.json()["comments"]
+        assert remaining == other  # id, author, text and at, byte for byte
