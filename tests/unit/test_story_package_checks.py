@@ -79,6 +79,27 @@ async def test_a_test_that_passes_before_the_code_is_a_finding(tmp_path: Path) -
     assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_add.py::test_add_two")]
 
 
+async def test_a_regression_guard_may_pass_before_the_code_and_every_other_test_must_still_fail(
+    tmp_path: Path,
+) -> None:
+    """AIR-61 layer 02 (2026-11-05): a criterion already true on main has a test that can never be red; the
+    package marks it a guard, and the red check lets it pass on the base. A test that is no guard and passes
+    there is still a finding."""
+    root, base = calc(tmp_path)
+    add_tests = (
+        "from calc import add\n\n\ndef test_add_two():\n    assert add(2, 2) == 4\n\n\n"
+        "def test_add_zero():\n    assert add(0, 2) == 2\n"
+    )
+    tests = {"tests/test_add.py": add_tests, "tests/test_mul.py": TEST_MUL}
+    covers = {
+        "AC1": ("tests/test_mul.py::test_mul", "tests/test_add.py::test_add_two"),
+        "AC2": ("tests/test_add.py::test_add_zero",),
+    }
+    guarded = replace(package(tests, covers), guards={"tests/test_add.py::test_add_two": "add is on main"})
+    _, found = await check(tmp_path, root, base, guarded)
+    assert [(f.kind, f.test) for f in found] == [("passes_before_code", "tests/test_add.py::test_add_zero")]
+
+
 async def test_a_covered_test_id_that_is_not_in_the_file_is_a_finding(tmp_path: Path) -> None:
     root, base = calc(tmp_path)
     tests = {"tests/test_base.py": OLD_TESTS + "\n\n" + TEST_MUL.split("\n\n\n", 1)[1]}
@@ -454,6 +475,12 @@ def test_the_package_as_checked_holds_its_test_files_and_only_the_additions_to_a
     obj = json.loads(text.split("```json\n")[1].split("```")[0])
     assert obj["type"] == "package" and obj["covers"] == {"AC1": ["tests/test_mul.py::test_mul"]}
     assert obj["steps"] == ["add mul to calc.py"] and obj["files"][0]["path"] == "calc.py"
+    assert "guards" not in obj  # none to carry
+    guarded = replace(p, guards={"tests/test_mul.py::test_mul": "mul is on main"})
+    obj = json.loads(
+        as_checked(guarded, {"tests/test_base.py": BASE_TESTS}.get).split("```json\n")[1].split("```")[0]
+    )
+    assert obj["guards"] == {"tests/test_mul.py::test_mul": "mul is on main"}  # a retry keeps its guards
 
 
 def test_a_package_too_long_to_carry_says_which_test_file_it_leaves_out() -> None:

@@ -467,14 +467,17 @@ def test_feedback_names_each_test_and_why() -> None:
     assert text.endswith(hub_text("package-fix")) and "Reply with the whole package again" in text
 
 
-def test_a_test_that_passes_before_code_is_told_it_may_be_deleted() -> None:
+def test_a_test_that_passes_before_code_is_told_it_may_be_a_regression_guard() -> None:
     """AIR-9 layer 05: the brief kept some notes role-less, the tester tested that, it passed before the code
-    and the layer blocked; the retry may delete such a test."""
+    and the layer blocked. The architect writes the tests since P1 and replies with a package, not edit_file
+    (AIR-59, AIR-61 layer 02, 2026-11-05): a test of what already holds is marked a guard, or the layer is
+    satisfied."""
     text = package_feedback_said(
         [Finding("passes_before_code", "tests/test_p.py::test_keeps", "it passes before the code", "...")]
     )[0]
     assert "test_keeps" in text
-    assert "delete it (edit_file with the whole test as old and nothing as new)" in text
+    assert 'list it in the package\'s "guards"' in text and '{"type": "satisfied", ...}' in text
+    assert "edit_file" not in text
 
 
 LOOSE = Finding(

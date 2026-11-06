@@ -12,7 +12,7 @@ import pytest
 
 from airlie.story import package as package_module
 from airlie.story.model import Criterion, Layer, ScopedPath, Story, StoryError
-from airlie.story.package import PACKAGE_CONTRACT, Package, ProofChange, parse_package
+from airlie.story.package import PACKAGE_CONTRACT, Package, ProofChange, Satisfied, parse_package
 
 STORY = Story(
     "Store",
@@ -430,3 +430,122 @@ def test_a_drafted_package_rebased_joins_its_additions_to_the_file_on_the_layer_
     assert q.added == p.added and q.covers == p.covers
     whole = parse_package(reply(), LAYER, STORY)
     assert whole.rebased({PATH: later}.get) == whole  # a file written whole stays as written
+
+
+# ---- regression guards and an already satisfied layer (AIR-59, AIR-61, AIR-62, 2026-11-06) ----
+
+TWO_TESTS = "def test_a():\n    assert store() == 1\n\n\ndef test_b():\n    assert unsigned_delete() == 401\n"
+GUARDED = Layer("store", "Store", "src/store.py", "build the store", ("AC1", "AC2"))
+
+
+def guarded_reply(guards: Any) -> str:
+    """A package reply with a `guards` object beside its covers."""
+    text = reply(tests={PATH: TWO_TESTS}, covers={"AC1": [f"{PATH}::test_a"], "AC2": [f"{PATH}::test_b"]})
+    head, _, tail = text.rpartition("```json\n")
+    obj = json.loads(tail.removesuffix("\n```\n"))
+    obj["guards"] = guards
+    return f"{head}```json\n{json.dumps(obj)}\n```\n"
+
+
+def test_a_test_marked_a_regression_guard_keeps_its_one_line_reason() -> None:
+    """AIR-61 layer 02 (2026-11-05): an unsigned DELETE already answers 401 on main, so a correct test of it
+    passes before the code and can never be red; marked a guard, the red check lets it pass there."""
+    why = "the auth middleware already answers 401"
+    p = parse_package(guarded_reply({f"{PATH}::test_b": why}), GUARDED, STORY)
+    assert isinstance(p, Package)
+    assert p.guards == {f"{PATH}::test_b": why}
+    assert Package.from_dict(p.to_dict()) == p
+    assert Package.from_dict({k: v for k, v in p.to_dict().items() if k != "guards"}).guards == {}
+
+
+def test_a_guard_named_by_its_bare_name_resolves_to_the_covered_test() -> None:
+    p = parse_package(guarded_reply({"test_b": "already true"}), GUARDED, STORY)
+    assert isinstance(p, Package) and p.guards == {f"{PATH}::test_b": "already true"}
+
+
+@pytest.mark.parametrize(
+    ("guards", "says"),
+    [
+        (["x"], "'guards' must map each guard's test id to a one-line reason"),
+        ({f"{PATH}::test_b": ""}, "needs a one-line reason"),
+        ({f"{PATH}::test_c": "x"}, "names no test in covers"),
+    ],
+)
+def test_a_guard_that_is_not_a_covered_test_with_a_reason_is_refused(guards: Any, says: str) -> None:
+    with pytest.raises(StoryError, match=says):
+        parse_package(guarded_reply(guards), GUARDED, STORY)
+
+
+def test_a_package_whose_tests_are_all_guards_is_refused_as_a_layer_with_nothing_to_build() -> None:
+    """AIR-62 layer 02: a layer holding only criteria that already hold has nothing to build; its answer is
+    the satisfied reply, not a package of guards for a coder to make pass."""
+    guards = {f"{PATH}::test_a": "already true", f"{PATH}::test_b": "already true"}
+    with pytest.raises(StoryError, match='"type": "satisfied"'):
+        parse_package(guarded_reply(guards), GUARDED, STORY)
+
+
+def satisfied_reply(by: Any, why: Any = "the auth middleware answers 401 for every unsigned /v1 call") -> str:
+    obj = {"type": "satisfied", "by": by, "why": why}
+    return "It already holds.\n```json\n" + json.dumps(obj) + "\n```\n"
+
+
+def test_a_satisfied_reply_names_what_already_holds_the_layer_and_why() -> None:
+    """AIR-47 layer 04 and AIR-48 layer 02 were dropped by hand-editing state.json: airlie had no outcome
+    for a layer whose criteria already hold."""
+    by = ["01", "tests/unit/test_auth.py::TestDelete::test_unsigned_is_401"]
+    got = parse_package(satisfied_reply(by), LAYER, STORY, base=AUTH_BASE)
+    assert got == Satisfied(tuple(by), "the auth middleware answers 401 for every unsigned /v1 call")
+    assert isinstance(got, Satisfied) and Satisfied.from_dict(got.to_dict()) == got
+    # a test named without its class is stored as its full id, as covers stores one
+    bare = parse_package(
+        satisfied_reply(["tests/unit/test_auth.py::test_unsigned_is_401"]), LAYER, STORY, base=AUTH_BASE
+    )
+    assert isinstance(bare, Satisfied) and bare.by == (
+        "tests/unit/test_auth.py::TestDelete::test_unsigned_is_401",
+    )
+
+
+AUTH_BASE = {
+    "tests/unit/test_auth.py": (
+        "class TestDelete:\n    def test_unsigned_is_401(self):\n        assert True\n"
+    ),
+    "src/airlie/serve/app.py": "def _require_principal(): ...\n",
+}.get
+
+
+@pytest.mark.parametrize(
+    ("by", "why", "says"),
+    [
+        ([], "x", "'by' needs at least one"),
+        (["01"], "", "needs a non-empty 'why'"),
+        (
+            ["tests/unit/test_nowhere.py::test_f"],
+            "x",
+            "tests/unit/test_nowhere.py is not on the layer's base",
+        ),
+        (["tests/unit/test_auth.py::test_gone"], "x", "does not exist on the base"),
+        (["src/airlie/serve/app.py"], "x", "name a test that already proves it"),
+        (["src/airlie/serve/app.py::_require_principal"], "x", "src/airlie/serve/app.py is not a test file"),
+        (["nothing in particular"], "x", "name an earlier layer by its number"),
+    ],
+)
+def test_a_satisfied_reply_that_does_not_say_what_holds_it_is_refused(by: Any, why: Any, says: str) -> None:
+    """Review of PR #244 (2026-11-06): satisfied is no escape hatch from a hard layer. It names earlier built
+    layers or tests on the base (airlie then runs them there); a bare file or a function proves nothing."""
+    with pytest.raises(StoryError, match=says):
+        parse_package(satisfied_reply(by, why), LAYER, STORY, base=AUTH_BASE)
+
+
+def test_the_contract_says_how_to_mark_a_guard_and_when_a_layer_is_satisfied() -> None:
+    assert '"guards"' in PACKAGE_CONTRACT
+    assert '"type": "satisfied"' in PACKAGE_CONTRACT
+
+
+def test_the_coders_list_of_tests_marks_a_guard_as_one_that_passes_already() -> None:
+    from airlie.story.briefs import GUARD_NOTE, package_blocks
+
+    p = parse_package(guarded_reply({"test_b": "already true"}), GUARDED, STORY)
+    assert isinstance(p, Package)
+    shown = package_blocks(STORY, (GUARDED,), 0, p)
+    assert f"  - {PATH}::test_b{GUARD_NOTE}" in shown
+    assert f"  - {PATH}::test_a\n" in shown

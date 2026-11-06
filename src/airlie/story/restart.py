@@ -144,7 +144,8 @@ def _checked(key: str, point: str, saved: dict[str, Any] | None) -> int | None:
     built = saved.get("built") or {}
     if not 1 <= n <= len(saved.get("layers") or []):
         raise RestartError(f"story {key} has no layer {n:02d}")
-    missing = [f"{i:02d}" for i in range(1, n) if f"{i:02d}" not in built]
+    satisfied = saved.get("satisfied") or {}  # a satisfied layer below is as good as a built one
+    missing = [f"{i:02d}" for i in range(1, n) if f"{i:02d}" not in built and f"{i:02d}" not in satisfied]
     if missing:
         raise RestartError(f"story {key} has not built layer {missing[0]} yet: start it over from that one")
     return n
@@ -232,9 +233,10 @@ def _cleared(
     else:
         st.stage = PLANNED
     if layer is None:
-        st.built, st.drafts, st.drafted = {}, {}, False
+        st.built, st.satisfied, st.drafts, st.drafted = {}, {}, {}, False
     else:
         st.built = {nn: b for nn, b in st.built.items() if int(nn) < layer}
+        st.satisfied = {nn: s for nn, s in st.satisfied.items() if int(nn) < layer}
         for nn, sha in moved.items():
             st.built[nn]["sha"] = sha
         st.drafts = {nn: d for nn, d in st.drafts.items() if int(nn) < layer}

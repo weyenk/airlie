@@ -25,6 +25,20 @@ def test_state_round_trips_and_tracks_stages(tmp_path: Path) -> None:
     assert kinds == ["stage"]
 
 
+def test_a_satisfied_layer_is_kept_and_a_layer_builds_on_the_nearest_built_one_below(tmp_path: Path) -> None:
+    """A satisfied layer (2026-11-06) has no branch: the layer above it builds on the one below it."""
+    card = text_card("Let users upload an avatar")
+    st = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    st.built["01"] = {"branch": "b1", "sha": "abc"}
+    st.satisfied["02"] = {"criteria": ["AC2"], "by": ["01"], "why": "it holds"}
+    st.save()
+    again = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    assert again.satisfied == {"02": {"criteria": ["AC2"], "by": ["01"], "why": "it holds"}}
+    assert [again.built_below(i) for i in range(4)] == [None, "01", "01", "01"]
+    again.built.clear()
+    assert again.built_below(2) is None  # nothing built below: the story's base
+
+
 def test_a_story_resumes_only_in_its_own_repository(tmp_path: Path) -> None:
     card = text_card("x")
     StoryState.open(tmp_path / card.key, card, tmp_path / "a")

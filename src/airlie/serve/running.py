@@ -71,10 +71,13 @@ def _story_row(
         return None
     if not (_fresh(row["last_activity"], now) or f"story-{row['key']}" in live):
         return None
-    layers, built = st.get("layers"), st.get("built")
-    progress = story_progress(
-        stage, len(layers) if isinstance(layers, list) else 0, len(built) if isinstance(built, dict) else 0
+    layers, built, satisfied = st.get("layers"), st.get("built"), st.get("satisfied")
+    done = (len(built) if isinstance(built, dict) else 0) + (
+        len(satisfied) if isinstance(satisfied, dict) else 0
     )
+    progress = story_progress(
+        stage, len(layers) if isinstance(layers, list) else 0, done
+    )  # satisfied: done too
     return {
         "kind": "story",
         "key": row["key"],

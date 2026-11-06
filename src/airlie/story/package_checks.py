@@ -526,7 +526,10 @@ class PackageChecker:
                 ]
             if web:
                 found += await vitest_red(scratch, web, self.node_cache, timeout_s=self.timeout_s)
-            return package, found
+            # a regression guard pins what the base already does: it passes there (AIR-61, 2026-11-05)
+            return package, [
+                f for f in found if not (f.kind == "passes_before_code" and f.test in package.guards)
+            ]
         finally:
             remove_worktree(repo, scratch)
 
@@ -596,6 +599,7 @@ def as_checked(package: Package, base: Callable[[str], str | None], limit: int =
         "interfaces": [asdict(i) for i in package.interfaces],
         "steps": list(package.steps),
         "covers": {k: list(v) for k, v in package.covers.items()},
+        **({"guards": dict(package.guards)} if package.guards else {}),  # kept on a retry (2026-11-06)
         "done_when": package.done_when,
     }
     blocks.append(f"```json\n{json.dumps(obj, indent=1, ensure_ascii=False)}\n```")

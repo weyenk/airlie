@@ -754,6 +754,10 @@ def package_brief(
     return "\n\n".join(parts)
 
 
+GUARD_NOTE = " (a regression guard: it passes already and must keep passing)"
+"""After a guard's id in the coder's list of tests (AIR-61, 2026-11-05): it was let pass on the base."""
+
+
 def package_blocks(story: Story, layers: tuple[Layer, ...], i: int, package: Package) -> str:
     """The package as the coder reads it: the tests it makes pass (each under the criterion it covers; they
     are in the worktree and locked), the files, the interfaces, the numbered steps and when it is done,
@@ -763,7 +767,7 @@ def package_blocks(story: Story, layers: tuple[Layer, ...], i: int, package: Pac
     tests: list[str] = []
     for cid, ids in package.covers.items():
         head = owned[cid].line() if cid in owned else cid
-        tests += [f"- {head}", *(f"  - {t}" for t in ids)]
+        tests += [f"- {head}", *(f"  - {t}" + (GUARD_NOTE if package.is_guard(t) else "") for t in ids)]
     covered = {t for ids in package.covers.values() for t in ids}
     tests += [f"- also in {t}" for t in package.tests if not any(c.startswith(f"{t}::") for c in covered)]
     files = [f"- {f.path} ({f.action})" + (f": {f.why}" if f.why else "") for f in package.files]
@@ -912,7 +916,8 @@ def _built(p: Provenance) -> list[str]:
 
 
 def _stack(p: Provenance) -> list[str]:
-    """`### Stack`: the layers' PRs in merge order, and the base: trunk, or the story this one stacks on."""
+    """`### Stack`: the layers' PRs in merge order, the layers that needed no code (satisfied), and the base:
+    trunk, or the story this one stacks on."""
     s = p.stack
     kind, name = s.base
     lines = [
@@ -921,6 +926,12 @@ def _stack(p: Provenance) -> list[str]:
         for j, (n, _, title) in enumerate(s.prs)
     ]
     out = ["### Stack (review and merge bottom-up)", *lines, ""]
+    if s.satisfied:  # no PR of their own: what already held each of them (`layer_satisfied`)
+        out += [
+            f"- Layer {n}, {_model(_line(title, 80))}, needed no code: {_model(_line(why, 300))}"
+            for n, title, why in s.satisfied
+        ]
+        out.append("")
     if kind == "story":
         story = _model(_line(name, 60))
         out.append(f"Stacks on {story}'s pull requests; merge those first, then this stack bottom-up.")

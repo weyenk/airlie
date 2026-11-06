@@ -240,13 +240,17 @@ def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_code
         "**AC1** Given a user" not in text.split("The criteria this layer owns:")[1].split("Later layers")[0]
     )
     assert "03 Docs" in text and "## What this layer builds\nShow the avatar." in text
-    assert "a test that passes there, an import it cannot resolve" in text
+    assert "a test that passes there (unless it is a regression guard, below), an import it cannot" in text
+    assert "mark its test a guard" in text  # a criterion already true on the base (AIR-61, 2026-11-05)
     assert "NOT happen" in text and "Every test asserts" in text
     assert "The coder has 40 steps and a context budget of 65536 tokens" in text
     assert text.rstrip().endswith(
+        "airlie runs those tests on the base and takes the reply only when every one of them passes there."
+    )  # the contract ends the brief: covers, then guards and the satisfied reply (AIR-61, 2026-11-05)
+    assert (
         "Every criterion this layer owns appears in covers with at least one test; "
         "every test id names a test in one of your test files."
-    )
+    ) in text
     assert "could not be used" not in text
     assert "foundation for later layers" in package_brief(
         STORY, LAYERS, 2, max_steps=40, context_budget=65_536

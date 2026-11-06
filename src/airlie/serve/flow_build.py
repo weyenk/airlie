@@ -62,6 +62,7 @@ CHECK_KINDS = frozenset(
         "tests_mended",
         "vacuous_test",
         "test_checks_red_base",
+        "satisfied_unproven",
     }
 )
 """What the story's events say about the readiness check on a layer's package (and, in a story recorded
@@ -220,7 +221,9 @@ def _turns(st: dict[str, Any], window: list[dict[str, Any]], open_: bool) -> lis
         returned = next((e for e in mine if e.get("kind") == "package_returned"), None)
         draft: dict[str, Any] = drafts[nn] if isinstance(drafts.get(nn), dict) else {}
         turn = _Turn(nn, start=_ts(started) or prev)
-        if drafted is not None:
+        if drafted is not None and drafted.get("satisfied"):
+            turn.status, turn.text, turn.end = "passed", f"L{nn} · package → satisfied", _ts(drafted)
+        elif drafted is not None:
             said = f" → critic {critic.get('verdict')}" if critic else ""
             again = " → revision" if critic and int(critic.get("objections") or 0) else ""
             turn.status, turn.text, turn.end = "passed", f"L{nn} · package{said}{again}", _ts(drafted)
@@ -899,6 +902,9 @@ def _layer_node(
 ) -> dict[str, Any]:
     nn = f"{i + 1:02d}"
     built = nn in (st.get("built") or {})
+    satisfied = (st.get("satisfied") or {}).get(nn)
+    if isinstance(satisfied, dict):
+        return _satisfied_node(nn, layer, satisfied, events)
     rows = cycles(nn, events, runs, built=built)
     rounds = [r for r in rows if r["kind"] == "cycle"]
     if built:
@@ -928,6 +934,33 @@ def _layer_node(
         "tags": tags,
         "rows": rows,
         "jobs": rounds[-1]["jobs"] if rounds else _pending_jobs(),
+    }
+
+
+def _satisfied_node(
+    nn: str, layer: dict[str, Any], satisfied: dict[str, Any], events: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A layer that needed no code (`layer_satisfied`, 2026-11-06): done, tagged satisfied, with one code step
+    whose card says why and what already held it, in place of the build's steps it never took."""
+    at = next(
+        (e for e in reversed(events) if e.get("kind") == "layer_satisfied" and e.get("layer") == nn), None
+    )
+    rows = [text_row("why", str(satisfied.get("why") or ""))]
+    rows += [text_row("by", str(b)) for b in satisfied.get("by") or []]
+    box = job("satisfied", "satisfied", None, "passed", ended=_ts(at))
+    return {
+        "id": f"layer-{nn}",
+        "label": f"Layer {nn}",
+        "kind": "layer",
+        "lane": "build",
+        "title": layer.get("title"),
+        "scope": layer.get("scope"),
+        "acceptance": list(layer.get("acceptance") or []),
+        "attempts": 0,
+        "status": "passed",
+        "tags": [tag("satisfied", "ok")],
+        "rows": [],
+        "jobs": [shaped(box, "code", card=card("already satisfied", rows), sub="no code needed")],
     }
 
 
@@ -980,8 +1013,8 @@ def build_nodes(state_dir: Path, st: dict[str, Any], events: list[dict[str, Any]
     layer dropped from it are not drawn), publish and review."""
     runs = functools.cache(lambda run: run_events(state_dir, run))
     layers = [x for x in st.get("layers") or [] if isinstance(x, dict)]
-    built = st.get("built") or {}
-    first_open = next((i for i in range(len(layers)) if f"{i + 1:02d}" not in built), None)
+    done = {**(st.get("built") or {}), **(st.get("satisfied") or {})}  # a satisfied layer is done too
+    first_open = next((i for i in range(len(layers)) if f"{i + 1:02d}" not in done), None)
     packages, turns = _packages_node(st, events, runs)
     by_layer = {t.nn: t for t in turns}
     nodes = [packages]

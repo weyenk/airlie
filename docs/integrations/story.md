@@ -407,7 +407,34 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    not fail. A package that reproduces an existing test and
    changes it is an `existing_test_changed` finding with the test as it was. A suite that did not run its tests
    (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run` finding, and a package with no new test a
-   `no_new_test` one.
+   `no_new_test` one. A **regression guard** may pass here (below).
+- **Regression guards:** a criterion that is already true on the layer's base (AIR-61 layer 02, 2026-11-05: every
+  unsigned `/v1` call already answered 401, so a correct test of "an unsigned DELETE returns 401" could never be red;
+  AIR-59 met the same with a criterion that was already written) is not forced into a failing test. The architect
+  keeps its test in `covers` and lists it in the package's `"guards": {"<test id>": "<what already holds it>"}`; the
+  red check lets a guard pass on the base, the final gate holds it to passing after the code, the coder's brief
+  marks it, and `package_ready` names the guards. Every test that is not a guard must still fail on the base. A
+  guard must be a covered test and have a reason, and a package whose every test is a guard is refused: that layer
+  has nothing to build, and its answer is the satisfied reply. The architect's package brief says so up front, and
+  the `passes-before-code-choice` steer under a `passes_before_code` finding points at a guard (or the satisfied
+  reply) rather than at editing the test away.
+- **A layer that is already satisfied:** when every criterion a layer owns already holds, it is not built. Either
+  the packages of the layers built below it already cover each of its criteria (checked before its draft is
+  taken), or the architect's reply for it is `{"type": "satisfied", "by": ["01", "tests/unit/test_x.py::test_y"],
+  "why": "..."}` instead of a package. Each of `by` is an earlier layer by number or a test on the base
+  (`path::name`); a bare file, a function, a test file the base lacks or a test it does not hold is a reply that
+  cannot be used. The claim is then held to its evidence (`airlie.story.satisfied_check`): each layer it names must
+  have been built below, and each test it names is run on the layer's base with the red check's machinery (the
+  gate's pytest step, confined, in a detached checkout; a Vitest file with Vitest) and must pass there. What does
+  not hold is a `satisfied_unproven` finding (`package_returned` with that kind; the architect is told with
+  `checks-found` and `satisfied-unproven`) on the package's normal retry path: the next reply proves the claim or
+  is the layer's package. The layer is recorded in `state.satisfied` (`{"criteria", "by", "why"}`), with no branch, no commit and
+  no PR, a `layer_satisfied` event (layer, criteria, by, why) and a note on the issue, and the next layer builds on
+  the nearest layer below that was built. The stack's PRs name it ("Layer 2, Profile, needed no code: …"), the web
+  app's pipeline shows its lane done and tagged *satisfied*, and a restart from a layer above it keeps it as it
+  keeps a built one. A story whose every layer is satisfied publishes nothing and says so on the issue when it
+  moves to review. Before 2026-11-06 such a layer was dropped from `state.json` by hand (AIR-47 layer 04, AIR-48
+  layer 02).
 - **One retry, for the architect:** with findings, the architect is asked for the whole package again (every test
   file in full and the JSON object) with each finding and why, then its package as checked (`package-as-checked`:
   each test file after ruff's fixes, only the additions for a file it added tests to, and its JSON object, up to
