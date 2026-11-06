@@ -387,7 +387,12 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    standard-library or single-definer name imported, and a docstring or `#` comment line over the line length of
    the repository's ruff configuration wrapped at a word, its indentation kept (`wrap_long_lines`; code, any other
    string, a `# noqa`-style directive and a doctest are never touched; AIR-59, 2026-11-05: a 111-character
-   docstring line against 110 sent the package back twice).
+   docstring line against 110 sent the package back twice). First of all, a module that does not compile for an
+   `await` outside an async function has each plain `def` whose own body awaits made an `async def`, and each call
+   of one by name that is a whole statement or a whole assigned value in an async function awaited
+   (`async_awaiting_defs`; a def already async, an await only in a nested def or lambda, and a module that would
+   still not compile are left as they were; AIR-59 layer 01, 2026-11-04 and 2026-11-06: a test helper
+   `def _refined(...)` around `await pipeline(...).plan(...)` lost a try each time).
 3. **Parse:** a test module that does not parse is an `unparseable_test` finding, and the checks below do not run.
 4. **Tests and covers:** a test with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
    `raise`, or call to a helper of its module that has one is an `assertion_free_test` finding. A test id a
