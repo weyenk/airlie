@@ -99,10 +99,11 @@ async def unproven(
     return found
 
 
-def satisfied_feedback(found: Sequence[Finding]) -> tuple[str, tuple[str, ...]]:
+def satisfied_feedback(found: Sequence[Finding], *, tools: bool = False) -> tuple[str, tuple[str, ...]]:
     """What the architect is told when its satisfied reply does not hold, and the hub ids in it, in order (the
     pipeline emits a `steer` event for each): `checks-found`, a line per finding, then
-    `satisfied-unproven`."""
+    `satisfied-unproven` (`satisfied-unproven-tools` when the package is written with the file tools)."""
     said = Said()
-    lines = [said("checks-found"), *(f"- {f.test}: {f.why}" for f in found), said("satisfied-unproven")]
+    lines = [said("checks-found"), *(f"- {f.test}: {f.why}" for f in found)]
+    lines.append(said("satisfied-unproven-tools" if tools else "satisfied-unproven"))
     return "\n".join(lines), tuple(said.ids)

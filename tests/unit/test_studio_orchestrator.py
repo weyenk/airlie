@@ -1878,3 +1878,19 @@ def test_only_a_pinned_subtask_gets_its_extra_tools_scope_and_cap(tmp_path: Path
         "any",
         None,
     )
+
+
+async def test_a_subtask_whose_deliverable_is_its_reply_is_not_sent_back_for_writing_nothing(
+    tmp_path: Path,
+) -> None:
+    """The architect's package ask may answer with a satisfied reply and no file (2026-11-06): `act-first`,
+    which sends a writer's first reply of prose back once, is for a build, whose deliverable is the change."""
+    repo = repo_with_marker_tests(tmp_path)
+    answer = FakeReply(text='```json\n{"type": "satisfied", "by": ["01"], "why": "built below"}\n```')
+    for must_act, asked in ((False, 1), (True, 2)):
+        engine = FakeEngine({"docs": [answer, answer]})
+        orch = StudioOrchestrator(cfg_for(tmp_path), engine, router=ChiefRouter())
+        sub = Subtask("package", "write the tests", "docs", tools=("write_file",), must_act=must_act)
+        report = await orch.execute_task("g", repo=repo, plan=Plan((), (sub,)), detach=True, synthesise=False)
+        assert report.teams[0].ok and len(engine.requests) == asked, must_act
+    assert Subtask("s", "b").must_act is True

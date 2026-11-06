@@ -534,13 +534,23 @@ class PackageChecker:
             remove_worktree(repo, scratch)
 
 
-def package_feedback_said(findings: Sequence[Finding], previous: str = "") -> tuple[str, tuple[str, ...]]:
+def package_feedback_said(
+    findings: Sequence[Finding], previous: str = "", *, placed: Package | None = None
+) -> tuple[str, tuple[str, ...]]:
     """What the architect is told when its package comes back, and the hub ids in it, in order: the caller
     that sends it emits a `steer` event for each. `checks-found`, a line per finding (with
     `passes-before-code-choice` and `loose-match` where they apply), then, with `previous` (the package as
-    checked, `as_checked`), `package-as-checked` and it, then `package-fix`."""
+    checked, `as_checked`), `package-as-checked` and it, then `package-fix`.
+
+    With `placed` (a package written with the file tools, the tool-written packages design, 2026-11-06) its
+    test files are put back in the next try's checkout as checked, so they are named, not pasted:
+    `package-files-placed`, their paths and its JSON object (`package_json`), then `package-fix-tools`."""
     said = Said()
     lines = listed_findings(findings, said)
+    if placed is not None:
+        paths = "\n".join(f"- {p}" for p in sorted(placed.tests))
+        lines += [said("package-files-placed"), paths, package_json(placed)]
+        return "\n".join([*lines, said("package-fix-tools")]), tuple(said.ids)
     if previous:
         lines += [said("package-as-checked"), previous]
     return "\n".join([*lines, said("package-fix")]), tuple(said.ids)
@@ -593,6 +603,12 @@ def as_checked(package: Package, base: Callable[[str], str | None], limit: int =
         blocks.append(
             f"(left out, too long to carry here: {', '.join(left)}; it is as you wrote it, with ruff's fixes)"
         )
+    blocks.append(package_json(package))
+    return "\n\n".join(blocks)
+
+
+def package_json(package: Package) -> str:
+    """The package's ```json object as the contract asks for it, its guards kept (2026-11-06)."""
     obj = {
         "type": "package",
         "files": [asdict(f) for f in package.files],
@@ -602,5 +618,4 @@ def as_checked(package: Package, base: Callable[[str], str | None], limit: int =
         **({"guards": dict(package.guards)} if package.guards else {}),  # kept on a retry (2026-11-06)
         "done_when": package.done_when,
     }
-    blocks.append(f"```json\n{json.dumps(obj, indent=1, ensure_ascii=False)}\n```")
-    return "\n\n".join(blocks)
+    return f"```json\n{json.dumps(obj, indent=1, ensure_ascii=False)}\n```"
