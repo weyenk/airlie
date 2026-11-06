@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from airlie.engine import FakeEngine, FakeReply, ToolCall
@@ -599,6 +600,39 @@ async def test_a_package_covering_a_test_the_proof_lacks_keeps_it_and_reports_it
     assert kinds(st.path / "events.jsonl", "package_returned") == []
     [ready] = kinds(st.path / "events.jsonl", "package_ready")
     assert ready["beyond_proof"] == ["tests/test_calc.py::test_extra"]
+
+
+async def test_an_existing_test_the_proof_names_is_covered_as_a_guard_the_coder_is_told_of(
+    tmp_path: Path,
+) -> None:
+    """AIR-62 layer 01 (2026-11-06): the proof of a criterion that already holds named an existing test of
+    the file the layer adds to; covered it was `covers_missing`, left out a `proof_mismatch`, and the story
+    blocked. Covered, it is a regression guard: package_ready names it and the coder's brief marks it."""
+    agreed = agreement()
+    proof = (
+        ProofTest("AC1", "mul", "tests/test_base.py", "test_mul", "tests", None, "mul(2, 3) is 6", ""),
+        ProofTest("AC2", "mul", "tests/test_base.py", "test_add", "tests", None, "add(1, 2) is 3", ""),
+    )
+    base_tests = "from calc import add, mul\n\n\ndef test_add():\n    assert add(1, 2) == 3\n\n\n"
+    joined = package_reply(
+        {"tests/test_base.py": base_tests + "def test_mul():\n    assert mul(2, 3) == 6\n"},
+        {"AC1": ["tests/test_base.py::test_mul"], "AC2": ["tests/test_base.py::test_add"]},
+        files=[{"path": "calc.py", "action": "modify"}],
+        interfaces=[MUL_INTERFACE],
+        steps=STEPS,
+    )
+    st, engine = await agreed_run(
+        tmp_path,
+        [joined],
+        [AGREE_ALL],
+        [FEATURE, DONE],
+        meeting=lambda cfg, tools, on_turn: FakeMeeting(replace(agreed, proof=proof)),
+    )
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert kinds(st.path / "events.jsonl", "package_returned") == []
+    [ready] = kinds(st.path / "events.jsonl", "package_ready")
+    assert ready["guards"] == {"tests/test_base.py::test_add": "existing test the agreed proof names"}
+    assert "tests/test_base.py::test_add (a regression guard" in prompts(engine, "coder")[0]
 
 
 PROOF_CHANGE = FakeReply(

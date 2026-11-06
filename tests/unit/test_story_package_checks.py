@@ -109,6 +109,36 @@ async def test_a_covered_test_id_that_is_not_in_the_file_is_a_finding(tmp_path: 
     assert "new or changed" in found[0].why
 
 
+async def test_an_existing_test_the_agreed_proof_names_is_covered_as_a_regression_guard(
+    tmp_path: Path,
+) -> None:
+    """AIR-62 layer 01 (2026-11-06): the agreed proof named existing tests of the file the layer adds to as
+    the proof of its criteria that already hold. Covered, they were `covers_missing`; left out,
+    `proof_mismatch`: no package could pass. An existing test the proof names, or one the package declares a
+    guard, is covered as a regression guard; one that is neither is still `covers_missing`."""
+    root, base = calc(tmp_path)
+    tests = {"tests/test_base.py": OLD_TESTS + "\n\n" + TEST_MUL.split("\n\n\n", 1)[1]}
+    covers = {"AC1": ("tests/test_base.py::test_mul",), "AC2": ("tests/test_base.py::test_add",)}
+    checker = PackageChecker((PYTEST,), timeout_s=120)
+    scratch = tmp_path / "scratch" / "package-01"
+    agreed = {"tests/test_base.py::test_mul", "tests/test_base.py::test_add"}
+    got, found = await checker.check(package(tests, covers), root, base, scratch, proof_ids=agreed)
+    assert found == []
+    assert got.guards == {"tests/test_base.py::test_add": "existing test the agreed proof names"}
+    assert got.is_guard("tests/test_base.py::test_add") and not got.is_guard("tests/test_base.py::test_mul")
+    # declared a guard, it needs no proof, and its own reason is kept
+    guarded = replace(package(tests, covers), guards={"tests/test_base.py::test_add": "add is on main"})
+    got, found = await checker.check(guarded, root, base, scratch)
+    assert found == []
+    assert got.guards == {"tests/test_base.py::test_add": "add is on main"}
+    # neither named by the proof nor a guard: still not this layer's test
+    got, found = await checker.check(
+        package(tests, covers), root, base, scratch, proof_ids={"tests/test_base.py::test_mul"}
+    )
+    assert [(f.kind, f.test) for f in found] == [("covers_missing", "tests/test_base.py::test_add")]
+    assert got.guards == {}
+
+
 async def test_an_import_of_a_name_the_package_neither_defines_nor_declares_is_a_finding(
     tmp_path: Path,
 ) -> None:
