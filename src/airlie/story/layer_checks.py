@@ -103,6 +103,11 @@ _EXIT = re.compile(r"\[exit (\d+)\]\s*$")
 _PARAMS = re.compile(r"\[.*\]$")
 _RAN = frozenset({0, 1})
 """pytest's exit codes for a run that ran the tests: all passed, or some failed."""
+RED = frozenset({"FAILED", "ERROR"})
+"""The outcomes that are a test failing. A SKIPPED test (an xfail is one in the JUnit report) did not fail:
+the confined suite skips tests/unit/test_confine.py and others inside the sandbox, and from the JUnit report
+on (PR #223) every story named them as failing on the base (`existing_tests_fail_at_base`, 2026-11-05)."""
+_RANK = {"PASSED": 0, "SKIPPED": 1, "FAILED": 2, "ERROR": 2}
 _SOURCE_CHARS = 4_000
 """How much of a test's source a finding keeps (for the events, as a negative example)."""
 _OUTPUT_CHARS = 2_000_000
@@ -278,10 +283,11 @@ def _outcomes(output: str) -> dict[str, str]:
 
 def _junit_outcomes(report: Path) -> dict[str, str] | None:
     """Each test id in pytest's JUnit report (xunit1: each case names its file), with PASSED, FAILED, ERROR
-    or SKIPPED, read as `_outcomes` reads -rA (a parametrized test's cases are one id; any case that did not
-    pass makes it so; a module that could not be collected is an ERROR on its path). None when the report
-    cannot be read. The report holds every case whatever the output's length: the -rA summary is at the end
-    of an output the check caps, and AIR-47 layer 04's PASSED line was past the cap (2026-11-03)."""
+    or SKIPPED, read as `_outcomes` reads -rA (a parametrized test's cases are one id: a case that failed
+    makes it FAILED or ERROR, else a skipped one SKIPPED; a module that could not be collected is an ERROR on
+    its path). None when the report cannot be read. The report holds every case whatever the output's
+    length: the -rA summary is at the end of an output the check caps, and AIR-47 layer 04's PASSED line was
+    past the cap (2026-11-03)."""
     try:
         root = ET.parse(report).getroot()
     except (ET.ParseError, OSError):
@@ -308,7 +314,7 @@ def _junit_outcomes(report: Path) -> dict[str, str] | None:
             inner = cls.removeprefix(module).strip(".")
             classes = inner.split(".") if inner else []  # a test's class, nested classes in turn
             key = "::".join([path, *classes, _PARAMS.sub("", name)])
-        if out.get(key) in (None, "PASSED"):
+        if key not in out or _RANK[outcome] > _RANK[out[key]]:
             out[key] = outcome
     return out
 
@@ -363,7 +369,7 @@ class PytestChecks:
         existing = [
             k
             for k, o in outcomes.items()
-            if o != "PASSED" and not any(_same(m, k.split("::")[0]) for m in modules)
+            if o in RED and not any(_same(m, k.split("::")[0]) for m in modules)
         ]
         self.failing_at_base = await self._failing_at(worktree, base, existing) if existing else []
         findings += [
@@ -374,11 +380,11 @@ class PytestChecks:
         return findings
 
     async def failing(self, worktree: Path) -> list[str] | None:
-        """The ids of the tests that do not pass on the worktree as it is (a module that cannot be collected
-        is its path), with the whole outcome read from -rA, not from a capped gate output; None when the
-        suite did not run its tests."""
+        """The ids of the tests that fail on the worktree as it is (a module that cannot be collected is its
+        path; a skipped test is not one, RED), with the whole outcome read from -rA, not from a capped gate
+        output; None when the suite did not run its tests."""
         outcomes, _ = await self._suite(worktree)
-        return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
+        return None if outcomes is None else [k for k, o in outcomes.items() if o in RED]
 
     async def run_one(self, worktree: Path, test: str) -> str:
         """The gate's pytest step on the node id `test` alone, confined as the suite is, for a reader (Muse)
@@ -387,9 +393,10 @@ class PytestChecks:
         return output[-_TAIL_CHARS:]
 
     async def _failing_at(self, worktree: Path, base: str, tests: list[str]) -> list[str]:
-        """Which of `tests` (ids from the worktree's suite) fail on `base` too: run alone, confined as the
-        suite is, in a detached checkout of `base` beside the worktree that is removed after. A run that does
-        not run them (a module the base lacks) counts none as failing there, so they stay findings."""
+        """Which of `tests` (ids from the worktree's suite) fail on `base` too (FAILED or ERROR there, RED:
+        one skipped there did not fail): run alone, confined as the suite is, in a detached checkout of `base`
+        beside the worktree that is removed after. A run that does not run them (a module the base lacks)
+        counts none as failing there, so they stay findings."""
         tree = worktree.parent / f"{worktree.name}.base"
         remove_worktree(worktree, tree)  # one a killed run left behind
         add_worktree(worktree, tree, branch=None, start_point=base)
@@ -399,7 +406,7 @@ class PytestChecks:
             remove_worktree(worktree, tree)
         if outcomes is None:
             return []
-        return [t for t in tests if any(o != "PASSED" and _same(t, k) for k, o in outcomes.items())]
+        return [t for t in tests if any(o in RED and _same(t, k) for k, o in outcomes.items())]
 
     async def _suite(self, worktree: Path, tests: Sequence[str] = ()) -> tuple[dict[str, str] | None, str]:
         """The gate's pytest step run on the worktree with PYTEST_FLAGS (on `tests` alone when given): each

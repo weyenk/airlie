@@ -402,7 +402,9 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    cannot be collected yet: that counts as red, and every other module still runs). A new test that passes there
    does not test what the layer builds: a `passes_before_code` finding. A test the layer did not touch that fails
    there was broken by the new tests (a fixture, `conftest.py`, a shared helper): an `existing_test_fails` finding,
-   unless it fails on the base too (`existing_tests_fail_at_base`). A package that reproduces an existing test and
+   unless it fails on the base too (`existing_tests_fail_at_base`). Only FAILED and ERROR count as failing: a
+   test skipped there (or xfailed), as the confined suite skips the sandbox's own tests inside a sandbox, did
+   not fail. A package that reproduces an existing test and
    changes it is an `existing_test_changed` finding with the test as it was. A suite that did not run its tests
    (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run` finding, and a package with no new test a
    `no_new_test` one.
@@ -601,12 +603,14 @@ When a story blocks, the line writes down why before it moves the card (planning
 `docs/superpowers/specs/2026-10-25-line-scheduler-design.md`). It gathers an evidence pack from disk alone (the
 story's `events.jsonl`, `state.json` and the run directory: counts, the gate's tail, tracebacks, the diff stat and
 the paths of the trace), classes it by rules, asks Muse to read the pack beside the class, and writes
-`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class.
+`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class. The pack is the blocking
+layer's (the one the block's reason names): only its events are read, the gate's tail is from its last attempt,
+and a package block carries that attempt's finding (the parse error of a reply, or the check's kinds).
 
 | class | means | what happens |
 | --- | --- | --- |
 | `transient` | a trunk fetch or an engine stall | retried up to `line.transient_retries` (2) times per signature, then waits for you |
-| `environment` | the gate was red on the base already | waits for you |
+| `environment` | the gate was red on the base already: every test it failed on fails on the base too | waits for you |
 | `content` | the model's work | waits for you to resume it |
 | `process` | a bug in airlie's code, or a hold that trapped a role | a fix card on airlie's own board (below) |
 | `config` | a role's token or step cap is too small for its task | a fix card |

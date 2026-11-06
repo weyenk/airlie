@@ -217,6 +217,8 @@ def test_the_junit_report_names_each_test_as_its_id_with_its_outcome(tmp_path: P
         '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_p[2]"><failure/></testcase>'
         '<testcase file="tests/test_a.py" classname="tests.test_a.TestC.Inner" name="test_m"/>'
         '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_s"><skipped/></testcase>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_q[1]"><skipped/></testcase>'
+        '<testcase file="tests/test_a.py" classname="tests.test_a" name="test_q[2]"><failure/></testcase>'
         "</testsuite></testsuites>"
     )
     assert _junit_outcomes(report) == {
@@ -226,6 +228,7 @@ def test_the_junit_report_names_each_test_as_its_id_with_its_outcome(tmp_path: P
         "tests/test_a.py::test_p": "FAILED",  # one case failed: the test is not PASSED
         "tests/test_a.py::TestC::Inner::test_m": "PASSED",
         "tests/test_a.py::test_s": "SKIPPED",
+        "tests/test_a.py::test_q": "FAILED",  # a skipped case first: the failed one still makes it FAILED
     }
     report.write_text("<not xml")
     assert _junit_outcomes(report) is None
@@ -285,6 +288,25 @@ async def test_an_existing_test_that_already_fails_on_the_base_is_not_the_new_te
     assert await checks.run(root, base) == []
     assert checks.failing_at_base == ["tests/test_calc.py::test_add"]
     assert git(root, "worktree", "list").count("\n") == 0  # the base's checkout is gone again
+
+
+async def test_an_existing_test_that_is_skipped_or_xfails_does_not_fail_on_the_base(tmp_path: Path) -> None:
+    """From the JUnit report on (PR #223, 2026-11-03) every story logged `existing_tests_fail_at_base` naming
+    tests/unit/test_confine.py and others: they skip inside the sandbox (confine.available() is False there),
+    and a skip was counted as not passing. A skipped or xfailed test never failed: only FAILED or ERROR is."""
+    skips = (
+        "import pytest\n\n\n@pytest.mark.skip(reason='sandboxed')\ndef test_skip():\n    assert False\n\n\n"
+        "@pytest.mark.xfail(reason='known')\ndef test_xfail():\n    assert False\n\n\n"
+        "@pytest.mark.xfail(reason='known')\ndef test_xpass():\n    assert True\n"
+    )
+    root, base = repo(
+        tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS, "tests/test_skips.py": skips}
+    )
+    commit(root, "tests", {"tests/test_mul.py": TEST_MUL})
+    checks = PytestChecks(PYTEST, timeout_s=120)
+    assert await checks.run(root, base) == []
+    assert checks.failing_at_base == []
+    assert await checks.failing(root) == ["tests/test_mul.py::test_mul"]
 
 
 async def test_outcome_lines_in_a_passing_tests_captured_output_are_not_its_suites(tmp_path: Path) -> None:
