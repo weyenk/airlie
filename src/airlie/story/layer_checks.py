@@ -60,6 +60,7 @@ Kind = Literal[
     "proof_mismatch",
     "proof_sampled",
     "proof_too_large",
+    "satisfied_unproven",
 ]
 """What a finding is about."""
 PASSES_BEFORE_CODE = "it passes before the layer's code is written, so it does not test what the layer builds"
@@ -379,6 +380,13 @@ class PytestChecks:
         suite did not run its tests."""
         outcomes, _ = await self._suite(worktree)
         return None if outcomes is None else [k for k, o in outcomes.items() if o != "PASSED"]
+
+    async def outcomes(self, worktree: Path, tests: Sequence[str]) -> dict[str, str] | None:
+        """The gate's pytest step on the node ids `tests` alone, confined as the suite is: each reported id
+        with PASSED, FAILED, ERROR or SKIPPED (None when the run did not run them). A satisfied reply's tests
+        are run so on the layer's base (satisfied_check)."""
+        found, _ = await self._suite(worktree, tests)
+        return found
 
     async def run_one(self, worktree: Path, test: str) -> str:
         """The gate's pytest step on the node id `test` alone, confined as the suite is, for a reader (Muse)

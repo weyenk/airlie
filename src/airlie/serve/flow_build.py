@@ -62,6 +62,7 @@ CHECK_KINDS = frozenset(
         "tests_mended",
         "vacuous_test",
         "test_checks_red_base",
+        "satisfied_unproven",
     }
 )
 """What the story's events say about the readiness check on a layer's package (and, in a story recorded

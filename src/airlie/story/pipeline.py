@@ -114,6 +114,7 @@ from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
 from airlie.story.rounds import same_layers
+from airlie.story.satisfied_check import satisfied_feedback, unproven
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_note
 from airlie.story.testing_conventions import conventions, conventions_text, test_levels
@@ -2145,7 +2146,8 @@ class StoryPipeline:
         as the next brief's feedback, with a `steer` event per hub text in it. Events: package_start,
         package_returned (kinds), package_ready, and each finding. Exhausted: a `package_rejected` lesson and
         StoryBlocked. A gate that does not run pytest gets no red check, and an event says so. A satisfied
-        reply (the layer's criteria already hold on its base) is returned as it is, with no check."""
+        reply (the layer's criteria already hold on its base) is returned once its layers and tests hold
+        on the base (`satisfied_check.unproven`); else its findings are the next try's feedback."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
             self.commands,
@@ -2210,8 +2212,26 @@ class StoryPipeline:
                     attempt -= 1  # the attempt the architect used to say so is not charged
                     revised = True
                     continue
-                if isinstance(got, Satisfied):  # nothing to check or build: `_build` records it
-                    return got
+                if isinstance(got, Satisfied):  # held to its evidence; then `_build` records it
+                    unheld = await unproven(
+                        got,
+                        built=[b for b in st.built if int(b) <= i],
+                        repo=self.repo,
+                        base=base_sha,
+                        scratch=st.path / f"satisfied-{nn}",
+                        checks=checker.checks,
+                        node_cache=checker.node_cache,
+                        timeout_s=self.timeout_s,
+                    )
+                    if not unheld:
+                        return got
+                    run = self._package_run or st.runs[-1]
+                    self._emit_findings(st, unheld, nn, attempt, run)
+                    kinds = ["satisfied_unproven"]
+                    st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run)
+                    feedback, ids = satisfied_feedback(unheld)
+                    self._steer(st, ids, self.s.architect_role, nn)
+                    continue
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
                 st.emit("retry", stage="package", error=feedback, reply=e.reply)

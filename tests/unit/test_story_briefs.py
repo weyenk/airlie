@@ -233,8 +233,7 @@ def test_the_package_brief_asks_for_tests_as_code_with_the_contract_and_the_code
     assert "NOT happen" in text and "Every test asserts" in text
     assert "The coder has 40 steps and a context budget of 65536 tokens" in text
     assert text.rstrip().endswith(
-        "each file on the base (from the repository root, with ::name for the function or test in it) that "
-        "already does it."
+        "airlie runs those tests on the base and takes the reply only when every one of them passes there."
     )  # the contract ends the brief: covers, then guards and the satisfied reply (AIR-61, 2026-11-05)
     assert (
         "Every criterion this layer owns appears in covers with at least one test; "

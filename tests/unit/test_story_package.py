@@ -492,11 +492,25 @@ def satisfied_reply(by: Any, why: Any = "the auth middleware answers 401 for eve
 def test_a_satisfied_reply_names_what_already_holds_the_layer_and_why() -> None:
     """AIR-47 layer 04 and AIR-48 layer 02 were dropped by hand-editing state.json: airlie had no outcome
     for a layer whose criteria already hold."""
-    base = {"src/airlie/serve/app.py": "def _require_principal(): ...\n"}.get
-    by = ["01", "src/airlie/serve/app.py::_require_principal"]
-    got = parse_package(satisfied_reply(by), LAYER, STORY, base=base)
+    by = ["01", "tests/unit/test_auth.py::TestDelete::test_unsigned_is_401"]
+    got = parse_package(satisfied_reply(by), LAYER, STORY, base=AUTH_BASE)
     assert got == Satisfied(tuple(by), "the auth middleware answers 401 for every unsigned /v1 call")
     assert isinstance(got, Satisfied) and Satisfied.from_dict(got.to_dict()) == got
+    # a test named without its class is stored as its full id, as covers stores one
+    bare = parse_package(
+        satisfied_reply(["tests/unit/test_auth.py::test_unsigned_is_401"]), LAYER, STORY, base=AUTH_BASE
+    )
+    assert isinstance(bare, Satisfied) and bare.by == (
+        "tests/unit/test_auth.py::TestDelete::test_unsigned_is_401",
+    )
+
+
+AUTH_BASE = {
+    "tests/unit/test_auth.py": (
+        "class TestDelete:\n    def test_unsigned_is_401(self):\n        assert True\n"
+    ),
+    "src/airlie/serve/app.py": "def _require_principal(): ...\n",
+}.get
 
 
 @pytest.mark.parametrize(
@@ -504,13 +518,22 @@ def test_a_satisfied_reply_names_what_already_holds_the_layer_and_why() -> None:
     [
         ([], "x", "'by' needs at least one"),
         (["01"], "", "needs a non-empty 'why'"),
-        (["src/nowhere.py::f"], "x", "src/nowhere.py is not on the layer's base"),
+        (
+            ["tests/unit/test_nowhere.py::test_f"],
+            "x",
+            "tests/unit/test_nowhere.py is not on the layer's base",
+        ),
+        (["tests/unit/test_auth.py::test_gone"], "x", "does not exist on the base"),
+        (["src/airlie/serve/app.py"], "x", "name a test that already proves it"),
+        (["src/airlie/serve/app.py::_require_principal"], "x", "src/airlie/serve/app.py is not a test file"),
         (["nothing in particular"], "x", "name an earlier layer by its number"),
     ],
 )
 def test_a_satisfied_reply_that_does_not_say_what_holds_it_is_refused(by: Any, why: Any, says: str) -> None:
+    """Review of PR #244 (2026-11-06): satisfied is no escape hatch from a hard layer. It names earlier built
+    layers or tests on the base (airlie then runs them there); a bare file or a function proves nothing."""
     with pytest.raises(StoryError, match=says):
-        parse_package(satisfied_reply(by, why), LAYER, STORY, base=lambda _: None)
+        parse_package(satisfied_reply(by, why), LAYER, STORY, base=AUTH_BASE)
 
 
 def test_the_contract_says_how_to_mark_a_guard_and_when_a_layer_is_satisfied() -> None:

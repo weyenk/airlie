@@ -414,10 +414,15 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   reply) rather than at editing the test away.
 - **A layer that is already satisfied:** when every criterion a layer owns already holds, it is not built. Either
   the packages of the layers built below it already cover each of its criteria (checked before its draft is
-  taken), or the architect's reply for it is `{"type": "satisfied", "by": ["01", "src/pkg/mod.py::name"], "why":
-  "..."}` instead of a package, each of `by` an earlier layer by number or a file on the base (with `::name` for
-  what in it does the work; a file that is not there, or a number that is not a layer below, is a reply that cannot
-  be used). The layer is recorded in `state.satisfied` (`{"criteria", "by", "why"}`), with no branch, no commit and
+  taken), or the architect's reply for it is `{"type": "satisfied", "by": ["01", "tests/unit/test_x.py::test_y"],
+  "why": "..."}` instead of a package. Each of `by` is an earlier layer by number or a test on the base
+  (`path::name`); a bare file, a function, a test file the base lacks or a test it does not hold is a reply that
+  cannot be used. The claim is then held to its evidence (`airlie.story.satisfied_check`): each layer it names must
+  have been built below, and each test it names is run on the layer's base with the red check's machinery (the
+  gate's pytest step, confined, in a detached checkout; a Vitest file with Vitest) and must pass there. What does
+  not hold is a `satisfied_unproven` finding (`package_returned` with that kind; the architect is told with
+  `checks-found` and `satisfied-unproven`) on the package's normal retry path: the next reply proves the claim or
+  is the layer's package. The layer is recorded in `state.satisfied` (`{"criteria", "by", "why"}`), with no branch, no commit and
   no PR, a `layer_satisfied` event (layer, criteria, by, why) and a note on the issue, and the next layer builds on
   the nearest layer below that was built. The stack's PRs name it ("Layer 2, Profile, needed no code: …"), the web
   app's pipeline shows its lane done and tagged *satisfied*, and a restart from a layer above it keeps it as it

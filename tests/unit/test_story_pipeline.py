@@ -748,6 +748,34 @@ async def test_a_layer_whose_criteria_an_earlier_layer_already_covers_is_satisfi
     assert [e["layer"] for e in kinds(events, "package_start")] == ["01"]
 
 
+async def test_a_satisfied_reply_whose_test_cannot_be_run_on_the_base_goes_back_as_a_finding(
+    tmp_path: Path,
+) -> None:
+    """Review of PR #244 (2026-11-06): a satisfied reply is held to its evidence. Its test is run on the
+    layer's base; this gate runs no pytest, so it cannot be, and the claim goes back to the architect as a
+    `satisfied_unproven` finding on the normal retry path; its next reply is a package, and the layer
+    builds."""
+    repo = repo_with_marker_tests(tmp_path)
+    commit_file(repo, "test_old.py", "def test_old():\n    assert True\n")
+    claim = fenced({"type": "satisfied", "by": ["test_old.py::test_old"], "why": "it holds"})
+    engine = happy_engine(architect=[LAYERS, PKG1, claim, PKG2])
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert list(st.built) == ["01", "02"] and st.satisfied == {}
+    events = st.path / "events.jsonl"
+    (finding,) = kinds(events, "satisfied_unproven")
+    assert finding["layer"] == "02" and finding["test"] == "test_old.py::test_old"
+    assert "the gate runs no pytest" in finding["why"]
+    returned = [e["kinds"] for e in kinds(events, "package_returned") if e["layer"] == "02"]
+    assert returned == [["satisfied_unproven"]]
+    assert {e["id"] for e in kinds(events, "steer") if e["layer"] == "02"} == {
+        "checks-found",
+        "satisfied-unproven",
+    }
+    asked = [r for r in engine.requests if r.role == "architect"][-1].messages[-1].content
+    assert "test_old.py::test_old: satisfied, but the gate runs no pytest" in asked
+
+
 async def test_a_satisfied_reply_naming_a_layer_that_is_not_below_it_is_asked_again(tmp_path: Path) -> None:
     """A layer is satisfied only by what is already there: a layer number that is not an earlier one is a
     reply that cannot be used, and its reason goes back to the architect."""

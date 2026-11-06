@@ -36,7 +36,7 @@ PACKAGE_CONTRACT = """Reply with, for each new test file, a line `### test file:
  "guards": {"tests/unit/test_x.py::test_other": "one line: what on the base already makes it hold"},
  "done_when": "one sentence"}
 Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files.
-A criterion that is already true on the layer's base (the code there already does it, so no correct test of it can fail before this layer's code) is not forced into a failing test: keep its test in covers and list it in "guards" (leave guards out when there is none), with one line naming what already makes it hold. A guard is a regression guard: airlie lets it pass on the base, and it must still pass after the code; every test that is not a guard must fail on the base. When every criterion this layer owns is already true there, the layer has nothing to build: write no tests and reply instead with one ```json block holding {"type": "satisfied", "by": ["01", "src/pkg/mod.py::name"], "why": "one sentence"}: in by, each earlier layer that builds it, by its number, and each file on the base (from the repository root, with ::name for the function or test in it) that already does it."""  # noqa: E501
+A criterion that is already true on the layer's base (the code there already does it, so no correct test of it can fail before this layer's code) is not forced into a failing test: keep its test in covers and list it in "guards" (leave guards out when there is none), with one line naming what already makes it hold. A guard is a regression guard: airlie lets it pass on the base, and it must still pass after the code; every test that is not a guard must fail on the base. When every criterion this layer owns is already true there, the layer has nothing to build: write no tests and reply instead with one ```json block holding {"type": "satisfied", "by": ["01", "tests/unit/test_x.py::test_name"], "why": "one sentence"}: in by, each earlier layer that builds it, by its number, and each test on the base (path::name, from the repository root) that already proves it. airlie runs those tests on the base and takes the reply only when every one of them passes there."""  # noqa: E501
 
 AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test asserts what the layer cannot do, or cannot be made red in this layer for a reason other than that what it checks already holds on the base, which makes it a guard), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package. When an acceptance criterion itself is false (it states something untrue about the domain, or no correct code could meet it), name it in the same block as {"criterion": "<its id>", "why": "one sentence"}: product rewords it, then the tester revises the tests."""  # noqa: E501
 BEHAVIOUR = "behaviour"
@@ -355,32 +355,52 @@ _LAYER_NUMBER = re.compile(r"^\d{2}$")
 
 
 def _satisfied(obj: dict[str, Any], base: Callable[[str], str | None]) -> Satisfied:
-    """The satisfied reply, each of its `by` an earlier layer's number or a file on the layer's base (with
-    "::name" for what in it already does the work): a claim the architect cannot ground is refused, so a
-    layer is never let off on words alone. Whether a number is an earlier layer's is the pipeline's to say."""
-    by = tuple(s.strip() for s in _strs(obj.get("by"), "satisfied: 'by'") if s.strip())
-    if not by:
+    """The satisfied reply, each of its `by` an earlier layer's number or a test on the layer's base
+    ("path::name", stored as its full id): a claim the architect cannot ground is refused, so a layer is
+    never let off on words alone (review of PR #244, 2026-11-06: a bare file or a function proves nothing).
+    Whether a number is a layer built below, and whether each test passes on the base, the pipeline checks
+    (`satisfied_check.unproven`)."""
+    raw = tuple(s.strip() for s in _strs(obj.get("by"), "satisfied: 'by'") if s.strip())
+    if not raw:
         raise StoryError(
-            "satisfied: 'by' needs at least one earlier layer (by its number, \"01\") or file on the base "
-            "that already does what this layer's criteria ask"
+            "satisfied: 'by' needs at least one earlier layer (by its number, \"01\") or test on the base "
+            "(path::name) that already proves what this layer's criteria ask"
         )
     why = _text(obj, "why", "satisfied")
-    for item in by:
+    by: list[str] = []
+    for item in raw:
         if _LAYER_NUMBER.match(item):
+            by.append(item)
             continue
-        where = item.partition("::")[0]
-        if "/" not in where and "." not in where:
+        where, _, name = _test_id(item).partition("::")
+        if not name:
+            if "/" not in where and "." not in where:
+                raise StoryError(
+                    f'satisfied: by {item!r}: name an earlier layer by its number ("01") or a test on the '
+                    "base, from the repository root, as path::name"
+                )
             raise StoryError(
-                f'satisfied: by {item!r}: name an earlier layer by its number ("01") or a file on the base, '
-                "from the repository root, with ::name for the function or test in it that does the work"
+                f"satisfied: by {item!r}: name a test that already proves it, as path::name; airlie runs it "
+                "on the layer's base"
             )
-        path = _normal(where, "satisfied: a file")
-        if base(path) is None:
+        path = _normal(where, "satisfied: a test file")
+        if not is_test_file(path):
+            raise StoryError(
+                f"satisfied: by {item!r}: {path} is not a test file; name a test that already proves it, as "
+                "path::name"
+            )
+        text = base(path)
+        if text is None:
             raise StoryError(
                 f"satisfied: by {item!r}: {path} is not on the layer's base; name an earlier layer by its "
                 'number ("01") for what it builds'
             )
-    return Satisfied(by, why)
+        bare = name if is_js_test(path) else _PARAMS.sub("", name)
+        found = _test_named(path, text, bare)
+        if found is False:
+            raise StoryError(f"satisfied: by {item!r}: that test does not exist on the base, in {path}")
+        by.append(f"{path}::{found}{name[len(bare) :]}" if isinstance(found, str) else f"{path}::{name}")
+    return Satisfied(tuple(by), why)
 
 
 def _test_id(tid: str) -> str:
