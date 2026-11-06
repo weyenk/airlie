@@ -3,6 +3,8 @@ why: |
   model.parse_layers, checks it and names what is wrong (an unknown criterion id, one criterion under two
   layers); the schema states the same shape, as leniently as the parser reads it, for decoding constrained
   to it. 2026-11-02: the plans were 6-19k characters, mostly prose before the block (the oversharing audit).
+  "unchanged" (AIR-62, 2026-11-05): the layer's criteria that existing behaviour stays as it was, which do
+  not count toward story.max_layer_criteria.
 schema:
   $schema: https://json-schema.org/draft/2020-12/schema
   type: object
@@ -33,6 +35,8 @@ schema:
                     new: {type: boolean}
           interfaces:
             anyOf: [{type: string}, {type: array, items: {type: string}}]
+          unchanged:
+            anyOf: [{type: string}, {type: array, items: {type: string}}]
     refine:
       type: object
       properties:
@@ -48,4 +52,5 @@ rules: |
   List in "acceptance" each criterion id the layer makes true, each id under one layer. Use [] only for a layer
   that makes no criterion true (a foundation): a layer that makes one true lists it, which gives the layer its
   test-first step. List every file the layer creates or changes under files, and under interfaces the
-  signatures a later layer will import from it.
+  signatures a later layer will import from it. List under "unchanged" (optional) those of the layer's
+  criteria that say existing behaviour stays as it was.

@@ -10,16 +10,19 @@ pytest gets no red check and the caller logs that, as before.
 
 The test text is model output: written only inside the worktree (a path that leaves it is refused), parsed
 with `ast` and never imported here; the tests run as the gate runs them, confined. Findings go back to the
-architect with `package_feedback_said`, whose last text is the hub's `package-fix`."""
+architect with `package_feedback_said`, with the package as checked (`as_checked`) before the hub's
+`package-fix`, its last text."""
 
 from __future__ import annotations
 
 import ast
+import difflib
+import json
 import re
 import tempfile
 import unittest
-from collections.abc import Collection, Iterable, Iterator, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -531,10 +534,73 @@ class PackageChecker:
             remove_worktree(repo, scratch)
 
 
-def package_feedback_said(findings: Sequence[Finding]) -> tuple[str, tuple[str, ...]]:
+def package_feedback_said(findings: Sequence[Finding], previous: str = "") -> tuple[str, tuple[str, ...]]:
     """What the architect is told when its package comes back, and the hub ids in it, in order: the caller
     that sends it emits a `steer` event for each. `checks-found`, a line per finding (with
-    `passes-before-code-choice` and `loose-match` where they apply), then `package-fix`."""
+    `passes-before-code-choice` and `loose-match` where they apply), then, with `previous` (the package as
+    checked, `as_checked`), `package-as-checked` and it, then `package-fix`."""
     said = Said()
     lines = listed_findings(findings, said)
+    if previous:
+        lines += [said("package-as-checked"), previous]
     return "\n".join([*lines, said("package-fix")]), tuple(said.ids)
+
+
+AS_CHECKED_CHARS = 60_000
+"""The most of a package's test text a retry carries (`as_checked`): AIR-59's whole package was about 50k
+characters; a test file that would go over is left out by name."""
+
+
+def _additions(base: str, checked: str) -> str:
+    """The lines of `checked` (a test file the package added to, as checked) that are not `base`'s: the
+    imports and tests the package added, after ruff's fixes, in their order in the file."""
+    old, new = base.splitlines(), checked.splitlines()
+    runs = [
+        "\n".join(new[j1:j2]).strip("\n")
+        for op, _, _, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+        if op in ("insert", "replace")
+    ]
+    return "\n\n\n".join(r for r in runs if r.strip()) + "\n"
+
+
+def _fenced(path: str, text: str) -> str:
+    """`text` in a fence longer than any run of backticks it holds, opened for its language."""
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{'ts' if is_js_test(path) else 'python'}\n{text.rstrip(chr(10))}\n{fence}"
+
+
+def as_checked(package: Package, base: Callable[[str], str | None], limit: int = AS_CHECKED_CHARS) -> str:
+    """`package` as the retry carries it back to the architect (AIR-59, AIR-61, 2026-11-05: a retry started
+    fresh had lost it): each test file as checked, under `### test file:`, or, for one the package added to
+    (`added`) whose base text `base` reads, only the lines it added under `### test additions:`, never the
+    base's own tests; then its ```json object as the contract asks for it. A test file that would take the
+    test text past `limit` characters is left out, and a line says so."""
+    blocks: list[str] = []
+    left: list[str] = []
+    used = 0
+    for path in sorted(package.tests):
+        text = package.tests[path]
+        old = base(path) if path in package.added else None
+        heading, body = ("test additions", _additions(old, text)) if old is not None else ("test file", text)
+        block = f"### {heading}: {path}\n{_fenced(path, body)}"
+        if used + len(block) > limit:
+            left.append(path)
+            continue
+        used += len(block)
+        blocks.append(block)
+    if left:
+        blocks.append(
+            f"(left out, too long to carry here: {', '.join(left)}; it is as you wrote it, with ruff's fixes)"
+        )
+    obj = {
+        "type": "package",
+        "files": [asdict(f) for f in package.files],
+        "interfaces": [asdict(i) for i in package.interfaces],
+        "steps": list(package.steps),
+        "covers": {k: list(v) for k, v in package.covers.items()},
+        **({"guards": dict(package.guards)} if package.guards else {}),  # kept on a retry (2026-11-06)
+        "done_when": package.done_when,
+    }
+    blocks.append(f"```json\n{json.dumps(obj, indent=1, ensure_ascii=False)}\n```")
+    return "\n\n".join(blocks)

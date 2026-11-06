@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from airlie.story.tester_lint import LayerLint, RuffStep, lint_for, lint_note, ruff_steps
+from airlie.story.tester_lint import LayerLint, RuffStep, lint_for, lint_note, ruff_steps, wrap_long_lines
 from tests.unit.git_helpers import git
 from tests.unit.test_story_layer_checks import commit, repo
 
@@ -18,8 +18,8 @@ MESSY = "x=1\n"
 """A file of the base that ruff format would change: not the tester's, so never touched."""
 UNSORTED = "import sys\nimport os\n\n\ndef test_x():\n    assert os.sep and len(sys.argv)>0\n"
 SORTED = "import os\nimport sys\n\n\ndef test_x():\n    assert os.sep and len(sys.argv) > 0\n"
-LONG = "def test_long():\n    # " + "words " * 12 + "end\n    assert True\n"
-"""A comment too long for the line length: ruff format does not wrap comments."""
+LONG = 'def test_long():\n    message = "' + "words " * 12 + 'end"\n    assert message\n'
+"""A string too long for the line length: neither ruff nor airlie splits a string."""
 
 
 def lint() -> LayerLint:
@@ -223,3 +223,62 @@ def test_the_lint_note_reads_pyproject_falls_back_to_ruffs_default_and_is_empty_
     bare, bare_base = repo(tmp_path / "bare", {"calc.py": "x = 1\n"})
     assert "88 characters" in lint_note(bare, bare_base, GATE)
     assert lint_note(root, base, (f"{sys.executable} -m pytest -q",)) == ""
+
+
+AIR59_LINE = '    carries "type": "story" so parse_story accepts it and _refine reaches the comment and the section write."""'  # noqa: E501
+"""AIR-59 layer 02, 2026-11-05: a docstring line of 111 characters against the repository's 110 sent the
+package back twice as lint_fails, a whole try each."""
+AIR59 = f'''def test_refine_writes_the_section():
+    """A card whose text holds the refined story's JSON block, as the board returns it after a refine: it
+{AIR59_LINE}
+    pass
+'''
+
+
+def test_the_air59_docstring_line_is_wrapped_at_a_word_keeping_its_indentation() -> None:
+    assert len(AIR59_LINE) == 111
+    wrapped = wrap_long_lines(AIR59, 110)
+    lines = wrapped.splitlines()
+    assert max(len(x) for x in lines) <= 110
+    assert lines[2].startswith('    carries "type": "story"') and lines[3].startswith("    ")
+    assert lines[3].endswith('write."""')
+    assert " ".join(wrapped.split()) == " ".join(AIR59.split())  # the same words, only the breaks moved
+
+
+def test_a_long_comment_is_wrapped_and_a_trailing_one_continues_on_the_lines_below() -> None:
+    source = (
+        "def test_x():\n    # " + "words " * 12 + "end\n    x = 1  # " + "more " * 12 + "end\n    assert x\n"
+    )
+    lines = wrap_long_lines(source, 40).splitlines()
+    assert max(len(x) for x in lines) <= 40
+    comments = [x for x in lines if x.strip().startswith("#")]
+    assert all(x.startswith("    # ") for x in comments)
+    assert any(x.startswith("    x = 1  # more") for x in lines)
+    assert " ".join(" ".join(lines).replace("#", "").split()) == " ".join(source.replace("#", "").split())
+
+
+def test_code_a_string_a_directive_comment_and_a_doctest_are_never_wrapped() -> None:
+    source = (
+        "def test_x():\n"
+        '    """Doc.\n\n    >>> ' + "f(1) + " * 10 + 'f(2)\n    """\n'
+        '    message = "' + "words " * 12 + 'end"\n'
+        '    note = """\n    ' + "text " * 12 + 'end\n    """\n'
+        "    assert message, note  # noqa: " + "E501 " * 10 + "\n"
+        "    assert " + " and ".join(["message"] * 8) + "\n"
+    )
+    assert wrap_long_lines(source, 40) == source
+    broken = "def broken(:\n    # " + "words " * 20 + "\n"
+    assert wrap_long_lines(broken, 40) == broken
+
+
+async def test_the_fixer_wraps_a_long_docstring_or_comment_at_the_repositorys_line_length(
+    tmp_path: Path,
+) -> None:
+    root, base = repo(
+        tmp_path, {"pyproject.toml": '[tool.ruff]\nline-length = 110\n\n[tool.ruff.lint]\nselect = ["E"]\n'}
+    )
+    commit(root, "tests", {"tests/test_refine.py": AIR59 + "\n\n# " + "words " * 20 + "end\n"})
+    assert await lint().fix(root, base) == ["tests/test_refine.py"]
+    fixed = (root / "tests" / "test_refine.py").read_text()
+    assert max(len(x) for x in fixed.splitlines()) <= 110 and 'write."""' in fixed
+    assert await lint().check(root, base) == []

@@ -8,7 +8,7 @@ at a stack of draft pull requests for you to review. **Only a human merges:** ai
 | --- | --- | --- |
 | intake | airlie | the issue moves to *In Progress* with a comment |
 | refine | product (Qwen3.8) | a story: title, summary, Given/When/Then acceptance criteria |
-| layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned, each aiming at `story.max_layer_criteria` criteria or fewer (a soft cap the reviewer rules on) |
+| layers | architect (Qwen3.8) | at most `story.max_layers` layers, bottom first, every criterion assigned, each aiming at `story.max_layer_criteria` criteria or fewer (a soft cap the reviewer rules on; criteria that existing behaviour stays unchanged ride with the change and are not counted); a layer whose files are all test files is refused |
 | meeting | product, the architect and the tester (all on the generalist since 2026-10-26), with airlie's checker | the agreement: the criteria as worded, the layers with their files and interfaces, and the proof plan (*The three amigos*) |
 | build, per layer | the architect writes the layer's package (its tests as code, files, interfaces, steps), airlie places the tests in a scratch worktree and checks them (they fail on the base, lint, imports, covers), then the studio: the coder writes the code that makes them pass, Muse Glimmer reviews, the whole suite gates | branch `<ISSUE-KEY>-<story>-<NN>-<layer>`, one commit by `airlie` (or by the bot when you publish as one), gated by the repository's test gate (its `AGENTS.md`) |
 | publish | `gh stack` | the layers stacked on `story.trunk`, pushed, opened as **draft** PRs with bodies |
@@ -110,13 +110,13 @@ The other `story:` settings are overridden in `airlie.local.yaml` (`task config`
 | `story.trunk`, `story.remote` | `main`, `origin` | the branch the stack is based on, and the remote it is pushed to |
 | `story.publish` | `stack` | how the layers are published: `single` = one draft PR on the top layer's branch holding every layer's commit in layer order; `stack` = one draft PR per layer via `gh stack`. The committed `airlie.yaml` picks `single` |
 | `story.max_layers` | 5 | the most layers the architect may plan |
-| `story.max_layer_criteria` | 3 | the most acceptance criteria the architect aims to put in one layer, with about 4 proof tests, since a layer's whole package is written in one reply (2026-11-05: layers of 6 criteria could not be packaged, AIR-62, AIR-55, AIR-61). A soft cap: a plan with a layer over it goes once to the studio's reviewer (Muse Glimmer), which says per layer `split` (the plan goes back to the architect with its suggested split) or `keep` (it stands); a second plan still over it, or a review that fails, stands. Each ruling is a `layer_size_review` event. 0 = no cap |
+| `story.max_layer_criteria` | 3 | the most acceptance criteria the architect aims to put in one layer, with about 4 proof tests, since a layer's whole package is written in one reply (2026-11-05: layers of 6 criteria could not be packaged, AIR-62, AIR-55, AIR-61). A soft cap: a plan with a layer over it goes once to the studio's reviewer (Muse Glimmer), which says per layer `split` (the plan goes back to the architect with its suggested split) or `keep` (it stands); a second plan still over it, or a review that fails, stands. Each ruling is a `layer_size_review` event. Not counted: a criterion that existing behaviour stays unchanged, by its then-clause (unchanged, as before, as on main, does not change, still, keeps its existing, regression) or listed under the layer's `unchanged`; it rides with the change that could break it, and the reviewer never splits it off alone (2026-11-05: AIR-62's three "unchanged from before" criteria, split into a layer of their own, had nothing to build and blocked). 0 = no cap |
 | `story.stage_attempts` | 2 | tries for the story and for the layer plan before the story stops |
 | `story.plan_round_steps` | 5 | the architect plans in rounds of this many steps and stops when a round leaves the plan unchanged (*Planning time*); 0 plans in one go |
 | `story.survey` | true | while product refines the request, the architect reads the code it touches and takes notes the layer planning starts from |
 | `story.topology` | `studio` | the profile story runs load (start the engines with it: `task restart -- --topology studio`) |
 | `story.product_role`, `architect_role`, `build_role` | `product`, `architect`, `coder` | which role does what |
-| `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings (*The package check*) |
+| `story.package_attempts` | 2 | tries the architect gets at one layer's package before the story stops: a package that fails the readiness check goes back to it with the findings and the package as checked; a try back for lint alone is not charged, once a layer (*The package check*) |
 | `story.layer_attempts` | 2 | builds of one layer, each re-planned by the architect from the last gate's output, before the story stops |
 | `story.package_steps` | 12 | steps the architect gets to read the code before it writes a layer's package |
 | `story.amigos.enabled` | true | hold the story meeting before any layer is built; false: the split is the agreement and there is no proof plan |
@@ -383,7 +383,11 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
 2. **Lint:** before anything else is read, the gate's ruff steps fix what they can in the package's test files
    (the fixed text is carried into the package, so the lock commit holds what was checked), and what they cannot is
    a `lint_fails` finding with ruff's output and rule (AIR-22 layer 03, 2026-10-24: a loop variable named `l` cost
-   2.5 hours).
+   2.5 hours). Before them airlie makes the fixes ruff has none for: an ambiguous name (`l`) renamed, an undefined
+   standard-library or single-definer name imported, and a docstring or `#` comment line over the line length of
+   the repository's ruff configuration wrapped at a word, its indentation kept (`wrap_long_lines`; code, any other
+   string, a `# noqa`-style directive and a doctest are never touched; AIR-59, 2026-11-05: a 111-character
+   docstring line against 110 sent the package back twice).
 3. **Parse:** a test module that does not parse is an `unparseable_test` finding, and the checks below do not run.
 4. **Tests and covers:** a test with no `assert`, `pytest.raises`, `pytest.warns`, `assert_*` call (a mock's, say),
    `raise`, or call to a helper of its module that has one is an `assertion_free_test` finding. A test id a
@@ -398,7 +402,9 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    cannot be collected yet: that counts as red, and every other module still runs). A new test that passes there
    does not test what the layer builds: a `passes_before_code` finding. A test the layer did not touch that fails
    there was broken by the new tests (a fixture, `conftest.py`, a shared helper): an `existing_test_fails` finding,
-   unless it fails on the base too (`existing_tests_fail_at_base`). A package that reproduces an existing test and
+   unless it fails on the base too (`existing_tests_fail_at_base`). Only FAILED and ERROR count as failing: a
+   test skipped there (or xfailed), as the confined suite skips the sandbox's own tests inside a sandbox, did
+   not fail. A package that reproduces an existing test and
    changes it is an `existing_test_changed` finding with the test as it was. A suite that did not run its tests
    (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run` finding, and a package with no new test a
    `no_new_test` one. A **regression guard** may pass here (below).
@@ -430,9 +436,17 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
   moves to review. Before 2026-11-06 such a layer was dropped from `state.json` by hand (AIR-47 layer 04, AIR-48
   layer 02).
 - **One retry, for the architect:** with findings, the architect is asked for the whole package again (every test
-  file in full and the JSON object) with each finding and why, the hub's `package-fix` last; a `steer` event names
-  each hub text sent. `story.package_attempts` tries in all; findings after the last stop the layer before the
-  coder starts, with a `package_rejected` lesson. A reply that cannot be parsed as a package counts as a try. The
+  file in full and the JSON object) with each finding and why, then its package as checked (`package-as-checked`:
+  each test file after ruff's fixes, only the additions for a file it added tests to, and its JSON object, up to
+  60,000 characters of test text, a file past that named as left out), the hub's `package-fix` last; a `steer` event
+  names each hub text sent. The package is carried in the ask itself, so a retry on a conversation started fresh
+  (over `teams.fresh_continuation_tokens`) edits it rather than writing it again from memory (AIR-59 and AIR-61,
+  2026-11-05: the fresh start's diff was empty, as a package is a reply, and the tests were rewritten, one with the
+  same long line, one with another meaning). `story.package_attempts` tries in all; findings after the last stop
+  the layer before the coder starts, with a `package_rejected` lesson. A reply that cannot be parsed as a package
+  counts as a try. A try whose findings are all `lint_fails` is not charged, once a layer (`charged: false` on its
+  `package_returned`; a second is charged): a one-character E501 used to cost half the tries (AIR-47, AIR-48,
+  AIR-59, AIR-61). The
   supervisor is not asked about a package (its evidence is a layer run's trace, and there is none yet).
 - **Then placed and locked:** the tests are written into the layer's worktree (a path outside it is refused),
   committed, and locked by definition: only the test functions and classes the package added or changed are
@@ -616,12 +630,14 @@ When a story blocks, the line writes down why before it moves the card (planning
 `docs/superpowers/specs/2026-10-25-line-scheduler-design.md`). It gathers an evidence pack from disk alone (the
 story's `events.jsonl`, `state.json` and the run directory: counts, the gate's tail, tracebacks, the diff stat and
 the paths of the trace), classes it by rules, asks Muse to read the pack beside the class, and writes
-`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class.
+`stories/<key>/diagnosis/<n>.md` and `.json`. The card's note leads with the class. The pack is the blocking
+layer's (the one the block's reason names): only its events are read, the gate's tail is from its last attempt,
+and a package block carries that attempt's finding (the parse error of a reply, or the check's kinds).
 
 | class | means | what happens |
 | --- | --- | --- |
 | `transient` | a trunk fetch or an engine stall | retried up to `line.transient_retries` (2) times per signature, then waits for you |
-| `environment` | the gate was red on the base already | waits for you |
+| `environment` | the gate was red on the base already: every test it failed on fails on the base too | waits for you |
 | `content` | the model's work | waits for you to resume it |
 | `process` | a bug in airlie's code, or a hold that trapped a role | a fix card on airlie's own board (below) |
 | `config` | a role's token or step cap is too small for its task | a fix card |

@@ -102,13 +102,20 @@ from airlie.story.model import (
     StoryError,
     StorySetupError,
     branch_name,
+    change_criteria,
     oversized_layers,
     parse_layers,
     parse_size_verdict,
     parse_story,
 )
 from airlie.story.package import Package, ProofChange, Satisfied, parse_package
-from airlie.story.package_checks import PackageChecker, beyond_proof, package_feedback_said, place_package
+from airlie.story.package_checks import (
+    PackageChecker,
+    as_checked,
+    beyond_proof,
+    package_feedback_said,
+    place_package,
+)
 from airlie.story.phase import decoding, write_phase
 from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
@@ -874,14 +881,22 @@ class StoryPipeline:
         once per planning (`asked`): a layer it would split sends the plan back with its suggestion, a
         StoryError on `_usable`'s retry path; one it would keep stands. A later plan still over the cap
         stands, so this cannot loop, and a review that fails (an engine error, a verdict that cannot be read)
-        lets the plan stand: never a reason to stop a story. Each ruling is a `layer_size_review` event."""
-        over = oversized_layers(layers, self.s.max_layer_criteria)
+        lets the plan stand: never a reason to stop a story. Each ruling is a `layer_size_review` event,
+        its `criteria` the layer's counted ones: a criterion that existing behaviour stays unchanged rides
+        with the change and is not counted (AIR-62, 2026-11-05: split off alone it made a layer with
+        nothing to build)."""
+        over = oversized_layers(layers, self.s.max_layer_criteria, story)
         if not over:
             return
+        counted = {x.slug: change_criteria(x, story) for x in over}
 
         def emit(x: Layer, verdict: str, reason: str) -> None:
             st.emit(
-                "layer_size_review", layer=x.slug, criteria=len(x.acceptance), verdict=verdict, reason=reason
+                "layer_size_review",
+                layer=x.slug,
+                criteria=len(counted[x.slug]),
+                verdict=verdict,
+                reason=reason,
             )
 
         if asked:
@@ -903,12 +918,14 @@ class StoryPipeline:
         if split:
             raise StoryError(
                 "; ".join(
-                    f"layer '{x.slug}' covers {len(x.acceptance)} acceptance criteria "
-                    f"({', '.join(x.acceptance)}), more than the {cap} a layer's package of tests holds in "
-                    f"its one reply, and the reviewer would split it: {verdicts[x.slug][1]}"
+                    f"layer '{x.slug}' covers {len(counted[x.slug])} acceptance criteria "
+                    f"({', '.join(counted[x.slug])}), more than the {cap} a layer's package of tests holds "
+                    f"in its one reply, and the reviewer would split it: {verdicts[x.slug][1]}"
                     for x in split
                 )
-                + f". Split it into layers of at most {cap} criteria each, keeping each criterion whole"
+                + f". Split it into layers of at most {cap} criteria each, keeping each criterion whole; a "
+                "criterion that existing behaviour stays unchanged is not counted and stays with the layer "
+                "whose change could break it, never in a layer of its own"
             )
 
     async def _ask_reviewer(self, brief: str) -> str:
@@ -2143,11 +2160,14 @@ class StoryPipeline:
         """A package for layer `i` that passes the readiness check (package_checks): up to
         story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
         base; what a try left (a reply that could not be parsed, or the findings) goes back to the architect
-        as the next brief's feedback, with a `steer` event per hub text in it. Events: package_start,
-        package_returned (kinds), package_ready, and each finding. Exhausted: a `package_rejected` lesson and
-        StoryBlocked. A gate that does not run pytest gets no red check, and an event says so. A satisfied
-        reply (the layer's criteria already hold on its base) is returned once its layers and tests hold
-        on the base (`satisfied_check.unproven`); else its findings are the next try's feedback."""
+        as the next brief's feedback, with a `steer` event per hub text in it, and with findings the package
+        as checked (`as_checked`), so the retry edits it whether or not its conversation was started fresh. A
+        try whose findings are all lint_fails is not charged, once a layer (`charged` on its event). Events:
+        package_start, package_returned (kinds, charged), package_ready, and each finding. Exhausted: a
+        `package_rejected` lesson and StoryBlocked. A gate that does not run pytest gets no red check, and an
+        event says so. A satisfied reply (the layer's criteria already hold on its base) is returned once its
+        layers and tests hold on the base (`satisfied_check.unproven`); else its findings are the next try's
+        feedback."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
             self.commands,
@@ -2165,6 +2185,7 @@ class StoryPipeline:
         package: Package | None = None
         attempt = revisions = 0
         revised = False  # the layer's proof was revised: the next ask resumes the drafting conversation
+        lint_turn_used = False  # the one uncharged fix turn for a package back for lint alone
         # the layer's draft, taken once (a re-plan after a red gate comes with feedback and asks afresh)
         draft = st.drafts.pop(nn, None) if feedback is None else None
         if draft is not None:
@@ -2228,7 +2249,14 @@ class StoryPipeline:
                     run = self._package_run or st.runs[-1]
                     self._emit_findings(st, unheld, nn, attempt, run)
                     kinds = ["satisfied_unproven"]
-                    st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run)
+                    st.emit(
+                        "package_returned",
+                        layer=nn,
+                        attempt=attempt,
+                        kinds=kinds,
+                        studio_run=run,
+                        charged=True,
+                    )
                     feedback, ids = satisfied_feedback(unheld)
                     self._steer(st, ids, self.s.architect_role, nn)
                     continue
@@ -2275,9 +2303,19 @@ class StoryPipeline:
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))
-            st.emit("package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run)
+            # lint alone gets one fix turn a layer that is not charged (AIR-47, AIR-48, AIR-59, AIR-61: a
+            # one-character E501 used half the tries, so what mattered landed on the last with no feedback)
+            free = not lint_turn_used and kinds == ["lint_fails"]
+            st.emit(
+                "package_returned", layer=nn, attempt=attempt, kinds=kinds, studio_run=run, charged=not free
+            )
+            if free:
+                lint_turn_used = True
+                attempt -= 1
             if attempt < self.s.package_attempts:
-                feedback, ids = package_feedback_said(found)
+                # the package as checked, so a retry started fresh edits it rather than writing it from
+                # memory (AIR-59, AIR-61, 2026-11-05)
+                feedback, ids = package_feedback_said(found, as_checked(package, self._files_at(base_sha)))
                 self._steer(st, ids, self.s.architect_role, nn)
         self._lesson(st, nn, layer, package, None, "package_rejected", ", ".join(kinds))
         raise StoryBlocked(

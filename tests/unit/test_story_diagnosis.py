@@ -221,11 +221,127 @@ def test_a_planning_role_out_of_steps_is_config_but_a_coder_out_of_steps_is_cont
 def test_a_gate_that_was_red_on_the_base_is_the_environments() -> None:
     pack = blocked_pack(
         reason="layer 01 (B): `gate` fails on b",
+        gate_tail="FAILED tests/test_a.py::test_a[1] - assert 0\n1 failed, 3 passed",
         base_gate_failed=True,
         base_failing=("tests/test_a.py::test_a",),
     )
     got = classify(pack)
     assert (got.class_, got.kind, got.where) == ("environment", "gate_on_base", "tests/test_a.py::test_a")
+
+
+def test_a_gate_red_on_a_test_the_base_does_not_fail_is_the_content_path() -> None:
+    """Tests failing on the base are the environment's only when they are what the gate failed on: a gate
+    red on another test, or red with no pytest failure to name (a lint step, the web gate), is the layer's."""
+    base = ("tests/test_a.py::test_a",)
+    for tail in (
+        "FAILED tests/test_a.py::test_a - assert 0\nFAILED tests/test_b.py::test_b - assert 0",
+        "src/x.py:1:1: E501 line too long\nFound 1 error.",
+    ):
+        pack = blocked_pack(
+            reason="layer 01 (B): `gate` fails on b", gate_tail=tail, base_gate_failed=True, base_failing=base
+        )  # base_gate_failed as packs written before 2026-11-06 have it: set whenever any test was named
+        assert classify(pack).class_ == "content", tail
+
+
+AIR_55_BASE = (
+    "tests/unit/test_confine.py::test_a_shell_command_writes_in_the_worktree_and_not_outside_it",
+    "tests/unit/test_compute_tool.py::test_it_cannot_reach_the_network",
+    "tests/unit/test_tools.py::test_a_command_is_found_on_the_worktrees_path",
+)
+AIR_55_GATE = (
+    "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+    "=========================== short test summary info ============================\n"
+    "FAILED tests/unit/test_serve.py::test_health_reports_the_line - AssertionErro...\n"
+    "1 failed, 3866 passed, 18 skipped, 894 warnings in 230.98s (0:03:50)\n\n[exit 1]"
+)
+
+
+def test_a_layers_own_regression_is_content_though_tests_were_named_failing_on_the_base(
+    tmp_path: Path,
+) -> None:
+    """AIR-55 (2026-11-05 17:26): the package check named the sandbox-skipped confine tests as failing on the
+    base, the gate failed on the layer's own regression in test_serve.py, and the block was classed
+    environment / gate_on_base, so it waited for a person instead of taking the content path."""
+    state = tmp_path / "state"
+    run = "20261105-155548-0d1f"
+    write_events(
+        state / "stories" / "AIR-55" / "events.jsonl",
+        [
+            {"kind": "package_start", "layer": "01", "attempt": 1},
+            {"kind": "package_checks_start", "layer": "01", "attempt": 1},
+            {"kind": "existing_tests_fail_at_base", "layer": "01", "attempt": 1, "tests": list(AIR_55_BASE)},
+            {"kind": "package_ready", "layer": "01", "attempt": 1, "studio_run": "20261105-141938-501b"},
+            {"kind": "layer_start", "layer": "01", "attempt": 2, "studio_run": run},
+            {"kind": "gate_tail", "layer": "01", "studio_run": run, "output": AIR_55_GATE},
+            {"kind": "lesson_recorded", "layer": "01"},
+            {
+                "kind": "blocked",
+                "stage": "layers",
+                "reason": "layer 01 (Idle predicate): `uv run pytest -q` fails on AIR-55-01 after 2 builds",
+            },
+        ],
+    )
+    pack = gather(state, "AIR-55")
+    assert pack.base_failing == AIR_55_BASE and pack.base_gate_failed is False
+    got = classify(pack)
+    assert (got.class_, got.kind) == ("content", "gate_failed")
+    assert got.where == "tests/unit/test_serve.py::test_health_reports_the_line"
+    assert "tests failing on the base already" not in render_pack(pack)
+
+
+def test_the_pack_of_a_block_is_the_blocking_layers_own_not_an_earlier_layers(tmp_path: Path) -> None:
+    """AIR-62 (2026-11-05): layer 02's package could not be parsed, and the diagnosis read layer 01's stale
+    gate tail, naming layer 01 and a pytest warning line (test_learned_controller.py) as the signature."""
+    state = tmp_path / "state"
+    packages = "20261105-111602-6e42"
+    stale = (
+        "tests/unit/test_learned_controller.py::test_lts_admission\n"
+        "  UserWarning: Converting a tensor with requires_grad=True to a scalar\n"
+        "src/components/SafeMarkdown.test.ts(120,6): error TS18046: 'el' is of type 'unknown'.\n[exit 201]"
+    )
+    unparsed = (
+        "test file web/src/components/SafeMarkdown.test.ts: no fenced block (```python or ```ts) after its "
+        "heading"
+    )
+    write_events(
+        state / "stories" / "AIR-62" / "events.jsonl",
+        [
+            {"kind": "layer_start", "layer": "01", "attempt": 1, "studio_run": "20261105-113449-8d4a"},
+            {"kind": "gate_tail", "layer": "01", "studio_run": "20261105-113449-8d4a", "output": stale},
+            {"kind": "layer_replanned", "layer": "01", "attempt": 1},
+            {"kind": "layer_start", "layer": "01", "attempt": 2, "studio_run": "20261105-121215-d1a1"},
+            {"kind": "layer_built", "layer": "01"},
+            {"kind": "package_start", "layer": "02", "attempt": 1},
+            {"kind": "covers_missing", "layer": "02", "attempt": 1, "studio_run": packages},
+            {"kind": "package_returned", "layer": "02", "attempt": 1, "kinds": ["covers_missing"]},
+            {"kind": "package_start", "layer": "02", "attempt": 2},
+            {"kind": "package_resumed", "layer": "02", "studio_run": packages},
+            {"kind": "retry", "stage": "package", "error": unparsed, "reply": "### test file: ..."},
+            {
+                "kind": "package_returned",
+                "layer": "02",
+                "attempt": 2,
+                "kinds": ["package_unusable"],
+                "studio_run": packages,
+            },
+            {"kind": "lesson_recorded", "layer": "02", "ending": "package_rejected"},
+            {"kind": "steer", "layer": "01", "studio_run": "20261105-121215-d1a1"},
+            {
+                "kind": "blocked",
+                "stage": "layers",
+                "reason": "layer 02 (Fenced): its package still fails the readiness check after 2 tries "
+                "(package_unusable)",
+            },
+        ],
+    )
+    pack = gather(state, "AIR-62")
+    assert (pack.layer, pack.attempt, pack.run_id) == ("02", 2, packages)
+    assert pack.gate_tail == ""
+    assert pack.finding == unparsed
+    assert "no fenced block" in render_pack(pack)
+    got = classify(pack)
+    assert (got.class_, got.kind, got.where) == ("content", "package_rejected", "layers")
+    assert any("no fenced block" in e for e in got.evidence)
 
 
 def test_muses_category_names_a_content_kind_and_the_failing_test_is_the_where() -> None:
