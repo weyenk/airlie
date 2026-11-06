@@ -1848,8 +1848,70 @@ async def test_a_resumed_conversation_keeps_the_reasoning_its_last_run_carried(t
 
 def answering_team(tmp_path: Path, engine: FakeEngine, **role_fields: Any) -> tuple[NativeTeam, TeamContext]:
     """A thinking role told to answer after two cut reads in a row, without thinking on its last turn (the
-    architect's settings)."""
-    return thinking_team(tmp_path, engine, answer_after_cuts=2, last_turn_thinking=False, **role_fields)
+    architect's settings), with the architect's read tools unless `tool_names` says otherwise: a role that
+    can write and has not is held to writing instead (`test_a_writer_cut_before_it_wrote_...`)."""
+    fields: dict[str, Any] = {"tool_names": ("read_file",), **role_fields}
+    return thinking_team(tmp_path, engine, answer_after_cuts=2, last_turn_thinking=False, **fields)
+
+
+async def test_a_writer_cut_before_it_wrote_anything_is_held_to_writing_not_asked_for_text(
+    tmp_path: Path,
+) -> None:
+    """Noah's decision 4 (tool-written packages, 2026-11-06): the architect that writes its tests as files and
+    is cut reading before it has written anything gets the write-only hold, with tools, not the tool-less
+    answer turn, where it could only reply in text. Once it has written, the answer turn is as before."""
+    write = FakeReply(
+        tool_calls=[ToolCall("w", "write_file", json.dumps({"path": "t.py", "content": "x\n"}))]
+    )
+    engine = FakeEngine(
+        {
+            "coder": [
+                cut_read("a"),
+                cut_read("b", "b"),
+                write,
+                cut_read("c", "c"),
+                cut_read("d", "d"),
+                FakeReply(text="Done."),
+            ]
+        }
+    )
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"))
+    ctx.emit = events = Events()
+    result = await team.run(ctx, Recorder())
+    assert result.ok and result.final_text == "Done."
+    assert engine.requests[2].tools is not None  # held to writing, tools still offered
+    held = [str(m.content) for m in engine.requests[2].messages if m.role == "user"]
+    assert held[-1] == text("write-only", what="nothing", n=2, k=3)
+    assert [e["step"] for e in events.records if e["kind"] == "write_after_cuts"] == [2]
+    # after the write, two more cut reads: the answer turn, with no tools
+    assert engine.requests[5].tools is None
+    assert [s["id"] for s in steers(events)] == [
+        "reasoning-carried",
+        "reasoning-carried",
+        "write-only",
+        "reasoning-carried",
+        "answer-now",
+    ]
+
+
+async def test_a_writer_held_after_cuts_is_not_asked_for_text_while_it_still_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    engine = FakeEngine(
+        {
+            "coder": [
+                cut_read("a"),
+                cut_read("b", "b"),
+                cut_read("c", "c"),
+                cut_read("d", "d"),
+                FakeReply(text="Done."),
+            ]
+        }
+    )
+    team, ctx = answering_team(tmp_path, engine, tool_names=("write_file", "read_file"))
+    await team.run(ctx, Recorder())
+    assert all(r.tools is not None for r in engine.requests)
+    assert not any(text("answer-now", n=2, reasoning=thought(8, t)) in user_said(engine) for t in "bcd")
 
 
 async def test_cut_reads_in_a_row_end_in_the_answer_with_all_of_the_last_reasoning(tmp_path: Path) -> None:

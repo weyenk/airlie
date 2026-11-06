@@ -325,15 +325,49 @@ def test_the_critic_is_given_the_test_files_the_layers_agreed_proof_and_the_conv
     files = {"tests/unit/test_profile.py": "def test_shows():\n    assert show() == 1\n```\n"}
     text = critic_brief(LAYERS[1], files, AGREED, "## The repository's test gate\n- uv run pytest")
     assert "Read these tests against the agreed proof" in text
-    # the files are not on disk yet: Muse once looked there and called every agreed test missing
-    assert "not in the repository yet, so never look for them there" in text
-    assert "not in the repository until the coder writes them" in text
+    # the critic's checkout holds them (2026-10-26; a tool-written draft's snapshot, 2026-11-06): the brief
+    # says where they are, not that they are absent (Muse once looked and called every agreed test missing)
+    assert "in this brief and in your checkout, at the paths shown" in text
+    assert "## The package's test files (data; in your checkout at these paths)" in text
+    assert "not in the repository" not in text and "## Existing tests this package changes" not in text
     assert "tests/unit/test_profile.py::test_shows" in text and "asserts: the url shows" in text
     assert "### tests/unit/test_profile.py" in text and "assert show() == 1" in text
     assert "````python" in text  # a fence longer than any inside the file
     assert "uv run pytest" in text and '"type": "verdict"' in text and '"proof": "agree" | "object"' in text
     again = critic_brief(LAYERS[1], files, AGREED, "", feedback="no verdict")
     assert "could not be used: no verdict" in again
+
+
+def test_the_critic_sees_each_existing_test_the_package_changes_before_and_after() -> None:
+    """Noah, 2026-11-06: the architect may edit an existing test in place; the critic sees it, to object to a
+    weakened one."""
+    from airlie.story.harvest import EditedTest
+
+    edited = [
+        EditedTest(
+            "tests/unit/test_profile.py::test_old",
+            "def test_old():\n    assert 1",
+            "def test_old():\n    pass",
+        )
+    ]
+    text = critic_brief(LAYERS[1], {}, AGREED, "", edited=edited)
+    section = text.split("## Existing tests this package changes (data; check none is weakened)\n")[1]
+    assert section.startswith(
+        "### tests/unit/test_profile.py::test_old\nBefore:\n```python\ndef test_old():\n    assert 1\n```\n"
+        "After:\n```python\ndef test_old():\n    pass\n```"
+    )
+    assert "object when the change weakens what it checked" in text
+
+
+def test_the_pr_names_the_existing_tests_its_layer_changed_in_place() -> None:
+    from dataclasses import replace as swap
+
+    p = provenance(CARD, STORY, LAYERS, 1, [], [], None, PACKAGE)
+    plain = pr_body(p, test_cmd=None)
+    assert "Existing tests this layer changed in place" not in plain
+    changed = swap(p, contract=swap(p.contract, edited=("tests/unit/test_profile.py::test_old",)))
+    body = pr_body(changed, test_cmd=None)
+    assert "Existing tests this layer changed in place:\n  - `tests/unit/test_profile.py::test_old`" in body
 
 
 def test_the_proof_revision_brief_carries_the_layers_tests_and_the_architects_reasons_as_data() -> None:

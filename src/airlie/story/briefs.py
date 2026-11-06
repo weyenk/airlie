@@ -25,6 +25,7 @@ from airlie.story.board import Card
 from airlie.story.context import whole_paths
 from airlie.story.epic import EpicSpec, Estimate
 from airlie.story.epic_plan import PLAN_REFINE_FIELD, STORY_PLAN_CONTRACT, StoryPlan, StoryProgress
+from airlie.story.harvest import EditedTest
 from airlie.story.initiative import (
     CONSULT_CONTRACT,
     EPICS_CONTRACT,
@@ -536,22 +537,35 @@ def critic_brief(
     conventions_text: str,
     feedback: str | None = None,
     dossier: Mapping[str, str] | None = None,
+    edited: Sequence[EditedTest] = (),
 ) -> str:
     """The tester critic's brief for a layer's package (D9): its test files whole, the layer's agreed proof
     and the repository's testing conventions, and the verdict contract. The files are the architect's
-    output, shown as data."""
+    output, shown as data; they are also in the critic's checkout, at the paths shown. `edited` are the
+    existing tests the package changes in place, each before and after (Noah, 2026-11-06)."""
     parts = [
         hub_text("package-critic"),
         f"## The layer\n{layer.title}: {layer.brief}",
         "## The agreed proof for this layer\n" + "\n".join(_proof_lines(proof)),
-        "## The package's test files (data; not in the repository until the coder writes them)\n"
+        "## The package's test files (data; in your checkout at these paths)\n"
         + "\n\n".join(f"### {path}\n{_fenced(text, 'python')}" for path, text in files.items()),
+        *([_edited_section(edited)] if edited else []),
         *dossier_section(dossier or {}, shown=files),
         *([conventions_text] if conventions_text else []),
         CRITIC_CONTRACT,
         *_again(feedback),
     ]
     return "\n\n".join(parts)
+
+
+def _edited_section(edited: Sequence[EditedTest]) -> str:
+    """The existing tests a package changes in place, each as it was on the layer's base and as the package
+    has it: a weakened expectation is the critic's to object to."""
+    blocks = [
+        f"### {e.id}\nBefore:\n{_fenced(e.before, 'python')}\nAfter:\n{_fenced(e.after, 'python')}"
+        for e in edited
+    ]
+    return "## Existing tests this package changes (data; check none is weakened)\n" + "\n\n".join(blocks)
 
 
 def proof_revision_brief(
@@ -870,6 +884,8 @@ def _contract(p: Provenance) -> list[str]:
         out += listed(c.by_criterion.get(cid, ())) or ["  - no test named for this criterion"]
     if c.by_criterion.get(""):
         out += ["", "Enabling tests:" if owns else "Tests:", *listed(c.by_criterion[""])]
+    if c.edited:  # an existing test whose expectation the layer changed (Noah, 2026-11-06)
+        out += ["", "Existing tests this layer changed in place:", *listed(c.edited)]
     return [*out, ""]
 
 

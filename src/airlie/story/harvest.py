@@ -11,7 +11,10 @@ anyway, in the old `### test file:` / `### test additions:` form, has them writt
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+import subprocess
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from airlie.story.js_tests import JsParseError, js_tests
@@ -117,3 +120,96 @@ def _place(worktree: Path, text: str) -> list[str]:
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(body, encoding="utf-8")
     return sorted(out)
+
+
+@dataclass(frozen=True)
+class EditedTest:
+    """A test that was on the layer's base and that the package changes in place (Noah, 2026-11-06: allowed,
+    and shown to the critic and in the PR): its id and its source before and after."""
+
+    id: str
+    before: str
+    after: str
+
+
+def _sources(path: str, text: str) -> dict[str, str] | None:
+    """Each test of the file `path` (its `text`) by its name in a test id, with its source; None when it does
+    not parse."""
+    if is_js_test(path):
+        try:
+            return {t.name: t.source for t in js_tests(text)}
+        except JsParseError:
+            return None
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    lines = text.splitlines()
+    classes = {c.name: c for c in tree.body if isinstance(c, ast.ClassDef)}
+
+    def whole(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
+        """`node`'s source with its decorators: dropping a parametrize case changes only them (review of
+        PR #251, 2026-11-06)."""
+        start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        return "\n".join(lines[start - 1 : node.end_lineno])
+
+    out: dict[str, str] = {}
+    for name, fn in test_functions(tree):
+        cls = classes.get(name.partition("::")[0]) if "::" in name else None
+        # a method's class decorators (a mark, a parametrize) are part of what the test checks
+        context = "".join(f"@{ast.get_source_segment(text, d)}\n" for d in cls.decorator_list) if cls else ""
+        out[name] = context + whole(fn)
+    return out
+
+
+def edited_tests(tests: Mapping[str, str], base: Callable[[str], str | None]) -> list[EditedTest]:
+    """The tests of `tests` (path -> whole text) that `base` (path -> text on the layer's base, None when
+    absent) already has, with a different source, in path and file order. A file that does not parse, then
+    or now, gives none."""
+    found: list[EditedTest] = []
+    for path in sorted(tests):
+        old_text = base(path)
+        old = _sources(path, old_text) if old_text is not None else None
+        new = _sources(path, tests[path])
+        if not old or new is None:
+            continue
+        found += [
+            EditedTest(f"{path}::{name}", old[name], src)
+            for name, src in new.items()
+            if name in old and old[name] != src
+        ]
+    return found
+
+
+def merged(ancestor: str, ours: str, theirs: str) -> str | None:
+    """`theirs` (a draft's file) with what changed from `ancestor` (the file it was drafted on) to `ours`
+    (the file on the layer's real base) merged in, by `git merge-file`; None when the two changes conflict.
+    When `ours` is `ancestor`, `theirs` as it is."""
+    if ours == ancestor:
+        return theirs
+    with tempfile.TemporaryDirectory(prefix="airlie-merge-") as d:
+        paths = [Path(d) / n for n in ("ours", "ancestor", "theirs")]
+        for p, text in zip(paths, (ours, ancestor, theirs), strict=True):
+            p.write_text(text, encoding="utf-8")
+        done = subprocess.run(
+            ["git", "merge-file", "-p", *map(str, paths)], capture_output=True, text=True, check=False
+        )
+    return done.stdout if done.returncode == 0 else None
+
+
+def rebase_draft(
+    tests: Mapping[str, str], drafted: Callable[[str], str | None], base: Callable[[str], str | None]
+) -> tuple[dict[str, str], list[str]]:
+    """A tool-written draft's test files rebased onto its layer's real base (the tool-written packages
+    design, 2026-11-06): each file merged three ways (`merged`), the ancestor the file as it was where the
+    draft's edits were made (`drafted`, path -> text at the draft's `at`), ours the file on the real base
+    (`base`). The rebased files, and the paths whose changes conflict (left out of the files)."""
+    out: dict[str, str] = {}
+    conflicts: list[str] = []
+    for path in sorted(tests):
+        got = merged(drafted(path) or "", base(path) or "", tests[path])
+        if got is None:
+            conflicts.append(path)
+        else:
+            out[path] = got
+    return out, conflicts

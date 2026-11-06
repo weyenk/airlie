@@ -667,7 +667,22 @@ class NativeTeam:
                 )
                 tail = _carried_tail(ctx.role, bool(req.thinking), res, call)
                 cuts = cuts + 1 if tail else 0
-                if tail and ctx.role.answer_after_cuts and cuts >= ctx.role.answer_after_cuts:
+                cut_out = bool(tail and ctx.role.answer_after_cuts and cuts >= ctx.role.answer_after_cuts)
+                unwritten = can_write and not (changed if continuing else wrote)
+                if cut_out and unwritten and not reading_off:
+                    # a writer that has written nothing would answer in text alone: it writes first, under
+                    # the write-only hold, and the answer turn waits for a write (the tool-written packages
+                    # design, 2026-11-06, Noah's decision 4)
+                    messages.append(
+                        Message(role="user", content=_steer(ctx, steps, "reasoning-carried", tail=tail))
+                    )
+                    what = "nothing this round" if continuing else "nothing"
+                    said = _steer(ctx, steps, "write-only", what=what, n=steps, k=READS_UNDER_HOLD)
+                    messages.append(Message(role="user", content=said))
+                    reading_off, reads_left, cuts = True, READS_UNDER_HOLD, 0
+                    if ctx.emit is not None:
+                        ctx.emit("write_after_cuts", team_id=ctx.team_id, role=ctx.role_name, step=steps)
+                elif cut_out and not unwritten:
                     # the design began again on each cut turn: all of the last one goes back, and the
                     # next turn answers (AIR-54, AIR-55, AIR-59, 2026-11-04)
                     reasoning = res.reasoning.strip()

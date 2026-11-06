@@ -181,6 +181,20 @@ red check a clean base whatever else the architect's checkout holds, and it is c
    "<reason>"}` in the package JSON, and the `satisfied` reply). The JSON-only contract keeps `guards` and the
    `satisfied` reply. #244 merges before build step 3; steps 1 and 2 do not depend on it.
 
+## As built (2026-11-06)
+
+- Steps 1-2: #245, #248. Step 3: #250. The package ask is an `Asker.conversation(writes=Writes(...))`, not
+  `Asker.ask(prepare=)`, because the JSON-only turn has to be in the same conversation. `Subtask.must_act` is
+  False for it, so `act-first` does not send back a satisfied, proof_change or JSON-only reply.
+- Step 4: the drafting conversation writes with the tools. Its snapshots are commits of its checkout under
+  `refs/airlie/<story>/draft-NN`, dropped when the story publishes or restarts. A draft conflict is not charged
+  as a try. The critic reads a draft at its snapshot. A single ask's package is read at a commit built with
+  its files (`_with_tests`), as before. Edited existing tests appear before and after in the critic's brief,
+  and by id in the PR's contract section (from `package_ready`'s `edited`).
+- Step 5's code: when a writer that has written nothing is cut, it gets the write-only hold, not the answer
+  turn. While the hold is on and nothing is written, further cuts carry the reasoning and do not ask for text.
+- `story.package_tools` stays off in `airlie.yaml`, with `package_steps` at 24, until a bench comparison.
+
 ## Build plan (independent PRs, each through the gate)
 
 1. **Tools.** `ToolContext.write_scope` and `write_max_chars`; `Subtask.tools` added in `_tools`. Tests:

@@ -26,7 +26,7 @@ from typing import Any
 
 from airlie.obs import EventSink
 from airlie.story.board import Board, Card, note
-from airlie.story.cleanup import prune_stale_stacks
+from airlie.story.cleanup import drop_draft_refs, prune_stale_stacks
 from airlie.story.local_board import LocalBoard
 from airlie.story.model import PLANNED, StoryRunning, StorySetupError
 from airlie.story.publish import Publisher, PublishError
@@ -494,6 +494,7 @@ async def _set_aside(
                 capture_output=True,
             )
         prune_stale_stacks(repo)
+        drop_draft_refs(repo, key)  # the drafts are drafted again
         built = saved.get("built") or {}
         # from where they are, together; one an interrupted run of this restart already moved stays put
         moves: dict[str, tuple[str, str]] = {}

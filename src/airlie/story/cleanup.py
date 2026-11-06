@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -32,3 +33,36 @@ def prune_stale_stacks(clone: Path) -> int:
     if len(kept) != len(stacks):
         path.write_text(json.dumps({**data, "stacks": kept}, indent=2) + "\n")
     return len(stacks) - len(kept)
+
+
+def draft_ref(story: str, nn: str) -> str:
+    """The ref that keeps story `story`'s drafted snapshot of layer `nn` from git's garbage collection (the
+    tool-written packages design, 2026-11-06): the commit a later layer's draft was made on, which its
+    rebase reads."""
+    return f"refs/airlie/{story}/draft-{nn}"
+
+
+def drop_draft_refs(clone: Path, story: str) -> int:
+    """Delete story `story`'s draft refs (`draft_ref`) from the clone: once it publishes, or is set aside or
+    started over. How many were deleted."""
+    return len(
+        _drop_refs(clone, f"refs/airlie/{story}/", lambda ref: ref.startswith(f"refs/airlie/{story}/draft-"))
+    )
+
+
+def drop_every_draft_ref(clone: Path) -> list[str]:
+    """Delete every story's draft refs from the clone, and return them: the story bench clears its sandbox
+    with this after every run, whatever story the run was (review of PR #251, 2026-11-06)."""
+    return _drop_refs(clone, "refs/airlie/", lambda ref: ref.rpartition("/")[2].startswith("draft-"))
+
+
+def _drop_refs(clone: Path, prefix: str, wanted: Callable[[str], bool]) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(clone), "for-each-ref", "--format=%(refname)", prefix],
+        capture_output=True,
+        text=True,
+    )
+    refs = [r for r in out.stdout.splitlines() if wanted(r)]
+    for ref in refs:
+        subprocess.run(["git", "-C", str(clone), "update-ref", "-d", ref], capture_output=True)
+    return refs
