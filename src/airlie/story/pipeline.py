@@ -101,6 +101,7 @@ from airlie.story.model import (
     StoryError,
     StorySetupError,
     branch_name,
+    change_criteria,
     oversized_layers,
     parse_layers,
     parse_size_verdict,
@@ -815,14 +816,22 @@ class StoryPipeline:
         once per planning (`asked`): a layer it would split sends the plan back with its suggestion, a
         StoryError on `_usable`'s retry path; one it would keep stands. A later plan still over the cap
         stands, so this cannot loop, and a review that fails (an engine error, a verdict that cannot be read)
-        lets the plan stand: never a reason to stop a story. Each ruling is a `layer_size_review` event."""
-        over = oversized_layers(layers, self.s.max_layer_criteria)
+        lets the plan stand: never a reason to stop a story. Each ruling is a `layer_size_review` event,
+        its `criteria` the layer's counted ones: a criterion that existing behaviour stays unchanged rides
+        with the change and is not counted (AIR-62, 2026-11-05: split off alone it made a layer with
+        nothing to build)."""
+        over = oversized_layers(layers, self.s.max_layer_criteria, story)
         if not over:
             return
+        counted = {x.slug: change_criteria(x, story) for x in over}
 
         def emit(x: Layer, verdict: str, reason: str) -> None:
             st.emit(
-                "layer_size_review", layer=x.slug, criteria=len(x.acceptance), verdict=verdict, reason=reason
+                "layer_size_review",
+                layer=x.slug,
+                criteria=len(counted[x.slug]),
+                verdict=verdict,
+                reason=reason,
             )
 
         if asked:
@@ -844,12 +853,14 @@ class StoryPipeline:
         if split:
             raise StoryError(
                 "; ".join(
-                    f"layer '{x.slug}' covers {len(x.acceptance)} acceptance criteria "
-                    f"({', '.join(x.acceptance)}), more than the {cap} a layer's package of tests holds in "
-                    f"its one reply, and the reviewer would split it: {verdicts[x.slug][1]}"
+                    f"layer '{x.slug}' covers {len(counted[x.slug])} acceptance criteria "
+                    f"({', '.join(counted[x.slug])}), more than the {cap} a layer's package of tests holds "
+                    f"in its one reply, and the reviewer would split it: {verdicts[x.slug][1]}"
                     for x in split
                 )
-                + f". Split it into layers of at most {cap} criteria each, keeping each criterion whole"
+                + f". Split it into layers of at most {cap} criteria each, keeping each criterion whole; a "
+                "criterion that existing behaviour stays unchanged is not counted and stays with the layer "
+                "whose change could break it, never in a layer of its own"
             )
 
     async def _ask_reviewer(self, brief: str) -> str:

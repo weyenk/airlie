@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
+from airlie.tools.scope import is_test_file
 from airlie.topology.studio_plan import json_block_problem
 
 
@@ -153,7 +154,9 @@ class ScopedPath:
 class Layer:
     """One layer of a story. `scope` is prose for people (and for states saved before D14); `files` and
     `interfaces` are what the architect names for the machine: every file the layer creates or changes and
-    the signatures at its boundary that later layers import (three-amigos D14, 2026-10-24)."""
+    the signatures at its boundary that later layers import (three-amigos D14, 2026-10-24). `unchanged` is
+    the ids of `acceptance` the architect marks as behaviour that stays as it was, riding with this layer's
+    change (AIR-62, 2026-11-05): with those whose wording says so, they do not count toward the soft cap."""
 
     slug: str
     title: str
@@ -162,6 +165,7 @@ class Layer:
     acceptance: tuple[str, ...] = ()
     files: tuple[ScopedPath, ...] = ()
     interfaces: tuple[str, ...] = ()
+    unchanged: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -176,8 +180,16 @@ class Layer:
             for f in d.get("files") or ()
         )
         interfaces = tuple(str(i) for i in d.get("interfaces") or ())
+        unchanged = tuple(str(a) for a in d.get("unchanged") or ())
         return cls(
-            str(d["slug"]), str(d["title"]), str(d["scope"]), str(d["brief"]), acceptance, files, interfaces
+            str(d["slug"]),
+            str(d["title"]),
+            str(d["scope"]),
+            str(d["brief"]),
+            acceptance,
+            files,
+            interfaces,
+            unchanged,
         )
 
     def paths(self) -> tuple[str, ...]:
@@ -374,6 +386,22 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
                 )
             owner[a] = slug
         where = f"layer '{slug}'"
+        same = _strs(d.get("unchanged"), f"{where}: 'unchanged'", "criterion ids")
+        stray = [a for a in same if a not in acc]
+        if stray:
+            raise StoryError(
+                f"layer '{slug}' marks {stray} unchanged but does not list them under its 'acceptance' "
+                f"{list(acc)}; mark only the criteria the layer lists"
+            )
+        files = _scoped_paths(d.get("files"), where)
+        if files and all(is_test_file(f.path) for f in files):
+            raise StoryError(
+                f"layer '{slug}' changes only test files ({', '.join(f.path for f in files)}): a layer's "
+                "tests must fail before its code and pass after it, and with no source file to change they "
+                "cannot. A criterion that existing behaviour stays unchanged rides with the layer whose "
+                "change could break it, never in a layer of its own: give this layer's criteria to that "
+                "layer, or name the source files this layer changes"
+            )
         layers.append(
             Layer(
                 slug,
@@ -381,8 +409,9 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
                 _text(d, "scope", where),
                 _text(d, "brief", where),
                 acc,
-                _scoped_paths(d.get("files"), where),
+                files,
                 _strs(d.get("interfaces"), f"{where}: 'interfaces'"),
+                same,
             )
         )
     missing = sorted(known - set(owner))
@@ -393,12 +422,38 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
     return tuple(layers)
 
 
-def oversized_layers(layers: Sequence[Layer], cap: int) -> tuple[Layer, ...]:
-    """The layers of a plan that make more than `cap` acceptance criteria true (story.max_layer_criteria);
-    none when `cap` is 0. A soft cap (2026-11-05): a layer's whole package of tests is written in one reply,
-    and layers of 6 criteria could not be packaged in it (AIR-62 layer 01, AIR-55 and AIR-61 layer 02), but
-    a story that cannot be cut further keeps its layer, so the reviewer rules on these, not the parser."""
-    return tuple(x for x in layers if cap and len(x.acceptance) > cap)
+_UNCHANGED = re.compile(
+    r"\bunchanged\b|\bas (?:it |they )?(?:did |does |do )?before\b|\bas on (?:the )?(?:main|base|trunk)\b"
+    r"|\b(?:does|do|did)(?: not|n't) change\b|\bnot changed\b|\bstill\b|\bregressions?\b"
+    r"|\bkeeps? (?:its|their) (?:existing|current)\b",
+    re.IGNORECASE,
+)
+
+
+def is_unchanged(c: Criterion) -> bool:
+    """Whether `c`'s then-clause says existing behaviour stays as it was (unchanged, as before, as on main,
+    does not change, still, keeps its existing ...): a regression criterion, which rides with the change that
+    could break it. AIR-62 (2026-11-05): "(unchanged from before: fenced blocks keep their existing
+    rendering)" and two more like it were ruled over the cap with its one real change, split into a layer of
+    their own, and that layer had nothing to build."""
+    return bool(_UNCHANGED.search(c.then))
+
+
+def change_criteria(layer: Layer, story: Story) -> tuple[str, ...]:
+    """The ids of `layer`'s criteria that its change makes true: not marked unchanged in the plan and not
+    worded as unchanged behaviour (`is_unchanged`); an id the story lacks counts as a change."""
+    worded = {c.id for c in story.acceptance if is_unchanged(c)}
+    return tuple(a for a in layer.acceptance if a not in layer.unchanged and a not in worded)
+
+
+def oversized_layers(layers: Sequence[Layer], cap: int, story: Story) -> tuple[Layer, ...]:
+    """The layers of a plan that make more than `cap` acceptance criteria of `story` true
+    (story.max_layer_criteria); none when `cap` is 0. A soft cap (2026-11-05): a layer's whole package of
+    tests is written in one reply, and layers of 6 criteria could not be packaged in it (AIR-62 layer 01,
+    AIR-55 and AIR-61 layer 02), but a story that cannot be cut further keeps its layer, so the reviewer
+    rules on these, not the parser. Only `change_criteria` count: an unchanged criterion is proven inside a
+    test of the change, and split off alone it is a layer with nothing to build (AIR-62's re-plan)."""
+    return tuple(x for x in layers if cap and len(change_criteria(x, story)) > cap)
 
 
 SIZE_VERDICTS = ("split", "keep")

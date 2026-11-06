@@ -14,6 +14,7 @@ from airlie.story.model import (
     StoryError,
     StorySetupError,
     branch_name,
+    is_unchanged,
     oversized_layers,
     parse_layers,
     parse_size_verdict,
@@ -92,9 +93,92 @@ def test_oversized_layers_are_those_over_the_criteria_cap_and_a_cap_of_0_has_non
     small = {"slug": "small", "title": "Small", "scope": "a.py", "brief": "b", "acceptance": ["AC1"]}
     big = {**small, "slug": "big", "title": "Big", "acceptance": ["AC2", "AC3", "AC4"]}
     layers = parse_layers({"layers": [small, big]}, story, 3)
-    assert [x.slug for x in oversized_layers(layers, 2)] == ["big"]
-    assert oversized_layers(layers, 3) == () and oversized_layers(layers, 0) == ()  # at the cap; no cap
-    assert oversized_layers(layers[:1], 1) == ()  # one criterion is never over a cap: it cannot be split
+    assert [x.slug for x in oversized_layers(layers, 2, story)] == ["big"]
+    assert oversized_layers(layers, 3, story) == () and oversized_layers(layers, 0, story) == ()  # no cap
+    assert oversized_layers(layers[:1], 1, story) == ()  # one criterion is never over a cap: no split
+
+
+AIR62_THENS = (
+    "the span's content renders inside a <code> element whose class attribute is exactly "
+    '"font-mono text-xs"',
+    "the fenced content renders inside exactly one <pre> (unchanged from before: fenced blocks keep their "
+    "existing rendering)",
+    'it renders a <strong> with text "bold" (unchanged from before: non-code inline markdown is unaffected)',
+    "no <a> element is rendered for the key (unchanged from before: comments keep linkKeys off)",
+)
+"""AIR-62's refined criteria, cut short: AC1 the change, AC2-AC4 behaviour that stays as on main."""
+
+
+def _story_of(*thens: str) -> Story:
+    acc = [{"id": f"AC{n}", "given": "g", "when": "w", "then": t} for n, t in enumerate(thens, 1)]
+    return parse_story({**GOOD, "acceptance": acc})
+
+
+def test_unchanged_criteria_ride_with_the_change_and_do_not_count_toward_the_cap() -> None:
+    """AIR-62, 2026-11-05: one layer of the change (AC1) and three unchanged-from-before criteria was ruled
+    over the cap of 3 and split, and the layer of the unchanged ones alone had nothing to build and blocked.
+    The architect's one layer was right: it makes one criterion true, the others ride with it."""
+    story = _story_of(*AIR62_THENS)
+    one = {"slug": "inline-code-class", "title": "Inline code", "scope": "SafeMarkdown.ts", "brief": "b"}
+    layers = parse_layers({"layers": [{**one, "acceptance": ["AC1", "AC2", "AC3", "AC4"]}]}, story, 5)
+    assert oversized_layers(layers, 3, story) == ()
+    assert [x.slug for x in oversized_layers(layers, 1, _story_of("a", "b", *AIR62_THENS[2:]))] == [
+        "inline-code-class"
+    ]  # two changes over a cap of 1: the two unchanged ones still do not count
+
+
+@pytest.mark.parametrize(
+    ("then", "unchanged"),
+    [
+        ("fenced blocks render as before", True),
+        ("the output is exactly as on main", True),
+        ("the board does not change", True),
+        ("existing comments keep their current rendering", True),
+        ("the old command still works", True),
+        ("the existing behaviour is kept (no regression)", True),
+        ("the avatar is stored", False),
+        ("the change is shown in the log", False),
+        ("the class is exactly font-mono text-xs", False),
+    ],
+)
+def test_a_criterion_whose_then_says_existing_behaviour_stays_reads_as_unchanged(
+    then: str, unchanged: bool
+) -> None:
+    assert is_unchanged(Criterion("AC1", "g", "w", then)) is unchanged
+
+
+def test_the_architect_may_mark_a_layers_unchanged_criteria_itself() -> None:
+    """The plan's "unchanged" ids (2026-11-06): criteria whose wording does not say so are not counted
+    either, and only a criterion the layer lists can be one."""
+    story = _story_of("a", "b", "c", "d")
+    one = {
+        "slug": "x",
+        "title": "X",
+        "scope": "x.py",
+        "brief": "b",
+        "acceptance": ["AC1", "AC2", "AC3", "AC4"],
+    }
+    assert [x.slug for x in oversized_layers(parse_layers({"layers": [one]}, story, 3), 3, story)] == ["x"]
+    [marked] = parse_layers({"layers": [{**one, "unchanged": ["AC3", "AC4"]}]}, story, 3)
+    assert marked.unchanged == ("AC3", "AC4") and oversized_layers((marked,), 3, story) == ()
+    assert Layer.from_dict(json.loads(json.dumps(marked.to_dict()))) == marked
+    with pytest.raises(StoryError, match=r"layer 'x' marks \['AC9'\] unchanged"):
+        parse_layers({"layers": [{**one, "unchanged": ["AC9"]}]}, story, 3)
+
+
+def test_a_layer_whose_files_are_all_test_files_is_refused() -> None:
+    """AIR-62's re-plan (2026-11-05): a layer of the unchanged criteria alone, its only file the test file,
+    had no change a test could fail before; it could never get a package and blocked."""
+    story = _story_of(*AIR62_THENS)
+    test = {"path": "web/src/components/SafeMarkdown.test.ts"}
+    first = {"slug": "inline-code-class", "title": "Code", "scope": "s", "brief": "b", "acceptance": ["AC1"]}
+    first["files"] = [{"path": "web/src/components/SafeMarkdown.ts"}, test]
+    rest = {**first, "slug": "no-change-regression", "acceptance": ["AC2", "AC3", "AC4"], "files": [test]}
+    with pytest.raises(StoryError, match="layer 'no-change-regression' changes only test files") as err:
+        parse_layers({"layers": [first, rest]}, story, 5)
+    assert "rides with the layer whose change could break it" in str(err.value)
+    for files in ([], [{"path": "docs/x.md"}], [{"path": "tests/helpers.py"}]):  # none named; not a test
+        parse_layers({"layers": [first, {**rest, "files": files}]}, story, 5)
 
 
 def test_parse_size_verdict_reads_a_verdict_per_layer_asked_about() -> None:

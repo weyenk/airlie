@@ -39,7 +39,7 @@ from airlie.story.initiative import (
 )
 from airlie.story.lessons import Lesson
 from airlie.story.mockups import DIRECTIONS_CONTRACT, Direction
-from airlie.story.model import CONTROL, SURROGATE, Layer, Story
+from airlie.story.model import CONTROL, SURROGATE, Layer, Story, change_criteria
 from airlie.story.package import AGREED_PROOF_CONTRACT, PACKAGE_CONTRACT, Package
 from airlie.story.provenance import Provenance
 from airlie.story.rounds import REFINE_FIELD
@@ -271,12 +271,18 @@ def _criteria(cap: int) -> dict[str, object]:
 def layer_size_brief(story: Story, layers: Sequence[Layer], over: Sequence[Layer], cap: int) -> str:
     """The reviewer's brief on a layer plan whose `over` layers make more than `cap` criteria true
     (story.max_layer_criteria, 2026-11-05): the story, the whole plan (each layer's criteria and brief as the
-    architect wrote them: data) and the verdict contract (prompts/replies/layer-size.yaml)."""
-    plan = [
-        f"- {x.slug} ({len(x.acceptance)} criteria: {', '.join(x.acceptance) or 'none'}): "
-        f"{x.title}. {x.brief}"
-        for x in layers
-    ]
+    architect wrote them: data) and the verdict contract (prompts/replies/layer-size.yaml). A layer's
+    criteria that existing behaviour stays unchanged are shown apart: they are not counted (AIR-62,
+    2026-11-05: the reviewer split three of them off alone, into a layer with nothing to build)."""
+
+    def sized(x: Layer) -> str:
+        counted = change_criteria(x, story)
+        kept = [a for a in x.acceptance if a not in counted]
+        return f"{len(counted)} criteria: {', '.join(counted) or 'none'}" + (
+            f"; unchanged, riding with them: {', '.join(kept)}" if kept else ""
+        )
+
+    plan = [f"- {x.slug} ({sized(x)}): {x.title}. {x.brief}" for x in layers]
     parts = [
         hub_text("brief-layer-size-review", **_criteria(cap)),
         story_text(story),
