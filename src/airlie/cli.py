@@ -847,6 +847,9 @@ def bench_story(
     case_id: Annotated[str, typer.Argument(metavar="CASE", help="a case of evals/stories (roman)")],
     baseline: Annotated[Path | None, typer.Option(help="an earlier record to compare with")] = None,
     keep_prs: Annotated[bool, typer.Option(help="leave the run's PRs open instead of closing them")] = False,
+    no_publish: Annotated[
+        bool, typer.Option(help="stop once every layer is built and gated: no push, no PR, no GitHub")
+    ] = False,
     cases_dir: Path = Path("evals/stories"),
     out_dir: Annotated[Path, typer.Option(help="where the record is written")] = Path("docs/bench"),
     state_root: Annotated[Path, typer.Option(help="each run's own state directory goes under it")] = Path(
@@ -855,27 +858,12 @@ def bench_story(
     config: ConfigOpt = None,
 ) -> None:
     """Build a case's story end to end on a state directory of its own, then record what it cost (phases,
-    tokens per second by role, retries) and how good it is (gate, oracle, mutation score, tests), close its
-    PRs, and compare with --baseline. Hours long: it holds the engine the whole time."""
-    import subprocess as sp
-    import time
+    tokens per second by role, retries), whether it went through first try, and how good it is (gate, oracle,
+    mutation score, tests), close its PRs, and compare with --baseline. Hours long: it holds the engine the
+    whole time."""
+    import json
 
-    from airlie.bench.story_bench import (
-        close_prs,
-        compare,
-        delete_new_branches,
-        find_case,
-        fresh_state_dir,
-        grade,
-        local_branches,
-        measure,
-        prune_remote_branches,
-        prune_stale_stacks,
-        save,
-        verdict,
-    )
-    from airlie.story import factory
-    from airlie.story.model import StorySetupError
+    from airlie.bench.story_bench import BenchSetupError, compare, find_case, run_case, verdict
 
     cfg = _story_cfg(config)
     try:
@@ -883,64 +871,100 @@ def bench_story(
     except FileNotFoundError as e:
         err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
         raise typer.Exit(2) from None
-    state = fresh_state_dir(state_root.expanduser(), case.id)
-    cfg.observability.state_dir = state  # no lessons, board or runs of an earlier run
-    problems = factory.story_problems(cfg)
     try:
-        clone = factory.written_repo(cfg, cfg.story.repos_root.expanduser() / case.name)
-    except StorySetupError as e:
-        problems.append(str(e))
-    _fail(problems)
-    console.print(f"[bold]{case.id}[/bold]: building in {clone}, state in {state}")
-
-    async def go() -> StoryState:
-        board, card = await factory.card_for(cfg, None, case.request)
-        return await factory.run_one(cfg, board=board, card=card, repo=clone, test_cmd=None)
-
-    started = time.strftime("%Y-%m-%dT%H:%M:%S")
-    # the build that runs, read before it does: a commit made during an hour-long run is not this run's code
-    # (2026-10-31: two runs were stamped with commits made while they ran)
-    build = sp.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    prune_remote_branches(clone)  # no stale record of a branch an earlier run deleted on GitHub
-    prune_stale_stacks(clone)  # nor of a stack whose branches an earlier run deleted
-    before = local_branches(clone)
-    try:
-        st = _run_stoppable(go())
-    except BaseException:
-        delete_new_branches(clone, before)  # a stopped run leaves nothing for the next one to trip on
-        prune_stale_stacks(clone)
-        raise
-    gate = " && ".join((st.gate or {}).get("commands") or [])
-    top = st.built[max(st.built)]["sha"] if st.built else None
-    built_on = (st.base or {}).get("sha")
-    record: dict[str, Any] = {
-        "case": case.id,
-        "started": started,
-        "airlie_build": build,
-        "base": {"expected": case.base, "built_on": built_on, "same": built_on == case.base},
-        "stage": st.stage,
-        "blocked": st.blocked,
-        "layers_built": len(st.built),
-        "prs": [p.get("url") for p in st.prs],
-        "cost": measure(st.path, state / "runs"),
-        "quality": grade(case, clone, top, ["sh", "-c", gate]) if top and gate else None,
-    }
-    record["closed"] = [] if keep_prs else close_prs(case.repo, st.prs, clone)
-    if not keep_prs:
-        record["branches_deleted"] = delete_new_branches(clone, before)
-        prune_stale_stacks(clone)
-    path = save(record, out_dir)
-    console.print(f"record: {path}")
+        record, path = run_case(
+            cfg,
+            case,
+            state_root=state_root,
+            out_dir=out_dir,
+            keep_prs=keep_prs,
+            publish=False if no_publish else None,
+            run=_run_stoppable,
+            say=lambda line: console.print(line, markup=False, highlight=False, emoji=False),
+        )
+    except BenchSetupError as e:
+        _fail(e.problems)
+        raise  # unreachable: _fail exits
+    console.print(f"record: {path}", markup=False, highlight=False)
     if not record["base"]["same"]:
+        built_on = record["base"]["built_on"]
         console.print(f"[yellow]built on {built_on}, not the case's {case.base}: compare with care[/yellow]")
     for line in verdict(case, record) or ["within its budgets"]:
-        console.print(f"verdict: {line}")
+        console.print(f"verdict: {line}", markup=False, highlight=False, emoji=False)
     if baseline is not None:
-        import json
-
         for line in compare(json.loads(baseline.read_text()), record):
-            console.print(f"vs {baseline.name}: {line}")
-    if st.blocked:
+            console.print(f"vs {baseline.name}: {line}", markup=False, highlight=False, emoji=False)
+    if record["blocked"]:
+        raise typer.Exit(1)
+
+
+@bench_app.command("sweep")
+def bench_sweep(
+    case_ids: Annotated[
+        list[str], typer.Argument(metavar="CASE...", help="cases of evals/stories, run in turn")
+    ],
+    keep_prs: Annotated[bool, typer.Option(help="leave each run's PRs open instead of closing them")] = False,
+    no_publish: Annotated[
+        bool, typer.Option(help="every case stops once its layers are built and gated, whatever it says")
+    ] = False,
+    cases_dir: Path = Path("evals/stories"),
+    out_dir: Annotated[Path, typer.Option(help="where each record is written")] = Path("docs/bench"),
+    state_root: Annotated[Path, typer.Option(help="each run's own state directory goes under it")] = Path(
+        "~/.local/state/airlie-bench"
+    ),
+    config: ConfigOpt = None,
+) -> None:
+    """Run story bench cases one after another (the reliability loop, 2026-11-06), writing each record, then
+    print one row per case (first try, wall minutes, package tries, builds, blocks, gate failures) and each
+    case's comparison with its previous record in --out-dir. A case that cannot start is a row of its own and
+    the sweep goes on; a stop (Ctrl-C) ends it. Exits 1 when any case did not go through first try."""
+    import json
+
+    from airlie.bench.story_bench import (
+        BenchSetupError,
+        SweepRow,
+        find_case,
+        previous_record,
+        run_case,
+        sweep_lines,
+    )
+
+    try:
+        cases = [find_case(cases_dir, c) for c in case_ids]
+    except FileNotFoundError as e:
+        err.print(f"[red]{escape(str(e))}[/red]", emoji=False)
+        raise typer.Exit(2) from None
+    rows: list[SweepRow] = []
+    for case in cases:
+        before = previous_record(out_dir, case.id)  # found before this run writes its own
+        row = SweepRow(
+            case.id,
+            None,
+            previous=json.loads(before.read_text()) if before is not None else None,
+            previous_name=before.name if before is not None else None,
+        )
+        try:
+            row.record, path = run_case(
+                _story_cfg(config),  # each case changes its config (its state directory): a fresh one each
+                case,
+                state_root=state_root,
+                out_dir=out_dir,
+                keep_prs=keep_prs,
+                publish=False if no_publish else None,
+                run=_run_stoppable,
+                say=lambda line: console.print(line, markup=False, highlight=False, emoji=False),
+            )
+            console.print(f"record: {path}", markup=False, highlight=False)
+        except BenchSetupError as e:
+            row.error = "; ".join(e.problems)
+        except typer.Exit:  # a stop (SIGTERM, SIGHUP) or a config that cannot load: a RuntimeError, but final
+            raise
+        except Exception as e:  # noqa: BLE001 - one case that fails does not stop the others
+            row.error = f"{type(e).__name__}: {e}"
+        rows.append(row)
+    for line in sweep_lines(rows):
+        console.print(line, markup=False, highlight=False, emoji=False, soft_wrap=True)
+    if any(r.record is None or not r.record.get("first_try") for r in rows):
         raise typer.Exit(1)
 
 

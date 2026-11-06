@@ -4,7 +4,8 @@
 id: wiki
 request: >-
   Make the existing wiki (docs/wiki) more Wikipedia-like and expose it in airlie's web UI.
-repo: weyenk/airlie             # its clone under story.repos_root; the story publishes there, the bench closes the PRs
+repo: weyenk/airlie             # the story publishes there, the bench closes the PRs
+clone: ~/.local/state/airlie-bench/repos/airlie   # since 2026-11-06: repos_root/airlie is the home checkout serve runs from
 base: b41d8ce3bea98fa097f00e3b191aa06346f03c14   # main when run B built it; a run on another says so
 oracle: wiki_oracle.py          # beside this file; mounts the built app's wiki routes in jsdom with Vitest
 mutate: null                    # the mutation score's mutants are Python's, and this story's code is TypeScript

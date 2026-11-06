@@ -787,11 +787,13 @@ class StorySpec(Strict):
     trunk: str = Field(default="main", description="the stack's base branch")
     remote: str = "origin"
     topology: str = Field(default="studio", description="the profile story runs load")
-    publish: Literal["single", "stack"] = Field(
+    publish: Literal["single", "stack", "none"] = Field(
         default="stack",
         description="how the story's layers are published: stack = one draft PR per layer (gh stack, "
         "today's behaviour); single = one draft PR on the top layer's branch, holding every layer's "
-        "commit in layer order",
+        "commit in layer order; none = nothing is pushed or opened and GitHub is never asked (no bot "
+        "token): the story ends at review with its layer branches local (the story bench's no-publish "
+        "runs, 2026-11-06)",
     )
     max_layers: int = Field(default=5, ge=1)
     max_layer_criteria: int = Field(

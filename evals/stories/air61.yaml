@@ -1,0 +1,19 @@
+# AIR-61 as its card read on 2026-11-06, rerun from scratch until it goes through first try (the reliability
+# loop: task bench:sweep -- air55 air59 air61 air62). Built in a clone of its own on the main commit where none
+# of the four stories is merged, published nowhere: its layers are built and gated, and nothing reaches GitHub.
+id: air61
+request: |-
+  Delete comments
+
+  Airlie tickets need a way to delete comments
+repo: weyenk/airlie             # the clone below; its origin must name this repository
+clone: ~/.local/state/airlie-bench/repos/airlie   # not repos_root/airlie: that is the home checkout serve runs from
+base: c0399cdf5c2ee2d1d8eddc08812ea5e0a4a4ebb0   # main at #244, before any of AIR-55/59/61/62 merged
+pin_base: true                  # every run builds on that commit, however far main has moved
+publish: false                  # built and gated, never pushed: no PR, no GitHub call
+oracle: null                    # no exact answer: quality is the gate and the layers' own tests
+mutate: null
+gate_timeout_s: 1800            # airlie's own gate: uv sync, ruff, mypy, pytest and the web build
+budgets:
+  wall_min: 240
+  first_try: true               # every layer packaged and built on its first try, no block

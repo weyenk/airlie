@@ -247,6 +247,7 @@ def make_pipeline(
     repo: Path,
     test_cmd: str | None = None,
     github_repo: str | None = None,
+    pinned_base: str | None = None,
 ) -> StoryPipeline:
     engine = _engine(cfg)
     return StoryPipeline(
@@ -257,14 +258,22 @@ def make_pipeline(
         repo=repo,
         test_cmd=test_cmd,
         github_repo=github_repo,
+        pinned_base=pinned_base,
     )
 
 
 async def run_one(
-    cfg: AirlieConfig, *, board: Board, card: Card, repo: Path | None = None, test_cmd: str | None = None
+    cfg: AirlieConfig,
+    *,
+    board: Board,
+    card: Card,
+    repo: Path | None = None,
+    test_cmd: str | None = None,
+    pinned_base: str | None = None,
 ) -> StoryState:
     """Build, or resume, the story of `card`: where `placed` says (`repo` is a person's --repo), gated by
-    `test_cmd` (a person's --test-cmd), else by the test gate of the repository's AGENTS.md. It plans under
+    `test_cmd` (a person's --test-cmd), else by the test gate of the repository's AGENTS.md, on `pinned_base`
+    when given (the story bench's case base), else on the remote's trunk. It plans under
     the planning lane's lock and then builds under the build lane's, in turn (a job holds one lane): a
     planning job or a build already running is StoryBusy, naming the lane. Each lane it holds names the story
     (`lane_record`), as the line's jobs do, so the line's row and a restart's running check see it."""
@@ -278,7 +287,12 @@ async def run_one(
         with lane_record(state, "plan", card.key, "plan", time.time()):
             where = await placed(cfg, board, card, repo)
             pipe = make_pipeline(
-                cfg, board=board, repo=where.repo, test_cmd=test_cmd, github_repo=where.github_repo
+                cfg,
+                board=board,
+                repo=where.repo,
+                test_cmd=test_cmd,
+                github_repo=where.github_repo,
+                pinned_base=pinned_base,
             )
             st = await pipe.plan(card)
         if st.blocked is not None or not st.done(PLANNED):
