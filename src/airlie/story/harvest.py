@@ -11,6 +11,7 @@ anyway, in the old `### test file:` / `### test additions:` form, has them writt
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from pathlib import Path
 
 from airlie.story.js_tests import JsParseError, js_tests
@@ -45,6 +46,15 @@ def harvest(worktree: Path, since: str) -> dict[str, str]:
     path order. A test that a file had at `since` and has no more (the file deleted, the test removed or
     renamed) is a StoryError naming each, by its id; a file that does not parse, then or now, is not judged
     here."""
+    tests, deleted = harvest_files(worktree, since)
+    if deleted:
+        raise StoryError(DELETED_TESTS.format(ids=", ".join(deleted)))
+    return tests
+
+
+def harvest_files(worktree: Path, since: str) -> tuple[dict[str, str], list[str]]:
+    """`harvest`'s two halves, with nothing refused: the test files, and the ids of the tests deleted since
+    `since`. A try that ends unusable keeps its files for the next one, deletions and all."""
     tests: dict[str, str] = {}
     deleted: list[str] = []
     for path in sorted(p for p in changed_in_tree(worktree, since) if is_test_file(p)):
@@ -57,9 +67,21 @@ def harvest(worktree: Path, since: str) -> dict[str, str]:
         after = _names(path, now) if now is not None else set()
         if before is not None and after is not None:
             deleted += [f"{path}::{name}" for name in sorted(before - after)]
-    if deleted:
-        raise StoryError(DELETED_TESTS.format(ids=", ".join(deleted)))
-    return tests
+    return tests, deleted
+
+
+def place_tests(worktree: Path, tests: Mapping[str, str]) -> list[str]:
+    """Write `tests` (path -> whole text) into `worktree` and return their paths, sorted: the last try's test
+    files, put back for the next try to edit (the tool-written packages design, 2026-11-06). A path that is
+    absolute or leaves the worktree is a ValueError."""
+    root = worktree.resolve()
+    for path in sorted(tests):
+        target = (root / path).resolve()
+        if Path(path).is_absolute() or not target.is_relative_to(root):
+            raise ValueError(f"test path {path!r} must be inside the worktree")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(tests[path], encoding="utf-8")
+    return sorted(tests)
 
 
 def place_reply_tests(worktree: Path, text: str) -> list[str]:

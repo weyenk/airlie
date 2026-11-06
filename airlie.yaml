@@ -181,7 +181,14 @@ story:
   # 12 (the schema's default) until 2026-11-02: AIR-47 layer 02's architect ran out of its read steps three times
   # before writing a package (the layer touches the publisher, the pipeline and a 160k-char test module, and
   # brief-package-existing-tests asks it to grep for the existing tests it breaks)
-  package_steps: 24
+  # 24 until 2026-11-06: with package_tools each test file, or each few tests added to one, is a step of its own
+  # (the tool-written packages design, Noah's decision 3)
+  package_steps: 32
+  # 2026-11-06: the architect writes a layer's tests as files with write_file/edit_file (test files only, at most
+  # package_write_chars a call, no test deleted) and replies with the package JSON alone. From 2026-10-31 to 11-05
+  # 48% of package rounds blocked and 56% of tries had no usable package (cut off, out of steps, no JSON), the
+  # whole reply 40k+ characters. The drafting conversation stays one reply per layer until it gets the tools too
+  package_tools: true
   amigos:                          # P2 (2026-10-24): product, the architect and the tester agree requirements, changes and proof before any layer is built
     enabled: true
     max_turns: 12                  # at the cap each owner's part stands and the open objections are recorded

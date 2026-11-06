@@ -854,7 +854,14 @@ class StorySpec(Strict):
         default=False,
         description="the architect writes a layer's tests into its checkout with write_file and edit_file "
         "and replies with the package JSON alone, where off it writes every test file into one reply (the "
-        "tool-written packages design, 2026-11-06); off until the package asks get the write tools",
+        "tool-written packages design, 2026-11-06); the drafting conversation stays one reply per layer "
+        "until it gets the tools too",
+    )
+    package_write_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        description="with package_tools: the most text one write_file or edit_file call of the architect's "
+        "takes (about 3k tokens), so a file is written with its first tests and the rest added after",
     )
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
     plan: PlanSpec = Field(default_factory=PlanSpec)

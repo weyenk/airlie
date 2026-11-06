@@ -485,7 +485,8 @@ class StudioOrchestrator:
             nudge=nudge,
             already_written=written,
             attempt=attempt,  # its steps' trace folder, whether or not the conversation starts again
-            must_act=True,  # a build's deliverable is the change: a first reply of prose is sent back once
+            # a build's deliverable is the change: a first reply of prose is sent back once
+            must_act=run.subtask.must_act,
             stop_when=lambda _s: False,  # keeps the conversation state for a fix round
             images=list(self.images) if role.vision else [],
             emit=self.sink.emit,

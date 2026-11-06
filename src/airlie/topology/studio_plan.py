@@ -32,6 +32,11 @@ class Subtask:
     write_max_chars: int | None = None
     """`ToolContext.write_max_chars` for a pinned subtask: the most text one write_file or edit_file call
     takes (None: no cap)."""
+    must_act: bool = True
+    """A first reply that changed nothing is sent back once (`act-first`): a build's deliverable is the
+    change. False for a subtask whose deliverable is its reply, the files it writes beside it (the
+    architect's package, whose answer may be a satisfied or proof_change reply, or the JSON alone;
+    2026-11-06)."""
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from airlie.config import AirlieConfig
 from airlie.story.fixes import line_event
@@ -41,7 +41,23 @@ class Say(Protocol):
     specialist said. `at` moves the conversation's read-only checkout to another commit before a later turn
     (a story's later layer's base, P9)."""
 
-    def __call__(self, nudge: str | None = None, /, *, at: str | None = None) -> Awaitable[str]: ...
+    def __call__(
+        self, nudge: str | None = None, /, *, at: str | None = None, steps: int | None = None
+    ) -> Awaitable[str]: ...
+
+
+@dataclass(frozen=True)
+class Writes:
+    """What a conversation may write (the tool-written packages design, 2026-11-06): the builtin `tools` its
+    subtask gets beside its role's, the file tools' `scope` and size per call (`max_chars`), and the hooks
+    on its worktree: `prepare` before the first turn (`execute_task`'s), `collect` after each turn with the
+    turn's result (a `TeamResult`, or None), before what it said is judged."""
+
+    tools: tuple[str, ...] = ()
+    scope: Literal["any", "tests"] = "any"
+    max_chars: int | None = None
+    prepare: Callable[[Path], Awaitable[None]] | None = None
+    collect: Callable[[Path, Any], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -251,20 +267,48 @@ class Asker:
         images: Sequence[Path] = (),
         long: bool = True,
         repo_map: MapUse = CONFIG_MAP,
+        writes: Writes | None = None,
     ) -> AsyncIterator[Say]:
         """A read-only conversation with `role` (P4, 2026-10-25): the first `say(...)` runs `brief` as the
         subtask (detached worktree at the record's base, or `at`), each later `say(text)` sends `text` as a
-        follow-up in the same conversation (`follow_up`, `steps` steps), and the worktree is removed when the
-        block ends, even when it raises. Product's imagining holds one open across consultations."""
-        plan = Plan((), (Subtask(stage, brief, role),))
+        follow-up in the same conversation (`follow_up`, `steps` steps, or a turn's own `steps`), and the
+        worktree is removed when the block ends, even when it raises. Product's imagining holds one open
+        across consultations.
+
+        With `writes` the conversation may write test files (the architect's package, the tool-written
+        packages design, 2026-11-06): its subtask gets the write tools, confined and capped as `writes` says;
+        `writes.prepare` runs on the worktree before the first turn, and `writes.collect` after every turn,
+        before what the turn said is judged, so a turn that ends unusable has still been read."""
+        grant = writes or Writes()
+        plan = Plan(
+            (),
+            (
+                Subtask(
+                    stage,
+                    brief,
+                    role,
+                    tools=grant.tools,
+                    write_scope=grant.scope,
+                    write_max_chars=grant.max_chars,
+                    must_act=writes is None,  # with writes the reply is the deliverable, the files beside it
+                ),
+            ),
+        )
         orch, base = self.start_ask(st, stage, at)
         started = False
+        tree = orch.run_dir.path / "studio"
+        turn_steps = steps  # `say`'s own `steps` names one turn's
 
-        async def say(nudge: str | None = None, /, *, at: str | None = None) -> str:
+        def judged(team: Any) -> str:
+            if writes is not None and writes.collect is not None and tree.is_dir():
+                writes.collect(tree, team)
+            return self.answer(team, role, orch, cut=self.cut_key(st, stage, role))
+
+        async def say(nudge: str | None = None, /, *, at: str | None = None, steps: int | None = None) -> str:
             nonlocal started
             await self.wait(st, stage, long)  # every turn of the conversation is a long one
             if at is not None and started:  # a later turn about another commit (a later layer's base)
-                detach_at(orch.run_dir.path / "studio", at)
+                detach_at(tree, at)
             if not started:
                 started = True
                 report = await orch.execute_task(
@@ -274,15 +318,14 @@ class Asker:
                     base=base.get("sha"),
                     detach=True,
                     synthesise=False,
-                    max_steps=steps,
+                    max_steps=turn_steps,
                     images=images,
+                    prepare=writes.prepare if writes is not None else None,
                     **repo_map.kwargs(),
                 )
-                return self.answer(
-                    report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
-                )
-            await orch.follow_up(stage, nudge or "", max_steps=steps)
-            return self.answer(orch.runs[stage].result, role, orch, cut=self.cut_key(st, stage, role))
+                return judged(report.teams[0] if report.teams else None)
+            await orch.follow_up(stage, nudge or "", max_steps=steps or turn_steps)
+            return judged(orch.runs[stage].result)
 
         try:
             yield say
