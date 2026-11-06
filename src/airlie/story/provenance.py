@@ -106,6 +106,8 @@ class Stack:
     """("trunk", "main") or ("story", "AIR-39")."""
     prs: tuple[tuple[int, str, str], ...]
     """(number, url, layer title) in merge order."""
+    satisfied: tuple[tuple[int, str, str], ...] = ()
+    """(layer number, title, why) of each layer that needed no code: it has no PR (`layer_satisfied`)."""
 
 
 @dataclass(frozen=True)
@@ -281,10 +283,11 @@ def gather_provenance(
     if rest:
         by_criterion[""] = rest
 
+    below = st.built_below(i)  # a satisfied layer has no commit: the nearest built one below is the base
     base_sha = (
         str((st.base or {}).get("sha") or "")
-        if i == 0
-        else str(st.built.get(f"{i:02d}", {}).get("sha") or "")
+        if below is None
+        else str(st.built.get(below, {}).get("sha") or "")
     )
     skipped = any(e.get("kind") == "test_checks_skipped" for e in mine)
     ready = any(e.get("kind") == "package_ready" for e in mine)
@@ -328,12 +331,19 @@ def gather_provenance(
         )
         for r in rows
     )
-    below = (st.base or {}).get("story")
+    on = (st.base or {}).get("story")
+    # the layers with a PR, in order: a satisfied layer has none, and the stack names it apart
+    with_pr = [j for j in range(total) if f"{j + 1:02d}" not in st.satisfied]
     stack = Stack(
-        i + 1,
+        with_pr.index(i) + 1 if i in with_pr else i + 1,
         total,
-        ("story", str(below)) if below else ("trunk", cfg.story.trunk),
-        tuple((n, u, layers[j].title) for j, (n, u) in enumerate(prs)),
+        ("story", str(on)) if on else ("trunk", cfg.story.trunk),
+        tuple((n, u, layers[j].title) for j, (n, u) in zip(with_pr, prs, strict=False)),
+        tuple(
+            (int(nn), layers[int(nn) - 1].title, str(s.get("why") or ""))
+            for nn, s in sorted(st.satisfied.items())
+            if 0 < int(nn) <= total
+        ),
     )
     start = next((e for e in events if e.get("kind") == "story_start" and e.get("build")), None)
     return Provenance(

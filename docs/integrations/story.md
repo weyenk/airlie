@@ -401,7 +401,29 @@ order, with no model. Each finding is an event in the story's `events.jsonl` (`p
    unless it fails on the base too (`existing_tests_fail_at_base`). A package that reproduces an existing test and
    changes it is an `existing_test_changed` finding with the test as it was. A suite that did not run its tests
    (pytest's exit code is neither 0 nor 1) is a `suite_did_not_run` finding, and a package with no new test a
-   `no_new_test` one.
+   `no_new_test` one. A **regression guard** may pass here (below).
+- **Regression guards:** a criterion that is already true on the layer's base (AIR-61 layer 02, 2026-11-05: every
+  unsigned `/v1` call already answered 401, so a correct test of "an unsigned DELETE returns 401" could never be red;
+  AIR-59 met the same with a criterion that was already written) is not forced into a failing test. The architect
+  keeps its test in `covers` and lists it in the package's `"guards": {"<test id>": "<what already holds it>"}`; the
+  red check lets a guard pass on the base, the final gate holds it to passing after the code, the coder's brief
+  marks it, and `package_ready` names the guards. Every test that is not a guard must still fail on the base. A
+  guard must be a covered test and have a reason, and a package whose every test is a guard is refused: that layer
+  has nothing to build, and its answer is the satisfied reply. The architect's package brief says so up front, and
+  the `passes-before-code-choice` steer under a `passes_before_code` finding points at a guard (or the satisfied
+  reply) rather than at editing the test away.
+- **A layer that is already satisfied:** when every criterion a layer owns already holds, it is not built. Either
+  the packages of the layers built below it already cover each of its criteria (checked before its draft is
+  taken), or the architect's reply for it is `{"type": "satisfied", "by": ["01", "src/pkg/mod.py::name"], "why":
+  "..."}` instead of a package, each of `by` an earlier layer by number or a file on the base (with `::name` for
+  what in it does the work; a file that is not there, or a number that is not a layer below, is a reply that cannot
+  be used). The layer is recorded in `state.satisfied` (`{"criteria", "by", "why"}`), with no branch, no commit and
+  no PR, a `layer_satisfied` event (layer, criteria, by, why) and a note on the issue, and the next layer builds on
+  the nearest layer below that was built. The stack's PRs name it ("Layer 2, Profile, needed no code: …"), the web
+  app's pipeline shows its lane done and tagged *satisfied*, and a restart from a layer above it keeps it as it
+  keeps a built one. A story whose every layer is satisfied publishes nothing and says so on the issue when it
+  moves to review. Before 2026-11-06 such a layer was dropped from `state.json` by hand (AIR-47 layer 04, AIR-48
+  layer 02).
 - **One retry, for the architect:** with findings, the architect is asked for the whole package again (every test
   file in full and the JSON object) with each finding and why, the hub's `package-fix` last; a `steer` event names
   each hub text sent. `story.package_attempts` tries in all; findings after the last stop the layer before the

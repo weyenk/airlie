@@ -250,6 +250,43 @@ def test_an_unknown_kind_in_a_try_is_a_finding_and_retired_mutation_events_are_n
     assert kinds == ["vacuous_test", "some_new_check", "package_returned"]
 
 
+def test_a_satisfied_layer_shows_as_satisfied_and_the_next_layer_is_the_open_one(tmp_path: Path) -> None:
+    """A layer whose criteria already held (`layer_satisfied`, 2026-11-06) has no build: its lane is done,
+    tagged satisfied, with one code step that says why, not a row of pending build steps."""
+    events = [
+        {"ts": 1.0, "kind": "stage", "stage": "layers"},
+        {"ts": 1.5, "kind": "packages_drafting", "layers": 3},
+        {"ts": 2.0, "kind": "package_drafted", "layer": "01", "tests": [], "satisfied": True},
+        {
+            "ts": 3.0,
+            "kind": "layer_satisfied",
+            "layer": "01",
+            "criteria": ["AC1"],
+            "by": ["src/app.py::_require_principal"],
+            "why": "an unsigned call already answers 401",
+        },
+        {"ts": 4.0, "kind": "package_start", "layer": "02", "attempt": 1},
+    ]
+    satisfied = {
+        "01": {
+            "criteria": ["AC1"],
+            "by": ["src/app.py::_require_principal"],
+            "why": "an unsigned call already answers 401",
+        }
+    }
+    layered(tmp_path, events, satisfied=satisfied, drafted=True)
+    nodes = nodes_of(tmp_path)
+    one, two = by_id(nodes, "layer-01"), by_id(nodes, "layer-02")
+    assert one["status"] == "passed" and {"text": "satisfied", "tone": "ok"} in one["tags"]
+    assert [j["id"] for j in one["jobs"]] == ["satisfied"]
+    (job,) = one["jobs"]
+    assert job["status"] == "passed" and job["shape"] == "code"
+    assert texts_of(job) == ["an unsigned call already answers 401", "src/app.py::_require_principal"]
+    assert two["status"] == "running"
+    turn = steps_of(by_id(nodes, "packages")["jobs"][0])[0]
+    assert turn["text"] == "L01 · package → satisfied"
+
+
 def test_events_for_a_layer_dropped_from_the_state_are_not_drawn(tmp_path: Path) -> None:
     layered(tmp_path, [{"ts": 1.0, "kind": "package_start", "layer": "04", "attempt": 1}])
     assert "layer-04" not in [n["id"] for n in nodes_of(tmp_path)]

@@ -523,7 +523,10 @@ class PackageChecker:
                 ]
             if web:
                 found += await vitest_red(scratch, web, self.node_cache, timeout_s=self.timeout_s)
-            return package, found
+            # a regression guard pins what the base already does: it passes there (AIR-61, 2026-11-05)
+            return package, [
+                f for f in found if not (f.kind == "passes_before_code" and f.test in package.guards)
+            ]
         finally:
             remove_worktree(repo, scratch)
 

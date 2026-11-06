@@ -311,6 +311,23 @@ async def test_a_story_started_over_from_a_layer_keeps_the_layers_below_it(tmp_p
     assert st.blocked is None and "02" in st.built and st.built["01"] == built_01
 
 
+async def test_a_layer_restart_drops_the_satisfied_layers_from_it_up_and_counts_those_below_as_done(
+    tmp_path: Path,
+) -> None:
+    """A satisfied layer (`layer_satisfied`, 2026-11-06) has no branch: a restart from a layer above it keeps
+    it as it keeps a built one, and a restart from it or below forgets it, so the layer is judged again."""
+    repo, board, store, card, st = await stopped(tmp_path)
+    st.built.pop("01")
+    st.satisfied = {"01": {"criteria": ["AC1"], "by": ["README.md"], "why": "it holds"}}
+    st.save()
+    await start_over(tmp_path, card, board, GitHubPrs(), "layer-02")  # layer 01 counts as done
+    now = StoryState.open(st.path, card, repo, github_repo="o/r")
+    assert now.satisfied == {"01": {"criteria": ["AC1"], "by": ["README.md"], "why": "it holds"}}
+    assert now.built == {} and now.stage == "layers"
+    await start_over(tmp_path, card, board, GitHubPrs(), "layer-01")
+    assert StoryState.open(st.path, card, repo, github_repo="o/r").satisfied == {}
+
+
 async def test_a_layer_restart_replays_the_layers_below_it_onto_a_moved_trunk(tmp_path: Path) -> None:
     """layer-02 keeps layer 01, replayed on the trunk fetched now and held to the story's gate there; its
     branch moves only then, and the next run builds layer 02 on it."""

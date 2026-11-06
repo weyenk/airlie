@@ -33,10 +33,12 @@ PACKAGE_CONTRACT = """Reply with, for each new test file, a line `### test file:
  "interfaces": [{"file": "src/pkg/mod.py", "signature": "def name(arg: T) -> R", "behaviour": "one line: what it does, the exact message or value the tests assert"}],
  "steps": ["ordered, one change each, naming the file and the function"],
  "covers": {"AC1": ["tests/unit/test_x.py::test_name"]},
+ "guards": {"tests/unit/test_x.py::test_other": "one line: what on the base already makes it hold"},
  "done_when": "one sentence"}
-Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files."""  # noqa: E501
+Every criterion this layer owns appears in covers with at least one test; every test id names a test in one of your test files.
+A criterion that is already true on the layer's base (the code there already does it, so no correct test of it can fail before this layer's code) is not forced into a failing test: keep its test in covers and list it in "guards" (leave guards out when there is none), with one line naming what already makes it hold. A guard is a regression guard: airlie lets it pass on the base, and it must still pass after the code; every test that is not a guard must fail on the base. When every criterion this layer owns is already true there, the layer has nothing to build: write no tests and reply instead with one ```json block holding {"type": "satisfied", "by": ["01", "src/pkg/mod.py::name"], "why": "one sentence"}: in by, each earlier layer that builds it, by its number, and each file on the base (from the repository root, with ::name for the function or test in it) that already does it."""  # noqa: E501
 
-AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test cannot be made red in this layer, or asserts what the layer cannot do), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package. When an acceptance criterion itself is false (it states something untrue about the domain, or no correct code could meet it), name it in the same block as {"criterion": "<its id>", "why": "one sentence"}: product rewords it, then the tester revises the tests."""  # noqa: E501
+AGREED_PROOF_CONTRACT = """`covers` names every agreed test, each under the criterion it proves (a test that proves no criterion goes under "behaviour"), written with the asserts and the state the plan names; a test beyond them is kept, checked like the rest, and reported. When the proof itself is wrong (a test asserts what the layer cannot do, or cannot be made red in this layer for a reason other than that what it checks already holds on the base, which makes it a guard), reply instead with one ```json block holding {"type": "proof_change", "changes": [{"test": "<test id>", "why": "one sentence"}]} and no package. When an acceptance criterion itself is false (it states something untrue about the domain, or no correct code could meet it), name it in the same block as {"criterion": "<its id>", "why": "one sentence"}: product rewords it, then the tester revises the tests."""  # noqa: E501
 BEHAVIOUR = "behaviour"
 """The key of `covers` a proof test with no criterion is listed under: a behaviour of its layer."""
 
@@ -76,7 +78,8 @@ class Interface:
 class Package:
     """A layer's package: tests (path -> the file's whole text), files, interfaces, steps, `covers`
     (criterion id -> test ids "path::name") and `done_when`. `added` holds, for a test file the reply added
-    to rather than wrote whole, only what it added: `rebased` joins it again to a later base's file."""
+    to rather than wrote whole, only what it added: `rebased` joins it again to a later base's file.
+    `guards` are the regression guards among the covered tests, test id -> why it already holds."""
 
     layer: str
     tests: Mapping[str, str]
@@ -86,6 +89,10 @@ class Package:
     covers: Mapping[str, tuple[str, ...]]
     done_when: str
     added: Mapping[str, str] = field(default_factory=dict)
+    guards: Mapping[str, str] = field(default_factory=dict)
+    """The tests that pin behaviour the layer's base already has and must keep (AIR-61 layer 02, 2026-11-05:
+    an unsigned DELETE already answered 401, so its test could never be red), each with why it holds: the
+    red check lets a guard pass on the base. A pytest id is kept without parameters, as the check names it."""
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-native: lists for tuples, so a saved package equals the one read back."""
@@ -98,6 +105,7 @@ class Package:
             "covers": {k: list(v) for k, v in self.covers.items()},
             "done_when": self.done_when,
             "added": dict(self.added),
+            "guards": dict(self.guards),
         }
 
     @classmethod
@@ -117,6 +125,7 @@ class Package:
             {str(k): tuple(str(t) for t in v) for k, v in d["covers"].items()},
             str(d.get("done_when") or ""),
             {str(k): str(v) for k, v in (d.get("added") or {}).items()},
+            {str(k): str(v) for k, v in (d.get("guards") or {}).items()},
         )
 
     def with_tests(self, tests: Mapping[str, str]) -> Package:
@@ -130,6 +139,7 @@ class Package:
             self.covers,
             self.done_when,
             self.added,
+            self.guards,
         )
 
     def rebased(self, base: Callable[[str], str | None]) -> Package:
@@ -149,6 +159,10 @@ class Package:
         """The paths of `files`, test modules excluded."""
         return tuple(f.path for f in self.files if not is_test_file(f.path))
 
+    def is_guard(self, tid: str) -> bool:
+        """Whether the covered test `tid` (parameters and all) is one of the package's regression guards."""
+        return _checked_id(tid) in self.guards
+
 
 @dataclass(frozen=True)
 class ProofChange:
@@ -159,6 +173,25 @@ class ProofChange:
     criteria: tuple[tuple[str, str], ...] = ()
     """The acceptance criteria it says are false, each with why (2026-10-29, roman: "no canonical numeral
     exceeds four characters"): product rewords them before the tester revises the tests."""
+
+
+@dataclass(frozen=True)
+class Satisfied:
+    """The architect's reply when every criterion its layer owns already holds on the layer's base, so the
+    layer has nothing to build: what holds it (`by`: earlier layers by number, "01", and files on the base,
+    "path" or "path::name") and why. The pipeline records the layer as satisfied, with no branch and no PR
+    (`layer_satisfied`), where before a person dropped it from state.json by hand (AIR-47 layer 04, AIR-48
+    layer 02; AIR-62 layer 02, 2026-11-05, held only criteria that were already true)."""
+
+    by: tuple[str, ...]
+    why: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"by": list(self.by), "why": self.why}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> Satisfied:
+        return cls(tuple(str(x) for x in d.get("by") or ()), str(d.get("why") or ""))
 
 
 def test_files_in(text: str) -> dict[str, str]:
@@ -318,6 +351,38 @@ def _proof_change(obj: dict[str, Any], story: Story) -> ProofChange:
     return ProofChange(tuple(changes), tuple(criteria))
 
 
+_LAYER_NUMBER = re.compile(r"^\d{2}$")
+
+
+def _satisfied(obj: dict[str, Any], base: Callable[[str], str | None]) -> Satisfied:
+    """The satisfied reply, each of its `by` an earlier layer's number or a file on the layer's base (with
+    "::name" for what in it already does the work): a claim the architect cannot ground is refused, so a
+    layer is never let off on words alone. Whether a number is an earlier layer's is the pipeline's to say."""
+    by = tuple(s.strip() for s in _strs(obj.get("by"), "satisfied: 'by'") if s.strip())
+    if not by:
+        raise StoryError(
+            "satisfied: 'by' needs at least one earlier layer (by its number, \"01\") or file on the base "
+            "that already does what this layer's criteria ask"
+        )
+    why = _text(obj, "why", "satisfied")
+    for item in by:
+        if _LAYER_NUMBER.match(item):
+            continue
+        where = item.partition("::")[0]
+        if "/" not in where and "." not in where:
+            raise StoryError(
+                f'satisfied: by {item!r}: name an earlier layer by its number ("01") or a file on the base, '
+                "from the repository root, with ::name for the function or test in it that does the work"
+            )
+        path = _normal(where, "satisfied: a file")
+        if base(path) is None:
+            raise StoryError(
+                f"satisfied: by {item!r}: {path} is not on the layer's base; name an earlier layer by its "
+                'number ("01") for what it builds'
+            )
+    return Satisfied(by, why)
+
+
 def _test_id(tid: str) -> str:
     """A pytest id as the architect wrote it, with any note after it dropped: a pytest id has no whitespace,
     so what follows the first space is words about the test (2026-10-30, roman: "…::test_x (re-agreed to
@@ -332,12 +397,12 @@ def parse_package(
     story: Story,
     gated: Collection[str] = (),
     base: Callable[[str], str | None] | None = None,
-) -> Package | ProofChange:
-    """The architect's reply as a Package, or as a ProofChange when it says the agreed proof is wrong and
-    writes no package. A StoryError says what to fix, in words the architect acts on, and keeps the reply's
-    end (`reply`). `gated` are the criteria the agreed proof leaves to the gate: they need no covers. `base`
-    reads a file on the base the reply was written at (path -> text, None when absent): test additions are
-    joined to it."""
+) -> Package | ProofChange | Satisfied:
+    """The architect's reply as a Package, as a ProofChange when it says the agreed proof is wrong and
+    writes no package, or as Satisfied when it says the layer's criteria already hold on its base. A
+    StoryError says what to fix, in words the architect acts on, and keeps the reply's end (`reply`). `gated`
+    are the criteria the agreed proof leaves to the gate: they need no covers. `base` reads a file on the base
+    the reply was written at (path -> text, None when absent): test additions are joined to it."""
     try:
         return _parse_package(text, layer, story, gated, base or (lambda _: None))
     except StoryError as e:
@@ -347,10 +412,12 @@ def parse_package(
 
 def _parse_package(
     text: str, layer: Layer, story: Story, gated: Collection[str], base: Callable[[str], str | None]
-) -> Package | ProofChange:
+) -> Package | ProofChange | Satisfied:
     obj = extract_json_block(text)
     if obj is not None and obj.get("type") == "proof_change":
         return _proof_change(obj, story)
+    if obj is not None and obj.get("type") == "satisfied":
+        return _satisfied(obj, base)
     raw_tests = _test_blocks(text)
     if obj is None:
         raise StoryError(NO_JSON)
@@ -452,7 +519,57 @@ def _parse_package(
         covers,
         str(obj.get("done_when") or "").strip(),
         added,
+        _guards(obj.get("guards"), covers),
     )
+
+
+def _guards(raw: Any, covers: Mapping[str, tuple[str, ...]]) -> dict[str, str]:
+    """The package's regression guards, each a covered test (by its id, or by its bare name when one covered
+    test has it) with a one-line reason, keyed by its id as the red check names it (a pytest id without
+    parameters). A package whose every test is a guard is refused: such a layer has nothing to build, and its
+    answer is the satisfied reply (AIR-62 layer 02, 2026-11-05)."""
+    if raw is None or raw == {}:
+        return {}
+    if not isinstance(raw, dict):
+        raise StoryError("'guards' must map each guard's test id to a one-line reason it already holds")
+    covered = {_checked_id(t) for ids in covers.values() for t in ids}
+    guards: dict[str, str] = {}
+    for raw_id, why in raw.items():
+        tid = _test_id(str(raw_id).strip())
+        if not isinstance(why, str) or not why.strip():
+            raise StoryError(
+                f"guards {tid}: a guard needs a one-line reason: what on the base already holds it"
+            )
+        where, _, name = tid.rpartition("::") if "::" in tid else ("", "", tid)
+        exact = _checked_id(tid) if where else ""
+        named = (
+            [exact]
+            if exact in covered
+            else [
+                t
+                for t in covered
+                if t.startswith(f"{where}::" if where else "")
+                and t.endswith((f"::{_PARAMS.sub('', name)}", f" > {name}"))
+            ]
+        )
+        if len(named) != 1:
+            raise StoryError(
+                f"guards {tid}: it names no test in covers; a guard is one of the tests covers lists"
+            )
+        guards[named[0]] = _encodable(" ".join(why.split()), "a guard's reason")
+    if covered and set(guards) >= covered:
+        raise StoryError(
+            "every test of this package is a regression guard, so the layer has nothing to build: when every "
+            'criterion it owns already holds on its base, reply with {"type": "satisfied", "by": [...], '
+            '"why": "..."} instead; else add the tests of what it changes'
+        )
+    return guards
+
+
+def _checked_id(tid: str) -> str:
+    """A covered test's id as the red check names it: a pytest id without parameters, a Vitest id whole."""
+    where, _, name = tid.partition("::")
+    return tid if is_js_test(where) else f"{where}::{_PARAMS.sub('', name)}"
 
 
 def _list(value: Any, what: str) -> list[Any]:

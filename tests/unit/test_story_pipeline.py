@@ -688,6 +688,79 @@ async def test_publish_writes_a_body_with_the_contract_from_the_layers_package(t
     assert lines[-1].startswith("Built by airlie") and ", ".join(st.runs[4:6]) in lines[-1]
 
 
+SATISFIED = fenced({"type": "satisfied", "by": ["01"], "why": "the profile already shows a stored avatar"})
+
+
+async def test_a_layer_the_architect_finds_already_satisfied_has_no_branch_and_is_shown_in_the_prs(
+    tmp_path: Path,
+) -> None:
+    """AIR-62 layer 02 (2026-11-05): a layer whose criteria already hold has nothing to build. Its package
+    reply says so; the layer is recorded satisfied (no branch, no PR, `layer_satisfied`), the story goes on,
+    and the stack's PR names it, where AIR-47 layer 04 and AIR-48 layer 02 were dropped by hand."""
+    repo = repo_with_marker_tests(tmp_path)
+    trunk = git(repo, "branch", "--show-current")
+    engine = happy_engine(
+        architect=[LAYERS, PKG1, SATISFIED], coder=[WRITE_PASS, RUN, DONE], reviewer=[APPROVE]
+    )
+    gh = RecordedGh()
+    st = await pipeline(tmp_path, repo, engine, gh).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert list(st.built) == ["01"]
+    assert st.satisfied == {
+        "02": {"criteria": ["AC2"], "by": ["01"], "why": "the profile already shows a stored avatar"}
+    }
+    assert git(repo, "branch", "--list", B2) == ""
+    assert ["gh", "stack", "init", "--base", trunk, B1] in gh.calls
+    assert [p["branch"] for p in st.prs] == [B1]
+    events = st.path / "events.jsonl"
+    assert [
+        {k: e[k] for k in ("layer", "criteria", "by", "why")} for e in kinds(events, "layer_satisfied")
+    ] == [
+        {"layer": "02", "criteria": ["AC2"], "by": ["01"], "why": "the profile already shows a stored avatar"}
+    ]
+    assert not [e for e in kinds(events, "layer_start") if e["layer"] == "02"]
+    body = (st.path / "pr-01.md").read_text(encoding="utf-8")
+    assert "1. #11 Storage (this PR)" in body
+    assert "Layer 2, Profile, needed no code: the profile already shows a stored avatar" in body
+    assert not (st.path / "pr-02.md").exists()
+    assert "layer 02/02 already satisfied" in (st.path / "notes.md").read_text()
+
+
+async def test_a_layer_whose_criteria_an_earlier_layer_already_covers_is_satisfied_without_a_build(
+    tmp_path: Path,
+) -> None:
+    """A layer every criterion of which an earlier built layer's package covers has nothing left to build:
+    it is satisfied by that layer before its own draft is checked or built."""
+    repo = repo_with_marker_tests(tmp_path)
+    both = package_reply(
+        {"tests/unit/test_storage.py": "def test_stores_an_avatar():\n    assert True\n"},
+        {
+            "AC1": ["tests/unit/test_storage.py::test_stores_an_avatar"],
+            "AC2": ["tests/unit/test_storage.py::test_stores_an_avatar"],
+        },
+    )
+    engine = happy_engine(architect=[LAYERS, both, PKG2], coder=[WRITE_PASS, RUN, DONE], reviewer=[APPROVE])
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert list(st.built) == ["01"] and st.satisfied["02"]["by"] == ["01"]
+    assert "AC2" in st.satisfied["02"]["why"] and st.drafts == {}
+    events = st.path / "events.jsonl"
+    assert [e["layer"] for e in kinds(events, "package_start")] == ["01"]
+
+
+async def test_a_satisfied_reply_naming_a_layer_that_is_not_below_it_is_asked_again(tmp_path: Path) -> None:
+    """A layer is satisfied only by what is already there: a layer number that is not an earlier one is a
+    reply that cannot be used, and its reason goes back to the architect."""
+    repo = repo_with_marker_tests(tmp_path)
+    wrong = fenced({"type": "satisfied", "by": ["02"], "why": "it holds"})
+    engine = happy_engine(architect=[LAYERS, PKG1, wrong, PKG2])
+    st = await pipeline(tmp_path, repo, engine, RecordedGh()).run(text_card("Let users upload an avatar"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert list(st.built) == ["01", "02"] and st.satisfied == {}
+    retries = [e["error"] for e in kinds(st.path / "events.jsonl", "retry") if e.get("stage") == "package"]
+    assert any("02 is not a layer below layer 02" in r for r in retries)
+
+
 async def test_a_layers_commit_carries_the_story_layer_and_run_trailers(tmp_path: Path) -> None:
     """Each layer's commit ends in trailers (P6, 2026-10-25): keys, numbers and shas, no model text."""
     repo = repo_with_marker_tests(tmp_path)

@@ -93,6 +93,7 @@ from airlie.story.model import (
     _BRANCH,
     NO_JSON,
     PLANNED,
+    REPLY_TAIL,
     SURROGATE,
     Layer,
     NotActionable,
@@ -106,7 +107,7 @@ from airlie.story.model import (
     parse_size_verdict,
     parse_story,
 )
-from airlie.story.package import Package, ProofChange, parse_package
+from airlie.story.package import Package, ProofChange, Satisfied, parse_package
 from airlie.story.package_checks import PackageChecker, beyond_proof, package_feedback_said, place_package
 from airlie.story.phase import decoding, write_phase
 from airlie.story.provenance import Provenance, chain_items, gather_provenance
@@ -326,8 +327,65 @@ def _evidence_kinds(reason: str) -> tuple[str, ...]:
 
 
 def _to_build(st: StoryState) -> bool:
-    """A layer of the story is still to be built: its layers are not planned yet, or one is not built."""
-    return st.layers is None or any(f"{i + 1:02d}" not in st.built for i in range(len(st.layers)))
+    """A layer of the story is still to be built: its layers are not planned yet, or one is neither built nor
+    satisfied."""
+    return st.layers is None or any(
+        f"{i + 1:02d}" not in st.built and f"{i + 1:02d}" not in st.satisfied for i in range(len(st.layers))
+    )
+
+
+def _layer_reply(
+    text: str,
+    story: Story,
+    layers: tuple[Layer, ...],
+    i: int,
+    proof: Sequence[ProofTest],
+    base: Callable[[str], str | None],
+) -> Package | ProofChange | Satisfied:
+    """The architect's reply for layer `i` (`parse_package`), with a satisfied reply's layer numbers held to
+    the layers below this one: a layer is satisfied only by what is already there when it is built."""
+    got = parse_package(text, layers[i], story, gated=_gated(proof), base=base)
+    if isinstance(got, Satisfied):
+        for item in got.by:
+            if item.isdigit() and not 1 <= int(item) <= i:
+                e = StoryError(
+                    f"satisfied: by {item!r}: {item} is not a layer below layer {i + 1:02d}; name the "
+                    "earlier layers and the files on the base that already do what its criteria ask"
+                )
+                e.reply = text[-REPLY_TAIL:]
+                raise e
+    return got
+
+
+def _covered_below(st: StoryState, layers: tuple[Layer, ...], i: int) -> Satisfied | None:
+    """Layer `i` satisfied by the layers below it, when every criterion it owns is one an earlier built
+    layer's package covers, or one an earlier satisfied layer owned; None when a criterion is left (or it
+    owns none: an enabling layer is built). Its tests already prove those criteria, so a build would be one
+    with nothing to make red (AIR-62, 2026-11-05)."""
+    owned = layers[i].acceptance
+    if not owned:
+        return None
+    by: dict[str, None] = {}
+    for cid in owned:
+        who = next(
+            (
+                nn
+                for nn in sorted({*st.built, *st.satisfied})
+                if int(nn) <= i
+                and (
+                    cid in ((st.built.get(nn) or {}).get("package") or {}).get("covers", {})
+                    or cid in (st.satisfied.get(nn) or {}).get("criteria", ())
+                )
+            ),
+            None,
+        )
+        if who is None:
+            return None
+        by[who] = None
+    below = f"layer{'s' if len(by) > 1 else ''} {', '.join(by)}"
+    return Satisfied(
+        tuple(by), f"every criterion it owns ({', '.join(owned)}) is proven by the tests of {below}"
+    )
 
 
 def _running(st: StoryState) -> str:
@@ -1312,19 +1370,25 @@ class StoryPipeline:
         """Build layer `i` from its package. The architect writes the package on the branch the layers below
         produced (`_ready_package`); the studio builds it; a gate still red after the coder's follow-up
         sends the layer back to the architect with the coder's account and the gate's tail, up to
-        story.layer_attempts builds in all (`_build_once`)."""
+        story.layer_attempts builds in all (`_build_once`). A layer whose criteria already hold is satisfied
+        instead (`_satisfy`): by the layers below, when their packages cover every criterion it owns, or by
+        the architect's satisfied reply. It builds on the nearest layer below that was built."""
         nn = f"{i + 1:02d}"
-        if nn in st.built:
+        if nn in st.built or nn in st.satisfied:
+            return
+        if (covered := _covered_below(st, layers, i)) is not None:
+            await self._satisfy(st, card, layers, i, covered)
             return
         # who commits the layer, found before it is built: a bot that cannot be found costs no build
         author = await self.publisher.author(self.repo)
         layer = layers[i]
         self._clear_attempt(st)
-        if i == 0:
+        below = st.built_below(i)
+        if below is None:
             base = await self._base(st)
             base_ref, base_sha = base["ref"], base["sha"]
         else:
-            base_ref = str(st.built[f"{i:02d}"]["branch"])
+            base_ref = str(st.built[below]["branch"])
             found = rev_parse(self.repo, f"refs/heads/{base_ref}")  # for the short name, a tag comes first
             if found is None:
                 raise StoryBlocked(f"layer {nn}: its base '{base_ref}' does not exist in {self.repo}")
@@ -1339,7 +1403,7 @@ class StoryPipeline:
         # what the layers below added, so the coder is not sent reading for their names (AIR-31 layer 02)
         built = (
             built_so_far(diff_commits(self.repo, st.base["sha"], base_sha, BUILT_DIFF_CHARS))
-            if i > 0 and st.base
+            if below is not None and st.base
             else ""
         )
         if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
@@ -1348,6 +1412,9 @@ class StoryPipeline:
         story = _current(st, story)  # a criterion the architect found false was reworded on the way
         attempts = self.s.layer_attempts
         for attempt in range(1, attempts + 1):
+            if isinstance(package, Satisfied):
+                await self._satisfy(st, card, layers, i, package)
+                return
             again = await self._build_once(
                 st,
                 card,
@@ -1363,6 +1430,31 @@ class StoryPipeline:
                 return
             package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
             story = _current(st, story)
+
+    async def _satisfy(
+        self, st: StoryState, card: Card, layers: tuple[Layer, ...], i: int, satisfied: Satisfied
+    ) -> None:
+        """Layer `i` recorded as satisfied (`StoryState.satisfied`): every criterion it owns already holds, so
+        it has nothing to build, no branch and no PR, and the story goes on to the next layer (AIR-62 layer
+        02, 2026-11-05; AIR-47 layer 04 and AIR-48 layer 02 were dropped from state.json by hand). Its draft,
+        if any, is dropped. Event: layer_satisfied, and a note on the issue."""
+        nn, total, layer = f"{i + 1:02d}", f"{len(layers):02d}", layers[i]
+        st.drafts.pop(nn, None)
+        st.satisfied[nn] = {
+            "criteria": list(layer.acceptance),
+            "by": list(satisfied.by),
+            "why": satisfied.why,
+        }
+        st.save()
+        st.emit(
+            "layer_satisfied",
+            layer=nn,
+            criteria=list(layer.acceptance),
+            by=list(satisfied.by),
+            why=satisfied.why,
+        )
+        text = f"layer {nn}/{total} already satisfied: {layer.title} needs no code ({satisfied.why})"
+        await self.board.comment(card, note(text), role=self.s.architect_role)
 
     async def _build_once(
         self,
@@ -1586,7 +1678,7 @@ class StoryPipeline:
         proof: tuple[ProofTest, ...] = (),
         *,
         revised: bool = False,
-    ) -> Package | ProofChange:
+    ) -> Package | ProofChange | Satisfied:
         """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed: the package,
         or a ProofChange when the architect says the layer's agreed `proof` is wrong. A reply that cannot be
         used is a StoryError: its text is the next try's feedback. A retry (`feedback`), or the ask after the
@@ -1615,7 +1707,7 @@ class StoryPipeline:
                 st, "package", self.s.architect_role, brief, at=base_sha, steps=self.s.package_steps
             )
         self._package_run = st.runs[-1]
-        return parse_package(text, layers[i], story, gated=_gated(proof), base=self._files_at(base_sha))
+        return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha))
 
     def _files_at(self, commit: str) -> Callable[[str], str | None]:
         """A file's text in `commit` (None when it has none): the base a package's test additions join."""
@@ -1644,7 +1736,7 @@ class StoryPipeline:
         base_sha: str,
         feedback: str | None,
         proof: tuple[ProofTest, ...],
-    ) -> Package | ProofChange:
+    ) -> Package | ProofChange | Satisfied:
         """A retry of layer `i`'s package as a turn of the architect's drafting conversation (P9 of the
         performance plan): it still holds the files, the agreement and its drafts, so it does not read them
         again (2026-10-29: a cold retry spent 60 of its 68 calls reading, ~104 s each; a gate re-plan cost
@@ -1664,7 +1756,7 @@ class StoryPipeline:
         self._package_run = run  # before the turn: a reply that cannot be used is still this run's
         async with decoding(self.stories_dir, None):  # a long turn of the build lane's own
             text = await say(told, at=base_sha)
-        return parse_package(text, layers[i], story, gated=_gated(proof), base=self._files_at(base_sha))
+        return _layer_reply(text, story, layers, i, proof, self._files_at(base_sha))
 
     async def _draft_packages(self, st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
         """Every layer's package drafted in one architect conversation at the story's base, before the first
@@ -1730,13 +1822,11 @@ class StoryPipeline:
                         sources = layer_sources(self.repo, sha, layer)
                         asked = None if i == 0 else next_package_brief(story, layers, i, proof, sources)
                         at = self._files_at(sha)
-                        got = parse_package(await say(asked), layer, story, gated=_gated(proof), base=at)
+                        got = _layer_reply(await say(asked), story, layers, i, proof, at)
                         if isinstance(got, Package) and proof:
                             told = await self._objections(st, layers, i, sha, got, proof)
                             if told is not None:
-                                got = parse_package(
-                                    await say(told), layer, story, gated=_gated(proof), base=at
-                                )
+                                got = _layer_reply(await say(told), story, layers, i, proof, at)
                     except StoryError as e:
                         st.drafts[nn] = {"unusable": str(e)}
                         st.emit("retry", stage="package", error=str(e), reply=e.reply)
@@ -1755,8 +1845,13 @@ class StoryPipeline:
                             "run": run,
                         }
                         break
-                    st.drafts[nn] = {"package": got.to_dict(), "run": run}
-                    st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
+                    if isinstance(got, Satisfied):
+                        # nothing to build: its layer records it when it comes to it
+                        st.drafts[nn] = {"satisfied": got.to_dict(), "run": run}
+                        st.emit("package_drafted", layer=nn, studio_run=run, tests=[], satisfied=True)
+                    else:
+                        st.drafts[nn] = {"package": got.to_dict(), "run": run}
+                        st.emit("package_drafted", layer=nn, studio_run=run, tests=list(got.test_ids))
                     st.save()
                 finally:
                     ASK_LAYER.reset(token)
@@ -1798,7 +1893,7 @@ class StoryPipeline:
         guide: str,
         package: Package,
         proof: tuple[ProofTest, ...],
-    ) -> Package | ProofChange:
+    ) -> Package | ProofChange | Satisfied:
         """The tester critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
         of the tester role at the base with the test files, the layer's proof and the conventions. An
         objection is the architect's one revision (`package-fix` after the objections); a critic that cannot
@@ -2022,7 +2117,7 @@ class StoryPipeline:
         guide: str,
         *,
         feedback: str | None = None,
-    ) -> Package:
+    ) -> Package | Satisfied:
         """`_ready_package`, with the layer named on the `run` event of every ask it makes."""
         token = ASK_LAYER.set(f"{i + 1:02d}")
         try:
@@ -2043,13 +2138,14 @@ class StoryPipeline:
         guide: str,
         *,
         feedback: str | None = None,
-    ) -> Package:
+    ) -> Package | Satisfied:
         """A package for layer `i` that passes the readiness check (package_checks): up to
         story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
         base; what a try left (a reply that could not be parsed, or the findings) goes back to the architect
         as the next brief's feedback, with a `steer` event per hub text in it. Events: package_start,
         package_returned (kinds), package_ready, and each finding. Exhausted: a `package_rejected` lesson and
-        StoryBlocked. A gate that does not run pytest gets no red check, and an event says so."""
+        StoryBlocked. A gate that does not run pytest gets no red check, and an event says so. A satisfied
+        reply (the layer's criteria already hold on its base) is returned as it is, with no check."""
         nn, layer = f"{i + 1:02d}", layers[i]
         checker = PackageChecker(
             self.commands,
@@ -2079,7 +2175,7 @@ class StoryPipeline:
             st.emit("package_start", layer=nn, attempt=attempt)
             self._package_run = ""  # this try's drafting or asking run, set where it is made
             proof = self._layer_proof(st, layer)
-            got: Package | ProofChange
+            got: Package | ProofChange | Satisfied
             try:
                 if draft is not None:  # drafted with the others and read by the critic: the checks follow
                     self._package_run = str(draft["run"])
@@ -2087,6 +2183,8 @@ class StoryPipeline:
                         # drafted at the story's base: its test additions join the files of this one
                         Package.from_dict(draft["package"]).rebased(self._files_at(base_sha))
                         if "package" in draft
+                        else Satisfied.from_dict(draft["satisfied"])
+                        if "satisfied" in draft
                         else ProofChange(
                             tuple((str(t), str(w)) for t, w in draft["proof_change"]),
                             tuple((str(c), str(w)) for c, w in draft.get("criteria_change") or ()),
@@ -2112,6 +2210,8 @@ class StoryPipeline:
                     attempt -= 1  # the attempt the architect used to say so is not charged
                     revised = True
                     continue
+                if isinstance(got, Satisfied):  # nothing to check or build: `_build` records it
+                    return got
             except StoryError as e:
                 feedback, kinds = str(e), ["package_unusable"]
                 st.emit("retry", stage="package", error=feedback, reply=e.reply)
@@ -2151,6 +2251,7 @@ class StoryPipeline:
                     tests=list(package.test_ids),
                     files=[f.path for f in package.files],
                     beyond_proof=beyond_proof(package, [t.id for t in proof if not t.gate]) if proof else [],
+                    guards=dict(package.guards),
                 )
                 return package
             kinds = list(dict.fromkeys(f.kind for f in found))
@@ -2232,7 +2333,14 @@ class StoryPipeline:
     async def _publish(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> None:
         if st.done("publish"):
             return
-        branches = [str(st.built[f"{i + 1:02d}"]["branch"]) for i in range(len(layers))]
+        # a satisfied layer has no branch and no PR: each PR's stack names it (provenance)
+        shown = [i for i in range(len(layers)) if f"{i + 1:02d}" in st.built]
+        branches = [str(st.built[f"{i + 1:02d}"]["branch"]) for i in shown]
+        if not branches:  # every layer already held on its base: nothing to publish (`_finish` says so)
+            st.prs = []
+            st.emit("published", prs=[])
+            st.finish("publish")
+            return
         wt = st.path / "publish"
         remove_worktree(self.repo, wt)  # left by an interrupted publish
         # gh stack init switches the checkout it runs in: never the person's own
@@ -2251,8 +2359,11 @@ class StoryPipeline:
                 prs = [(n, u)]
                 body = st.path / "pr.md"
                 text = "\n\n".join(
-                    pr_body(self.provenance(st, card, story, layers, i, prs), test_cmd=gate)
-                    for i, gate in enumerate(st.built[f"{i + 1:02d}"].get("gate") for i in range(len(layers)))
+                    pr_body(
+                        self.provenance(st, card, story, layers, i, prs),
+                        test_cmd=st.built[f"{i + 1:02d}"].get("gate"),
+                    )
+                    for i in shown
                 )
                 # A neutralised body holds U+200B and "…": gh reads UTF-8, so it is written as that, not as
                 # whatever encoding the locale makes the default.
@@ -2266,7 +2377,7 @@ class StoryPipeline:
                 )
                 await self.publisher.submit(wt)
                 prs = [await self.publisher.pr(wt, b) for b in branches]
-                for i, b in enumerate(branches):
+                for i, b in zip(shown, branches, strict=True):
                     body = st.path / f"pr-{i + 1:02d}.md"
                     # the gate this layer passed: a state from before layers kept theirs has none to name
                     gate = st.built[f"{i + 1:02d}"].get("gate")
@@ -2358,6 +2469,9 @@ class StoryPipeline:
         text = (
             f"stacked draft PRs, bottom layer first:\n{links}\n"
             "Review and merge bottom-up; only a human merges."
+            if st.prs
+            else "every layer of this story already held on its base, so there is no pull request: "
+            "check the satisfied layers' reasons and close the story"
         )
         # the PR stack is the reviewer's to read: posted as the studio's review role (story.review.role)
         await self.board.comment(card, note(text), role=self.cfg.studio.review.role)

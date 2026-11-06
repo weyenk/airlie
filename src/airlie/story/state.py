@@ -89,6 +89,11 @@ class StoryState:
     """The layer plan as the architect split it, written beside `refined_story` for a restart from the
     meeting."""
     built: dict[str, dict[str, Any]] = field(default_factory=dict)
+    satisfied: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """The layers that needed no code, by layer number: `{"criteria": [...], "by": [...], "why": ...}`, every
+    criterion they own already holding on their base (`layer_satisfied`). Such a layer has no branch, commit
+    or PR, and the next layer builds on the one below it. Before 2026-11-06 a person dropped it from the plan
+    by hand-editing this file (AIR-47 layer 04, AIR-48 layer 02)."""
     drafted: bool = False
     """Whether the architect's conversation that drafts every layer's package has been held (amendment of
     2026-10-26 to the planning-line design): it is held once, before the first layer is built."""
@@ -201,6 +206,11 @@ class StoryState:
                 os.fsync(dir_fd)
             finally:
                 os.close(dir_fd)
+
+    def built_below(self, i: int) -> str | None:
+        """The number of the nearest layer below layer `i` (0-based) that was built, skipping the satisfied
+        ones, which have no branch; None when there is none, and the layer builds on the story's base."""
+        return next((f"{j:02d}" for j in range(i, 0, -1) if f"{j:02d}" in self.built), None)
 
     def done(self, stage: str) -> bool:
         return STAGES.index(self.stage) >= STAGES.index(stage)
