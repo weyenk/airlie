@@ -73,6 +73,7 @@ export function useBuilder(name: Ref<string>) {
     checked.value = null;
     validated.value = false;
     publishStatus.value = null;
+    publishing.value = false; // a publish still out belongs to the workflow left
     if (wanted === "new") return;
     let def: WorkflowDetail;
     try {
@@ -103,6 +104,7 @@ export function useBuilder(name: Ref<string>) {
     try {
       graph.value = change(graph.value);
       error.value = null;
+      publishStatus.value = null; // "nothing to publish" was said of the canvas before this edit
       return true;
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
@@ -166,14 +168,17 @@ export function useBuilder(name: Ref<string>) {
    * other failure (502 the publisher, 404 the draft gone) shown as the error. */
   async function publish(): Promise<boolean> {
     const as = detail.value?.name ?? name.value;
+    const mine = loading; // an answer after another workflow loaded is that one's no longer: it changes nothing
     publishing.value = true;
     publishStatus.value = null;
     try {
       const pr = await publishWorkflow(as);
+      if (mine !== loading) return false;
       if (detail.value) detail.value = { ...detail.value, pr };
       error.value = null;
       return true;
     } catch (e) {
+      if (mine !== loading) return false;
       if (e instanceof ApiError && e.status === 422) {
         problems.value = refusedProblems(e.message);
         checked.value = state();
@@ -185,7 +190,7 @@ export function useBuilder(name: Ref<string>) {
       } else error.value = e instanceof Error ? e : String(e);
       return false;
     } finally {
-      publishing.value = false;
+      if (mine === loading) publishing.value = false;
     }
   }
 

@@ -438,6 +438,85 @@ test("a publisher failure (502) shows the server's message", async () => {
   expect(publishButton(w).disabled).toBe(false);
 });
 
+function later<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((ok, no) => {
+    resolve = ok;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+test("a publish that answers after the address moved on touches nothing: no PR on the other workflow, no trip to the card", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  const pending = later<{ number: number; url: string }>();
+  api.publishWorkflow.mockReturnValueOnce(pending.promise);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w, router } = await open(`/workflows/build/fix?card=${token}`);
+  await w.get("[data-publish]").trigger("click");
+  api.getWorkflowDef.mockResolvedValue(fixDraft({ name: "other", problems: ["workflow other: node fix: bad"] }));
+  await router.push(`/workflows/build/other?card=${token}`);
+  await flushPromises();
+  pending.resolve({ number: 12, url: "https://github.com/weyenk/airlie/pull/12" });
+  await flushPromises();
+  expect(router.currentRoute.value.path).toBe("/workflows/build/other");
+  expect(w.find("[data-pr]").exists()).toBe(false);
+  expect(w.get("[data-problems]").text()).toContain("1 problem");
+  expect(useCardDraftStore().take(token)).toEqual(HELD);
+});
+
+test.each([
+  [422, JSON.stringify({ problems: ["a", "b", "c"] })],
+  [409, "nothing to publish"],
+  [502, "GitHub refused the push"],
+])("a late publish refusal (%i) leaves the workflow now open alone", async (status, message) => {
+  const pending = later<{ number: number; url: string }>();
+  api.publishWorkflow.mockReturnValueOnce(pending.promise);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w, router } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  api.getWorkflowDef.mockResolvedValue(fixDraft({ name: "other" }));
+  await router.push("/workflows/build/other");
+  await flushPromises();
+  pending.reject(new ApiError(status, message));
+  await flushPromises();
+  expect(w.find("[data-problems]").exists()).toBe(false);
+  expect(w.find("[data-publish-status]").exists()).toBe(false);
+  expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
+test("Save and Publish wait for each other", async () => {
+  const pending = later<{ number: number; url: string }>();
+  api.publishWorkflow.mockReturnValueOnce(pending.promise);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  expect((w.get("[data-save]").element as HTMLButtonElement).disabled).toBe(true);
+  pending.resolve({ number: 12, url: "u" });
+  await flushPromises();
+  expect((w.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
+
+  const saving = later<WorkflowDetail>();
+  api.saveDraft.mockReturnValueOnce(saving.promise);
+  await w.get("[data-save]").trigger("click");
+  expect(publishButton(w).disabled).toBe(true);
+  saving.resolve(fixDraft());
+  await flushPromises();
+});
+
+test("a Nothing-to-publish line goes once the canvas is edited", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.publishWorkflow.mockRejectedValueOnce(new ApiError(409, "nothing to publish"));
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(w.find("[data-publish-status]").exists()).toBe(true);
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await flushPromises();
+  expect(w.find("[data-publish-status]").exists()).toBe(false);
+});
+
 // ---- the trip back to the card ----
 
 const HELD: CreateForm = { level: "story", title: "Half written", description: "Why", parent: "AIR-2", repo: "weyenk/airlie", workflow: "story" };

@@ -193,8 +193,8 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <span class="grow" />
       <Button v-if="card" size="sm" variant="ghost" data-cancel @click="cancel">Cancel</Button>
       <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
-      <Button size="sm" data-save :disabled="b.broken.value || b.saving.value" @click="saveClick">Save draft</Button>
-      <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value" @click="publishClick">Publish</Button>
+      <Button size="sm" data-save :disabled="b.broken.value || b.saving.value || b.publishing.value" @click="saveClick">Save draft</Button>
+      <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value || b.saving.value" @click="publishClick">Publish</Button>
       <div role="tablist" aria-label="View" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
         <button type="button" role="tab" data-tab="diagram" :aria-selected="tab === 'diagram'" :class="tabClass(tab === 'diagram')" @click="tab = 'diagram'">Diagram</button>
         <button type="button" role="tab" data-tab="yaml" :aria-selected="tab === 'yaml'" :class="tabClass(tab === 'yaml')" @click="tab = 'yaml'">YAML</button>
