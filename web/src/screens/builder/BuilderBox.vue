@@ -3,8 +3,9 @@ import { computed } from "vue";
 import type { GNode } from "./graph";
 import { SHAPE_CLASS, shapeOf } from "./shapes";
 
-/** One node on the canvas, in its type's shape; the canvas sets where it sits. */
-const props = defineProps<{ node: GNode; selected?: boolean }>();
+/** One node on the canvas, in its type's shape; the canvas sets where it sits. A box validation found wrong is
+ * outlined, and its hover says what is wrong. */
+const props = defineProps<{ node: GNode; selected?: boolean; problems?: string[] }>();
 const emit = defineEmits<{ pick: [id: string] }>();
 
 const shape = computed(() => shapeOf(props.node.type));
@@ -17,6 +18,8 @@ const sub = computed(() => {
   if (shape.value === "each") return s.over ? `for each ${text(s.over)}` : "for each";
   return text(s.nodes);
 });
+const bad = computed(() => (props.problems?.length ?? 0) > 0);
+const title = computed(() => [`${props.node.id} (${props.node.type})`, ...(props.problems ?? [])].join("\n"));
 </script>
 
 <template>
@@ -26,12 +29,14 @@ const sub = computed(() => {
     :data-node="node.id"
     :data-shape="shape"
     :data-type="node.type"
+    :data-problem="bad ? 'true' : undefined"
     :aria-pressed="selected ? 'true' : 'false'"
-    :title="`${node.id} (${node.type})`"
+    :title="title"
     :class="[
       'absolute flex min-w-0 flex-col justify-center gap-0.5 overflow-hidden text-left outline-none focus-visible:ring-2 focus-visible:ring-ring',
       SHAPE_CLASS[shape],
       selected ? 'ring-2 ring-ring' : '',
+      bad ? 'outline-2 outline-offset-1 outline-destructive' : '',
     ]"
     @click="emit('pick', node.id)"
   >

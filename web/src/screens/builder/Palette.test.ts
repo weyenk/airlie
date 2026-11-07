@@ -14,3 +14,30 @@ test("the node types in their shapes, then the bundles by name", () => {
 test("no bundles says so", () => {
   expect(mount(Palette, { props: { bundles: [] } }).get("[data-bundles]").text()).toContain("None yet");
 });
+
+test("a type or a bundle drags out with what it places", async () => {
+  const w = mount(Palette, { props: { bundles: ["layer"] } });
+  const set: [string, string][] = [];
+  const dataTransfer = { setData: (k: string, v: string) => set.push([k, v]), effectAllowed: "" };
+  await w.get("[data-palette-type=check]").trigger("dragstart", { dataTransfer });
+  await w.get("[data-bundle]").trigger("dragstart", { dataTransfer });
+  expect(set).toEqual([
+    ["application/x-airlie-node", "check"],
+    ["application/x-airlie-bundle", "layer"],
+  ]);
+  expect(w.get("[data-palette-type=check]").attributes("draggable")).toBe("true");
+});
+
+test("a click (or a tap, where nothing drags) adds one too", async () => {
+  const w = mount(Palette, { props: { bundles: ["layer"] } });
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-bundle]").trigger("click");
+  expect(w.emitted("add")).toEqual([[{ type: "gate" }], [{ bundle: "layer" }]]);
+});
+
+test("read-only, nothing drags or adds", async () => {
+  const w = mount(Palette, { props: { bundles: ["layer"], readonly: true } });
+  expect(w.get("[data-palette-type=check]").attributes("draggable")).toBe("false");
+  await w.get("[data-palette-type=gate]").trigger("click");
+  expect(w.emitted("add")).toBeUndefined();
+});
