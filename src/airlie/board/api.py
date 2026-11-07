@@ -124,7 +124,9 @@ def board_router(
     @router.patch("/items/{key}")
     async def change_item(key: str, body: ChangeItem, request: Request) -> dict[str, Any]:
         found = item(key)  # 404 before anything else
-        relabelled = body.labels is not None and workflow_label(body.labels) != workflow_label(found["labels"])
+        relabelled = body.labels is not None and workflow_label(body.labels) != workflow_label(
+            found["labels"]
+        )
         if relabelled and started is not None and started(key):
             raise HTTPException(422, STARTED)
         if relabelled or (body.status == "approved" and found["level"] == "story"):
