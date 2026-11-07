@@ -57,6 +57,21 @@ def test_rundir_and_event_sink(tmp_path: Path) -> None:
     assert (rd.path / "trace" / "team-1" / "step-1.json").is_file()
 
 
+def test_two_runs_minted_in_the_same_second_never_share_a_directory(tmp_path: Path, monkeypatch) -> None:
+    """Two studio runs started in the same second can draw the same id suffix; the second must take a fresh
+    id instead of sharing the first's directory (whose `studio` worktree then 'already exists')."""
+    from airlie.obs import run_dir as module
+
+    ids = iter(["20261107-180658-bf01", "20261107-180658-bf01", "20261107-180658-c0de"])
+    monkeypatch.setattr(module, "new_run_id", lambda: next(ids))
+    first = RunDir.create(tmp_path / "state")
+    second = RunDir.create(tmp_path / "state")
+    assert first.run_id == "20261107-180658-bf01" and second.run_id == "20261107-180658-c0de"
+    assert first.path != second.path and (second.path / "trace").is_dir()
+    story = RunDir.create_for_story(tmp_path / "state", "AIR-1", run_id="20261107-180658-bf01")
+    assert story.path == tmp_path / "state" / "stories" / "AIR-1" / "runs" / "20261107-180658-bf01"
+
+
 def test_load_and_materialize_eval_task(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
     task = load_task(root / "evals" / "tasks" / "lang_detect.yaml")

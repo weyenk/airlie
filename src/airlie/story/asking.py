@@ -262,18 +262,21 @@ class Asker:
         role: str,
         brief: str,
         *,
-        steps: int,
+        steps: int | None,
         at: str | None = None,
         images: Sequence[Path] = (),
         long: bool = True,
         repo_map: MapUse = CONFIG_MAP,
         writes: Writes | None = None,
+        capped_follow_ups: bool = True,
     ) -> AsyncIterator[Say]:
         """A read-only conversation with `role` (P4, 2026-10-25): the first `say(...)` runs `brief` as the
         subtask (detached worktree at the record's base, or `at`), each later `say(text)` sends `text` as a
         follow-up in the same conversation (`follow_up`, `steps` steps, or a turn's own `steps`), and the
         worktree is removed when the block ends, even when it raises. Product's imagining holds one open
-        across consultations.
+        across consultations. `steps` None is the role's own allowance; with `capped_follow_ups` False a
+        later turn that names no `steps` of its own has the role's allowance too (the planning rounds,
+        `ask_in_rounds`).
 
         With `writes` the conversation may write test files (the architect's package, the tool-written
         packages design, 2026-11-06): its subtask gets the write tools, confined and capped as `writes` says;
@@ -324,7 +327,8 @@ class Asker:
                     **repo_map.kwargs(),
                 )
                 return judged(report.teams[0] if report.teams else None)
-            await orch.follow_up(stage, nudge or "", max_steps=steps or turn_steps)
+            later = steps or (turn_steps if capped_follow_ups else None)
+            await orch.follow_up(stage, nudge or "", max_steps=later)
             return judged(orch.runs[stage].result)
 
         try:
@@ -348,43 +352,43 @@ class Asker:
         repo_map: MapUse = CONFIG_MAP,
     ) -> str:
         """`ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
-        conversation until a round leaves the plan unchanged or `rounds` are used."""
-        plan = Plan((), (Subtask(stage, brief, role),))
-        orch, base = self.start_ask(st, stage, at)
+        conversation until a round leaves the plan unchanged or `rounds` are used (`in_rounds`).
 
-        async def first() -> str:
-            await self.wait(st, stage, True)
-            report = await orch.execute_task(
-                f"{stage}: {st.card['title']}",
-                repo=self.repo,
-                plan=plan,
-                base=base.get("sha"),
-                detach=True,
-                synthesise=False,
-                max_steps=round_steps,
-                **repo_map.kwargs(),
-            )
-            return self.answer(
-                report.teams[0] if report.teams else None, role, orch, cut=self.cut_key(st, stage, role)
+        `signal` reads the plan's own verdict (its `refine` object): `worth_another_round: false` ends the
+        rounds early, on that plan (`plan_in_rounds`)."""
+        talk = self.conversation(
+            st, stage, role, brief, steps=round_steps, at=at, repo_map=repo_map, capped_follow_ups=False
+        )
+        async with talk as say:
+            return await self.in_rounds(
+                st, stage, role, say, parse=parse, same=same, rounds=rounds, signal=signal
             )
 
-        async def again(nudge: str) -> str:
-            await self.wait(st, stage, True)
-            await orch.follow_up(stage, nudge)
-            return self.answer(orch.runs[stage].result, role, orch, cut=self.cut_key(st, stage, role))
-
-        try:
-            return await plan_in_rounds(
-                first,
-                again,
-                parse,
-                same,
-                rounds=rounds,
-                emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
-                role=role,
-            )
-        finally:
-            remove_worktree(self.repo, orch.run_dir.path / "studio")
+    async def in_rounds[T](
+        self,
+        st: Recorder,
+        stage: str,
+        role: str,
+        say: Say,
+        *,
+        parse: Callable[[str], T],
+        same: Callable[[T, T], bool],
+        rounds: int,
+        signal: Callable[[str], Any] | None = None,
+    ) -> str:
+        """The planning rounds (`plan_in_rounds`) as the turns of the conversation `say` speaks in: its
+        opening turn is round 1 and each later round a follow-up; the rounds' events are the record's, with
+        the stage. `signal` reads the plan's own verdict, which ends the rounds early (`ask_in_rounds`)."""
+        return await plan_in_rounds(
+            lambda: say(),
+            say,
+            parse,
+            same,
+            rounds=rounds,
+            emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
+            signal=signal,
+            role=role,
+        )
 
     async def usable[T](
         self,

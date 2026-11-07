@@ -16,6 +16,7 @@ from typing import Any
 
 from airlie.prompts import text as hub_text
 from airlie.story.model import REPLY_TAIL, Layer, StoryError, unusable_why
+from airlie.topology.studio_plan import extract_json_block
 
 REFINE_FIELD = (
     'With every plan, add a top-level "refine" object: {"worth_another_round": true or false, "reason": one '
@@ -96,6 +97,12 @@ async def plan_in_rounds[T](
         if finished:
             return _done(text, emit, "architect_done", n)
     return _done(text, emit, "cap", rounds)
+
+
+def plan_verdict(text: str) -> Any:
+    """The plan's own `refine` object (its verdict), as `plan_in_rounds`' `signal` reads it; None if the
+    reply carries no JSON block or no such object."""
+    return (extract_json_block(text) or {}).get("refine")
 
 
 def _steer(emit: Emit, role: str, n: int, id: str, fields: dict[str, object]) -> str:
