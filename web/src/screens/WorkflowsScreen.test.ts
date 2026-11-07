@@ -1,11 +1,14 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
+import type { WorkflowDef } from "@/api/workflow_defs";
 import type { StoryRow } from "@/api/workflows";
 import WorkflowsScreen from "./WorkflowsScreen.vue";
 
 const api = vi.hoisted(() => ({ listRunning: vi.fn(), listStories: vi.fn() }));
 vi.mock("@/api/workflows", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflows")>()), ...api }));
+const defsApi = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
+vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...defsApi }));
 
 const STORIES: StoryRow[] = [
   { key: "AIR-17", title: "Card modal", repo: "weyenk/airlie", stage: "build", blocked: null, last_activity: 100 },
@@ -18,6 +21,7 @@ async function open(url = "/workflows") {
     routes: [
       { path: "/workflows", name: "workflows", component: WorkflowsScreen },
       { path: "/signin", name: "signin", component: { template: "<i/>" } },
+      { path: "/workflows/build/:name", name: "builder", component: { template: "<i/>" } },
       { path: "/workflows/:key", component: { template: "<i/>" } },
     ],
   });
@@ -28,8 +32,15 @@ async function open(url = "/workflows") {
 }
 const lastPageCall = () => api.listStories.mock.calls.map((c) => c[0]).filter((q) => q.size !== undefined).at(-1);
 
+const DEFS: WorkflowDef[] = [
+  { name: "story", type: "story", source: "file", problems: [], pr: null },
+  { name: "layer", type: null, source: "file", problems: [], pr: null, bundle: true },
+  { name: "fix", type: "bug", source: "draft", problems: ["workflow fix: node a: check needs run"], pr: { number: 241, url: "https://github.com/weyenk/airlie/pull/241" } },
+];
+
 beforeEach(() => {
   setActivePinia(createPinia());
+  defsApi.listWorkflowDefs.mockReset().mockResolvedValue(DEFS);
   api.listRunning.mockReset().mockResolvedValue([]);
   api.listStories.mockReset().mockImplementation(async (q: { size?: number; page?: number }) =>
     q.size === undefined
@@ -257,4 +268,30 @@ test("the Stage filter uses the chips' words and sends the API word", async () =
   await w.get("[data-filter=stage]").setValue("layers");
   await flushPromises();
   expect(router.currentRoute.value.query.stage).toBe("layers");
+});
+
+test("the Definitions table lists every workflow, each opening in the builder", async () => {
+  const { w, router } = await open();
+  const rows = w.findAll("[data-def]");
+  expect(rows.map((r) => r.attributes("data-def"))).toEqual(["story", "layer", "fix"]);
+  expect(w.get("[data-def=story] a[href='/workflows/build/story']").text()).toBe("story");
+  expect(w.get("[data-def=layer]").text()).toContain("bundle");
+  const fix = w.get("[data-def=fix]");
+  expect(fix.text()).toContain("bug");
+  expect(fix.text()).toContain("draft");
+  expect(fix.get("[data-def-problems]").text()).toBe("1");
+  expect(fix.get("a[href='https://github.com/weyenk/airlie/pull/241']").text()).toBe("#241");
+  expect(w.get("[data-def=story] [data-def-problems]").text()).toBe("0");
+  await w.get("[data-def=layer] a").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/layer");
+});
+
+test("a Definitions list that does not load says so and offers a retry", async () => {
+  defsApi.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
+  const { w } = await open();
+  expect(w.get("[aria-label=Definitions]").text()).toContain("could not be loaded");
+  await w.get("[data-defs-retry]").trigger("click");
+  await flushPromises();
+  expect(w.findAll("[data-def]")).toHaveLength(3);
 });
