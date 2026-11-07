@@ -45,7 +45,7 @@ from airlie.story.briefs import (
 from airlie.story.context import guide_budget, repo_guide
 from airlie.story.model import Layer, Story, parse_layers, parse_story
 from airlie.story.package import Package, Satisfied
-from airlie.story.rounds import same_layers
+from airlie.story.rounds import plan_verdict, same_layers
 from airlie.story.state import StoryState
 from airlie.story.tester_lint import lint_note
 from airlie.topology.studio_plan import extract_json_block
@@ -184,7 +184,8 @@ async def plan_layers(
                     session.say,
                     parse=parse,
                     same=same_layers,
-                    rounds=turns,  # the plan's own verdict is not read (`Asker.ask_in_rounds`)
+                    rounds=turns,
+                    signal=plan_verdict,  # the plan's own verdict ends the rounds early
                 )
 
         ask = in_rounds

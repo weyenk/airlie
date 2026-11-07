@@ -1493,31 +1493,38 @@ async def test_plan_rounds_are_turns_of_one_conversation(tmp_path: Path) -> None
     assert seen[1] == seen[0]
 
 
-async def test_a_plans_own_verdict_does_not_end_the_rounds_either_way(tmp_path: Path) -> None:
-    """A plan whose `refine` says another round is not worth it: the rounds go on until they converge, as
-    they have since the verdict stopped being read (208385f), driver and composer alike: no `plan_check`,
-    no `architect_done`."""
+@pytest.mark.parametrize("worth", [False, True])
+async def test_a_plans_own_verdict_ends_the_rounds_early_either_way(tmp_path: Path, worth: bool) -> None:
+    """A plan whose `refine` says another round is not worth it ends the planning rounds at once: a
+    `plan_check` event, one `plan_round`, `plan_done` with `architect_done`. A plan that says another round
+    is worth it goes on (here to round 2, which converges). Driver and composer alike, with the same
+    events and state."""
     settings = {"plan_round_steps": 2, "plan_max_rounds": 2}
-    verdict = {"worth_another_round": False, "reason": "enough read", "check": ""}
+    verdict = {"worth_another_round": worth, "reason": "enough read", "check": ""}
     plan = [
         layer("storage", "Storage", "store.py", "AC1", "Store."),
         layer("profile", "Profile", "profile.py", "AC2", "Show."),
     ]
-    finished = FakeReply(text=fenced({"layers": plan, "refine": verdict}))
+    first = FakeReply(text=fenced({"layers": plan, "refine": verdict}))
     seen = []
     for composer in (False, True):
         root = tmp_path / ("composer" if composer else "driver")
         root.mkdir()
         repo = repo_with_marker_tests(root)
-        engine = happy_engine(architect=[finished, LAYERS])
+        engine = happy_engine(architect=[first, LAYERS])
         pipe = pipeline(root, repo, engine, story=settings, composer=composer)
         st = await pipe.plan(text_card("add a marker"))
         assert st.blocked is None and st.stage == "layers", st.blocked
         assert st.base is not None
         events = plan_events(st.path / "events.jsonl", root, st.base["sha"])
         kinds = [e["kind"] for e in events]
-        assert "plan_check" not in kinds and kinds.count("plan_round") == 2
-        assert [e["reason"] for e in events if e["kind"] == "plan_done"] == ["converged"]
+        [check] = [e for e in events if e["kind"] == "plan_check"]
+        assert check["worth_another_round"] is worth
+        done = [e["reason"] for e in events if e["kind"] == "plan_done"]
+        if worth:
+            assert kinds.count("plan_round") == 2 and done == ["converged"]
+        else:
+            assert kinds.count("plan_round") == 1 and done == ["architect_done"]
         seen.append((events, plan_state(st.path, root, st.base["sha"])))
     assert seen[1] == seen[0]
 
