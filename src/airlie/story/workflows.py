@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.prompts.hub import PromptError
+from airlie.prompts.hub import load as hub_prompts
 from airlie.story.board import Card
 from airlie.story.model import StoryError
 
@@ -78,11 +79,16 @@ DraftPrompts = Mapping[str, Mapping[str, str]]
 
 def closure_prompts(prompts: DraftPrompts | None, names: Iterable[str]) -> dict[str, str]:
     """The prompt files the drafts among `names` carry (a resolved workflow and its bundles), by id. Two of
-    them carrying different texts under one id is a WorkflowError: a node could not say which it means."""
+    them carrying different texts under one id is a WorkflowError: a node could not say which it means; so is
+    one carrying an id the hub has (a rule or steering): the hub's file comes first (D19), and publishing
+    would overwrite it."""
+    hub_ids = hub_prompts().keys()
     found: dict[str, str] = {}
     owner: dict[str, str] = {}
     for name in names:
         for id, text in (prompts or {}).get(name, {}).items():
+            if id in hub_ids:
+                raise WorkflowError(f"workflow {name}: prompt file '{id}' is already a hub prompt")
             if id in found and found[id] != text:
                 raise WorkflowError(
                     f"draft workflows {owner[id]!r} and {name!r} carry different prompt files {id!r}"

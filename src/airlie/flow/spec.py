@@ -104,10 +104,10 @@ def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -
         return []
     id = node.prompt.removeprefix(PREFIX)
     parsed: PromptText | None
-    if id in prompts:
-        parsed = prompts[id] if isinstance(prompts, Mapping) else None
-    elif id in rule_ids():
+    if id in rule_ids():  # the hub first (D19)
         parsed = entry(id)
+    elif id in prompts:
+        parsed = prompts[id] if isinstance(prompts, Mapping) else None
     else:
         return [f"unknown prompt file '{id}'"]
     fields = parsed.fields if parsed is not None else ()

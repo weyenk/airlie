@@ -4,17 +4,24 @@ rendered with the node's inputs as its fields (docs/superpowers/specs/2026-11-07
 
 from __future__ import annotations
 
+import functools
+import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from airlie.flow.composer import Registry, RunContext
-from airlie.flow.prompt_files import PREFIX, parse_draft_prompts
+from airlie.flow.composer import Composer, Registry, RunContext
+from airlie.flow.prompt_files import PREFIX, parse_draft_prompts, render_value
 from airlie.flow.runners import ask_runner
 from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
 from airlie.flow.store import MemoryStore, Sessions
 from airlie.prompts.hub import PromptError
+from airlie.story.board import text_card
+from airlie.story.workflows import WorkflowError, closure_prompts
+from tests.unit.test_studio_orchestrator import cfg_for
 
 REPRODUCE = """\
 ---
@@ -150,3 +157,86 @@ def test_check_workflows_flags_a_field_the_node_cannot_read() -> None:
         "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
         "which is not an input of the node"
     ]
+
+
+WRITE = """\
+---
+kind: rule
+roles: [tester]
+fields: [card, feedback]
+why: A bug workflow's write step, re-run with the judge's note.
+---
+Write the steps for: {card}
+
+{feedback}
+"""
+
+
+async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: Path) -> None:
+    """A loop back into a prompt-file ask carries its text into `{feedback}`; a parse retry's reason comes
+    first, then the carry, a blank line between."""
+    asker = FakeAsker()
+    verdicts = iter([{"__fail__": "too long", "note": "make it shorter"}, {"verdict": "ok"}])
+
+    async def judge(n: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        return next(verdicts)
+
+    write = {
+        "type": "ask",
+        "role": "tester",
+        "prompt": "prompt:bug-write",
+        "inputs": ["card"],
+        "outputs": {"steps": "text"},
+    }
+    judged = {
+        "type": "check",
+        "run": "bug.judge",
+        "inputs": ["steps"],
+        "outputs": {"verdict": "text"},
+        "loop": {"to": "write", "max": 1, "carry": "note"},
+    }
+    spec = {"start": "write", "loose": ["card"], "nodes": {"write": write, "judge": judged}}
+    workflows = {"bug": WorkflowSpec.model_validate(spec)}
+    texts = parse_draft_prompts({"bug-write": WRITE})
+    assert check_workflows(workflows, prompts=texts) == []
+    composer = Composer(
+        cfg_for(tmp_path),
+        runners={
+            "ask": functools.partial(ask_runner, asker=cast(Any, asker), st=cast(Any, None)),
+            "check": judge,
+        },
+        registry=Registry(prompts=texts),
+        store=MemoryStore({"card": "C1"}),
+        sessions=Sessions(),
+        workflows=workflows,
+    )
+    await composer.run("bug")
+    assert asker.briefs == ["Write the steps for: C1\n\n", "Write the steps for: C1\n\nmake it shorter"]
+    registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
+    carried = context(node(inputs=["card"]), registry, MemoryStore({"card": "C1"}))
+    carried.feedback = "make it shorter"
+    brief = registry["prompt:bug-reproduce"]
+    assert brief(carried, "no steps") == "Reproduce: C1\n\nno steps\n\nmake it shorter"
+
+
+def test_a_card_renders_as_its_title_and_description_and_an_artifact_as_json() -> None:
+    card = replace(text_card("Fix the marker"), title="Fix the marker", description="It is red.")
+    assert render_value(card) == "Fix the marker\n\nIt is red."
+    artifact = {"base": "abc", "layers": [1]}
+    assert render_value(artifact) == json.dumps(artifact, indent=1, default=str)
+    assert render_value(["a", 2]) == json.dumps(["a", 2], indent=1)
+    assert render_value("plain") == "plain" and render_value(3) == "3"
+    registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
+    ctx = context(node(inputs=["card"]), registry, MemoryStore({"card": card}))
+    assert registry["prompt:bug-reproduce"](ctx, None) == "Reproduce: Fix the marker\n\nIt is red.\n\n"
+
+
+def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() -> None:
+    clash = REPRODUCE.replace("roles: [tester]", "roles: [architect]")
+    for id in ("brief-survey-task", "act-first"):  # a rule's id, a steering id
+        with pytest.raises(WorkflowError, match=f"workflow bug: prompt file '{id}' is already a hub prompt"):
+            closure_prompts({"bug": {id: clash}}, ["bug"])
+    registry = Registry(prompts=parse_draft_prompts({"brief-survey-task": clash}))
+    n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
+    brief = registry["prompt:brief-survey-task"](context(n, registry, MemoryStore()), None)
+    assert brief.startswith("Read the code this request touches")  # the hub first, whatever a draft says

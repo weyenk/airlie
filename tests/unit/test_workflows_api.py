@@ -127,6 +127,18 @@ def test_a_draft_naming_its_own_prompt_file_has_no_problems_and_one_naming_none_
     assert none.status_code == 200 and none.json()["problems"] == [unknown]
 
 
+def test_a_draft_prompt_file_named_like_a_hub_prompt_is_a_problem(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    http, _ = bare(c, store(c))
+    clash = {"brief-survey-task": NOTE}
+    taken = "workflow mini: prompt file 'brief-survey-task' is already a hub prompt"
+    with http:
+        put = http.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI, "prompts": clash})
+        checked = http.post("/v1/workflows/validate", json={"yaml": MINI, "prompts": clash}).json()
+    assert put.status_code == 200 and put.json()["problems"] == [taken]
+    assert checked == {"problems": [taken]}
+
+
 def test_a_draft_with_problems_is_saved_and_returned_with_them(tmp_path: Path) -> None:
     http, c = client(tmp_path)
     with http:
