@@ -454,6 +454,7 @@ def create_app(
         return "; ".join(problems) or None
 
     local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked
+
     def started(key: str) -> bool:
         """The card has a saved state: it started on the workflow it snapshotted."""
         from airlie.story.factory import _saved
