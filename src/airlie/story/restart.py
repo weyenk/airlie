@@ -241,7 +241,9 @@ def _cleared(
             st.built[nn]["sha"] = sha
         st.drafts = {nn: d for nn, d in st.drafts.items() if int(nn) < layer}
     st.attempt = None
-    st.workflow = None  # the next run snapshots the workflow again
+    # st.workflow is kept: a restart from a step resumes node ids that only the snapshot names, so the
+    # snapshot must stay; a changed definition is picked up by a fresh card (a started card's workflow
+    # cannot change)
     st.prs = []
     st.blocked = None
     st.save()

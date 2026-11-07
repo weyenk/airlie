@@ -278,7 +278,8 @@ async def test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_i
     assert now["base"] == {"ref": f"origin/{trunk}", "sha": news} != old["base"]
     assert {k: now[k] for k in kept} == {k: old[k] for k in kept}
     assert all(now[k] is None for k in cleared)
-    assert "workflow" not in now  # cleared, so not saved: a re-snapshot comes at its next start
+    # kept: the steps it resumes are named by the snapshot alone (a started card's workflow cannot change)
+    assert now["workflow"] == old["workflow"]
     assert now["built"] == {} and now["attempt"] is None and now["drafts"] == {} and not now["drafted"]
     assert not layer_branches & branches(repo) and worktrees(repo) == 1
     # a copy of the record as it was, beside the record kept in place
@@ -290,6 +291,41 @@ async def test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_i
     item = store.get(card.key)
     assert item.status == "approved" and f"started over from {point}" in item.comments[-1].text
     assert done.archive == str(folder) and gh.closes() == []
+
+
+async def test_a_card_on_a_draft_workflow_restarted_from_a_step_runs_its_own_snapshot_again(
+    tmp_path: Path,
+) -> None:
+    """A restart keeps the snapshot: the card resumes the workflow it started on (its node ids are named by
+    the snapshot alone), not the story, and the snapshot is what it was, whatever the draft says since."""
+    from tests.unit.test_story_workflows import MINI, MINI_MORE
+
+    repo = github_repo(tmp_path)
+    board, store, key = story_card(tmp_path)
+    store.update(key, labels=["workflow:mini"])
+    card = await board.card(key)
+    pipe = pipeline(tmp_path, repo, happy_engine(), board=board)
+    pipe.drafts = lambda: {"mini": MINI}
+    st = await pipe.run(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    saved = json.loads((st.path / "state.json").read_text())
+    snap = saved["workflow"]
+    assert snap["name"] == "mini"
+    saved["story"] = {"title": "fix the marker"}  # what a later point needs reached; mini refines nothing
+    (st.path / "state.json").write_text(json.dumps(saved))
+    trunk_commit(repo, {"NEWS": "news\n"})
+    await start_over(tmp_path, card, board, GitHubPrs(), "layers")
+    assert json.loads((st.path / "state.json").read_text())["workflow"] == snap
+    before = len((st.path / "events.jsonl").read_text().splitlines())
+
+    again = pipeline(tmp_path, repo, happy_engine(), board=board)
+    again.drafts = lambda: {"mini": MINI_MORE}  # edited since: the restarted card does not see it
+    st = await again.run(await board.card(key))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    events = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()][before:]
+    ran = [e["node"] for e in events if e["kind"] == "node_started"]
+    assert ran and set(ran) <= {"intake", "base", "gate", "review"}
+    assert json.loads((st.path / "state.json").read_text())["workflow"] == snap
 
 
 async def test_a_story_started_over_from_its_packages_builds_every_layer_on_its_plan(tmp_path: Path) -> None:
