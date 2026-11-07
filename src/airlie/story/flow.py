@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 Until = Literal["planned", "review"]
 Step = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
 Opener = Callable[[Opening], AbstractAsyncContextManager[Session]]
+"""How a conversation step opens its conversation: the runner's `Talk.open`, or the driver's `converse`."""
 
 CATALOG: Mapping[str, tuple[str, ...]] = {
     # every id `story_registry` adds, by the node field that names it: the builder's dropdowns
@@ -95,7 +96,6 @@ CATALOG: Mapping[str, tuple[str, ...]] = {
     "turns": ("story.layers_turns", "story.drafts_turns"),  # a conversation's args.turns
     "meetings": ("story.amigos",),  # run: of a meeting node
 }
-"""How a conversation step opens its conversation: the runner's `Talk.open`, or the driver's `converse`."""
 
 
 # ---- the ask nodes' pieces (survey, refine): the registry's and the driver's step's one implementation ----
