@@ -5,24 +5,38 @@ A strangler: the runners here call today's `StoryPipeline` steps by node name, w
 return the node's outputs read back from the state, so a story runs the same either way by construction and
 the composer only orders the steps; each type's generic loop is lifted into `airlie.flow.runners` in turn,
 with the story's pieces (the brief, the parser, the after-hook) defined here once and called by both the
-registry and the driver's step. The ask type is lifted (survey and refine), and the check type: each check
-is a `(ctx, **args)` callable that reads its inputs from the store and calls the step the driver calls."""
+registry and the driver's step. The ask type is lifted (survey and refine), the check type (each check is a
+`(ctx, **args)` callable that reads its inputs from the store and calls the step the driver calls), and the
+conversation type: the layer plan's rounds and the packages' drafting are turn bodies (`args.turns`) that
+open their conversation through the runner's `Talk`, the drafting one held for the run as the
+`drafts_session` the layer's package node continues."""
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext, Runner
-from airlie.flow.runners import ask_runner, check_runner
+from airlie.flow.runners import Opening, Session, Talk, ask_runner, check_runner, conversation_runner
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
 from airlie.story.board import Card, note
-from airlie.story.briefs import refine_brief, survey_brief
-from airlie.story.model import Layer, Story, parse_story
+from airlie.story.briefs import (
+    drafts_brief,
+    layer_sources,
+    layers_brief,
+    refine_brief,
+    story_text,
+    survey_brief,
+)
+from airlie.story.context import guide_budget, repo_guide
+from airlie.story.model import Layer, Story, parse_layers, parse_story
 from airlie.story.package import Package, Satisfied
+from airlie.story.rounds import same_layers
 from airlie.story.state import StoryState
+from airlie.story.tester_lint import lint_note
 from airlie.topology.studio_plan import extract_json_block
 
 # the pipeline imports this module for `compose`
@@ -31,20 +45,8 @@ if TYPE_CHECKING:
 
 Until = Literal["planned", "review"]
 Step = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
-
-LATER = (  # ids the YAML names whose callables come with the generic runners
-    "story.layers",  # the conversation ids: today's by-name calls build their own briefs and parse
-    "story.layers_again",
-    "story.drafts",
-    "story.next_package",
-)
-
-
-def _later(id: str) -> Callable[..., Any]:
-    def fn(*_: Any, **__: Any) -> Any:
-        raise NotImplementedError(f"registry '{id}': not lifted out of the pipeline yet")
-
-    return fn
+Opener = Callable[[Opening], AbstractAsyncContextManager[Session]]
+"""How a conversation step opens its conversation: the runner's `Talk.open`, or the driver's `converse`."""
 
 
 # ---- the ask nodes' pieces (survey, refine): the registry's and the driver's step's one implementation ----
@@ -98,6 +100,149 @@ async def refined(pipe: StoryPipeline, st: StoryState, card: Card, story: Story)
     # Each note is posted as the role that wrote it (the prefix keeps it recognisable as airlie's):
     # story → product, layers → architect, layer built → build_role, the PR stack in _finish → review.
     await pipe.board.comment(card, note(_story_note(story)), role=pipe.s.product_role)
+
+
+# ---- the conversation nodes' pieces (layers, drafts): the registry's and the driver's step's one
+# implementation ----
+
+
+def layers_guide(pipe: StoryPipeline, st: StoryState, story: Story) -> str:
+    """The files the story names, read at its base for the layer plan."""
+    sha = (st.base or {}).get("sha", "HEAD")
+    budget = guide_budget(pipe.cfg, [pipe.s.architect_role])
+    return repo_guide(pipe.repo, sha, story_text(story), budget_chars=budget)
+
+
+def layers_opening(
+    pipe: StoryPipeline, st: StoryState, story: Story, guide: str, feedback: str | None
+) -> str:
+    """The layer plan's brief (`layers_brief`), with the last try's reason when it went back."""
+    coder_steps, coder_context = pipe._coder_budget()
+    return layers_brief(
+        story,
+        pipe.s.max_layers,
+        feedback,
+        guide=guide,
+        survey=st.survey or "",
+        round_steps=pipe.s.plan_round_steps,
+        lessons=pipe.lessons.recent(),
+        max_steps=coder_steps,
+        context_budget=coder_context,
+        dossier=pipe._dossier(st, (st.base or {}).get("sha")),
+        max_criteria=pipe.s.max_layer_criteria,
+    )
+
+
+def parse_plan(pipe: StoryPipeline, story: Story, text: str) -> tuple[Layer, ...]:
+    """The architect's reply as the story's layers."""
+    return parse_layers(extract_json_block(text), story, pipe.s.max_layers)
+
+
+async def plan_layers(
+    pipe: StoryPipeline,
+    st: StoryState,
+    story: Story,
+    *,
+    brief: Callable[[str | None], str],
+    parse: Callable[[str], tuple[Layer, ...]],
+    open: Opener,
+    rounds: int,
+) -> tuple[Layer, ...]:
+    """The layer plan, asked until it parses and its sizes stand (`_usable`, `_size_review` once a
+    planning). With story.plan_round_steps each try is a conversation (`open`) whose turns are the rounds
+    (`Asker.in_rounds`): at most `rounds` (story.plan_max_rounds) and what the role's step allowance gives;
+    with 0, one plain ask."""
+    reviewed: list[bool] = []  # the size review is asked once in this planning (`_size_review`)
+
+    async def sized(layers: tuple[Layer, ...]) -> None:
+        await pipe._size_review(st, story, layers, asked=reviewed)
+
+    ask: Callable[..., Awaitable[str]] | None = None
+    round_steps = pipe.s.plan_round_steps
+    if round_steps:
+        cap = pipe.cfg.roles[pipe.s.architect_role].max_steps or pipe.cfg.teams.max_steps
+        turns = max(1, min(cap // round_steps, rounds))
+
+        async def in_rounds(st: StoryState, stage: str, role: str, text: str, at: str | None = None) -> str:
+            options = {"repo_map": pipe._map(stage, text), "capped_follow_ups": False}
+            async with open(Opening(text, round_steps, stage=stage, at=at, options=options)) as session:
+                return await pipe.asker.in_rounds(
+                    st,
+                    stage,
+                    role,
+                    session.say,
+                    parse=parse,
+                    same=same_layers,
+                    rounds=turns,
+                    signal=lambda reply: (extract_json_block(reply) or {}).get("refine"),
+                )
+
+        ask = in_rounds
+    return await pipe._usable(
+        st, "layers", pipe.s.architect_role, "layer plan", brief, parse, ask=ask, check=sized
+    )
+
+
+async def layers_planned(pipe: StoryPipeline, st: StoryState, card: Card, layers: tuple[Layer, ...]) -> None:
+    """The plan kept (the stage finishes once the layers are agreed, `_agree`) and told to the issue."""
+    from airlie.story.pipeline import _layers_note  # the pipeline imports this module
+
+    st.layers = [x.to_dict() for x in layers]
+    st.save()
+    await pipe.board.comment(card, note(_layers_note(layers)), role=pipe.s.architect_role)
+
+
+async def drafts_opening(
+    pipe: StoryPipeline, st: StoryState, story: Story, layers: tuple[Layer, ...]
+) -> Opening:
+    """The drafting conversation's opening at the story's base: layer 01's package brief (`drafts_brief`),
+    the packages' steps a turn, and with story.package_tools the checkout's turns (`ToolTurns`) it carries
+    and what it may write. Event: packages_drafting."""
+    from airlie.story.pipeline import ToolTurns  # the pipeline imports this module
+
+    sha = (await pipe._base(st))["sha"]
+    guide = repo_guide(
+        pipe.repo,
+        sha,
+        "\n".join(f"{x.scope}\n{x.brief}" for x in layers),
+        budget_chars=guide_budget(pipe.cfg, [pipe.s.architect_role, pipe.s.build_role]),
+    )
+    max_steps, context = pipe._coder_budget()
+    first = drafts_brief(
+        story,
+        layers,
+        guide=guide,
+        lessons=pipe.lessons.recent(),
+        max_steps=max_steps,
+        context_budget=context,
+        proof=pipe._layer_proof(st, layers[0]),
+        sources=layer_sources(pipe.repo, sha, layers[0]),  # lever 2: its files, not read by tool
+        dossier=pipe._dossier(st, sha),
+        lint=lint_note(pipe.repo, sha, pipe.commands),
+        tools=pipe.s.package_tools,
+    )
+    st.emit("packages_drafting", layers=len(layers))
+    turns = ToolTurns(st, sha, pipe._keep_tests) if pipe.s.package_tools else None
+    options = {"repo_map": pipe._map("packages", first), "writes": pipe._writes(turns) if turns else None}
+    return Opening(first, pipe.s.package_steps, stage="packages", at=sha, options=options, state=turns)
+
+
+async def draft_packages(
+    pipe: StoryPipeline,
+    st: StoryState,
+    story: Story,
+    layers: tuple[Layer, ...],
+    opening: Opening,
+    open: Opener,
+) -> Session:
+    """Every layer's package drafted in the conversation `opening` starts (`open`), its turns
+    `_draft_each`'s; the story is then drafted. The session, for a hold that keeps it."""
+    assert opening.at is not None  # drafts_opening: the story's base
+    async with open(opening) as session:
+        await pipe._draft_each(st, story, layers, opening.at, session.say, session.run, session.state)
+    st.drafted = True
+    st.save()
+    return session
 
 
 def seat(pipe: StoryPipeline, role: str) -> str:
@@ -167,10 +312,15 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
 
     async def ready_package(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         """`_ready_package` at the layer's base, with the build's feedback when the build node looped back
-        here; an architect's satisfied reply is `_satisfy`'d, and the build node is then skipped."""
+        here, continuing the drafting conversation the node names (`session`) while the run holds it, else
+        asking afresh (a story built again by another process); an architect's satisfied reply is
+        `_satisfy`'d, and the build node is then skipped."""
         nn, i, story, layers = at(ctx)
         where, built, guide = sites[nn]
-        got = await pipe._ready_package(st, story, layers, i, where[1], built, guide, feedback=ctx.feedback)
+        drafting = ctx.sessions.get(node.session) if node.session is not None else None
+        got = await pipe._ready_package(
+            st, story, layers, i, where[1], built, guide, feedback=ctx.feedback, drafting=drafting
+        )
         if isinstance(got, Satisfied):
             await pipe._satisfy(st, card, layers, i, got)
             return {"satisfied.{item}": st.satisfied[nn]}
@@ -205,6 +355,34 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         await take_card_as_story(pipe, st, card)
         return {"story": st.story}
 
+    # ---- the conversations' pieces: the opening briefs, the plan's parser, the turn bodies (ctx, talk) ----
+    guides: dict[str, str] = {}  # the layer plan's guide, read once a planning as the driver reads it
+
+    def layers_brief_for(ctx: RunContext, feedback: str | None) -> str:
+        story = Story.from_dict(ctx.store.get("story"))
+        if "layers" not in guides:
+            guides["layers"] = layers_guide(pipe, st, story)
+        return layers_opening(pipe, st, story, guides["layers"], feedback)
+
+    async def layers_turns(ctx: RunContext, talk: Talk) -> Any:
+        assert talk.node.prompt is not None and talk.node.parse is not None  # the layers node's
+        story = Story.from_dict(ctx.store.get("story"))
+        layers = await plan_layers(
+            pipe,
+            st,
+            story,
+            brief=functools.partial(ctx.registry[talk.node.prompt], ctx),
+            parse=ctx.registry[talk.node.parse],
+            open=talk.open,
+            rounds=talk.count,
+        )
+        await layers_planned(pipe, st, card, layers)
+        return st.layers
+
+    async def drafts_turns(ctx: RunContext, talk: Talk) -> Any:
+        await draft_packages(pipe, st, *_planned(ctx), await talk.opening(), talk.open)
+        return True
+
     registry = Registry()
     # the ask nodes' pieces: briefs (ctx, feedback), the parser, the after-hooks (ctx, value)
     registry.add("story.survey", lambda ctx, feedback: survey_brief(card))
@@ -213,8 +391,12 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
     registry.add("story.refine", lambda ctx, feedback: refine_brief(card, feedback))
     registry.add("story.story", parse_refined)
     registry.add("story.refined", lambda ctx, story: refined(pipe, st, card, story))
-    for id in LATER:
-        registry.add(id, _later(id))
+    # the conversations' pieces: opening briefs (ctx, feedback), the plan's parser, turn bodies (ctx, talk)
+    registry.add("story.layers", layers_brief_for)
+    registry.add("story.layer_plan", lambda text: parse_plan(pipe, Story.from_dict(st.story or {}), text))
+    registry.add("story.layers_turns", layers_turns)
+    registry.add("story.drafts", lambda ctx, feedback: drafts_opening(pipe, st, *_planned(ctx)))
+    registry.add("story.drafts_turns", drafts_turns)
     checks: dict[str, Callable[..., Any]] = {  # (ctx, **args)
         "story.intake": intake,
         "story.take_card_as_story": take_card,
@@ -247,12 +429,6 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
     return registry
 
 
-def _plan(st: StoryState) -> tuple[Layer, ...]:
-    """The agreed layers (the meeting stores them; nothing rewrites them while the layers are built)."""
-    assert st.layers is not None  # planned
-    return tuple(Layer.from_dict(d) for d in st.layers)
-
-
 def _planned(ctx: RunContext) -> tuple[Story, tuple[Layer, ...]]:
     """The story and its agreed layers as the store holds them (a node's `story` and `layers`)."""
     return Story.from_dict(ctx.store.get("story")), tuple(Layer.from_dict(d) for d in ctx.store.get("layers"))
@@ -268,8 +444,8 @@ def build_finished(st: StoryState) -> None:
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
     """One runner per node type. A check is the generic `check_runner`; a meeting, a write or a gate runs
     its `run` id from the registry; an ask is the generic `ask_runner` (the layer's package ask still its
-    `run` id), asking through `_ask` for the stage's map as the driver does, and a conversation calls
-    today's step by node name."""
+    `run` id), asking through `_ask` for the stage's map as the driver does, and a conversation is the
+    generic `conversation_runner` (the plan's rounds and the drafting are its turn bodies)."""
 
     async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         assert node.run is not None  # spec.py: a check, a gate and a meeting need run
@@ -285,16 +461,9 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
             return await by_run(node, ctx)
         return await asked(node, ctx)
 
-    async def conversation(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        if ctx.node == "layers":
-            assert st.story is not None  # the node's input
-            await pipe._layers(st, card, Story.from_dict(st.story))
-            return {"layers": st.layers}
-        if ctx.node == "drafts":  # the architect's drafting conversation, held for the layers' retries
-            assert st.story is not None  # planned
-            await pipe._draft_packages(st, Story.from_dict(st.story), _plan(st))
-            return {"drafted": True, "drafts_session": pipe._drafting}
-        raise NotImplementedError(f"conversation node '{ctx.node}': no runner yet")
+    conversation = functools.partial(
+        conversation_runner, asker=pipe.asker, st=st, seat=functools.partial(seat, pipe)
+    )
 
     async def later(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         raise NotImplementedError(f"{node.type} node '{ctx.node}': no runner yet")

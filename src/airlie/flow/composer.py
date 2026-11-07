@@ -8,6 +8,7 @@ with carried feedback."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ class RunContext:
     node: str
     item: str | None  # the each-loop item, else None
     feedback: str | None  # the carried loop feedback for this node, else None
+    held: contextlib.AsyncExitStack | None = None  # the run's: what nodes hold open for later ones
 
 
 Runner = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
@@ -91,13 +93,18 @@ class Composer:
         self.registry = registry
         self.store = store
         self.sessions = sessions
+        self.held = contextlib.AsyncExitStack()
+        """Open while `run` runs: a conversation a node holds for later nodes (a session) is entered on it,
+        and closed, whatever ends the run, when `run` returns or raises."""
         self._loops: dict[
             tuple[str, str | None, str, str], int
         ] = {}  # (workflow, item, node, which) -> re-runs
 
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
-        """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached."""
-        return await self._walk(workflow, until, item, bundle=False)
+        """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached.
+        What the run's nodes held open (`held`) is closed when it returns or raises."""
+        async with contextlib.AsyncExitStack() as self.held:
+            return await self._walk(workflow, until, item, bundle=False)
 
     async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
         spec = self.cfg.workflows[workflow]
@@ -197,6 +204,7 @@ class Composer:
             node=name,
             item=item,
             feedback=self.store.get(fb) if self.store.has(fb := self._feedback(name, item)) else None,
+            held=self.held,
         )
 
     async def _step(
@@ -262,11 +270,13 @@ class Composer:
             inline = False
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
+            inline = False  # a child that turns this cancel into another error must not cancel us again
             await self._cancel(tasks)
             if failed and parent is not None and parent.uncancel() == 0:
                 raise failed[0] from None  # a later child failed: its error, not the cancel it caused
             raise
         except BaseException:
+            inline = False
             await self._cancel(tasks)
             raise
 

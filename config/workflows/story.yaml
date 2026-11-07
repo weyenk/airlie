@@ -54,11 +54,11 @@ workflows:
         type: conversation
         role: architect
         prompt: story.layers
-        turn: story.layers_again
-        parse: story.layers
+        parse: story.layer_plan
+        args: {turns: story.layers_turns}  # each try a conversation whose turns are the rounds (story.plan_round_steps)
         inputs: [story, base]
         outputs: {layers: list}
-        steps: story.plan_max_rounds
+        steps: story.plan_max_rounds  # the turns: at most this many rounds
       costed_plan:
         type: check
         run: story.costed

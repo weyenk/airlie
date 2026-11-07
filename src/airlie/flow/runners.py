@@ -6,13 +6,15 @@ configured seat (`functools.partial`), and registers the pieces its nodes name."
 
 from __future__ import annotations
 
+import contextlib
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from airlie.flow.composer import FAIL_KEY, RunContext, resolve_count
 from airlie.flow.spec import NodeSpec
-from airlie.story.asking import Asker, Recorder, StoryBlocked
+from airlie.story.asking import Asker, Recorder, Say, StoryBlocked
 from airlie.story.model import NotActionable
 
 
@@ -78,6 +80,151 @@ async def check_runner(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
     fn = ctx.registry[node.run]  # resolved before the call: a wrong id is a config error, not the step's
     out = await _maybe(fn(ctx, **node.args))
     return out or {}
+
+
+@dataclass(frozen=True)
+class Opening:
+    """How a conversation starts: its opening `brief`, the tool `steps` a turn has (None: its role's own),
+    the stage the asker records (None: the node's name), the commit it reads (`at`, None: the record's
+    base), `Asker.conversation`'s other keywords (`options`: the map, what it may write), and the
+    workflow's own `state` the session carries (the story's: the drafting checkout's turns)."""
+
+    brief: str
+    steps: int | None = None
+    stage: str | None = None
+    at: str | None = None
+    options: Mapping[str, Any] = field(default_factory=dict)
+    state: Any = None
+
+
+@dataclass(frozen=True)
+class Session:
+    """A held conversation (the `session` artifact format): what continues it (`say`), the studio run it
+    is held in, and its opening's `state`. It lives in the process only, never in a saved record."""
+
+    say: Say
+    run: str
+    state: Any = None
+
+
+@contextlib.asynccontextmanager
+async def converse(
+    asker: Asker,
+    st: Recorder,
+    role: str,
+    opening: Opening,
+    *,
+    stage: str,
+    held: contextlib.AsyncExitStack | None = None,
+) -> AsyncIterator[Session]:
+    """The conversation `opening` starts with `role`, as a Session (its run is the one it opened). It is
+    closed when the block ends; on `held` it is entered there instead, and closed when that stack is,
+    after the block (a conversation later nodes or steps continue)."""
+    talk = asker.conversation(
+        st,
+        opening.stage or stage,
+        role,
+        opening.brief,
+        steps=opening.steps,
+        at=opening.at,
+        **opening.options,
+    )
+    if held is None:
+        async with talk as say:
+            yield Session(say, st.runs[-1], opening.state)
+    else:
+        say = await held.enter_async_context(talk)
+        yield Session(say, st.runs[-1], opening.state)
+
+
+class Talk:
+    """What a conversation node's turns are had through (`conversation_runner`): `opening` builds the
+    node's opening (its `prompt` piece), `open` starts the conversation, or continues the session the node
+    names, and `count` is the node's turn count (`steps`, else 1)."""
+
+    def __init__(self, node: NodeSpec, ctx: RunContext, *, asker: Asker, st: Recorder, role: str) -> None:
+        self.node, self.ctx, self.asker, self.st, self.role = node, ctx, asker, st, role
+        self.count = resolve_count(ctx.cfg, node.steps) if node.steps is not None else 1
+        self.output = next((n for n, f in node.outputs.items() if f == "session"), None)
+        named = ctx.sessions.get(node.session) if node.session is not None else None
+        self.continued: Session | None = named
+        self.session: Session | None = named
+
+    async def opening(self, feedback: str | None = None) -> Opening:
+        assert self.node.prompt is not None  # spec.py: a conversation needs a prompt
+        got = await _maybe(self.ctx.registry[self.node.prompt](self.ctx, feedback))
+        return got if isinstance(got, Opening) else Opening(str(got))
+
+    @contextlib.asynccontextmanager
+    async def open(self, opening: Opening) -> AsyncIterator[Session]:
+        """The node's conversation from `opening`: the session it names, when one is held (`opening` is
+        then its next turn's to send, not a new conversation's); else a new one, held on the run's stack
+        when the node outputs a session (it is dropped from the sessions when the stack closes it), else
+        closed when the block ends."""
+        if self.continued is not None:
+            yield self.continued
+            return
+        held = self.ctx.held if self.output is not None else None
+        if self.output is not None:
+            if held is None:
+                raise RuntimeError(
+                    f"node '{self.ctx.node}' outputs a session, but the run holds nothing open"
+                )
+            item = self.ctx.item
+            name = self.output if item is None else self.output.replace("{item}", item)
+            held.callback(self.ctx.sessions.pop, name)  # after the conversation closes (the stack is LIFO)
+        async with converse(self.asker, self.st, self.role, opening, stage=self.ctx.node, held=held) as s:
+            self.session = s
+            yield s
+
+
+async def conversation_runner(
+    node: NodeSpec,
+    ctx: RunContext,
+    *,
+    asker: Asker,
+    st: Recorder,
+    seat: Callable[[str], str] = str,
+) -> Mapping[str, Any]:
+    """One seat with a held transcript. With `args.turns` the node's turns are that registry piece's,
+    `turns(ctx, talk)` (a workflow's own turn body: the story's drafting and planning rounds), which opens
+    the conversation through `talk` and returns the node's value. Else the generic loop: the opening
+    (`prompt(ctx, feedback)`) is turn 0, or, for a node that names a held `session`, its opening is one
+    more turn of that conversation; each later turn sends `turn(ctx, index, feedback)`, up to `steps`
+    turns in all; each reply is `parse`d when the node names a parser, and `done(ctx, value)` ends the
+    turns early. Then `after(ctx, value)`. The value is the node's first non-session output; a session
+    output is the conversation, held for the run (`Composer.held`)."""
+    assert isinstance(node.role, str)  # spec.py: a conversation needs a role
+    talk = Talk(node, ctx, asker=asker, st=st, role=seat(node.role))
+    parse = ctx.registry[node.parse] if node.parse is not None else None
+    after = ctx.registry[node.after] if node.after is not None else None
+    if "turns" in node.args:
+        value = await _maybe(ctx.registry[node.args["turns"]](ctx, talk))
+    else:
+        turn = ctx.registry[node.turn] if node.turn is not None else None
+        done = ctx.registry[node.done] if node.done is not None else None
+        opening = await talk.opening(ctx.feedback)
+        value = None
+        async with talk.open(opening) as session:
+            for index in range(talk.count):
+                if index == 0:
+                    nudge = opening.brief if talk.continued is not None else None
+                elif turn is not None:
+                    nudge = await _maybe(turn(ctx, index, ctx.feedback))
+                else:
+                    break
+                reply = await session.say(nudge)
+                value = parse(reply) if parse is not None else reply
+                if done is not None and done(ctx, value):
+                    break
+    if after is not None:
+        await _maybe(after(ctx, value))
+    out: dict[str, Any] = {}
+    if (first := next((n for n, f in node.outputs.items() if f != "session"), None)) is not None:
+        out[first] = value.to_dict() if hasattr(value, "to_dict") else value
+    if talk.output is not None and talk.session is not None and talk.continued is None:
+        out[talk.output] = talk.session  # a continued session is the node's input, not its output
+    return out
 
 
 async def _maybe(result: Any) -> Any:

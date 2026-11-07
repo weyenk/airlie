@@ -14,11 +14,10 @@ workflows:
       drafts:
         type: conversation
         role: architect
-        prompt: story.drafts
-        turn: story.next_package
-        outputs: {drafted: bool, drafts_session: session}
+        prompt: story.drafts   # layer 01's package brief; a turn of story.package_steps steps
+        args: {turns: story.drafts_turns}   # a turn per layer, the critic's revision in it; ends at an unusable draft
+        outputs: {drafted: bool, drafts_session: session}   # the session: held for the run, never saved
         when: story.not_built
-        steps: story.package_steps
       package:
         type: ask
         role: architect

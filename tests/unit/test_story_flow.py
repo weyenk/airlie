@@ -4,19 +4,22 @@ name."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shlex
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply
-from airlie.flow.composer import Registry, RunContext
-from airlie.flow.runners import check_runner
+from airlie.flow.composer import Composer, Registry, RunContext
+from airlie.flow.runners import Session, check_runner, conversation_runner
 from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
@@ -49,7 +52,7 @@ from tests.unit.test_story_pipeline import (
     planned,
     repo_with_marker_tests,
 )
-from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
+from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS, cfg_for
 
 KEY = "AIR-1"
 
@@ -944,6 +947,14 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         if id is not None
     } | {node.loop.when for node in nodes if node.loop is not None and node.loop.when is not None}
     named |= {node.args["failed"] for node in nodes if "failed" in node.args}  # an ask's failure hook
+    named |= {node.args["turns"] for node in nodes if "turns" in node.args}  # a conversation's turn body
+    assert {
+        "story.layers",
+        "story.layer_plan",
+        "story.layers_turns",
+        "story.drafts",
+        "story.drafts_turns",
+    } <= named
     assert {"story.to_build", "story.survey_on", "story.amigos", "story.costed"} <= named
     asks = {"story.survey", "story.surveyed", "story.survey_failed", "story.refine", "story.story"}
     asks |= {"story.refined", "story.take_card_as_story", "story.is_story_card", "story.not_story_card"}
@@ -1223,4 +1234,226 @@ async def test_a_satisfied_layer_runs_the_same_through_the_composer(tmp_path: Pa
         assert st.blocked is None and st.stage == "review", st.blocked
         assert list(st.built) == ["01"] and list(st.satisfied) == ["02"]
         seen.append(built_run(st, root))
+    assert seen[1] == seen[0]
+
+
+# ---- the conversation type (`conversation_runner`): held conversations, and sessions that cross nodes ----
+
+
+class TalkingAsker:
+    """An asker whose conversations reply from a script: each opening and close recorded, and every turn's
+    nudge (None for the opening turn)."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.opened: list[tuple[str, str, str, int | None]] = []
+        self.said: list[str | None] = []
+        self.closed = 0
+
+    @contextlib.asynccontextmanager
+    async def conversation(
+        self, st: Any, stage: str, role: str, brief: str, *, steps: int | None, **_: Any
+    ) -> AsyncIterator[Any]:
+        self.opened.append((stage, role, brief, steps))
+        st.runs.append(f"run-{len(self.opened)}")
+
+        async def say(nudge: str | None = None, /, *, at: str | None = None, steps: int | None = None) -> str:
+            self.said.append(nudge)
+            return self.replies.pop(0)
+
+        try:
+            yield say
+        finally:
+            self.closed += 1
+
+
+def talk_workflow(tmp_path: Path, nodes: dict[str, Any]) -> Any:
+    return cfg_for(tmp_path, extra={"workflows": {"w": {"start": next(iter(nodes)), "nodes": nodes}}})
+
+
+async def test_the_conversation_runner_holds_its_session_for_the_run_and_ends_when_done_says(
+    tmp_path: Path,
+) -> None:
+    """The generic turn loop: the opening brief, then each turn's nudge from `turn`, each reply parsed, and
+    `done` ending it early; the session is stored under the session output and the next node that names it
+    continues it, one more turn of the same conversation; the composer closes it when the run ends, and the
+    session is dropped then."""
+    nodes = {
+        "talk": {
+            "type": "conversation",
+            "role": "architect",
+            "prompt": "open",
+            "turn": "again",
+            "parse": "upper",
+            "done": "said_done",
+            "steps": 5,
+            "outputs": {"said": "text", "talk_session": "session"},
+        },
+        "more": {
+            "type": "conversation",
+            "role": "architect",
+            "prompt": "open_more",
+            "turn": "again",
+            "session": "talk_session",
+            "parse": "upper",
+            "inputs": ["talk_session"],
+            "outputs": {"more": "text"},
+        },
+    }
+    registry = Registry()
+    registry.add("open", lambda ctx, feedback: "the opening")
+    registry.add("open_more", lambda ctx, feedback: "one more")
+    registry.add("again", lambda ctx, index, feedback: f"turn {index}")
+    registry.add("upper", str.upper)
+    registry.add("said_done", lambda ctx, value: value == "DONE")
+    asker = TalkingAsker(["first", "second", "done", "after"])
+    st = SimpleNamespace(runs=[])
+    held: list[Any] = []
+
+    async def converse(node: Any, ctx: RunContext) -> Any:
+        out = await conversation_runner(node, ctx, asker=asker, st=st)
+        held.append((out.get("talk_session") or ctx.sessions.get("talk_session"), asker.closed))
+        return out
+
+    c = Composer(
+        talk_workflow(tmp_path, nodes),
+        runners={"conversation": converse},
+        registry=registry,
+        store=MemoryStore(),
+        sessions=Sessions(),
+    )
+    await c.run("w")
+    assert asker.opened == [("talk", "architect", "the opening", None)]  # one conversation, opened once
+    assert asker.said == [None, "turn 1", "turn 2", "one more"]  # `done` ended it on the third turn
+    assert c.store.get("said") == "DONE" and c.store.get("more") == "AFTER"
+    [(session, closed), (again, still)] = held
+    assert isinstance(session, Session) and session.run == "run-1" and again is session
+    assert closed == still == 0  # held while the run goes on
+    assert asker.closed == 1 and c.sessions.get("talk_session") is None  # closed, and dropped, at its end
+
+
+async def test_the_composer_closes_its_held_conversations_when_the_run_raises(tmp_path: Path) -> None:
+    nodes = {
+        "talk": {
+            "type": "conversation",
+            "role": "architect",
+            "prompt": "open",
+            "outputs": {"said": "text", "s": "session"},
+        },
+        "boom": {"type": "check", "run": "boom"},
+    }
+    registry = Registry()
+    registry.add("open", lambda ctx, feedback: "the opening")
+    asker = TalkingAsker(["first"])
+    st = SimpleNamespace(runs=[])
+
+    async def boom(node: Any, ctx: RunContext) -> Any:
+        assert asker.closed == 0
+        raise RuntimeError("boom")
+
+    async def converse(node: Any, ctx: RunContext) -> Any:
+        return await conversation_runner(node, ctx, asker=asker, st=st)
+
+    c = Composer(
+        talk_workflow(tmp_path, nodes),
+        runners={"conversation": converse, "check": boom},
+        registry=registry,
+        store=MemoryStore(),
+        sessions=Sessions(),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        await c.run("w")
+    assert asker.said == [None] and asker.closed == 1
+
+
+async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) -> None:
+    """story.layer_attempts 2, layer 01 red after its first build: its package retry is a turn of the
+    architect's drafting conversation (`package_resumed`), which the composer holds as the `drafts_session`
+    the package node names; the drafting is had once. The same events and state as the driver's."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        engine = FakeEngine(
+            {
+                "product": [STORY],
+                "architect": [CALC_LAYERS, RED, OTHER_RED],
+                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "reviewer": [APPROVE, APPROVE],
+            }
+        )
+        repo = calc_repo(root)
+        cmd = f"{shlex.quote(sys.executable)} -m pytest -q"
+        pipe = pipeline(root, repo, engine, test_cmd=cmd, story={"layer_attempts": 2}, composer=composer)
+        st = await pipe.run(text_card("multiply"))
+        assert st.blocked is None and st.stage == "review", st.blocked
+        events, state = built_run(st, root)
+        kinds = [e["kind"] for e in events]
+        assert kinds.count("packages_drafting") == 1 and kinds.count("package_resumed") == 1
+        assert "drafts_session" not in json.loads((st.path / "state.json").read_text())  # never saved
+        seen.append((events, state))
+    assert seen[1] == seen[0]
+
+
+async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) -> None:
+    """A story drafted and stopped on its layer's last build, then built again by a fresh pipeline: the
+    drafting conversation went with the first process, so the layer's package asks afresh, its retry after
+    a red build too (`package_start`, never `package_resumed`), and the story still reaches review. The
+    same events and state as the driver's."""
+    cmd = f"{shlex.quote(sys.executable)} -m pytest -q"
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = calc_repo(root)
+        card = text_card("multiply")
+        first = FakeEngine(
+            {
+                "product": [STORY],
+                "architect": [CALC_LAYERS, RED],
+                "coder": [BROKEN, DONE, STILL_BROKEN, DONE],
+                "reviewer": [APPROVE],
+            }
+        )
+        stopped = await pipeline(root, repo, first, test_cmd=cmd, composer=composer).run(card)
+        assert stopped.blocked is not None and stopped.drafted and not stopped.built, stopped.blocked
+        log = stopped.path / "events.jsonl"
+        before = len(log.read_text().splitlines())
+        again = FakeEngine(
+            {
+                "architect": [RED, OTHER_RED],
+                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, FEATURE, DONE],
+                "reviewer": [APPROVE, APPROVE],
+            }
+        )
+        pipe = pipeline(root, repo, again, test_cmd=cmd, story={"layer_attempts": 2}, composer=composer)
+        st = await pipe.build(card)
+        assert st.blocked is None and st.stage == "review", st.blocked
+        later = [e["kind"] for e in kinds_all(log)[before:]]
+        assert later.count("package_start") == 2 and "package_resumed" not in later
+        assert "packages_drafting" not in later
+        seen.append(built_run(st, root))
+    assert seen[1] == seen[0]
+
+
+async def test_plan_rounds_are_turns_of_one_conversation(tmp_path: Path) -> None:
+    """story.plan_round_steps 2, plan_max_rounds 2: the architect's first round has no plan ("more"), is
+    sent back in the same conversation and plans, and round 2 converges on it. The round events (the fix,
+    each round's plan, the steering, the end) are the driver's."""
+    settings = {"plan_round_steps": 2, "plan_max_rounds": 2}
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        engine = happy_engine(architect=[FakeReply(text="more"), LAYERS, LAYERS])
+        pipe = pipeline(root, repo, engine, story=settings, composer=composer)
+        st = await pipe.plan(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "layers", st.blocked
+        assert st.base is not None
+        events = plan_events(st.path / "events.jsonl", root, st.base["sha"])
+        rounds = [e["kind"] for e in events if str(e["kind"]).startswith("plan_") or e["kind"] == "steer"]
+        assert rounds == ["plan_fix", "steer", "plan_round", "steer", "plan_round", "plan_done"]
+        assert [e["kind"] for e in events].count("run") == 2  # refine, and one conversation for the rounds
+        seen.append((events, plan_state(st.path, root, st.base["sha"])))
     assert seen[1] == seen[0]
