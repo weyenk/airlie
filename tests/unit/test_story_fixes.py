@@ -400,19 +400,28 @@ async def test_bookkeeping_keeps_a_draft_whose_pr_is_open_or_cannot_be_read(
     assert [d.name for d in store.drafts()] == ["alpha", "mini"]
 
 
-async def test_bookkeeping_keeps_a_merged_draft_whose_loaded_file_is_another_workflow(
+async def test_bookkeeping_retires_a_merged_draft_even_when_the_loaded_file_differs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Once the name is loaded the file wins in resolution, so a draft kept beside it would only strand
+    the cards on it: a merged PR retires it whatever the file holds (an edit saved after the publish has no
+    PR, so it is never retired)."""
     monkeypatch.setattr(fixes, "home_checkout", lambda: None)
-    files = {name: yaml.safe_load(_named(name))["workflows"][name] for name in ("edited", "moved")}
+    files = {name: yaml.safe_load(_named(name))["workflows"][name] for name in ("edited", "moved", "later")}
     loaded = cfg_for(tmp_path, extra={"workflows": files})
     store = BoardStore(tmp_path / "board.sqlite")
-    # the file the serve loaded is not what the draft holds (edits made after the PR, or someone else's)
+    # the file the serve loaded is not what the draft holds (edited by hand in its PR, or someone else's)
     store.save_draft("edited", type="bug", yaml=_named("edited").replace("story.finish", "story.costed"))
     # only the positions differ: the same workflow
     store.save_draft("moved", type="bug", yaml=_named("moved") + "    layout:\n      intake: {x: 1, y: 2}\n")
-    for name, n in (("edited", 5), ("moved", 6)):
+    store.save_draft("later", type="bug", yaml=_named("later"))
+    for name, n in (("edited", 5), ("moved", 6), ("later", 7)):
         store.mark_published(name, n, f"https://github.com/o/r/pull/{n}")
+    # edited again after its publish: the row holds no PR, so nothing retires it
+    store.save_draft("later", type="bug", yaml=_named("later").replace("story.finish", "story.costed"))
     lines = await fixes.bookkeep(loaded, store, serve_commit=None, gh=merged_gh("abc"))
-    assert lines == ["workflow moved is merged and loaded: draft retired (PR #6)"]
-    assert [d.name for d in store.drafts()] == ["edited"]
+    assert sorted(lines) == [
+        "workflow edited is merged and loaded: draft retired (PR #5)",
+        "workflow moved is merged and loaded: draft retired (PR #6)",
+    ]
+    assert [d.name for d in store.drafts()] == ["later"]

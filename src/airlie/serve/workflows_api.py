@@ -6,6 +6,7 @@ name (docs/superpowers/specs/2026-11-07-workflow-builder-design.md: "What it loo
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, get_args
@@ -22,7 +23,14 @@ from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import CATALOG
 from airlie.story.publish import PublishError
 from airlie.story.workflow_publish import NothingToPublish
-from airlie.story.workflows import DraftPrompts, WorkflowError, draft_body, draft_spec, workflow_problems
+from airlie.story.workflows import (
+    DraftPrompts,
+    WorkflowError,
+    draft_body,
+    draft_spec,
+    edits_file,
+    workflow_problems,
+)
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
 """Names a draft may not take: the router's own paths under /v1/workflows, which `GET /{name}` would never
@@ -80,13 +88,14 @@ def workflows_router(
     def problems(
         name: str, drafts: Mapping[str, str] | None = None, prompts: DraftPrompts | None = None
     ) -> list[str]:
-        """What stops `name` resolving over the drafts (their YAML, and the prompt files they carry), as
-        saved unless given."""
+        """What stops draft `name` resolving over the drafts (their YAML, and the prompt files they carry), as
+        saved unless given. A draft that edits a file is checked as its own text, though the file runs."""
         return workflow_problems(
             cfg,
             texts() if drafts is None else drafts,
             name,
             prompts=prompt_files() if prompts is None else prompts,
+            own=True,
         )
 
     def file_text(name: str, spec: WorkflowSpec) -> str:
@@ -111,6 +120,7 @@ def workflows_router(
             "problems": problems(draft.name),
             "prompts": dict(draft.prompts),
             "pr": _pr(draft),
+            "edits_file": edits_file(cfg, draft.name),
         }
 
     def get_draft(name: str) -> WorkflowDraft:
@@ -143,6 +153,8 @@ def workflows_router(
                 "bundle": d.type is None,
                 "problems": problems(d.name, drafts, prompts),
                 "pr": _pr(d),
+                # an edit of a file waiting for its PR (or a merge the serve has not loaded): never run
+                "superseded": edits_file(cfg, d.name),
             }
             for d in rows
         ]
@@ -171,6 +183,9 @@ def workflows_router(
 
     @router.get("/{name}")
     async def read_workflow(name: str) -> dict[str, Any]:
+        """A draft first: one named as a file is that file's edit in progress, which the builder opens."""
+        with contextlib.suppress(KeyError):
+            return draft_detail(store.draft(name))
         if (spec := cfg.workflows.get(name)) is not None:
             return {
                 "name": name,
@@ -181,16 +196,13 @@ def workflows_router(
                 "problems": [],
                 "prompts": {},
                 "pr": None,
+                "edits_file": False,
             }
         return draft_detail(get_draft(name))
 
     @router.put("/drafts/{name}")
     async def save_draft(name: str, body: SaveDraft) -> dict[str, Any]:
-        _not_reserved(name)
-        if name in cfg.workflows:
-            raise HTTPException(
-                409, f"{name!r} is a workflow in the repo's files; a draft needs its own name"
-            )
+        _not_reserved(name)  # a file's name is allowed: the draft is an edit of that file (`edits_file`)
         try:
             draft_body(body.yaml, name)
             saved = store.save_draft(name, type=body.type, yaml=body.yaml, prompts=body.prompts)

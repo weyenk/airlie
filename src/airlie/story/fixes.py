@@ -26,7 +26,6 @@ from airlie.obs import EventSink
 from airlie.story.board import note
 from airlie.story.diagnosis import Diagnosis, latest, muse_text
 from airlie.story.publish import Publisher, run_cmd
-from airlie.story.workflows import WorkflowError, draft_spec
 
 FIX = "fix"
 """The label every fix card carries."""
@@ -341,20 +340,15 @@ def transient_retry(store: BoardStore, state_dir: Path, story: Item, *, retries:
 async def retire_draft(
     cfg: AirlieConfig, store: BoardStore, state_dir: Path, draft: WorkflowDraft, *, gh: GhRun
 ) -> bool:
-    """The draft row of a workflow whose PR is merged (`gh pr view <url> --json state`) and whose file this
-    serve has loaded as the same workflow (`cfg.workflows` holds it, equal to the draft's but for layout)
-    is deleted, with a `draft_retired` line event; True then. Merged but not loaded yet (no restart since
-    the merge), or loaded as another workflow (the draft was edited after, or the file was): the row stays,
-    so a card naming the workflow still resolves to the draft (D20). A gh that fails raises."""
-    loaded = cfg.workflows.get(draft.name)
-    if loaded is None or draft.published_url is None:
+    """The draft row of a workflow whose PR is merged (`gh pr view <url> --json state`) and whose name this
+    serve has loaded (`cfg.workflows` holds it) is deleted, with a `draft_retired` line event; True then.
+    What the file holds does not matter: once the name is loaded the file wins over the draft
+    (`resolve_workflows`), so a row kept beside it could never run again, and an edit saved after the
+    publish has no PR to be merged (`BoardStore.save_draft`). Merged but not loaded yet (no restart since
+    the merge): the row stays, so a card naming the workflow still resolves to the draft (D20). A gh that
+    fails raises."""
+    if draft.name not in cfg.workflows or draft.published_url is None:
         return False
-    try:
-        mine = draft_spec(draft.name, draft.yaml)
-    except WorkflowError:
-        return False
-    if loaded.model_dump(mode="json", exclude={"layout"}) != mine.model_dump(mode="json", exclude={"layout"}):
-        return False  # the loaded file is another workflow than the draft holds: the draft stays
     info = json.loads(await gh(["gh", "pr", "view", draft.published_url, "--json", "state"]))
     if not isinstance(info, dict) or info.get("state") != "MERGED":
         return False

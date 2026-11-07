@@ -18,7 +18,7 @@ from airlie.story.epic_state import epic_needs_work
 from airlie.story.initiative import Initiative, initiative_key_of
 from airlie.story.model import PLANNED, StoryError
 from airlie.story.state import STAGES
-from airlie.story.workflows import workflow_label
+from airlie.story.workflows import DEFAULT, workflow_label
 
 log = logging.getLogger(__name__)
 
@@ -156,11 +156,11 @@ class LocalBoard:
         """The workflow the story's `workflow:` label names has a problem (a draft edited or deleted after
         the card was approved): the picks pass over it, so the cards behind it still run, and it is told why
         once per problem (by its stored comments) until a person fixes the draft or the label. A story with
-        no label runs the story's own workflow, and one that has started runs the workflow it snapshotted
-        whatever the drafts say since (D21): neither is resolved. A note the store refuses never fails the
-        pick."""
+        no label (or `workflow:story`, the default written out) runs the story's own workflow, and one that
+        has started runs the workflow it snapshotted whatever the drafts say since (D21): neither is
+        resolved. A note the store refuses never fails the pick."""
         name = workflow_label(story.labels)
-        if self.workflow_problem is None or name is None or self._snapshotted(story.key):
+        if self.workflow_problem is None or name in (None, DEFAULT) or self._snapshotted(story.key):
             return False
         problem = self.workflow_problem(name)
         if problem is None:

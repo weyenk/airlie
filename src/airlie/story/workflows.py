@@ -98,28 +98,33 @@ def closure_prompts(prompts: DraftPrompts | None, names: Iterable[str]) -> dict[
 
 
 def resolve_workflows(
-    cfg: AirlieConfig, drafts: Mapping[str, str], name: str, *, prompts: DraftPrompts | None = None
+    cfg: AirlieConfig,
+    drafts: Mapping[str, str],
+    name: str,
+    *,
+    prompts: DraftPrompts | None = None,
+    own: bool = False,
 ) -> dict[str, WorkflowSpec]:
     """Workflow `name` and the bundles it calls through its `each` nodes, transitively: each from the repo's
     workflows first, else from the drafts (name -> YAML text), and checked together. Nothing else is read,
     so a half-edited draft no other card names never stops this one; the repo's files were checked when
-    the config loaded. A draft may not shadow a workflow the repo's files define. `prompts` are the
+    the config loaded. A file wins over a draft of its name, which is an edit of it waiting to be published
+    or merged (`edits_file`), and that draft's prompt files are not read. `prompts` are the
     drafts' prompt files (`DraftPrompts`): those of the drafts resolved must each be a valid rule file, and
-    a node may name them as `prompt:<id>` beside the hub's rules."""
+    a node may name them as `prompt:<id>` beside the hub's rules. `own`: `name` itself is read from its
+    draft even when a file has the name, as the builder checks an edit of a file (never as a card runs)."""
     specs: dict[str, WorkflowSpec] = {}
+    from_drafts: list[str] = []
     todo = [name]
     while todo:
         wanted = todo.pop()
         if wanted in specs:
             continue
-        if wanted in cfg.workflows:
-            if wanted in drafts:
-                raise WorkflowError(
-                    f"draft workflow {wanted!r} shadows the workflow of that name in the repo's files"
-                )
-            spec = cfg.workflows[wanted]
+        if wanted in cfg.workflows and not (own and wanted == name and wanted in drafts):
+            spec = cfg.workflows[wanted]  # a same-name draft is a pending edit of the file: never run
         elif wanted in drafts:
             spec = draft_spec(wanted, drafts[wanted])
+            from_drafts.append(wanted)
         elif wanted == name:
             raise WorkflowError(f"no workflow named {name!r}")
         else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
@@ -127,7 +132,7 @@ def resolve_workflows(
         specs[wanted] = spec
         todo += [n.workflow for n in spec.nodes.values() if n.type == "each" and n.workflow is not None]
     try:
-        texts = parse_draft_prompts(closure_prompts(prompts, specs))
+        texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
         raise WorkflowError(f"draft workflow {name!r}: prompt file {e}") from None
     if problems := check_workflows(specs, prompts=texts):
@@ -135,13 +140,29 @@ def resolve_workflows(
     return specs
 
 
+def edits_file(cfg: AirlieConfig, name: str) -> bool:
+    """Whether a draft named `name` is an edit of a loaded file: it never runs (the file does) and its
+    Publish changes that file."""
+    return name in cfg.workflows
+
+
+def drafted(cfg: AirlieConfig, names: Iterable[str]) -> list[str]:
+    """The names among `names` that resolve to drafts, not files."""
+    return [n for n in names if not edits_file(cfg, n)]
+
+
 def workflow_problems(
-    cfg: AirlieConfig, drafts: Mapping[str, str], name: str, *, prompts: DraftPrompts | None = None
+    cfg: AirlieConfig,
+    drafts: Mapping[str, str],
+    name: str,
+    *,
+    prompts: DraftPrompts | None = None,
+    own: bool = False,
 ) -> list[str]:
     """What stops workflow `name` resolving (`resolve_workflows`), as the builder shows it: [] or the one
     WorkflowError's message."""
     try:
-        resolve_workflows(cfg, drafts, name, prompts=prompts)
+        resolve_workflows(cfg, drafts, name, prompts=prompts, own=own)
     except WorkflowError as e:
         return [str(e)]
     return []
@@ -182,16 +203,17 @@ def has_node(spec: WorkflowSpec, name: str) -> bool:
 
 
 def workflow_for(
-    pipe: StoryPipeline, st: StoryState, card: Card
+    pipe: StoryPipeline, st: StoryState, card: Card, name: str | None = None
 ) -> tuple[str, dict[str, WorkflowSpec], dict[str, str]]:
-    """The workflow `st` runs and the drafts' prompt files it may name: its snapshot, else the card's,
-    resolved (the pipeline's drafts and their prompts read now) and snapshotted into the state, saved."""
+    """The workflow `st` runs and the drafts' prompt files it may name: its snapshot, else `name` (the
+    card's, `card_workflow`, unless given), resolved (the pipeline's drafts and their prompts read now) and
+    snapshotted into the state, saved."""
     if st.workflow is not None:
         return from_snapshot(st.workflow)
-    name = card_workflow(card)
+    name = name or card_workflow(card)
     prompts = pipe.draft_prompts()
     specs = resolve_workflows(pipe.cfg, pipe.drafts(), name, prompts=prompts)
-    texts = closure_prompts(prompts, specs)
+    texts = closure_prompts(prompts, drafted(pipe.cfg, specs))
     st.workflow = snapshot(name, specs, texts)
     st.save()
     return name, specs, texts

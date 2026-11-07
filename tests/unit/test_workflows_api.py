@@ -20,11 +20,13 @@ from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
 from airlie.story.flow import CATALOG
 from airlie.story.publish import CannotStart, Publisher
-from airlie.story.workflow_publish import NothingToPublish
+from airlie.story.workflow_publish import NothingToPublish, publish_workflow
+from tests.unit.git_helpers import git
 from tests.unit.serve_helpers import TestClient
-from tests.unit.test_story_pipeline import WORKFLOWS
+from tests.unit.test_story_pipeline import WORKFLOWS, RecordedGh
 from tests.unit.test_story_workflows import MINI, MINI_EACH, MINI_NOTE, NOTE, TINY
 from tests.unit.test_studio_orchestrator import cfg_for
+from tests.unit.test_workflow_publish import home_with_origin
 
 KEY = "k"
 AUTH = {"Authorization": f"Bearer {KEY}"}
@@ -102,6 +104,7 @@ def test_a_draft_saved_is_read_back_with_its_prompts_and_told_to_the_feed(tmp_pa
         "problems": [],
         "prompts": {"mini-note": NOTE},
         "pr": None,
+        "edits_file": False,
     }
     assert seen == [("workflows", "mini")]
 
@@ -165,13 +168,67 @@ def test_a_file_workflow_reads_as_its_file_text_else_its_spec(tmp_path: Path) ->
     assert missing.status_code == 404
 
 
-def test_a_draft_may_not_take_a_file_workflows_name(tmp_path: Path) -> None:
+def test_a_draft_named_as_a_file_is_a_pending_edit_of_it(tmp_path: Path) -> None:
+    """Goal 4: the builder saves a file's workflow under the file's name. The draft is an edit of the file,
+    checked as its own text (the file stays what runs, as `resolve_workflows` says), read back in place of
+    the file, and listed beside it as superseded."""
     http, c = client(tmp_path)
-    story = MINI.replace("mini:", "story:")
+    data = yaml.safe_load((WORKFLOWS / "story.yaml").read_text())
+    data["workflows"]["story"]["layout"] = {"intake": {"x": 10, "y": 20}}
+    laid_out = yaml.safe_dump(data, sort_keys=False)
+    broken = laid_out.replace("start: intake", "start: nowhere")
+    assert broken != laid_out
     with http:
-        r = http.put("/v1/workflows/drafts/story", json={"type": "story", "yaml": story}, headers=AUTH)
-    assert r.status_code == 409
-    assert store(c).drafts() == []
+        put = http.put("/v1/workflows/drafts/story", json={"type": "story", "yaml": laid_out}, headers=AUTH)
+        read = http.get("/v1/workflows/story", headers=AUTH).json()
+        listed = http.get("/v1/workflows", headers=AUTH).json()["workflows"]
+        rows = [w for w in listed if w["name"] == "story"]
+        checked = http.post("/v1/workflows/validate", json={"yaml": broken}, headers=AUTH).json()
+        bad = http.put("/v1/workflows/drafts/story", json={"type": "story", "yaml": broken}, headers=AUTH)
+    assert put.status_code == 200 and put.json()["edits_file"] is True and put.json()["problems"] == []
+    assert read["source"] == "draft" and read["yaml"] == laid_out and read["edits_file"] is True
+    assert read["layout"] == {"intake": {"x": 10.0, "y": 20.0}}
+    assert [(w["source"], w.get("superseded")) for w in rows] == [("file", None), ("draft", True)]
+    assert checked == {"problems": ["workflow story: start names unknown node 'nowhere'"]}
+    assert bad.json()["problems"] == ["workflow story: start names unknown node 'nowhere'"]
+    assert store(c).draft("story").yaml == broken
+
+
+async def test_publishing_an_unchanged_file_from_the_builder_diffs_only_the_layout_block(
+    tmp_path: Path, local_remotes: None
+) -> None:
+    """Goal 4 through the API: the shipped story read, saved as a draft of its own name with a box moved, and
+    published: the PR's diff is the layout block alone."""
+    shipped = (WORKFLOWS / "story.yaml").read_text()
+    home, origin = home_with_origin(tmp_path, {"config/workflows/story.yaml": shipped})
+    workflows = {
+        name: spec
+        for part in ("story", "layer")
+        for name, spec in yaml.safe_load((WORKFLOWS / f"{part}.yaml").read_text())["workflows"].items()
+    }
+    c = cfg_for(tmp_path, extra={"workflows": workflows, "story": {"trunk": "main", "remote": "origin"}})
+    own = Path(c.source_path).parent / "config" / "workflows"
+    own.mkdir(parents=True)
+    (own / "story.yaml").write_text(shipped)
+
+    async def publisher(draft: WorkflowDraft) -> tuple[int, str]:
+        return await publish_workflow(c, Publisher(run=RecordedGh(fetch="real")), draft, home=home)
+
+    http, _ = bare(c, store(c), publisher)
+    with http:
+        opened = http.get("/v1/workflows/story").json()
+        data = yaml.safe_load(opened["yaml"])  # the builder's own serialisation, a box moved
+        data["workflows"]["story"]["layout"] = {"intake": {"x": 10, "y": 20}}
+        saved = http.put(
+            "/v1/workflows/drafts/story",
+            json={"type": "story", "yaml": yaml.safe_dump(data, sort_keys=False)},
+        )
+        published = http.post("/v1/workflows/story/publish")
+    assert opened["source"] == "file" and saved.status_code == 200, saved.text
+    assert published.status_code == 200, published.text
+    diff = git(origin, "diff", "--unified=0", "main", "airlie/workflow/story").splitlines()
+    changed = [d for d in diff if d[:1] in "+-" and not d.startswith(("+++", "---"))]
+    assert changed == ["+    layout:", "+      intake: {x: 10, y: 20}"]
 
 
 def test_a_draft_may_not_take_a_name_the_routes_use(tmp_path: Path) -> None:

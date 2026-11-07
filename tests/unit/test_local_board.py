@@ -387,3 +387,19 @@ async def test_the_picks_skip_a_story_whose_workflow_has_a_problem_and_say_so_on
     folder.mkdir(parents=True)
     (folder / "state.json").write_text('{"stage": "intake", "workflow": {"name": "nope", "specs": {}}}')
     assert (await board.next_card()).key == broken  # type: ignore[union-attr]
+
+
+async def test_a_story_labelled_with_the_default_workflow_is_not_resolved_at_pick(tmp_path: Path) -> None:
+    """`workflow:story` is the default written out, as `Line._workflow_hold` reads it: never asked about."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    asked: list[str] = []
+
+    def problem(name: str) -> str | None:
+        asked.append(name)
+        return "broken"
+
+    board = LocalBoard(s, stories_dir=tmp_path / "stories", workflow_problem=problem)
+    story = s.create(level="story", title="labelled", labels=["workflow:story"]).key
+    s.update(story, status="approved")
+    assert (await board.next_card()).key == story  # type: ignore[union-attr]
+    assert asked == [] and not s.get(story).comments
