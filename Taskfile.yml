@@ -331,10 +331,11 @@ tasks:
       - echo {{.CHECKSUM}} > {{.ROOT_DIR}}/.task/web-build.pass
 
   web:gate:
-    desc: "The Vue app's gate, web:check then web:build; skipped while nothing under web/ changed since it last passed in this checkout"
+    desc: "The Vue app's gate, web:check then web:build; skipped while nothing under web/ (or the workflow files its tests read) changed since it last passed in this checkout"
     sources:
       - web/**/*
       - exclude: web/node_modules/**/*
+      - config/workflows/*.yaml  # the builder's tests read the shipped workflows
     # Task stores the checksum of `sources` before the commands run and drops it only when one fails, so a run killed
     # partway (a tool's timeout, a closed terminal) would count as passed next time. The task is up to date only while
     # the pass stamp, written once the last command has passed, holds that same checksum.
