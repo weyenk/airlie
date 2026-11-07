@@ -379,3 +379,48 @@ def test_a_draft_name_must_be_kebab_case(tmp_path: Path, name: str) -> None:
     with pytest.raises(BoardStoreError, match="kebab"):
         s.save_draft(name, type=None, yaml="a: 1\n")
     assert s.drafts() == []
+
+
+def test_delete_comment_removes_the_row_bumps_updated_at_and_does_not_reuse_the_id(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    init = s.create(level="initiative", title="i")
+    s.comment(init.key, "noah", "first")
+    s.comment(init.key, "airlie", "second")
+    before = s.get(init.key)
+    assert [c.id for c in before.comments] == [1, 2]
+    updated_before = before.updated_at
+    deleted = s.delete_comment(init.key, 1)
+    assert [c.id for c in deleted.comments] == [2]  # id 1 gone, id 2 still there
+    assert deleted.comments[0] == before.comments[1]  # the other comment is untouched
+    assert deleted.updated_at >= updated_before
+    after = s.comment(init.key, "noah", "third")
+    assert [c.id for c in after.comments] == [2, 3]  # the next id, not a reused 1
+
+
+def test_delete_comment_raises_key_error_for_an_unknown_item(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    with pytest.raises(KeyError, match="AIR-9"):
+        s.delete_comment("AIR-9", 1)  # the item check runs before the comment check
+
+
+def test_delete_comment_raises_key_error_for_a_comment_id_not_on_the_item(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    init = s.create(level="initiative", title="i")
+    s.comment(init.key, "noah", "first")
+    before = s.get(init.key)
+    with pytest.raises(KeyError, match="99"):
+        s.delete_comment(init.key, 99)
+    assert s.get(init.key) == before  # the item and its comment are unchanged
+
+
+def test_a_refused_delete_changes_nothing(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    init = s.create(level="initiative", title="i")
+    s.comment(init.key, "noah", "first")
+    s.comment(init.key, "airlie", "second")
+    before = s.get(init.key)
+    with pytest.raises(KeyError):
+        s.delete_comment(init.key, 99)
+    after = s.get(init.key)
+    assert after.comments == before.comments  # both comments: ids, authors, texts, at unchanged
+    assert after.updated_at == before.updated_at  # a refused delete is not an update
