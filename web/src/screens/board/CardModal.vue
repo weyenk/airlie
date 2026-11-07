@@ -107,6 +107,14 @@ async function saveWorkflow(name: string): Promise<void> {
 // v-model, not :value: it selects the card's workflow again on every render, so a list that loads after the card
 // (or a refused change) still shows the right one
 const chosenWorkflow = computed({ get: () => workflow.value, set: (name: string) => void saveWorkflow(name) });
+/** The card has started on its workflow (its state snapshotted it), so the server refuses a change: the server's
+ * word when the card was fetched, else a column past approved; and once the line takes it up (doing), always. */
+const STARTED_HELP = "the workflow of a started card cannot be changed; restart it from a step instead";
+const started = computed(() => {
+  const status = item.value?.status;
+  if (status === "doing") return true;
+  return fetched.value?.started ?? (status !== undefined && status !== "todo" && status !== "approved");
+});
 
 async function moveTo(status: Status): Promise<void> {
   problem.value = "";
@@ -172,7 +180,8 @@ function giveFocusBack(e: Event): void {
               <select
                 v-model="chosenWorkflow"
                 required
-                :disabled="defsFailed"
+                :disabled="defsFailed || started"
+                :title="started ? STARTED_HELP : undefined"
                 aria-label="Workflow"
                 class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
               >
@@ -187,6 +196,7 @@ function giveFocusBack(e: Event): void {
                 Workflows did not load
                 <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reloadDefs">Retry</Button>
               </p>
+              <p v-if="started" data-workflow-started class="basis-full text-muted-foreground">Locked: {{ STARTED_HELP }}.</p>
               <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
             </div>
           </template>

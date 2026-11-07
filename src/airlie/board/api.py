@@ -15,6 +15,7 @@ from airlie.board.store import BoardStore, BoardStoreError
 from airlie.story.workflows import workflow_label
 
 PERSON = "noah"
+STARTED = "the workflow of a started card cannot be changed; restart it from a step instead"
 
 
 class CreateItem(BaseModel):
@@ -56,13 +57,17 @@ def board_router(
     publish: Callable[[str, str | None], None] | None = None,
     *,
     workflow_check: Callable[[str], str | None] | None = None,
+    started: Callable[[str], bool] | None = None,
 ) -> APIRouter:
     """`publish`, when given, is told `("board", key)` right after each write that succeeded (a refused one
     publishes nothing): task serve passes its feed's, so an open page refetches that one item at once.
     `workflow_check`, when given, says what stops a workflow resolving (None when nothing does): a card is
     not given a `workflow:` label, nor a story carrying one moved to approved, while its workflow has a
     problem (a 422 with it), so the board never holds a card the line could not run (the builder's anti-goal:
-    nothing saves what the composer refuses). A card with no such label runs the story's: never refused."""
+    nothing saves what the composer refuses). A card with no such label runs the story's: never refused.
+    `started`, when given, says whether the card `key` has a saved state (it has started, and runs the
+    workflow it snapshotted, D21): its `workflow:` label is then never added, removed or changed (a 422),
+    and `GET /items/{key}` says `started`."""
     router = APIRouter(prefix="/v1/board", tags=["board"])
 
     def check_workflow(labels: Sequence[str]) -> None:
@@ -111,12 +116,18 @@ def board_router(
 
     @router.get("/items/{key}")
     async def get_item(key: str) -> dict[str, Any]:
-        return item(key)
+        found = item(key)
+        if started is not None:
+            found["started"] = started(key)
+        return found
 
     @router.patch("/items/{key}")
     async def change_item(key: str, body: ChangeItem, request: Request) -> dict[str, Any]:
         found = item(key)  # 404 before anything else
-        if body.labels is not None or (body.status == "approved" and found["level"] == "story"):
+        relabelled = body.labels is not None and workflow_label(body.labels) != workflow_label(found["labels"])
+        if relabelled and started is not None and started(key):
+            raise HTTPException(422, STARTED)
+        if relabelled or (body.status == "approved" and found["level"] == "story"):
             check_workflow(found["labels"] if body.labels is None else body.labels)
         try:
             updated = store.update(

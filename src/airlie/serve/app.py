@@ -454,7 +454,20 @@ def create_app(
         return "; ".join(problems) or None
 
     local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked
-    app.include_router(board_router(board, feed.publish, workflow_check=workflow_check if local else None))
+    def started(key: str) -> bool:
+        """The card has a saved state: it started on the workflow it snapshotted."""
+        from airlie.story.factory import _saved
+
+        return _saved(cfg, key) is not None
+
+    app.include_router(
+        board_router(
+            board,
+            feed.publish,
+            workflow_check=workflow_check if local else None,
+            started=started if local else None,
+        )
+    )
     if local:
         app.include_router(workflows_router(cfg, board, feed.publish, _workflow_publisher(cfg)))
 

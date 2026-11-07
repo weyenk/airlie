@@ -89,7 +89,9 @@ def test_comments_are_by_noah_and_the_export_has_everything(tmp_path: Path) -> N
         [comment] = r.json()["comments"]
         assert comment["author"] == "noah" and comment["text"] == "looks good"
         out = c.get("/v1/board/export").json()
-        assert out["prefix"] == "AIR" and out["items"] == [c.get("/v1/board/items/AIR-1").json()]
+        one = c.get("/v1/board/items/AIR-1").json()
+        assert one.pop("started") is False  # the one item says whether it has started; the export does not
+        assert out["prefix"] == "AIR" and out["items"] == [one]
 
 
 def test_the_board_is_in_state_dir_and_survives_a_restart(tmp_path: Path) -> None:
@@ -177,3 +179,45 @@ def test_moving_a_story_with_an_invalid_draft_to_approved_is_refused(tmp_path: P
         r = c.patch(f"/v1/board/items/{story}", json={"status": "approved"})
         assert r.status_code == 422 and problem in r.json()["detail"]
         assert c.get(f"/v1/board/items/{story}").json()["status"] == "todo"
+
+
+def test_a_label_change_that_keeps_the_workflow_is_not_checked(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini"]}).status_code == 200
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": NO_RUN}).status_code == 200
+        # another label added beside it: the workflow is the same, so its problem is not this edit's
+        r = c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini", "repo:o/r"]})
+        assert r.status_code == 200 and r.json()["labels"] == ["workflow:mini", "repo:o/r"]
+
+
+STARTED = "the workflow of a started card cannot be changed; restart it from a step instead"
+
+
+def test_the_workflow_of_a_started_card_cannot_be_changed(tmp_path: Path) -> None:
+    """A card with a saved state started on its workflow (D21): adding, removing or changing its `workflow:`
+    label is refused; its other labels change as ever, and the item says it has started."""
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        plain = c.post("/v1/board/items", json={"level": "story", "title": "plain"}).json()["key"]
+        mini = c.post(
+            "/v1/board/items", json={"level": "story", "title": "mini", "labels": ["workflow:mini"]}
+        ).json()["key"]
+        fresh = c.post("/v1/board/items", json={"level": "story", "title": "fresh"}).json()["key"]
+        for key in (plain, mini):
+            (tmp_path / "state" / "stories" / key).mkdir(parents=True)
+            (tmp_path / "state" / "stories" / key / "state.json").write_text('{"stage": "intake"}')
+        assert c.get(f"/v1/board/items/{plain}").json()["started"] is True
+        assert c.get(f"/v1/board/items/{fresh}").json()["started"] is False
+        for key, labels in (
+            (plain, ["workflow:mini"]),  # added
+            (mini, []),  # removed
+            (mini, ["workflow:story"]),  # changed
+        ):
+            r = c.patch(f"/v1/board/items/{key}", json={"labels": labels})
+            assert (r.status_code, r.json()["detail"]) == (422, STARTED), (key, labels)
+        assert c.get(f"/v1/board/items/{mini}").json()["labels"] == ["workflow:mini"]
+        assert c.patch(f"/v1/board/items/{mini}", json={"labels": ["workflow:mini", "x"]}).status_code == 200
+        assert c.patch(f"/v1/board/items/{plain}", json={"labels": ["x"]}).status_code == 200
+        assert c.patch(f"/v1/board/items/{fresh}", json={"labels": ["workflow:mini"]}).status_code == 200

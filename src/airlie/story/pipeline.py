@@ -668,13 +668,19 @@ class StoryPipeline:
             write_phase(self.stories_dir, "gap")
         # a card that names a workflow other than the story runs it through the composer whatever the flag
         # says; the flag governs the story's (D16, D17); a card that took a snapshot runs it whatever its
-        # label says now (D21)
-        composed = st.workflow is not None or card_workflow(card) != "story" or self.s.composer
+        # label says now (D21). A card that started with no snapshot (the driver ran it, or an airlie from
+        # before workflows) and gained a label since has run the story's stages, which no snapshot records,
+        # so D21 cannot hold it: it stays on the story, the flag deciding as for any story card (with no
+        # label it runs as it always has). The board API refuses that relabel; a Jira card's does not ask.
+        named = card_workflow(card)
+        if st.workflow is None and st.stage != "new":
+            named = "story"
+        composed = st.workflow is not None or named != "story" or self.s.composer
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
             # the card's workflow, snapshotted the first time it is used (D21); the driver runs the story's
-            name, specs, _ = workflow_for(self, st, card) if composed else ("story", None, None)
+            name, specs, _ = workflow_for(self, st, card, named) if composed else ("story", None, None)
             spec = None if specs is None else specs[name]
             if (
                 until == "review" and not st.done("publish") and (spec is None or has_node(spec, "publish"))

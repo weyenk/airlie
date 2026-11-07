@@ -25,8 +25,8 @@ export type WorkflowOption = { value: string; label: string; disabled: boolean; 
 export type WorkflowGroup = { label: string; options: WorkflowOption[] };
 
 /** What a card's select offers: a group per declared type for the files, then the drafts. A bundle (no type) is
- * a part of other workflows, not one a card runs, so it is left out; a draft that does not validate is shown
- * but cannot be chosen. */
+ * a part of other workflows, not one a card runs, so it is left out, as is a draft that edits a file (the file
+ * runs); a draft that does not validate is shown but cannot be chosen. */
 export function workflowGroups(defs: WorkflowDef[]): WorkflowGroup[] {
   const option = (d: WorkflowDef, label: string): WorkflowOption => ({
     value: d.name,
@@ -38,6 +38,7 @@ export function workflowGroups(defs: WorkflowDef[]): WorkflowGroup[] {
   const drafts: WorkflowOption[] = [];
   for (const d of defs) {
     if (!d.type || d.bundle) continue; // a draft bundle no more than a file one
+    if (d.superseded) continue; // an edit of a file: the file runs, and is offered as itself
     if (d.source === "draft") drafts.push(option(d, `${d.name} (draft)`));
     else {
       if (!byType.has(d.type)) byType.set(d.type, []);

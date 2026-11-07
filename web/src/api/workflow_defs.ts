@@ -12,6 +12,9 @@ export type WorkflowDef = {
   problems: string[];
   pr: { number: number; url: string } | null;
   bundle?: boolean;
+  /** A draft named as a file: that file's edit waiting for its PR (or a merge the serve has not loaded yet). The
+   * file runs; this draft never does. */
+  superseded?: boolean;
 };
 
 /** One definition whole: its YAML, where its boxes sit and the text of the prompt files it names. */
@@ -24,6 +27,8 @@ export type WorkflowDetail = {
   problems: string[];
   prompts: Record<string, string>;
   pr: { number: number; url: string } | null;
+  /** A draft named as a file: an edit of that file, published as a change to it; the file runs meanwhile. */
+  edits_file?: boolean;
 };
 
 /** What the builder's palette and forms may pick from. */
@@ -56,7 +61,7 @@ export function getWorkflowDef(name: string): Promise<WorkflowDetail> {
   return request<WorkflowDetail>(`/v1/workflows/${seg(name)}`);
 }
 
-/** Save a draft (409: the name is a file; 422: the YAML does not parse). */
+/** Save a draft (422: the name is reserved, or the YAML does not parse). A file's name saves an edit of that file. */
 export function saveDraft(name: string, body: DraftBody): Promise<WorkflowDetail> {
   return request<WorkflowDetail>(`/v1/workflows/drafts/${seg(name)}`, { method: "PUT", body });
 }

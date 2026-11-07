@@ -129,10 +129,19 @@ def test_only_the_named_workflow_and_the_bundles_it_calls_are_resolved() -> None
         resolve_workflows(cfg, {"mini": MINI_EACH}, "mini")
 
 
-def test_a_draft_must_hold_its_one_workflow_and_not_shadow_a_file() -> None:
+def test_a_file_wins_over_a_draft_of_the_same_name() -> None:
+    """A draft named as a loaded file is a pending edit of that file (merged, or not yet published): the
+    file runs, the draft and its prompt files are left out, and nothing is refused."""
     cfg = load_config(Path("airlie.yaml"))
-    with pytest.raises(WorkflowError, match="story"):
-        resolve_workflows(cfg, {"story": MINI.replace("  mini:", "  story:")}, "story")
+    edit = MINI_NOTE.replace("  mini:", "  story:")
+    prompts = {"story": {"mini-note": "not a rule file"}}
+    specs = resolve_workflows(cfg, {"story": edit}, "story", prompts=prompts)
+    assert specs["story"] == cfg.workflows["story"] and set(specs) == {"story", "layer"}
+    assert workflow_problems(cfg, {"story": "workflows: [1"}, "story", prompts=prompts) == []
+
+
+def test_a_draft_must_hold_its_one_workflow() -> None:
+    cfg = load_config(Path("airlie.yaml"))
     with pytest.raises(WorkflowError, match="mini"):
         resolve_workflows(cfg, {"mini": MINI + TINY.removeprefix("workflows:\n")}, "mini")
     with pytest.raises(WorkflowError, match="other"):
@@ -254,6 +263,22 @@ async def test_a_drafts_prompt_file_is_the_brief_and_a_started_card_keeps_its_te
     [asked] = [r for r in engine.requests if r.role == "product"]
     assert "Write one line about this card: " in asked.messages[-1].content
     assert st.workflow is not None and st.workflow["prompts"] == {"mini-note": NOTE}
+
+
+async def test_a_card_the_driver_started_stays_the_story_when_it_gains_a_label(tmp_path: Path) -> None:
+    """A card that started with no snapshot (the driver ran it: the flag off, no label) has run the story's
+    stages, which no snapshot records; a `workflow:` label it gains after (the board API refuses that, a
+    Jira card's labels do not ask) leaves it on the story, run as it started."""
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=False)
+    called: list[Any] = []
+    pipe.drafts = lambda: called.append(1) or {"mini": MINI}  # type: ignore[func-returns-value]
+    card = text_card("add a marker")
+    st = await pipe.plan(card)
+    assert st.workflow is None and st.stage != "new"
+    st = await pipe.build(replace(card, labels=("workflow:mini",)))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert started(st.path / "events.jsonl") == [] and st.workflow is None and called == []
 
 
 async def test_a_drafts_own_output_is_stored_read_by_a_later_node_and_skipped_on_resume(

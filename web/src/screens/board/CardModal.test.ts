@@ -419,3 +419,33 @@ test("a workflow the server refuses shows its words and the card keeps its workf
   expect(q("[data-workflow-field] [role=alert]")!.textContent).toContain("no start node");
   expect(workflowSelect().value).toBe("story");
 });
+
+const STARTED_HELP = "the workflow of a started card cannot be changed; restart it from a step instead";
+
+test("a started card's workflow cannot be changed: the select is off and says why", async () => {
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
+  await open();
+  expect(workflowSelect().disabled).toBe(true);
+  expect(q("[data-workflow-started]")!.textContent).toContain(STARTED_HELP);
+});
+
+test("without the server's word, a card past approved counts as started", async () => {
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), status: "doing", updated_at: 9000 });
+  await open();
+  expect(workflowSelect().disabled).toBe(true);
+  expect(q("[data-workflow-started]")).not.toBeNull();
+});
+
+test("a card the server says has not started keeps its select, whatever its column", async () => {
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), status: "blocked", started: false, updated_at: 9000 });
+  await open();
+  expect(workflowSelect().disabled).toBe(false);
+  expect(q("[data-workflow-started]")).toBeNull();
+});
+
+test("a draft that edits a file is not offered: the file runs", async () => {
+  const edit = { name: "story", type: "story", source: "draft", problems: [], pr: null, superseded: true };
+  defs.listWorkflowDefs.mockResolvedValue([...structuredClone(DEFS), edit]);
+  await open();
+  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
+});
