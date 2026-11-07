@@ -232,11 +232,13 @@ Where the build settled what the design left open, or changed it after the final
   Workflows page.
 - **A started card's workflow cannot change.** The board API refuses adding, removing or changing a card's
   `workflow:` label once the card has a saved state (422 "the workflow of a started card cannot be changed;
-  restart it from a step instead"); `GET /v1/board/items/{key}` says `started`, and CardModal disables the
+  make a new card for the other workflow": a restart keeps the state, so it would not help);
+  `GET /v1/board/items/{key}` says `started`, and CardModal disables the
   select with that reason (falling back to a column past approved when the server has not said). The label
-  check runs only when the `workflow:` label itself changes (or a story moves to approved). In `_drive`, a card
-  that started with no snapshot and gained a label since stays on the story (D21 cannot cover it); with no
-  label it runs as it always has.
+  check runs only when the `workflow:` label itself changes (or a story moves to approved). One rule,
+  `running_workflow(saved state, labels)`, says what a card runs for `_drive`, the line's hold and the board's
+  pick: the snapshot's name; else `story` once the state is past `new` (a card started with no snapshot, by the
+  driver or an airlie from before workflows, and relabelled since: D21 cannot cover it); else the label.
 - **CardModal has no "Build new…"**: only CreateModal opens the builder from a card.
 - **The card trip.** CreateModal's fields go into a sessionStorage-backed store under a token: `?card=<token>`
   out to the builder, `?create=<token>` back to the board; Save and Publish return with the workflow chosen,
@@ -244,13 +246,17 @@ Where the build settled what the design left open, or changed it after the final
 - **Problems at pick time.** A card whose workflow does not resolve is skipped by the picks (the cards behind it
   run) with one note per problem; `workflow:story`, the default written out, is never resolved, as no label.
 - **The snapshot decides the composer.** A card with a snapshot runs it through the composer whatever its label
-  or the flag says now; restart-from-step clears it.
+  or the flag says now. **A restart from a step keeps the snapshot** (this replaces D21's "restart-from-step
+  re-snapshots"): the steps it resumes are node ids only the snapshot names, and a changed definition is for a
+  fresh card. A fresh start moves the whole record aside, so its next run snapshots anew.
 - **No `planned` node.** A workflow without one runs intake in the plan lane, is marked planned there
   (`story_planned` with no layers) and runs whole in the build lane.
 - **Publish.** It continues an open PR's branch, else starts the branch from the trunk again and pushes with a
   lease; a definition the trunk already holds is a 409 "nothing to publish"; publishes of one workflow run one
   at a time (a per-name lock).
-- **Reserved names.** `catalog`, `validate`, `drafts` (the router's paths) and the builder's `new`.
+- **Reserved names.** For drafts: `catalog`, `validate`, `drafts` (the router's paths) and the builder's `new`.
+  For node outputs (`check_workflows` refuses them, and the store will not write them): `path`, `artifacts`
+  (the store whole; `artifacts.<name>` inside it is fine) and `workflow` (the snapshot), dotted or not.
 - **Prompt files.** The hub wins: a draft may not carry a prompt id the hub has, nor two drafts one id with
   different texts. Feedback is joined into the brief; values are rendered as the hub's rules render them.
 - **Canvas.** Hand-rolled SVG; node keys keep the file's order (the order is what falls through to what); a drag
