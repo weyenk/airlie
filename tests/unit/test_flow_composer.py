@@ -529,3 +529,31 @@ async def test_end_run_inside_a_bundle_ends_the_whole_run(tmp_path):
     }
     c = composer(tmp_path, wf, {"gate": gate, "check": check_that(lambda n, c: {"x": 1})}, store=store)
     assert await c.run("story") == "lay" and not store.has("x")
+
+
+async def test_feedback_carried_in_one_item_is_not_read_by_the_next(tmp_path):
+    store = MemoryStore({"card": "c"})
+    store.put("layers", [{}, {}])
+    calls = []
+
+    def build(n, c):
+        calls.append((c.item, c.feedback))
+        first = sum(1 for item, _ in calls if item == c.item) == 1
+        return {"__fail__": "red", "tail": f"red {c.item}"} if first else {"built.{item}": c.item}
+
+    wf = {
+        "story": {"start": "lay", "nodes": {"lay": {"type": "each", "over": "layers", "workflow": "layer"}}},
+        "layer": {
+            "start": "b",
+            "nodes": {
+                "b": {
+                    "type": "check",
+                    "run": "r",
+                    "outputs": {"built.{item}": "json"},
+                    "loop": {"to": "b", "max": 1, "carry": "tail"},
+                }
+            },
+        },
+    }
+    await composer(tmp_path, wf, {"check": check_that(build)}, store=store).run("story")
+    assert calls == [("01", None), ("01", "red 01"), ("02", None), ("02", "red 02")]

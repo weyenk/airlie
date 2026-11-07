@@ -47,14 +47,18 @@ class MemoryStore:
 
 class StateStore:
     """A store over a StoryState: its fields are the artifacts, `<field>.<key>` reaches into a dict field,
-    `feedback.<name>` is kept here in memory and never saved, and `loose` names (`card`, `repo`) are read
-    from the mapping given, ahead of a state field of the same name."""
+    `feedback.<name>` (carried loop feedback) and `package.<layer>` (a layer's ready package, until it is
+    built: a run that stops between the two asks for it again, as the driver does) are kept here in memory
+    and never saved, and `loose` names (`card`, `repo`) are read from the mapping given, ahead of a state
+    field of the same name."""
+
+    MEMORY = ("feedback", "package")
 
     def __init__(self, st: StoryState, *, loose: Mapping[str, Any]) -> None:
         self.st = st
         self._fields = frozenset(f.name for f in dataclasses.fields(st)) - {"path"}
         self._loose = dict(loose)
-        self._feedback: dict[str, Any] = {}
+        self._memory: dict[str, dict[str, Any]] = {head: {} for head in self.MEMORY}
 
     def has(self, name: str) -> bool:
         try:
@@ -64,8 +68,8 @@ class StateStore:
 
     def get(self, name: str) -> Any:
         head, _, key = name.partition(".")
-        if head == "feedback" and key:
-            return self._feedback[key]
+        if head in self._memory and key:
+            return self._memory[head][key]
         if not key:
             if head in self._loose:  # a loose name wins over a state field of the same name (`card`)
                 return self._loose[head]
@@ -76,8 +80,8 @@ class StateStore:
 
     def put(self, name: str, value: Any) -> None:
         head, _, key = name.partition(".")
-        if head == "feedback" and key:
-            self._feedback[key] = value
+        if head in self._memory and key:
+            self._memory[head][key] = value
         elif not key:
             if head not in self._fields:
                 raise KeyError(name)

@@ -39,15 +39,16 @@ def test_state_store_reads_and_writes_story_fields_and_dotted_layers(tmp_path):
         s.get("built.02")
 
 
-def test_feedback_lives_beside_the_state_and_is_never_saved(tmp_path):
+@pytest.mark.parametrize("head", ["feedback", "package"])
+def test_feedback_and_packages_live_beside_the_state_and_are_never_saved(tmp_path, head):
     repo = repo_with_marker_tests(tmp_path)
     st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
     s = StateStore(st, loose={})
-    assert not s.has("feedback.write")
-    s.put("feedback.write", "red")
+    assert not s.has(f"{head}.01")
+    s.put(f"{head}.01", "red")
     s.save()
-    assert s.has("feedback.write") and s.get("feedback.write") == "red"
-    assert "feedback" not in json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert s.has(f"{head}.01") and s.get(f"{head}.01") == "red"
+    assert head not in json.loads((tmp_path / "AIR-1" / "state.json").read_text())
 
 
 def test_put_on_an_unknown_field_is_refused(tmp_path):

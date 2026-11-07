@@ -1547,6 +1547,41 @@ class StoryPipeline:
         if (covered := _covered_below(st, layers, i)) is not None:
             await self._satisfy(st, card, layers, i, covered)
             return
+        where, built, guide = await self._layer_site(st, card, story, layers, i)
+        base_sha = where[1]
+        if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
+            await self._draft_packages(st, story, layers)
+        package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
+        story = _current(st, story)  # a criterion the architect found false was reworded on the way
+        attempts = self.s.layer_attempts
+        for attempt in range(1, attempts + 1):
+            if isinstance(package, Satisfied):
+                await self._satisfy(st, card, layers, i, package)
+                return
+            again = await self._build_once(
+                st,
+                card,
+                story,
+                layers,
+                i,
+                package,
+                where,
+                built,
+                attempt,
+            )
+            if again is None:
+                return
+            package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
+            story = _current(st, story)
+
+    async def _layer_site(
+        self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], i: int
+    ) -> tuple[tuple[str, str, str, Any], str, str]:
+        """Where layer `i` (not satisfied below) is built, found before its package is asked for: `where` for
+        `_build_once` (its base ref and commit, its branch and its commit's author), what the layers below
+        added (`built`) and the repository guide at its base. A layer an earlier run stopped part-way is
+        cleared first (`_clear_attempt`)."""
+        nn = f"{i + 1:02d}"
         # who commits the layer, found before it is built: a bot that cannot be found costs no build
         author = await self.publisher.author(self.repo)
         layer = layers[i]
@@ -1574,30 +1609,7 @@ class StoryPipeline:
             if below is not None and st.base
             else ""
         )
-        if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
-            await self._draft_packages(st, story, layers)
-        package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
-        story = _current(st, story)  # a criterion the architect found false was reworded on the way
-        attempts = self.s.layer_attempts
-        for attempt in range(1, attempts + 1):
-            if isinstance(package, Satisfied):
-                await self._satisfy(st, card, layers, i, package)
-                return
-            again = await self._build_once(
-                st,
-                card,
-                story,
-                layers,
-                i,
-                package,
-                (base_ref, base_sha, branch, author),
-                built,
-                attempt,
-            )
-            if again is None:
-                return
-            package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
-            story = _current(st, story)
+        return (base_ref, base_sha, branch, author), built, guide
 
     async def _satisfy(
         self, st: StoryState, card: Card, layers: tuple[Layer, ...], i: int, satisfied: Satisfied

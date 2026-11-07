@@ -184,7 +184,7 @@ class Composer:
             return False
         self._loops[key] = self._loops.get(key, 0) + 1
         if loop.carry is not None and loop.carry in result:
-            self.store.put(f"feedback.{loop.to}", result[loop.carry])
+            self.store.put(self._feedback(loop.to, item), result[loop.carry])
         return True
 
     def _ctx(self, workflow: str, name: str, item: str | None) -> RunContext:
@@ -196,7 +196,7 @@ class Composer:
             workflow=workflow,
             node=name,
             item=item,
-            feedback=self.store.get(f"feedback.{name}") if self.store.has(f"feedback.{name}") else None,
+            feedback=self.store.get(fb) if self.store.has(fb := self._feedback(name, item)) else None,
         )
 
     async def _step(
@@ -251,6 +251,12 @@ class Composer:
         assert node.over is not None and node.workflow is not None
         for i in range(len(self.store.get(node.over))):
             await self._walk(node.workflow, None, f"{i + 1:02d}", bundle=True)
+
+    @staticmethod
+    def _feedback(name: str, item: str | None) -> str:
+        """Where the feedback carried to node `name` is kept: per each-loop item, so a layer's first try
+        never reads what the layer before it was told."""
+        return f"feedback.{name}" if item is None else f"feedback.{name}.{item}"
 
     @staticmethod
     def _ms(started: float) -> int:

@@ -9,6 +9,7 @@ workflows:
         type: check
         run: story.covered
         outputs: {"satisfied.{item}": json}
+        when: story.open_layer   # neither built nor satisfied: `_build` returns at once for either
         on_fail: continue
       drafts:
         type: conversation
@@ -24,7 +25,8 @@ workflows:
         prompt: story.ready_package   # spec.py needs a prompt on ask/write; same id as run
         run: story.ready_package
         inputs: [base]
-        outputs: {"package.{item}": json}
+        outputs: {"package.{item}": json}   # in memory: a run stopped before the build asks again
+        when: story.open_layer
         session: drafts_session
       build:
         type: write

@@ -10,11 +10,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from airlie.flow.composer import Composer, Registry, RunContext, Runner
+from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext, Runner
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
 from airlie.story.board import Card
 from airlie.story.model import Layer, Story
+from airlie.story.package import Package, Satisfied
 from airlie.story.state import StoryState
 
 # the pipeline imports this module for `compose`
@@ -24,23 +25,15 @@ if TYPE_CHECKING:
 Until = Literal["planned", "review"]
 Step = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
 
-LATER = (  # ids the YAML names whose callables come with the generic runners (the build half: Task 7 on)
+LATER = (  # ids the YAML names whose callables come with the generic runners
     "story.survey",  # the ask/conversation ids: today's by-name calls build their own briefs and parse
     "story.refine",
     "story.story",
     "story.refined",
     "story.layers",
     "story.layers_again",
-    "story.build_done",
-    "story.publish",
-    "story.finish",
-    "story.covered",
     "story.drafts",
     "story.next_package",
-    "story.not_built",
-    "story.ready_package",
-    "story.build_once",
-    "story.has_package",
 )
 
 
@@ -52,9 +45,10 @@ def _later(id: str) -> Callable[..., Any]:
 
 
 def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until = "planned") -> Registry:
-    """Every `story.*` id the story and layer workflows name. The checks and the meeting are today's steps
-    by name; the predicates are today's conditions; the rest raise until their runners are lifted."""
-    from airlie.story.pipeline import _to_build  # the pipeline imports this module
+    """Every `story.*` id the story and layer workflows name. The checks, the meeting, the layer's package
+    and build, and the review gate are today's steps by name; the predicates are today's conditions; the
+    rest (prompt, turn and parse ids) raise until their runners are lifted."""
+    from airlie.story.pipeline import _covered_below, _to_build  # the pipeline imports this module
 
     async def intake(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         await pipe._intake(st, card)
@@ -85,6 +79,68 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
             st.emit("story_planned", layers=len(st.layers or ()))
         return {}
 
+    # ---- the layer bundle (config/workflows/layer.yaml), one run per layer: `_build`'s steps by name ----
+    sites: dict[str, tuple[tuple[str, str, str, Any], str, str]] = {}  # layer -> `_layer_site`
+    attempts: dict[str, int] = {}  # layer -> builds started this run, for `_build_once`'s last-build stop
+
+    def at(ctx: RunContext) -> tuple[str, int, Story, tuple[Layer, ...]]:
+        """The layer the bundle is on (its number and index) and the story and layers as they now stand
+        (`_current`: a criterion reworded on the way is read back)."""
+        assert ctx.item is not None and st.story is not None and st.layers is not None  # an each item
+        return ctx.item, int(ctx.item) - 1, Story.from_dict(st.story), _plan(st)
+
+    def open_layer(ctx: RunContext) -> bool:
+        """Neither built nor satisfied: `_build` returns at once for a layer that is either."""
+        return ctx.item is not None and ctx.item not in st.built and ctx.item not in st.satisfied
+
+    async def covered(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        """Satisfied by the layers below (`_covered_below`), or else where it is built (`_layer_site`, which
+        finds its author and clears what an earlier run left of it): no outputs, so nothing is skipped."""
+        nn, i, story, layers = at(ctx)
+        if (below := _covered_below(st, layers, i)) is not None:
+            await pipe._satisfy(st, card, layers, i, below)
+            return {"satisfied.{item}": st.satisfied[nn]}
+        sites[nn] = await pipe._layer_site(st, card, story, layers, i)
+        return {}
+
+    async def ready_package(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        """`_ready_package` at the layer's base, with the build's feedback when the build node looped back
+        here; an architect's satisfied reply is `_satisfy`'d, and the build node is then skipped."""
+        nn, i, story, layers = at(ctx)
+        where, built, guide = sites[nn]
+        got = await pipe._ready_package(st, story, layers, i, where[1], built, guide, feedback=ctx.feedback)
+        if isinstance(got, Satisfied):
+            await pipe._satisfy(st, card, layers, i, got)
+            return {"satisfied.{item}": st.satisfied[nn]}
+        return {"package.{item}": got.to_dict()}
+
+    async def build_once(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        """One `_build_once` from the stored package: the layer's built record, or a failure that carries
+        the feedback back to the package node. The attempt counts this run's builds, so the last of
+        story.layer_attempts stops the story there, as the driver's loop does."""
+        nn, i, story, layers = at(ctx)
+        where, built, _ = sites[nn]
+        attempts[nn] = attempt = attempts.get(nn, 0) + 1
+        package = Package.from_dict(ctx.store.get(f"package.{nn}"))
+        again = await pipe._build_once(st, card, story, layers, i, package, where, built, attempt)
+        if again is not None:
+            return {FAIL_KEY: "layer red", "feedback": again}
+        return {"built.{item}": st.built[nn]}
+
+    async def build_done(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
+            st.finish("build")
+        return {}
+
+    async def publish(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        assert st.story is not None  # planned
+        await pipe._publish(st, card, Story.from_dict(st.story), _plan(st))
+        return {"prs": st.prs} if st.prs else {}  # set only once all are opened, then the node is skipped
+
+    async def finish(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        await pipe._finish(st, card)
+        raise EndRun()
+
     registry = Registry()
     for id in LATER:
         registry.add(id, _later(id))
@@ -95,17 +151,33 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         "story.costed": costed,
         "story.amigos": amigos,
         "story.planned": planned,
+        "story.covered": covered,
+        "story.ready_package": ready_package,
+        "story.build_once": build_once,
+        "story.build_done": build_done,
+        "story.publish": publish,
+        "story.finish": finish,
     }
     for id, fn in steps.items():
         registry.add(id, fn)
     registry.add("story.to_build", lambda ctx: _to_build(st))
     registry.add("story.survey_on", lambda ctx: pipe.s.survey)
+    registry.add("story.open_layer", open_layer)
+    # the whole plan is drafted once, before the first layer is built (`_build`)
+    registry.add("story.not_built", lambda ctx: not st.drafted and not st.built and open_layer(ctx))
+    registry.add("story.has_package", lambda ctx: open_layer(ctx) and ctx.store.has(f"package.{ctx.item}"))
     return registry
 
 
+def _plan(st: StoryState) -> tuple[Layer, ...]:
+    """The agreed layers (the meeting stores them; nothing rewrites them while the layers are built)."""
+    assert st.layers is not None  # planned
+    return tuple(Layer.from_dict(d) for d in st.layers)
+
+
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
-    """One runner per node type. A check or a meeting runs its `run` id from the registry; an ask or a
-    conversation calls today's step by node name."""
+    """One runner per node type. A check, a meeting, a write or a gate runs its `run` id from the registry;
+    an ask or a conversation calls today's step by node name (the layer's package ask its `run` id)."""
 
     async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         assert node.run is not None  # spec.py: a check, a gate and a meeting need run
@@ -124,6 +196,8 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         if ctx.node == "refine":
             await pipe._refine(st, card)
             return {"story": st.story}
+        if ctx.node == "package":  # the layer's step, which needs the layer's site from `covered`
+            return await by_run(node, ctx)
         raise NotImplementedError(f"ask node '{ctx.node}': no runner yet")
 
     async def conversation(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
@@ -131,6 +205,10 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
             assert st.story is not None  # the node's input
             await pipe._layers(st, card, Story.from_dict(st.story))
             return {"layers": st.layers}
+        if ctx.node == "drafts":  # the architect's drafting conversation, held for the layers' retries
+            assert st.story is not None  # planned
+            await pipe._draft_packages(st, Story.from_dict(st.story), _plan(st))
+            return {"drafted": True, "drafts_session": pipe._drafting}
         raise NotImplementedError(f"conversation node '{ctx.node}': no runner yet")
 
     async def later(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
@@ -141,10 +219,10 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         "meeting": by_run,
         "ask": ask,
         "conversation": conversation,
-        "each": later,
-        "write": later,
-        "gate": later,
-        "parallel": later,  # the composer runs a parallel node's children itself
+        "write": by_run,  # the layer's build (`_build_once`)
+        "gate": by_run,  # the review (`_finish`), which ends the run
+        "each": later,  # the composer runs an each node's bundle itself
+        "parallel": later,  # and a parallel node's children
     }
 
 

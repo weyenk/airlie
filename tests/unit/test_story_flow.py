@@ -5,31 +5,45 @@ name."""
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from airlie.config import load_config
-from airlie.engine import FakeReply
+from airlie.engine import FakeEngine, FakeReply
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.board import text_card
 from airlie.story.flow import story_registry, story_runners
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState
+from tests.unit.git_helpers import git
 from tests.unit.test_story_epic import fenced
 from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
+from tests.unit.test_story_layer_checks_flow import BROKEN, FEATURE, OTHER_RED, RED, STILL_BROKEN, calc_repo
+from tests.unit.test_story_layer_checks_flow import LAYERS as CALC_LAYERS
 from tests.unit.test_story_pipeline import (
+    B2,
     LAYERS,
+    NOTE,
+    PKG1,
+    PKG2,
     PKGS,
+    SATISFIED,
+    STORY,
     SURVEY_NOTES,
     gated,
     happy_engine,
     kinds_all,
+    package_reply,
     pipeline,
     repo_with_marker_tests,
 )
+from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
 
 KEY = "AIR-1"
 
@@ -927,3 +941,168 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
     assert set(story_runners(pipe, st, card)) == {
         "ask", "conversation", "write", "meeting", "check", "gate", "parallel", "each"
     }  # fmt: skip
+    # the layer bundle's ids and the build lane's checks are lifted: none raises NotImplementedError
+    build_lane = {id for node in pipe.cfg.workflows["layer"].nodes.values() for id in (node.run, node.when)}
+    build_lane |= {
+        "story.build_done",
+        "story.publish",
+        "story.finish",
+        "story.not_built",
+        "story.has_package",
+    }
+    assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+
+
+# ---- the build lane through the composer (story.composer), against the driver ----
+
+# captured once from the driver (composer=False): the contract the composer meets
+EXPECTED_RUN_KINDS = [
+    "story_start", "stage", "run", "stage", "run", "stage",
+    "packages_drafting", "run", "package_draft_start", "package_drafted", "package_draft_start",
+    "package_drafted",
+    "test_checks_skipped", "package_start", "package_checks_start", "package_ready", "layer_start", "brief",
+    "package_placed", "layer_built",
+    "test_checks_skipped", "package_start", "package_checks_start", "package_ready", "layer_start", "brief",
+    "package_placed", "layer_built",
+    "stage", "published", "stage", "stage", "story_done",
+]  # fmt: skip
+
+
+def built_run(st: StoryState, root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """`plan_events` and `plan_state` of a story that built layers: each commit (its own in every
+    repository, as the commit times differ) named by the order it first appears in, as are its short names,
+    and every studio run id spelled the same."""
+    assert st.base is not None
+    run_id = r"\b\d{8}-\d{6}-[0-9a-f]{4}\b"
+    events = re.sub(run_id, "<run>", json.dumps(plan_events(st.path / "events.jsonl", root, st.base["sha"])))
+    state = re.sub(run_id, "<run>", json.dumps(plan_state(st.path, root, st.base["sha"])))
+    shas = list(dict.fromkeys(re.findall(r"\b[0-9a-f]{40}\b", events + state)))
+    for n, sha in enumerate(shas):
+        events, state = (re.sub(rf"\b{sha[:7]}[0-9a-f]*\b", f"<commit {n}>", t) for t in (events, state))
+    return json.loads(events), json.loads(state)
+
+
+@pytest.mark.parametrize("composer", [False, True])
+async def test_a_story_builds_publishes_and_reaches_review_the_same_either_way(
+    tmp_path: Path, composer: bool
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=composer)
+    st = await pipe.run(text_card("add a marker"))
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert plan_kinds(st.path / "events.jsonl") == EXPECTED_RUN_KINDS
+    assert list(st.built) == ["01", "02"] and [p["number"] for p in st.prs] == [11, 12]
+    stages = [e["stage"] for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "stage"]
+    assert stages == ["intake", "refine", "layers", "build", "publish", "review"]
+
+
+async def test_the_composer_runs_a_story_with_the_drivers_events_fields_and_state(tmp_path: Path) -> None:
+    """A full `run` through the composer, beside the driver: the same events with the same fields in the same
+    order (but for times and run ids) and the same state.json, from intake to review."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        st = await pipeline(root, repo, happy_engine(), composer=composer).run(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "review", st.blocked
+        seen.append(built_run(st, root))
+    (driver_events, driver_state), (composer_events, composer_state) = seen
+    assert composer_events == driver_events
+    assert composer_state == driver_state
+
+
+@pytest.mark.parametrize("ends", ["built", "blocked"])
+async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_composers_loop(
+    tmp_path: Path, ends: str
+) -> None:
+    """story.layer_attempts 2: a layer red after the coder's follow-up goes back to the architect with the
+    feedback (the build node's loop to package, carrying it) and builds again; red again, the story stops on
+    the last build, as `_build_once` stops it. The same events and state as the driver's."""
+    second = [FEATURE, DONE] if ends == "built" else [BROKEN, DONE, STILL_BROKEN, DONE]
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        engine = FakeEngine(
+            {
+                "product": [STORY],
+                "architect": [CALC_LAYERS, RED, OTHER_RED],
+                "coder": [BROKEN, DONE, STILL_BROKEN, DONE, *second],
+                "reviewer": [APPROVE, APPROVE],
+            }
+        )
+        repo = calc_repo(root)
+        cmd = f"{shlex.quote(sys.executable)} -m pytest -q"
+        pipe = pipeline(root, repo, engine, test_cmd=cmd, story={"layer_attempts": 2}, composer=composer)
+        st = await pipe.run(text_card("multiply"))
+        assert (st.blocked is None) == (ends == "built"), st.blocked
+        events, state = built_run(st, root)
+        assert [e["attempt"] for e in events if e["kind"] == "layer_start"] == [1, 2]
+        seen.append((events, state))
+    assert seen[1] == seen[0]
+
+
+async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) -> None:
+    """A story built and published, then put back to its planned stage with layer 02's build and the PRs
+    forgotten, and built again: through the composer every node of layer 01's bundle is skipped (`covered`
+    and `package` by `story.open_layer`, `drafts` as the drafting was held, `build` on its stored output)
+    and layer 02 is built again from a fresh package, with the driver's events and state."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        card = text_card("add a marker")
+        first = await pipeline(root, repo, happy_engine(), composer=composer).run(card)
+        assert first.blocked is None and first.stage == "review"
+        saved = json.loads((first.path / "state.json").read_text())
+        del saved["built"]["02"]
+        saved["prs"], saved["stage"] = [], "layers"
+        (first.path / "state.json").write_text(json.dumps(saved))
+        git(repo, "branch", "-D", B2)  # gone with its record, as a layer stopped part-way leaves none
+        log = first.path / "events.jsonl"
+        before = len(log.read_text().splitlines())
+        engine = happy_engine(architect=[PKGS[1]], coder=[NOTE, DONE], reviewer=[APPROVE])
+        st = await pipeline(root, repo, engine, composer=composer).build(card)
+        assert st.blocked is None and st.stage == "review", st.blocked
+        assert list(st.built) == ["01", "02"] and [p["number"] for p in st.prs] == [11, 12]
+        events = kinds_all(log)[before:]
+        assert [e["layer"] for e in events if e["kind"] == "layer_start"] == ["02"]
+        if composer:
+            skipped = [(e["node"], e["item"]) for e in events if e["kind"] == "node_skipped"]
+            assert [node for node, item in skipped if item == "01"] == [
+                "covered",
+                "drafts",
+                "package",
+                "build",
+            ]
+            assert ("drafts", "02") in skipped  # the drafting was held once, before layer 01
+        seen.append(built_run(st, root))
+    assert seen[1] == seen[0]
+
+
+@pytest.mark.parametrize("how", ["reply", "below"])
+async def test_a_satisfied_layer_runs_the_same_through_the_composer(tmp_path: Path, how: str) -> None:
+    """Layer 02 needs no code: the architect's package reply says so (`package` satisfies it, and `build`
+    is skipped), or layer 01's package already covers its criterion (`covered` satisfies it). The same
+    events and state as the driver's."""
+    both = package_reply(
+        {"tests/unit/test_storage.py": "def test_stores_an_avatar():\n    assert True\n"},
+        {
+            "AC1": ["tests/unit/test_storage.py::test_stores_an_avatar"],
+            "AC2": ["tests/unit/test_storage.py::test_stores_an_avatar"],
+        },
+    )
+    architect = [LAYERS, PKG1, SATISFIED] if how == "reply" else [LAYERS, both, PKG2]
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        engine = happy_engine(architect=architect, coder=[WRITE_PASS, RUN, DONE], reviewer=[APPROVE])
+        st = await pipeline(root, repo, engine, composer=composer).run(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "review", st.blocked
+        assert list(st.built) == ["01"] and list(st.satisfied) == ["02"]
+        seen.append(built_run(st, root))
+    assert seen[1] == seen[0]
