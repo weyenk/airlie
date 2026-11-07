@@ -21,18 +21,32 @@ class RunDir:
 
     @classmethod
     def create(cls, state_dir: Path, run_id: str | None = None) -> RunDir:
-        rid = run_id or new_run_id()
-        p = state_dir.expanduser() / "runs" / rid
-        (p / "trace").mkdir(parents=True, exist_ok=True)
-        return cls(p, rid)
+        return cls._make(state_dir.expanduser() / "runs", run_id)
 
     @classmethod
     def create_for_story(cls, state_dir: Path, story_key: str, run_id: str | None = None) -> RunDir:
         """A run of a story: under state_dir/stories/<key>/runs/, so the step events carry its key."""
-        rid = run_id or new_run_id()
-        p = state_dir.expanduser() / "stories" / story_key / "runs" / rid
-        (p / "trace").mkdir(parents=True, exist_ok=True)
-        return cls(p, rid)
+        return cls._make(state_dir.expanduser() / "stories" / story_key / "runs", run_id)
+
+    @classmethod
+    def _make(cls, runs: Path, run_id: str | None) -> RunDir:
+        """The run's directory. A given id is reused as is (a resumed run). A fresh id is minted until its
+        directory did not exist: two runs started in the same second can draw the same suffix, and sharing
+        a directory makes the second one's worktree add fail with "already exists"."""
+        if run_id is not None:
+            p = runs / run_id
+            (p / "trace").mkdir(parents=True, exist_ok=True)
+            return cls(p, run_id)
+        runs.mkdir(parents=True, exist_ok=True)
+        while True:
+            rid = new_run_id()
+            p = runs / rid
+            try:
+                p.mkdir(exist_ok=False)
+            except FileExistsError:
+                continue
+            (p / "trace").mkdir(exist_ok=True)
+            return cls(p, rid)
 
     @property
     def story_key(self) -> str | None:
