@@ -48,7 +48,7 @@ from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
 from airlie.story.restart import FRESH, Restarted, restart
 from airlie.story.state import STAGES, StoryState, lane_lock, lane_record, lock_held
-from airlie.story.workflows import workflow_problems
+from airlie.story.workflows import board_problems
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -181,7 +181,7 @@ def make_board(cfg: AirlieConfig) -> Board:
         def workflow_problem(name: str) -> str | None:
             """What stops workflow `name` resolving over the drafts as they are now (read at each pick: they
             are small), or None: the picks pass over a card whose workflow has one."""
-            return "; ".join(workflow_problems(cfg, {d.name: d.yaml for d in store.drafts()}, name)) or None
+            return "; ".join(board_problems(cfg, store.drafts(), name)) or None
 
         return LocalBoard(
             store,
@@ -271,6 +271,7 @@ def make_pipeline(
     )
     if isinstance(board, LocalBoard):  # a card labelled workflow:<name> can run a draft of the board
         pipe.drafts = lambda: {d.name: d.yaml for d in board.store.drafts()}
+        pipe.draft_prompts = lambda: {d.name: d.prompts for d in board.store.drafts()}
     return pipe
 
 

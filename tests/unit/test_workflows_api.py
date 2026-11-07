@@ -23,7 +23,7 @@ from airlie.story.publish import CannotStart, Publisher
 from airlie.story.workflow_publish import NothingToPublish
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_story_pipeline import WORKFLOWS
-from tests.unit.test_story_workflows import MINI, MINI_EACH, TINY
+from tests.unit.test_story_workflows import MINI, MINI_EACH, MINI_NOTE, NOTE, TINY
 from tests.unit.test_studio_orchestrator import cfg_for
 
 KEY = "k"
@@ -88,7 +88,7 @@ def test_a_draft_saved_is_read_back_with_its_prompts_and_told_to_the_feed(tmp_pa
     http, seen = bare(c, store(c))
     with http:
         put = http.put(
-            "/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI, "prompts": {"intake": "Read it."}}
+            "/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI, "prompts": {"mini-note": NOTE}}
         )
         got = http.get("/v1/workflows/mini")
     assert put.status_code == 200
@@ -100,10 +100,31 @@ def test_a_draft_saved_is_read_back_with_its_prompts_and_told_to_the_feed(tmp_pa
         "yaml": MINI,
         "layout": {},
         "problems": [],
-        "prompts": {"intake": "Read it."},
+        "prompts": {"mini-note": NOTE},
         "pr": None,
     }
     assert seen == [("workflows", "mini")]
+
+
+def test_a_draft_naming_its_own_prompt_file_has_no_problems_and_one_naming_none_has_one(
+    tmp_path: Path,
+) -> None:
+    c = cfg(tmp_path)
+    http, _ = bare(c, store(c))
+    unknown = "workflow mini: node note: unknown prompt file 'mini-note'"
+    with http:
+        own = http.put(
+            "/v1/workflows/drafts/mini",
+            json={"type": "bug", "yaml": MINI_NOTE, "prompts": {"mini-note": NOTE}},
+        )
+        checked = http.post("/v1/workflows/validate", json={"yaml": MINI_NOTE}).json()  # the saved draft's
+        sent = http.post("/v1/workflows/validate", json={"yaml": MINI_NOTE, "prompts": {}}).json()
+        listed = {w["name"]: w for w in http.get("/v1/workflows").json()["workflows"]}
+        none = http.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI_NOTE})
+    assert own.status_code == 200 and own.json()["problems"] == []
+    assert checked == {"problems": []} and sent == {"problems": [unknown]}
+    assert listed["mini"]["problems"] == []
+    assert none.status_code == 200 and none.json()["problems"] == [unknown]
 
 
 def test_a_draft_with_problems_is_saved_and_returned_with_them(tmp_path: Path) -> None:

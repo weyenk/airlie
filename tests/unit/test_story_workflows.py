@@ -13,15 +13,18 @@ import pytest
 
 from airlie.board import BoardStore
 from airlie.config import load_config
+from airlie.engine import FakeReply
 from airlie.story.board import Card, text_card
 from airlie.story.workflows import (
     WorkflowError,
     card_workflow,
+    closure_prompts,
     from_snapshot,
     has_node,
     resolve_workflows,
     snapshot,
     workflow_label,
+    workflow_problems,
 )
 from tests.unit.test_story_pipeline import (
     RecordingBoard,
@@ -48,6 +51,21 @@ MINI_MORE = MINI.replace(
 )
 MINI_EACH = MINI.replace(
     "      review:", "      build_layers: {type: each, over: layers, workflow: tiny}\n      review:"
+)
+NOTE = """\
+---
+kind: rule
+roles: [product]
+fields: [card]
+why: The mini workflow's note, written in the builder.
+---
+Write one line about this card: {card}
+"""
+MINI_NOTE = MINI.replace(
+    "      review:",
+    "      note: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],\n"
+    "             outputs: {artifacts.note: text}}\n"
+    "      review:",
 )
 TINY = """\
 workflows:
@@ -119,12 +137,26 @@ def test_a_draft_must_hold_its_one_workflow_and_not_shadow_a_file() -> None:
 def test_a_snapshot_round_trips_and_names_its_nodes() -> None:
     cfg = load_config(Path("airlie.yaml"))
     specs = resolve_workflows(cfg, {"mini": MINI}, "mini")
-    data = json.loads(json.dumps(snapshot("mini", specs)))
-    name, back = from_snapshot(data)
-    assert name == "mini" and back == specs
+    data = json.loads(json.dumps(snapshot("mini", specs, {"mini-note": NOTE})))
+    name, back, prompts = from_snapshot(data)
+    assert name == "mini" and back == specs and prompts == {"mini-note": NOTE}
     assert not has_node(back["mini"], "planned") and not has_node(back["mini"], "publish")
-    _, story = from_snapshot(snapshot("story", resolve_workflows(cfg, {}, "story")))
-    assert has_node(story["story"], "planned") and has_node(story["story"], "publish")
+    _, story, none = from_snapshot(snapshot("story", resolve_workflows(cfg, {}, "story")))
+    assert has_node(story["story"], "planned") and has_node(story["story"], "publish") and none == {}
+    older = {"name": "mini", "specs": data["specs"]}  # saved before snapshots carried prompt files
+    assert from_snapshot(older)[2] == {}
+
+
+def test_a_drafts_own_prompt_file_resolves_and_an_unknown_or_broken_one_does_not() -> None:
+    cfg = load_config(Path("airlie.yaml"))
+    own = {"mini": {"mini-note": NOTE}}
+    assert set(resolve_workflows(cfg, {"mini": MINI_NOTE}, "mini", prompts=own)) == {"mini"}
+    assert workflow_problems(cfg, {"mini": MINI_NOTE}, "mini") == [
+        "workflow mini: node note: unknown prompt file 'mini-note'"
+    ]
+    assert closure_prompts({**own, "other": {"x": "y"}}, ["mini", "story"]) == {"mini-note": NOTE}
+    broken = workflow_problems(cfg, {"mini": MINI_NOTE}, "mini", prompts={"mini": {"mini-note": "Hi {card}"}})
+    assert len(broken) == 1 and "rules/mini-note.md" in broken[0] and "---" in broken[0]
 
 
 def test_a_snapshot_that_no_longer_validates_is_a_workflow_error() -> None:
@@ -196,6 +228,25 @@ async def test_a_card_whose_label_is_removed_after_it_started_still_runs_its_sna
     st = await pipe.build(replace(card, labels=()))  # the same card, its workflow: label gone (D21)
     assert st.blocked is None and st.stage == "review", st.blocked
     assert [n for n, _ in started(st.path / "events.jsonl")] == ["intake", "base", "gate", "review"]
+
+
+async def test_a_drafts_prompt_file_is_the_brief_and_a_started_card_keeps_its_text(tmp_path: Path) -> None:
+    """A draft's ask node names the draft's own prompt file: the brief is that file with the card filled
+    in, and the snapshot keeps the text, so an edit to the draft's prompts after the card started changes
+    nothing for it (D21)."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(product=[FakeReply(text="one line")])
+    pipe = pipeline(tmp_path, repo, engine, composer=False)
+    pipe.drafts = lambda: {"mini": MINI_NOTE}
+    pipe.draft_prompts = lambda: {"mini": {"mini-note": NOTE}}
+    card = mini_card()
+    await pipe.plan(card)
+    pipe.draft_prompts = lambda: {"mini": {"mini-note": NOTE.replace("Write one line", "Write a poem")}}
+    st = await pipe.build(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    [asked] = [r for r in engine.requests if r.role == "product"]
+    assert "Write one line about this card: " in asked.messages[-1].content
+    assert st.workflow is not None and st.workflow["prompts"] == {"mini-note": NOTE}
 
 
 async def test_the_plan_lane_shortcut_takes_the_card_in_and_says_so_once(tmp_path: Path) -> None:

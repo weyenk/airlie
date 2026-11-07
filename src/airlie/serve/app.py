@@ -60,7 +60,7 @@ from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
 from airlie.story.workflow_publish import publish_workflow
-from airlie.story.workflows import workflow_problems
+from airlie.story.workflows import board_problems
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -450,7 +450,7 @@ def create_app(
 
     def workflow_check(name: str) -> str | None:
         """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
-        problems = workflow_problems(cfg, {d.name: d.yaml for d in board.drafts()}, name)
+        problems = board_problems(cfg, board.drafts(), name)
         return "; ".join(problems) or None
 
     local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked

@@ -22,7 +22,7 @@ from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import CATALOG
 from airlie.story.publish import PublishError
 from airlie.story.workflow_publish import NothingToPublish
-from airlie.story.workflows import WorkflowError, draft_body, draft_spec, workflow_problems
+from airlie.story.workflows import DraftPrompts, WorkflowError, draft_body, draft_spec, workflow_problems
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
 """Names a draft may not take: the router's own paths under /v1/workflows, which `GET /{name}` would never
@@ -48,6 +48,7 @@ class SaveDraft(BaseModel):
 class Validate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     yaml: str
+    prompts: dict[str, str] | None = None  # None: the prompt files of the saved draft of that name
 
 
 def _layout(spec: WorkflowSpec) -> dict[str, dict[str, float]]:
@@ -73,8 +74,20 @@ def workflows_router(
     def texts() -> dict[str, str]:
         return {d.name: d.yaml for d in store.drafts()}
 
-    def problems(name: str, drafts: Mapping[str, str] | None = None) -> list[str]:
-        return workflow_problems(cfg, texts() if drafts is None else drafts, name)
+    def prompt_files() -> dict[str, Mapping[str, str]]:
+        return {d.name: d.prompts for d in store.drafts()}
+
+    def problems(
+        name: str, drafts: Mapping[str, str] | None = None, prompts: DraftPrompts | None = None
+    ) -> list[str]:
+        """What stops `name` resolving over the drafts (their YAML, and the prompt files they carry), as
+        saved unless given."""
+        return workflow_problems(
+            cfg,
+            texts() if drafts is None else drafts,
+            name,
+            prompts=prompt_files() if prompts is None else prompts,
+        )
 
     def file_text(name: str, spec: WorkflowSpec) -> str:
         if cfg.source_path is not None:
@@ -121,13 +134,14 @@ def workflows_router(
         ]
         rows = store.drafts()
         drafts = {d.name: d.yaml for d in rows}
+        prompts = {d.name: d.prompts for d in rows}
         listed = [
             {
                 "name": d.name,
                 "type": d.type,
                 "source": "draft",
                 "bundle": d.type is None,
-                "problems": problems(d.name, drafts),
+                "problems": problems(d.name, drafts, prompts),
                 "pr": _pr(d),
             }
             for d in rows
@@ -150,7 +164,10 @@ def workflows_router(
         except WorkflowError as e:
             return {"problems": [str(e)]}
         _not_reserved(name)
-        return {"problems": problems(name, {**texts(), name: body.yaml})}
+        prompts = prompt_files()
+        if body.prompts is not None:
+            prompts[name] = body.prompts
+        return {"problems": problems(name, {**texts(), name: body.yaml}, prompts)}
 
     @router.get("/{name}")
     async def read_workflow(name: str) -> dict[str, Any]:

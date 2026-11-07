@@ -11,11 +11,14 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
+from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.prompts.hub import PromptError
 from airlie.story.board import Card
 from airlie.story.model import StoryError
 
 if TYPE_CHECKING:
+    from airlie.board.model import WorkflowDraft
     from airlie.config import AirlieConfig
     from airlie.story.pipeline import StoryPipeline
     from airlie.story.state import StoryState
@@ -69,11 +72,34 @@ def draft_spec(name: str, text: str) -> WorkflowSpec:
         raise WorkflowError(f"draft workflow {name!r}: {e}") from None
 
 
-def resolve_workflows(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -> dict[str, WorkflowSpec]:
+DraftPrompts = Mapping[str, Mapping[str, str]]
+"""The prompt files the drafts carry: draft name -> {prompt id: the file's whole text}."""
+
+
+def closure_prompts(prompts: DraftPrompts | None, names: Iterable[str]) -> dict[str, str]:
+    """The prompt files the drafts among `names` carry (a resolved workflow and its bundles), by id. Two of
+    them carrying different texts under one id is a WorkflowError: a node could not say which it means."""
+    found: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    for name in names:
+        for id, text in (prompts or {}).get(name, {}).items():
+            if id in found and found[id] != text:
+                raise WorkflowError(
+                    f"draft workflows {owner[id]!r} and {name!r} carry different prompt files {id!r}"
+                )
+            found[id], owner[id] = text, name
+    return found
+
+
+def resolve_workflows(
+    cfg: AirlieConfig, drafts: Mapping[str, str], name: str, *, prompts: DraftPrompts | None = None
+) -> dict[str, WorkflowSpec]:
     """Workflow `name` and the bundles it calls through its `each` nodes, transitively: each from the repo's
     workflows first, else from the drafts (name -> YAML text), and checked together. Nothing else is read,
     so a half-edited draft no other card names never stops this one; the repo's files were checked when
-    the config loaded. A draft may not shadow a workflow the repo's files define."""
+    the config loaded. A draft may not shadow a workflow the repo's files define. `prompts` are the
+    drafts' prompt files (`DraftPrompts`): those of the drafts resolved must each be a valid rule file, and
+    a node may name them as `prompt:<id>` beside the hub's rules."""
     specs: dict[str, WorkflowSpec] = {}
     todo = [name]
     while todo:
@@ -94,46 +120,72 @@ def resolve_workflows(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -
             continue
         specs[wanted] = spec
         todo += [n.workflow for n in spec.nodes.values() if n.type == "each" and n.workflow is not None]
-    if problems := check_workflows(specs):
+    try:
+        texts = parse_draft_prompts(closure_prompts(prompts, specs))
+    except PromptError as e:
+        raise WorkflowError(f"draft workflow {name!r}: prompt file {e}") from None
+    if problems := check_workflows(specs, prompts=texts):
         raise WorkflowError("; ".join(problems))
     return specs
 
 
-def workflow_problems(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -> list[str]:
+def workflow_problems(
+    cfg: AirlieConfig, drafts: Mapping[str, str], name: str, *, prompts: DraftPrompts | None = None
+) -> list[str]:
     """What stops workflow `name` resolving (`resolve_workflows`), as the builder shows it: [] or the one
     WorkflowError's message."""
     try:
-        resolve_workflows(cfg, drafts, name)
+        resolve_workflows(cfg, drafts, name, prompts=prompts)
     except WorkflowError as e:
         return [str(e)]
     return []
 
 
-def snapshot(name: str, specs: Mapping[str, WorkflowSpec]) -> dict[str, Any]:
-    """What `StoryState.workflow` keeps: the workflow's name and the specs resolved with it (it and the
-    bundles it calls), as JSON."""
-    return {"name": name, "specs": {n: s.model_dump(mode="json") for n, s in specs.items()}}
+def board_problems(cfg: AirlieConfig, drafts: Iterable[WorkflowDraft], name: str) -> list[str]:
+    """`workflow_problems` over the board's drafts as they are: their YAML and the prompt files they carry."""
+    rows = list(drafts)
+    texts = {d.name: d.yaml for d in rows}
+    return workflow_problems(cfg, texts, name, prompts={d.name: d.prompts for d in rows})
 
 
-def from_snapshot(data: Mapping[str, Any]) -> tuple[str, dict[str, WorkflowSpec]]:
+def snapshot(
+    name: str, specs: Mapping[str, WorkflowSpec], prompts: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """What `StoryState.workflow` keeps: the workflow's name, the specs resolved with it (it and the
+    bundles it calls), as JSON, and the drafts' prompt files they may name (id -> text), so a draft's
+    prompts edited after the card started change nothing for it."""
+    return {
+        "name": name,
+        "specs": {n: s.model_dump(mode="json") for n, s in specs.items()},
+        "prompts": dict(prompts or {}),
+    }
+
+
+def from_snapshot(data: Mapping[str, Any]) -> tuple[str, dict[str, WorkflowSpec], dict[str, str]]:
+    """The name, specs and prompt files a snapshot keeps (none in one saved before snapshots kept them)."""
     name = str(data["name"])
     try:
-        return name, {n: WorkflowSpec.model_validate(s) for n, s in data["specs"].items()}
+        specs = {n: WorkflowSpec.model_validate(s) for n, s in data["specs"].items()}
     except ValidationError as e:  # saved by an older airlie whose spec this one no longer reads
         raise WorkflowError(f"snapshot of {name!r} no longer validates: {e}") from None
+    return name, specs, {str(id): str(text) for id, text in data.get("prompts", {}).items()}
 
 
 def has_node(spec: WorkflowSpec, name: str) -> bool:
     return name in spec.nodes
 
 
-def workflow_for(pipe: StoryPipeline, st: StoryState, card: Card) -> tuple[str, dict[str, WorkflowSpec]]:
-    """The workflow `st` runs: its snapshot, else the card's, resolved (the pipeline's drafts read now) and
-    snapshotted into the state, saved."""
+def workflow_for(
+    pipe: StoryPipeline, st: StoryState, card: Card
+) -> tuple[str, dict[str, WorkflowSpec], dict[str, str]]:
+    """The workflow `st` runs and the drafts' prompt files it may name: its snapshot, else the card's,
+    resolved (the pipeline's drafts and their prompts read now) and snapshotted into the state, saved."""
     if st.workflow is not None:
         return from_snapshot(st.workflow)
     name = card_workflow(card)
-    specs = resolve_workflows(pipe.cfg, pipe.drafts(), name)
-    st.workflow = snapshot(name, specs)
+    prompts = pipe.draft_prompts()
+    specs = resolve_workflows(pipe.cfg, pipe.drafts(), name, prompts=prompts)
+    texts = closure_prompts(prompts, specs)
+    st.workflow = snapshot(name, specs, texts)
     st.save()
-    return name, specs
+    return name, specs, texts

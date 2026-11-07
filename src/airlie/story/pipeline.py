@@ -595,6 +595,8 @@ class StoryPipeline:
         self.drafts: Callable[[], Mapping[str, str]] = _no_drafts
         """The board's draft workflows (name -> YAML text), read when a card's workflow is first resolved
         (`workflows.workflow_for`); none until the serve wires the board's drafts in."""
+        self.draft_prompts: Callable[[], Mapping[str, Mapping[str, str]]] = lambda: {}
+        """The prompt files those drafts carry (draft name -> {prompt id: text}), read with them."""
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self._tests_before: dict[str, str] = {}
         """The test files a layer's last package try left (story.package_tools): the next try starts there."""
@@ -672,7 +674,7 @@ class StoryPipeline:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
             # the card's workflow, snapshotted the first time it is used (D21); the driver runs the story's
-            name, specs = workflow_for(self, st, card) if composed else ("story", None)
+            name, specs, _ = workflow_for(self, st, card) if composed else ("story", None, None)
             spec = None if specs is None else specs[name]
             if (
                 until == "review" and not st.done("publish") and (spec is None or has_node(spec, "publish"))

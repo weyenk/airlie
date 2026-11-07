@@ -6,7 +6,7 @@ field for a node's type, an input nothing produces) before anything runs. This m
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -93,8 +93,36 @@ def _produced(w: WorkflowSpec) -> set[str]:
     return names
 
 
-def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
-    """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent."""
+def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -> list[str]:
+    """What is wrong with the prompt file a node's `prompt: "prompt:<id>"` names: an id that is neither a
+    hub rule nor in `prompts`, or a field the node cannot read (the hub's rules always, a draft's when
+    `prompts` maps its ids to their parsed files)."""
+    from airlie.flow.prompt_files import FEEDBACK, PREFIX, rule_ids
+    from airlie.prompts.hub import PromptText, entry
+
+    if node.prompt is None or not node.prompt.startswith(PREFIX):
+        return []
+    id = node.prompt.removeprefix(PREFIX)
+    parsed: PromptText | None
+    if id in prompts:
+        parsed = prompts[id] if isinstance(prompts, Mapping) else None
+    elif id in rule_ids():
+        parsed = entry(id)
+    else:
+        return [f"unknown prompt file '{id}'"]
+    fields = parsed.fields if parsed is not None else ()
+    return [
+        f"prompt file '{id}' reads '{name}', which is not an input of the node"
+        for name in fields
+        if name != FEEDBACK and name not in readable
+    ]
+
+
+def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collection[str] = ()) -> list[str]:
+    """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent.
+    `prompts` are the ids of the prompt files the drafts carry, beside the hub's rules, that a node's
+    `prompt: "prompt:<id>"` may name; a mapping of them to their parsed files (`PromptText`) has their
+    fields checked as well."""
     problems: list[str] = []
     callers: dict[str, list[str]] = {}  # bundle -> workflows whose `each` nodes call it
     for wname, w in workflows.items():
@@ -119,6 +147,8 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
 
             if (missing := _requirements(n)) is not None:
                 add(missing)
+            for what in _prompt_file(n, set(n.inputs) | set(w.loose), prompts):
+                add(what)
             for name in n.inputs:
                 if name not in available:
                     add(f"input '{name}' is not produced by any node and not loose")

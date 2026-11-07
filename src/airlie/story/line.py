@@ -507,7 +507,7 @@ class Line:
         if name == DEFAULT or (factory._saved(self.cfg, card.key) or {}).get("workflow") is not None:
             return None
         try:
-            resolve_workflows(self.cfg, pipe.drafts(), name)
+            resolve_workflows(self.cfg, pipe.drafts(), name, prompts=pipe.draft_prompts())
         except WorkflowError as e:
             text = f"workflow {name}: {e}"
             if not self._said(card, text):

@@ -117,7 +117,8 @@ class StoryState:
     store). JSON-serialisable: they are saved with the state."""
     workflow: dict[str, Any] | None = None
     """The workflow this card started on, snapshotted so a later edit does not change a running card:
-    `{"name": str, "specs": {workflow name: WorkflowSpec.model_dump(mode="json")}}`. None: not snapshotted
+    `{"name": str, "specs": {workflow name: WorkflowSpec.model_dump(mode="json")}, "prompts": {prompt id:
+    the draft's prompt file text}}` (`story.workflows.snapshot`). None: not snapshotted
     (the repo's workflows are read) or cleared by a restart."""
 
     @classmethod
