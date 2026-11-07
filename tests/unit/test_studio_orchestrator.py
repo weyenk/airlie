@@ -67,7 +67,9 @@ def cfg_for(
         "observability": {"state_dir": str(tmp_path / "state")},
         **(extra or {}),
     }
-    (d / "airlie.yaml").write_text(yaml.safe_dump(data))
+    (d / "airlie.yaml").write_text(
+        yaml.safe_dump(data, sort_keys=False)
+    )  # node order in a workflow is meaningful
     return load_config(d / "airlie.yaml")
 
 

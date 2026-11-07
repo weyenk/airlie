@@ -1,10 +1,13 @@
 """The composer: interprets a workflow of typed nodes over a store, one runner per node type.
 
-This is the sequence rule: nodes run in order (or by `next`), a node whose outputs already exist is skipped,
-and every input must be present before a node runs. Wiring moves (parallel, each, branch, loop) come later."""
+The sequence rule: nodes run in order (or by `next`), a node whose outputs already exist is skipped, and every
+input must be present before a node runs. The wiring moves: `parallel` and `each` run other nodes, `branch`
+picks the next node by an output, `loop` (or a LoopSpec `on_fail`) re-runs from a node
+with carried feedback."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -88,9 +91,15 @@ class Composer:
         self.registry = registry
         self.store = store
         self.sessions = sessions
+        self._loops: dict[
+            tuple[str, str | None, str, str], int
+        ] = {}  # (workflow, item, node, which) -> re-runs
 
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
         """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached."""
+        return await self._walk(workflow, until, item, bundle=False)
+
+    async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
         spec = self.cfg.workflows[workflow]
         names = list(spec.nodes)
         formats = {name: fmt for n in spec.nodes.values() for name, fmt in n.outputs.items()}
@@ -100,17 +109,134 @@ class Composer:
             node = spec.nodes[current]
             last = current
             try:
-                await self._run_node(workflow, current, node, formats, item)
+                result = await self._step(workflow, current, node, formats, item)
             except EndRun:
+                if bundle:
+                    raise
                 return current
             if current == until:
                 return current
-            if node.next is not None:
-                current = node.next
-            else:
-                after = names.index(current) + 1
-                current = names[after] if after < len(names) else None
+            current = self._route(workflow, current, node, names, result, item)
         return last
+
+    def _route(
+        self,
+        workflow: str,
+        name: str,
+        node: NodeSpec,
+        names: list[str],
+        result: Mapping[str, Any],
+        item: str | None,
+    ) -> str | None:
+        """The node after `name`: a loop's target, a branch, `next`, else dict order."""
+        failed = FAIL_KEY in result
+        if result:  # a skipped node (empty result) never loops
+            ctx = self._ctx(workflow, name, item)
+            if node.loop is not None:
+                loop = node.loop
+                if (self.registry[loop.when](ctx, result) if loop.when else failed) and self._again(
+                    workflow, name, "loop", loop, result, item
+                ):
+                    return loop.to
+            if (
+                failed
+                and isinstance(node.on_fail, LoopSpec)
+                and self._again(workflow, name, "on_fail", node.on_fail, result, item)
+            ):
+                return node.on_fail.to
+            if (
+                failed
+                and node.on_fail != "continue"
+                and (node.loop is not None or isinstance(node.on_fail, LoopSpec))
+            ):
+                from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
+
+                raise StoryBlocked(str(result[FAIL_KEY]))
+        if node.branch is not None and node.on is not None:
+            value = result[node.on] if node.on in result else self.store.get(self._name(node.on, item))
+            target = node.branch.get(str(value), node.branch.get("*"))
+            if target is not None:
+                return target
+        if node.next is not None:
+            return node.next
+        after = names.index(name) + 1
+        return names[after] if after < len(names) else None
+
+    def _again(
+        self,
+        workflow: str,
+        name: str,
+        which: str,
+        loop: LoopSpec,
+        result: Mapping[str, Any],
+        item: str | None,
+    ) -> bool:
+        """Count one re-run if the bound allows it, carrying feedback; False once the count is spent."""
+        key = (workflow, item, name, which)
+        if self._loops.get(key, 0) >= resolve_count(self.cfg, loop.max):
+            return False
+        self._loops[key] = self._loops.get(key, 0) + 1
+        if loop.carry is not None and loop.carry in result:
+            self.store.put(f"feedback.{loop.to}", result[loop.carry])
+        return True
+
+    def _ctx(self, workflow: str, name: str, item: str | None) -> RunContext:
+        return RunContext(
+            cfg=self.cfg,
+            store=self.store,
+            sessions=self.sessions,
+            registry=self.registry,
+            workflow=workflow,
+            node=name,
+            item=item,
+            feedback=self.store.get(f"feedback.{name}") if self.store.has(f"feedback.{name}") else None,
+        )
+
+    async def _step(
+        self, workflow: str, name: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
+    ) -> Mapping[str, Any]:
+        if node.type not in ("parallel", "each"):
+            return await self._run_node(workflow, name, node, formats, item)
+        fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
+        if node.when is not None and not self.registry[node.when](self._ctx(workflow, name, item)):
+            self.store.emit("node_skipped", **fields)
+            return {}
+        self.store.emit("node_started", **fields)
+        started = time.monotonic()
+        outcome = "failed"
+        try:
+            if node.type == "parallel":
+                await self._parallel(workflow, node, formats, item)
+            else:
+                await self._each(node)
+            outcome = "done"
+        except EndRun:
+            outcome = "done"
+            raise
+        finally:
+            self.store.emit("node_finished", node=name, type=node.type, outcome=outcome, ms=self._ms(started))
+        return {}
+
+    async def _parallel(
+        self, workflow: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
+    ) -> None:
+        spec = self.cfg.workflows[workflow]
+        tasks = [
+            asyncio.ensure_future(self._run_node(workflow, child, spec.nodes[child], formats, item))
+            for child in node.nodes
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    async def _each(self, node: NodeSpec) -> None:
+        assert node.over is not None and node.workflow is not None
+        for i in range(len(self.store.get(node.over))):
+            await self._walk(node.workflow, None, f"{i + 1:02d}", bundle=True)
 
     @staticmethod
     def _ms(started: float) -> int:
@@ -128,24 +254,8 @@ class Composer:
         self, workflow: str, name: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
     ) -> Mapping[str, Any]:
         """Run one node; returns the runner's full result mapping (empty when skipped)."""
-        if (
-            node.type in ("parallel", "each")
-            or node.branch is not None
-            or node.loop is not None
-            or isinstance(node.on_fail, LoopSpec)
-        ):
-            raise NotImplementedError(f"workflow {workflow}: node {name}: {node.type} wiring comes later")
         fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
-        ctx = RunContext(
-            cfg=self.cfg,
-            store=self.store,
-            sessions=self.sessions,
-            registry=self.registry,
-            workflow=workflow,
-            node=name,
-            item=item,
-            feedback=self.store.get(f"feedback.{name}") if self.store.has(f"feedback.{name}") else None,
-        )
+        ctx = self._ctx(workflow, name, item)
         if node.outputs and all(self._present(o, node.outputs, item) for o in node.outputs):
             self.store.emit("node_skipped", **fields)
             return {}
@@ -183,7 +293,7 @@ class Composer:
             outcome="failed" if failure is not None else "done",
             ms=self._ms(started),
         )
-        if failure is not None and node.on_fail == "block":
+        if failure is not None and node.on_fail == "block" and node.loop is None:
             from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
 
             raise StoryBlocked(str(failure))
