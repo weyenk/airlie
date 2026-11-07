@@ -96,6 +96,7 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
                 callers.setdefault(n.workflow, []).append(wname)
     for wname, w in workflows.items():
         known = set(w.nodes)
+        children = {c for n in w.nodes.values() if n.type == "parallel" for c in n.nodes}
         available = _produced(w) | set(w.loose)
         for caller in callers.get(wname, []):
             available |= _produced(workflows[caller]) | set(workflows[caller].loose)
@@ -119,6 +120,13 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
             for target in n.nodes:
                 if target not in known:
                     add(f"nodes names unknown node '{target}'")
+            if nname in children and (
+                n.loop is not None
+                or n.branch is not None
+                or n.next is not None
+                or isinstance(n.on_fail, LoopSpec)
+            ):
+                add("a parallel child may not use loop, branch, next or an on_fail loop")
             for loop in (n.loop, n.on_fail if isinstance(n.on_fail, LoopSpec) else None):
                 if loop is not None and loop.to not in known:
                     add(f"loop names unknown node '{loop.to}'")

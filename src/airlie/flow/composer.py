@@ -103,20 +103,25 @@ class Composer:
         spec = self.cfg.workflows[workflow]
         names = list(spec.nodes)
         formats = {name: fmt for n in spec.nodes.values() for name, fmt in n.outputs.items()}
+        children = {c for n in spec.nodes.values() if n.type == "parallel" for c in n.nodes}
         current: str | None = spec.start
+        forced = False  # arrived by a loop jump: redo the node even if its outputs exist
         last = spec.start
         while current is not None:
             node = spec.nodes[current]
             last = current
             try:
-                result = await self._step(workflow, current, node, formats, item)
+                result = await self._step(workflow, current, node, formats, item, force=forced)
             except EndRun:
                 if bundle:
                     raise
                 return current
-            if current == until:
+            target, forced = self._route(workflow, current, node, names, children, result, item)
+            if (
+                current == until and not forced
+            ):  # routed first so a spent loop blocks; a loop jump is not done yet
                 return current
-            current = self._route(workflow, current, node, names, result, item)
+            current = target
         return last
 
     def _route(
@@ -125,10 +130,12 @@ class Composer:
         name: str,
         node: NodeSpec,
         names: list[str],
+        children: set[str],
         result: Mapping[str, Any],
         item: str | None,
-    ) -> str | None:
-        """The node after `name`: a loop's target, a branch, `next`, else dict order."""
+    ) -> tuple[str | None, bool]:
+        """The node after `name` and whether a loop jump forces it: a loop's target, a branch, `next`, else
+        dict order (stepping over parallel children, which run only through their parent)."""
         failed = FAIL_KEY in result
         if result:  # a skipped node (empty result) never loops
             ctx = self._ctx(workflow, name, item)
@@ -137,13 +144,13 @@ class Composer:
                 if (self.registry[loop.when](ctx, result) if loop.when else failed) and self._again(
                     workflow, name, "loop", loop, result, item
                 ):
-                    return loop.to
+                    return loop.to, True
             if (
                 failed
                 and isinstance(node.on_fail, LoopSpec)
                 and self._again(workflow, name, "on_fail", node.on_fail, result, item)
             ):
-                return node.on_fail.to
+                return node.on_fail.to, True
             if (
                 failed
                 and node.on_fail != "continue"
@@ -156,11 +163,11 @@ class Composer:
             value = result[node.on] if node.on in result else self.store.get(self._name(node.on, item))
             target = node.branch.get(str(value), node.branch.get("*"))
             if target is not None:
-                return target
+                return target, False
         if node.next is not None:
-            return node.next
-        after = names.index(name) + 1
-        return names[after] if after < len(names) else None
+            return node.next, False
+        rest = [n for n in names[names.index(name) + 1 :] if n not in children]
+        return (rest[0] if rest else None), False
 
     def _again(
         self,
@@ -193,10 +200,17 @@ class Composer:
         )
 
     async def _step(
-        self, workflow: str, name: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
+        self,
+        workflow: str,
+        name: str,
+        node: NodeSpec,
+        formats: Mapping[str, str],
+        item: str | None,
+        *,
+        force: bool = False,
     ) -> Mapping[str, Any]:
         if node.type not in ("parallel", "each"):
-            return await self._run_node(workflow, name, node, formats, item)
+            return await self._run_node(workflow, name, node, formats, item, force=force)
         fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
         if node.when is not None and not self.registry[node.when](self._ctx(workflow, name, item)):
             self.store.emit("node_skipped", **fields)
@@ -251,12 +265,19 @@ class Composer:
         return self.store.has(self._name(name, item))
 
     async def _run_node(
-        self, workflow: str, name: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
+        self,
+        workflow: str,
+        name: str,
+        node: NodeSpec,
+        formats: Mapping[str, str],
+        item: str | None,
+        *,
+        force: bool = False,
     ) -> Mapping[str, Any]:
         """Run one node; returns the runner's full result mapping (empty when skipped)."""
         fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
         ctx = self._ctx(workflow, name, item)
-        if node.outputs and all(self._present(o, node.outputs, item) for o in node.outputs):
+        if not force and node.outputs and all(self._present(o, node.outputs, item) for o in node.outputs):
             self.store.emit("node_skipped", **fields)
             return {}
         if node.when is not None and not self.registry[node.when](ctx):

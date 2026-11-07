@@ -76,3 +76,17 @@ def test_story_composer_defaults_off(tmp_path):
     from tests.unit.test_config import MINIMAL, write
 
     assert load_config(write(tmp_path, MINIMAL)).story.composer is False
+
+
+def test_a_parallel_child_may_not_use_loop_branch_next_or_an_on_fail_loop():
+    w = wf(
+        p=NodeSpec(type="parallel", nodes=["a", "b", "c", "d", "e"]),
+        a=NodeSpec(type="check", run="r", loop={"to": "a", "max": 1}),
+        b=NodeSpec(type="check", run="r", branch={"x": "a"}, on="k"),
+        c=NodeSpec(type="check", run="r", next="a"),
+        d=NodeSpec(type="check", run="r", on_fail={"to": "d", "max": 1}),
+        e=NodeSpec(type="check", run="r", on_fail="continue"),
+    )
+    problems = check_workflows({"w": w})
+    msg = "a parallel child may not use loop, branch, next or an on_fail loop"
+    assert problems == [f"workflow w: node {n}: {msg}" for n in "abcd"]

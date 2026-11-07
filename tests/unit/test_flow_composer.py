@@ -378,8 +378,8 @@ async def test_a_loop_bound_from_config_and_block_when_spent(tmp_path):
 async def test_a_loop_when_predicate_re_runs_a_node_that_did_not_fail(tmp_path):
     calls = []
     registry = Registry()
-    registry.add("again", lambda ctx, result: result["n"] < 3)
-    runner = check_that(lambda n, c: (calls.append(1), {"n": len(calls)})[1])
+    registry.add("again", lambda ctx, result: result["n"] < 2)
+    runner = check_that(lambda n, c: (calls.append(c.feedback), {"n": len(calls), "note": "fb"})[1])
     wf = {
         "w": {
             "start": "a",
@@ -388,14 +388,72 @@ async def test_a_loop_when_predicate_re_runs_a_node_that_did_not_fail(tmp_path):
                     "type": "check",
                     "run": "r",
                     "outputs": {"n": "json"},
-                    "loop": {"to": "a", "max": 5, "when": "again"},
+                    "loop": {"to": "a", "max": 5, "when": "again", "carry": "note"},
                 }
             },
         }
     }
     c = composer(tmp_path, wf, {"check": runner}, registry=registry)
     await c.run("w")
-    assert len(calls) == 1  # the output stored by the first run makes the node skip on loop-back
+    assert calls == [None, "fb"] and c.store.get("n") == 2
+
+
+async def test_a_loop_to_an_earlier_succeeded_node_runs_it_again_and_overwrites(tmp_path):
+    calls = []
+    registry = Registry()
+    registry.add("redo", lambda ctx, result: len(calls) < 3)
+    runner = check_that(lambda n, c: (calls.append(c.node), {k: len(calls) for k in n.outputs})[1])
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {
+                "a": {"type": "check", "run": "r", "outputs": {"x": "json"}},
+                "b": {
+                    "type": "check",
+                    "run": "r",
+                    "outputs": {"y": "json"},
+                    "loop": {"to": "a", "max": 1, "when": "redo"},
+                },
+            },
+        }
+    }
+    c = composer(tmp_path, wf, {"check": runner}, registry=registry)
+    await c.run("w")
+    assert calls == ["a", "b", "a"] and c.store.get("x") == 3
+
+
+async def test_until_on_a_failed_loop_node_still_blocks(tmp_path):
+    runner = check_that(lambda n, c: {"__fail__": "red"})
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {
+                "a": {"type": "check", "run": "r", "outputs": {"x": "text"}, "loop": {"to": "a", "max": 1}}
+            },
+        }
+    }
+    with pytest.raises(StoryBlocked):
+        await composer(tmp_path, wf, {"check": runner}).run("w", until="a")
+
+
+async def test_parallel_children_run_once_and_are_not_walked_again(tmp_path):
+    seen = []
+    runner = check_that(lambda n, c: (seen.append(c.node), {k: 1 for k in n.outputs})[1])
+    wf = {
+        "w": {
+            "start": "both",
+            "nodes": {
+                "both": {"type": "parallel", "nodes": ["s", "quiet"]},
+                "s": {"type": "check", "run": "r", "outputs": {"survey": "text"}},
+                "quiet": {"type": "check", "run": "r"},
+                "after": {"type": "check", "run": "r", "inputs": ["survey"], "outputs": {"z": "text"}},
+            },
+        }
+    }
+    c = composer(tmp_path, wf, {"check": runner})
+    assert await c.run("w") == "after"
+    assert sorted(seen) == ["after", "quiet", "s"]
+    assert [k for k, _ in c.store.events if k == "node_skipped"] == []
 
 
 async def test_an_on_fail_loop_re_runs_then_blocks(tmp_path):
