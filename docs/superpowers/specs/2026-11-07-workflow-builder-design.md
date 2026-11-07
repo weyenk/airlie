@@ -205,3 +205,56 @@ beside the YAML. Checks and parsers stay code.
 - Order of work. A sensible order: the schema additions and glob include; the composer taking a workflows
   mapping and `compose` reading the card's workflow; the drafts table and the card field; the builder's
   canvas read-only from a file; editing and validation; Save draft; Publish; the prompt-file piece.
+
+## As built (2026-11-07)
+
+Where the build settled what the design left open, or changed it after the final review:
+
+- **D15, the artifact store.** `StateStore` routes a plain output name that is no `StoryState` field, no loose
+  name and no memory head (`feedback`, `package`) to `st.artifacts[name]`; `<name>.<key>` goes into the dict
+  there. `path` is refused. A builder workflow's `outputs: {repro: text}` is therefore stored, read by a later
+  node, saved in `state.json["artifacts"]` and skipped on resume.
+- **The flag-off bytes.** `StoryState.save` omits `artifacts` while it is empty and `workflow` while it is
+  None, so a story that runs no workflow writes the `state.json` airlie wrote before workflows existed (and a
+  rollback opens it).
+- **Goal 4: a draft named as a file is a pending edit of that file.** The Drafts paragraph's "a draft's name
+  must not collide with a file's" is replaced: `PUT /v1/workflows/drafts/<file's name>` is accepted (reserved
+  names and kebab-case still refused). Such a draft is never runnable (the file wins, below); it is checked as
+  its own text for the builder (`resolve_workflows(..., own=True)`), `GET /v1/workflows/<name>` returns it in
+  place of the file with `edits_file: true`, the list shows it beside the file with `superseded: true` ("edit of
+  <name>" on the Workflows page and in the builder), and a card's Workflow select does not offer it. The builder
+  saves a file's workflow in place under the file's name (no name asked); Publish goes through
+  `publish_workflow` as for any draft, so an unchanged definition diffs only the `layout:` block.
+- **The file wins over a same-name draft.** Once a name is in `cfg.workflows`, resolution takes the file and
+  leaves the draft (and its prompt files) out, without an error. Bookkeeping retires a draft whenever its PR is
+  `MERGED` and its name is loaded, whatever the file holds (an edit saved after the publish has no PR, so it is
+  never retired). The builder has a Delete draft button (asked first) that removes the draft and returns to the
+  Workflows page.
+- **A started card's workflow cannot change.** The board API refuses adding, removing or changing a card's
+  `workflow:` label once the card has a saved state (422 "the workflow of a started card cannot be changed;
+  restart it from a step instead"); `GET /v1/board/items/{key}` says `started`, and CardModal disables the
+  select with that reason (falling back to a column past approved when the server has not said). The label
+  check runs only when the `workflow:` label itself changes (or a story moves to approved). In `_drive`, a card
+  that started with no snapshot and gained a label since stays on the story (D21 cannot cover it); with no
+  label it runs as it always has.
+- **CardModal has no "Build new…"**: only CreateModal opens the builder from a card.
+- **The card trip.** CreateModal's fields go into a sessionStorage-backed store under a token: `?card=<token>`
+  out to the builder, `?create=<token>` back to the board; Save and Publish return with the workflow chosen,
+  Cancel returns with the card as it was and no draft made.
+- **Problems at pick time.** A card whose workflow does not resolve is skipped by the picks (the cards behind it
+  run) with one note per problem; `workflow:story`, the default written out, is never resolved, as no label.
+- **The snapshot decides the composer.** A card with a snapshot runs it through the composer whatever its label
+  or the flag says now; restart-from-step clears it.
+- **No `planned` node.** A workflow without one runs intake in the plan lane, is marked planned there
+  (`story_planned` with no layers) and runs whole in the build lane.
+- **Publish.** It continues an open PR's branch, else starts the branch from the trunk again and pushes with a
+  lease; a definition the trunk already holds is a 409 "nothing to publish"; publishes of one workflow run one
+  at a time (a per-name lock).
+- **Reserved names.** `catalog`, `validate`, `drafts` (the router's paths) and the builder's `new`.
+- **Prompt files.** The hub wins: a draft may not carry a prompt id the hub has, nor two drafts one id with
+  different texts. Feedback is joined into the brief; values are rendered as the hub's rules render them.
+- **Canvas.** Hand-rolled SVG; node keys keep the file's order (the order is what falls through to what); a drag
+  changes only `layout:`. With nothing selected the panel edits the workflow's type, loose names (a new canvas
+  starts with `card`, `repo`) and start box.
+- **Run view.** A for-each draws lanes only for the items reached; a bundle's children are drawn flat.
+- **Not yet.** The Workflows page has no "New" button; a new canvas is reached at `/workflows/build/new`.
