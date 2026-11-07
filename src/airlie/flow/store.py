@@ -6,6 +6,8 @@ import dataclasses
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
+from airlie.flow.spec import RESERVED, reserved_output
+
 # airlie.config imports airlie.flow.spec, so this package cannot import the story state at load.
 if TYPE_CHECKING:
     from airlie.story.state import StoryState
@@ -54,8 +56,9 @@ class StateStore:
     `st.artifacts` under that name (`<name>.<key>` in the dict there), saved with the state."""
 
     MEMORY = ("feedback", "package")
-    RESERVED = ("path",)
-    """Names no node may write: the state's own location, never saved."""
+    RESERVED = RESERVED
+    """Names no node may write (`airlie.flow.spec.RESERVED`): the state's own place, the artifact store whole
+    and the card's snapshot; `check_workflows` refuses them as outputs too."""
 
     def __init__(self, st: StoryState, *, loose: Mapping[str, Any]) -> None:
         self.st = st
@@ -87,8 +90,10 @@ class StateStore:
         head, _, key = name.partition(".")
         if head in self._memory and key:
             self._memory[head][key] = value
+        elif reserved_output(name):
+            raise KeyError(name)
         elif not key:
-            if head in self._loose or head in self.RESERVED or head in self.MEMORY:
+            if head in self._loose or head in self.MEMORY:
                 # a loose name is read-only: `get` reads the mapping, so a write to a state field or an
                 # artifact of the same name would never be read back
                 raise KeyError(name)
@@ -98,7 +103,7 @@ class StateStore:
                 self.st.artifacts[head] = value
         elif head in self._fields:
             self._dict_field(name, head)[key] = value
-        elif head in self._loose or head in self.RESERVED:
+        elif head in self._loose:
             raise KeyError(name)
         else:
             container = self.st.artifacts.setdefault(head, {})

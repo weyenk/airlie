@@ -83,7 +83,7 @@ def test_a_dotted_name_under_a_plain_artifact_is_refused(tmp_path):
 def test_put_on_a_reserved_or_memory_head_is_refused(tmp_path):
     repo = repo_with_marker_tests(tmp_path)
     st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
-    for name in ("path", "path.x", "feedback", "package"):
+    for name in ("path", "path.x", "feedback", "package", "artifacts", "workflow", "workflow.name"):
         with pytest.raises(KeyError):
             StateStore(st, loose={}).put(name, 1)
     assert st.artifacts == {}

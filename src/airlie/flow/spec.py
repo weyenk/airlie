@@ -22,6 +22,19 @@ Format = Literal[
 ]
 
 
+RESERVED = ("path", "artifacts", "workflow")
+"""Names of the story state's own bookkeeping that no node output may take: `path` (where the state lives,
+never saved), `artifacts` (the store of a workflow's own outputs, D15) and `workflow` (the card's snapshot,
+D21). `artifacts.<name>` is a name inside the store, and is fine; nothing may write inside `path` or
+`workflow`."""
+
+
+def reserved_output(name: str) -> bool:
+    """`name` would overwrite the state's own bookkeeping (`RESERVED`)."""
+    head, dot, _ = name.partition(".")
+    return head in RESERVED and (not dot or head != "artifacts")
+
+
 class LoopSpec(Strict):
     to: str  # node to run again
     max: int | str  # a count, or a dotted config path such as "story.layer_attempts"
@@ -147,6 +160,9 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collectio
 
             if (missing := _requirements(n)) is not None:
                 add(missing)
+            for out in n.outputs:
+                if reserved_output(out):
+                    add(f"output '{out}' is reserved")
             for what in _prompt_file(n, set(n.inputs) | set(w.loose), prompts):
                 add(what)
             for name in n.inputs:

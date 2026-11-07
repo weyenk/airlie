@@ -127,3 +127,15 @@ def test_type_and_layout_are_optional_and_layout_must_name_nodes():
         start="a", layout={"zz": Layout(x=0, y=0)}, nodes={"a": NodeSpec(type="check", run="r")}
     )
     assert check_workflows({"w": w2}) == ["workflow w: layout names unknown node 'zz'"]
+
+
+@pytest.mark.parametrize("name", ["path", "artifacts", "workflow", "workflow.name", "path.x"])
+def test_an_output_named_as_the_states_own_bookkeeping_is_refused(name):
+    """`artifacts` would overwrite the artifact store, `workflow` the card's snapshot, `path` the state's place."""
+    w = wf(a=NodeSpec(type="check", run="r", outputs={name: "json"}))
+    assert check_workflows({"w": w}) == [f"workflow w: node a: output '{name}' is reserved"]
+
+
+def test_an_output_inside_the_artifact_store_is_fine():
+    w = wf(a=NodeSpec(type="check", run="r", outputs={"artifacts.note": "text", "repro": "text"}))
+    assert check_workflows({"w": w}) == []
