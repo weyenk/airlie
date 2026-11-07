@@ -11,10 +11,25 @@ from typing import Any
 import pytest
 
 from airlie.config import load_config
+from airlie.engine import FakeReply
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
+from airlie.story.board import text_card
+from airlie.story.flow import story_registry, story_runners
+from airlie.story.pipeline import StoryPipeline
+from airlie.story.state import StoryState
 from tests.unit.test_story_epic import fenced
 from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
+from tests.unit.test_story_pipeline import (
+    LAYERS,
+    PKGS,
+    SURVEY_NOTES,
+    gated,
+    happy_engine,
+    kinds_all,
+    pipeline,
+    repo_with_marker_tests,
+)
 
 KEY = "AIR-1"
 
@@ -789,3 +804,126 @@ def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
     loop = cfg.workflows["layer"].nodes["build"].loop
     assert loop is not None
     assert loop.max == "story.layer_attempts"
+
+
+# ---- the plan lane through the composer (story.composer), against the driver ----
+
+# captured once from the driver (composer=False): the contract the composer meets
+EXPECTED_PLAN_KINDS = ["story_start", "stage", "run", "stage", "run", "stage", "story_planned", "story_done"]
+
+
+def plan_kinds(path: Path) -> list[str]:
+    return [e["kind"] for e in kinds_all(path) if not str(e["kind"]).startswith("node_")]
+
+
+@pytest.mark.parametrize("composer", [False, True])
+async def test_the_plan_lane_produces_the_same_events_and_state_either_way(
+    tmp_path: Path, composer: bool
+) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=composer)
+    st = await pipe.plan(text_card("add a marker"))
+    assert plan_kinds(st.path / "events.jsonl") == EXPECTED_PLAN_KINDS
+    assert st.story is not None and st.layers is not None and st.agreement is not None
+    assert st.blocked is None and st.stage == "layers"
+
+
+async def test_a_handover_after_planning_is_not_a_resume_despite_node_events(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
+    st = await pipe.plan(text_card("add a marker"))
+    assert any(e["kind"] == "node_started" for e in kinds_all(st.path / "events.jsonl"))
+    assert StoryPipeline._handoff(st, "review") is True
+
+
+VOLATILE = frozenset({"ts", "build", "run_id", "studio_run", "ms", "elapsed_s", "wall_s"})
+
+
+def neutral(text: str, root: Path, sha: str) -> Any:
+    """`text` (JSON) with this run's directory and base commit spelled the same for every run."""
+    return json.loads(
+        text.replace(str(root.resolve()), "<root>").replace(str(root), "<root>").replace(sha, "<sha>")
+    )
+
+
+def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
+    """The story's events without the composer's node events and without what differs run to run."""
+    return [
+        {k: v for k, v in e.items() if k not in VOLATILE}
+        for e in neutral(json.dumps(kinds_all(path)), root, sha)
+        if not str(e["kind"]).startswith("node_")
+    ]
+
+
+def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
+    saved = neutral((path / "state.json").read_text(), root, sha)
+    return {k: v for k, v in saved.items() if k != "runs"}
+
+
+@pytest.mark.parametrize("survey", [False, True])
+async def test_the_composer_plans_with_the_drivers_events_fields_and_state(
+    tmp_path: Path, survey: bool
+) -> None:
+    """Driver and composer on the same story, each in its own directory: the same events with the same
+    fields in the same order (but for times and run ids), and the same state.json. With the survey on, the
+    survey runs beside refine (the plan_story parallel node), as `_refine_with_survey` runs it."""
+    settings = {"survey": survey}
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        architect = [SURVEY_NOTES, LAYERS, *PKGS] if survey else [LAYERS, *PKGS]
+        pipe = pipeline(root, repo, happy_engine(architect=architect), story=settings, composer=composer)
+        st = await pipe.plan(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "layers"
+        assert st.base is not None
+        sha = st.base["sha"]
+        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+    (driver_events, driver_state), (composer_events, composer_state) = seen
+    assert composer_events == driver_events
+    assert composer_state == driver_state
+    if survey:
+        assert composer_state["survey"] == SURVEY_NOTES.text
+
+
+async def test_a_plan_resumed_through_the_composer_matches_the_drivers_resume(tmp_path: Path) -> None:
+    """A story stopped in the layer split (its base and gate stored) and planned again: the composer skips
+    the nodes whose outputs are stored, and still reads the stored gate into the pipeline as `_gate` does."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = gated(root)
+        nonsense = FakeReply(text="no plan here")
+        first = pipeline(root, repo, happy_engine(architect=[nonsense] * 4), test_cmd=None, composer=composer)
+        stopped = await first.plan(text_card("add a marker"))
+        assert stopped.blocked and stopped.gate is not None and stopped.layers is None
+        again = pipeline(root, repo, happy_engine(), test_cmd=None, composer=composer)
+        st = await again.plan(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "layers"
+        assert again.commands == ("./check.sh",)
+        assert st.base is not None
+        sha = st.base["sha"]
+        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+    assert seen[1] == seen[0]
+
+
+def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
+    card = text_card("add a marker")
+    st = StoryState(path=tmp_path, card={}, repo=str(repo))
+    registry = story_registry(pipe, st, card)
+    nodes = [node for spec in pipe.cfg.workflows.values() for node in spec.nodes.values()]
+    named = {
+        id
+        for node in nodes
+        for id in (node.prompt, node.turn, node.parse, node.run, node.after, node.done, node.when)
+        if id is not None
+    } | {node.loop.when for node in nodes if node.loop is not None and node.loop.when is not None}
+    assert {"story.to_build", "story.survey_on", "story.amigos", "story.costed"} <= named
+    assert all(callable(registry[id]) for id in sorted(named))
+    assert set(story_runners(pipe, st, card)) == {
+        "ask", "conversation", "write", "meeting", "check", "gate", "parallel", "each"
+    }  # fmt: skip

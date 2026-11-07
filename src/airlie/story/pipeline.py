@@ -85,6 +85,7 @@ from airlie.story.diagnosis import (
 from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
+from airlie.story.flow import compose
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.harvest import (
     DELETED_TESTS,
@@ -665,34 +666,50 @@ class StoryPipeline:
                 if st.blocked is not None:
                     st.blocked = None
                     st.save()
-            await self._intake(st, card)
-            base = await self._base(st, card)
-            if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
-                self._gate(st, base)
-            story = await self._refine_with_survey(st, card)
-            await self._costed(st, card, "survey", "refine")
-            layers = await self._layers(st, card, story)
-            await self._costed(st, card, "plan")
-            agreed = await self._agree(st, card, story, layers)
-            await self._costed(st, card, "amigos")
-            story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
-            if until == "planned":
-                st.emit("story_planned", layers=len(layers))
+            if (
+                self.s.composer and until == "planned"
+            ):  # the same steps, ordered by config/workflows/story.yaml
+                await compose(self, st, card, until=until)  # its `planned` node says story_planned
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)
                 return st
-            async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
-                self._held = held
-                try:
-                    for i in range(len(layers)):
-                        await self._build(st, card, _current(st, story), layers, i)
-                        await self._costed(st, card, "package", "layer", "review")
-                finally:
-                    self._held, self._drafting, self._draft_turns = None, None, None
-            if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
-                st.finish("build")
-            await self._publish(st, card, _current(st, story), layers)
-            await self._costed(st, card, "publish")
-            await self._finish(st, card)
+            if self.s.composer:
+                async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
+                    self._held = held
+                    try:
+                        await compose(self, st, card, until=until)
+                    finally:
+                        self._held, self._drafting, self._draft_turns = None, None, None
+            else:
+                await self._intake(st, card)
+                base = await self._base(st, card)
+                if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
+                    self._gate(st, base)
+                story = await self._refine_with_survey(st, card)
+                await self._costed(st, card, "survey", "refine")
+                layers = await self._layers(st, card, story)
+                await self._costed(st, card, "plan")
+                agreed = await self._agree(st, card, story, layers)
+                await self._costed(st, card, "amigos")
+                story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
+                if until == "planned":
+                    st.emit("story_planned", layers=len(layers))
+                    st.emit("story_done", stage=st.stage, blocked=st.blocked)
+                    return st
+                async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
+                    self._held = held
+                    try:
+                        for i in range(len(layers)):
+                            await self._build(st, card, _current(st, story), layers, i)
+                            await self._costed(st, card, "package", "layer", "review")
+                    finally:
+                        self._held, self._drafting, self._draft_turns = None, None, None
+                if not st.done(
+                    "build"
+                ):  # here, not in the last layer: a note that failed there must not skip it
+                    st.finish("build")
+                await self._publish(st, card, _current(st, story), layers)
+                await self._costed(st, card, "publish")
+                await self._finish(st, card)
         except StoryWaiting as e:
             await self._wait(st, card, str(e), e.on)
         except StoryBlocked as e:
@@ -747,7 +764,11 @@ class StoryPipeline:
         if "story_planned" not in seen:
             return False
         after = seen[len(seen) - 1 - seen[::-1].index("story_planned") + 1 :]
-        return all(kind in ("story_start", "story_done") for kind in after)
+        # the composer's node events (story.composer) say which box ran, not that work went on: no resume
+        return all(
+            kind in ("story_start", "story_done", "node_started", "node_finished", "node_skipped")
+            for kind in after
+        )
 
     # ---- stages: each one skips itself when the state says it already finished ----
     async def _intake(self, st: StoryState, card: Card) -> None:

@@ -19,7 +19,7 @@ workflows:
         when: story.to_build
       plan_story:
         type: parallel
-        nodes: [survey, refine]
+        nodes: [refine, survey]  # refine first: the driver starts it before the survey (the same event order)
       survey:
         type: ask
         role: architect

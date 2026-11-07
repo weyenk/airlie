@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from autogen_ext.models.replay import ReplayChatCompletionClient
 
 from airlie.board import BoardStore
@@ -59,6 +60,8 @@ from tests.unit.test_fork_orchestrator import repo_with_marker_tests
 from tests.unit.test_story_board import FakeJira
 from tests.unit.test_story_board import board as jira_board_for
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, ROLES, RUN, WRITE_PASS, cfg_for
+
+WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
 
 STORY_ROLES = {
     **ROLES,
@@ -194,6 +197,7 @@ def pipeline(
     done_check: bool = False,
     meeting: Any = None,
     pinned_base: str | None = None,
+    composer: bool = False,
 ) -> StoryPipeline:
     """A pipeline over `repo`. `test_cmd` is a person's (None: the gate of the repository's AGENTS.md), and
     `github_repo` the repository an issue's label names (None: a written request's, the remote as written)."""
@@ -203,10 +207,18 @@ def pipeline(
         "survey": False,
         "layer_attempts": 1,  # a layer that fails stops the story; re-planning has tests of its own
         "amigos": {"enabled": False},  # the meeting has tests of its own (below)
+        "composer": composer,
         **(story or {}),
     }
     # the done-check is off unless a test asks for it: it costs the coder one scripted reply per layer
-    cfg = cfg_for(tmp_path, roles=roles, extra={"story": settings}, done_check=done_check)
+    extra: dict[str, object] = {"story": settings}
+    if composer:  # the shipped story and layer workflows, as airlie.yaml includes them
+        extra["workflows"] = {
+            name: spec
+            for part in ("story", "layer")
+            for name, spec in yaml.safe_load((WORKFLOWS / f"{part}.yaml").read_text())["workflows"].items()
+        }
+    cfg = cfg_for(tmp_path, roles=roles, extra=extra, done_check=done_check)
     return StoryPipeline(
         cfg,
         board=board or NullBoard(cfg.observability.state_dir / "stories"),
