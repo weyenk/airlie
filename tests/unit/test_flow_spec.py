@@ -131,7 +131,7 @@ def test_type_and_layout_are_optional_and_layout_must_name_nodes():
 
 @pytest.mark.parametrize("name", ["path", "artifacts", "workflow", "workflow.name", "path.x"])
 def test_an_output_named_as_the_states_own_bookkeeping_is_refused(name):
-    """`artifacts` would overwrite the artifact store, `workflow` the card's snapshot, `path` the state's place."""
+    """`artifacts` would overwrite the artifact store, `workflow` the card's snapshot, `path` its place."""
     w = wf(a=NodeSpec(type="check", run="r", outputs={name: "json"}))
     assert check_workflows({"w": w}) == [f"workflow w: node a: output '{name}' is reserved"]
 

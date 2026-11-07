@@ -148,7 +148,7 @@ from airlie.story.satisfied_check import satisfied_feedback, unproven
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_note
 from airlie.story.testing_conventions import conventions, conventions_text, test_levels
-from airlie.story.workflows import WorkflowError, card_workflow, has_node, workflow_for
+from airlie.story.workflows import WorkflowError, has_node, running_workflow, workflow_for
 from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
@@ -672,9 +672,7 @@ class StoryPipeline:
         # before workflows) and gained a label since has run the story's stages, which no snapshot records,
         # so D21 cannot hold it: it stays on the story, the flag deciding as for any story card (with no
         # label it runs as it always has). The board API refuses that relabel; a Jira card's does not ask.
-        named = card_workflow(card)
-        if st.workflow is None and st.stage != "new":
-            named = "story"
+        named = running_workflow({"stage": st.stage, "workflow": st.workflow}, card.labels)
         composed = st.workflow is not None or named != "story" or self.s.composer
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else

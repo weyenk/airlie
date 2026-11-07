@@ -53,7 +53,7 @@ from airlie.story.phase import (
 )
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import Lane, StoryState, lane_lock, lane_record, lock_held
-from airlie.story.workflows import DEFAULT, WorkflowError, card_workflow, resolve_workflows
+from airlie.story.workflows import DEFAULT, WorkflowError, resolve_workflows, running_workflow
 
 Spawn = Callable[["Job"], None]
 """Starts a lane's job in the background and returns at once (the serve process registers it in its jobs)."""
@@ -501,10 +501,11 @@ class Line:
         now (a draft edited or deleted after the card was approved): the card stays where it is, untouched,
         and is told why once per problem, until a person fixes the draft or the label. None otherwise, and
         always for a card with no label (the story's own workflow)."""
-        name = card_workflow(card)
+        saved = factory._saved(self.cfg, card.key)
+        name = running_workflow(saved, card.labels)
         # only a card with no snapshot is resolved here: one that has started runs the workflow it
-        # snapshotted, whatever the drafts say since (D21)
-        if name == DEFAULT or (factory._saved(self.cfg, card.key) or {}).get("workflow") is not None:
+        # snapshotted, whatever the drafts say since (D21), and one started without a snapshot runs the story
+        if name == DEFAULT or (saved or {}).get("workflow") is not None:
             return None
         try:
             resolve_workflows(self.cfg, pipe.drafts(), name, prompts=pipe.draft_prompts())

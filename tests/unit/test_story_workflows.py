@@ -22,6 +22,7 @@ from airlie.story.workflows import (
     from_snapshot,
     has_node,
     resolve_workflows,
+    running_workflow,
     snapshot,
     workflow_label,
     workflow_problems,
@@ -95,6 +96,25 @@ def started(path: Path) -> list[tuple[str, str | None]]:
 def test_card_workflow_defaults_to_story_and_reads_the_label() -> None:
     assert card_workflow(text_card("x")) == "story"
     assert card_workflow(replace(text_card("x"), labels=("repo:o/r", "workflow:bug-fix"))) == "bug-fix"
+
+
+@pytest.mark.parametrize(
+    ("saved", "labels", "runs"),
+    [
+        (None, ("workflow:mini",), "mini"),  # not started: the card's label
+        (None, (), "story"),  # no label: the story
+        ({"stage": "new"}, ("workflow:mini",), "mini"),  # a record that never got past new: not started
+        ({"stage": "intake", "workflow": None}, ("workflow:mini",), "story"),  # started with no snapshot
+        ({"stage": "intake", "workflow": {"name": "fix"}}, ("workflow:mini",), "fix"),  # its snapshot
+        ({"stage": "intake", "workflow": {"name": "fix"}}, (), "fix"),
+    ],
+)
+def test_the_workflow_a_card_runs_is_its_snapshot_else_story_once_started_else_its_label(
+    saved: dict[str, Any] | None, labels: tuple[str, ...], runs: str
+) -> None:
+    """One rule for `_drive`, `Line._workflow_hold` and `LocalBoard._unrunnable`: a card that started with no
+    snapshot (the driver ran it, or an airlie from before workflows) has run the story's stages."""
+    assert running_workflow(saved, labels) == runs
 
 
 def test_workflow_label_is_the_first_named_one_and_none_without_one() -> None:

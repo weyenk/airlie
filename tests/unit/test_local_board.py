@@ -403,3 +403,21 @@ async def test_a_story_labelled_with_the_default_workflow_is_not_resolved_at_pic
     s.update(story, status="approved")
     assert (await board.next_card()).key == story  # type: ignore[union-attr]
     assert asked == [] and not s.get(story).comments
+
+
+async def test_a_started_card_with_no_snapshot_is_not_resolved_at_pick(tmp_path: Path) -> None:
+    """It runs the story (`running_workflow`), so its label's problem is not its own: it is picked."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    asked: list[str] = []
+
+    def problem(name: str) -> str | None:
+        asked.append(name)
+        return "broken"
+
+    board = LocalBoard(s, stories_dir=tmp_path / "stories", workflow_problem=problem)
+    story = s.create(level="story", title="relabelled", labels=["workflow:nope"]).key
+    s.update(story, status="approved")
+    (tmp_path / "stories" / story).mkdir(parents=True)
+    (tmp_path / "stories" / story / "state.json").write_text('{"stage": "intake"}')
+    assert (await board.next_card()).key == story  # type: ignore[union-attr]
+    assert asked == [] and not s.get(story).comments

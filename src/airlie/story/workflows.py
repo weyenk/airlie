@@ -44,6 +44,20 @@ def card_workflow(card: Card) -> str:
     return workflow_label(card.labels) or DEFAULT
 
 
+def running_workflow(saved: Mapping[str, Any] | None, labels: Iterable[str]) -> str:
+    """The workflow a card runs, given its saved state (None: none yet) and its labels: the snapshot's name
+    when the state holds one (D21); `story` when the state got past `new` with no snapshot, as a card the
+    driver started (or an airlie from before workflows) has run the story's stages, which no snapshot
+    records, so a label it gained since cannot apply; else the card's label, or `story`. `_drive`,
+    `Line._workflow_hold` and `LocalBoard._unrunnable` all decide with this."""
+    snap = (saved or {}).get("workflow")
+    if isinstance(snap, Mapping) and snap.get("name"):
+        return str(snap["name"])
+    if saved is not None and saved.get("stage", "new") != "new":
+        return DEFAULT
+    return workflow_label(labels) or DEFAULT
+
+
 def draft_body(text: str, name: str | None = None) -> tuple[str, Mapping[str, Any]]:
     """The one workflow a draft's YAML text holds: `workflows:` with a single name mapped to a mapping (that
     name `name`, when given). Its name and mapping; WorkflowError when the text is not YAML or holds anything

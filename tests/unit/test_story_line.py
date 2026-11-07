@@ -392,6 +392,22 @@ async def test_a_card_that_reaches_the_story_line_with_a_broken_workflow_is_held
     assert len(held) == 1 and rig.status(story) == "approved" and not rig.engine.requests
 
 
+async def test_a_started_card_with_no_snapshot_is_not_held_for_its_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It runs the story (`running_workflow`), as `_drive` runs it: its label is not resolved."""
+    rig = TickRig(tmp_path, monkeypatch)
+    story = rig.store.create(level="story", title="S", labels=["repo:o/r", "workflow:nope"]).key
+    folder = factory.stories_dir(rig.cfg) / story
+    folder.mkdir(parents=True)
+    (folder / "state.json").write_text('{"stage": "intake"}')
+    board = LocalBoard(rig.store, stories_dir=factory.stories_dir(rig.cfg))
+    line = Line(rig.cfg, board=board, state_dir=rig.cfg.observability.state_dir)
+    card = board.card_of(rig.store.get(story))
+    assert await line._workflow_hold(card, None) is None  # type: ignore[arg-type]
+    assert not rig.store.get(story).comments
+
+
 async def test_a_card_whose_workflow_has_a_problem_is_skipped_so_the_next_one_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -8,6 +8,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from airlie.board import BoardStore, Item
 from airlie.board.model import Comment, Status
@@ -18,7 +19,7 @@ from airlie.story.epic_state import epic_needs_work
 from airlie.story.initiative import Initiative, initiative_key_of
 from airlie.story.model import PLANNED, StoryError
 from airlie.story.state import STAGES
-from airlie.story.workflows import DEFAULT, workflow_label
+from airlie.story.workflows import DEFAULT, running_workflow
 
 log = logging.getLogger(__name__)
 
@@ -157,10 +158,12 @@ class LocalBoard:
         the card was approved): the picks pass over it, so the cards behind it still run, and it is told why
         once per problem (by its stored comments) until a person fixes the draft or the label. A story with
         no label (or `workflow:story`, the default written out) runs the story's own workflow, and one that
-        has started runs the workflow it snapshotted whatever the drafts say since (D21): neither is
-        resolved. A note the store refuses never fails the pick."""
-        name = workflow_label(story.labels)
-        if self.workflow_problem is None or name in (None, DEFAULT) or self._snapshotted(story.key):
+        has started runs the workflow it snapshotted whatever the drafts say since (D21), or the story when
+        it started with none (`running_workflow`): none of them is resolved. A note the store refuses never
+        fails the pick."""
+        saved = self._saved(story.key)
+        name = running_workflow(saved, story.labels)
+        if self.workflow_problem is None or name == DEFAULT or (saved or {}).get("workflow") is not None:
             return False
         problem = self.workflow_problem(name)
         if problem is None:
@@ -174,15 +177,15 @@ class LocalBoard:
                 log.warning("the workflow note on %s failed", story.key, exc_info=True)
         return True
 
-    def _snapshotted(self, key: str) -> bool:
-        """The story's record holds its workflow's snapshot: it started on it."""
+    def _saved(self, key: str) -> dict[str, Any] | None:
+        """The story's record (state.json) as a dict, or None when there is none or it cannot be read."""
         if self.stories_dir is None:
-            return False
+            return None
         try:
             saved = json.loads((self.stories_dir / key / "state.json").read_text())
         except (OSError, ValueError):
-            return False
-        return isinstance(saved, dict) and saved.get("workflow") is not None
+            return None
+        return saved if isinstance(saved, dict) else None
 
     def _planned(self, key: str) -> bool:
         """The story's record has reached the boundary stage (`PLANNED`): its layers are split and agreed. A
