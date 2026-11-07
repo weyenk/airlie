@@ -34,6 +34,8 @@ from airlie.topology.studio_plan import Plan, Subtask
 
 CHAT_SKILLS = Path(__file__).resolve().parents[2] / "skills" / "chat"
 """The chat skills airlie ships: the / menu is tested on the real /story."""
+WORKFLOWS = Path(__file__).resolve().parents[2] / "config" / "workflows"
+"""The workflows airlie ships (airlie.yaml includes them), for a server the builder is tested on."""
 KEY = "e2e-admin-key"
 """The admin key the test server is started with: made up here, for this server only."""
 CARDS = (
@@ -79,9 +81,10 @@ class Server:
     upstream: Upstream
 
 
-def _config(root: Path) -> AirlieConfig:
+def _config(root: Path, *, workflows: bool = False) -> AirlieConfig:
     """The least airlie.yaml the app starts with: one engine it never reaches (the board needs none), the
-    roles the config requires, and the state under `root`. Its own, so the image needs no engine packages."""
+    roles the config requires, and the state under `root`. Its own, so the image needs no engine packages.
+    `workflows` includes the shipped workflow files, as airlie.yaml does."""
     roles = ("coder", "summarizer", "judge", "aggregator")
     for r in roles:
         (root / f"{r}.md").write_text("x")
@@ -98,6 +101,8 @@ def _config(root: Path) -> AirlieConfig:
         "observability": {"state_dir": str(root / "state")},
     }
     data["roles"]["coder"]["summary"] = "writes the code"  # a role the studio may route a subtask to
+    if workflows:
+        data["includes"] = [str(f) for f in sorted(WORKFLOWS.glob("*.yaml"))]
     (root / "airlie.yaml").write_text(yaml.safe_dump(data))
     return load_config(root / "airlie.yaml")
 
@@ -543,8 +548,14 @@ def bootstrap_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Serve
     yield from _serve(tmp_path_factory.mktemp("airlie"), api_key=None)
 
 
-def _serve(root: Path, api_key: str | None = KEY) -> Iterator[Server]:
-    config = _config(root)
+@pytest.fixture
+def workflows_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
+    """A server of the test's own whose config has the shipped workflows (story, layer), for the builder."""
+    yield from _serve(tmp_path_factory.mktemp("airlie"), workflows=True)
+
+
+def _serve(root: Path, api_key: str | None = KEY, *, workflows: bool = False) -> Iterator[Server]:
+    config = _config(root, workflows=workflows)
     state = config.observability.state_dir.expanduser()
     state.mkdir(parents=True, exist_ok=True)
     _seed(state)
