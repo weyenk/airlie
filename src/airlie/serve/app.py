@@ -50,14 +50,16 @@ from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
+from airlie.story.fixes import home_checkout
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
 from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
-from airlie.story.publish import PublishError
+from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
+from airlie.story.workflow_publish import publish_workflow
 from airlie.story.workflows import workflow_problems
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
@@ -379,9 +381,20 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
-async def _no_workflow_publisher(draft: WorkflowDraft) -> tuple[int, str]:
-    """Publishing a draft as a PR is not built yet: the builder's publish says so."""
-    raise HTTPException(501, "publishing workflows is not wired yet")
+def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
+    """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
+    starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
+    from airlie.story.factory import github_app
+
+    publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
+
+    async def publish(draft: WorkflowDraft) -> tuple[int, str]:
+        home = home_checkout()
+        if home is None:
+            raise HTTPException(503, "airlie's own checkout was not found: serve runs from no git checkout")
+        return await publish_workflow(cfg, publisher, draft, home=home)
+
+    return publish
 
 
 CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
@@ -439,7 +452,7 @@ def create_app(
     local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked
     app.include_router(board_router(board, feed.publish, workflow_check=workflow_check if local else None))
     if local:
-        app.include_router(workflows_router(cfg, board, feed.publish, _no_workflow_publisher))
+        app.include_router(workflows_router(cfg, board, feed.publish, _workflow_publisher(cfg)))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()

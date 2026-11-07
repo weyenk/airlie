@@ -20,6 +20,7 @@ from airlie.config import AirlieConfig
 from airlie.flow.spec import NodeType, WorkflowSpec
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import CATALOG
+from airlie.story.publish import PublishError
 from airlie.story.workflows import WorkflowError, draft_body, draft_spec, workflow_problems
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
@@ -194,8 +195,16 @@ def workflows_router(
         draft = get_draft(name)
         if found := problems(name):
             raise HTTPException(422, {"problems": found})
-        number, url = await publisher(draft)
-        store.mark_published(name, number, url)
+        # published already: a new push to the same branch, and the PR gh finds on it (the same one while
+        # it is open) is the one recorded
+        try:
+            number, url = await publisher(draft)
+        except PublishError as e:  # a git or gh step that failed, or gh not installed (CannotStart)
+            raise HTTPException(502, str(e)) from None
+        try:
+            store.mark_published(name, number, url)
+        except KeyError:
+            raise HTTPException(404, "draft vanished while publishing") from None
         publish("workflows", name)
         return {"number": number, "url": url}
 

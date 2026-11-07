@@ -7,15 +7,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 from fastapi import FastAPI
 
 from airlie.board import BoardStore
 from airlie.board.model import WorkflowDraft
 from airlie.prompts.hub import load
+from airlie.serve import app as app_module
 from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
 from airlie.story.flow import CATALOG
+from airlie.story.publish import CannotStart, Publisher
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_story_pipeline import WORKFLOWS
 from tests.unit.test_story_workflows import MINI, MINI_EACH, TINY
@@ -186,18 +189,75 @@ def test_a_draft_is_deleted(tmp_path: Path) -> None:
     assert seen == [("workflows", "mini")]
 
 
-def test_serve_refuses_what_it_cannot_publish_and_has_no_publisher_yet(tmp_path: Path) -> None:
+def test_serve_refuses_what_it_cannot_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def never(*args: object, **kw: object) -> tuple[int, str]:
+        raise AssertionError("refused before anything is published")
+
+    monkeypatch.setattr(app_module, "publish_workflow", never)
     http, c = client(tmp_path)
-    store(c).save_draft("mini", type="bug", yaml=MINI)
     store(c).save_draft("broken", type=None, yaml=BROKEN)
     with http:
         none = http.post("/v1/workflows/nope/publish", headers=AUTH)
         broken = http.post("/v1/workflows/broken/publish", headers=AUTH)
-        stub = http.post("/v1/workflows/mini/publish", headers=AUTH)
     assert none.status_code == 404
     assert broken.status_code == 422 and "unknown node 'x'" in str(broken.json())
-    assert stub.status_code == 501
+
+
+def test_serve_publishes_through_the_story_publisher_from_its_own_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[tuple[Any, Any, str, Any]] = []
+
+    async def published(
+        cfg: Any, publisher: Publisher, draft: WorkflowDraft, *, home: Path
+    ) -> tuple[int, str]:
+        sent.append((cfg, publisher, draft.name, home))
+        return 7, PR
+
+    monkeypatch.setattr(app_module, "publish_workflow", published)
+    monkeypatch.setattr(app_module, "home_checkout", lambda: tmp_path / "home")
+    http, c = client(tmp_path)
+    store(c).save_draft("mini", type="bug", yaml=MINI)
+    with http:
+        r = http.post("/v1/workflows/mini/publish", headers=AUTH)
+    assert r.status_code == 200 and r.json() == {"number": 7, "url": PR}
+    [(cfg_, publisher, name, home)] = sent
+    assert cfg_ is c and name == "mini" and home == tmp_path / "home"
+    assert (publisher.publish, publisher.remote, publisher.app) == ("single", c.story.remote, None)
+    assert store(c).draft("mini").published_pr == 7
+
+
+def test_serve_without_its_own_checkout_cannot_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "home_checkout", lambda: None)
+    http, c = client(tmp_path)
+    store(c).save_draft("mini", type="bug", yaml=MINI)
+    with http:
+        r = http.post("/v1/workflows/mini/publish", headers=AUTH)
+    assert r.status_code == 503 and "checkout" in r.json()["detail"]
     assert store(c).draft("mini").published_pr is None
+
+
+def test_a_publish_that_fails_is_a_bad_gateway_and_a_vanished_draft_a_404(tmp_path: Path) -> None:
+    c = cfg(tmp_path)
+    s = store(c)
+    s.save_draft("mini", type="bug", yaml=MINI)
+    s.save_draft("gone", type="bug", yaml=MINI.replace("  mini:", "  gone:"))
+
+    async def publisher(draft: WorkflowDraft) -> tuple[int, str]:
+        if draft.name == "mini":
+            raise CannotStart("`gh pr create` could not start: no gh")
+        s.delete_draft(draft.name)  # deleted while its PR was being opened
+        return 7, PR
+
+    http, seen = bare(c, s, publisher)
+    with http:
+        failed = http.post("/v1/workflows/mini/publish")
+        vanished = http.post("/v1/workflows/gone/publish")
+    assert failed.status_code == 502 and failed.json()["detail"] == "`gh pr create` could not start: no gh"
+    assert vanished.status_code == 404 and vanished.json()["detail"] == "draft vanished while publishing"
+    assert s.draft("mini").published_pr is None and seen == []
 
 
 def test_publishing_a_draft_records_its_pr(tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from airlie.board import BoardStore, Item
+from airlie.board.model import WorkflowDraft
 from airlie.config import AirlieConfig
 from airlie.obs import EventSink
 from airlie.story.board import note
@@ -336,17 +337,36 @@ def transient_retry(store: BoardStore, state_dir: Path, story: Item, *, retries:
     return True
 
 
+async def retire_draft(
+    cfg: AirlieConfig, store: BoardStore, state_dir: Path, draft: WorkflowDraft, *, gh: GhRun
+) -> bool:
+    """The draft row of a workflow whose PR is merged (`gh pr view <url> --json state`) and whose file this
+    serve has loaded (`cfg.workflows` names it) is deleted, with a `draft_retired` line event; True then.
+    Merged but not loaded yet (no restart since the merge): the row stays, so a card naming the workflow
+    still resolves, to the draft whose text the merged file holds (D20). A gh that fails raises."""
+    if draft.name not in cfg.workflows or draft.published_url is None:
+        return False
+    info = json.loads(await gh(["gh", "pr", "view", draft.published_url, "--json", "state"]))
+    if not isinstance(info, dict) or info.get("state") != "MERGED":
+        return False
+    with contextlib.suppress(KeyError):  # gone already: deleted by hand meanwhile
+        store.delete_draft(draft.name)
+    line_event(state_dir, "draft_retired", name=draft.name, pr=draft.published_pr)
+    return True
+
+
 async def bookkeep(
     cfg: AirlieConfig, store: BoardStore, *, serve_commit: str | None, gh: GhRun | None = None
 ) -> list[str]:
     """What every beat does with no model (until the scheduler moves it): each open fix card through
-    `release_after_fix`, each blocked story through `transient_retry`. One line per thing done, for the log.
-    A card that fails is a line and the rest go on."""
+    `release_after_fix`, each published workflow draft through `retire_draft`, each blocked story through
+    `transient_retry`. One line per thing done, for the log. A card or draft that fails is a line and the
+    rest go on."""
     state_dir = cfg.observability.state_dir.expanduser()
     home = home_checkout()
     lines: list[str] = []
+    run = gh or _gh_in(home or Path.home())
     if home is not None:
-        run = gh or _gh_in(home)
         for fix in store.list(level="story"):
             if FIX not in fix.labels or fix.status == "done":
                 continue
@@ -359,6 +379,16 @@ async def bookkeep(
                 continue
             if released:
                 lines.append(f"{fix.key} is deployed: resumed {', '.join(released)}")
+    for draft in store.drafts():
+        if draft.published_pr is None or not draft.published_url:
+            continue
+        try:
+            if await retire_draft(cfg, store, state_dir, draft, gh=run):
+                lines.append(
+                    f"workflow {draft.name} is merged and loaded: draft retired (PR #{draft.published_pr})"
+                )
+        except Exception as e:  # noqa: BLE001 - one draft's failure never stops the beat
+            lines.append(f"workflow {draft.name}: PR state unknown ({type(e).__name__}: {e})")
     for story in store.list(level="story", status="blocked"):
         try:
             if transient_retry(store, state_dir, story, retries=cfg.line.transient_retries):

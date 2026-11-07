@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+import yaml
 
 from airlie.board import BoardStore
 from airlie.engine import FakeEngine
@@ -339,3 +340,61 @@ async def test_the_beat_runs_the_bookkeeping_first_and_adds_its_lines(
     # the fix lines come first, ahead of what the gates and the lanes say
     out = await factory.tick(cfg)
     assert out.startswith("AIR-3: transient block, retried; engine down: start it with")
+
+
+def _named(name: str) -> str:
+    from tests.unit.test_story_workflows import MINI
+
+    return MINI.replace("  mini:", f"  {name}:")
+
+
+async def test_bookkeeping_retires_a_merged_draft_once_the_file_is_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fixes, "home_checkout", lambda: None)  # no fix cards here: no checkout needed
+    unloaded = cfg_for(tmp_path)
+    loaded = cfg_for(tmp_path, extra={"workflows": yaml.safe_load(_named("bug-fix"))["workflows"]})
+    store = BoardStore(tmp_path / "board.sqlite")
+    store.save_draft("bug-fix", type="bug", yaml=_named("bug-fix"))
+    store.mark_published("bug-fix", 9, "https://github.com/o/r/pull/9")
+    store.save_draft("open", type="bug", yaml=_named("open"))  # never published: gh is not asked
+    asked: list[list[str]] = []
+    merged = merged_gh("abc")
+
+    async def gh(args: list[str]) -> str:
+        asked.append(args)
+        return await merged(args)
+
+    # merged, but this serve has not loaded the file yet: the card still resolves to the draft
+    assert await fixes.bookkeep(unloaded, store, serve_commit=None, gh=gh) == []
+    assert [d.name for d in store.drafts()] == ["bug-fix", "open"]
+    assert asked == []  # nothing to retire until the file is loaded: gh is not asked
+    # the file is loaded (serve restarted after the merge): the draft row goes
+    lines = await fixes.bookkeep(loaded, store, serve_commit=None, gh=gh)
+    assert asked == [["gh", "pr", "view", "https://github.com/o/r/pull/9", "--json", "state"]]
+    assert lines == ["workflow bug-fix is merged and loaded: draft retired (PR #9)"]
+    assert [d.name for d in store.drafts()] == ["open"]
+    events = (tmp_path / "state" / "line" / "events.jsonl").read_text().splitlines()
+    [retired] = [json.loads(e) for e in events if '"draft_retired"' in e]
+    assert (retired["name"], retired["pr"]) == ("bug-fix", 9)
+
+
+async def test_bookkeeping_keeps_a_draft_whose_pr_is_open_or_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fixes, "home_checkout", lambda: None)
+    both = {name: yaml.safe_load(_named(name))["workflows"][name] for name in ("alpha", "mini")}
+    loaded = cfg_for(tmp_path, extra={"workflows": both})
+    store = BoardStore(tmp_path / "board.sqlite")
+    for name, n in (("alpha", 3), ("mini", 4)):
+        store.save_draft(name, type="bug", yaml=_named(name))
+        store.mark_published(name, n, f"https://github.com/o/r/pull/{n}")
+
+    async def gh(args: list[str]) -> str:
+        if args[3].endswith("/3"):
+            raise RuntimeError("gh: no network")
+        return await merged_gh("abc", state="OPEN")(args)
+
+    lines = await fixes.bookkeep(loaded, store, serve_commit=None, gh=gh)
+    assert lines == ["workflow alpha: PR state unknown (RuntimeError: gh: no network)"]
+    assert [d.name for d in store.drafts()] == ["alpha", "mini"]
