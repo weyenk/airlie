@@ -54,30 +54,47 @@ def _draft(name: str, text: str) -> WorkflowSpec:
 
 
 def resolve_workflows(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -> dict[str, WorkflowSpec]:
-    """The repo's workflows and every draft (name -> YAML text), checked together; `name` must be among
-    them. A draft may not shadow a workflow the repo's files define."""
-    specs = dict(cfg.workflows)
-    for draft, text in drafts.items():
-        if draft in specs:
-            raise WorkflowError(
-                f"draft workflow {draft!r} shadows the workflow of that name in the repo's files"
-            )
-        specs[draft] = _draft(draft, text)
-    if name not in specs:
-        raise WorkflowError(f"no workflow named {name!r}")
+    """Workflow `name` and the bundles it calls through its `each` nodes, transitively: each from the repo's
+    workflows first, else from the drafts (name -> YAML text), and checked together. Nothing else is read,
+    so a half-edited draft no other card names never stops this one; the repo's files were checked when
+    the config loaded. A draft may not shadow a workflow the repo's files define."""
+    specs: dict[str, WorkflowSpec] = {}
+    todo = [name]
+    while todo:
+        wanted = todo.pop()
+        if wanted in specs:
+            continue
+        if wanted in cfg.workflows:
+            if wanted in drafts:
+                raise WorkflowError(
+                    f"draft workflow {wanted!r} shadows the workflow of that name in the repo's files"
+                )
+            spec = cfg.workflows[wanted]
+        elif wanted in drafts:
+            spec = _draft(wanted, drafts[wanted])
+        elif wanted == name:
+            raise WorkflowError(f"no workflow named {name!r}")
+        else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
+            continue
+        specs[wanted] = spec
+        todo += [n.workflow for n in spec.nodes.values() if n.type == "each" and n.workflow is not None]
     if problems := check_workflows(specs):
         raise WorkflowError("; ".join(problems))
     return specs
 
 
 def snapshot(name: str, specs: Mapping[str, WorkflowSpec]) -> dict[str, Any]:
-    """What `StoryState.workflow` keeps: the workflow's name and every spec resolved with it (a bundle it
-    calls among them), as JSON."""
+    """What `StoryState.workflow` keeps: the workflow's name and the specs resolved with it (it and the
+    bundles it calls), as JSON."""
     return {"name": name, "specs": {n: s.model_dump(mode="json") for n, s in specs.items()}}
 
 
 def from_snapshot(data: Mapping[str, Any]) -> tuple[str, dict[str, WorkflowSpec]]:
-    return str(data["name"]), {n: WorkflowSpec.model_validate(s) for n, s in data["specs"].items()}
+    name = str(data["name"])
+    try:
+        return name, {n: WorkflowSpec.model_validate(s) for n, s in data["specs"].items()}
+    except ValidationError as e:  # saved by an older airlie whose spec this one no longer reads
+        raise WorkflowError(f"snapshot of {name!r} no longer validates: {e}") from None
 
 
 def has_node(spec: WorkflowSpec, name: str) -> bool:

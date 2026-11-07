@@ -665,8 +665,9 @@ class StoryPipeline:
         if until == "review":
             write_phase(self.stories_dir, "gap")
         # a card that names a workflow other than the story runs it through the composer whatever the flag
-        # says; the flag governs the story's (D16, D17)
-        composed = card_workflow(card) != "story" or self.s.composer
+        # says; the flag governs the story's (D16, D17); a card that took a snapshot runs it whatever its
+        # label says now (D21)
+        composed = st.workflow is not None or card_workflow(card) != "story" or self.s.composer
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
@@ -699,7 +700,9 @@ class StoryPipeline:
                 assert spec is not None
                 if has_node(spec, "planned"):
                     await compose(self, st, card, until=until)  # its `planned` node says story_planned
-                else:  # nothing to plan: the build lane runs the workflow whole (D16)
+                else:  # nothing to plan: the card is taken in; the build lane runs the workflow whole (D16)
+                    await self._intake(st, card)  # the move to building and the note, as the story's intake
+                    # the stage then claims refine and layers too: a stage is an ordinal, not a record
                     st.emit("story_planned", layers=0)
                     st.finish(PLANNED)
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)

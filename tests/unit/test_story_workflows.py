@@ -21,7 +21,13 @@ from airlie.story.workflows import (
     resolve_workflows,
     snapshot,
 )
-from tests.unit.test_story_pipeline import happy_engine, kinds_all, pipeline, repo_with_marker_tests
+from tests.unit.test_story_pipeline import (
+    RecordingBoard,
+    happy_engine,
+    kinds_all,
+    pipeline,
+    repo_with_marker_tests,
+)
 
 MINI = """\
 workflows:
@@ -70,11 +76,24 @@ def test_resolve_adds_a_valid_draft_and_refuses_an_invalid_or_missing_one() -> N
         "workflows:\n  mini:\n    type: bug\n    start: intake\n    loose: [card, repo]\n    nodes:\n"
         "      intake: {type: check, run: story.intake}\n"
     )
-    assert set(resolve_workflows(cfg, {"mini": good}, "mini")) >= {"mini", "story", "layer"}
+    assert set(resolve_workflows(cfg, {"mini": good}, "mini")) == {"mini"}
     with pytest.raises(WorkflowError, match="node intake: check needs run"):
         resolve_workflows(cfg, {"mini": good.replace(", run: story.intake", "")}, "mini")
     with pytest.raises(WorkflowError, match="no workflow named 'nope'"):
         resolve_workflows(cfg, {}, "nope")
+
+
+def test_only_the_named_workflow_and_the_bundles_it_calls_are_resolved() -> None:
+    cfg = load_config(Path("airlie.yaml"))
+    broken = {"junk": "workflows: [1", "half": "workflows:\n  half:\n    start: nowhere\n    nodes: {}\n"}
+    assert set(resolve_workflows(cfg, {"mini": MINI, **broken}, "mini")) == {"mini"}
+    assert set(resolve_workflows(cfg, {"mini": MINI_EACH, "tiny": TINY, **broken}, "mini")) == {
+        "mini",
+        "tiny",
+    }
+    assert set(resolve_workflows(cfg, broken, "story")) == {"story", "layer"}  # the files' own, first
+    with pytest.raises(WorkflowError, match="unknown workflow 'tiny'"):
+        resolve_workflows(cfg, {"mini": MINI_EACH}, "mini")
 
 
 def test_a_draft_must_hold_its_one_workflow_and_not_shadow_a_file() -> None:
@@ -84,7 +103,7 @@ def test_a_draft_must_hold_its_one_workflow_and_not_shadow_a_file() -> None:
     with pytest.raises(WorkflowError, match="mini"):
         resolve_workflows(cfg, {"mini": MINI + TINY.removeprefix("workflows:\n")}, "mini")
     with pytest.raises(WorkflowError, match="other"):
-        resolve_workflows(cfg, {"other": MINI}, "mini")
+        resolve_workflows(cfg, {"other": MINI}, "other")
     with pytest.raises(WorkflowError, match="mini"):
         resolve_workflows(cfg, {"mini": "workflows: [1"}, "mini")
 
@@ -95,8 +114,14 @@ def test_a_snapshot_round_trips_and_names_its_nodes() -> None:
     data = json.loads(json.dumps(snapshot("mini", specs)))
     name, back = from_snapshot(data)
     assert name == "mini" and back == specs
-    assert has_node(back["story"], "planned") and has_node(back["story"], "publish")
     assert not has_node(back["mini"], "planned") and not has_node(back["mini"], "publish")
+    _, story = from_snapshot(snapshot("story", resolve_workflows(cfg, {}, "story")))
+    assert has_node(story["story"], "planned") and has_node(story["story"], "publish")
+
+
+def test_a_snapshot_that_no_longer_validates_is_a_workflow_error() -> None:
+    with pytest.raises(WorkflowError, match="snapshot of 'mini' no longer validates"):
+        from_snapshot({"name": "mini", "specs": {"mini": {"start": "a", "nodes": {}, "gone": 1}}})
 
 
 async def test_a_workflow_without_a_planned_node_passes_the_plan_lane_at_once(tmp_path: Path) -> None:
@@ -152,6 +177,31 @@ async def test_a_started_card_runs_its_snapshot_not_the_changed_draft(tmp_path: 
     assert st.blocked is None and st.stage == "review", st.blocked
     assert [n for n, _ in started(st.path / "events.jsonl")] == ["intake", "base", "gate", "review"]
     assert "costed" not in st.workflow["specs"]["mini"]["nodes"]
+
+
+async def test_a_card_whose_label_is_removed_after_it_started_still_runs_its_snapshot(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=False)
+    pipe.drafts = lambda: {"mini": MINI}
+    card = mini_card()
+    await pipe.plan(card)
+    st = await pipe.build(replace(card, labels=()))  # the same card, its workflow: label gone (D21)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert [n for n, _ in started(st.path / "events.jsonl")] == ["intake", "base", "gate", "review"]
+
+
+async def test_the_plan_lane_shortcut_takes_the_card_in_and_says_so_once(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=False, board=board)
+    pipe.drafts = lambda: {"mini": MINI}
+    card = mini_card()
+    await pipe.plan(card)
+    assert board.moves == ["building"]
+    assert sum("picked this up" in n for n in board.notes) == 1
+    st = await pipe.build(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert sum("picked this up" in n for n in board.notes) == 1  # the build lane's intake posts nothing more
 
 
 async def test_a_drafts_each_node_runs_its_draft_bundle_per_item(tmp_path: Path) -> None:
