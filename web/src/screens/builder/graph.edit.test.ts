@@ -1,6 +1,6 @@
 // The graph's editing functions (graph.ts): each produces the spec keys its move means, and the wires are what
 // the composer would walk from those keys.
-import { addNode, canRemove, connect, emptyGraph, fromWorkflow, moveNode, removeEdge, removeNode, renameNode, toWorkflow, updateNode } from "./graph";
+import { addNode, canRemove, connect, emptyGraph, fromWorkflow, isChild, moveNode, removeEdge, removeNode, renameNode, toWorkflow, updateNode } from "./graph";
 import type { Graph } from "./graph";
 import { parseWorkflow } from "./yaml";
 
@@ -73,6 +73,15 @@ test("connect parallel creates a parallel box between source and target holding 
   g = connect(g, "a", "b", "parallel");
   expect(specOf(g, "parallel-1").nodes).toEqual(["c", "b"]);
   expect(g.nodes.filter((n) => n.type === "parallel")).toHaveLength(1);
+});
+
+test("a parallel child drops its next, loop and branch: a child may carry none", () => {
+  let g = connect(row3(), "c", "a", "loop", { loop: { max: 2 } });
+  g = updateNode(g, "c", { ...specOf(g, "c"), next: "a", on: "verdict", branch: { yes: "b" } });
+  g = connect(g, "a", "c", "parallel");
+  expect(specOf(g, "c")).toEqual({ run: "x.c" });
+  expect(isChild(g, "c")).toBe(true);
+  expect(isChild(g, "a")).toBe(false);
 });
 
 test("connect parallel from a parallel box adds the target to its nodes", () => {

@@ -55,6 +55,16 @@ test("picking a role updates the box's fields; clearing a select drops the field
   expect(lastUpdate(w)).not.toHaveProperty("parse");
 });
 
+test("every control has a label", () => {
+  const w = mountForm(ask);
+  for (const el of w.findAll("select, input:not([type=checkbox]), textarea")) {
+    const e = el.element as HTMLElement;
+    expect(e.closest("label") !== null || e.hasAttribute("aria-label"), e.outerHTML.slice(0, 60)).toBe(true);
+  }
+  expect(w.get("select[data-input=role]").element.closest("label")).not.toBeNull();
+  expect(w.get("select[data-input=on_fail]").element.closest("label")).not.toBeNull();
+});
+
 test("a meeting picks several roles", async () => {
   const w = mountForm({ id: "amigos", type: "meeting", spec: { role: ["product"], run: "story.amigos" }, x: 0, y: 0 });
   expect(optionValues(w, "select[data-input=run]")).toEqual(expect.arrayContaining(["story.amigos"]));

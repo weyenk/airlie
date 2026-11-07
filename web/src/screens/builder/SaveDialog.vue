@@ -11,6 +11,9 @@ const props = defineProps<{ open: boolean; taken: string[]; types: string[]; typ
 const emit = defineEmits<{ "update:open": [open: boolean]; save: [name: string, type: string | null] }>();
 
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** `new` is the builder's address for an empty canvas; the rest are the server's paths under /v1/workflows
+ * (airlie.serve.workflows_api RESERVED). */
+const RESERVED = ["new", "catalog", "validate", "drafts"];
 const name = ref("");
 const kind = ref("");
 watch(
@@ -26,6 +29,7 @@ const problem = computed(() => {
   const n = name.value.trim();
   if (!n) return null;
   if (!KEBAB.test(n)) return "The name must be kebab-case: lower-case words joined by -.";
+  if (RESERVED.includes(n)) return `'${n}' is reserved: the builder's and the server's own paths use it.`;
   if (props.taken.includes(n)) return `A workflow is already called ${n}.`;
   return null;
 });

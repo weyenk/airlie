@@ -46,6 +46,19 @@ test("for each needs an each box at one end and picks the bundle", async () => {
   expect(w.emitted("apply")).toEqual([["each", { each: { workflow: "layer" } }]]);
 });
 
+test("a parallel child cannot start a wire", () => {
+  const w = mountForm({ fromChild: true });
+  expect(w.get("[data-wire-refused]").text()).toContain("a parallel child cannot start a wire");
+  expect(w.get("[data-wire-apply]").attributes("disabled")).toBeDefined();
+});
+
+test("a parallel move says the target's next, loop and branch go", async () => {
+  const w = mountForm({ to: { ...to, spec: { ...to.spec, next: "x", loop: { to: "y", max: 2 } } } });
+  expect(w.find("[data-wire-clears]").exists()).toBe(false);
+  await w.get("input[value=parallel]").setValue(true);
+  expect(w.get("[data-wire-clears]").text()).toContain("next, loop");
+});
+
 test("an existing wire opens on its move and fields, and can be removed", async () => {
   const w = mountForm({ existing: { from: "check_it", to: "build", kind: "loop", loop: { max: "story.attempts", carry: "notes" } }, removable: true });
   expect((w.get("input[value=loop]").element as HTMLInputElement).checked).toBe(true);

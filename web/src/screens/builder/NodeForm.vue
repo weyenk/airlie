@@ -184,18 +184,21 @@ const label = "text-muted-foreground";
       <span class="flex-none rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ node.type }}</span>
     </div>
 
-    <div v-if="has('role')" data-form-field="role" class="flex flex-col gap-1">
-      <span :class="label">{{ node.type === "meeting" ? "roles" : "role" }}</span>
-      <div v-if="node.type === 'meeting'" class="flex flex-wrap gap-x-3 gap-y-1">
+    <fieldset v-if="has('role') && node.type === 'meeting'" data-form-field="role" class="flex flex-col gap-1">
+      <legend :class="[label, 'mb-1']">roles</legend>
+      <div class="flex flex-wrap gap-x-3 gap-y-1">
         <label v-for="r in catalog.roles" :key="r" class="inline-flex items-center gap-1.5">
           <input type="checkbox" :data-role="r" :checked="roles.includes(r)" @change="toggleRole(r, ($event.target as HTMLInputElement).checked)" />{{ r }}
         </label>
       </div>
-      <select v-else data-input="role" :value="text(spec.role)" :class="control" @change="set('role', valueOf($event) || undefined)">
+    </fieldset>
+    <label v-else-if="has('role')" data-form-field="role" class="flex flex-col gap-1">
+      <span :class="label">role</span>
+      <select data-input="role" :value="text(spec.role)" :class="control" @change="set('role', valueOf($event) || undefined)">
         <option value="">none</option>
         <option v-for="r in options(catalog.roles, spec.role)" :key="r" :value="r">{{ r }}</option>
       </select>
-    </div>
+    </label>
 
     <label v-if="has('prompt')" data-form-field="prompt" class="flex flex-col gap-1">
       <span :class="label">prompt</span>
@@ -285,14 +288,17 @@ const label = "text-muted-foreground";
       <input data-input="tools" :value="list(spec.tools).join(', ')" :class="[control, 'font-mono']" @change="setTools" />
     </label>
 
-    <div v-if="has('on_fail')" data-form-field="on_fail" class="flex flex-col gap-1">
+    <div v-if="has('on_fail') && onFailLoop !== null" data-form-field="on_fail" class="flex flex-col gap-1">
       <span :class="label">on_fail</span>
-      <span v-if="onFailLoop !== null" class="font-mono text-xs">loops back to {{ onFailLoop }} (on the wire)</span>
-      <select v-else data-input="on_fail" :value="text(spec.on_fail) || 'block'" :class="control" @change="set('on_fail', valueOf($event) === 'block' ? undefined : valueOf($event))">
+      <span class="font-mono text-xs">loops back to {{ onFailLoop }} (on the wire)</span>
+    </div>
+    <label v-else-if="has('on_fail')" data-form-field="on_fail" class="flex flex-col gap-1">
+      <span :class="label">on_fail</span>
+      <select data-input="on_fail" :value="text(spec.on_fail) || 'block'" :class="control" @change="set('on_fail', valueOf($event) === 'block' ? undefined : valueOf($event))">
         <option value="block">block (the card stops)</option>
         <option value="continue">continue</option>
       </select>
-    </div>
+    </label>
 
     <label v-if="has('args')" data-form-field="args" class="flex flex-col gap-1">
       <span :class="label">args (JSON)</span>

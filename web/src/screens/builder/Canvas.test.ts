@@ -111,6 +111,13 @@ test("a wire dragged from a box's right port to another box connects them", asyn
   expect(w.find("[data-wire-draft]").exists()).toBe(false);
 });
 
+test("a wire let go on its own box connects nothing", async () => {
+  const w = editable(graphOf(STORY_YAML));
+  await press(w.get("[data-port=out][data-node=intake]"), 144, 52);
+  pointer("pointerup", 26, 52); // intake's own left port
+  expect(w.emitted("connect")).toBeUndefined();
+});
+
 test("a wire let go over nothing connects nothing", async () => {
   const w = editable(graphOf(STORY_YAML));
   await press(w.get("[data-port=out][data-node=intake]"), 144, 52);

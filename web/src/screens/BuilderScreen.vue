@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { canRemove, connect, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
+import { canRemove, connect, isChild, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
 import type { GEdge, Move, MoveOpts, NodeSpec } from "./builder/graph";
 import NodeForm from "./builder/NodeForm.vue";
 import Palette from "./builder/Palette.vue";
@@ -112,8 +112,9 @@ async function saveClick() {
 async function saveAs(as: string, type: string | null) {
   asking.value = false;
   const done = await b.save(as, type);
-  if (done === "taken") {
-    reason.value = `The server refused ${as}: ${as} is a workflow in the repo's files; a draft needs its own name.`;
+  if (typeof done === "object") {
+    // a name (or text) the server refused: ask again, saying why
+    reason.value = `The server refused ${as}: ${done.refused}`;
     asking.value = true;
   } else if (done && as !== name.value) await router.replace(`/workflows/build/${encodeURIComponent(as)}`);
 }
@@ -169,6 +170,10 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
     </section>
 
     <ErrorBanner v-if="error" :error="error" />
+    <p v-if="b.catalogFailed.value" data-catalog-failed class="text-[13px] text-muted-foreground">
+      The registry's catalog could not be loaded, so the forms offer only what the boxes already have.
+      <button type="button" class="underline" @click="b.loadCatalog">Retry</button>
+    </p>
     <template v-if="count || b.validated.value">
       <Problems :problems="problems" @focus="focus" />
       <p v-if="b.stale.value" data-problems-stale class="-mt-2 text-xs text-muted-foreground">Edited since this check: Validate again to see where it stands.</p>
@@ -204,6 +209,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           :removable="wire.edge ? canRemove(graph, wire.edge) : false"
           :bundles="bundles"
           :predicates="catalog.predicates"
+          :from-child="isChild(graph, wire.from)"
           @apply="applyWire"
           @remove="dropWire"
           @cancel="closeWire"

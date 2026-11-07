@@ -258,6 +258,30 @@ test("a save the server refuses as a file's name asks for another", async () => 
   expect(dialog()!.textContent).toContain("a draft needs its own name");
 });
 
+test("a save the server refuses as unreadable (422) reopens the dialog with its reason", async () => {
+  api.saveDraft.mockRejectedValueOnce(new ApiError(422, "'drafts' is reserved"));
+  const { w } = await open("/workflows/build/new");
+  await w.get("[data-palette-type=check]").trigger("click");
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  type(dialog()!.querySelector("[data-save-name]"), "my-flow");
+  await flushPromises();
+  (dialog()!.querySelector("[data-save-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(dialog()!.textContent).toContain("'drafts' is reserved");
+  expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
+test("a catalog that did not load says so and retries", async () => {
+  api.registryCatalog.mockRejectedValueOnce(new Error("down"));
+  const { w } = await open();
+  expect(w.get("[data-catalog-failed]").text()).toContain("could not be loaded");
+  await w.get("[data-catalog-failed] button").trigger("click");
+  await flushPromises();
+  expect(api.registryCatalog).toHaveBeenCalledTimes(2);
+  expect(w.find("[data-catalog-failed]").exists()).toBe(false);
+});
+
 test("Validate sends the canvas's YAML and prompt files; a problem outlines its box and a click on it selects the box", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
   api.validateWorkflow.mockResolvedValue(["workflow fix: node fix: input 'repro' is not produced by any node and not loose"]);

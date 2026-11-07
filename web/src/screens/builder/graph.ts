@@ -330,8 +330,21 @@ export function connect(graph: Graph, from: string, to: string, move: Move, opts
   }
 }
 
+/** Whether box `id` is a parallel box's child (which may carry no next, loop, branch or on_fail loop). */
+export function isChild(graph: Graph, id: string): boolean {
+  return childrenOf(graph.nodes.map((n) => ({ ...n.spec, type: n.type }))).has(id);
+}
+
+/** The fields a parallel child may not carry (check_workflows refuses them), which joining a parallel box drops. */
+export const CHILD_DROPS = ["next", "loop", "branch"] as const;
+
 function parallel(graph: Graph, source: GNode, to: string): Graph {
-  const join = (g: Graph, p: string) => editing(g, [p], (s) => void (s.nodes = [...new Set([...kidsOf(s), to])]));
+  const join = (g: Graph, p: string) =>
+    editing(editing(g, [p], (s) => void (s.nodes = [...new Set([...kidsOf(s), to])])), [to], (s) => {
+      for (const k of CHILD_DROPS) delete s[k];
+      delete s.on;
+      if (isRecord(s.on_fail)) delete s.on_fail;
+    });
   if (source.type === "parallel") return join(graph, source.id);
   const went = onward(graph, source.id);
   if (went !== undefined && nodeOf(graph, went).type === "parallel" && went !== to) return join(graph, went);
@@ -341,11 +354,11 @@ function parallel(graph: Graph, source: GNode, to: string): Graph {
   const x = source.x + 80;
   let y = source.y + 90;
   while (graph.nodes.some((n) => Math.abs(n.x - x) < 120 && Math.abs(n.y - y) < 56)) y += 90;
-  const box: GNode = { id, type: "parallel", spec: { nodes: [to] }, x, y, placed: true };
+  const box: GNode = { id, type: "parallel", spec: { nodes: [] }, x, y, placed: true };
   const at = graph.nodes.findIndex((n) => n.id === source.id) + 1;
   let g: Graph = { ...graph, nodes: [...graph.nodes.slice(0, at), box, ...graph.nodes.slice(at)] };
   g = pointTo(g, source.id, id);
-  return pointTo(g, id, goOn === id ? undefined : goOn);
+  return join(pointTo(g, id, goOn === id ? undefined : goOn), id);
 }
 
 /** Whether `edge` comes from a field the builder can drop; a fall-through (the file's order) or a child's wire on

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
-import { MOVES } from "./graph";
+import { CHILD_DROPS, MOVES } from "./graph";
 import type { GEdge, GNode, Move, MoveOpts } from "./graph";
 
 defineOptions({ name: "AirlieBuilderWireForm" });
@@ -15,6 +15,8 @@ const props = defineProps<{
   removable?: boolean;
   bundles?: string[];
   predicates?: string[];
+  /** The source is a parallel box's child: its way on is its parent's, so it starts no wire. */
+  fromChild?: boolean;
 }>();
 const emit = defineEmits<{ apply: [move: Move, opts: MoveOpts]; remove: []; cancel: [] }>();
 
@@ -56,7 +58,11 @@ function reset() {
 }
 watch(() => [props.from, props.to, props.existing], reset, { immediate: true });
 
+/** What a parallel move drops from the target, which as a child may carry none of it. */
+const clears = computed(() => [...CHILD_DROPS.filter((k) => props.to.spec[k] !== undefined), ...(typeof props.to.spec.on_fail === "object" && props.to.spec.on_fail !== null ? ["on_fail loop"] : [])]);
+
 const opts = computed<MoveOpts | null>(() => {
+  if (props.fromChild) return null;
   switch (move.value) {
     case "sequence":
     case "parallel":
@@ -138,6 +144,12 @@ const fieldClass = "h-8 w-full rounded-md border border-input bg-background px-2
       </select>
     </label>
 
+    <p v-if="fromChild" data-wire-refused class="text-danger-foreground">
+      {{ from.id }} runs inside a parallel box: a parallel child cannot start a wire; wire from the parallel box instead.
+    </p>
+    <p v-if="move === 'parallel' && clears.length && !fromChild" data-wire-clears class="text-muted-foreground">
+      {{ to.id }} will lose its {{ clears.join(", ") }}: a parallel child goes on with its parallel box.
+    </p>
     <p v-if="existing && !removable" data-wire-fixed class="text-muted-foreground">
       This wire is the file's order: {{ from.id }} goes on to the box after it. Wire it elsewhere to change it.
     </p>

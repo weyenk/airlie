@@ -32,9 +32,17 @@ export function useBuilder(name: Ref<string>) {
   const validated = ref(false);
   const saving = ref(false);
   const catalog = ref<Catalog>(EMPTY_CATALOG);
-  void registryCatalog()
-    .then((c) => (catalog.value = c))
-    .catch(() => undefined); // the forms offer what the box already has; validation still judges
+  /** The catalog did not load: the forms offer only what the boxes already have (the screen says so, with Retry). */
+  const catalogFailed = ref(false);
+  async function loadCatalog(): Promise<void> {
+    try {
+      catalog.value = await registryCatalog();
+      catalogFailed.value = false;
+    } catch {
+      catalogFailed.value = true;
+    }
+  }
+  void loadCatalog();
 
   const isNew = computed(() => name.value === "new");
   /** The state Save would send; `saved` is the one last loaded or saved. */
@@ -119,10 +127,11 @@ export function useBuilder(name: Ref<string>) {
     }
   }
 
-  /** Save the canvas as draft `as` serving `type`. Resolves to "taken" when the server refuses the name (a file
-   * of the repo's), true once saved, false on any other failure (shown as the error). An unchanged draft sends
-   * its own text, so a hand-written file keeps its comments. */
-  async function save(as: string, type: string | null): Promise<boolean | "taken"> {
+  /** Save the canvas as draft `as` serving `type`. Resolves to true once saved; to `{ refused }` with the
+   * server's reason when it refuses the name or the text (409: a file of the repo's has it; 422: reserved, or the
+   * YAML does not read), for the name dialog to ask again; false on any other failure (shown as the error). An
+   * unchanged draft sends its own text, so a hand-written file keeps its comments. */
+  async function save(as: string, type: string | null): Promise<boolean | { refused: string }> {
     const g: Graph = { ...graph.value, name: as, type };
     const same = !dirty.value && detail.value?.source === "draft" && detail.value.name === as && detail.value.type === type;
     saving.value = true;
@@ -137,7 +146,7 @@ export function useBuilder(name: Ref<string>) {
       error.value = null;
       return true;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) return "taken";
+      if (e instanceof ApiError && (e.status === 409 || e.status === 422)) return { refused: e.message };
       error.value = e instanceof Error ? e : String(e);
       return false;
     } finally {
@@ -158,6 +167,8 @@ export function useBuilder(name: Ref<string>) {
     stale: computed(() => checked.value !== null && checked.value !== state()),
     byNode,
     catalog,
+    catalogFailed,
+    loadCatalog,
     saving,
     isNew,
     dirty,

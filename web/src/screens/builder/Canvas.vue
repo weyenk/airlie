@@ -124,7 +124,8 @@ function onUp(e: PointerEvent) {
     const p = local(e);
     draft.value = null;
     const to = boxAt(p.x, p.y);
-    if (to !== null && (to !== from || p.x <= (at.value.get(to)?.x ?? 0) + 8)) emit("connect", from, to);
+    // a box wired to itself is a move check_workflows has no use for: nothing opens
+    if (to !== null && to !== from) emit("connect", from, to);
   }
   stopListening();
 }
