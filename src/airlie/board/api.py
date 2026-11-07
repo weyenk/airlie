@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from airlie.board.model import Level, Status
 from airlie.board.store import BoardStore, BoardStoreError
+from airlie.story.workflows import workflow_label
 
 PERSON = "noah"
 
@@ -50,16 +51,6 @@ class EditComment(BaseModel):
     text: str
 
 
-WORKFLOW_LABEL = "workflow:"
-
-
-def _named_workflow(labels: Sequence[str]) -> str | None:
-    """The workflow the first `workflow:` label naming one names, as the line reads it (`card_workflow`), or
-    None when there is none (the story's own runs)."""
-    named = (x.removeprefix(WORKFLOW_LABEL).strip() for x in labels if x.startswith(WORKFLOW_LABEL))
-    return next((n for n in named if n), None)
-
-
 def board_router(
     store: BoardStore,
     publish: Callable[[str, str | None], None] | None = None,
@@ -75,7 +66,7 @@ def board_router(
     router = APIRouter(prefix="/v1/board", tags=["board"])
 
     def check_workflow(labels: Sequence[str]) -> None:
-        name = _named_workflow(labels)
+        name = workflow_label(labels)  # as the line reads it: the card's own (`card_workflow`)
         if workflow_check is not None and name is not None and (problem := workflow_check(name)) is not None:
             raise HTTPException(422, problem)
 

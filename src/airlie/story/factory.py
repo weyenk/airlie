@@ -48,6 +48,7 @@ from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
 from airlie.story.restart import FRESH, Restarted, restart
 from airlie.story.state import STAGES, StoryState, lane_lock, lane_record, lock_held
+from airlie.story.workflows import workflow_problems
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -175,11 +176,19 @@ def make_board(cfg: AirlieConfig) -> Board:
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
     if cfg.story.board == "local":
+        store = BoardStore(_board_path(cfg), prefix=cfg.board.prefix)
+
+        def workflow_problem(name: str) -> str | None:
+            """What stops workflow `name` resolving over the drafts as they are now (read at each pick: they
+            are small), or None: the picks pass over a card whose workflow has one."""
+            return "; ".join(workflow_problems(cfg, {d.name: d.yaml for d in store.drafts()}, name)) or None
+
         return LocalBoard(
-            BoardStore(_board_path(cfg), prefix=cfg.board.prefix),
+            store,
             role_names=set(cfg.roles),
             epics_dir=epics_dir(cfg),
             stories_dir=stories_dir(cfg),
+            workflow_problem=workflow_problem,
         )
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))

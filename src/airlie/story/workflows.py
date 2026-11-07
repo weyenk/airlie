@@ -5,7 +5,7 @@ it is used, so every resume runs what the card started on whatever the drafts an
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -29,10 +29,15 @@ class WorkflowError(StoryError):
     names the workflow and the problem; the story is blocked with it."""
 
 
+def workflow_label(labels: Iterable[str]) -> str | None:
+    """The name the first `workflow:` label that names one gives, else None (the card runs `story`)."""
+    named = (x.removeprefix(LABEL).strip() for x in labels if x.startswith(LABEL))
+    return next((n for n in named if n), None)
+
+
 def card_workflow(card: Card) -> str:
     """The name the card's first `workflow:` label gives, else `story` (D17)."""
-    named = [x.removeprefix(LABEL).strip() for x in card.labels if x.startswith(LABEL)]
-    return next((n for n in named if n), DEFAULT)
+    return workflow_label(card.labels) or DEFAULT
 
 
 def draft_body(text: str, name: str | None = None) -> tuple[str, Mapping[str, Any]]:

@@ -173,3 +173,7 @@ def test_moving_a_story_with_an_invalid_draft_to_approved_is_refused(tmp_path: P
         # only approval runs it: any other column takes the card as it is
         assert c.post(f"/v1/board/items/{story}/move", json={"status": "doing"}).status_code == 200
         assert c.post(f"/v1/board/items/{story}/move", json={"status": "todo"}).status_code == 200
+        # a PATCH of the status is the other way into approved: refused the same
+        r = c.patch(f"/v1/board/items/{story}", json={"status": "approved"})
+        assert r.status_code == 422 and problem in r.json()["detail"]
+        assert c.get(f"/v1/board/items/{story}").json()["status"] == "todo"

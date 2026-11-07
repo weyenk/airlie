@@ -21,6 +21,7 @@ from airlie.story.workflows import (
     has_node,
     resolve_workflows,
     snapshot,
+    workflow_label,
 )
 from tests.unit.test_story_pipeline import (
     RecordingBoard,
@@ -69,6 +70,12 @@ def started(path: Path) -> list[tuple[str, str | None]]:
 def test_card_workflow_defaults_to_story_and_reads_the_label() -> None:
     assert card_workflow(text_card("x")) == "story"
     assert card_workflow(replace(text_card("x"), labels=("repo:o/r", "workflow:bug-fix"))) == "bug-fix"
+
+
+def test_workflow_label_is_the_first_named_one_and_none_without_one() -> None:
+    assert workflow_label(()) is None and workflow_label(("repo:o/r", "workflow:", "workflow: ")) is None
+    assert workflow_label(("workflow:", "workflow: bug-fix", "workflow:other")) == "bug-fix"
+    assert card_workflow(replace(text_card("x"), labels=("workflow:",))) == "story"
 
 
 def test_resolve_adds_a_valid_draft_and_refuses_an_invalid_or_missing_one() -> None:
