@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from airlie.flow.spec import WorkflowSpec, check_workflows
+
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -795,6 +797,7 @@ class StorySpec(Strict):
         "token): the story ends at review with its layer branches local (the story bench's no-publish "
         "runs, 2026-11-06)",
     )
+    composer: bool = Field(default=False, description="run the story through the workflow composer")
     max_layers: int = Field(default=5, ge=1)
     max_layer_criteria: int = Field(
         default=3,
@@ -954,6 +957,7 @@ class AirlieConfig(Strict):
     router: RouterSpec = Field(default_factory=RouterSpec)
     studio: StudioSpec = Field(default_factory=StudioSpec)
     story: StorySpec = Field(default_factory=StorySpec)
+    workflows: dict[str, WorkflowSpec] = Field(default_factory=dict)
     board: BoardSpec = Field(default_factory=BoardSpec)
     line: LineSpec = Field(default_factory=LineSpec)
     web: WebSpec = Field(default_factory=WebSpec)
@@ -966,6 +970,7 @@ class AirlieConfig(Strict):
     def validate_references(self) -> list[str]:
         """Return human-readable problems; empty means consistent."""
         problems: list[str] = []
+        problems.extend(check_workflows(self.workflows))
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:
