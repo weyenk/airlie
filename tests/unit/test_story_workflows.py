@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from airlie.board import BoardStore
 from airlie.config import load_config
 from airlie.story.board import Card, text_card
 from airlie.story.workflows import (
@@ -243,3 +244,24 @@ async def test_a_story_card_with_no_label_still_runs_the_driver_when_the_flag_is
     assert st.blocked is None and st.stage == "review", st.blocked
     assert started(st.path / "events.jsonl") == []
     assert st.workflow is None and called == []
+
+
+async def test_make_pipeline_reads_the_boards_drafts(tmp_path: Path) -> None:
+    from airlie.story.factory import make_pipeline, stories_dir
+    from airlie.story.local_board import LocalBoard
+    from tests.unit.test_story_factory import STORY_ROLES, cfg_for
+
+    repo = repo_with_marker_tests(tmp_path)
+    cfg = cfg_for(tmp_path, roles=STORY_ROLES, extra={"story": {"composer": False}})
+    board = LocalBoard(BoardStore(tmp_path / "board.sqlite"), stories_dir=stories_dir(cfg))
+    pipe = make_pipeline(cfg, board=board, repo=repo, test_cmd="./check.sh")
+    assert pipe.drafts() == {}
+    board.store.save_draft("mini", type="bug", yaml=MINI)
+    assert pipe.drafts() == {"mini": MINI}  # read at use, not at build
+    init = board.store.create(level="initiative", title="i")
+    epic = board.store.create(level="epic", title="e", parent=init.key)
+    story = board.store.create(
+        level="story", title="fix the marker", parent=epic.key, labels=["workflow:mini"]
+    )
+    st = await pipe.plan(await board.card(story.key))
+    assert st.workflow is not None and st.workflow["name"] == "mini" and st.blocked is None

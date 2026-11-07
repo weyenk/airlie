@@ -250,7 +250,7 @@ def make_pipeline(
     pinned_base: str | None = None,
 ) -> StoryPipeline:
     engine = _engine(cfg)
-    return StoryPipeline(
+    pipe = StoryPipeline(
         cfg,
         board=board,
         studio=lambda: StudioOrchestrator(cfg, engine),
@@ -260,6 +260,9 @@ def make_pipeline(
         github_repo=github_repo,
         pinned_base=pinned_base,
     )
+    if isinstance(board, LocalBoard):  # a card labelled workflow:<name> can run a draft of the board
+        pipe.drafts = lambda: {d.name: d.yaml for d in board.store.drafts()}
+    return pipe
 
 
 async def run_one(

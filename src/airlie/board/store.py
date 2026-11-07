@@ -6,14 +6,25 @@ from __future__ import annotations
 
 import builtins
 import json
+import re
 import sqlite3
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from airlie.board.model import LEVELS, STATUSES, Comment, Item, Level, Move, Status, parent_level
+from airlie.board.model import (
+    LEVELS,
+    STATUSES,
+    Comment,
+    Item,
+    Level,
+    Move,
+    Status,
+    WorkflowDraft,
+    parent_level,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -30,7 +41,12 @@ CREATE TABLE IF NOT EXISTS moves (
 CREATE INDEX IF NOT EXISTS moves_by_item ON moves(item_key, id);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 INSERT OR IGNORE INTO meta (k, v) VALUES ('next_n', '1');
+CREATE TABLE IF NOT EXISTS workflow_drafts (
+    name TEXT PRIMARY KEY, type TEXT, yaml TEXT NOT NULL, prompts_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL, updated_at REAL NOT NULL, published_pr INTEGER, published_url TEXT);
 """
+_DRAFT_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_DRAFT_FIELDS = "name, type, yaml, prompts_json, created_at, updated_at, published_pr, published_url"
 _FIELDS = "key, level, title, description, status, parent, labels_json, created_at, updated_at, created_by"
 
 
@@ -295,7 +311,95 @@ class BoardStore:
                 raise
             return self._get(key)
 
+    # ---- workflow drafts (the builder's unpublished workflows) ---------------------------------------------
+
+    def drafts(self) -> builtins.list[WorkflowDraft]:
+        """Every draft, by name."""
+        with self._lock:
+            rows = self._db.execute(f"SELECT {_DRAFT_FIELDS} FROM workflow_drafts ORDER BY name").fetchall()
+        return [self._draft(r) for r in rows]
+
+    def draft(self, name: str) -> WorkflowDraft:
+        """The draft `name`; KeyError when there is none."""
+        with self._lock:
+            return self._get_draft(name)
+
+    def save_draft(
+        self, name: str, *, type: str | None, yaml: str, prompts: Mapping[str, str] | None = None
+    ) -> WorkflowDraft:
+        """Create or replace the draft `name` (its creation time and published PR are kept).
+        BoardStoreError for a name that is not kebab-case."""
+        if not _DRAFT_NAME.match(name):
+            raise BoardStoreError(f"a workflow name is kebab-case (a-z, 0-9, single hyphens), not {name!r}")
+        now = time.time()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT INTO workflow_drafts (name, type, yaml, prompts_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET type = excluded.type, "
+                    "yaml = excluded.yaml, prompts_json = excluded.prompts_json, "
+                    "updated_at = excluded.updated_at",
+                    (name, type, yaml, json.dumps(dict(prompts or {})), now, now),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            return self._get_draft(name)
+
+    def delete_draft(self, name: str) -> None:
+        """Remove the draft `name`; KeyError when there is none."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                gone = self._db.execute("DELETE FROM workflow_drafts WHERE name = ?", (name,)).rowcount
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+        if not gone:
+            raise KeyError(name)
+
+    def mark_published(self, name: str, number: int, url: str) -> WorkflowDraft:
+        """Record the PR that published the draft `name`; KeyError when there is no such draft."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                hit = self._db.execute(
+                    "UPDATE workflow_drafts SET published_pr = ?, published_url = ? WHERE name = ?",
+                    (number, url, name),
+                ).rowcount
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            if not hit:
+                raise KeyError(name)
+            return self._get_draft(name)
+
     # ---- inside the lock -----------------------------------------------------------------------------------
+
+    def _get_draft(self, name: str) -> WorkflowDraft:
+        row = self._db.execute(
+            f"SELECT {_DRAFT_FIELDS} FROM workflow_drafts WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(name)
+        return self._draft(row)
+
+    @staticmethod
+    def _draft(row: sqlite3.Row) -> WorkflowDraft:
+        return WorkflowDraft(
+            name=row["name"],
+            type=row["type"],
+            yaml=row["yaml"],
+            prompts=json.loads(row["prompts_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            published_pr=row["published_pr"],
+            published_url=row["published_url"],
+        )
 
     def _check_parent(self, level: Level, parent: str | None) -> None:
         want = parent_level(level)

@@ -322,3 +322,46 @@ def test_every_status_change_is_recorded_with_who_made_it(tmp_path: Path) -> Non
     assert s.moves("AIR-99") == []
     other = store(tmp_path)  # reopened: the table is there, and an older board gains it on open
     assert [m.to_status for m in other.moves(a.key)] == ["approved", "doing", "review", "blocked"]
+
+
+def test_a_draft_is_saved_listed_updated_and_deleted(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    assert s.drafts() == []
+    a = s.save_draft("zeta", type="bug", yaml="workflows: {}\n", prompts={"intake": "Read it."})
+    s.save_draft("alpha", type=None, yaml="a: 1\n")
+    assert (a.name, a.type, a.yaml, a.prompts) == ("zeta", "bug", "workflows: {}\n", {"intake": "Read it."})
+    assert a.published_pr is None and a.published_url is None and a.created_at == a.updated_at
+    assert [d.name for d in s.drafts()] == ["alpha", "zeta"]
+    b = s.save_draft("zeta", type="feature", yaml="b: 2\n")
+    assert (b.type, b.yaml, b.prompts) == ("feature", "b: 2\n", {})
+    assert b.created_at == a.created_at and b.updated_at >= a.updated_at
+    s.close()
+    again = store(tmp_path)  # it is on disk, not in memory
+    assert again.draft("zeta") == b and [d.name for d in again.drafts()] == ["alpha", "zeta"]
+    again.delete_draft("zeta")
+    assert [d.name for d in again.drafts()] == ["alpha"]
+    with pytest.raises(KeyError):
+        again.draft("zeta")
+    with pytest.raises(KeyError):
+        again.delete_draft("zeta")
+
+
+def test_a_draft_keeps_its_pr_through_a_save(tmp_path: Path) -> None:
+    s = store(tmp_path)
+    s.save_draft("mini", type=None, yaml="a: 1\n")
+    marked = s.mark_published("mini", 42, "https://github.com/o/r/pull/42")
+    assert (marked.published_pr, marked.published_url) == (42, "https://github.com/o/r/pull/42")
+    saved = s.save_draft("mini", type="bug", yaml="a: 2\n")
+    assert (saved.published_pr, saved.published_url) == (42, "https://github.com/o/r/pull/42")
+    s.close()
+    assert store(tmp_path).draft("mini").published_pr == 42
+    with pytest.raises(KeyError):
+        store(tmp_path).mark_published("nope", 1, "u")
+
+
+@pytest.mark.parametrize("name", ["", "Mini", "mini_x", "-mini", "mini-", "mi--ni", "mi ni", "mini/x"])
+def test_a_draft_name_must_be_kebab_case(tmp_path: Path, name: str) -> None:
+    s = store(tmp_path)
+    with pytest.raises(BoardStoreError, match="kebab"):
+        s.save_draft(name, type=None, yaml="a: 1\n")
+    assert s.drafts() == []
