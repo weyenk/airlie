@@ -1,0 +1,41 @@
+# The layer bundle: what the story workflow's build_layers node runs per layer.
+# Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
+workflows:
+  layer:
+    start: covered
+    loose: [card, story, layers, base, gate]
+    nodes:
+      covered:
+        type: check
+        run: story.covered
+        outputs: {"satisfied.{item}": json}
+        on_fail: continue
+      drafts:
+        type: conversation
+        role: architect
+        prompt: story.drafts
+        turn: story.next_package
+        outputs: {drafted: bool, drafts_session: session}
+        when: story.not_built
+        steps: story.package_steps
+      package:
+        type: ask
+        role: architect
+        prompt: story.ready_package   # spec.py needs a prompt on ask/write; same id as run
+        run: story.ready_package
+        inputs: [base]
+        outputs: {"package.{item}": json}
+        session: drafts_session
+      build:
+        type: write
+        role: coder
+        prompt: story.build_once   # spec.py needs a prompt on ask/write; same id as run
+        run: story.build_once
+        inputs: ["package.{item}"]
+        outputs: {"built.{item}": json}
+        when: story.has_package
+        loop: {to: package, max: story.layer_attempts, carry: feedback}
+      costed_layer:
+        type: check
+        run: story.costed
+        args: {stages: [package, layer, review]}

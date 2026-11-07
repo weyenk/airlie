@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from airlie.config import load_config
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from tests.unit.test_story_epic import fenced
@@ -774,3 +775,17 @@ def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> Non
         "n": 2,
     }
     assert flow["budgets"] == {"layer": {"tokens": 5000, "wall_s": 900.0, "state": "ok"}}
+
+
+def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
+    cfg = load_config(Path("airlie.yaml"))
+    assert list(cfg.workflows["story"].nodes) == [
+        "intake", "base", "gate", "plan_story", "survey", "refine", "costed_refine", "layers",
+        "costed_plan", "amigos", "costed_amigos", "planned", "build_layers", "built", "publish",
+        "costed_publish", "review",
+    ]  # fmt: skip
+    assert list(cfg.workflows["layer"].nodes) == ["covered", "drafts", "package", "build", "costed_layer"]
+    assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect", "tester"]
+    loop = cfg.workflows["layer"].nodes["build"].loop
+    assert loop is not None
+    assert loop.max == "story.layer_attempts"

@@ -1,0 +1,90 @@
+# The story workflow: the pipeline as typed nodes. Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
+workflows:
+  story:
+    start: intake
+    loose: [card, repo]
+    nodes:
+      intake:
+        type: check
+        run: story.intake
+      base:
+        type: check
+        run: story.base
+        outputs: {base: json}
+      gate:
+        type: check
+        run: story.gate
+        inputs: [base]
+        outputs: {gate: json}
+        when: story.to_build
+      plan_story:
+        type: parallel
+        nodes: [survey, refine]
+      survey:
+        type: ask
+        role: architect
+        prompt: story.survey
+        inputs: [card]
+        outputs: {survey: markdown}
+        steps: 8
+        on_fail: continue
+        when: story.survey_on
+      refine:
+        type: ask
+        role: product
+        prompt: story.refine
+        parse: story.story
+        after: story.refined
+        inputs: [card]
+        outputs: {story: json}
+        steps: story.stage_attempts
+      costed_refine:
+        type: check
+        run: story.costed
+        args: {stages: [survey, refine]}
+      layers:
+        type: conversation
+        role: architect
+        prompt: story.layers
+        turn: story.layers_again
+        parse: story.layers
+        inputs: [story, base]
+        outputs: {layers: list}
+        steps: story.plan_max_rounds
+      costed_plan:
+        type: check
+        run: story.costed
+        args: {stages: [plan]}
+      amigos:
+        type: meeting
+        role: [product, architect, tester]
+        run: story.amigos
+        inputs: [story, layers, base]
+        outputs: {agreement: json}
+        steps: story.amigos.max_turns
+      costed_amigos:
+        type: check
+        run: story.costed
+        args: {stages: [amigos]}
+      planned:
+        type: check
+        run: story.planned
+      build_layers:
+        type: each
+        over: layers
+        workflow: layer
+      built:
+        type: check
+        run: story.build_done
+      publish:
+        type: check
+        run: story.publish
+        inputs: [layers]
+        outputs: {prs: list}
+      costed_publish:
+        type: check
+        run: story.costed
+        args: {stages: [publish]}
+      review:
+        type: gate
+        run: story.finish
