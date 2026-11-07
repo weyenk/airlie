@@ -34,7 +34,7 @@ export function inline(text: string, linkKeys: boolean): (VNode | string)[] {
   let rest = text;
   for (let m = INLINE.exec(rest); m; m = INLINE.exec(rest)) {
     if (m.index) out.push(...keyed(rest.slice(0, m.index), linkKeys));
-    if (m[1] !== undefined) out.push(h("code", { class: "rounded bg-code px-1 py-px font-mono text-[12px]" }, m[1]));
+    if (m[1] !== undefined) out.push(h("code", { class: "font-mono text-xs" }, m[1]));
     else if (m[2] !== undefined) out.push(h("strong", { class: "font-semibold" }, inline(m[2], linkKeys)));
     else if (m[3] !== undefined) out.push(h("em", inline(m[3], linkKeys)));
     else if (safeUrl(m[5])) {

@@ -99,3 +99,35 @@ test("the three Given/When/Then lines render as one paragraph with line breaks, 
   expect(p.text().split("Then").length - 1).toBe(1);
   expect(w.findAll("h1, h2, h3, h4, h5, h6, ul, ol, pre").length).toBe(0);
 });
+
+test("an inline code span renders as standard code with the fenced-block class", () => {
+  const w = md("use `code` now");
+  const code = w.find("code");
+  expect(code.exists()).toBe(true);
+  expect(code.attributes("class")).toBe("font-mono text-xs");
+  expect(code.text()).toBe("code");
+  const all = w.findAll("*");
+  expect(all.some((el) => el.element.classList.contains("bg-code"))).toBe(false);
+  expect(all.some((el) => el.element.classList.contains("text-[12px]"))).toBe(false);
+});
+
+test("a fenced block keeps its existing rendering", () => {
+  const w = md("```\nlet x = <b>1</b>\n```");
+  expect(w.findAll("pre").length).toBe(1);
+  expect(w.find("pre").text()).toBe("let x = <b>1</b>");
+  expect(w.find("pre b").exists()).toBe(false);
+});
+
+test("bold, italic and links are unaffected by the inline-code change", () => {
+  const w = md("**bold** and *soft* and [ok](https://example.com)");
+  expect(w.find("strong").text()).toBe("bold");
+  expect(w.find("em").text()).toBe("soft");
+  const links = w.findAll("a");
+  expect(links.length).toBe(1);
+  expect(links[0].attributes("href")).toBe("https://example.com");
+});
+
+test("a story key in a comment is not linked", () => {
+  const w = md("see AIR-36 now");
+  expect(w.find("a").exists()).toBe(false);
+});
