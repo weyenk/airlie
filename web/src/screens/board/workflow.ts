@@ -37,8 +37,9 @@ export function workflowGroups(defs: WorkflowDef[]): WorkflowGroup[] {
   const byType = new Map<string, WorkflowOption[]>();
   const drafts: WorkflowOption[] = [];
   for (const d of defs) {
+    if (!d.type || d.bundle) continue; // a draft bundle no more than a file one
     if (d.source === "draft") drafts.push(option(d, `${d.name} (draft)`));
-    else if (d.type && !d.bundle) {
+    else {
       if (!byType.has(d.type)) byType.set(d.type, []);
       byType.get(d.type)!.push(option(d, d.name));
     }
@@ -47,16 +48,19 @@ export function workflowGroups(defs: WorkflowDef[]): WorkflowGroup[] {
   return drafts.length ? [...groups, { label: "Drafts", options: drafts }] : groups;
 }
 
-/** The workflows, loaded once the component mounts. A failed load leaves the list empty: the select still shows
- * the card's own workflow, and the server checks whatever is sent. */
-export function useWorkflowDefs(): Ref<WorkflowDef[]> {
+/** The workflows, loaded once the component mounts; `failed` says the last load did not answer (the modal says so
+ * and offers `reload`). */
+export function useWorkflowDefs(): { defs: Ref<WorkflowDef[]>; failed: Ref<boolean>; reload: () => Promise<void> } {
   const defs = ref<WorkflowDef[]>([]);
-  onMounted(async () => {
+  const failed = ref(false);
+  async function reload(): Promise<void> {
     try {
       defs.value = await listWorkflowDefs();
+      failed.value = false;
     } catch {
-      // no list: only the current choice is offered
+      failed.value = true;
     }
-  });
-  return defs;
+  }
+  onMounted(reload);
+  return { defs, failed, reload };
 }

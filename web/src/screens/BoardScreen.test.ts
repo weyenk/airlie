@@ -128,6 +128,18 @@ test("coming back from the builder (?create=<token>) opens Create with the held 
   w.unmount();
 });
 
+test("an Add child that went to the builder comes back to its parent card when Create closes", async () => {
+  const token = useCardDraftStore().hold({ level: "story", title: "Held", description: "", parent: "AIR-1", repo: "", workflow: "story" });
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
+  await router.push(`/board?create=${token}`);
+  const w = mount(BoardScreen, { global: { plugins: [router] }, attachTo: document.body });
+  await flushPromises();
+  (document.body.querySelector("[data-cancel]") as HTMLElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/board/AIR-1");
+  w.unmount();
+});
+
 test("an address with a key shows that card's modal over the board; closing returns to /board", async () => {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
   await router.push("/board/AIR-2");

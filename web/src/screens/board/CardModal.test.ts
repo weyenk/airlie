@@ -393,6 +393,25 @@ test("a list of workflows that answers after the card still shows the card's own
   expect(workflowSelect().value).toBe("bug-fix");
 });
 
+test("only a story card has a Workflow row", async () => {
+  await open("AIR-2"); // the epic
+  expect(q("[data-title]")).not.toBeNull();
+  expect(q("[data-workflow-field]")).toBeNull();
+});
+
+test("a failed list says so and keeps the select disabled until Retry loads it", async () => {
+  defs.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
+  await open();
+  expect(q("[data-workflow-field] [role=status]")!.textContent).toContain("Workflows did not load");
+  expect(workflowSelect().disabled).toBe(true);
+  (q("[data-workflow-retry]") as HTMLElement).click();
+  await flushPromises();
+  expect(q("[data-workflow-field] [role=status]")).toBeNull();
+  expect(workflowSelect().disabled).toBe(false);
+  await choose("bug-fix");
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web", "workflow:bug-fix"] });
+});
+
 test("a workflow the server refuses shows its words and the card keeps its workflow", async () => {
   api.patchItem.mockRejectedValue(Object.assign(new Error("workflow bug-fix: no start node"), { status: 422 }));
   await open();

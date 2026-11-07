@@ -125,7 +125,7 @@ test("a child starts with its parent's type below it and its parent's repository
   type(q<HTMLInputElement>("input[aria-label=Title]")!, "Child");
   (q("[data-submit]") as HTMLElement).click();
   await flushPromises();
-  expect(api.createItem).toHaveBeenCalledWith({ level: "subtask", title: "Child", description: "", parent: "AIR-4", labels: ["repo:weyenk/airlie", "workflow:story"] });
+  expect(api.createItem).toHaveBeenCalledWith({ level: "subtask", title: "Child", description: "", parent: "AIR-4", labels: ["repo:weyenk/airlie"] });
 });
 
 test("a repository that is not owner/name is refused", async () => {
@@ -220,29 +220,55 @@ test("Build new holds what was typed and opens the builder with the card's token
 test("coming back with the token restores the form and the workflow the builder chose, and a create drops it", async () => {
   setActivePinia(createPinia());
   const drafts = useCardDraftStore();
-  const token = drafts.hold({ level: "epic", title: "Kept", description: "Still here", parent: "AIR-1", repo: "weyenk/airlie", workflow: "story" });
+  const token = drafts.hold({ level: "story", title: "Kept", description: "Still here", parent: "AIR-2", repo: "weyenk/airlie", workflow: "story" });
   drafts.setWorkflow(token, "my-draft");
   await open({}, `/board?create=${token}`);
   expect(q<HTMLInputElement>("input[aria-label=Title]")!.value).toBe("Kept");
   expect(q<HTMLTextAreaElement>("textarea[aria-label=Description]")!.value).toBe("Still here");
-  expect(q<HTMLSelectElement>("select[aria-label=Parent]")!.value).toBe("AIR-1");
+  expect(q<HTMLSelectElement>("select[aria-label=Parent]")!.value).toBe("AIR-2");
   expect(q<HTMLInputElement>("input[aria-label=Repository]")!.value).toBe("weyenk/airlie");
-  expect(q("[data-type][aria-pressed=true]")!.textContent).toContain("Epic");
   expect(workflowSelect().value).toBe("my-draft");
   (q("[data-submit]") as HTMLElement).click();
   await flushPromises();
   expect(api.createItem).toHaveBeenCalledWith({
-    level: "epic",
+    level: "story",
     title: "Kept",
     description: "Still here",
-    parent: "AIR-1",
+    parent: "AIR-2",
     labels: ["repo:weyenk/airlie", "workflow:my-draft"],
   });
   expect(drafts.take(token)).toBeNull();
 });
 
-test("a workflow the list does not know yet is still shown as chosen", async () => {
-  defs.listWorkflowDefs.mockRejectedValue(new Error("down"));
+test("a held epic comes back as an epic", async () => {
+  setActivePinia(createPinia());
+  const token = useCardDraftStore().hold({ level: "epic", title: "Kept", description: "", parent: "AIR-1", repo: "", workflow: "story" });
+  await open({}, `/board?create=${token}`);
+  expect(q("[data-type][aria-pressed=true]")!.textContent).toContain("Epic");
+  expect(q<HTMLSelectElement>("select[aria-label=Parent]")!.value).toBe("AIR-1");
+});
+
+test("only a story has a workflow: an epic shows no Workflow field and gets no workflow label", async () => {
   await open();
+  type(workflowSelect(), "bug-fix");
+  (document.body.querySelectorAll("[data-type]")[1] as HTMLElement).click(); // Epic
+  await flushPromises();
+  expect(q("select[data-workflow]")).toBeNull();
+  type(q<HTMLInputElement>("input[aria-label=Title]")!, "An epic");
+  (q("[data-submit]") as HTMLElement).click();
+  await flushPromises();
+  expect(api.createItem).toHaveBeenCalledWith({ level: "epic", title: "An epic", description: "", parent: null, labels: [] });
+});
+
+test("a failed list says so, offers only story and Build new, and Retry loads it", async () => {
+  defs.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
+  await open();
+  expect(q("[role=status]")!.textContent).toContain("Workflows did not load");
+  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "__new__"]);
   expect(workflowSelect().value).toBe("story");
+  (q("[data-workflow-retry]") as HTMLElement).click();
+  await flushPromises();
+  expect(defs.listWorkflowDefs).toHaveBeenCalledTimes(2);
+  expect(q("[role=status]")).toBeNull();
+  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "__new__"]);
 });

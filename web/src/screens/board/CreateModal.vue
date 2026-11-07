@@ -37,7 +37,7 @@ const names = useRepoNames();
 const drafts = useCardDraftStore();
 const router = useRouter();
 const route = useRoute();
-const defs = useWorkflowDefs();
+const { defs, failed, reload } = useWorkflowDefs();
 
 const token = typeof route.query.create === "string" ? route.query.create : null;
 const held = token ? drafts.take(token) : null;
@@ -57,9 +57,13 @@ const parents = computed(() => {
   return want ? board.items.filter((i) => i.level === want) : [];
 });
 const label = computed(() => LEVELS.find((l) => l.level === level.value)!.label.toLowerCase());
-const groups = computed(() => workflowGroups(defs.value));
-/** The choice is offered even before (or without) the list, so the select never shows blank. */
+/** Only a story runs a workflow this round (D17): the field and its label are a story's alone. */
+const isStory = computed(() => level.value === "story");
+const groups = computed(() => (failed.value ? [] : workflowGroups(defs.value)));
 const listed = computed(() => groups.value.some((g) => g.options.some((o) => o.value === workflow.value)));
+/** Plain options ahead of the groups: with no list, story (and a choice the builder brought back, so it is not
+ * lost); before the list answers, the current choice, so the select never shows blank. */
+const loose = computed(() => (failed.value ? [...new Set([DEFAULT_WORKFLOW, workflow.value])] : listed.value ? [] : [workflow.value]));
 const chosen = computed({
   get: () => workflow.value,
   set: (value: string) => {
@@ -116,7 +120,7 @@ async function submit(): Promise<void> {
       title: t,
       description: description.value,
       parent: parentKey.value || null,
-      labels: [...(clean ? [`repo:${clean}`] : []), `${WORKFLOW_PREFIX}${workflow.value}`],
+      labels: [...(clean ? [`repo:${clean}`] : []), ...(isStory.value ? [`${WORKFLOW_PREFIX}${workflow.value}`] : [])],
     });
     if (token) drafts.drop(token);
     emit("created", made);
@@ -174,15 +178,19 @@ const fieldLabel = "mb-1.5 block text-[13px] font-semibold text-muted-foreground
           <span :class="fieldLabel">Repository</span>
           <Typeahead v-model="repo" :source="names" label="Repository" placeholder="owner/name" />
         </div>
-        <div class="min-w-0">
+        <div v-if="isStory" class="min-w-0">
           <label for="create-workflow" :class="fieldLabel">Workflow</label>
           <select id="create-workflow" v-model="chosen" data-workflow required aria-label="Workflow" :class="select">
-            <option v-if="!listed" :value="workflow">{{ workflow }}</option>
+            <option v-for="v in loose" :key="v" :value="v">{{ v }}</option>
             <optgroup v-for="g in groups" :key="g.label" :label="g.label">
               <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
             </optgroup>
             <option :value="BUILD_NEW">＋ Build new…</option>
           </select>
+          <p v-if="failed" role="status" class="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            Workflows did not load
+            <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reload">Retry</Button>
+          </p>
         </div>
       </div>
 

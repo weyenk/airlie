@@ -25,6 +25,7 @@ test("workflowGroups: a group per type for files, then the drafts; bundles are n
     def("bug-fix", { type: "bug" }),
     def("review-loop", { type: null, bundle: true }),
     def("my-draft", { source: "draft", type: "story" }),
+    def("draft-bundle", { source: "draft", type: null }),
     def("broken", { source: "draft", problems: ["no start"] }),
   ]);
   expect(groups).toEqual([

@@ -89,7 +89,7 @@ const saveRepo = (value: string) => patch({ labels: withRepo(item.value?.labels 
 
 // The workflow: a select of the same choices Create offers (less Build new…), saved on change. A refusal (422:
 // the workflow does not validate) shows the server's words and puts the select back.
-const defs = useWorkflowDefs();
+const { defs, failed: defsFailed, reload: reloadDefs } = useWorkflowDefs();
 const groups = computed(() => workflowGroups(defs.value));
 const workflow = computed(() => workflowOf(item.value?.labels ?? []));
 const workflowDef = computed(() => defs.value.find((d) => d.name === workflow.value));
@@ -165,23 +165,31 @@ function giveFocusBack(e: Event): void {
             :validate="repoProblem"
             :save="saveRepo"
           />
-          <span class="text-xs text-muted-foreground">· Workflow</span>
-          <div data-workflow-field class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-            <select
-              v-model="chosenWorkflow"
-              required
-              aria-label="Workflow"
-              class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
-            >
-              <option v-if="!listed" :value="workflow">{{ workflow }}</option>
-              <optgroup v-for="g in groups" :key="g.label" :label="g.label">
-                <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
-              </optgroup>
-            </select>
-            <a v-if="workflowDef?.pr" data-workflow-pr :href="workflowDef.pr.url" target="_blank" rel="noopener" class="text-primary hover:underline">PR #{{ workflowDef.pr.number }}</a>
-            <span v-else-if="workflowDef?.source === 'draft'" data-workflow-draft class="rounded-full bg-muted px-2 font-semibold">draft</span>
-            <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
-          </div>
+          <!-- only a story runs a workflow this round (D17) -->
+          <template v-if="item.level === 'story'">
+            <span class="text-xs text-muted-foreground">· Workflow</span>
+            <div data-workflow-field class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+              <select
+                v-model="chosenWorkflow"
+                required
+                :disabled="defsFailed"
+                aria-label="Workflow"
+                class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+              >
+                <option v-if="!listed" :value="workflow">{{ workflow }}</option>
+                <optgroup v-for="g in groups" :key="g.label" :label="g.label">
+                  <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
+                </optgroup>
+              </select>
+              <a v-if="workflowDef?.pr" data-workflow-pr :href="workflowDef.pr.url" target="_blank" rel="noopener" class="text-primary hover:underline">PR #{{ workflowDef.pr.number }}</a>
+              <span v-else-if="workflowDef?.source === 'draft'" data-workflow-draft class="rounded-full bg-muted px-2 font-semibold">draft</span>
+              <p v-if="defsFailed" role="status" class="flex items-center gap-1.5 text-muted-foreground">
+                Workflows did not load
+                <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reloadDefs">Retry</Button>
+              </p>
+              <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
+            </div>
+          </template>
         </div>
       </div>
 
