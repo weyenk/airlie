@@ -58,6 +58,41 @@ if TYPE_CHECKING:
 Until = Literal["planned", "review"]
 Step = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
 Opener = Callable[[Opening], AbstractAsyncContextManager[Session]]
+
+CATALOG: Mapping[str, tuple[str, ...]] = {
+    # every id `story_registry` adds, by the node field that names it: the builder's dropdowns
+    "prompts": ("story.survey", "story.refine", "story.layers", "story.drafts"),  # prompt: (ctx, feedback)
+    "parsers": ("story.story", "story.layer_plan"),  # parse:
+    "checks": (  # run: of a check or gate node, and the layer bundle's package and build steps
+        "story.intake",
+        "story.take_card_as_story",
+        "story.base",
+        "story.gate",
+        "story.agree_plain",
+        "story.costed",
+        "story.planned",
+        "story.covered",
+        "story.build_done",
+        "story.publish",
+        "story.finish",
+        "story.ready_package",
+        "story.build_once",
+    ),
+    "predicates": (  # when:, done:, a loop's when: (ctx)
+        "story.amigos_on",
+        "story.amigos_off",
+        "story.to_build",
+        "story.survey_on",
+        "story.is_story_card",
+        "story.not_story_card",
+        "story.open_layer",
+        "story.not_built",
+        "story.has_package",
+    ),
+    "afters": ("story.surveyed", "story.survey_failed", "story.refined"),  # after:, an ask's args.failed
+    "turns": ("story.layers_turns", "story.drafts_turns"),  # a conversation's args.turns
+    "meetings": ("story.amigos",),  # run: of a meeting node
+}
 """How a conversation step opens its conversation: the runner's `Talk.open`, or the driver's `converse`."""
 
 

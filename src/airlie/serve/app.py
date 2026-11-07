@@ -27,6 +27,7 @@ from airlie.auth.principal import NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
+from airlie.board.model import WorkflowDraft
 from airlie.config import AirlieConfig
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
@@ -44,6 +45,7 @@ from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
+from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
@@ -376,6 +378,11 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+async def _no_workflow_publisher(draft: WorkflowDraft) -> tuple[int, str]:
+    """Publishing a draft as a PR is not built yet: the builder's publish says so."""
+    raise HTTPException(501, "publishing workflows is not wired yet")
+
+
 CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
 """How long a non-streamed `/v1/chat/completions` waits on the engine. It sends no bytes until the reply is
 whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs
@@ -423,6 +430,8 @@ def create_app(
     restart_story = story_restart or _story_restart_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
     app.include_router(board_router(board, feed.publish))
+    if cfg.story.board == "local":  # drafts live in the local board's store
+        app.include_router(workflows_router(cfg, board, feed.publish, _no_workflow_publisher))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()

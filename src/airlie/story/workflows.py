@@ -35,20 +35,31 @@ def card_workflow(card: Card) -> str:
     return next((n for n in named if n), DEFAULT)
 
 
-def _draft(name: str, text: str) -> WorkflowSpec:
-    """Draft `name`'s YAML text: `workflows:` holding that one workflow."""
+def draft_body(text: str, name: str | None = None) -> tuple[str, Mapping[str, Any]]:
+    """The one workflow a draft's YAML text holds: `workflows:` with a single name mapped to a mapping (that
+    name `name`, when given). Its name and mapping; WorkflowError when the text is not YAML or holds anything
+    else. The mapping is not yet checked as a workflow."""
+    called = repr(name) if name is not None else "draft"
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise WorkflowError(f"draft workflow {name!r} is not YAML: {e}") from None
+        raise WorkflowError(f"draft workflow {called} is not YAML: {e}") from None
     found = data.get("workflows") if isinstance(data, dict) else None
-    if not isinstance(found, dict) or list(found) != [name]:
-        names = sorted(map(str, found)) if isinstance(found, dict) else []
-        raise WorkflowError(
-            f"draft workflow {name!r} must hold `workflows:` with the one workflow {name!r}, not {names}"
-        )
+    names = sorted(map(str, found)) if isinstance(found, dict) else []
+    if not isinstance(found, dict) or len(found) != 1 or (name is not None and list(found) != [name]):
+        one = f"the one workflow {name!r}" if name is not None else "one workflow"
+        raise WorkflowError(f"draft workflow {called} must hold `workflows:` with {one}, not {names}")
+    [(got, body)] = found.items()
+    if not isinstance(body, dict):
+        raise WorkflowError(f"draft workflow {str(got)!r} must be a mapping, not {type(body).__name__}")
+    return str(got), body
+
+
+def draft_spec(name: str, text: str) -> WorkflowSpec:
+    """Draft `name`'s YAML text: `workflows:` holding that one workflow."""
+    _, body = draft_body(text, name)
     try:
-        return WorkflowSpec.model_validate(found[name])
+        return WorkflowSpec.model_validate(body)
     except ValidationError as e:
         raise WorkflowError(f"draft workflow {name!r}: {e}") from None
 
@@ -71,7 +82,7 @@ def resolve_workflows(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -
                 )
             spec = cfg.workflows[wanted]
         elif wanted in drafts:
-            spec = _draft(wanted, drafts[wanted])
+            spec = draft_spec(wanted, drafts[wanted])
         elif wanted == name:
             raise WorkflowError(f"no workflow named {name!r}")
         else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
@@ -81,6 +92,16 @@ def resolve_workflows(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -
     if problems := check_workflows(specs):
         raise WorkflowError("; ".join(problems))
     return specs
+
+
+def workflow_problems(cfg: AirlieConfig, drafts: Mapping[str, str], name: str) -> list[str]:
+    """What stops workflow `name` resolving (`resolve_workflows`), as the builder shows it: [] or the one
+    WorkflowError's message."""
+    try:
+        resolve_workflows(cfg, drafts, name)
+    except WorkflowError as e:
+        return [str(e)]
+    return []
 
 
 def snapshot(name: str, specs: Mapping[str, WorkflowSpec]) -> dict[str, Any]:

@@ -32,7 +32,7 @@ from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.board import text_card
-from airlie.story.flow import story_registry, story_runners
+from airlie.story.flow import CATALOG, story_registry, story_runners
 from airlie.story.phase import phase_path
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState, lane_lock, lock_held
@@ -991,6 +991,17 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         "story.has_package",
     }
     assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+
+
+def test_the_catalog_names_every_registered_id(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
+    st = StoryState(path=tmp_path, card={}, repo=str(repo))
+    registry = story_registry(pipe, st, text_card("add a marker"), until="review")
+    listed = [id for ids in CATALOG.values() for id in ids]
+    assert set(CATALOG) == {"prompts", "parsers", "checks", "predicates", "afters", "turns", "meetings"}
+    assert len(listed) == len(set(listed))  # each id in one kind
+    assert set(listed) == set(registry._fns)
 
 
 def run_context(pipe: StoryPipeline, registry: Registry, store: Any, node: str) -> RunContext:
