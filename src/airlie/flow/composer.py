@@ -112,6 +112,10 @@ class Composer:
                 current = names[after] if after < len(names) else None
         return last
 
+    @staticmethod
+    def _ms(started: float) -> int:
+        return int((time.monotonic() - started) * 1000)
+
     def _name(self, name: str, item: str | None) -> str:
         return name.replace("{item}", item) if item is not None else name
 
@@ -122,8 +126,14 @@ class Composer:
 
     async def _run_node(
         self, workflow: str, name: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
-    ) -> None:
-        if node.type in ("parallel", "each") or node.branch is not None or node.loop is not None:
+    ) -> Mapping[str, Any]:
+        """Run one node; returns the runner's full result mapping (empty when skipped)."""
+        if (
+            node.type in ("parallel", "each")
+            or node.branch is not None
+            or node.loop is not None
+            or isinstance(node.on_fail, LoopSpec)
+        ):
             raise NotImplementedError(f"workflow {workflow}: node {name}: {node.type} wiring comes later")
         fields: dict[str, Any] = {"node": name, "type": node.type, "workflow": workflow, "item": item}
         ctx = RunContext(
@@ -138,10 +148,10 @@ class Composer:
         )
         if node.outputs and all(self._present(o, node.outputs, item) for o in node.outputs):
             self.store.emit("node_skipped", **fields)
-            return
+            return {}
         if node.when is not None and not self.registry[node.when](ctx):
             self.store.emit("node_skipped", **fields)
-            return
+            return {}
         for needed in node.inputs:
             if not self._present(needed, formats, item):
                 raise MissingInput(f"workflow {workflow}: node {name}: missing input '{needed}'")
@@ -150,19 +160,16 @@ class Composer:
         started = time.monotonic()
         try:
             result = await self.runners[node.type](node, ctx)
+        except EndRun:  # a gate did its job
+            self.store.emit("node_finished", node=name, type=node.type, outcome="done", ms=self._ms(started))
+            raise
         except BaseException:
             self.store.emit(
-                "node_finished",
-                node=name,
-                type=node.type,
-                outcome="failed",
-                ms=int((time.monotonic() - started) * 1000),
+                "node_finished", node=name, type=node.type, outcome="failed", ms=self._ms(started)
             )
             raise
         failure = result.get(FAIL_KEY)
-        for key, value in result.items():
-            if key == FAIL_KEY:
-                continue
+        for key, value in ({} if failure is not None else result).items():
             target = self._name(key, item)
             if node.outputs.get(key) == "session":
                 self.sessions.put(target, value)
@@ -174,12 +181,11 @@ class Composer:
             node=name,
             type=node.type,
             outcome="failed" if failure is not None else "done",
-            ms=int((time.monotonic() - started) * 1000),
+            ms=self._ms(started),
         )
-        if failure is not None:
-            if isinstance(node.on_fail, LoopSpec):
-                raise NotImplementedError(f"workflow {workflow}: node {name}: on_fail loop comes later")
-            if node.on_fail == "block":
-                from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
+        if failure is not None and node.on_fail == "block":
+            from airlie.story.asking import StoryBlocked  # asking imports config, which imports flow.spec
 
-                raise StoryBlocked(str(failure))
+            raise StoryBlocked(str(failure))
+
+        return result

@@ -165,3 +165,73 @@ def test_counts_resolve_from_config(tmp_path):
     assert resolve_count(cfg, "story.stage_attempts") == 3 and resolve_count(cfg, 2) == 2
     with pytest.raises(ConfigError, match="story.nope"):
         resolve_count(cfg, "story.nope")
+
+
+ONE = {"w": {"start": "a", "nodes": {"a": {"type": "check", "run": "r", "outputs": {"x": "text"}}}}}
+
+
+async def test_a_raising_runner_emits_failed_and_reraises(tmp_path):
+    def boom(n, c):
+        raise RuntimeError("boom")
+
+    c = composer(tmp_path, ONE, {"check": check_that(boom)})
+    with pytest.raises(RuntimeError, match="boom"):
+        await c.run("w")
+    assert [(k, f.get("outcome")) for k, f in c.store.events] == [
+        ("node_started", None),
+        ("node_finished", "failed"),
+    ]
+
+
+async def test_a_missing_input_emits_no_node_events(tmp_path):
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {"a": {"type": "check", "run": "r", "inputs": ["x"], "outputs": {"y": "text"}}},
+        }
+    }
+    wf["w"]["loose"] = ["x"]
+    c = composer(tmp_path, wf, {"check": check_that(lambda n, c: {"y": 1})})
+    with pytest.raises(MissingInput):
+        await c.run("w")
+    assert c.store.events == []
+
+
+async def test_an_end_run_finishes_the_node_as_done(tmp_path):
+    def stop(n, c):
+        raise EndRun()
+
+    c = composer(tmp_path, ONE, {"check": check_that(stop)})
+    assert await c.run("w") == "a"
+    assert [(k, f.get("outcome")) for k, f in c.store.events] == [
+        ("node_started", None),
+        ("node_finished", "done"),
+    ]
+
+
+async def test_a_failed_node_stores_none_of_its_outputs(tmp_path):
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {"a": {"type": "check", "run": "r", "outputs": {"x": "text"}, "on_fail": "continue"}},
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(lambda n, c: {"__fail__": "red", "x": 1})})
+    assert await c.run("w") == "a"
+    assert not c.store.has("x")
+    assert c.store.events[-1][1]["outcome"] == "failed"
+
+
+async def test_an_on_fail_loop_is_refused_up_front(tmp_path):
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {
+                "a": {"type": "check", "run": "r", "outputs": {"x": "text"}, "on_fail": {"to": "a", "max": 2}}
+            },
+        }
+    }
+    c = composer(tmp_path, wf, {"check": check_that(lambda n, c: {"x": 1})})
+    with pytest.raises(NotImplementedError):
+        await c.run("w")
+    assert c.store.events == []
