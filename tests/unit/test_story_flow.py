@@ -1747,3 +1747,34 @@ async def test_a_build_after_the_review_gate_resumes_after_it_the_same_either_wa
         assert any(e["kind"] == "node_started" for e in again) is composer
         seen.append(story)
     assert seen[1] == seen[0]
+
+
+# ---- a card on another workflow (D22, 2026-11-07) ----
+
+
+def test_a_card_on_another_workflow_is_drawn_from_its_nodes(tmp_path: Path) -> None:
+    from tests.unit.test_flow_nodes import EVENTS, bugfix
+
+    story = tmp_path / "stories" / "AIR-9"
+    story.mkdir(parents=True)
+    st = {"stage": "new", "card": {"key": "AIR-9", "title": "Fix the bug"}, **bugfix()}
+    (story / "state.json").write_text(json.dumps(st))
+    write_events(story / "events.jsonl", EVENTS)
+    flow = story_flow(tmp_path, "AIR-9", held=True)
+    ids = [n["id"] for n in flow["nodes"]]
+    assert ids == ["intake", "reproduce", "fix_layers:01", "fix_layers:02", "review"]
+    assert flow["title"] == "Fix the bug"
+    assert flow["now"]["status"] == "running" and flow["now"]["node"] == "fix_layers:02"
+    assert flow["now"]["job"] == "write"
+    quiet = story_flow(tmp_path, "AIR-9", now=10_000.0)  # nobody works on it: the running box is stopped
+    assert by_id(quiet["nodes"], "fix_layers:02")["status"] == "stopped"
+
+
+def test_a_card_on_the_story_workflow_keeps_the_story_screen(state_dir: Path) -> None:
+    from tests.unit.test_flow_nodes import bugfix
+
+    f = state_dir / "stories" / KEY / "state.json"
+    snap = bugfix()["workflow"]
+    f.write_text(json.dumps({**json.loads(f.read_text()), "workflow": {**snap, "name": "story"}}))
+    ids = [n["id"] for n in story_flow(state_dir, KEY, held=True)["nodes"]]
+    assert ids[:3] == ["intake", "base", "gate"] and "layer-01" in ids

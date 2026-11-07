@@ -15,6 +15,7 @@ from typing import Any
 
 from airlie.board import BoardStore
 from airlie.serve.flow_build import build_nodes
+from airlie.serve.flow_nodes import node_flow
 from airlie.serve.flow_now import run_last_ts, settle, story_exit, story_live, story_now
 from airlie.serve.flow_parts import StoryNotFound, load, name, safe
 from airlie.serve.flow_plan import plan_nodes
@@ -39,7 +40,11 @@ def story_flow(state_dir: Path, key: str, *, held: bool = False, now: float | No
     at = time.time() if now is None else now
     card = st["card"] if isinstance(st.get("card"), dict) else {}
     story = st["story"] if isinstance(st.get("story"), dict) else {}
-    nodes = plan_nodes(state_dir, st, events) + build_nodes(state_dir, st, events)
+    snap = st.get("workflow")
+    if isinstance(snap, dict) and snap.get("name") != "story":  # a card on another workflow (D22)
+        nodes = node_flow(st, events)
+    else:
+        nodes = plan_nodes(state_dir, st, events) + build_nodes(state_dir, st, events)
     run_ts = run_last_ts(state_dir, nodes)
     live = story_live(events, run_ts, held=held, now=at)
     settle(nodes, live=live, blocked=bool(st.get("blocked")))
