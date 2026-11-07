@@ -111,7 +111,8 @@ loaded into a `WorkflowSpec` and validated on every pick; an invalid draft canno
 
 ## The card's Workflow field
 
-Stored as a card label `workflow:<name>` so Jira-backed cards carry it too; shown as a field. Mandatory
+Stored as a card label `workflow:<name>`, the way a card already holds its repository (`repo:<name>`), and
+shown as a field. Mandatory
 for a card to leave To do: the board refuses to move a card without one to Approved, and the line skips
 such a card with a note. When the named workflow is a draft, the field shows "draft"; when it has an open
 PR, the PR number; when merged, the plain name.
@@ -168,7 +169,7 @@ beside the YAML. Checks and parsers stay code.
   workflow has a `publish` node. The exits (block, wait, cancel) are shared.
 - **D17. Migration and scope of the field.** Only story-level cards run workflows this round; initiative,
   epic and subtask keep their pipelines. A story card without a `workflow:` label is treated as
-  `workflow:story`: existing cards, Jira-imported cards and the cards the epic pipeline makes all run the
+  `workflow:story`: existing cards and the cards the epic pipeline makes all run the
   story unchanged. The field is mandatory in the GUI (CreateModal requires it, preselecting `story`;
   CardModal shows it as required), so every card created or edited by hand carries it. Noah confirmed
   2026-11-07: this is what "mandatory" means: mandatory in the GUI, story by default elsewhere.
