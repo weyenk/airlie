@@ -38,8 +38,9 @@ const typeLabel = computed(() => TYPE_FILTERS.find((t) => t.value === type.value
 
 /** The open card, from the address (/board/AIR-4). */
 const openKey = computed(() => (typeof route.params.key === "string" && route.params.key ? route.params.key : null));
-/** Create, when it is open: `parent` is the card Add child was pressed on. */
-const creating = ref<{ parent: Item | null } | null>(null);
+/** Create, when it is open: `parent` is the card Add child was pressed on. The builder comes back to
+ * `/board?create=<token>`, which opens Create again with the form it held. */
+const creating = ref<{ parent: Item | null } | null>(typeof route.query.create === "string" ? { parent: null } : null);
 // Closing leaves the card's address; Back must not reopen it, so the entry the card was opened from is
 // returned to when it was the board, else the card's entry is replaced.
 const closeCard = () => {
@@ -54,6 +55,7 @@ const closeCreate = () => {
   const parent = creating.value?.parent;
   creating.value = null;
   if (parent) void router.push(`/board/${encodeURIComponent(parent.key)}`);
+  else if (route.query.create !== undefined) void router.replace("/board"); // Back or a reload must not reopen it
 };
 const move = (key: string, status: Status, before: string | null) => void board.move(key, status, before).catch(() => {});
 </script>

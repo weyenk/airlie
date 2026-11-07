@@ -21,6 +21,15 @@ const api = vi.hoisted(() => ({
 vi.mock("@/api/board", () => api);
 const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
 vi.mock("@/api/workflows", () => wf);
+const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn() }));
+vi.mock("@/api/workflow_defs", () => defs);
+const PR_URL = "https://example.test/weyenk/airlie/pull/42";
+const DEFS = [
+  { name: "story", type: "story", source: "file", problems: [], pr: null },
+  { name: "bug-fix", type: "bug", source: "file", problems: [], pr: null },
+  { name: "my-draft", type: "story", source: "draft", problems: [], pr: null },
+  { name: "in-review", type: "story", source: "draft", problems: [], pr: { number: 42, url: PR_URL } },
+];
 
 const STORY = item("AIR-4", {
   title: "Board: panel width",
@@ -81,6 +90,7 @@ beforeEach(() => {
   api.editComment.mockReset().mockResolvedValue({ ...STORY, updated_at: 3000 });
   wf.storyFlow.mockReset().mockResolvedValue(structuredClone(FLOW));
   wf.repoNames.mockReset().mockResolvedValue(["weyenk/airlie", "weyenk/openhand"]);
+  defs.listWorkflowDefs.mockReset().mockResolvedValue(structuredClone(DEFS));
 });
 afterEach(() => {
   document.body.innerHTML = "";
@@ -332,4 +342,61 @@ test("a card that was on the board and is gone says it was deleted", async () =>
   await flushPromises();
   expect(q("[role=dialog]")!.textContent).toContain("This item was deleted.");
   expect(q("[data-title]")).toBeNull();
+});
+
+const workflowSelect = () => q<HTMLSelectElement>("[data-workflow-field] select")!;
+const choose = async (name: string) => {
+  const select = workflowSelect();
+  select.value = name;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await flushPromises();
+};
+
+test("the Workflow row shows story for a card with no label, and offers the workflows but not Build new", async () => {
+  await open();
+  expect(workflowSelect().value).toBe("story");
+  expect(workflowSelect().required).toBe(true);
+  const values = [...workflowSelect().options].map((o) => o.value);
+  expect(values).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
+  expect(values).not.toContain("__new__");
+  expect(q("[data-workflow-draft]")).toBeNull();
+});
+
+test("choosing a workflow saves it as the card's workflow: label and keeps the others", async () => {
+  await open();
+  await choose("bug-fix");
+  expect(api.patchItem).toHaveBeenCalledWith("AIR-4", { labels: ["repo:weyenk/airlie", "web", "workflow:bug-fix"] });
+  expect(workflowSelect().value).toBe("bug-fix");
+});
+
+test("a draft workflow says draft, and one with a PR links it", async () => {
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), labels: ["workflow:my-draft"], updated_at: 9000 });
+  api.patchItem.mockImplementation(async (k: string, b: Partial<Item>) => ({ ...structuredClone(STORY), key: k, ...b, updated_at: 9500 }));
+  await open();
+  expect(workflowSelect().value).toBe("my-draft");
+  expect(q("[data-workflow-draft]")!.textContent).toBe("draft");
+  await choose("in-review");
+  const link = q<HTMLAnchorElement>("[data-workflow-pr]")!;
+  expect(link.textContent).toBe("PR #42");
+  expect(link.href).toBe(PR_URL);
+});
+
+test("a list of workflows that answers after the card still shows the card's own", async () => {
+  let answer!: (defs: unknown) => void;
+  defs.listWorkflowDefs.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+  api.getItem.mockResolvedValue({ ...structuredClone(STORY), labels: ["workflow:bug-fix"], updated_at: 9000 });
+  await open();
+  expect(workflowSelect().value).toBe("bug-fix");
+  answer(structuredClone(DEFS));
+  await flushPromises();
+  expect([...workflowSelect().options].map((o) => o.value)).toEqual(["story", "bug-fix", "my-draft", "in-review"]);
+  expect(workflowSelect().value).toBe("bug-fix");
+});
+
+test("a workflow the server refuses shows its words and the card keeps its workflow", async () => {
+  api.patchItem.mockRejectedValue(Object.assign(new Error("workflow bug-fix: no start node"), { status: 422 }));
+  await open();
+  await choose("bug-fix");
+  expect(q("[data-workflow-field] [role=alert]")!.textContent).toContain("no start node");
+  expect(workflowSelect().value).toBe("story");
 });

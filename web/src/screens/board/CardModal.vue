@@ -18,6 +18,7 @@ import ModalShell from "./ModalShell.vue";
 import { repoOf, repoProblem, withRepo } from "./repo";
 import { STATUSES } from "./statuses";
 import StoryFlow from "./StoryFlow.vue";
+import { useWorkflowDefs, withWorkflow, workflowGroups, workflowOf } from "./workflow";
 import { ago, date } from "./time";
 
 defineOptions({ name: "AirlieCardModal" });
@@ -86,6 +87,27 @@ async function patch(body: ItemChange): Promise<void> {
 }
 const saveRepo = (value: string) => patch({ labels: withRepo(item.value?.labels ?? [], value) });
 
+// The workflow: a select of the same choices Create offers (less Build new…), saved on change. A refusal (422:
+// the workflow does not validate) shows the server's words and puts the select back.
+const defs = useWorkflowDefs();
+const groups = computed(() => workflowGroups(defs.value));
+const workflow = computed(() => workflowOf(item.value?.labels ?? []));
+const workflowDef = computed(() => defs.value.find((d) => d.name === workflow.value));
+const listed = computed(() => groups.value.some((g) => g.options.some((o) => o.value === workflow.value)));
+const workflowError = ref("");
+async function saveWorkflow(name: string): Promise<void> {
+  if (name === workflow.value) return;
+  workflowError.value = "";
+  try {
+    await patch({ labels: withWorkflow(item.value?.labels ?? [], name) });
+  } catch (e) {
+    workflowError.value = (e as Error).message; // the re-render puts the select back on the card's workflow
+  }
+}
+// v-model, not :value: it selects the card's workflow again on every render, so a list that loads after the card
+// (or a refused change) still shows the right one
+const chosenWorkflow = computed({ get: () => workflow.value, set: (name: string) => void saveWorkflow(name) });
+
 async function moveTo(status: Status): Promise<void> {
   problem.value = "";
   try {
@@ -143,6 +165,23 @@ function giveFocusBack(e: Event): void {
             :validate="repoProblem"
             :save="saveRepo"
           />
+          <span class="text-xs text-muted-foreground">· Workflow</span>
+          <div data-workflow-field class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+            <select
+              v-model="chosenWorkflow"
+              required
+              aria-label="Workflow"
+              class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+            >
+              <option v-if="!listed" :value="workflow">{{ workflow }}</option>
+              <optgroup v-for="g in groups" :key="g.label" :label="g.label">
+                <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
+              </optgroup>
+            </select>
+            <a v-if="workflowDef?.pr" data-workflow-pr :href="workflowDef.pr.url" target="_blank" rel="noopener" class="text-primary hover:underline">PR #{{ workflowDef.pr.number }}</a>
+            <span v-else-if="workflowDef?.source === 'draft'" data-workflow-draft class="rounded-full bg-muted px-2 font-semibold">draft</span>
+            <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
+          </div>
         </div>
       </div>
 
