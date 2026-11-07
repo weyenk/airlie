@@ -8,14 +8,23 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from airlie.flow.composer import FAIL_KEY, RunContext, resolve_count
 from airlie.flow.spec import NodeSpec
 from airlie.story.asking import Asker, Recorder, Say, StoryBlocked
 from airlie.story.model import NotActionable
+
+if TYPE_CHECKING:
+    from airlie.config import AirlieConfig
+    from airlie.story.amigos import Agreement, MeetingFactory, Turn
+    from airlie.story.model import Layer, Story
+    from airlie.tools import ToolRegistry
+
+OnTurn = Callable[["Turn", Mapping[str, Any]], None]
 
 
 async def ask_runner(
@@ -225,6 +234,63 @@ async def conversation_runner(
     if talk.output is not None and talk.session is not None and talk.continued is None:
         out[talk.output] = talk.session  # a continued session is the node's input, not its output
     return out
+
+
+@dataclass(frozen=True)
+class Hold:
+    """How a meeting node's `run` piece holds its meeting (`meeting_runner`): called with the checkout the
+    seats' tools read and `Meets.run`'s arguments, it makes the meeting from the factory (`tools(checkout)`,
+    a fresh `on_turn()`, which saves the team state every turn) and holds it from `state`, the team state a
+    meeting cut short saved (None: afresh). `before_turn()` is what each seat's turn waits for first, when
+    there is one and the meeting takes it (`Meeting.before_turn`). The turn cap is the node's `steps`, read
+    from the same config by the factory."""
+
+    meeting: MeetingFactory
+    cfg: AirlieConfig
+    tools: Callable[[Path], Callable[[str], ToolRegistry]]
+    on_turn: Callable[[], OnTurn]
+    before_turn: Callable[[], Callable[[], Awaitable[Any]] | None] = lambda: None
+    state: Mapping[str, Any] | None = None
+
+    async def __call__(
+        self,
+        checkout: Path,
+        opening: str,
+        story: Story,
+        layers: tuple[Layer, ...],
+        levels: Mapping[str, int],
+        guidelines: Collection[str],
+        *,
+        repo: Path,
+        base: str,
+    ) -> Agreement:
+        meeting = self.meeting(self.cfg, self.tools(checkout), self.on_turn())
+        if (wait := self.before_turn()) is not None and hasattr(meeting, "before_turn"):
+            meeting.before_turn = wait
+        return await meeting.run(
+            opening, story, layers, levels, guidelines, repo=repo, base=base, state=self.state
+        )
+
+
+async def meeting_runner(
+    node: NodeSpec,
+    ctx: RunContext,
+    *,
+    meeting: MeetingFactory,
+    tools: Callable[[Path], Callable[[str], ToolRegistry]],
+    on_turn: Callable[[], OnTurn],
+    before_turn: Callable[[], Callable[[], Awaitable[Any]] | None] = lambda: None,
+) -> Mapping[str, Any]:
+    """Several seats on one shared transcript. The node's `run` piece is called as `run(ctx, hold,
+    **node.args)` (it may be async): it builds the opening and holds the meeting through `hold` (a `Hold`
+    over the factory, the tools, the turn callback and the team state the store saved as `meeting`, so a
+    killed meeting goes on from its next speaker), and the mapping it returns is the node's outputs."""
+    assert node.run is not None  # spec.py: a meeting needs run
+    run = ctx.registry[node.run]  # resolved before the meeting: a wrong id is a config error
+    state = ctx.store.get("meeting") if ctx.store.has("meeting") else None
+    hold = Hold(meeting, ctx.cfg, tools, on_turn, before_turn, state)
+    out = await _maybe(run(ctx, hold, **node.args))
+    return out or {}
 
 
 async def _maybe(result: Any) -> Any:

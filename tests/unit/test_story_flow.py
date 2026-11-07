@@ -4,12 +4,13 @@ name."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
 import shlex
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +20,7 @@ import pytest
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply
 from airlie.flow.composer import Composer, Registry, RunContext
-from airlie.flow.runners import Session, check_runner, conversation_runner
+from airlie.flow.runners import Hold, Session, check_runner, conversation_runner, meeting_runner
 from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
@@ -35,7 +36,10 @@ from tests.unit.test_story_layer_checks_flow import LAYERS as CALC_LAYERS
 from tests.unit.test_story_pipeline import (
     B2,
     CUT_THINKING,
+    EASY_MEETING,
     LAYERS,
+    MEETING,
+    MEETING_ROLES,
     NOTE,
     PKG1,
     PKG2,
@@ -51,6 +55,8 @@ from tests.unit.test_story_pipeline import (
     package_reply,
     pipeline,
     planned,
+    replay_meeting,
+    repo_with_levels,
     repo_with_marker_tests,
 )
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS, cfg_for
@@ -821,8 +827,8 @@ def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
     assert list(cfg.workflows["story"].nodes) == [
         "intake", "base", "gate", "take_card_as_story", "plan_story", "survey", "refine", "costed_refine",
         "layers",
-        "costed_plan", "amigos", "costed_amigos", "planned", "build_layers", "built", "publish",
-        "costed_publish", "review",
+        "costed_plan", "agree_plain", "amigos", "costed_amigos", "planned", "build_layers", "built",
+        "publish", "costed_publish", "review",
     ]  # fmt: skip
     assert list(cfg.workflows["layer"].nodes) == ["covered", "drafts", "package", "build", "costed_layer"]
     assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect", "tester"]
@@ -861,7 +867,7 @@ async def test_a_handover_after_planning_is_not_a_resume_despite_node_events(tmp
     assert StoryPipeline._handoff(st, "review") is True
 
 
-VOLATILE = frozenset({"ts", "build", "run_id", "studio_run", "ms", "elapsed_s", "wall_s"})
+VOLATILE = frozenset({"ts", "build", "run_id", "studio_run", "ms", "elapsed_s", "wall_s", "wall_ms"})
 
 
 def neutral(text: str, root: Path, sha: str) -> Any:
@@ -957,6 +963,7 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         "story.drafts_turns",
     } <= named
     assert {"story.to_build", "story.survey_on", "story.amigos", "story.costed"} <= named
+    assert {"story.agree_plain", "story.amigos_on", "story.amigos_off"} <= named  # the meeting's switch
     asks = {"story.survey", "story.surveyed", "story.survey_failed", "story.refine", "story.story"}
     asks |= {"story.refined", "story.take_card_as_story", "story.is_story_card", "story.not_story_card"}
     assert asks <= named  # the ask nodes' pieces are lifted
@@ -1502,3 +1509,127 @@ async def test_a_plans_own_verdict_does_not_end_the_rounds_either_way(tmp_path: 
         assert [e["reason"] for e in events if e["kind"] == "plan_done"] == ["converged"]
         seen.append((events, plan_state(st.path, root, st.base["sha"])))
     assert seen[1] == seen[0]
+
+
+# ---- the three amigos through the meeting runner, against the driver ----
+
+
+def killed_after(n: int) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """A meeting's turn hook that saves the turn as the pipeline does, then kills the run after turn `n`."""
+    turns: list[int] = []
+
+    def hook(on_turn: Callable[..., None]) -> Callable[..., None]:
+        def hooked(turn: Any, state: Any) -> None:
+            on_turn(turn, state)
+            turns.append(1)
+            if len(turns) == n:
+                raise asyncio.CancelledError
+
+        return hooked
+
+    return hook
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_driver(
+    tmp_path: Path, resume: bool
+) -> None:
+    """With story.amigos on, driver and composer plan the same story through the meeting: the same events
+    with the same fields in the same order and the same state.json. With `resume`, the first plan is killed
+    right after the meeting's fifth turn (its team state saved) and a fresh pipeline plans again: the
+    meeting goes on from the saved history (`amigos_start` resumed, six turns in all), driver and composer
+    alike."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_levels(root)
+        card = text_card("avatars")
+        script: dict[str, list[str]] = EASY_MEETING
+        engine = happy_engine()
+        if resume:
+            meeting = replay_meeting(EASY_MEETING, hook=killed_after(5))
+            first = pipeline(
+                root, repo, engine, story=MEETING, roles=MEETING_ROLES, meeting=meeting, composer=composer
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await first.plan(card)
+            saved = StoryState.open(first.stories_dir / card.key, card, first.repo)
+            assert saved.meeting is not None and saved.agreement is None
+            # what each role has left to say: the architect's second turn
+            script = {"product": [], "architect": EASY_MEETING["architect"][1:], "tester": []}
+            engine = FakeEngine({})  # product is not asked to refine again, nor the architect to split
+        pipe = pipeline(
+            root,
+            repo,
+            engine,
+            story=MEETING,
+            roles=MEETING_ROLES,
+            meeting=replay_meeting(script),
+            composer=composer,
+        )
+        st = await pipe.plan(card)
+        assert st.blocked is None and st.stage == "layers", st.blocked
+        assert st.agreement is not None and st.meeting is None
+        assert st.base is not None
+        events = plan_events(st.path / "events.jsonl", root, st.base["sha"])
+        starts = [e["resumed"] for e in events if e["kind"] == "amigos_start"]
+        assert starts == ([False, True] if resume else [False])
+        roles = [e["role"] for e in events if e["kind"] == "amigos_turn"]
+        assert roles == ["product", "architect", "tester", "airlie", "product", "architect"]
+        assert st.agreement["turns"] == 6
+        seen.append((events, plan_state(st.path, root, st.base["sha"])))
+    assert seen[1] == seen[0]
+
+
+async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through_its_run_piece(
+    tmp_path: Path,
+) -> None:
+    """The generic runner: the node's `run` piece is called with a `Hold`, which makes the meeting from the
+    factory (the tools over the checkout the piece names, a fresh turn callback, the wait before each turn)
+    and holds it from the team state the store has saved; the piece's mapping is the node's outputs."""
+    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine(), composer=True)
+    node = pipe.cfg.workflows["story"].nodes["amigos"]
+    made: list[Any] = []
+    turned: list[Any] = []
+
+    async def wait() -> None:
+        pass
+
+    class Held:
+        before_turn: Any = None
+
+        async def run(self, opening: str, *args: Any, repo: Path, base: str, state: Any = None) -> Any:
+            made.append((opening, args, repo, base, state, self.before_turn))
+            self_on_turn("turn", {"n": 1})
+            return "the agreement"
+
+    def factory(cfg: Any, tools: Any, on_turn: Any) -> Any:
+        nonlocal self_on_turn
+        self_on_turn = on_turn
+        made.append((cfg is pipe.cfg, tools("tester")))
+        return Held()
+
+    self_on_turn: Any = None
+
+    async def piece(ctx: RunContext, hold: Hold) -> dict[str, Any]:
+        agreed = await hold(tmp_path / "tree", "open", "story", "layers", {}, set(), repo=tmp_path, base="b")
+        return {"agreement": agreed}
+
+    registry = Registry()
+    registry.add("story.amigos", piece)
+    store = MemoryStore({"meeting": {"saved": True}})
+    out = await meeting_runner(
+        node,
+        run_context(pipe, registry, store, "amigos"),
+        meeting=factory,
+        tools=lambda tree: lambda role: f"{role} reads {tree.name}",
+        on_turn=lambda: lambda turn, state: turned.append((turn, state)),
+        before_turn=lambda: wait,
+    )
+    assert out == {"agreement": "the agreement"}
+    assert made == [
+        (True, "tester reads tree"),
+        ("open", ("story", "layers", {}, set()), tmp_path, "b", {"saved": True}, wait),
+    ]
+    assert turned == [("turn", {"n": 1})]

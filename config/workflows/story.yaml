@@ -63,13 +63,20 @@ workflows:
         type: check
         run: story.costed
         args: {stages: [plan]}
+      agree_plain:  # story.amigos off: the split is the agreement, with no proof plan
+        type: check
+        run: story.agree_plain
+        inputs: [story, layers]
+        outputs: {agreement: json}
+        when: story.amigos_off
       amigos:
         type: meeting
         role: [product, architect, tester]
         run: story.amigos
         inputs: [story, layers, base]
-        outputs: {agreement: json}
-        steps: story.amigos.max_turns
+        outputs: {agreement: json, story: json, layers: list}  # the agreement rewrites the story and the layers
+        steps: story.amigos.max_turns  # the turns
+        when: story.amigos_on
       costed_amigos:
         type: check
         run: story.costed

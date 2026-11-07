@@ -19,9 +19,19 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext, Runner
-from airlie.flow.runners import Opening, Session, Talk, ask_runner, check_runner, conversation_runner
+from airlie.flow.runners import (
+    Hold,
+    Opening,
+    Session,
+    Talk,
+    ask_runner,
+    check_runner,
+    conversation_runner,
+    meeting_runner,
+)
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
+from airlie.story.amigos import Agreement
 from airlie.story.board import Card, note
 from airlie.story.briefs import (
     drafts_brief,
@@ -244,6 +254,39 @@ async def draft_packages(
     return session
 
 
+# ---- the meeting's pieces (amigos, agree_plain): `_agree`'s branches, shared with the composer ----
+
+
+def kept_agreement(st: StoryState) -> Agreement | None:
+    """The agreement already stored (a resume), with the `layers` stage finished if a state saved it without
+    that (one from before the stage and the agreement were saved together); None when there is none."""
+    if st.agreement is None:
+        return None
+    if not st.done("layers"):
+        st.finish("layers")
+    return Agreement.from_dict(st.agreement)
+
+
+def keep_refined(st: StoryState, story: Story, layers: tuple[Layer, ...]) -> None:
+    """The story and the plan as refine and the split left them, before the agreement (and later a reworded
+    criterion) replaces them: a restart from the layer plan or the meeting goes back to these."""
+    st.refined_story, st.refined_layers = story.to_dict(), [x.to_dict() for x in layers]
+    st.save()
+
+
+def agree_plain(st: StoryState, story: Story, layers: tuple[Layer, ...]) -> Agreement:
+    """No meeting (story.amigos off, or a story past `layers` from before the meeting existed): the split is
+    the agreement, with an empty proof plan, and the `layers` stage finishes if it has not."""
+    keep_refined(st, story, layers)
+    plain = Agreement(story, layers, ())
+    st.agreement = plain.to_dict()
+    if st.done("layers"):
+        st.save()
+    else:
+        st.finish("layers")
+    return plain
+
+
 def seat(pipe: StoryPipeline, role: str) -> str:
     """The configured role a workflow's seat names: `story.<seat>_role` when the config has one (product,
     architect), else the role of that name."""
@@ -251,9 +294,9 @@ def seat(pipe: StoryPipeline, role: str) -> str:
 
 
 def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until = "planned") -> Registry:
-    """Every `story.*` id the story and layer workflows name. The checks, the meeting, the layer's package
-    and build, and the review gate are today's steps by name; the predicates are today's conditions; the
-    rest (prompt, turn and parse ids) raise until their runners are lifted."""
+    """Every `story.*` id the story and layer workflows name. The checks, the meeting's piece, the layer's
+    package and build, and the review gate call today's steps; the predicates are today's conditions; the
+    asks' and conversations' briefs, parsers, after-hooks and turn bodies are their pieces."""
     from airlie.story.pipeline import _covered_below, _to_build  # the pipeline imports this module
 
     # ---- the checks (`check_runner`: `fn(ctx, **node.args)`, a declared input read from the store, the
@@ -273,10 +316,14 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         await pipe._costed(st, card, *stages)
         return {}
 
-    async def amigos(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        assert st.story is not None and st.layers is not None  # the node's inputs
-        layers = tuple(Layer.from_dict(d) for d in st.layers)
-        await pipe._agree(st, card, Story.from_dict(st.story), layers)
+    def plain(ctx: RunContext) -> Mapping[str, Any]:
+        agree_plain(st, *_planned(ctx))
+        return {"agreement": st.agreement}
+
+    # ---- the meeting's piece (`meeting_runner`: `fn(ctx, hold)`): `_agree`, holding the meeting through
+    # the runner's `hold`; the agreement rewrites the story and the layers
+    async def amigos(ctx: RunContext, hold: Hold) -> Mapping[str, Any]:
+        await pipe._agree(st, card, *_planned(ctx), hold)
         return {"agreement": st.agreement, "story": st.story, "layers": st.layers}
 
     def planned(ctx: RunContext) -> Mapping[str, Any]:
@@ -401,20 +448,23 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         "story.take_card_as_story": take_card,
         "story.base": base,
         "story.gate": gate,
+        "story.agree_plain": plain,
         "story.costed": costed,
         "story.planned": planned,
         "story.covered": covered,
         "story.build_done": build_done,
         "story.publish": publish,
     }
-    steps: dict[str, Step] = {  # the meeting, the layer's package and build, the review: (node, ctx)
-        "story.amigos": amigos,
+    steps: dict[str, Step] = {  # the layer's package and build, the review: (node, ctx)
         "story.ready_package": ready_package,
         "story.build_once": build_once,
         "story.finish": finish,
     }
     for id, fn in {**checks, **steps}.items():
         registry.add(id, fn)
+    registry.add("story.amigos", amigos)
+    registry.add("story.amigos_on", lambda ctx: pipe.s.amigos.enabled)
+    registry.add("story.amigos_off", lambda ctx: not pipe.s.amigos.enabled)
     registry.add("story.to_build", lambda ctx: _to_build(st))
     # `_survey`'s own skips: a story surveyed already (its notes may be "", a survey that failed) or
     # refined (a resume, or a story card taken by `take_card_as_story`) is not surveyed
@@ -441,10 +491,11 @@ def build_finished(st: StoryState) -> None:
 
 
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
-    """One runner per node type. A check is the generic `check_runner`; a meeting, a write or a gate runs
-    its `run` id from the registry; an ask is the generic `ask_runner` (the layer's package ask still its
-    `run` id), asking through `_ask` for the stage's map as the driver does, and a conversation is the
-    generic `conversation_runner` (the plan's rounds and the drafting are its turn bodies)."""
+    """One runner per node type. A check is the generic `check_runner`; a write or a gate runs its `run` id
+    from the registry; an ask is the generic `ask_runner` (the layer's package ask still its `run` id),
+    asking through `_ask` for the stage's map as the driver does; a conversation is the generic
+    `conversation_runner` (the plan's rounds and the drafting are its turn bodies), and a meeting the
+    generic `meeting_runner` over the story's meeting parts (`_meeting_parts`, the driver's too)."""
 
     async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         assert node.run is not None  # spec.py: a check, a gate and a meeting need run
@@ -469,7 +520,7 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
 
     return {
         "check": check_runner,
-        "meeting": by_run,
+        "meeting": functools.partial(meeting_runner, **pipe._meeting_parts(st)),
         "ask": ask,
         "conversation": conversation,
         "write": by_run,  # the layer's build (`_build_once`)
@@ -482,13 +533,16 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
 def _restore(pipe: StoryPipeline, st: StoryState) -> None:
     """What the driver's steps do on a resume that a skipped node does not (a node whose outputs are all
     present is not run): the gate read into the pipeline (`commands`, which the meeting's opening and every
-    layer read), and the `layers` stage of a story whose agreement is stored without it (`_agree`)."""
+    layer read), and the `layers` stage of a story whose agreement is stored without it (`kept_agreement`,
+    `_agree`'s first branch). Only a state saved before the stage and the agreement were saved together has
+    that (every agreement airlie stores now finishes the stage in the same save, and a restart from
+    `layers` or `amigos` clears the agreement), so its `stage` event comes here, before intake, and not at
+    the meeting's place: the meeting's nodes are skipped once the agreement is stored."""
     from airlie.story.pipeline import _to_build  # the pipeline imports this module
 
     if st.gate is not None and st.base is not None and _to_build(st):
         pipe._gate(st, st.base)
-    if st.agreement is not None and not st.done("layers"):
-        st.finish("layers")
+    kept_agreement(st)
 
 
 async def compose(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until) -> None:

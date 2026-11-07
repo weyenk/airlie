@@ -27,13 +27,12 @@ from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.engine.types import GenRequest, Message
-from airlie.flow.runners import Session, converse
+from airlie.flow.runners import Hold, Session, converse
 from airlie.prompts import text as hub_text
 from airlie.skills import Skill, load_skills, prompt_text, skill_criteria
 from airlie.story.amigos import (
     CHECKER,
     Agreement,
-    Meeting,
     MeetingFactory,
     ProofTest,
     Turn,
@@ -85,10 +84,13 @@ from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
 from airlie.story.flow import (
+    agree_plain,
     build_finished,
     compose,
     draft_packages,
     drafts_opening,
+    keep_refined,
+    kept_agreement,
     layers_guide,
     layers_opening,
     layers_planned,
@@ -1197,7 +1199,29 @@ class StoryPipeline:
         st.save()
         cls._keep_transcript(st)
 
-    async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
+    def _meeting_parts(self, st: StoryState) -> dict[str, Any]:
+        """What the story's meeting is made of (`Hold`, `meeting_runner`): the factory, each role's read-only
+        tools over a checkout (`_meeting_tools`), a fresh turn callback for each meeting (`_on_turn`, which
+        saves the team state every turn) and, in the planning lane, the wait for the build lane's gap before
+        each long turn."""
+
+        def before_turn() -> Callable[[], Awaitable[Any]] | None:
+            return partial(self.asker.wait, st, "amigos", True) if self.asker.lane == "plan" else None
+
+        return {
+            "meeting": self.meeting,
+            "tools": self._meeting_tools,
+            "on_turn": partial(self._on_turn, st),
+            "before_turn": before_turn,
+        }
+
+    def _hold(self, st: StoryState) -> Hold:
+        """The driver's meeting: held from the team state the story saved (`st.meeting`)."""
+        return Hold(cfg=self.cfg, state=st.meeting, **self._meeting_parts(st))
+
+    async def _agree(
+        self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], hold: Hold | None = None
+    ) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
         the changes and the proof, then the stored agreement replaces the story and the layers. Skipped, and
         the split is the agreement with an empty proof plan, when the agreement is already stored (a resume),
@@ -1208,23 +1232,16 @@ class StoryPipeline:
         At the end: references to criteria the story no longer has are pruned (an event says which); an
         agreement that cannot be built whatever was decided (a criterion no layer owns, a criterion or layer
         with no test) stops the story, naming what is missing; the rest stands as each owner left it, with
-        the open objections on record and a lesson when the turns ran out."""
-        if st.agreement is not None:
-            if not st.done("layers"):
-                st.finish("layers")
-            return Agreement.from_dict(st.agreement)
-        # the story and the plan as refine and the split left them, before the agreement (and later a reworded
-        # criterion) replaces them: a restart from the layer plan or the meeting goes back to these
-        st.refined_story, st.refined_layers = story.to_dict(), [x.to_dict() for x in layers]
-        st.save()
+        the open objections on record and a lesson when the turns ran out.
+
+        The meeting is held through `hold` (the meeting runner's, over the team state its store saved), by
+        default `_hold`'s over the state's own: the stored-agreement and plain-split branches are
+        `kept_agreement` and `agree_plain`, which the composer's `agree_plain` check and `_restore` call."""
+        if (kept := kept_agreement(st)) is not None:
+            return kept
         if st.done("layers") or not self.s.amigos.enabled:
-            plain = Agreement(story, layers, ())
-            st.agreement = plain.to_dict()
-            if st.done("layers"):
-                st.save()
-            else:
-                st.finish("layers")
-            return plain
+            return agree_plain(st, story, layers)
+        keep_refined(st, story, layers)
         tester = self.cfg.roles.get("tester")
         if tester is None:
             raise StoryBlocked(
@@ -1247,10 +1264,8 @@ class StoryPipeline:
         st.emit("amigos_start", resumed=st.meeting is not None)
         add_worktree(self.repo, tree, branch=None, start_point=sha)
         try:
-            meeting = self.meeting(self.cfg, self._meeting_tools(tree), self._on_turn(st))
-            if isinstance(meeting, Meeting) and self.asker.lane == "plan":  # each long turn waits for a gap
-                meeting.before_turn = partial(self.asker.wait, st, "amigos", True)
-            held = await meeting.run(
+            held = await (hold or self._hold(st))(
+                tree,
                 opening,
                 story,
                 layers,
@@ -1258,7 +1273,6 @@ class StoryPipeline:
                 {g.name for g in found.guidelines},
                 repo=self.repo,
                 base=sha,
-                state=st.meeting,
             )
         except NotActionable as e:
             self._forget_meeting(st)
