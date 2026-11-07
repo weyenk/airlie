@@ -398,3 +398,21 @@ async def test_bookkeeping_keeps_a_draft_whose_pr_is_open_or_cannot_be_read(
     lines = await fixes.bookkeep(loaded, store, serve_commit=None, gh=gh)
     assert lines == ["workflow alpha: PR state unknown (RuntimeError: gh: no network)"]
     assert [d.name for d in store.drafts()] == ["alpha", "mini"]
+
+
+async def test_bookkeeping_keeps_a_merged_draft_whose_loaded_file_is_another_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fixes, "home_checkout", lambda: None)
+    files = {name: yaml.safe_load(_named(name))["workflows"][name] for name in ("edited", "moved")}
+    loaded = cfg_for(tmp_path, extra={"workflows": files})
+    store = BoardStore(tmp_path / "board.sqlite")
+    # the file the serve loaded is not what the draft holds (edits made after the PR, or someone else's)
+    store.save_draft("edited", type="bug", yaml=_named("edited").replace("story.finish", "story.costed"))
+    # only the positions differ: the same workflow
+    store.save_draft("moved", type="bug", yaml=_named("moved") + "    layout:\n      intake: {x: 1, y: 2}\n")
+    for name, n in (("edited", 5), ("moved", 6)):
+        store.mark_published(name, n, f"https://github.com/o/r/pull/{n}")
+    lines = await fixes.bookkeep(loaded, store, serve_commit=None, gh=merged_gh("abc"))
+    assert lines == ["workflow moved is merged and loaded: draft retired (PR #6)"]
+    assert [d.name for d in store.drafts()] == ["edited"]

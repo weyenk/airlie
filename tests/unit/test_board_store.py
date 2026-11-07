@@ -346,17 +346,31 @@ def test_a_draft_is_saved_listed_updated_and_deleted(tmp_path: Path) -> None:
         again.delete_draft("zeta")
 
 
-def test_a_draft_keeps_its_pr_through_a_save(tmp_path: Path) -> None:
+def test_a_draft_keeps_its_pr_through_a_save_that_changes_nothing_it_published(tmp_path: Path) -> None:
     s = store(tmp_path)
-    s.save_draft("mini", type=None, yaml="a: 1\n")
+    s.save_draft("mini", type=None, yaml="a: 1\n", prompts={"p": "P"})
     marked = s.mark_published("mini", 42, "https://github.com/o/r/pull/42")
     assert (marked.published_pr, marked.published_url) == (42, "https://github.com/o/r/pull/42")
-    saved = s.save_draft("mini", type="bug", yaml="a: 2\n")
+    saved = s.save_draft("mini", type="bug", yaml="a: 1\n", prompts={"p": "P"})  # only the type differs
     assert (saved.published_pr, saved.published_url) == (42, "https://github.com/o/r/pull/42")
     s.close()
     assert store(tmp_path).draft("mini").published_pr == 42
     with pytest.raises(KeyError):
         store(tmp_path).mark_published("nope", 1, "u")
+
+
+@pytest.mark.parametrize(
+    ("yaml", "prompts"), [("a: 2\n", {"p": "P"}), ("a: 1\n", {"p": "Q"})], ids=["yaml", "prompts"]
+)
+def test_a_draft_changed_after_its_publish_is_unpublished_again(
+    tmp_path: Path, yaml: str, prompts: dict[str, str]
+) -> None:
+    s = store(tmp_path)
+    s.save_draft("mini", type=None, yaml="a: 1\n", prompts={"p": "P"})
+    s.mark_published("mini", 42, "https://github.com/o/r/pull/42")
+    saved = s.save_draft("mini", type=None, yaml=yaml, prompts=prompts)
+    assert (saved.published_pr, saved.published_url) == (None, None)
+    assert s.draft("mini").published_pr is None
 
 
 @pytest.mark.parametrize("name", ["", "Mini", "mini_x", "-mini", "mini-", "mi--ni", "mi ni", "mini/x"])

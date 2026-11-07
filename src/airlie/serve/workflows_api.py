@@ -21,6 +21,7 @@ from airlie.flow.spec import NodeType, WorkflowSpec
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import CATALOG
 from airlie.story.publish import PublishError
+from airlie.story.workflow_publish import NothingToPublish
 from airlie.story.workflows import WorkflowError, draft_body, draft_spec, workflow_problems
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
@@ -199,6 +200,8 @@ def workflows_router(
         # it is open) is the one recorded
         try:
             number, url = await publisher(draft)
+        except NothingToPublish as e:  # the trunk holds the draft as it is
+            raise HTTPException(409, str(e)) from None
         except PublishError as e:  # a git or gh step that failed, or gh not installed (CannotStart)
             raise HTTPException(502, str(e)) from None
         try:

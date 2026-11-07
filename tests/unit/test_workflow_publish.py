@@ -5,6 +5,7 @@ and a draft PR opened; a file that already holds the same workflow changes only 
 from __future__ import annotations
 
 import difflib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,12 @@ import pytest
 from airlie.board.model import WorkflowDraft
 from airlie.flow.spec import Layout
 from airlie.story.publish import Publisher, PublishError
-from airlie.story.workflow_publish import publish_workflow, same_definition, with_layout
+from airlie.story.workflow_publish import (
+    NothingToPublish,
+    publish_workflow,
+    same_definition,
+    with_layout,
+)
 from tests.unit.git_helpers import git
 from tests.unit.test_story_pipeline import WORKFLOWS, RecordedGh
 from tests.unit.test_story_workflows import MINI
@@ -95,11 +101,59 @@ def config(tmp_path: Path) -> Any:
     return cfg_for(tmp_path, extra={"story": {"trunk": "main", "remote": "origin"}})
 
 
+class PrsGh(RecordedGh):
+    """RecordedGh whose `gh pr list --head` finds an open PR while `open`, and that keeps each PR body
+    `gh pr edit --body-file` is given (the file is gone once the publish ends)."""
+
+    def __init__(self) -> None:
+        super().__init__(fetch="real")
+        self.open = False
+        self.bodies: list[str] = []
+
+    async def __call__(self, args: list[str], cwd: Path, env: Any) -> str:
+        if args[:3] == ["gh", "pr", "list"]:
+            self.calls.append(args)
+            return json.dumps([{"number": 11}] if self.open else [])
+        if args[:3] == ["gh", "pr", "edit"]:
+            self.bodies.append(Path(args[args.index("--body-file") + 1]).read_text(encoding="utf-8"))
+        return await super().__call__(args, cwd, env)
+
+
+async def test_publishing_again_after_its_pr_closed_starts_over_from_the_trunk(
+    tmp_path: Path, local_remotes: None
+) -> None:
+    home, origin = home_with_origin(tmp_path)
+    c, gh = config(tmp_path), PrsGh()
+    await publish_workflow(c, Publisher(run=gh), draft("mini", MINI), home=home)
+    branch = "airlie/workflow/mini"
+    old = git(origin, "rev-parse", branch)
+    # the PR was merged or closed: no open PR on the branch, which the remote still has
+    await publish_workflow(c, Publisher(run=gh), draft("mini", MINI_LAID_OUT), home=home)
+    assert git(origin, "rev-parse", f"{branch}~1") == git(origin, "rev-parse", "main")
+    assert git(origin, "rev-parse", branch) != old
+    [_, second] = [a for a in gh.calls if a[:2] == ["git", "push"]]
+    assert "--force-with-lease" in second
+    assert len([a for a in gh.calls if a[:3] == ["gh", "pr", "create"]]) == 2
+
+
+async def test_a_draft_the_trunk_already_holds_is_nothing_to_publish(
+    tmp_path: Path, local_remotes: None
+) -> None:
+    home, _ = home_with_origin(tmp_path, {"config/workflows/story.yaml": STORY})
+    gh = PrsGh()
+    with pytest.raises(NothingToPublish, match="nothing to publish"):
+        await publish_workflow(
+            config(tmp_path), Publisher(run=gh), draft("story", STORY, type="story"), home=home
+        )
+    assert not [a for a in gh.calls if a[:2] == ["git", "push"]]
+    assert len(git(home, "worktree", "list").splitlines()) == 1
+
+
 async def test_publish_writes_the_file_and_prompts_in_a_worktree_and_opens_a_pr(
     tmp_path: Path, local_remotes: None
 ) -> None:
     home, origin = home_with_origin(tmp_path)
-    c, gh = config(tmp_path), RecordedGh(fetch="real")
+    c, gh = config(tmp_path), PrsGh()
     got = await publish_workflow(
         c,
         Publisher(run=gh, publish="single"),
@@ -115,13 +169,21 @@ async def test_publish_writes_the_file_and_prompts_in_a_worktree_and_opens_a_pr(
     [create] = [a for a in gh.calls if a[:3] == ["gh", "pr", "create"]]
     assert create[:8] == ["gh", "pr", "create", "--draft", "--base", "main", "--head", branch]
     assert create[create.index("--title") + 1] == "workflow: mini"
+    [edit] = [a for a in gh.calls if a[:3] == ["gh", "pr", "edit"]]
+    assert edit[3:6] == [branch, "--title", "workflow: mini"]
+    [body] = gh.bodies
+    assert "`mini`" in body and "bug" in body
+    assert "config/workflows/mini.yaml" in body and "src/airlie/prompts/rules/reproduce.md" in body
+    assert body.rstrip().endswith("🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     assert not any("merge" in " ".join(a) for a in gh.calls)
     assert git(home, "status", "--porcelain") == ""  # the serve's checkout is never written
     assert git(home, "branch", "--show-current") == "main"
     assert not (c.observability.state_dir.expanduser() / "workflows" / "mini" / "publish").exists()
     assert len(git(home, "worktree", "list").splitlines()) == 1
 
-    # published again (the builder moved a box): one more commit on the same branch, the PR found again
+    # published again while its PR is open (the builder moved a box): one more commit on the same branch,
+    # the PR found again and no second one opened
+    gh.open = True
     moved = MINI_LAID_OUT
     again = await publish_workflow(c, Publisher(run=gh, publish="single"), draft("mini", moved), home=home)
     assert again == got
@@ -130,6 +192,7 @@ async def test_publish_writes_the_file_and_prompts_in_a_worktree_and_opens_a_pr(
     )
     assert removed == [] and added[0] == "    layout:"
     assert git(origin, "rev-parse", f"{branch}~2") == git(origin, "rev-parse", "main")
+    assert len([a for a in gh.calls if a[:3] == ["gh", "pr", "create"]]) == 1
 
 
 async def test_publishing_an_unchanged_file_diffs_only_the_layout_block(

@@ -387,12 +387,16 @@ def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitabl
     from airlie.story.factory import github_app
 
     publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
+    locks: dict[
+        str, asyncio.Lock
+    ] = {}  # one publish per workflow at a time: they share a worktree and branch
 
     async def publish(draft: WorkflowDraft) -> tuple[int, str]:
         home = home_checkout()
         if home is None:
             raise HTTPException(503, "airlie's own checkout was not found: serve runs from no git checkout")
-        return await publish_workflow(cfg, publisher, draft, home=home)
+        async with locks.setdefault(draft.name, asyncio.Lock()):
+            return await publish_workflow(cfg, publisher, draft, home=home)
 
     return publish
 

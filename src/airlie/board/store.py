@@ -327,20 +327,31 @@ class BoardStore:
     def save_draft(
         self, name: str, *, type: str | None, yaml: str, prompts: Mapping[str, str] | None = None
     ) -> WorkflowDraft:
-        """Create or replace the draft `name` (its creation time and published PR are kept).
-        BoardStoreError for a name that is not kebab-case."""
+        """Create or replace the draft `name`. Its creation time is kept, and its published PR while the YAML
+        and prompts are what was published; a draft whose YAML or prompts changed is unpublished again (no
+        PR holds it), so bookkeeping never retires edits a merge did not carry. BoardStoreError for a name
+        that is not kebab-case."""
         if not _DRAFT_NAME.match(name):
             raise BoardStoreError(f"a workflow name is kebab-case (a-z, 0-9, single hyphens), not {name!r}")
         now = time.time()
+        wanted = dict(prompts or {})
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
+                was = self._db.execute(
+                    "SELECT yaml, prompts_json FROM workflow_drafts WHERE name = ?", (name,)
+                ).fetchone()
+                if was is not None and (was["yaml"] != yaml or json.loads(was["prompts_json"]) != wanted):
+                    self._db.execute(
+                        "UPDATE workflow_drafts SET published_pr = NULL, published_url = NULL WHERE name = ?",
+                        (name,),
+                    )
                 self._db.execute(
                     "INSERT INTO workflow_drafts (name, type, yaml, prompts_json, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET type = excluded.type, "
                     "yaml = excluded.yaml, prompts_json = excluded.prompts_json, "
                     "updated_at = excluded.updated_at",
-                    (name, type, yaml, json.dumps(dict(prompts or {})), now, now),
+                    (name, type, yaml, json.dumps(wanted), now, now),
                 )
                 self._db.execute("COMMIT")
             except BaseException:

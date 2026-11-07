@@ -484,12 +484,24 @@ class Publisher:
         async with self._step(wt, workflows=self.changes_workflows(wt, "HEAD")) as env:
             await self.run(["gh", "stack", "submit", "--auto", "--remote", self.remote], wt, env)
 
-    async def push_top(self, wt: Path, branch: str) -> None:
+    async def push_top(self, wt: Path, branch: str, *, lease: bool = False) -> None:
         """Push the top layer's branch to the remote (a single draft PR is opened on it; its commits are the
-        layers' in layer order)."""
+        layers' in layer order). With `lease`, the push replaces what the remote's branch holds, as long as
+        that is still what its remote-tracking branch says (`--force-with-lease`): a branch started over."""
         _refuse_option_like(branch)
+        force = ["--force-with-lease"] if lease else []
         async with self._step(wt, workflows=self.changes_workflows(wt, f"refs/heads/{branch}")) as env:
-            await self.run(["git", "push", "-q", self.remote, branch], wt, env)
+            await self.run(["git", "push", "-q", *force, self.remote, branch], wt, env)
+
+    async def has_open_pr(self, cwd: Path, branch: str) -> bool:
+        """Whether an open PR has `branch` as its head (`gh pr list --head`)."""
+        _refuse_option_like(branch)
+        async with self._step(cwd) as env:
+            return await self._open_pr(cwd, branch, env)
+
+    async def _open_pr(self, cwd: Path, branch: str, env: Mapping[str, str]) -> bool:
+        listed = ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"]
+        return bool(json.loads(await self.run(listed, cwd, env) or "[]"))
 
     async def create_draft(self, wt: Path, branch: str, base: str, title: str) -> None:
         """Open one draft PR on `branch`, already pushed (push_top), against `base`, a branch on the remote
@@ -498,8 +510,7 @@ class Publisher:
         terminal needs a body as well as a title: a placeholder, which describe replaces."""
         _refuse_option_like(branch, base)
         async with self._step(wt) as env:
-            listed = ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"]
-            if json.loads(await self.run(listed, wt, env) or "[]"):
+            if await self._open_pr(wt, branch, env):
                 return
             await self.run(
                 [

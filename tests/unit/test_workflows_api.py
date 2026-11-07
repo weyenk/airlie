@@ -4,6 +4,7 @@ and the catalog of registry ids the builder's dropdowns offer."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
 from airlie.story.flow import CATALOG
 from airlie.story.publish import CannotStart, Publisher
+from airlie.story.workflow_publish import NothingToPublish
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_story_pipeline import WORKFLOWS
 from tests.unit.test_story_workflows import MINI, MINI_EACH, TINY
@@ -245,19 +247,57 @@ def test_a_publish_that_fails_is_a_bad_gateway_and_a_vanished_draft_a_404(tmp_pa
     s.save_draft("mini", type="bug", yaml=MINI)
     s.save_draft("gone", type="bug", yaml=MINI.replace("  mini:", "  gone:"))
 
+    s.save_draft("same", type="bug", yaml=MINI.replace("  mini:", "  same:"))
+
     async def publisher(draft: WorkflowDraft) -> tuple[int, str]:
         if draft.name == "mini":
             raise CannotStart("`gh pr create` could not start: no gh")
+        if draft.name == "same":
+            raise NothingToPublish("nothing to publish: main already holds it")
         s.delete_draft(draft.name)  # deleted while its PR was being opened
         return 7, PR
 
     http, seen = bare(c, s, publisher)
     with http:
         failed = http.post("/v1/workflows/mini/publish")
+        same = http.post("/v1/workflows/same/publish")
         vanished = http.post("/v1/workflows/gone/publish")
     assert failed.status_code == 502 and failed.json()["detail"] == "`gh pr create` could not start: no gh"
+    assert same.status_code == 409 and same.json()["detail"] == "nothing to publish: main already holds it"
     assert vanished.status_code == 404 and vanished.json()["detail"] == "draft vanished while publishing"
     assert s.draft("mini").published_pr is None and seen == []
+
+
+async def test_publishes_of_one_workflow_run_one_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running: dict[str, int] = {}
+    most: dict[str, int] = {}
+
+    async def published(
+        cfg: Any, publisher: Publisher, draft: WorkflowDraft, *, home: Path
+    ) -> tuple[int, str]:
+        running[draft.name] = running.get(draft.name, 0) + 1
+        most[draft.name] = max(most.get(draft.name, 0), running[draft.name])
+        most["all"] = max(most.get("all", 0), sum(n for k, n in running.items()))
+        await asyncio.sleep(0.02)
+        running[draft.name] -= 1
+        return 7, PR
+
+    monkeypatch.setattr(app_module, "publish_workflow", published)
+    monkeypatch.setattr(app_module, "home_checkout", lambda: tmp_path)
+    publish = app_module._workflow_publisher(cfg(tmp_path))
+    one, two = (draft_named("mini"), draft_named("other"))
+    await asyncio.gather(publish(one), publish(one), publish(two), publish(two), publish(one))
+    # one at a time per workflow (they share a worktree and a branch); different workflows side by side
+    assert most == {"mini": 1, "other": 1, "all": 2}
+
+
+def draft_named(name: str) -> WorkflowDraft:
+    return WorkflowDraft(
+        name=name, type="bug", yaml=MINI, prompts={}, created_at=0.0, updated_at=0.0,
+        published_pr=None, published_url=None,
+    )  # fmt: skip
 
 
 def test_publishing_a_draft_records_its_pr(tmp_path: Path) -> None:

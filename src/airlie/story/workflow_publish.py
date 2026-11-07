@@ -30,6 +30,11 @@ from airlie.story.workflows import WorkflowError, draft_spec
 from airlie.subproc import NO_HOOKS_ARGS, agent_env
 from airlie.teams.worktree import AIRLIE, add_worktree, delete_branch, dirty, remove_worktree
 
+
+class NothingToPublish(PublishError):
+    """The trunk already holds the draft as it is: there is no change to open a PR on."""
+
+
 _WORKFLOWS = re.compile(r"workflows\s*:\s*(#.*)?$")
 _LAYOUT = re.compile(r"layout\s*:")
 _PLAIN_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
@@ -152,25 +157,52 @@ def _prompt_paths(draft: WorkflowDraft) -> dict[str, str]:
     return paths
 
 
+ATTRIBUTION = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+"""The line the repository's PR descriptions end with."""
+
+
+def pr_body(draft: WorkflowDraft, files: list[str]) -> str:
+    """The description of a workflow's PR: the workflow, what it serves and the files it changes (paths
+    and names only: no draft text reaches it)."""
+    serves = f"type `{draft.type}`" if draft.type else "a bundle other workflows call"
+    listed = "\n".join(f"- `{f}`" for f in files)
+    return (
+        f"Publishes the workflow `{draft.name}` ({serves}) from the workflow builder.\n\n"
+        f"Files:\n{listed}\n\n"
+        "Only a person merges this PR. Once it is merged and serve has loaded the file, the draft "
+        "retires.\n\n"
+        f"{ATTRIBUTION}\n"
+    )
+
+
 async def publish_workflow(
     cfg: AirlieConfig, publisher: Publisher, draft: WorkflowDraft, *, home: Path
 ) -> tuple[int, str]:
     """Commit `draft` (its YAML and prompt files) on `airlie/workflow/<name>` and open its draft PR against
-    `story.trunk`; the PR's number and URL. The branch starts from the remote's copy of it when there is one
-    (a publish again: one more commit on the open PR) and from the freshly fetched trunk otherwise. `home` is
+    `story.trunk`; the PR's number and URL. The branch starts from the remote's copy of it while a PR on it
+    is open (a publish again: one more commit on that PR) and from the freshly fetched trunk otherwise; a
+    branch left by a merged or closed PR is replaced (`--force-with-lease`) and a new PR opened. `home` is
     airlie's own checkout; nothing is written in it, and the worktree and local branch made for the publish
-    are removed on every path. A git or gh step that fails is a PublishError."""
+    are removed on every path. A git or gh step that fails is a PublishError; a draft the trunk already
+    holds as it is, NothingToPublish."""
     trunk, remote = cfg.story.trunk, publisher.remote
     branch = f"airlie/workflow/{draft.name}"
     file = f"config/workflows/{draft.name}.yaml"
     prompts = _prompt_paths(draft)
     layout = layout_of(draft)
     await publisher.fetch(home, trunk)
-    start = f"{remote}/{trunk}"
-    with contextlib.suppress(PublishError):  # no such branch on the remote: a first publish
+    start, lease = f"{remote}/{trunk}", False
+    try:
         await publisher.fetch(home, branch)
-        start = f"{remote}/{branch}"
+    except PublishError:  # no such branch on the remote: a first publish
+        pass
+    else:
+        if await publisher.has_open_pr(home, branch):  # one more commit on the PR still open
+            start = f"{remote}/{branch}"
+        else:  # its PR was merged or closed: the branch starts over from the trunk
+            lease = True
     wt = cfg.observability.state_dir.expanduser() / "workflows" / draft.name / "publish"
+    body = wt.parent / "pr.md"
     remove_worktree(home, wt)  # left by an interrupted publish
     shutil.rmtree(wt, ignore_errors=True)
     try:
@@ -197,10 +229,16 @@ async def publish_workflow(
             subject = f"workflow: {draft.name} ({draft.type or 'bundle'})"
             await publisher.run([*git, "commit", "-q", "-m", subject], wt, env)
         elif start == f"{remote}/{trunk}":
-            raise PublishError(f"nothing to publish: {file} on {trunk} already holds workflow {draft.name!r}")
-        await publisher.push_top(wt, branch)
-        await publisher.create_draft(wt, branch, trunk, f"workflow: {draft.name}")
-        return await publisher.pr(wt, branch)
+            raise NothingToPublish(
+                f"nothing to publish: {file} on {trunk} already holds workflow {draft.name!r}"
+            )
+        title = f"workflow: {draft.name}"
+        await publisher.push_top(wt, branch, lease=lease)
+        await publisher.create_draft(wt, branch, trunk, title)
+        number, url = await publisher.pr(wt, branch)
+        body.write_text(pr_body(draft, [file, *prompts.values()]), encoding="utf-8")
+        await publisher.describe(wt, branch, title, body)
+        return number, url
     except subprocess.CalledProcessError as e:
         raise PublishError(
             f"`{' '.join(map(str, e.cmd))}` exited {e.returncode}: {(e.stderr or '').strip()}"
