@@ -248,11 +248,11 @@ async def test_parallel_nodes_both_run_then_the_next_in_order(tmp_path):
 
 
 async def test_a_failing_parallel_branch_cancels_the_others(tmp_path):
+    """A later child that fails cancels the first, still waiting, at once, and its error is raised."""
     cancelled = []
 
     async def runner(node, ctx):
-        if ctx.node == "bad":  # the first child runs inline: it waits once, so the others have started
-            await asyncio.sleep(0)
+        if ctx.node == "bad":
             raise RuntimeError("boom")
         try:
             await asyncio.sleep(10)
@@ -265,15 +265,43 @@ async def test_a_failing_parallel_branch_cancels_the_others(tmp_path):
         "w": {
             "start": "both",
             "nodes": {
-                "both": {"type": "parallel", "nodes": ["bad", "slow"]},
-                "bad": {"type": "check", "run": "r", "outputs": {"a": "text"}},
-                "slow": {"type": "check", "run": "r", "outputs": {"b": "text"}},
+                "both": {"type": "parallel", "nodes": ["slow", "bad"]},
+                "slow": {"type": "check", "run": "r", "outputs": {"a": "text"}},
+                "bad": {"type": "check", "run": "r", "outputs": {"b": "text"}},
             },
         }
     }
     with pytest.raises(RuntimeError, match="boom"):
-        await composer(tmp_path, wf, {"check": runner}).run("w")
+        await asyncio.wait_for(composer(tmp_path, wf, {"check": runner}).run("w"), 5)
     assert cancelled == ["slow"]
+
+
+async def test_a_first_parallel_child_that_fails_before_waiting_stops_the_rest_before_they_start(tmp_path):
+    """The driver's order (`create_task(survey); await _refine`): the first child runs until it first waits
+    before the others start, so one that raises at once leaves the rest without a step or an event."""
+    seen = []
+
+    async def runner(node, ctx):
+        if ctx.node == "bad":
+            raise RuntimeError("boom")
+        seen.append(ctx.node)
+        return {"b": "x"}
+
+    wf = {
+        "w": {
+            "start": "both",
+            "nodes": {
+                "both": {"type": "parallel", "nodes": ["bad", "quiet"]},
+                "bad": {"type": "check", "run": "r", "outputs": {"a": "text"}},
+                "quiet": {"type": "check", "run": "r", "outputs": {"b": "text"}},
+            },
+        }
+    }
+    store = MemoryStore({"card": "c"})
+    with pytest.raises(RuntimeError, match="boom"):
+        await composer(tmp_path, wf, {"check": runner}, store=store).run("w")
+    assert seen == []
+    assert [f["node"] for k, f in store.events if k == "node_started"] == ["both", "bad"]
 
 
 async def test_a_branch_picks_the_next_node_by_an_output(tmp_path):

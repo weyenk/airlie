@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -234,23 +234,47 @@ class Composer:
     async def _parallel(
         self, workflow: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
     ) -> None:
-        """The first child runs in this coroutine and the rest as tasks beside it, started when it first
-        waits (as the driver runs refine with the survey beside it): a failure of the first stops the rest
-        before they take another step. A later child's failure surfaces once the first is done."""
+        """Every child at once, in the driver's order (`create_task(survey); await _refine`): the first runs
+        in this coroutine until it first waits, the rest as tasks that start then. Any failure stops the
+        rest and is raised: the first's cancels the tasks (one not started yet never takes a step); a later
+        child's cancels this coroutine, and so the first, at once, and is raised in place of the cancel."""
         spec = self.cfg.workflows[workflow]
         first, *rest = node.nodes
+        parent = asyncio.current_task()
+        failed: list[BaseException] = []
+        inline = True  # the first child is still running here
+
+        def stop(task: asyncio.Future[Any]) -> None:
+            if task.cancelled() or (error := task.exception()) is None or failed:
+                return
+            failed.append(error)
+            if inline and parent is not None:
+                parent.cancel()
+
         tasks = [
             asyncio.ensure_future(self._run_node(workflow, child, spec.nodes[child], formats, item))
             for child in rest
         ]
+        for task in tasks:
+            task.add_done_callback(stop)
         try:
             await self._run_node(workflow, first, spec.nodes[first], formats, item)
+            inline = False
             await asyncio.gather(*tasks)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            await self._cancel(tasks)
+            if failed and parent is not None and parent.uncancel() == 0:
+                raise failed[0] from None  # a later child failed: its error, not the cancel it caused
             raise
+        except BaseException:
+            await self._cancel(tasks)
+            raise
+
+    @staticmethod
+    async def _cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _each(self, node: NodeSpec) -> None:
         assert node.over is not None and node.workflow is not None

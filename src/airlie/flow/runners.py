@@ -36,33 +36,36 @@ async def ask_runner(
     stop: `args.failed(ctx, error)` runs when the node names it, and the node fails without outputs."""
     assert node.prompt is not None and isinstance(node.role, str)  # spec.py: an ask needs a role and prompt
     role = seat(node.role)
-    brief = ctx.registry[node.prompt]
+    brief = ctx.registry[node.prompt]  # the ids and counts resolve before the ask: a wrong one is no
+    parse = ctx.registry[node.parse] if node.parse is not None else None  # failed ask to continue past
+    failed = ctx.registry[node.args["failed"]] if "failed" in node.args else None
+    after = ctx.registry[node.after] if node.after is not None else None
+    steps = resolve_count(ctx.cfg, node.steps) if node.steps is not None else None
     asking = ask or asker.ask
     try:
-        if node.parse is not None:
+        if parse is not None:
             value: Any = await asker.usable(
                 st,
                 ctx.node,
                 role,
                 next(iter(node.outputs), ctx.node),
                 lambda feedback: brief(ctx, feedback),
-                ctx.registry[node.parse],
-                resolve_count(ctx.cfg, node.steps) if node.steps is not None else None,
+                parse,
+                steps,
                 ask=asking,
             )
         else:
-            steps = resolve_count(ctx.cfg, node.steps) if node.steps is not None else None
             value = await asking(st, ctx.node, role, brief(ctx, None), steps=steps, long=False)
     except Exception as e:
         if node.on_fail != "continue":
             if isinstance(e, NotActionable):
                 raise StoryBlocked(f"{node.role} says this cannot be built as written: {e}") from e
             raise
-        if (failed := node.args.get("failed")) is not None:
-            await _maybe(ctx.registry[failed](ctx, e))
+        if failed is not None:
+            await _maybe(failed(ctx, e))
         return {FAIL_KEY: f"{type(e).__name__}: {e}"}
-    if node.after is not None:
-        await _maybe(ctx.registry[node.after](ctx, value))
+    if after is not None:
+        await _maybe(after(ctx, value))
     plain = value.to_dict() if hasattr(value, "to_dict") else value
     return {name: plain for name in list(node.outputs)[:1]}
 
