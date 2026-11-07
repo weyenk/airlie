@@ -83,8 +83,8 @@ class StateStore:
         if head in self._memory and key:
             self._memory[head][key] = value
         elif not key:
-            if head not in self._fields:
-                raise KeyError(name)
+            if head in self._loose or head not in self._fields:  # a loose name is read-only: `get` reads
+                raise KeyError(name)  # the mapping, so a write to the state field would never be read back
             setattr(self.st, head, value)
         else:
             self._dict_field(name, head)[key] = value

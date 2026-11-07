@@ -953,7 +953,7 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
     pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
     card = text_card("add a marker")
     st = StoryState(path=tmp_path, card={}, repo=str(repo))
-    registry = story_registry(pipe, st, card)
+    registry = story_registry(pipe, st, card, until="review")
     nodes = [node for spec in pipe.cfg.workflows.values() for node in spec.nodes.values()]
     named = {
         id
@@ -1017,7 +1017,7 @@ async def test_check_callables_read_inputs_from_the_store_not_the_pipeline(tmp_p
     sha = git(repo, "rev-parse", "HEAD")
     base = {"ref": f"origin/{pipe.s.trunk}", "sha": sha}
     store = MemoryStore({"base": base})
-    registry = story_registry(pipe, st, card)
+    registry = story_registry(pipe, st, card, until="review")
     node = pipe.cfg.workflows["story"].nodes["gate"]
     out = await check_runner(node, run_context(pipe, registry, store, "gate"))
     assert st.base is None  # read from the store, never the pipeline's state
@@ -1110,11 +1110,14 @@ EXPECTED_RUN_KINDS = [
 ]  # fmt: skip
 
 
-def built_run(st: StoryState, root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def built_run(st: StoryState, root: Path, *, composer: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`plan_events` and `plan_state` of a story that built layers: each commit (its own in every
     repository, as the commit times differ) named by the order it first appears in, as are its short names,
-    and every studio run id and pytest's time in a gate's output ("1 failed in 0.01s") spelled the same."""
+    and every studio run id and pytest's time in a gate's output ("1 failed in 0.01s") spelled the same.
+    `composer` says which ran it, and the raw log must agree: node events only under the composer."""
     assert st.base is not None
+    started = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "node_started"]
+    assert bool(started) is composer, f"composer={composer} but {len(started)} node_started events"
 
     def same(text: str) -> str:
         return re.sub(r" in \d+\.\d+s\b", " in <s>", re.sub(r"\b\d{8}-\d{6}-[0-9a-f]{4}\b", "<run>", text))
@@ -1151,7 +1154,7 @@ async def test_the_composer_runs_a_story_with_the_drivers_events_fields_and_stat
         repo = repo_with_marker_tests(root)
         st = await pipeline(root, repo, happy_engine(), composer=composer).run(text_card("add a marker"))
         assert st.blocked is None and st.stage == "review", st.blocked
-        seen.append(built_run(st, root))
+        seen.append(built_run(st, root, composer=composer))
     (driver_events, driver_state), (composer_events, composer_state) = seen
     assert composer_events == driver_events
     assert composer_state == driver_state
@@ -1182,7 +1185,7 @@ async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_comp
         pipe = pipeline(root, repo, engine, test_cmd=cmd, story={"layer_attempts": 2}, composer=composer)
         st = await pipe.run(text_card("multiply"))
         assert (st.blocked is None) == (ends == "built"), st.blocked
-        events, state = built_run(st, root)
+        events, state = built_run(st, root, composer=composer)
         assert [e["attempt"] for e in events if e["kind"] == "layer_start"] == [1, 2]
         seen.append((events, state))
     assert seen[1] == seen[0]
@@ -1223,7 +1226,7 @@ async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) ->
                 "build",
             ]
             assert ("drafts", "02") in skipped  # the drafting was held once, before layer 01
-        seen.append(built_run(st, root))
+        seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
 
 
@@ -1249,7 +1252,7 @@ async def test_a_satisfied_layer_runs_the_same_through_the_composer(tmp_path: Pa
         st = await pipeline(root, repo, engine, composer=composer).run(text_card("add a marker"))
         assert st.blocked is None and st.stage == "review", st.blocked
         assert list(st.built) == ["01"] and list(st.satisfied) == ["02"]
-        seen.append(built_run(st, root))
+        seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
 
 
@@ -1416,7 +1419,7 @@ async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) ->
         pipe = pipeline(root, repo, engine, test_cmd=cmd, story={"layer_attempts": 2}, composer=composer)
         st = await pipe.run(text_card("multiply"))
         assert st.blocked is None and st.stage == "review", st.blocked
-        events, state = built_run(st, root)
+        events, state = built_run(st, root, composer=composer)
         kinds = [e["kind"] for e in events]
         assert kinds.count("packages_drafting") == 1 and kinds.count("package_resumed") == 1
         assert "drafts_session" not in json.loads((st.path / "state.json").read_text())  # never saved
@@ -1463,7 +1466,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         later = [e["kind"] for e in kinds_all(log)[before:]]
         assert later.count("package_start") == 2 and "package_resumed" not in later
         assert "packages_drafting" not in later
-        seen.append(built_run(st, root))
+        seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
 
 
@@ -1684,6 +1687,7 @@ async def test_the_review_gate_ends_the_run_and_releases_the_build_lane(
     with lane_lock(pipe.stories_dir, "build") as held:
         assert held
         st = await pipe.run(text_card("add a marker"))
+        assert lock_held(pipe.stories_dir, "build") is True  # still ours: the run neither took nor freed it
     assert st.blocked is None and st.stage == "review" and st.done("review"), st.blocked
     assert returned == ["review"]
     events = kinds_all(st.path / "events.jsonl")
@@ -1696,3 +1700,29 @@ async def test_the_review_gate_ends_the_run_and_releases_the_build_lane(
     assert [e["outcome"] for e in gate] == ["done"]
     assert json.loads(phase_path(pipe.stories_dir).read_text())["phase"] == "idle"
     assert lock_held(pipe.stories_dir, "build") is False
+
+
+async def test_a_build_after_the_review_gate_resumes_after_it_the_same_either_way(tmp_path: Path) -> None:
+    """Review Focus 5's other half: a fresh pipeline's `build` of a story the review gate finished returns at
+    once at stage review, building nothing, with the driver's events (a resumed `story_start`, then
+    `story_done`), composer or not."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        card = text_card("add a marker")
+        first = await pipeline(root, repo, happy_engine(), composer=composer).run(card)
+        assert first.blocked is None and first.stage == "review", first.blocked
+        before = len(kinds_all(first.path / "events.jsonl"))
+        st = await asyncio.wait_for(pipeline(root, repo, happy_engine(), composer=composer).build(card), 30)
+        assert st.blocked is None and st.stage == "review", st.blocked
+        again = kinds_all(st.path / "events.jsonl")[before:]
+        story = [
+            (e["kind"], e.get("stage"), e.get("resumed")) for e in again if not e["kind"].startswith("node_")
+        ]
+        assert story[0] == ("story_start", "review", True) and story[-1][:2] == ("story_done", "review")
+        assert not {"layer_start", "package_start", "layer_built", "published"} & {k for k, _, _ in story}
+        assert any(e["kind"] == "node_started" for e in again) is composer
+        seen.append(story)
+    assert seen[1] == seen[0]

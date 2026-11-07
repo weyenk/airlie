@@ -1,8 +1,9 @@
 """The generic node runners: one loop per node type, with a workflow's own pieces (brief builders, parsers,
 after-hooks) looked up in the registry by id (docs/superpowers/specs/2026-11-06-generic-nodes-design.md).
 
-Nothing here knows a story: a workflow binds the asker, the record it writes on and how a YAML role names a
-configured seat (`functools.partial`), and registers the pieces its nodes name."""
+The runners depend on the story package's `Asker`, `Recorder`, `Say`, `StoryBlocked` and `NotActionable`
+types, but hold no story-specific logic: a workflow binds the asker, the record it writes on and how a YAML
+role names a configured seat (`functools.partial`), and registers the pieces its nodes name."""
 
 from __future__ import annotations
 

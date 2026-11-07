@@ -382,3 +382,28 @@ and type. The screen ignores events it does not read, so this is additive. One r
   and gate nodes; the ask node and the plan lane on the bench; the conversation node and drafts; the
   layer bundle with the build dissolved; the supervisor on events; the trace diff and the flip.
 - Where `node_started` and `node_finished` go in the hover cards, if anywhere. Nothing is required.
+
+## Part 1 as built (2026-11-07)
+
+Where the build differs from the text above:
+
+- The `prepare` GitHub block stays in `_drive`'s prologue, not in a node.
+- There is no `skill` node: the router call stays inside the meeting setup, and the drafts critic runs
+  inside the drafting turn body.
+- Extra check nodes: `take_card_as_story`, `agree_plain`, `costed_*`, `planned`, `built`.
+- `package` continues the drafting session through a `session:` field.
+- `package.{item}` is an in-memory artifact, never saved.
+- A third node event, `node_skipped`, beside `node_started` and `node_finished`.
+- Conversations take an `args.turns` registry body (`story.layers_turns`, `story.drafts_turns`); `steps`
+  on a conversation means turns.
+- `steps` on an ask without a parser means tool steps.
+- The composer stores only a node's declared outputs; a loop's carry key and the failure key are for
+  routing only.
+- A loop jump forces its target to run, even with its outputs present.
+- A parallel node runs its first child inline (the rest as tasks), and any child's failure cancels the
+  rest.
+- The plan's own `refine` verdict stays unread in the rounds, as on main; enabling it is a separate
+  decision.
+- Under the composer the drafting conversation stays held until the run ends (through publish and the
+  review gate); the driver closes it before publish. Accepted.
+- The layer build is still one `write` node wrapping `_build_once`, until Part 2.

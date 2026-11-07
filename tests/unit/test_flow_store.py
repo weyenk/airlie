@@ -60,6 +60,17 @@ def test_put_on_an_unknown_field_is_refused(tmp_path):
         StateStore(st, loose={}).put("path", 1)
 
 
+def test_put_on_a_loose_name_is_refused(tmp_path):
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    card = dict(st.card)
+    s = StateStore(st, loose={"card": "c", "repo": "r"})
+    for name in ("card", "repo"):
+        with pytest.raises(KeyError):
+            s.put(name, "other")
+    assert s.get("card") == "c" and st.card == card and st.repo == str(repo)
+
+
 def test_sessions_hold_objects_in_memory_only():
     ss = Sessions()
     obj = object()

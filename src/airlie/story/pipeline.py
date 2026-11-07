@@ -680,9 +680,8 @@ class StoryPipeline:
                 if st.blocked is not None:
                     st.blocked = None
                     st.save()
-            if (
-                self.s.composer and until == "planned"
-            ):  # the same steps, ordered by config/workflows/story.yaml
+            # the same steps, ordered by config/workflows/story.yaml
+            if self.s.composer and until == "planned":
                 await compose(self, st, card, until=until)  # its `planned` node says story_planned
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)
                 return st

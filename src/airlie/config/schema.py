@@ -971,6 +971,12 @@ class AirlieConfig(Strict):
         """Return human-readable problems; empty means consistent."""
         problems: list[str] = []
         problems.extend(check_workflows(self.workflows))
+        if self.story.composer:  # fail at load, not when the first story reaches the composer
+            problems += [
+                f"story.composer is on but workflows.{name} is missing"
+                for name in ("story", "layer")
+                if name not in self.workflows
+            ]
         served_by: dict[str, list[str]] = {m: [] for m in self.models}
         for ename, e in self.engines.items():
             for m in e.models:

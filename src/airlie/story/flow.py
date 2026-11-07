@@ -294,7 +294,7 @@ def seat(pipe: StoryPipeline, role: str) -> str:
     return str(getattr(pipe.s, f"{role}_role", role))
 
 
-def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until = "planned") -> Registry:
+def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until) -> Registry:
     """Every `story.*` id the story and layer workflows name. The checks, the meeting's piece, the layer's
     package and build, and the review gate call today's steps; the predicates are today's conditions; the
     asks' and conversations' briefs, parsers, after-hooks and turn bodies are their pieces."""

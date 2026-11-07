@@ -94,7 +94,7 @@ workflows:
       publish:
         type: check
         run: story.publish
-        inputs: [layers]
+        inputs: [story, layers]
         outputs: {prs: list}
       costed_publish:
         type: check

@@ -78,6 +78,32 @@ def test_story_composer_defaults_off(tmp_path):
     assert load_config(write(tmp_path, MINIMAL)).story.composer is False
 
 
+@pytest.mark.parametrize(
+    ("names", "missing"), [((), ["story", "layer"]), (("story",), ["layer"]), (("layer",), ["story"])]
+)
+def test_the_composer_on_without_its_workflows_is_a_problem(tmp_path, names, missing):
+    from airlie.config import ConfigError, load_config
+    from tests.unit.test_config import MINIMAL, write
+
+    workflows = {n: {"start": "a", "nodes": {"a": {"type": "check", "run": "r"}}} for n in names}
+    data = {**MINIMAL, "story": {**MINIMAL.get("story", {}), "composer": True}, "workflows": workflows}
+    with pytest.raises(ConfigError) as raised:
+        load_config(write(tmp_path, data))
+    for name in missing:
+        assert f"story.composer is on but workflows.{name} is missing" in str(raised.value)
+    for name in set(("story", "layer")) - set(missing):
+        assert f"workflows.{name} is missing" not in str(raised.value)
+
+
+def test_the_composer_on_with_both_workflows_loads(tmp_path):
+    from airlie.config import load_config
+    from tests.unit.test_config import MINIMAL, write
+
+    workflows = {n: {"start": "a", "nodes": {"a": {"type": "check", "run": "r"}}} for n in ("story", "layer")}
+    data = {**MINIMAL, "story": {**MINIMAL.get("story", {}), "composer": True}, "workflows": workflows}
+    assert load_config(write(tmp_path, data)).story.composer is True
+
+
 def test_a_parallel_child_may_not_use_loop_branch_next_or_an_on_fail_loop():
     w = wf(
         p=NodeSpec(type="parallel", nodes=["a", "b", "c", "d", "e"]),

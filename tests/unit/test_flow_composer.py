@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -586,3 +587,47 @@ async def test_feedback_carried_in_one_item_is_not_read_by_the_next(tmp_path):
     }
     await composer(tmp_path, wf, {"check": check_that(build)}, store=store).run("story")
     assert calls == [("01", None), ("01", "red 01"), ("02", None), ("02", "red 02")]
+
+
+async def test_a_result_key_the_node_does_not_declare_is_not_stored(tmp_path):
+    c = composer(
+        tmp_path,
+        {"w": {"start": "a", "nodes": {"a": {"type": "check", "run": "r", "outputs": {"x": "text"}}}}},
+        {"check": check_that(lambda n, c: {"x": 1, "y": 2})},
+    )
+    await c.run("w")
+    assert c.store.get("x") == 1 and not c.store.has("y")
+
+
+async def test_a_when_loop_on_a_state_store_carries_feedback_without_storing_the_carry_key(tmp_path):
+    from airlie.flow import StateStore
+    from airlie.story.state import StoryState
+    from tests.unit.test_fork_orchestrator import repo_with_marker_tests
+    from tests.unit.test_story_pipeline import text_card
+
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    calls = []
+    registry = Registry()
+    registry.add("again", lambda ctx, result: ctx.feedback is None)
+    runner = check_that(
+        lambda n, c: (calls.append(c.feedback), {"story": {"n": len(calls)}, "note": "fb"})[1]
+    )
+    wf = {
+        "w": {
+            "start": "a",
+            "nodes": {
+                "a": {
+                    "type": "check",
+                    "run": "r",
+                    "outputs": {"story": "json"},
+                    "loop": {"to": "a", "max": 3, "when": "again", "carry": "note"},
+                }
+            },
+        }
+    }
+    c = composer(tmp_path, wf, {"check": runner}, store=StateStore(st, loose={}), registry=registry)
+    await c.run("w")
+    assert calls == [None, "fb"] and st.story == {"n": 2}
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert saved["story"] == {"n": 2} and "note" not in saved and "feedback" not in saved

@@ -350,9 +350,17 @@ class Composer:
             )
             raise
         failure = result.get(FAIL_KEY)
-        for key, value in ({} if failure is not None else result).items():
+        # only the node's declared outputs land: a loop's carry key and FAIL_KEY are for routing, and any
+        # other key a runner returns is not an artifact (a StateStore would refuse a name it has no field for)
+        for key, fmt in ({} if failure is not None else node.outputs).items():
             target = self._name(key, item)
-            if node.outputs.get(key) == "session":
+            if key in result:
+                value = result[key]
+            elif target in result:
+                value = result[target]
+            else:
+                continue
+            if fmt == "session":
                 self.sessions.put(target, value)
             else:
                 self.store.put(target, value)
