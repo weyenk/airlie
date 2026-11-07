@@ -7,6 +7,7 @@ import type { RouteLocationNormalized } from "vue-router";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { deleteDraft } from "@/api/workflow_defs";
 import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
@@ -18,6 +19,7 @@ import Problems from "./builder/Problems.vue";
 import SaveDialog from "./builder/SaveDialog.vue";
 import { useBuilder } from "./builder/useBuilder";
 import WireForm from "./builder/WireForm.vue";
+import WorkflowForm from "./builder/WorkflowForm.vue";
 
 /** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the palette, the workflow drawn as boxes
  * and wires, the selected box's or wire's form, and the YAML. Validate and Save draft run the server's checks, so
@@ -99,16 +101,41 @@ function focus(id: string) {
   selected.value = id;
 }
 
-// saving: in place for a draft; a new canvas, or a file's workflow, asks for a name first
+// saving: in place for a draft, and for a file's workflow (a draft of the file's name is an edit of that file,
+// published as a change to it; the file runs until then); a new canvas asks for a name first
 const asking = ref(false);
 const reason = ref<string | null>(null);
 async function saveClick() {
-  if (b.isNew.value || detail.value?.source === "file") {
-    reason.value = detail.value?.source === "file" ? `${detail.value.name} is a workflow in the repo's files; your changes save as a draft under a name of its own.` : null;
+  if (b.isNew.value) {
+    reason.value = null;
     asking.value = true;
     return;
   }
-  await saveAs(name.value, graph.value.type);
+  await saveAs(detail.value?.name ?? name.value, graph.value.type);
+}
+/** The workflow's own fields (type, loose, start), from the panel shown while nothing is selected. */
+function updateWorkflow(change: { type?: string | null; loose?: string[]; start?: string }) {
+  b.edit((g) => ({ ...g, ...change }));
+}
+
+// Delete draft: asked first; the draft goes (an edit of a file leaves the file as it is) and the builder returns
+// to the Workflows page
+const deleting = ref(false);
+async function deleteConfirmed() {
+  deleting.value = false;
+  const gone = detail.value?.name ?? name.value;
+  try {
+    await deleteDraft(gone);
+  } catch (e) {
+    error.value = e instanceof Error ? e : String(e);
+    return;
+  }
+  letGo = true; // the draft is gone: its unsaved changes with it
+  try {
+    await router.push("/workflows");
+  } finally {
+    letGo = false;
+  }
 }
 async function saveAs(as: string, type: string | null) {
   asking.value = false;
@@ -146,9 +173,10 @@ async function cancel() {
     letGo = false;
   }
 }
-/** The dialog only asks when the current name will not do (a new canvas, a file's name, a name refused), so every
- * name a workflow has is taken. */
-const taken = computed(() => defs.value.map((d) => d.name));
+/** The dialog asks for a new canvas's name, or again after a refusal: a draft's name is taken (saving would replace
+ * it); a file's name is not, and saves an edit of that file. */
+const taken = computed(() => defs.value.filter((d) => d.source === "draft" && d.name !== name.value).map((d) => d.name));
+const files = computed(() => defs.value.filter((d) => d.source === "file").map((d) => d.name));
 
 // unsaved changes: leaving (or loading another workflow) asks first; closing the tab asks the browser's way
 const leaving = ref<string | null>(null);
@@ -186,12 +214,14 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <RouterLink to="/workflows" class="inline-flex items-center gap-1 text-[13px] text-muted-foreground"><ChevronLeft class="size-4" />Workflows</RouterLink>
       <h1 class="font-mono text-lg font-bold">{{ title }}</h1>
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
-      <span v-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
+      <span v-if="detail?.edits_file" data-edits-file :title="`Publishing changes the repo's ${detail.name}; until it merges, the file runs`" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">edit of {{ detail.name }}</span>
+      <span v-else-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
       <span v-if="count" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ count }} {{ count === 1 ? "problem" : "problems" }}</span>
       <a v-if="detail?.pr" data-pr :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">PR #{{ detail.pr.number }}</a>
       <span v-if="b.dirty.value" data-dirty class="text-xs text-muted-foreground">Unsaved changes</span>
       <span class="grow" />
       <Button v-if="card" size="sm" variant="ghost" data-cancel @click="cancel">Cancel</Button>
+      <Button v-if="detail?.source === 'draft'" size="sm" variant="ghost" data-delete :disabled="b.saving.value || b.publishing.value" @click="deleting = true">Delete draft</Button>
       <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
       <Button size="sm" data-save :disabled="b.broken.value || b.saving.value || b.publishing.value" @click="saveClick">Save draft</Button>
       <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value || b.saving.value" @click="publishClick">Publish</Button>
@@ -260,21 +290,31 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           @remove="removeBox"
           @create-prompt="addPrompt"
         />
-        <template v-else>
-          <p class="text-muted-foreground">Select a box or a wire to see its fields. Drag from a box's right port to another box to wire them.</p>
-          <dl v-if="graph.start" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
-            <dt class="text-muted-foreground">start</dt>
-            <dd class="font-mono text-xs">{{ graph.start }}</dd>
-            <template v-if="graph.loose.length">
-              <dt class="text-muted-foreground">loose</dt>
-              <dd class="font-mono text-xs">{{ graph.loose.join(", ") }}</dd>
-            </template>
-          </dl>
-        </template>
+        <WorkflowForm
+          v-else
+          :type="graph.type"
+          :loose="graph.loose"
+          :start="graph.start"
+          :nodes="graph.nodes.filter((n) => !isChild(graph, n.id)).map((n) => n.id)"
+          :types="cardTypes"
+          @update="updateWorkflow"
+        />
       </aside>
     </div>
 
-    <SaveDialog v-model:open="asking" :taken="taken" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
+    <SaveDialog v-model:open="asking" :taken="taken" :files="files" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
+    <Dialog :open="deleting" @update:open="(v) => !v && (deleting = false)">
+      <DialogContent :show-close-button="false">
+        <DialogHeader>
+          <DialogTitle>Delete the draft {{ title }}?</DialogTitle>
+          <DialogDescription>{{ detail?.edits_file ? `The edit goes; the repo's ${title} stays as it is.` : "The draft and its prompt files go. A card that names it can no longer start." }}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" data-delete-cancel @click="deleting = false">Keep it</Button>
+          <Button variant="destructive" data-delete-confirm @click="deleteConfirmed">Delete draft</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <Dialog :open="leaving !== null" @update:open="(v) => !v && (leaving = null)">
       <DialogContent :show-close-button="false">
         <DialogHeader>

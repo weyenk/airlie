@@ -287,6 +287,18 @@ test("the Definitions table lists every workflow, each opening in the builder", 
   expect(router.currentRoute.value.fullPath).toBe("/workflows/build/layer");
 });
 
+test("a draft that edits a file is listed beside it as that file's edit", async () => {
+  const edit: WorkflowDef = { name: "story", type: "story", source: "draft", problems: [], pr: { number: 9, url: "https://github.com/weyenk/airlie/pull/9" }, superseded: true };
+  defsApi.listWorkflowDefs.mockResolvedValue([...structuredClone(DEFS), edit]);
+  const { w } = await open();
+  const rows = w.findAll("[data-def=story]");
+  expect(rows).toHaveLength(2);
+  expect(rows[0].text()).toContain("file");
+  expect(rows[1].attributes("data-def-edit")).toBeDefined();
+  expect(rows[1].text()).toContain("edit of story");
+  expect(rows[1].find("a[href='/workflows/build/story']").exists()).toBe(true);
+});
+
 test("a Definitions list that does not load says so and offers a retry", async () => {
   defsApi.listWorkflowDefs.mockRejectedValueOnce(new Error("down"));
   const { w } = await open();

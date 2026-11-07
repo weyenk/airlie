@@ -51,8 +51,11 @@ export type Move = "sequence" | "parallel" | "loop" | "branch" | "each";
 export const MOVES: readonly Move[] = ["sequence", "parallel", "loop", "branch", "each"];
 export type MoveOpts = { loop?: LoopWire; branch?: { on: string; value: string }; each?: { workflow: string } };
 
+/** The loose names a new canvas starts with: what the shipped workflows read without a box writing it. */
+export const NEW_LOOSE: readonly string[] = ["card", "repo"];
+
 export function emptyGraph(name: string): Graph {
-  return { name, type: null, start: "", loose: [], nodes: [], edges: [], bundles: {} };
+  return { name, type: null, start: "", loose: [...NEW_LOOSE], nodes: [], edges: [], bundles: {} };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);

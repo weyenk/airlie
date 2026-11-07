@@ -8,7 +8,7 @@ import { type CreateForm, useCardDraftStore } from "@/stores/card_draft";
 import { STORY_YAML } from "@/test-utils/workflow-yaml";
 import BuilderScreen from "./BuilderScreen.vue";
 
-const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn() }));
+const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn(), deleteDraft: vi.fn() }));
 vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...api }));
 
 const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
@@ -77,6 +77,7 @@ beforeEach(() => {
   );
   api.validateWorkflow.mockReset().mockResolvedValue([]);
   api.publishWorkflow.mockReset().mockResolvedValue({ number: 12, url: "https://github.com/weyenk/airlie/pull/12" });
+  api.deleteDraft.mockReset().mockResolvedValue(undefined);
   sessionStorage.clear();
 });
 afterEach(() => {
@@ -228,9 +229,14 @@ test("Save on a new canvas asks for a kebab-case name and a type first, then ope
   await flushPromises();
   expect(d.textContent).toContain("kebab-case");
   expect((d.querySelector("[data-save-confirm]") as HTMLButtonElement).disabled).toBe(true);
-  type(d.querySelector("[data-save-name]"), "fix"); // taken
+  type(d.querySelector("[data-save-name]"), "fix"); // another draft's
   await flushPromises();
   expect(d.textContent).toContain("already");
+  type(d.querySelector("[data-save-name]"), "story"); // a file's: allowed, as an edit of it
+  await flushPromises();
+  expect(d.querySelector("[data-save-problem]")).toBeNull();
+  expect(d.querySelector("[data-save-edits-file]")!.textContent).toContain("edit of it");
+  expect((d.querySelector("[data-save-confirm]") as HTMLButtonElement).disabled).toBe(false);
   type(d.querySelector("[data-save-name]"), "my-flow");
   type(d.querySelector("[data-save-type]"), "bug");
   await flushPromises();
@@ -245,30 +251,95 @@ test("Save on a new canvas asks for a kebab-case name and a type first, then ope
   expect(w.get("h1").text()).toBe("my-flow");
 });
 
-test("a workflow in the repo's files saves as a draft under a new name", async () => {
+test("a workflow in the repo's files saves in place, as an edit of that file that Publish then opens", async () => {
+  api.saveDraft.mockImplementationOnce(async (name: string, body: { type: string | null; yaml: string; prompts: Record<string, string> }) =>
+    detail({ name, type: body.type, source: "draft", yaml: body.yaml, edits_file: true }),
+  );
   const { w } = await open();
+  expect(w.find("[data-edits-file]").exists()).toBe(false);
+  await w.get("[data-box][data-node=intake]").trigger("click"); // a box moved is the usual edit; any will do
+  await w.get("[data-box][data-node=intake]").trigger("click");
   await w.get("[data-save]").trigger("click");
   await flushPromises();
-  expect(api.saveDraft).not.toHaveBeenCalled();
-  expect(dialog()!.textContent).toContain("repo's files");
-  type(dialog()!.querySelector("[data-save-name]"), "story-two");
-  await flushPromises();
-  (dialog()!.querySelector("[data-save-confirm]") as HTMLButtonElement).click();
-  await flushPromises();
+  expect(dialog()).toBeNull(); // no name asked: the file's own
   const [name, body] = api.saveDraft.mock.calls[0];
-  expect(name).toBe("story-two");
+  expect(name).toBe("story");
   expect(body.type).toBe("story");
-  expect(body.yaml).toContain("workflows:\n  story-two:\n");
+  expect(body.yaml).toContain("workflows:\n  story:\n");
+  expect(w.get("[data-edits-file]").text()).toBe("edit of story");
+  expect(publishButton(w).disabled).toBe(false);
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(api.publishWorkflow).toHaveBeenCalledWith("story");
 });
 
-test("a save the server refuses as a file's name asks for another", async () => {
+test("a saved edit of a file opens as that edit", async () => {
+  api.getWorkflowDef.mockResolvedValue(detail({ source: "draft", edits_file: true }));
+  const { w } = await open();
+  expect(w.get("[data-edits-file]").text()).toBe("edit of story");
+  expect(publishButton(w).disabled).toBe(false);
+});
+
+test("a save the server refuses in place asks for another name", async () => {
   api.getWorkflowDef.mockResolvedValue(fixDraft());
-  api.saveDraft.mockRejectedValueOnce(new ApiError(409, "'fix' is a workflow in the repo's files; a draft needs its own name"));
+  api.saveDraft.mockRejectedValueOnce(new ApiError(422, "draft workflow 'fix' must hold `workflows:` with the one workflow 'fix'"));
   const { w } = await open("/workflows/build/fix");
   await w.get("[data-palette-type=gate]").trigger("click");
   await w.get("[data-save]").trigger("click");
   await flushPromises();
-  expect(dialog()!.textContent).toContain("a draft needs its own name");
+  expect(dialog()!.textContent).toContain("must hold");
+});
+
+test("Delete draft asks first; Keep it keeps it, Delete removes it and goes to the Workflows page", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w, router } = await open("/workflows/build/fix");
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved changes go with the draft: nothing more asked
+  await w.get("[data-delete]").trigger("click");
+  await flushPromises();
+  expect(dialog()!.textContent).toContain("Delete the draft fix?");
+  (dialog()!.querySelector("[data-delete-cancel]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(api.deleteDraft).not.toHaveBeenCalled();
+  await w.get("[data-delete]").trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-delete-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(api.deleteDraft).toHaveBeenCalledWith("fix");
+  expect(router.currentRoute.value.fullPath).toBe("/workflows");
+});
+
+test("a delete that fails stays and says why; a file or a new canvas has no Delete", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.deleteDraft.mockRejectedValueOnce(new Error("gone already"));
+  const { w, router } = await open("/workflows/build/fix");
+  await w.get("[data-delete]").trigger("click");
+  await flushPromises();
+  (dialog()!.querySelector("[data-delete-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/workflows/build/fix");
+  expect(w.text()).toContain("gone already");
+  api.getWorkflowDef.mockResolvedValue(detail());
+  await router.push("/workflows/build/story");
+  await flushPromises();
+  expect(w.find("[data-delete]").exists()).toBe(false);
+  await router.push("/workflows/build/new");
+  await flushPromises();
+  expect(w.find("[data-delete]").exists()).toBe(false);
+});
+
+test("with nothing selected the panel edits the workflow's type, loose names and start", async () => {
+  const { w } = await open("/workflows/build/new");
+  await w.get("[data-palette-type=check]").trigger("click");
+  await w.get("[data-palette-type=gate]").trigger("click");
+  await w.get("[data-box][data-node=gate-1]").trigger("click"); // unselect
+  const panel = w.get("[data-workflow-form]");
+  expect(panel.findAll("[data-loose]").map((c) => c.attributes("data-loose"))).toEqual(["card", "repo"]);
+  await panel.get("[data-loose-drop=repo]").trigger("click");
+  await w.get("[data-workflow-input=start]").setValue("gate-1");
+  await w.get("[data-workflow-input=type]").setValue("bug");
+  await w.get("[data-tab=yaml]").trigger("click");
+  const text = w.get("[data-yaml]").text();
+  expect(text).toContain("    type: bug\n    start: gate-1\n    loose: [card]\n");
 });
 
 test("a save the server refuses as unreadable (422) reopens the dialog with its reason", async () => {
@@ -503,6 +574,8 @@ test("Save and Publish wait for each other", async () => {
   expect(publishButton(w).disabled).toBe(true);
   saving.resolve(fixDraft());
   await flushPromises();
+  expect(publishButton(w).disabled).toBe(false); // saved: Publish is back
+  expect((w.get("[data-save]").element as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("a Nothing-to-publish line goes once the canvas is edited", async () => {

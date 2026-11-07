@@ -55,7 +55,8 @@ export function useBuilder(name: Ref<string>) {
   const byNode = computed(() => problemsByNode(problems.value));
   /** What Save would send (the text itself only when it could not be drawn). */
   const yamlText = computed(() => (broken.value && detail.value ? detail.value.yaml : toYaml(graph.value)));
-  /** Publish opens a PR of a saved draft: not a new canvas, a file's workflow, or changes not yet saved. */
+  /** Publish opens a PR of a saved draft (an edit of a file too): not a new canvas, a file's workflow as it is, or
+   * changes not yet saved. */
   const unsaved = computed(() => broken.value || isNew.value || dirty.value || detail.value?.source !== "draft");
 
   let loading = 0;
@@ -136,9 +137,9 @@ export function useBuilder(name: Ref<string>) {
     }
   }
 
-  /** Save the canvas as draft `as` serving `type`. Resolves to true once saved; to `{ refused }` with the
-   * server's reason when it refuses the name or the text (409: a file of the repo's has it; 422: reserved, or the
-   * YAML does not read), for the name dialog to ask again; false on any other failure (shown as the error). An
+  /** Save the canvas as draft `as` serving `type` (a file's name: an edit of that file). Resolves to true once
+   * saved; to `{ refused }` with the server's reason when it refuses the name or the text (422: reserved, or the
+   * YAML does not read; 409 kept for an older server), for the name dialog to ask again; false on any other failure (shown as the error). An
    * unchanged draft sends its own text, so a hand-written file keeps its comments. */
   async function save(as: string, type: string | null): Promise<boolean | { refused: string }> {
     const g: Graph = { ...graph.value, name: as, type };

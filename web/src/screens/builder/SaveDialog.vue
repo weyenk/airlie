@@ -5,9 +5,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 defineOptions({ name: "AirlieBuilderSaveDialog" });
 
-/** The name (kebab-case, not one a workflow already has) and the card type a draft serves, asked before the
- * first save of a new canvas, or of a workflow from the repo's files (whose name is the file's). */
-const props = defineProps<{ open: boolean; taken: string[]; types: string[]; type: string | null; reason?: string | null }>();
+/** The name (kebab-case, not another draft's) and the card type a draft serves, asked before the first save of a
+ * new canvas, or again after the server refused one. A file's name is allowed: the draft is an edit of that file,
+ * which the file's workflow replaces once it is published and merged. */
+const props = defineProps<{ open: boolean; taken: string[]; files?: string[]; types: string[]; type: string | null; reason?: string | null }>();
 const emit = defineEmits<{ "update:open": [open: boolean]; save: [name: string, type: string | null] }>();
 
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -33,6 +34,8 @@ const problem = computed(() => {
   if (props.taken.includes(n)) return `A workflow is already called ${n}.`;
   return null;
 });
+/** Said, not refused: the name is a file's, so this saves an edit of it. */
+const editsFile = computed(() => !problem.value && (props.files ?? []).includes(name.value.trim()));
 const ok = computed(() => !!name.value.trim() && !problem.value);
 function save() {
   if (ok.value) emit("save", name.value.trim(), kind.value.trim() || null);
@@ -61,6 +64,7 @@ const listId = "builder-save-types";
           </datalist>
         </label>
         <p v-if="problem" data-save-problem class="text-xs text-danger-foreground">{{ problem }}</p>
+        <p v-else-if="editsFile" data-save-edits-file class="text-xs text-muted-foreground">{{ name.trim() }} is a workflow in the repo's files: this saves an edit of it, which replaces it once published and merged.</p>
       </form>
       <DialogFooter>
         <Button variant="outline" data-save-cancel @click="emit('update:open', false)">Cancel</Button>
