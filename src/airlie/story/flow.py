@@ -48,6 +48,7 @@ from airlie.story.package import Package, Satisfied
 from airlie.story.rounds import plan_verdict, same_layers
 from airlie.story.state import StoryState
 from airlie.story.tester_lint import lint_note
+from airlie.story.workflows import has_node, workflow_for
 from airlie.topology.studio_plan import extract_json_block
 
 # the pipeline imports this module for `compose`
@@ -550,21 +551,18 @@ def _restore(pipe: StoryPipeline, st: StoryState) -> None:
 
 
 async def compose(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until) -> None:
-    """Run the story workflow over `st`: up to and including `planned` for the planning lane, else to the
-    end. The driver's prologue and its stop mapping stay in `_drive`, around this call."""
-    if "story" not in pipe.cfg.workflows:
-        from airlie.config import ConfigError
-
-        raise ConfigError(
-            "story.composer is on, but the config has no 'story' workflow: include "
-            "config/workflows/story.yaml and config/workflows/layer.yaml"
-        )
+    """Run the card's workflow over `st` (its snapshot, taken now if the card has none: `workflow_for`): up
+    to and including `planned` for the planning lane when the workflow has that node, else to the end. The
+    driver's prologue and its stop mapping stay in `_drive`, around this call."""
+    name, specs = workflow_for(pipe, st, card)
     composer = Composer(
         pipe.cfg,
         runners=story_runners(pipe, st, card),
         registry=story_registry(pipe, st, card, until=until),
         store=StateStore(st, loose={"card": card, "repo": pipe.repo}),
         sessions=Sessions(),
+        workflows=specs,
     )
     _restore(pipe, st)
-    await composer.run("story", until="planned" if until == "planned" else None)
+    planned_lane = until == "planned" and has_node(specs[name], "planned")
+    await composer.run(name, until="planned" if planned_lane else None)

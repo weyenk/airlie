@@ -895,8 +895,9 @@ def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
 
 
 def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
+    """The saved state but its runs and the workflow snapshot (the composer's alone: the driver runs none)."""
     saved = neutral((path / "state.json").read_text(), root, sha)
-    return {k: v for k, v in saved.items() if k != "runs"}
+    return {k: v for k, v in saved.items() if k not in ("runs", "workflow")}
 
 
 @pytest.mark.parametrize("survey", [False, True])
@@ -1154,6 +1155,8 @@ async def test_the_composer_runs_a_story_with_the_drivers_events_fields_and_stat
         repo = repo_with_marker_tests(root)
         st = await pipeline(root, repo, happy_engine(), composer=composer).run(text_card("add a marker"))
         assert st.blocked is None and st.stage == "review", st.blocked
+        # the composer ran the story's snapshot, taken when the card started (D21); the driver takes none
+        assert (st.workflow or {}).get("name") == ("story" if composer else None)
         seen.append(built_run(st, root, composer=composer))
     (driver_events, driver_state), (composer_events, composer_state) = seen
     assert composer_events == driver_events
