@@ -7,6 +7,7 @@ import type { RouteLocationNormalized } from "vue-router";
 import ErrorBanner from "@/components/ErrorBanner.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useCardDraftStore } from "@/stores/card_draft";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
 import { canRemove, connect, isChild, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
@@ -116,7 +117,34 @@ async function saveAs(as: string, type: string | null) {
     // a name (or text) the server refused: ask again, saying why
     reason.value = `The server refused ${as}: ${done.refused}`;
     asking.value = true;
-  } else if (done && as !== name.value) await router.replace(`/workflows/build/${encodeURIComponent(as)}`);
+  } else if (done && card.value) await backToCard(as);
+  else if (done && as !== name.value) await router.replace(`/workflows/build/${encodeURIComponent(as)}`);
+}
+
+async function publishClick() {
+  const as = detail.value?.name ?? name.value;
+  if (!(await b.publish())) return;
+  if (card.value) await backToCard(as);
+  else void reload(); // the definitions list (the palette's bundles, a card's Workflow field) learns of the PR
+}
+
+// from a card (Create's `＋ Build new…`, `?card=<token>`): a save or a publish returns to it with the workflow
+// chosen; Cancel returns with the card as it was
+const card = computed(() => (typeof route.query.card === "string" ? route.query.card : null));
+const drafts = useCardDraftStore();
+const backTo = (token: string) => ({ name: "board", query: { create: token } });
+async function backToCard(workflow: string) {
+  const token = card.value!;
+  drafts.setWorkflow(token, workflow);
+  await router.push(backTo(token));
+}
+async function cancel() {
+  letGo = true; // an explicit leave: nothing to ask
+  try {
+    await router.push(backTo(card.value!));
+  } finally {
+    letGo = false;
+  }
 }
 /** The dialog only asks when the current name will not do (a new canvas, a file's name, a name refused), so every
  * name a workflow has is taken. */
@@ -147,6 +175,8 @@ async function leaveAnyway() {
 }
 
 const count = computed(() => problems.value.length);
+/** Why Publish is off, as its tooltip; undefined when it is on (a publish in flight aside). */
+const publishHelp = computed(() => (b.unsaved.value ? "Save first" : count.value ? "Fix the problems first" : undefined));
 const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medium", on ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"];
 </script>
 
@@ -158,11 +188,13 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
       <span v-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
       <span v-if="count" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ count }} {{ count === 1 ? "problem" : "problems" }}</span>
-      <a v-if="detail?.pr" :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">#{{ detail.pr.number }}</a>
+      <a v-if="detail?.pr" data-pr :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">PR #{{ detail.pr.number }}</a>
       <span v-if="b.dirty.value" data-dirty class="text-xs text-muted-foreground">Unsaved changes</span>
       <span class="grow" />
+      <Button v-if="card" size="sm" variant="ghost" data-cancel @click="cancel">Cancel</Button>
       <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
       <Button size="sm" data-save :disabled="b.broken.value || b.saving.value" @click="saveClick">Save draft</Button>
+      <Button size="sm" variant="outline" data-publish :title="publishHelp" :disabled="publishHelp !== undefined || b.publishing.value" @click="publishClick">Publish</Button>
       <div role="tablist" aria-label="View" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
         <button type="button" role="tab" data-tab="diagram" :aria-selected="tab === 'diagram'" :class="tabClass(tab === 'diagram')" @click="tab = 'diagram'">Diagram</button>
         <button type="button" role="tab" data-tab="yaml" :aria-selected="tab === 'yaml'" :class="tabClass(tab === 'yaml')" @click="tab = 'yaml'">YAML</button>
@@ -170,6 +202,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
     </section>
 
     <ErrorBanner v-if="error" :error="error" />
+    <p v-if="b.publishStatus.value" data-publish-status role="status" class="text-[13px] text-muted-foreground">{{ b.publishStatus.value }}</p>
     <p v-if="b.catalogFailed.value" data-catalog-failed class="text-[13px] text-muted-foreground">
       The registry's catalog could not be loaded, so the forms offer only what the boxes already have.
       <button type="button" class="underline" @click="b.loadCatalog">Retry</button>

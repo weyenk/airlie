@@ -4,10 +4,11 @@ import { h } from "vue";
 import { createMemoryHistory, createRouter, RouterView } from "vue-router";
 import { ApiError } from "@/api";
 import type { Catalog, WorkflowDef, WorkflowDetail } from "@/api/workflow_defs";
+import { type CreateForm, useCardDraftStore } from "@/stores/card_draft";
 import { STORY_YAML } from "@/test-utils/workflow-yaml";
 import BuilderScreen from "./BuilderScreen.vue";
 
-const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn() }));
+const api = vi.hoisted(() => ({ getWorkflowDef: vi.fn(), listWorkflowDefs: vi.fn(), registryCatalog: vi.fn(), publishWorkflow: vi.fn(), saveDraft: vi.fn(), validateWorkflow: vi.fn() }));
 vi.mock("@/api/workflow_defs", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/api/workflow_defs")>()), ...api }));
 
 const detail = (over: Partial<WorkflowDetail> = {}): WorkflowDetail => ({
@@ -55,6 +56,7 @@ async function open(url = "/workflows/build/story") {
     history: createMemoryHistory(),
     routes: [
       { path: "/workflows", component: { template: "<i/>" } },
+      { path: "/board/:key?", name: "board", component: { template: "<i/>" } },
       { path: "/workflows/build/:name", name: "builder", component: BuilderScreen },
     ],
   });
@@ -74,6 +76,8 @@ beforeEach(() => {
     detail({ name, type: body.type, source: "draft", yaml: body.yaml, prompts: body.prompts }),
   );
   api.validateWorkflow.mockReset().mockResolvedValue([]);
+  api.publishWorkflow.mockReset().mockResolvedValue({ number: 12, url: "https://github.com/weyenk/airlie/pull/12" });
+  sessionStorage.clear();
 });
 afterEach(() => {
   document.body.innerHTML = "";
@@ -122,6 +126,15 @@ test("the YAML tab shows the definition's text", async () => {
   expect(w.find("[data-canvas]").exists()).toBe(false);
   await w.get("[data-tab=diagram]").trigger("click");
   expect(w.find("[data-canvas]").exists()).toBe(true);
+});
+
+test("the YAML tab shows what Save would send, a hand-written file's comments regenerated away", async () => {
+  api.getWorkflowDef.mockResolvedValue(detail({ name: "fix", type: "bug", yaml: `# hand-written\n${FIX_YAML}` }));
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-tab=yaml]").trigger("click");
+  expect(w.get("[data-yaml]").text()).not.toContain("# hand-written");
+  expect(w.get("[data-yaml]").text()).toContain("intake:");
+  expect(w.get("[data-yaml-notice]").text()).toContain("Saving regenerates the file");
 });
 
 test("new is an empty canvas, nothing fetched for it", async () => {
@@ -349,4 +362,159 @@ test("leaving with unsaved changes asks first: Stay keeps the canvas, Leave goes
   (dialog()!.querySelector("[data-leave-go]") as HTMLButtonElement).click();
   await flushPromises();
   expect(router.currentRoute.value.fullPath).toBe("/workflows");
+});
+
+// ---- publish ----
+
+const publishButton = (w: Awaited<ReturnType<typeof open>>["w"]) => w.get("[data-publish]").element as HTMLButtonElement;
+
+test("Publish is off while the canvas has problems, is unsaved or is new, and on for a saved draft", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft({ problems: ["workflow fix: node fix: bad"] }));
+  const { w, router } = await open("/workflows/build/fix");
+  expect(publishButton(w).disabled).toBe(true);
+
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  await router.push("/workflows/build/new");
+  await flushPromises();
+  expect(publishButton(w).disabled).toBe(true);
+  expect(w.get("[data-publish]").attributes("title")).toBe("Save first");
+
+  await router.push("/workflows/build/fix");
+  await flushPromises();
+  expect(publishButton(w).disabled).toBe(false);
+  await w.get("[data-palette-type=gate]").trigger("click"); // unsaved
+  await flushPromises();
+  expect(publishButton(w).disabled).toBe(true);
+  expect(w.get("[data-publish]").attributes("title")).toBe("Save first");
+});
+
+test("a file's workflow is not a draft: Publish waits for a save", async () => {
+  const { w } = await open();
+  expect(publishButton(w).disabled).toBe(true);
+});
+
+test("Publish opens the PR and the bar links to it", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w } = await open("/workflows/build/fix");
+  expect(w.find("[data-pr]").exists()).toBe(false);
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(api.publishWorkflow).toHaveBeenCalledWith("fix");
+  const link = w.get("a[data-pr]");
+  expect(link.text()).toBe("PR #12");
+  expect(link.attributes("href")).toBe("https://github.com/weyenk/airlie/pull/12");
+  expect(link.attributes("target")).toBe("_blank");
+});
+
+test("a publish refused for problems (422) lists them and outlines the boxes", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.publishWorkflow.mockRejectedValueOnce(new ApiError(422, JSON.stringify({ problems: ["workflow fix: node fix: input 'repro' is not produced by any node and not loose"] })));
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(w.get("[data-problems]").text()).toContain("1 problem");
+  expect(w.get("[data-box][data-node=fix]").attributes("data-problem")).toBe("true");
+  expect(w.find("[role=alert]").exists()).toBe(false);
+  expect(w.find("[data-pr]").exists()).toBe(false);
+});
+
+test("nothing to publish (409) says the trunk already holds it", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.publishWorkflow.mockRejectedValueOnce(new ApiError(409, "nothing to publish"));
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(w.get("[data-publish-status]").text()).toBe("Nothing to publish: the trunk already holds this definition");
+  expect(w.find("[role=alert]").exists()).toBe(false);
+});
+
+test("a publisher failure (502) shows the server's message", async () => {
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.publishWorkflow.mockRejectedValueOnce(new ApiError(502, "GitHub refused the push"));
+  const { w } = await open("/workflows/build/fix");
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(w.get("[role=alert]").text()).toContain("GitHub refused the push");
+  expect(publishButton(w).disabled).toBe(false);
+});
+
+// ---- the trip back to the card ----
+
+const HELD: CreateForm = { level: "story", title: "Half written", description: "Why", parent: "AIR-2", repo: "weyenk/airlie", workflow: "story" };
+
+test("no card, no Cancel", async () => {
+  const { w } = await open();
+  expect(w.find("[data-cancel]").exists()).toBe(false);
+});
+
+test("from a card, Save on a new canvas returns to the board with the card's token and the new workflow chosen", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  const { w, router } = await open(`/workflows/build/new?card=${token}`);
+  await w.get("[data-palette-type=check]").trigger("click");
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  type(dialog()!.querySelector("[data-save-name]"), "my-flow");
+  await flushPromises();
+  (dialog()!.querySelector("[data-save-confirm]") as HTMLButtonElement).click();
+  await flushPromises();
+  expect(api.saveDraft).toHaveBeenCalledTimes(1);
+  expect(router.currentRoute.value.fullPath).toBe(`/board?create=${token}`);
+  expect(useCardDraftStore().take(token)).toEqual({ ...HELD, workflow: "my-flow" });
+  expect(dialog()).toBeNull(); // no leave-without-saving question
+});
+
+test("from a card, Save on a draft returns to the board with that draft chosen", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w, router } = await open(`/workflows/build/fix?card=${token}`);
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe(`/board?create=${token}`);
+  expect(useCardDraftStore().take(token)).toEqual({ ...HELD, workflow: "fix" });
+});
+
+test("from a card, a failed save stays in the builder", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.saveDraft.mockRejectedValueOnce(new ApiError(500, "disk full"));
+  const { w, router } = await open(`/workflows/build/fix?card=${token}`);
+  await w.get("[data-save]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.path).toBe("/workflows/build/fix");
+  expect(useCardDraftStore().take(token)).toEqual(HELD);
+});
+
+test("from a card, Publish returns to the board with the workflow chosen", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  const { w, router } = await open(`/workflows/build/fix?card=${token}`);
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(api.publishWorkflow).toHaveBeenCalledWith("fix");
+  expect(router.currentRoute.value.fullPath).toBe(`/board?create=${token}`);
+  expect(useCardDraftStore().take(token)).toEqual({ ...HELD, workflow: "fix" });
+});
+
+test("from a card, a failed publish stays in the builder", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  api.getWorkflowDef.mockResolvedValue(fixDraft());
+  api.publishWorkflow.mockRejectedValueOnce(new ApiError(409, "nothing to publish"));
+  const { w, router } = await open(`/workflows/build/fix?card=${token}`);
+  await w.get("[data-publish]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.path).toBe("/workflows/build/fix");
+  expect(useCardDraftStore().take(token)).toEqual(HELD);
+});
+
+test("Cancel returns to the card unchanged: nothing saved, nothing published, no question asked", async () => {
+  const token = useCardDraftStore().hold(HELD);
+  const { w, router } = await open(`/workflows/build/new?card=${token}`);
+  await w.get("[data-palette-type=check]").trigger("click"); // unsaved changes
+  await w.get("[data-cancel]").trigger("click");
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe(`/board?create=${token}`);
+  expect(dialog()).toBeNull();
+  expect(api.saveDraft).not.toHaveBeenCalled();
+  expect(api.publishWorkflow).not.toHaveBeenCalled();
+  expect(useCardDraftStore().take(token)).toEqual(HELD);
 });

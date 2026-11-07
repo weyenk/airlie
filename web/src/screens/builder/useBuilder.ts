@@ -3,7 +3,7 @@
 import { computed, ref } from "vue";
 import type { Ref } from "vue";
 import { ApiError } from "@/api";
-import { getWorkflowDef, registryCatalog, saveDraft, validateWorkflow } from "@/api/workflow_defs";
+import { getWorkflowDef, publishWorkflow, registryCatalog, saveDraft, validateWorkflow } from "@/api/workflow_defs";
 import type { Catalog, WorkflowDetail } from "@/api/workflow_defs";
 import { addNode, emptyGraph, freeId, fromWorkflow } from "./graph";
 import type { GEdge, Graph, NodeType } from "./graph";
@@ -31,6 +31,9 @@ export function useBuilder(name: Ref<string>) {
   /** A Validate or a save has answered since the definition loaded (so "no problems" is news worth showing). */
   const validated = ref(false);
   const saving = ref(false);
+  const publishing = ref(false);
+  /** What the last publish said when it opened nothing (409: the trunk already holds the definition). */
+  const publishStatus = ref<string | null>(null);
   const catalog = ref<Catalog>(EMPTY_CATALOG);
   /** The catalog did not load: the forms offer only what the boxes already have (the screen says so, with Retry). */
   const catalogFailed = ref(false);
@@ -50,7 +53,10 @@ export function useBuilder(name: Ref<string>) {
   const saved = ref("");
   const dirty = computed(() => !broken.value && state() !== saved.value);
   const byNode = computed(() => problemsByNode(problems.value));
-  const yamlText = computed(() => (broken.value || (!dirty.value && detail.value) ? detail.value!.yaml : toYaml(graph.value)));
+  /** What Save would send (the text itself only when it could not be drawn). */
+  const yamlText = computed(() => (broken.value && detail.value ? detail.value.yaml : toYaml(graph.value)));
+  /** Publish opens a PR of a saved draft: not a new canvas, a file's workflow, or changes not yet saved. */
+  const unsaved = computed(() => broken.value || isNew.value || dirty.value || detail.value?.source !== "draft");
 
   let loading = 0;
   async function load(wanted: string): Promise<void> {
@@ -66,6 +72,7 @@ export function useBuilder(name: Ref<string>) {
     saved.value = state();
     checked.value = null;
     validated.value = false;
+    publishStatus.value = null;
     if (wanted === "new") return;
     let def: WorkflowDetail;
     try {
@@ -154,6 +161,34 @@ export function useBuilder(name: Ref<string>) {
     }
   }
 
+  /** Open the saved draft's PR. Resolves to true once opened (the definition's `pr` set to it); false when the
+   * server refused: its problems (422) shown on the canvas, nothing to publish (409) said as `publishStatus`, any
+   * other failure (502 the publisher, 404 the draft gone) shown as the error. */
+  async function publish(): Promise<boolean> {
+    const as = detail.value?.name ?? name.value;
+    publishing.value = true;
+    publishStatus.value = null;
+    try {
+      const pr = await publishWorkflow(as);
+      if (detail.value) detail.value = { ...detail.value, pr };
+      error.value = null;
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 422) {
+        problems.value = refusedProblems(e.message);
+        checked.value = state();
+        validated.value = true;
+        error.value = null;
+      } else if (e instanceof ApiError && e.status === 409) {
+        publishStatus.value = "Nothing to publish: the trunk already holds this definition";
+        error.value = null;
+      } else error.value = e instanceof Error ? e : String(e);
+      return false;
+    } finally {
+      publishing.value = false;
+    }
+  }
+
   return {
     detail,
     graph,
@@ -170,6 +205,9 @@ export function useBuilder(name: Ref<string>) {
     catalogFailed,
     loadCatalog,
     saving,
+    publishing,
+    publishStatus,
+    unsaved,
     isNew,
     dirty,
     yamlText,
@@ -178,5 +216,18 @@ export function useBuilder(name: Ref<string>) {
     place,
     validate,
     save,
+    publish,
   };
+}
+
+/** The problems of a 422 publish: its detail is `{problems: [...]}`, which arrives as JSON text; anything else is
+ * the one problem. */
+function refusedProblems(message: string): string[] {
+  try {
+    const found = (JSON.parse(message) as { problems?: unknown } | null)?.problems;
+    if (Array.isArray(found) && found.every((p) => typeof p === "string")) return found;
+  } catch {
+    // not JSON: the message is the problem
+  }
+  return [message];
 }
