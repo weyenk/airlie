@@ -15,7 +15,7 @@ from airlie.board.store import BoardStore, BoardStoreError
 from airlie.story.workflows import workflow_label
 
 PERSON = "noah"
-STARTED = "the workflow of a started card cannot be changed; restart it from a step instead"
+STARTED = "the workflow of a started card cannot be changed; make a new card for the other workflow"
 
 
 class CreateItem(BaseModel):

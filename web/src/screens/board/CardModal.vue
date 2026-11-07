@@ -109,7 +109,7 @@ async function saveWorkflow(name: string): Promise<void> {
 const chosenWorkflow = computed({ get: () => workflow.value, set: (name: string) => void saveWorkflow(name) });
 /** The card has started on its workflow (its state snapshotted it), so the server refuses a change: the server's
  * word when the card was fetched, else a column past approved; and once the line takes it up (doing), always. */
-const STARTED_HELP = "the workflow of a started card cannot be changed; restart it from a step instead";
+const STARTED_HELP = "the workflow of a started card cannot be changed; make a new card for the other workflow";
 const started = computed(() => {
   const status = item.value?.status;
   if (status === "doing") return true;

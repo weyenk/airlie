@@ -192,7 +192,7 @@ def test_a_label_change_that_keeps_the_workflow_is_not_checked(tmp_path: Path) -
         assert r.status_code == 200 and r.json()["labels"] == ["workflow:mini", "repo:o/r"]
 
 
-STARTED = "the workflow of a started card cannot be changed; restart it from a step instead"
+STARTED = "the workflow of a started card cannot be changed; make a new card for the other workflow"
 
 
 def test_the_workflow_of_a_started_card_cannot_be_changed(tmp_path: Path) -> None:

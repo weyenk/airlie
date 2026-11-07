@@ -420,7 +420,7 @@ test("a workflow the server refuses shows its words and the card keeps its workf
   expect(workflowSelect().value).toBe("story");
 });
 
-const STARTED_HELP = "the workflow of a started card cannot be changed; restart it from a step instead";
+const STARTED_HELP = "the workflow of a started card cannot be changed; make a new card for the other workflow";
 
 test("a started card's workflow cannot be changed: the select is off and says why", async () => {
   api.getItem.mockResolvedValue({ ...structuredClone(STORY), started: true, updated_at: 9000 });
