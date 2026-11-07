@@ -370,7 +370,7 @@ class Composer:
             raise
         failure = result.get(FAIL_KEY)
         # only the node's declared outputs land: a loop's carry key and FAIL_KEY are for routing, and any
-        # other key a runner returns is not an artifact (a StateStore would refuse a name it has no field for)
+        # other key a runner returns is not an artifact (a StateStore would keep it among the card's artifacts)
         for key, fmt in ({} if failure is not None else node.outputs).items():
             target = self._name(key, item)
             if key in result:

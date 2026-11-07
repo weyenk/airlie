@@ -199,9 +199,15 @@ class StoryState:
 
     def save(self) -> None:
         """The new bytes are synced before the rename and the directory after it, so a crash leaves the old
-        state or the new one, never a short file."""
+        state or the new one, never a short file. A story that ran no workflow saves no `artifacts` or
+        `workflow` key, so its file is the one airlie wrote before workflows existed (and opens there on a
+        rollback); both load through their defaults."""
         data = asdict(self)
         del data["path"]
+        if not data["artifacts"]:
+            del data["artifacts"]
+        if data["workflow"] is None:
+            del data["workflow"]
         tmp = self.path / "state.json.tmp"
         with tmp.open("w") as f:
             f.write(json.dumps(data, indent=1, default=str))

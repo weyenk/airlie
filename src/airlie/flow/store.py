@@ -50,9 +50,12 @@ class StateStore:
     `feedback.<name>` (carried loop feedback) and `package.<layer>` (a layer's ready package, until it is
     built: a run that stops between the two asks for it again, as the driver does) are kept here in memory
     and never saved, and `loose` names (`card`, `repo`) are read from the mapping given, ahead of a state
-    field of the same name."""
+    field of the same name. Any other name is a workflow's own artifact (design D15): it lives in
+    `st.artifacts` under that name (`<name>.<key>` in the dict there), saved with the state."""
 
     MEMORY = ("feedback", "package")
+    RESERVED = ("path",)
+    """Names no node may write: the state's own location, never saved."""
 
     def __init__(self, st: StoryState, *, loose: Mapping[str, Any]) -> None:
         self.st = st
@@ -73,9 +76,11 @@ class StateStore:
         if not key:
             if head in self._loose:  # a loose name wins over a state field of the same name (`card`)
                 return self._loose[head]
-            if head not in self._fields:
+            if head in self._fields:
+                return getattr(self.st, head)
+            if head in self.MEMORY or head in self.RESERVED:
                 raise KeyError(name)
-            return getattr(self.st, head)
+            return self.st.artifacts[head]
         return self._dict_field(name, head)[key]
 
     def put(self, name: str, value: Any) -> None:
@@ -83,14 +88,31 @@ class StateStore:
         if head in self._memory and key:
             self._memory[head][key] = value
         elif not key:
-            if head in self._loose or head not in self._fields:  # a loose name is read-only: `get` reads
-                raise KeyError(name)  # the mapping, so a write to the state field would never be read back
-            setattr(self.st, head, value)
-        else:
+            if head in self._loose or head in self.RESERVED or head in self.MEMORY:
+                # a loose name is read-only: `get` reads the mapping, so a write to a state field or an
+                # artifact of the same name would never be read back
+                raise KeyError(name)
+            if head in self._fields:
+                setattr(self.st, head, value)
+            else:
+                self.st.artifacts[head] = value
+        elif head in self._fields:
             self._dict_field(name, head)[key] = value
+        elif head in self._loose or head in self.RESERVED:
+            raise KeyError(name)
+        else:
+            container = self.st.artifacts.setdefault(head, {})
+            if not isinstance(container, dict):
+                raise KeyError(name)
+            container[key] = value
 
     def _dict_field(self, name: str, head: str) -> dict[str, Any]:
-        container = getattr(self.st, head) if head in self._fields else None
+        if head in self._fields:
+            container = getattr(self.st, head)
+        elif head in self._loose or head in self.RESERVED or head in self.MEMORY:
+            container = None
+        else:
+            container = self.st.artifacts.get(head)
         if not isinstance(container, dict):
             raise KeyError(name)
         return container

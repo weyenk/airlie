@@ -441,3 +441,20 @@ def test_lock_held_probes_without_keeping_the_lock(tmp_path: Path) -> None:
     assert lock_held(tmp_path / "stories", "build") is False
     with lane_lock(tmp_path / "stories", "build") as again:  # the probe left it free
         assert again
+
+
+def test_a_state_with_no_workflow_or_artifacts_saves_neither_key_and_one_with_them_round_trips(
+    tmp_path: Path,
+) -> None:
+    """A story that never ran a workflow saves the bytes it saved before workflows existed (the builder's
+    flag-off rule), so a rollback opens it; a workflow's snapshot and artifacts are saved and read back."""
+    card = text_card("x")
+    st = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    st.finish("intake")
+    saved = json.loads((tmp_path / card.key / "state.json").read_text())
+    assert "artifacts" not in saved and "workflow" not in saved
+    st.artifacts = {"repro": "click twice", "found": {"01": [1]}}
+    st.workflow = {"name": "mini", "specs": {}}
+    st.save()
+    again = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    assert again.artifacts == st.artifacts and again.workflow == st.workflow

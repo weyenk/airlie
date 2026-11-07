@@ -67,6 +67,13 @@ MINI_NOTE = MINI.replace(
     "             outputs: {artifacts.note: text}}\n"
     "      review:",
 )
+MINI_REPRO = MINI.replace(
+    "      review:",
+    "      repro: {type: ask, role: product, prompt: 'prompt:mini-note', inputs: [card],\n"
+    "              outputs: {repro: text}}\n"
+    "      read_repro: {type: check, run: story.costed, args: {stages: [plan]}, inputs: [repro]}\n"
+    "      review:",
+)
 TINY = """\
 workflows:
   tiny:
@@ -249,6 +256,45 @@ async def test_a_drafts_prompt_file_is_the_brief_and_a_started_card_keeps_its_te
     assert st.workflow is not None and st.workflow["prompts"] == {"mini-note": NOTE}
 
 
+async def test_a_drafts_own_output_is_stored_read_by_a_later_node_and_skipped_on_resume(
+    tmp_path: Path,
+) -> None:
+    """D15: an output that is no state field (`repro`) lands in `st.artifacts`, a later node reads it, and
+    a resume skips the node that made it."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(product=[FakeReply(text="click save twice")])
+    pipe = pipeline(tmp_path, repo, engine, composer=False)
+    pipe.drafts = lambda: {"mini": MINI_REPRO}
+    pipe.draft_prompts = lambda: {"mini": {"mini-note": NOTE}}
+    card = mini_card()
+    await pipe.plan(card)
+    st = await pipe.build(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    assert st.artifacts == {"repro": "click save twice"}
+    assert json.loads((st.path / "state.json").read_text())["artifacts"] == {"repro": "click save twice"}
+    assert [n for n, _ in started(st.path / "events.jsonl")] == [
+        "intake",
+        "base",
+        "gate",
+        "repro",
+        "read_repro",
+        "review",
+    ]
+    before = len(kinds_all(st.path / "events.jsonl"))
+
+    again = pipeline(tmp_path, repo, happy_engine(), composer=False)  # no product reply: an ask would fail
+    again.drafts = pipe.drafts
+    again.draft_prompts = pipe.draft_prompts
+    st = await again.build(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    later = kinds_all(st.path / "events.jsonl")[before:]
+    assert {"node": "repro", "kind": "node_skipped"} in [
+        {"node": e.get("node"), "kind": e["kind"]} for e in later
+    ]
+    assert "repro" not in {e["node"] for e in later if e["kind"] == "node_started"}
+    assert st.artifacts == {"repro": "click save twice"}
+
+
 async def test_the_plan_lane_shortcut_takes_the_card_in_and_says_so_once(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     board = RecordingBoard()
@@ -302,6 +348,8 @@ async def test_a_story_card_with_no_label_still_runs_the_driver_when_the_flag_is
     assert st.blocked is None and st.stage == "review", st.blocked
     assert started(st.path / "events.jsonl") == []
     assert st.workflow is None and called == []
+    saved = json.loads((st.path / "state.json").read_text())  # the base's bytes: no workflow keys at all
+    assert "artifacts" not in saved and "workflow" not in saved
 
 
 async def test_make_pipeline_reads_the_boards_drafts(tmp_path: Path) -> None:
