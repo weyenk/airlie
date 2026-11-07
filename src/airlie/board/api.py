@@ -50,10 +50,34 @@ class EditComment(BaseModel):
     text: str
 
 
-def board_router(store: BoardStore, publish: Callable[[str, str | None], None] | None = None) -> APIRouter:
+WORKFLOW_LABEL = "workflow:"
+
+
+def _named_workflow(labels: Sequence[str]) -> str | None:
+    """The workflow the first `workflow:` label naming one names, as the line reads it (`card_workflow`), or
+    None when there is none (the story's own runs)."""
+    named = (x.removeprefix(WORKFLOW_LABEL).strip() for x in labels if x.startswith(WORKFLOW_LABEL))
+    return next((n for n in named if n), None)
+
+
+def board_router(
+    store: BoardStore,
+    publish: Callable[[str, str | None], None] | None = None,
+    *,
+    workflow_check: Callable[[str], str | None] | None = None,
+) -> APIRouter:
     """`publish`, when given, is told `("board", key)` right after each write that succeeded (a refused one
-    publishes nothing): task serve passes its feed's, so an open page refetches that one item at once."""
+    publishes nothing): task serve passes its feed's, so an open page refetches that one item at once.
+    `workflow_check`, when given, says what stops a workflow resolving (None when nothing does): a card is
+    not given a `workflow:` label, nor a story carrying one moved to approved, while its workflow has a
+    problem (a 422 with it), so the board never holds a card the line could not run (the builder's anti-goal:
+    nothing saves what the composer refuses). A card with no such label runs the story's: never refused."""
     router = APIRouter(prefix="/v1/board", tags=["board"])
+
+    def check_workflow(labels: Sequence[str]) -> None:
+        name = _named_workflow(labels)
+        if workflow_check is not None and name is not None and (problem := workflow_check(name)) is not None:
+            raise HTTPException(422, problem)
 
     def changed(key: str) -> None:
         if publish is not None:
@@ -100,7 +124,9 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
 
     @router.patch("/items/{key}")
     async def change_item(key: str, body: ChangeItem, request: Request) -> dict[str, Any]:
-        item(key)  # 404 before anything else
+        found = item(key)  # 404 before anything else
+        if body.labels is not None or (body.status == "approved" and found["level"] == "story"):
+            check_workflow(found["labels"] if body.labels is None else body.labels)
         try:
             updated = store.update(
                 key,
@@ -118,7 +144,9 @@ def board_router(store: BoardStore, publish: Callable[[str, str | None], None] |
 
     @router.post("/items/{key}/move")
     async def move_item(key: str, body: MoveItem, request: Request) -> dict[str, Any]:
-        item(key)
+        found = item(key)
+        if body.status == "approved" and found["level"] == "story":
+            check_workflow(found["labels"])
         try:
             moved = store.move(key, body.status, body.before, by=mover(request))
         except BoardStoreError as e:

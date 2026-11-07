@@ -58,6 +58,7 @@ from airlie.story.publish import PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
+from airlie.story.workflows import workflow_problems
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -429,8 +430,15 @@ def create_app(
     make_initiative = initiative_job or _initiative_job_factory()
     restart_story = story_restart or _story_restart_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
-    app.include_router(board_router(board, feed.publish))
-    if cfg.story.board == "local":  # drafts live in the local board's store
+
+    def workflow_check(name: str) -> str | None:
+        """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
+        problems = workflow_problems(cfg, {d.name: d.yaml for d in board.drafts()}, name)
+        return "; ".join(problems) or None
+
+    local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked
+    app.include_router(board_router(board, feed.publish, workflow_check=workflow_check if local else None))
+    if local:
         app.include_router(workflows_router(cfg, board, feed.publish, _no_workflow_publisher))
 
     def repo_path(raw: str) -> Path:

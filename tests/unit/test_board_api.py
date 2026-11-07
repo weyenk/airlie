@@ -7,9 +7,12 @@ from pathlib import Path
 import httpx
 
 from airlie.board import BoardStore
+from airlie.flow.spec import check_workflows
 from airlie.serve.app import create_app
+from airlie.story.workflows import draft_spec
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_serve import FakeUpstream, cfg
+from tests.unit.test_story_workflows import MINI
 
 
 def client(tmp_path: Path, **kw: object) -> TestClient:
@@ -139,3 +142,34 @@ def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) ->
     moves = BoardStore(tmp_path / "state" / "board.sqlite").moves(key)
     assert [(m.from_status, m.to_status) for m in moves] == [("todo", "approved"), ("approved", "doing")]
     assert {m.by for m in moves} == {moves[0].by} and moves[0].by != "line"
+
+
+# ---- the card's workflow (docs/superpowers/specs/2026-11-07-workflow-builder-design.md) ----
+
+NO_RUN = MINI.replace("intake: {type: check, run: story.intake}", "intake: {type: check}")
+
+
+def test_a_label_naming_an_unknown_workflow_is_refused_with_422(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        r = c.patch(f"/v1/board/items/{story}", json={"labels": ["repo:o/r", "workflow:nope"]})
+        assert r.status_code == 422 and r.json()["detail"] == "no workflow named 'nope'"
+        assert c.get(f"/v1/board/items/{story}").json()["labels"] == []  # nothing stored
+        # a card with no workflow label runs the story's: never a problem
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["repo:o/r"]}).status_code == 200
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "approved"}).status_code == 200
+
+
+def test_moving_a_story_with_an_invalid_draft_to_approved_is_refused(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini"]}).status_code == 200
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": NO_RUN}).status_code == 200
+        [problem] = check_workflows({"mini": draft_spec("mini", NO_RUN)})
+        r = c.post(f"/v1/board/items/{story}/move", json={"status": "approved"})
+        assert r.status_code == 422 and problem in r.json()["detail"]
+        assert c.get(f"/v1/board/items/{story}").json()["status"] == "todo"
+        # only approval runs it: any other column takes the card as it is
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "doing"}).status_code == 200
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "todo"}).status_code == 200

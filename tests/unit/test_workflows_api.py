@@ -136,6 +136,18 @@ def test_a_draft_may_not_take_a_file_workflows_name(tmp_path: Path) -> None:
     assert store(c).drafts() == []
 
 
+def test_a_draft_may_not_take_a_name_the_routes_use(tmp_path: Path) -> None:
+    http, c = client(tmp_path)
+    with http:
+        for name in ("catalog", "validate", "drafts"):
+            text = MINI.replace("mini:", f"{name}:")
+            put = http.put(f"/v1/workflows/drafts/{name}", json={"type": "bug", "yaml": text}, headers=AUTH)
+            checked = http.post("/v1/workflows/validate", json={"yaml": text}, headers=AUTH)
+            assert put.status_code == 422 and put.json()["detail"] == f"{name!r} is reserved"
+            assert checked.status_code == 422 and checked.json()["detail"] == f"{name!r} is reserved"
+    assert store(c).drafts() == []
+
+
 def test_a_draft_that_is_not_yaml_or_names_another_workflow_is_refused(tmp_path: Path) -> None:
     http, c = client(tmp_path)
     with http:

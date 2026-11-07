@@ -22,6 +22,16 @@ from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import CATALOG
 from airlie.story.workflows import WorkflowError, draft_body, draft_spec, workflow_problems
 
+RESERVED = frozenset({"catalog", "validate", "drafts"})
+"""Names a draft may not take: the router's own paths under /v1/workflows, which `GET /{name}` would never
+reach."""
+
+
+def _not_reserved(name: str) -> None:
+    if name in RESERVED:
+        raise HTTPException(422, f"{name!r} is reserved")
+
+
 Publisher = Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]
 """Opens the PR that puts a draft in the repo: its number and URL."""
 
@@ -137,6 +147,7 @@ def workflows_router(
             name, _ = draft_body(body.yaml)
         except WorkflowError as e:
             return {"problems": [str(e)]}
+        _not_reserved(name)
         return {"problems": problems(name, {**texts(), name: body.yaml})}
 
     @router.get("/{name}")
@@ -156,6 +167,7 @@ def workflows_router(
 
     @router.put("/drafts/{name}")
     async def save_draft(name: str, body: SaveDraft) -> dict[str, Any]:
+        _not_reserved(name)
         if name in cfg.workflows:
             raise HTTPException(
                 409, f"{name!r} is a workflow in the repo's files; a draft needs its own name"
