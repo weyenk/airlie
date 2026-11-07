@@ -112,6 +112,13 @@ class StoryState:
     it, so a fresh story saves one)."""
     blocked: str | None = None
     github_repo: str | None = None
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    """Outputs of a workflow's nodes that are not fields of this state, by name (`artifacts.<name>` in the
+    store). JSON-serialisable: they are saved with the state."""
+    workflow: dict[str, Any] | None = None
+    """The workflow this card started on, snapshotted so a later edit does not change a running card:
+    `{"name": str, "specs": {workflow name: WorkflowSpec.model_dump(mode="json")}}`. None: not snapshotted
+    (the repo's workflows are read) or cleared by a restart."""
 
     @classmethod
     def open(cls, path: Path, card: Card, repo: Path, github_repo: str | None = None) -> StoryState:

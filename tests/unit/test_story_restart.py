@@ -263,7 +263,10 @@ async def test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_i
     tmp_path: Path, point: str, stage: str, kept: tuple[str, ...], cleared: tuple[str, ...], composer: bool
 ) -> None:
     repo, board, store, card, st = await stopped(tmp_path, composer=composer)
+    st.workflow = {"name": "story", "specs": {}}
+    st.save()
     old = json.loads((st.path / "state.json").read_text())
+    assert old["workflow"] is not None
     layer_branches = {str(st.built["01"]["branch"]), str(st.attempt and st.attempt["branch"])}
     trunk = git(repo, "branch", "--show-current")
     news = trunk_commit(repo, {"NEWS": "news\n"})
@@ -275,6 +278,7 @@ async def test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_i
     assert now["base"] == {"ref": f"origin/{trunk}", "sha": news} != old["base"]
     assert {k: now[k] for k in kept} == {k: old[k] for k in kept}
     assert all(now[k] is None for k in cleared)
+    assert now["workflow"] is None
     assert now["built"] == {} and now["attempt"] is None and now["drafts"] == {} and not now["drafted"]
     assert not layer_branches & branches(repo) and worktrees(repo) == 1
     # a copy of the record as it was, beside the record kept in place

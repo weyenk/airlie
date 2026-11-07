@@ -80,3 +80,13 @@ def test_sessions_hold_objects_in_memory_only():
     ss.put("a", 1)
     ss.clear()
     assert ss.get("a") is None
+
+
+def test_undeclared_outputs_land_in_artifacts(tmp_path):
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={})
+    s.put("artifacts.repro", {"steps": 3})
+    s.save()
+    again = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    assert again.artifacts["repro"] == {"steps": 3} and again.workflow is None

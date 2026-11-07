@@ -241,6 +241,7 @@ def _cleared(
             st.built[nn]["sha"] = sha
         st.drafts = {nn: d for nn, d in st.drafts.items() if int(nn) < layer}
     st.attempt = None
+    st.workflow = None  # the next run snapshots the workflow again
     st.prs = []
     st.blocked = None
     st.save()

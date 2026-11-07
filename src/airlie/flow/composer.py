@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from airlie.flow.spec import LoopSpec, NodeSpec, NodeType
+from airlie.flow.spec import LoopSpec, NodeSpec, NodeType, WorkflowSpec
 from airlie.flow.store import Sessions, Store
 
 # airlie.config imports airlie.flow.spec, so this package cannot import the config (or the story) at load.
@@ -87,8 +87,10 @@ class Composer:
         registry: Registry,
         store: Store,
         sessions: Sessions,
+        workflows: Mapping[str, WorkflowSpec] | None = None,
     ) -> None:
         self.cfg = cfg
+        self.workflows = workflows
         self.runners = runners
         self.registry = registry
         self.store = store
@@ -101,6 +103,14 @@ class Composer:
             tuple[str, str | None, str, str], int
         ] = {}  # (workflow, item, node, which) -> re-runs
 
+    def spec(self, name: str) -> WorkflowSpec:
+        """The workflow `name`: from the mapping the composer was given (the repo's workflows and drafts),
+        else from the config."""
+        found = self.cfg.workflows if self.workflows is None else self.workflows
+        if name not in found:
+            raise KeyError(f"no workflow named {name!r}")
+        return found[name]
+
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
         """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached.
         What the run's nodes held open (`held`) is closed when it returns or raises."""
@@ -112,7 +122,7 @@ class Composer:
                 self.held = None
 
     async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
-        spec = self.cfg.workflows[workflow]
+        spec = self.spec(workflow)
         names = list(spec.nodes)
         formats = {name: fmt for n in spec.nodes.values() for name, fmt in n.outputs.items()}
         children = {c for n in spec.nodes.values() if n.type == "parallel" for c in n.nodes}
@@ -251,7 +261,7 @@ class Composer:
         in this coroutine until it first waits, the rest as tasks that start then. Any failure stops the
         rest and is raised: the first's cancels the tasks (one not started yet never takes a step); a later
         child's cancels this coroutine, and so the first, at once, and is raised in place of the cancel."""
-        spec = self.cfg.workflows[workflow]
+        spec = self.spec(workflow)
         first, *rest = node.nodes
         parent = asyncio.current_task()
         failed: list[BaseException] = []
