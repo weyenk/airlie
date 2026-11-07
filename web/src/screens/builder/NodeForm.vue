@@ -97,11 +97,9 @@ function toggleRole(r: string, on: boolean) {
 const inputs = computed(() => list(spec.value.inputs));
 const readableNames = computed(() => [...new Set([...props.upstream, ...inputs.value])]);
 function toggleInput(name: string, on: boolean) {
-  const now = new Set(inputs.value);
-  if (on) now.add(name);
-  else now.delete(name);
-  const ordered = readableNames.value.filter((n) => now.has(n));
-  set("inputs", ordered.length ? ordered : undefined);
+  // the box's own order kept, a new name last
+  const next = on ? [...inputs.value.filter((n) => n !== name), name] : inputs.value.filter((n) => n !== name);
+  set("inputs", next.length ? next : undefined);
 }
 
 // outputs: name -> format rows, in order

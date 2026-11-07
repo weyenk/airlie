@@ -1,85 +1,151 @@
 <script setup lang="ts">
+import { useEventListener } from "@vueuse/core";
 import { ChevronLeft } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
-import { getWorkflowDef } from "@/api/workflow_defs";
-import type { WorkflowDetail } from "@/api/workflow_defs";
+import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute, useRouter } from "vue-router";
+import type { RouteLocationNormalized } from "vue-router";
 import ErrorBanner from "@/components/ErrorBanner.vue";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useWorkflowDefs } from "./board/workflow";
 import Canvas from "./builder/Canvas.vue";
-import { emptyGraph, fromWorkflow } from "./builder/graph";
-import type { Graph } from "./builder/graph";
-import { autoLayout } from "./builder/layout";
+import { canRemove, connect, moveNode, readable, removeEdge, removeNode, renameNode, updateNode } from "./builder/graph";
+import type { GEdge, Move, MoveOpts, NodeSpec } from "./builder/graph";
+import NodeForm from "./builder/NodeForm.vue";
 import Palette from "./builder/Palette.vue";
-import { parseWorkflow, toYaml } from "./builder/yaml";
+import Problems from "./builder/Problems.vue";
+import SaveDialog from "./builder/SaveDialog.vue";
+import { useBuilder } from "./builder/useBuilder";
+import WireForm from "./builder/WireForm.vue";
 
-/** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the workflow drawn as boxes and wires,
- * the palette, the selected box's fields, and the YAML. Read-only for now; editing comes next. */
+/** The builder (`/workflows/build/<name>`, or `new` for an empty canvas): the palette, the workflow drawn as boxes
+ * and wires, the selected box's or wire's form, and the YAML. Validate and Save draft run the server's checks, so
+ * the canvas is judged by the code that judges a hand-written file. */
 const route = useRoute();
+const router = useRouter();
 const name = computed(() => String(route.params.name ?? ""));
-
-const detail = ref<WorkflowDetail | null>(null);
-const graph = ref<Graph>(emptyGraph("new"));
-const error = ref<Error | string | null>(null);
-const selected = ref<string | null>(null);
+const b = useBuilder(name);
+const { detail, graph, error, selected, selectedEdge, problems, catalog } = b;
 const tab = ref<"diagram" | "yaml">("diagram");
 
-let loading = 0;
-async function load(wanted: string): Promise<void> {
-  const mine = ++loading;
-  detail.value = null;
-  error.value = null;
-  selected.value = null;
-  graph.value = emptyGraph(wanted);
-  if (wanted === "new") return;
-  let def: WorkflowDetail;
-  try {
-    def = await getWorkflowDef(wanted);
-  } catch (e) {
-    if (mine === loading) error.value = e instanceof Error ? e : String(e);
-    return;
-  }
-  if (mine !== loading) return; // the address moved on while this one loaded
-  detail.value = def;
-  try {
-    const parsed = parseWorkflow(def.yaml);
-    // a box keeps the place the definition saved for it; the rest are laid out left to right
-    graph.value = autoLayout(fromWorkflow(parsed.name, parsed.spec, { ...parsed.layout, ...def.layout }));
-  } catch (e) {
-    graph.value = emptyGraph(def.name);
-    error.value = `The YAML could not be drawn: ${e instanceof Error ? e.message : String(e)}`;
-  }
-}
 // the address moving off the builder (a link out, a 401 to sign in) leaves the loaded workflow alone
 watch(name, (n) => {
-  if (route.name === "builder") void load(n);
+  if (route.name === "builder") void b.load(n);
 }, { immediate: true });
 
 const { defs, failed, reload } = useWorkflowDefs();
 const bundles = computed(() => defs.value.map((d) => d.name).filter((n) => n !== name.value));
+const cardTypes = computed(() => [...new Set(defs.value.map((d) => d.type).filter((t): t is string => !!t))]);
 
 const title = computed(() => detail.value?.name ?? name.value);
 const typeLabel = computed(() => (detail.value ? (detail.value.type ?? "bundle") : null));
-const problems = computed(() => detail.value?.problems.length ?? 0);
-const yamlText = computed(() => detail.value?.yaml ?? toYaml(graph.value));
 const node = computed(() => graph.value.nodes.find((n) => n.id === selected.value) ?? null);
-
-/** A value as it reads in the panel: lists and short maps on one line, as the YAML writes them. */
-function inline(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(inline).join(", ")}]`;
-  if (typeof v === "object" && v !== null) return `{${Object.entries(v).map(([k, x]) => `${k}: ${inline(x)}`).join(", ")}}`;
-  return String(v);
-}
-function fieldText(v: unknown): string {
-  if (Array.isArray(v)) return v.map(inline).join(", ");
-  if (typeof v === "object" && v !== null) return Object.entries(v).map(([k, x]) => `${k}: ${inline(x)}`).join("\n");
-  return String(v);
-}
-const fields = computed(() => (node.value ? [["type", node.value.type] as const, ...Object.entries(node.value.spec)].map(([k, v]) => ({ key: k, text: fieldText(v) })) : []));
+const nodeOf = (id: string) => graph.value.nodes.find((n) => n.id === id);
 
 function pick(id: string) {
   selected.value = selected.value === id ? null : id;
+  selectedEdge.value = null;
+  wire.value = null;
 }
+
+// a wire: one just drawn (no edge yet) or one clicked
+const wire = ref<{ from: string; to: string; edge: GEdge | null } | null>(null);
+const wireEnds = computed(() => (wire.value ? { from: nodeOf(wire.value.from), to: nodeOf(wire.value.to) } : null));
+function drawn(from: string, to: string) {
+  wire.value = { from, to, edge: null };
+  selected.value = null;
+  selectedEdge.value = null;
+}
+function clickedWire(edge: GEdge) {
+  wire.value = { from: edge.from, to: edge.to, edge };
+  selected.value = null;
+  selectedEdge.value = edge;
+}
+function closeWire() {
+  wire.value = null;
+  selectedEdge.value = null;
+}
+function applyWire(move: Move, opts: MoveOpts) {
+  const w = wire.value!;
+  if (b.edit((g) => connect(w.edge ? removeEdge(g, w.edge) : g, w.from, w.to, move, opts))) closeWire();
+}
+function dropWire() {
+  const e = wire.value?.edge;
+  if (e) b.edit((g) => removeEdge(g, e));
+  closeWire();
+}
+
+function updateBox(spec: NodeSpec) {
+  const id = selected.value!;
+  b.edit((g) => updateNode(g, id, spec));
+}
+function renameBox(to: string) {
+  const id = selected.value!;
+  if (b.edit((g) => renameNode(g, id, to))) selected.value = to;
+}
+function removeBox() {
+  const id = selected.value!;
+  b.edit((g) => removeNode(g, id));
+  selected.value = null;
+}
+function addPrompt(id: string, text: string) {
+  b.prompts.value = { ...b.prompts.value, [id]: text };
+}
+/** A problem's box, shown: the diagram, the box selected, its form open. */
+function focus(id: string) {
+  tab.value = "diagram";
+  closeWire();
+  selected.value = id;
+}
+
+// saving: in place for a draft; a new canvas, or a file's workflow, asks for a name first
+const asking = ref(false);
+const reason = ref<string | null>(null);
+async function saveClick() {
+  if (b.isNew.value || detail.value?.source === "file") {
+    reason.value = detail.value?.source === "file" ? `${detail.value.name} is a workflow in the repo's files; your changes save as a draft under a name of its own.` : null;
+    asking.value = true;
+    return;
+  }
+  await saveAs(name.value, graph.value.type);
+}
+async function saveAs(as: string, type: string | null) {
+  asking.value = false;
+  const done = await b.save(as, type);
+  if (done === "taken") {
+    reason.value = `The server refused ${as}: ${as} is a workflow in the repo's files; a draft needs its own name.`;
+    asking.value = true;
+  } else if (done && as !== name.value) await router.replace(`/workflows/build/${encodeURIComponent(as)}`);
+}
+/** The dialog only asks when the current name will not do (a new canvas, a file's name, a name refused), so every
+ * name a workflow has is taken. */
+const taken = computed(() => defs.value.map((d) => d.name));
+
+// unsaved changes: leaving (or loading another workflow) asks first; closing the tab asks the browser's way
+const leaving = ref<string | null>(null);
+let letGo = false;
+function guard(to: RouteLocationNormalized) {
+  if (letGo || !b.dirty.value) return true;
+  leaving.value = to.fullPath;
+  return false;
+}
+onBeforeRouteLeave(guard);
+onBeforeRouteUpdate(guard);
+useEventListener(window, "beforeunload", (e: BeforeUnloadEvent) => {
+  if (b.dirty.value) e.preventDefault();
+});
+async function leaveAnyway() {
+  const to = leaving.value!;
+  leaving.value = null;
+  letGo = true;
+  try {
+    await router.push(to);
+  } finally {
+    letGo = false;
+  }
+}
+
+const count = computed(() => problems.value.length);
 const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medium", on ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"];
 </script>
 
@@ -90,9 +156,12 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
       <h1 class="font-mono text-lg font-bold">{{ title }}</h1>
       <span v-if="typeLabel" data-workflow-type class="rounded-full bg-chip px-2 py-px text-xs font-semibold text-chip-foreground">{{ typeLabel }}</span>
       <span v-if="detail?.source === 'draft'" class="rounded-full bg-warn px-2 py-px text-xs font-semibold text-warn-foreground">draft</span>
-      <span v-if="problems" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ problems }} {{ problems === 1 ? "problem" : "problems" }}</span>
+      <span v-if="count" data-problems class="rounded-full bg-danger px-2 py-px text-xs font-semibold text-danger-foreground">{{ count }} {{ count === 1 ? "problem" : "problems" }}</span>
       <a v-if="detail?.pr" :href="detail.pr.url" target="_blank" rel="noopener" class="text-[13px] text-muted-foreground underline">#{{ detail.pr.number }}</a>
+      <span v-if="b.dirty.value" data-dirty class="text-xs text-muted-foreground">Unsaved changes</span>
       <span class="grow" />
+      <Button size="sm" variant="outline" data-validate :disabled="b.broken.value" @click="b.validate">Validate</Button>
+      <Button size="sm" data-save :disabled="b.broken.value || b.saving.value" @click="saveClick">Save draft</Button>
       <div role="tablist" aria-label="View" class="inline-flex gap-0.5 rounded-lg bg-muted p-[3px]">
         <button type="button" role="tab" data-tab="diagram" :aria-selected="tab === 'diagram'" :class="tabClass(tab === 'diagram')" @click="tab = 'diagram'">Diagram</button>
         <button type="button" role="tab" data-tab="yaml" :aria-selected="tab === 'yaml'" :class="tabClass(tab === 'yaml')" @click="tab = 'yaml'">YAML</button>
@@ -100,26 +169,60 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
     </section>
 
     <ErrorBanner v-if="error" :error="error" />
+    <template v-if="count || b.validated.value">
+      <Problems :problems="problems" @focus="focus" />
+      <p v-if="b.stale.value" data-problems-stale class="-mt-2 text-xs text-muted-foreground">Edited since this check: Validate again to see where it stands.</p>
+    </template>
 
-    <pre v-if="tab === 'yaml'" data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed">{{ yamlText }}</pre>
+    <template v-if="tab === 'yaml'">
+      <p data-yaml-notice class="text-[13px] text-muted-foreground">Saving regenerates the file; comments in a hand-written file are kept only when the definition is unchanged.</p>
+      <pre data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed">{{ b.yamlText.value }}</pre>
+    </template>
 
-    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)_260px] items-start gap-3 max-[900px]:grid-cols-1">
-      <Palette :bundles="bundles" :failed="failed" @retry="reload" />
+    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)_280px] items-start gap-3 max-[900px]:grid-cols-1">
+      <Palette :bundles="bundles" :failed="failed" :readonly="b.broken.value" @retry="reload" @add="(item) => b.place(item)" />
       <section aria-label="Canvas" class="max-h-[calc(100dvh-var(--header-h)-200px)] min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm">
-        <Canvas :graph="graph" :selected="selected" readonly @select="pick" />
+        <Canvas
+          :graph="graph"
+          :selected="selected"
+          :selected-edge="selectedEdge"
+          :problems="b.byNode.value"
+          :readonly="b.broken.value"
+          @select="pick"
+          @move="(id, x, y) => b.edit((g) => moveNode(g, id, x, y))"
+          @connect="drawn"
+          @select-edge="clickedWire"
+          @place="(item, x, y) => b.place(item, x, y)"
+        />
       </section>
       <aside aria-label="Fields" data-fields class="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-[13px] shadow-sm">
-        <template v-if="node">
-          <h2 class="font-mono text-sm font-semibold">{{ node.id }}</h2>
-          <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
-            <template v-for="f in fields" :key="f.key">
-              <dt class="text-muted-foreground">{{ f.key }}</dt>
-              <dd :data-field="f.key" class="font-mono text-xs break-words whitespace-pre-line">{{ f.text }}</dd>
-            </template>
-          </dl>
-        </template>
+        <WireForm
+          v-if="wire && wireEnds?.from && wireEnds.to"
+          :from="wireEnds.from"
+          :to="wireEnds.to"
+          :existing="wire.edge"
+          :removable="wire.edge ? canRemove(graph, wire.edge) : false"
+          :bundles="bundles"
+          :predicates="catalog.predicates"
+          @apply="applyWire"
+          @remove="dropWire"
+          @cancel="closeWire"
+        />
+        <NodeForm
+          v-else-if="node"
+          :key="node.id"
+          :node="node"
+          :catalog="catalog"
+          :upstream="readable(graph, node.id)"
+          :prompts="b.prompts.value"
+          :bundles="bundles"
+          @update="updateBox"
+          @rename="renameBox"
+          @remove="removeBox"
+          @create-prompt="addPrompt"
+        />
         <template v-else>
-          <p class="text-muted-foreground">Select a box to see its fields.</p>
+          <p class="text-muted-foreground">Select a box or a wire to see its fields. Drag from a box's right port to another box to wire them.</p>
           <dl v-if="graph.start" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
             <dt class="text-muted-foreground">start</dt>
             <dd class="font-mono text-xs">{{ graph.start }}</dd>
@@ -131,5 +234,19 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
         </template>
       </aside>
     </div>
+
+    <SaveDialog v-model:open="asking" :taken="taken" :types="cardTypes" :type="graph.type" :reason="reason" @save="saveAs" />
+    <Dialog :open="leaving !== null" @update:open="(v) => !v && (leaving = null)">
+      <DialogContent :show-close-button="false">
+        <DialogHeader>
+          <DialogTitle>Leave without saving?</DialogTitle>
+          <DialogDescription>Your changes to {{ title }} are not saved.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" data-leave-stay @click="leaving = null">Stay</Button>
+          <Button variant="destructive" data-leave-go @click="leaveAnyway">Leave without saving</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

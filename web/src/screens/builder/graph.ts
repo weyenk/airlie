@@ -56,7 +56,10 @@ export function emptyGraph(name: string): Graph {
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+/** A deep copy of a node's fields: YAML data, so JSON's copy is exact (and it reads through a Vue proxy, which
+ * structuredClone refuses). */
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+const str =(v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /** A loop's wire data (the `loop:` of a node, or an `on_fail:` object), or null when `v` is not one. */
 function loopOf(v: unknown): { to: string; wire: LoopWire } | null {
@@ -159,7 +162,7 @@ function editing(graph: Graph, ids: string[], edit: (spec: NodeSpec, id: string)
     ...graph,
     nodes: graph.nodes.map((n) => {
       if (!want.has(n.id)) return n;
-      const spec = structuredClone(n.spec);
+      const spec = clone(n.spec);
       edit(spec, n.id);
       return { ...n, spec };
     }),
@@ -234,7 +237,7 @@ export function moveNode(graph: Graph, id: string, x: number, y: number): Graph 
 /** The graph with box `id`'s fields replaced by `spec`. */
 export function updateNode(graph: Graph, id: string, spec: NodeSpec): Graph {
   nodeOf(graph, id);
-  return rewire({ ...graph, nodes: graph.nodes.map((n) => (n.id === id ? { ...n, spec: structuredClone(spec) } : n)) });
+  return rewire({ ...graph, nodes: graph.nodes.map((n) => (n.id === id ? { ...n, spec: clone(spec) } : n)) });
 }
 
 /** Every field of `spec` that names box `id`, renamed to `to` (or dropped when `to` is null). */
