@@ -33,11 +33,15 @@ export function autoLayout(graph: Graph): Graph {
     column.set(id, Math.max(0, ...before));
   }
 
+  // a slot a placed box covers is taken: an automatic box goes to the next free row of its column
+  const taken = (x: number, y: number) => graph.nodes.some((n) => n.placed && Math.abs(n.x - x) < COLUMN && Math.abs(n.y - y) < ROW);
   const rows = new Map<number, number>();
   const place = new Map<string, { x: number; y: number }>();
   for (const id of ids) {
+    if (graph.nodes.find((n) => n.id === id)?.placed) continue;
     const c = column.get(id)!;
-    const r = rows.get(c) ?? 0;
+    let r = rows.get(c) ?? 0;
+    while (taken(c * COLUMN, r * ROW)) r += 1;
     rows.set(c, r + 1);
     place.set(id, { x: c * COLUMN, y: r * ROW });
   }

@@ -1,5 +1,5 @@
 import { LAYER_YAML, STORY_YAML } from "@/test-utils/workflow-yaml";
-import { fromWorkflow } from "./graph";
+import { connect, emptyGraph, fromWorkflow } from "./graph";
 import { autoLayout } from "./layout";
 import { parseWorkflow, toYaml } from "./yaml";
 
@@ -57,10 +57,12 @@ test("the text looks like the shipped files: type first, flow lists and maps, th
   expect(text.indexOf("    layout:")).toBeGreaterThan(text.indexOf("      review:"));
 });
 
-test("node keys follow the canvas: left to right, then top to bottom", () => {
+test("node keys keep the file's order wherever the boxes sit: the order is what falls through to what", () => {
   const { name, spec } = parseWorkflow("workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b}\n      c: {type: check, run: x.c}\n");
   const graph = fromWorkflow(name, spec, { a: { x: 320, y: 0 }, b: { x: 0, y: 90 }, c: { x: 0, y: 0 } });
-  expect(Object.keys(parseWorkflow(toYaml(graph)).spec.nodes)).toEqual(["c", "b", "a"]);
+  const back = parseWorkflow(toYaml(graph));
+  expect(Object.keys(back.spec.nodes)).toEqual(["a", "b", "c"]);
+  expect(back.layout).toEqual({ a: { x: 320, y: 0 }, b: { x: 0, y: 90 }, c: { x: 0, y: 0 } });
 });
 
 test("a workflow without a type or loose names writes neither", () => {
@@ -69,4 +71,20 @@ test("a workflow without a type or loose names writes neither", () => {
   expect(text).not.toContain("type: null");
   expect(text).not.toContain("loose");
   expect(text).toContain("    start: a\n");
+});
+
+test("a loop drawn on the canvas reparses with loop.to", () => {
+  const text = "workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b, outputs: {notes: text}}\n    layout:\n      a: {x: 0, y: 0}\n      b: {x: 160, y: 0}\n";
+  const { name, spec, layout } = parseWorkflow(text);
+  const g = connect(fromWorkflow(name, spec, layout), "b", "a", "loop", { loop: { max: 3, carry: "notes" } });
+  expect(parseWorkflow(toYaml(g)).spec.nodes.b.loop).toEqual({ to: "a", max: 3, carry: "notes" });
+  expect(toYaml(g)).toContain("        loop: {to: a, max: 3, carry: notes}\n");
+});
+
+test("an empty canvas writes no start", () => {
+  expect(toYaml(emptyGraph("w"))).not.toContain("start");
+});
+
+test("parseWorkflow refuses a node of an unknown type, naming it", () => {
+  expect(() => parseWorkflow("workflows:\n  w: {start: a, nodes: {a: {type: shout, run: r}}}\n")).toThrow(/node a has unknown type 'shout'/);
 });

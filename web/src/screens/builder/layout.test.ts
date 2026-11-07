@@ -56,3 +56,9 @@ test("it returns a new graph", () => {
   autoLayout(g);
   expect(JSON.stringify(g)).toBe(before);
 });
+
+test("a box laid out automatically never lands on a placed one", () => {
+  const g = autoLayout(graphOf("workflows:\n  w:\n    start: a\n    nodes:\n      a: {type: check, run: x.a}\n      b: {type: check, run: x.b}\n", { b: { x: 0, y: 0 } }));
+  expect(at(g, "b")).toEqual({ x: 0, y: 0 });
+  expect(at(g, "a")).not.toEqual({ x: 0, y: 0 });
+});

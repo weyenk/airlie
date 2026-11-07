@@ -2,12 +2,14 @@
 // file the canvas would save, shaped like the shipped config/workflows/*.yaml. Pure: no Vue.
 import { Document, isMap, isScalar, parse, visit } from "yaml";
 import type { YAMLMap } from "yaml";
-import type { Graph, Layout, NodeType, WorkflowSpec } from "./graph";
+import { isNodeType, toWorkflow } from "./graph";
+import type { Graph, Layout, WorkflowSpec } from "./graph";
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** The one workflow under `workflows:` in `text`: its name, its spec (layout aside) and its layout. Throws when
- * the text does not parse, holds no `workflows:` mapping, holds other than one workflow, or a node has no type. */
+ * the text does not parse, holds no `workflows:` mapping, holds other than one workflow, or a node has no type or
+ * one the builder does not know. */
 export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec; layout: Layout } {
   const doc: unknown = parse(text);
   if (!isRecord(doc) || !isRecord(doc.workflows)) throw new Error("the text has no workflows: mapping");
@@ -21,7 +23,8 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
   const nodes: WorkflowSpec["nodes"] = {};
   for (const [id, n] of Object.entries(rawNodes)) {
     if (!isRecord(n) || typeof n.type !== "string") throw new Error(`workflow ${name}: node ${id} has no type`);
-    nodes[id] = { ...n, type: n.type as NodeType };
+    if (!isNodeType(n.type)) throw new Error(`workflow ${name}: node ${id} has unknown type '${n.type}'`);
+    nodes[id] = { ...n, type: n.type };
   }
   const layout: Layout = {};
   for (const [id, at] of Object.entries(isRecord(rawLayout) ? rawLayout : {})) {
@@ -34,16 +37,12 @@ export function parseWorkflow(text: string): { name: string; spec: WorkflowSpec;
 /** Node fields written on one line, as the shipped files write them. */
 const FLOW_MAPS = new Set(["inputs", "outputs", "args", "loop", "on_fail", "branch"]);
 
-/** The file the canvas would save: `type:`, `start`, `loose`, the nodes in canvas order (left to right, then top to
- * bottom), and `layout:` last; lists, and the short maps a node carries, on one line. */
+/** The file the canvas would save: `type:`, `start` (once a box exists), `loose`, the nodes in the file's order
+ * (what falls through to what; see graph.ts), and `layout:` last; lists, and the short maps a node carries, on
+ * one line. */
 export function toYaml(graph: Graph): string {
-  const ordered = [...graph.nodes].sort((a, b) => a.x - b.x || a.y - b.y);
-  const wf: Record<string, unknown> = {};
-  if (graph.type) wf.type = graph.type;
-  wf.start = graph.start;
-  if (graph.loose.length) wf.loose = graph.loose;
-  wf.nodes = Object.fromEntries(ordered.map((n) => [n.id, { type: n.type, ...n.spec }]));
-  wf.layout = Object.fromEntries(ordered.map((n) => [n.id, { x: n.x, y: n.y }]));
+  const { spec, layout } = toWorkflow(graph);
+  const wf: Record<string, unknown> = { ...spec, layout };
 
   const doc = new Document({ workflows: { [graph.name]: wf } });
   visit(doc, {
