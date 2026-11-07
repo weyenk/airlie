@@ -173,8 +173,7 @@ async def plan_layers(
                     session.say,
                     parse=parse,
                     same=same_layers,
-                    rounds=turns,
-                    signal=lambda reply: (extract_json_block(reply) or {}).get("refine"),
+                    rounds=turns,  # the plan's own verdict is not read (`Asker.ask_in_rounds`)
                 )
 
         ask = in_rounds

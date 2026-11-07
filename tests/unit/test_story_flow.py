@@ -47,6 +47,7 @@ from tests.unit.test_story_pipeline import (
     gated,
     happy_engine,
     kinds_all,
+    layer,
     package_reply,
     pipeline,
     planned,
@@ -1361,9 +1362,22 @@ async def test_the_composer_closes_its_held_conversations_when_the_run_raises(tm
         store=MemoryStore(),
         sessions=Sessions(),
     )
+    assert c.held is None  # nothing can be held before the run, or after it
     with pytest.raises(RuntimeError, match="boom"):
         await c.run("w")
-    assert asker.said == [None] and asker.closed == 1
+    assert asker.said == [None] and asker.closed == 1 and c.held is None
+    with pytest.raises(RuntimeError, match="holds nothing open"):  # a session node outside a run: loud
+        await converse(c.cfg.workflows["w"].nodes["talk"], c._ctx("w", "talk", None))
+
+
+def drafting_closed(st: StoryState) -> None:
+    """The drafting conversation of `st` was closed when its run ended: its studio worktree is removed.
+    (The composer's Sessions live inside `compose`, out of a test's reach: the worktree is what shows it.)"""
+    runs = [e["studio_run"] for e in kinds_all(st.path / "events.jsonl") if e.get("stage") == "packages"]
+    assert runs
+    for run in runs:
+        tree = st.path.parents[1] / "runs" / run / "studio"
+        assert tree.parent.is_dir() and not tree.exists(), tree
 
 
 async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) -> None:
@@ -1391,6 +1405,7 @@ async def test_a_package_retry_continues_the_drafting_session(tmp_path: Path) ->
         kinds = [e["kind"] for e in events]
         assert kinds.count("packages_drafting") == 1 and kinds.count("package_resumed") == 1
         assert "drafts_session" not in json.loads((st.path / "state.json").read_text())  # never saved
+        drafting_closed(st)  # the run ended at the review gate (EndRun)
         seen.append((events, state))
     assert seen[1] == seen[0]
 
@@ -1417,6 +1432,7 @@ async def test_a_lost_session_falls_back_to_a_fresh_package_ask(tmp_path: Path) 
         )
         stopped = await pipeline(root, repo, first, test_cmd=cmd, composer=composer).run(card)
         assert stopped.blocked is not None and stopped.drafted and not stopped.built, stopped.blocked
+        drafting_closed(stopped)  # the run ended blocked (StoryBlocked)
         log = stopped.path / "events.jsonl"
         before = len(log.read_text().splitlines())
         again = FakeEngine(
@@ -1455,5 +1471,34 @@ async def test_plan_rounds_are_turns_of_one_conversation(tmp_path: Path) -> None
         rounds = [e["kind"] for e in events if str(e["kind"]).startswith("plan_") or e["kind"] == "steer"]
         assert rounds == ["plan_fix", "steer", "plan_round", "steer", "plan_round", "plan_done"]
         assert [e["kind"] for e in events].count("run") == 2  # refine, and one conversation for the rounds
+        seen.append((events, plan_state(st.path, root, st.base["sha"])))
+    assert seen[1] == seen[0]
+
+
+async def test_a_plans_own_verdict_does_not_end_the_rounds_either_way(tmp_path: Path) -> None:
+    """A plan whose `refine` says another round is not worth it: the rounds go on until they converge, as
+    they have since the verdict stopped being read (208385f), driver and composer alike: no `plan_check`,
+    no `architect_done`."""
+    settings = {"plan_round_steps": 2, "plan_max_rounds": 2}
+    verdict = {"worth_another_round": False, "reason": "enough read", "check": ""}
+    plan = [
+        layer("storage", "Storage", "store.py", "AC1", "Store."),
+        layer("profile", "Profile", "profile.py", "AC2", "Show."),
+    ]
+    finished = FakeReply(text=fenced({"layers": plan, "refine": verdict}))
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        engine = happy_engine(architect=[finished, LAYERS])
+        pipe = pipeline(root, repo, engine, story=settings, composer=composer)
+        st = await pipe.plan(text_card("add a marker"))
+        assert st.blocked is None and st.stage == "layers", st.blocked
+        assert st.base is not None
+        events = plan_events(st.path / "events.jsonl", root, st.base["sha"])
+        kinds = [e["kind"] for e in events]
+        assert "plan_check" not in kinds and kinds.count("plan_round") == 2
+        assert [e["reason"] for e in events if e["kind"] == "plan_done"] == ["converged"]
         seen.append((events, plan_state(st.path, root, st.base["sha"])))
     assert seen[1] == seen[0]

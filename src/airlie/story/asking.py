@@ -352,14 +352,16 @@ class Asker:
         repo_map: MapUse = CONFIG_MAP,
     ) -> str:
         """`ask`, in rounds (story.rounds): `round_steps` steps and a plan, then again in the same
-        conversation until a round leaves the plan unchanged or `rounds` are used (`in_rounds`)."""
+        conversation until a round leaves the plan unchanged or `rounds` are used (`in_rounds`).
+
+        `signal` is unused on purpose: the plan's own verdict (its `refine` object) has not been read since
+        208385f, so the rounds run until they converge or reach the cap. Reading it again is a change of
+        behaviour of its own (`plan_in_rounds`' `signal`), not this one's to make."""
         talk = self.conversation(
             st, stage, role, brief, steps=round_steps, at=at, repo_map=repo_map, capped_follow_ups=False
         )
         async with talk as say:
-            return await self.in_rounds(
-                st, stage, role, say, parse=parse, same=same, rounds=rounds, signal=signal
-            )
+            return await self.in_rounds(st, stage, role, say, parse=parse, same=same, rounds=rounds)
 
     async def in_rounds[T](
         self,
@@ -371,11 +373,10 @@ class Asker:
         parse: Callable[[str], T],
         same: Callable[[T, T], bool],
         rounds: int,
-        signal: Callable[[str], Any] | None = None,
     ) -> str:
         """The planning rounds (`plan_in_rounds`) as the turns of the conversation `say` speaks in: its
         opening turn is round 1 and each later round a follow-up; the rounds' events are the record's, with
-        the stage."""
+        the stage. The plan's own verdict is not read (`ask_in_rounds`)."""
         return await plan_in_rounds(
             lambda: say(),
             say,
@@ -384,7 +385,6 @@ class Asker:
             rounds=rounds,
             emit=lambda kind, **f: st.emit(kind, stage=stage, **f),
             role=role,
-            signal=signal,
         )
 
     async def usable[T](

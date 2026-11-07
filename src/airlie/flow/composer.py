@@ -93,9 +93,10 @@ class Composer:
         self.registry = registry
         self.store = store
         self.sessions = sessions
-        self.held = contextlib.AsyncExitStack()
+        self.held: contextlib.AsyncExitStack | None = None
         """Open while `run` runs: a conversation a node holds for later nodes (a session) is entered on it,
-        and closed, whatever ends the run, when `run` returns or raises."""
+        and closed, whatever ends the run, when `run` returns or raises. None outside a run, so a node that
+        would hold a session there fails loudly instead of holding it on a stack nothing closes."""
         self._loops: dict[
             tuple[str, str | None, str, str], int
         ] = {}  # (workflow, item, node, which) -> re-runs
@@ -103,8 +104,12 @@ class Composer:
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
         """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached.
         What the run's nodes held open (`held`) is closed when it returns or raises."""
-        async with contextlib.AsyncExitStack() as self.held:
-            return await self._walk(workflow, until, item, bundle=False)
+        async with contextlib.AsyncExitStack() as held:
+            self.held = held
+            try:
+                return await self._walk(workflow, until, item, bundle=False)
+            finally:
+                self.held = None
 
     async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
         spec = self.cfg.workflows[workflow]
