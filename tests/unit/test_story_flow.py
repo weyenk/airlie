@@ -28,6 +28,7 @@ from tests.unit.test_story_layer_checks_flow import BROKEN, FEATURE, OTHER_RED, 
 from tests.unit.test_story_layer_checks_flow import LAYERS as CALC_LAYERS
 from tests.unit.test_story_pipeline import (
     B2,
+    CUT_THINKING,
     LAYERS,
     NOTE,
     PKG1,
@@ -36,11 +37,13 @@ from tests.unit.test_story_pipeline import (
     SATISFIED,
     STORY,
     SURVEY_NOTES,
+    card_of_epic,
     gated,
     happy_engine,
     kinds_all,
     package_reply,
     pipeline,
+    planned,
     repo_with_marker_tests,
 )
 from tests.unit.test_studio_orchestrator import APPROVE, DONE, RUN, WRITE_PASS
@@ -809,7 +812,8 @@ def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> Non
 def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
     cfg = load_config(Path("airlie.yaml"))
     assert list(cfg.workflows["story"].nodes) == [
-        "intake", "base", "gate", "plan_story", "survey", "refine", "costed_refine", "layers",
+        "intake", "base", "gate", "take_card_as_story", "plan_story", "survey", "refine", "costed_refine",
+        "layers",
         "costed_plan", "amigos", "costed_amigos", "planned", "build_layers", "built", "publish",
         "costed_publish", "review",
     ]  # fmt: skip
@@ -936,7 +940,12 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         for id in (node.prompt, node.turn, node.parse, node.run, node.after, node.done, node.when)
         if id is not None
     } | {node.loop.when for node in nodes if node.loop is not None and node.loop.when is not None}
+    named |= {node.args["failed"] for node in nodes if "failed" in node.args}  # an ask's failure hook
     assert {"story.to_build", "story.survey_on", "story.amigos", "story.costed"} <= named
+    asks = {"story.survey", "story.surveyed", "story.survey_failed", "story.refine", "story.story"}
+    asks |= {"story.refined", "story.take_card_as_story", "story.is_story_card", "story.not_story_card"}
+    assert asks <= named  # the ask nodes' pieces are lifted
+    assert all("_later" not in registry[id].__qualname__ for id in sorted(asks))
     assert all(callable(registry[id]) for id in sorted(named))
     assert set(story_runners(pipe, st, card)) == {
         "ask", "conversation", "write", "meeting", "check", "gate", "parallel", "each"
@@ -951,6 +960,74 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         "story.has_package",
     }
     assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+
+
+async def test_the_ask_runner_retries_until_the_reply_parses(tmp_path: Path) -> None:
+    """Refine through the generic ask runner: an unusable reply goes back with the reason (`Asker.usable`),
+    one `retry` event, and the second reply's story lands in the store."""
+    repo = repo_with_marker_tests(tmp_path)
+    garbage = FakeReply(text="no story here")
+    pipe = pipeline(tmp_path, repo, happy_engine(product=[garbage, STORY]), composer=True)
+    st = await pipe.plan(text_card("add a marker"))
+    events = [(e["kind"], e) for e in kinds_all(st.path / "events.jsonl")]
+    assert [k for k, e in events if k == "retry"] == ["retry"]
+    assert [e["stage"] for k, e in events if k == "retry"] == ["refine"]
+    assert st.blocked is None and st.story is not None and st.story["title"] == "Add avatar upload"
+
+
+async def test_a_story_card_skips_refine_and_logs_refine_skipped(tmp_path: Path) -> None:
+    """An epic's story card is taken as the story by the `take_card_as_story` check; refine (and the survey
+    beside it) are skipped, and product is never asked."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(product=[])
+    card = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+    st = await pipeline(tmp_path, repo, engine, story={"survey": True}, composer=True).plan(card)
+    events = [(e["kind"], e) for e in kinds_all(st.path / "events.jsonl")]
+    kinds = [k for k, _ in events]
+    skipped = [f["node"] for k, f in events if k == "node_skipped"]
+    assert "refine_skipped" in kinds and "refine" in skipped and "survey" in skipped
+    assert not [r for r in engine.requests if r.role == "product"]
+    assert st.blocked is None and st.story is not None and st.story["title"] == "Add avatar upload"
+
+
+NOT_ACTIONABLE = FakeReply(text=fenced({"type": "blocked", "reason": "which image sizes?"}))
+
+
+@pytest.mark.parametrize("case", ["retry", "story card", "not actionable", "survey fails"])
+async def test_the_ask_nodes_edge_cases_run_the_same_either_way(tmp_path: Path, case: str) -> None:
+    """The ask runner's other paths, driver beside composer: a reply that goes back once, a story card,
+    product's refusal (the story blocks with today's reason) and a survey that fails (no notes, the story
+    goes on): the same events with the same fields in the same order, and the same state.json."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        card = text_card("add a marker")
+        settings: dict[str, object] = {"survey": True}
+        if case == "retry":
+            garbage = FakeReply(text="no story here")
+            engine = happy_engine(product=[garbage, STORY], architect=[SURVEY_NOTES, LAYERS])
+        elif case == "story card":
+            engine = happy_engine(product=[])
+            card = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+        elif case == "not actionable":
+            engine = happy_engine(product=[NOT_ACTIONABLE], architect=[SURVEY_NOTES])
+        else:
+            engine = happy_engine(architect=[CUT_THINKING, LAYERS])
+        st = await pipeline(root, repo, engine, story=settings, composer=composer).plan(card)
+        assert st.base is not None
+        sha = st.base["sha"]
+        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+    assert seen[1][0] == seen[0][0]
+    assert seen[1][1] == seen[0][1]
+    events, state = seen[0]
+    if case == "not actionable":
+        assert "product says this cannot be built as written: which image sizes?" in str(state["blocked"])
+    if case == "survey fails":
+        assert state["survey"] == "" and any(e["kind"] == "survey_failed" for e in events)
+    if case == "retry":
+        assert [e["kind"] for e in events].count("retry") == 1
 
 
 # ---- the build lane through the composer (story.composer), against the driver ----
@@ -971,11 +1048,14 @@ EXPECTED_RUN_KINDS = [
 def built_run(st: StoryState, root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`plan_events` and `plan_state` of a story that built layers: each commit (its own in every
     repository, as the commit times differ) named by the order it first appears in, as are its short names,
-    and every studio run id spelled the same."""
+    and every studio run id and pytest's time in a gate's output ("1 failed in 0.01s") spelled the same."""
     assert st.base is not None
-    run_id = r"\b\d{8}-\d{6}-[0-9a-f]{4}\b"
-    events = re.sub(run_id, "<run>", json.dumps(plan_events(st.path / "events.jsonl", root, st.base["sha"])))
-    state = re.sub(run_id, "<run>", json.dumps(plan_state(st.path, root, st.base["sha"])))
+
+    def same(text: str) -> str:
+        return re.sub(r" in \d+\.\d+s\b", " in <s>", re.sub(r"\b\d{8}-\d{6}-[0-9a-f]{4}\b", "<run>", text))
+
+    events = same(json.dumps(plan_events(st.path / "events.jsonl", root, st.base["sha"])))
+    state = same(json.dumps(plan_state(st.path, root, st.base["sha"])))
     shas = list(dict.fromkeys(re.findall(r"\b[0-9a-f]{40}\b", events + state)))
     for n, sha in enumerate(shas):
         events, state = (re.sub(rf"\b{sha[:7]}[0-9a-f]*\b", f"<commit {n}>", t) for t in (events, state))

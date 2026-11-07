@@ -1,0 +1,72 @@
+"""The generic node runners: one loop per node type, with a workflow's own pieces (brief builders, parsers,
+after-hooks) looked up in the registry by id (docs/superpowers/specs/2026-11-06-generic-nodes-design.md).
+
+Nothing here knows a story: a workflow binds the asker, the record it writes on and how a YAML role names a
+configured seat (`functools.partial`), and registers the pieces its nodes name."""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
+
+from airlie.flow.composer import FAIL_KEY, RunContext, resolve_count
+from airlie.flow.spec import NodeSpec
+from airlie.story.asking import Asker, Recorder, StoryBlocked
+from airlie.story.model import NotActionable
+
+
+async def ask_runner(
+    node: NodeSpec,
+    ctx: RunContext,
+    *,
+    asker: Asker,
+    st: Recorder,
+    seat: Callable[[str], str] = str,
+    ask: Callable[..., Awaitable[str]] | None = None,
+) -> Mapping[str, Any]:
+    """One seat, one brief, one reply. With `parse`, the seat is asked until the reply parses
+    (`Asker.usable`: `steps` tries, each failed try's reason in the next brief); without it, once, as a
+    short ask of at most `steps` tool steps. The stage the asker records is the node's name, the role
+    `seat(node.role)`, and `ask` replaces `Asker.ask` (a workflow's own map for the turn).
+
+    Then `after(ctx, value)` (it may be async) runs, and the value is the node's one output (a parsed value
+    with a `to_dict` is stored as that). A seat that says the work cannot be done as written
+    (`NotActionable`) blocks with its reason. On an `on_fail: continue` node a failed ask is no reason to
+    stop: `args.failed(ctx, error)` runs when the node names it, and the node fails without outputs."""
+    assert node.prompt is not None and isinstance(node.role, str)  # spec.py: an ask needs a role and prompt
+    role = seat(node.role)
+    brief = ctx.registry[node.prompt]
+    asking = ask or asker.ask
+    try:
+        if node.parse is not None:
+            value: Any = await asker.usable(
+                st,
+                ctx.node,
+                role,
+                next(iter(node.outputs), ctx.node),
+                lambda feedback: brief(ctx, feedback),
+                ctx.registry[node.parse],
+                resolve_count(ctx.cfg, node.steps) if node.steps is not None else None,
+                ask=asking,
+            )
+        else:
+            steps = resolve_count(ctx.cfg, node.steps) if node.steps is not None else None
+            value = await asking(st, ctx.node, role, brief(ctx, None), steps=steps, long=False)
+    except Exception as e:
+        if node.on_fail != "continue":
+            if isinstance(e, NotActionable):
+                raise StoryBlocked(f"{node.role} says this cannot be built as written: {e}") from e
+            raise
+        if (failed := node.args.get("failed")) is not None:
+            await _maybe(ctx.registry[failed](ctx, e))
+        return {FAIL_KEY: f"{type(e).__name__}: {e}"}
+    if node.after is not None:
+        await _maybe(ctx.registry[node.after](ctx, value))
+    plain = value.to_dict() if hasattr(value, "to_dict") else value
+    return {name: plain for name in list(node.outputs)[:1]}
+
+
+async def _maybe(result: Any) -> Any:
+    """`result`, awaited when a hook returned an awaitable."""
+    return await result if inspect.isawaitable(result) else result

@@ -85,7 +85,7 @@ from airlie.story.diagnosis import (
 from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
-from airlie.story.flow import compose
+from airlie.story.flow import compose, parse_refined, refined, survey_failed, surveyed, take_card_as_story
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.harvest import (
     DELETED_TESTS,
@@ -959,11 +959,9 @@ class StoryPipeline:
                 st, "survey", self.s.architect_role, survey_brief(card), steps=SURVEY_STEPS, long=False
             )
         except Exception as e:  # noqa: BLE001 - a survey is a head start: whatever fails, the story goes on
-            st.emit("survey_failed", reason=_cap(_reason(e)))
-            text = ""
-        st.survey = text
-        st.save()
-        st.emit("survey_done", chars=len(text))
+            survey_failed(st, e)
+            return
+        surveyed(st, text)
 
     async def _refine_with_survey(self, st: StoryState, card: Card) -> Story:
         """`_refine`, with `_survey` running beside it (they read the same code and share the engine). A
@@ -994,33 +992,15 @@ class StoryPipeline:
     async def _refine(self, st: StoryState, card: Card) -> Story:
         if st.story is not None:
             return Story.from_dict(st.story)
-        taken = self._story_card(card)
-        if taken is not None:  # the epic's plan wrote this story: the meeting reviews it, refine does not
-            st.story = taken.story.to_dict()
-            st.emit("refine_skipped", reason="story card")
-            st.finish("refine")
-            epic = taken.story.epic.key if taken.story.epic else "its epic"
-            await self.board.comment(
-                card, note(f"story taken from its card, planned under {epic}: {_story_note(taken.story)}")
-            )
-            return taken.story
+        if (taken := await take_card_as_story(self, st, card)) is not None:
+            return taken  # the epic's plan wrote this story: the meeting reviews it, refine does not
         try:
             story = await self._usable(
-                st,
-                "refine",
-                self.s.product_role,
-                "story",
-                lambda feedback: refine_brief(card, feedback),
-                lambda text: parse_story(extract_json_block(text), renumber=True),
+                st, "refine", self.s.product_role, "story", lambda fb: refine_brief(card, fb), parse_refined
             )
         except NotActionable as e:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
-        st.story = story.to_dict()
-        st.finish("refine")
-        # after the finish, so a note that cannot be posted never has the model asked again.
-        # Each note is posted as the role that wrote it (the prefix keeps it recognisable as airlie's):
-        # story → product, layers → architect, layer built → build_role, the PR stack in _finish → review.
-        await self.board.comment(card, note(_story_note(story)), role=self.s.product_role)
+        await refined(self, st, card, story)
         return story
 
     async def _size_review(

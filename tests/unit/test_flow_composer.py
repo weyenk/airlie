@@ -251,7 +251,8 @@ async def test_a_failing_parallel_branch_cancels_the_others(tmp_path):
     cancelled = []
 
     async def runner(node, ctx):
-        if ctx.node == "bad":
+        if ctx.node == "bad":  # the first child runs inline: it waits once, so the others have started
+            await asyncio.sleep(0)
             raise RuntimeError("boom")
         try:
             await asyncio.sleep(10)

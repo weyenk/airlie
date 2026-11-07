@@ -234,12 +234,17 @@ class Composer:
     async def _parallel(
         self, workflow: str, node: NodeSpec, formats: Mapping[str, str], item: str | None
     ) -> None:
+        """The first child runs in this coroutine and the rest as tasks beside it, started when it first
+        waits (as the driver runs refine with the survey beside it): a failure of the first stops the rest
+        before they take another step. A later child's failure surfaces once the first is done."""
         spec = self.cfg.workflows[workflow]
+        first, *rest = node.nodes
         tasks = [
             asyncio.ensure_future(self._run_node(workflow, child, spec.nodes[child], formats, item))
-            for child in node.nodes
+            for child in rest
         ]
         try:
+            await self._run_node(workflow, first, spec.nodes[first], formats, item)
             await asyncio.gather(*tasks)
         except BaseException:
             for task in tasks:

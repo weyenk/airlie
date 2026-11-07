@@ -17,6 +17,11 @@ workflows:
         inputs: [base]
         outputs: {gate: json}
         when: story.to_build
+      take_card_as_story:  # an epic's story card is the story: refine (and the survey beside it) skip
+        type: check
+        run: story.take_card_as_story
+        outputs: {story: json}
+        when: story.is_story_card
       plan_story:
         type: parallel
         nodes: [refine, survey]  # refine first: the driver starts it before the survey (the same event order)
@@ -24,10 +29,12 @@ workflows:
         type: ask
         role: architect
         prompt: story.survey
+        after: story.surveyed
         inputs: [card]
         outputs: {survey: markdown}
         steps: 8
         on_fail: continue
+        args: {failed: story.survey_failed}  # a survey that fails is no notes: logged, the story goes on
         when: story.survey_on
       refine:
         type: ask
@@ -38,6 +45,7 @@ workflows:
         inputs: [card]
         outputs: {story: json}
         steps: story.stage_attempts
+        when: story.not_story_card
       costed_refine:
         type: check
         run: story.costed
