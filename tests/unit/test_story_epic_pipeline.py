@@ -143,6 +143,18 @@ async def test_an_epic_is_planned_in_rounds_and_its_plan_is_recorded(tmp_path: P
     assert again.plan == st.plan and len(rig.engine.requests) == asked
 
 
+async def test_an_epic_plans_own_verdict_ends_the_rounds_after_one(tmp_path: Path) -> None:
+    done = {"worth_another_round": False, "reason": "settled", "check": ""}
+    engine = FakeEngine({"architect": [reply({**plan_obj(), "refine": done}), reply(plan_obj())]})
+    rig = Rig(tmp_path, engine, round_steps=2)
+    st = await rig.pipeline.plan(rig.item())
+    assert st.blocked is None and st.stage == "planned"
+    events = st.path / "events.jsonl"
+    assert len(kinds(events, "plan_round")) == 1 and len(kinds(events, "plan_check")) == 1
+    assert kinds(events, "plan_done")[0]["reason"] == "architect_done"
+    assert len(rig.architect_asks()) == 1
+
+
 async def test_a_plan_with_findings_is_asked_again_with_them_then_blocks_the_epic(tmp_path: Path) -> None:
     bad = reply(plan_obj(missing="docs/nope.md"))
     rig = Rig(tmp_path, FakeEngine({"architect": [bad, bad]}))

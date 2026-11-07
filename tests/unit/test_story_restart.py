@@ -92,9 +92,11 @@ async def published(tmp_path: Path) -> tuple[Path, LocalBoard, BoardStore, Card,
     return repo, board, store, card, st
 
 
-async def stopped(tmp_path: Path) -> tuple[Path, LocalBoard, BoardStore, Card, StoryState]:
+async def stopped(
+    tmp_path: Path, *, composer: bool = False
+) -> tuple[Path, LocalBoard, BoardStore, Card, StoryState]:
     """A story whose layer 01 is built and whose layer 02 stopped (it changed nothing): its branch and
-    worktree are kept, as an attempt."""
+    worktree are kept, as an attempt. `composer`: run through the story workflow (story.composer)."""
     repo = github_repo(tmp_path)
     board, store, key = story_card(tmp_path)
     card = await board.card(key)
@@ -106,7 +108,7 @@ async def stopped(tmp_path: Path) -> tuple[Path, LocalBoard, BoardStore, Card, S
             "reviewer": [APPROVE, APPROVE],
         }
     )
-    st = await pipeline(tmp_path, repo, engine, board=board).run(card)
+    st = await pipeline(tmp_path, repo, engine, board=board, composer=composer).run(card)
     assert "01" in st.built and st.blocked is not None and st.attempt is not None
     return repo, board, store, card, st
 
@@ -256,10 +258,11 @@ async def test_a_story_with_no_record_is_moved_to_approved(tmp_path: Path) -> No
         ("packages", "layers", ("story", "layers", "agreement"), ("gate",)),
     ],
 )
+@pytest.mark.parametrize("composer", [False, True])
 async def test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_it(
-    tmp_path: Path, point: str, stage: str, kept: tuple[str, ...], cleared: tuple[str, ...]
+    tmp_path: Path, point: str, stage: str, kept: tuple[str, ...], cleared: tuple[str, ...], composer: bool
 ) -> None:
-    repo, board, store, card, st = await stopped(tmp_path)
+    repo, board, store, card, st = await stopped(tmp_path, composer=composer)
     old = json.loads((st.path / "state.json").read_text())
     layer_branches = {str(st.built["01"]["branch"]), str(st.attempt and st.attempt["branch"])}
     trunk = git(repo, "branch", "--show-current")

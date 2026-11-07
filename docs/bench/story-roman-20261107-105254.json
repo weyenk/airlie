@@ -1,0 +1,282 @@
+{
+ "case": "roman",
+ "started": "2026-11-07T09:44:24",
+ "airlie_build": "7dba2d2",
+ "publish": false,
+ "base": {
+  "expected": "614384df3908fd705bd48a281136a3091c006459",
+  "built_on": "614384df3908fd705bd48a281136a3091c006459",
+  "same": true,
+  "pinned": false
+ },
+ "stage": "review",
+ "blocked": null,
+ "first_try": true,
+ "tries": {
+  "first_try": true,
+  "why_not": [],
+  "reached_end": true,
+  "package_tries": 2,
+  "packages_returned": 0,
+  "returned_kinds": {},
+  "layer_builds": 2,
+  "replans": 0,
+  "gate_failures": 0,
+  "blocks": 0,
+  "answer_after_cuts": 0,
+  "last_turn_tool_calls": 0,
+  "layers": {
+   "01": {
+    "package_tries": 1,
+    "returned": [],
+    "builds": 1,
+    "replanned": [],
+    "gate_failures": 0,
+    "built": true,
+    "satisfied": false
+   },
+   "02": {
+    "package_tries": 1,
+    "returned": [],
+    "builds": 1,
+    "replanned": [],
+    "gate_failures": 0,
+    "built": true,
+    "satisfied": false
+   }
+  }
+ },
+ "layers_built": 2,
+ "layers_satisfied": 0,
+ "prs": [],
+ "cost": {
+  "wall_min": 68.5,
+  "idle_min": 9.5,
+  "decode_tps_by_context": {
+   "<16k": 30.9,
+   "16-48k": 32.8,
+   ">48k": null
+  },
+  "phases": [
+   {
+    "at": "survey_done",
+    "min": 2.0
+   },
+   {
+    "at": "plan_done",
+    "min": 4.8
+   },
+   {
+    "at": "amigos_owner_decided",
+    "min": 19.8
+   },
+   {
+    "at": "story_done",
+    "min": 19.8
+   },
+   {
+    "at": "packages_drafting",
+    "min": 19.8
+   },
+   {
+    "at": "layer_built 01",
+    "min": 47.7
+   },
+   {
+    "at": "layer_built 02",
+    "min": 68.5
+   },
+   {
+    "at": "story_done",
+    "min": 68.5
+   }
+  ],
+  "roles": [
+   {
+    "phase": "layer build",
+    "role": "coder",
+    "calls": 19,
+    "tokens_in": 164285,
+    "tokens_out": 19064,
+    "prefill_s": 33.530899999999995,
+    "decode_s": 694.0840000000001,
+    "wall_s": 1294.4578,
+    "reads": 2,
+    "thinking_tokens": 14278,
+    "decode_tps": 27.5,
+    "prefill_tps": 4900
+   },
+   {
+    "phase": "meeting",
+    "role": "architect",
+    "calls": 3,
+    "tokens_in": 48163,
+    "tokens_out": 10345,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 601.512,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "packages",
+    "role": "architect",
+    "calls": 21,
+    "tokens_in": 316425,
+    "tokens_out": 50015,
+    "prefill_s": 46.877500000000005,
+    "decode_s": 1481.4766,
+    "wall_s": 506.29879999999997,
+    "reads": 5,
+    "thinking_tokens": 38152,
+    "decode_tps": 33.8,
+    "prefill_tps": 6750
+   },
+   {
+    "phase": "layers",
+    "role": "architect",
+    "calls": 2,
+    "tokens_in": 9171,
+    "tokens_out": 5538,
+    "prefill_s": 5.2943,
+    "decode_s": 160.90300000000002,
+    "wall_s": 166.2715,
+    "reads": 1,
+    "thinking_tokens": 4194,
+    "decode_tps": 34.4,
+    "prefill_tps": 1732
+   },
+   {
+    "phase": "meeting",
+    "role": "product",
+    "calls": 3,
+    "tokens_in": 42232,
+    "tokens_out": 3090,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 157.514,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "meeting",
+    "role": "tester",
+    "calls": 3,
+    "tokens_in": 51257,
+    "tokens_out": 3332,
+    "prefill_s": 0.0,
+    "decode_s": 0.0,
+    "wall_s": 142.63600000000002,
+    "reads": 0,
+    "thinking_tokens": 0,
+    "decode_tps": null,
+    "prefill_tps": null
+   },
+   {
+    "phase": "survey",
+    "role": "architect",
+    "calls": 7,
+    "tokens_in": 13726,
+    "tokens_out": 2853,
+    "prefill_s": 7.062899999999999,
+    "decode_s": 113.71260000000001,
+    "wall_s": 120.89110000000001,
+    "reads": 6,
+    "thinking_tokens": 1879,
+    "decode_tps": 25.1,
+    "prefill_tps": 1943
+   },
+   {
+    "phase": "refine",
+    "role": "product",
+    "calls": 9,
+    "tokens_in": 22437,
+    "tokens_out": 1980,
+    "prefill_s": 9.4746,
+    "decode_s": 87.34309999999999,
+    "wall_s": 97.0236,
+    "reads": 7,
+    "thinking_tokens": 0,
+    "decode_tps": 22.7,
+    "prefill_tps": 2368
+   },
+   {
+    "phase": "critic",
+    "role": "tester",
+    "calls": 11,
+    "tokens_in": 86841,
+    "tokens_out": 2494,
+    "prefill_s": 20.568099999999998,
+    "decode_s": 70.1023,
+    "wall_s": 92.5258,
+    "reads": 6,
+    "thinking_tokens": 0,
+    "decode_tps": 35.6,
+    "prefill_tps": 4222
+   }
+  ],
+  "retries": {
+   "plan_rounds": 1,
+   "plan_fixes": 0,
+   "meeting_turns": 9,
+   "meeting_objections": 3,
+   "critic_objections": 0,
+   "package_attempts": 2,
+   "packages_rejected": 0,
+   "unusable_replies": 0,
+   "layer_builds": 2,
+   "gate_replans": 0,
+   "supervisor_triages": 0
+  }
+ },
+ "quality": {
+  "gate_passes": true,
+  "layer_tests": {
+   "01": [
+    "tests/test_roman.py::NamesPresentAndCallableTest::test_names_present_and_callable",
+    "tests/test_roman.py::ToRomanRejectsNonIntTest::test_to_roman_rejects_non_int",
+    "tests/test_roman.py::ToRomanRejectsOutOfRangeTest::test_to_roman_rejects_out_of_range"
+   ],
+   "02": [
+    "tests/test_roman.py::FromRomanKnownValuesTest::test_from_roman_known_values",
+    "tests/test_roman.py::FromRomanRejectsEveryMalformedStringTest::test_from_roman_rejects_every_malformed_string",
+    "tests/test_roman.py::FromRomanRejectsNonStringTest::test_from_roman_rejects_non_string",
+    "tests/test_roman.py::NamesPresentAndCallableTest::test_names_present_and_callable",
+    "tests/test_roman.py::RoundTripEveryValueTest::test_round_trip_every_value",
+    "tests/test_roman.py::ToRomanRejectsNonIntTest::test_to_roman_rejects_non_int",
+    "tests/test_roman.py::ToRomanRejectsOutOfRangeTest::test_to_roman_rejects_out_of_range",
+    "tests/test_roman.py::ToRomanStandardValuesTest::test_to_roman_standard_values"
+   ]
+  },
+  "oracle": {
+   "spec": [
+    18,
+    18
+   ],
+   "extra": [
+    8,
+    8
+   ],
+   "failed": []
+  },
+  "mutation": {
+   "total": 59,
+   "killed": 59,
+   "survived": []
+  },
+  "tests": 9,
+  "asserts": 37,
+  "source_lines": 63
+ },
+ "closed": [],
+ "worktrees_removed": [],
+ "branches_deleted": [
+  "add-sandbox-roman-py-with-to-r-01-to-roman",
+  "add-sandbox-roman-py-with-to-r-02-from-roman"
+ ],
+ "draft_refs_dropped": []
+}

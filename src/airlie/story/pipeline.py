@@ -27,12 +27,12 @@ from airlie.board import BoardStore, Item
 from airlie.config import AirlieConfig
 from airlie.engine.protocol import Engine
 from airlie.engine.types import GenRequest, Message
+from airlie.flow.runners import Hold, Session, converse
 from airlie.prompts import text as hub_text
 from airlie.skills import Skill, load_skills, prompt_text, skill_criteria
 from airlie.story.amigos import (
     CHECKER,
     Agreement,
-    Meeting,
     MeetingFactory,
     ProofTest,
     Turn,
@@ -52,12 +52,10 @@ from airlie.story.briefs import (
     built_so_far,
     criteria_revision_brief,
     critic_brief,
-    drafts_brief,
     layer_goal,
     layer_plan,
     layer_size_brief,
     layer_sources,
-    layers_brief,
     next_package_brief,
     package_brief,
     pr_body,
@@ -85,6 +83,25 @@ from airlie.story.diagnosis import (
 from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
+from airlie.story.flow import (
+    agree_plain,
+    build_finished,
+    compose,
+    draft_packages,
+    drafts_opening,
+    keep_refined,
+    kept_agreement,
+    layers_guide,
+    layers_opening,
+    layers_planned,
+    parse_plan,
+    parse_refined,
+    plan_layers,
+    refined,
+    survey_failed,
+    surveyed,
+    take_card_as_story,
+)
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.harvest import (
     DELETED_TESTS,
@@ -112,7 +129,6 @@ from airlie.story.model import (
     branch_name,
     change_criteria,
     oversized_layers,
-    parse_layers,
     parse_size_verdict,
     parse_story,
 )
@@ -128,7 +144,6 @@ from airlie.story.phase import decoding, write_phase
 from airlie.story.provenance import Provenance, chain_items, gather_provenance
 from airlie.story.publish import Publisher, PublishError
 from airlie.story.restack import RestackError, replay
-from airlie.story.rounds import same_layers
 from airlie.story.satisfied_check import satisfied_feedback, unproven
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_note
@@ -574,14 +589,14 @@ class StoryPipeline:
         self.asker = Asker(cfg, self.studio, self.repo, lane=None)
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self._tests_before: dict[str, str] = {}
-        self._draft_turns: ToolTurns | None = None
-        """The held drafting conversation's turns when it writes the tests as files (story.package_tools)."""
         """The test files a layer's last package try left (story.package_tools): the next try starts there."""
         self._held: contextlib.AsyncExitStack | None = None
         """Open while a story's layers are built: the drafting conversation is held in it, for retries."""
-        self._drafting: tuple[Say, str] | None = None
-        """The architect's drafting conversation and its studio run, while it is held (P9 of the performance
-        plan): a retry of a layer's package is a follow-up in it, not a cold ask that reads it all again."""
+        self._drafting: Session | None = None
+        """The architect's drafting conversation, its studio run and (story.package_tools) its checkout's
+        turns, while the driver holds it (P9 of the performance plan): a retry of a layer's package is a
+        follow-up in it, not a cold ask that reads it all again. The composer holds it as the
+        `drafts_session` instead."""
         self._layer_base: str | None = None
         self.ledger: Ledger | None = None
         """The supervisor's ledger (observability.state_dir/supervisor.sqlite), opened by the first layer
@@ -665,34 +680,41 @@ class StoryPipeline:
                 if st.blocked is not None:
                     st.blocked = None
                     st.save()
-            await self._intake(st, card)
-            base = await self._base(st, card)
-            if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
-                self._gate(st, base)
-            story = await self._refine_with_survey(st, card)
-            await self._costed(st, card, "survey", "refine")
-            layers = await self._layers(st, card, story)
-            await self._costed(st, card, "plan")
-            agreed = await self._agree(st, card, story, layers)
-            await self._costed(st, card, "amigos")
-            story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
-            if until == "planned":
-                st.emit("story_planned", layers=len(layers))
+            # the same steps, ordered by config/workflows/story.yaml
+            if self.s.composer and until == "planned":
+                await compose(self, st, card, until=until)  # its `planned` node says story_planned
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)
                 return st
-            async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
-                self._held = held
-                try:
-                    for i in range(len(layers)):
-                        await self._build(st, card, _current(st, story), layers, i)
-                        await self._costed(st, card, "package", "layer", "review")
-                finally:
-                    self._held, self._drafting, self._draft_turns = None, None, None
-            if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
-                st.finish("build")
-            await self._publish(st, card, _current(st, story), layers)
-            await self._costed(st, card, "publish")
-            await self._finish(st, card)
+            if self.s.composer:  # the composer holds the drafting conversation for its run (`Composer.held`)
+                await compose(self, st, card, until=until)
+            else:
+                await self._intake(st, card)
+                base = await self._base(st, card)
+                if _to_build(st):  # each built layer keeps the gate it passed: publishing needs none
+                    self._gate(st, base)
+                story = await self._refine_with_survey(st, card)
+                await self._costed(st, card, "survey", "refine")
+                layers = await self._layers(st, card, story)
+                await self._costed(st, card, "plan")
+                agreed = await self._agree(st, card, story, layers)
+                await self._costed(st, card, "amigos")
+                story, layers = agreed.story, agreed.layers  # the one story every later brief and PR reads
+                if until == "planned":
+                    st.emit("story_planned", layers=len(layers))
+                    st.emit("story_done", stage=st.stage, blocked=st.blocked)
+                    return st
+                async with contextlib.AsyncExitStack() as held:  # the drafting conversation lives as long
+                    self._held = held
+                    try:
+                        for i in range(len(layers)):
+                            await self._build(st, card, _current(st, story), layers, i)
+                            await self._costed(st, card, "package", "layer", "review")
+                    finally:
+                        self._held, self._drafting = None, None
+                build_finished(st)
+                await self._publish(st, card, _current(st, story), layers)
+                await self._costed(st, card, "publish")
+                await self._finish(st, card)
         except StoryWaiting as e:
             await self._wait(st, card, str(e), e.on)
         except StoryBlocked as e:
@@ -747,7 +769,11 @@ class StoryPipeline:
         if "story_planned" not in seen:
             return False
         after = seen[len(seen) - 1 - seen[::-1].index("story_planned") + 1 :]
-        return all(kind in ("story_start", "story_done") for kind in after)
+        # the composer's node events (story.composer) say which box ran, not that work went on: no resume
+        return all(
+            kind in ("story_start", "story_done", "node_started", "node_finished", "node_skipped")
+            for kind in after
+        )
 
     # ---- stages: each one skips itself when the state says it already finished ----
     async def _intake(self, st: StoryState, card: Card) -> None:
@@ -875,35 +901,6 @@ class StoryPipeline:
             st, stage, role, brief, at, steps, long=long, repo_map=self._map(stage, brief)
         )
 
-    async def _ask_in_rounds[T](
-        self,
-        st: StoryState,
-        stage: str,
-        role: str,
-        brief: str,
-        at: str | None,
-        *,
-        parse: Callable[[str], T],
-        same: Callable[[T, T], bool],
-        round_steps: int,
-        rounds: int,
-        signal: Callable[[str], Any] | None = None,
-    ) -> str:
-        """`_ask`, in rounds (story.rounds): `Asker.ask_in_rounds`."""
-        return await self.asker.ask_in_rounds(
-            st,
-            stage,
-            role,
-            brief,
-            at,
-            parse=parse,
-            same=same,
-            round_steps=round_steps,
-            rounds=rounds,
-            signal=signal,
-            repo_map=self._map(stage, brief),
-        )
-
     def _map(self, stage: str, brief: str) -> MapUse:
         """`stage_map` with the config's cap."""
         return stage_map(stage, brief, self.cfg.repo_map.story_chars)
@@ -938,11 +935,9 @@ class StoryPipeline:
                 st, "survey", self.s.architect_role, survey_brief(card), steps=SURVEY_STEPS, long=False
             )
         except Exception as e:  # noqa: BLE001 - a survey is a head start: whatever fails, the story goes on
-            st.emit("survey_failed", reason=_cap(_reason(e)))
-            text = ""
-        st.survey = text
-        st.save()
-        st.emit("survey_done", chars=len(text))
+            survey_failed(st, e)
+            return
+        surveyed(st, text)
 
     async def _refine_with_survey(self, st: StoryState, card: Card) -> Story:
         """`_refine`, with `_survey` running beside it (they read the same code and share the engine). A
@@ -973,33 +968,15 @@ class StoryPipeline:
     async def _refine(self, st: StoryState, card: Card) -> Story:
         if st.story is not None:
             return Story.from_dict(st.story)
-        taken = self._story_card(card)
-        if taken is not None:  # the epic's plan wrote this story: the meeting reviews it, refine does not
-            st.story = taken.story.to_dict()
-            st.emit("refine_skipped", reason="story card")
-            st.finish("refine")
-            epic = taken.story.epic.key if taken.story.epic else "its epic"
-            await self.board.comment(
-                card, note(f"story taken from its card, planned under {epic}: {_story_note(taken.story)}")
-            )
-            return taken.story
+        if (taken := await take_card_as_story(self, st, card)) is not None:
+            return taken  # the epic's plan wrote this story: the meeting reviews it, refine does not
         try:
             story = await self._usable(
-                st,
-                "refine",
-                self.s.product_role,
-                "story",
-                lambda feedback: refine_brief(card, feedback),
-                lambda text: parse_story(extract_json_block(text), renumber=True),
+                st, "refine", self.s.product_role, "story", lambda fb: refine_brief(card, fb), parse_refined
             )
         except NotActionable as e:
             raise StoryBlocked(f"product says this cannot be built as written: {e}") from e
-        st.story = story.to_dict()
-        st.finish("refine")
-        # after the finish, so a note that cannot be posted never has the model asked again.
-        # Each note is posted as the role that wrote it (the prefix keeps it recognisable as airlie's):
-        # story → product, layers → architect, layer built → build_role, the PR stack in _finish → review.
-        await self.board.comment(card, note(_story_note(story)), role=self.s.product_role)
+        await refined(self, st, card, story)
         return story
 
     async def _size_review(
@@ -1080,62 +1057,21 @@ class StoryPipeline:
         return res.text
 
     async def _layers(self, st: StoryState, card: Card, story: Story) -> tuple[Layer, ...]:
+        """The layer plan (`plan_layers`, the layers node's one implementation), kept and told to the issue;
+        a story planned already keeps its plan."""
         if st.layers is not None:
             return tuple(Layer.from_dict(d) for d in st.layers)
-        guide = repo_guide(
-            self.repo,
-            (st.base or {}).get("sha", "HEAD"),
-            story_text(story),
-            budget_chars=guide_budget(self.cfg, [self.s.architect_role]),
-        )
-
-        def parse(text: str) -> tuple[Layer, ...]:
-            return parse_layers(extract_json_block(text), story, self.s.max_layers)
-
-        reviewed: list[bool] = []  # the size review is asked once in this planning (`_size_review`)
-
-        async def sized(layers: tuple[Layer, ...]) -> None:
-            await self._size_review(st, story, layers, asked=reviewed)
-
-        coder_steps, coder_context = self._coder_budget()
-
-        ask: Callable[..., Awaitable[str]] | None = None
-        round_steps = self.s.plan_round_steps
-        if round_steps:
-            cap = self.cfg.roles[self.s.architect_role].max_steps or self.cfg.teams.max_steps
-            ask = partial(
-                self._ask_in_rounds,
-                parse=parse,
-                same=same_layers,
-                round_steps=round_steps,
-                rounds=max(1, min(cap // round_steps, self.s.plan_max_rounds)),
-                signal=lambda text: (extract_json_block(text) or {}).get("refine"),
-            )
-        layers = await self._usable(
+        guide = layers_guide(self, st, story)
+        layers = await plan_layers(
+            self,
             st,
-            "layers",
-            self.s.architect_role,
-            "layer plan",
-            lambda feedback: layers_brief(
-                story,
-                self.s.max_layers,
-                feedback,
-                guide=guide,
-                survey=st.survey or "",
-                round_steps=round_steps,
-                lessons=self.lessons.recent(),
-                max_steps=coder_steps,
-                context_budget=coder_context,
-                dossier=self._dossier(st, (st.base or {}).get("sha")),
-                max_criteria=self.s.max_layer_criteria,
-            ),
-            parse,
-            ask=ask,
-            check=sized,
+            story,
+            brief=partial(layers_opening, self, st, story, guide),
+            parse=partial(parse_plan, self, story),
+            open=partial(converse, self.asker, st, self.s.architect_role, stage="layers"),
+            rounds=self.s.plan_max_rounds,
         )
-        st.layers = [x.to_dict() for x in layers]
-        st.save()  # the stage finishes once the layers are agreed (`_agree`), not when they are split
-        await self.board.comment(card, note(_layers_note(layers)), role=self.s.architect_role)
+        await layers_planned(self, st, card, layers)
         return layers
 
     async def _routed_guideline(self, st: StoryState, story: Story) -> Skill | None:
@@ -1262,7 +1198,29 @@ class StoryPipeline:
         st.save()
         cls._keep_transcript(st)
 
-    async def _agree(self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...]) -> Agreement:
+    def _meeting_parts(self, st: StoryState) -> dict[str, Any]:
+        """What the story's meeting is made of (`Hold`, `meeting_runner`): the factory, each role's read-only
+        tools over a checkout (`_meeting_tools`), a fresh turn callback for each meeting (`_on_turn`, which
+        saves the team state every turn) and, in the planning lane, the wait for the build lane's gap before
+        each long turn."""
+
+        def before_turn() -> Callable[[], Awaitable[Any]] | None:
+            return partial(self.asker.wait, st, "amigos", True) if self.asker.lane == "plan" else None
+
+        return {
+            "meeting": self.meeting,
+            "tools": self._meeting_tools,
+            "on_turn": partial(self._on_turn, st),
+            "before_turn": before_turn,
+        }
+
+    def _hold(self, st: StoryState) -> Hold:
+        """The driver's meeting: held from the team state the story saved (`st.meeting`)."""
+        return Hold(cfg=self.cfg, state=st.meeting, **self._meeting_parts(st))
+
+    async def _agree(
+        self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], hold: Hold | None = None
+    ) -> Agreement:
         """The story meeting (P2, 2026-10-24): product, the architect and the tester agree the requirements,
         the changes and the proof, then the stored agreement replaces the story and the layers. Skipped, and
         the split is the agreement with an empty proof plan, when the agreement is already stored (a resume),
@@ -1273,23 +1231,16 @@ class StoryPipeline:
         At the end: references to criteria the story no longer has are pruned (an event says which); an
         agreement that cannot be built whatever was decided (a criterion no layer owns, a criterion or layer
         with no test) stops the story, naming what is missing; the rest stands as each owner left it, with
-        the open objections on record and a lesson when the turns ran out."""
-        if st.agreement is not None:
-            if not st.done("layers"):
-                st.finish("layers")
-            return Agreement.from_dict(st.agreement)
-        # the story and the plan as refine and the split left them, before the agreement (and later a reworded
-        # criterion) replaces them: a restart from the layer plan or the meeting goes back to these
-        st.refined_story, st.refined_layers = story.to_dict(), [x.to_dict() for x in layers]
-        st.save()
+        the open objections on record and a lesson when the turns ran out.
+
+        The meeting is held through `hold` (the meeting runner's, over the team state its store saved), by
+        default `_hold`'s over the state's own: the stored-agreement and plain-split branches are
+        `kept_agreement` and `agree_plain`, which the composer's `agree_plain` check and `_restore` call."""
+        if (kept := kept_agreement(st)) is not None:
+            return kept
         if st.done("layers") or not self.s.amigos.enabled:
-            plain = Agreement(story, layers, ())
-            st.agreement = plain.to_dict()
-            if st.done("layers"):
-                st.save()
-            else:
-                st.finish("layers")
-            return plain
+            return agree_plain(st, story, layers)
+        keep_refined(st, story, layers)
         tester = self.cfg.roles.get("tester")
         if tester is None:
             raise StoryBlocked(
@@ -1312,10 +1263,8 @@ class StoryPipeline:
         st.emit("amigos_start", resumed=st.meeting is not None)
         add_worktree(self.repo, tree, branch=None, start_point=sha)
         try:
-            meeting = self.meeting(self.cfg, self._meeting_tools(tree), self._on_turn(st))
-            if isinstance(meeting, Meeting) and self.asker.lane == "plan":  # each long turn waits for a gap
-                meeting.before_turn = partial(self.asker.wait, st, "amigos", True)
-            held = await meeting.run(
+            held = await (hold or self._hold(st))(
+                tree,
                 opening,
                 story,
                 layers,
@@ -1323,7 +1272,6 @@ class StoryPipeline:
                 {g.name for g in found.guidelines},
                 repo=self.repo,
                 base=sha,
-                state=st.meeting,
             )
         except NotActionable as e:
             self._forget_meeting(st)
@@ -1526,6 +1474,45 @@ class StoryPipeline:
         if (covered := _covered_below(st, layers, i)) is not None:
             await self._satisfy(st, card, layers, i, covered)
             return
+        where, built, guide = await self._layer_site(st, card, story, layers, i)
+        base_sha = where[1]
+        if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
+            await self._draft_packages(st, story, layers)
+        package = await self._ready_package(
+            st, story, layers, i, base_sha, built, guide, drafting=self._drafting
+        )
+        story = _current(st, story)  # a criterion the architect found false was reworded on the way
+        attempts = self.s.layer_attempts
+        for attempt in range(1, attempts + 1):
+            if isinstance(package, Satisfied):
+                await self._satisfy(st, card, layers, i, package)
+                return
+            again = await self._build_once(
+                st,
+                card,
+                story,
+                layers,
+                i,
+                package,
+                where,
+                built,
+                attempt,
+            )
+            if again is None:
+                return
+            package = await self._ready_package(
+                st, story, layers, i, base_sha, built, guide, feedback=again, drafting=self._drafting
+            )
+            story = _current(st, story)
+
+    async def _layer_site(
+        self, st: StoryState, card: Card, story: Story, layers: tuple[Layer, ...], i: int
+    ) -> tuple[tuple[str, str, str, Any], str, str]:
+        """Where layer `i` (not satisfied below) is built, found before its package is asked for: `where` for
+        `_build_once` (its base ref and commit, its branch and its commit's author), what the layers below
+        added (`built`) and the repository guide at its base. A layer an earlier run stopped part-way is
+        cleared first (`_clear_attempt`)."""
+        nn = f"{i + 1:02d}"
         # who commits the layer, found before it is built: a bot that cannot be found costs no build
         author = await self.publisher.author(self.repo)
         layer = layers[i]
@@ -1553,30 +1540,7 @@ class StoryPipeline:
             if below is not None and st.base
             else ""
         )
-        if not st.drafted and not st.built:  # the whole plan, before the first layer (amendment 2026-10-26)
-            await self._draft_packages(st, story, layers)
-        package = await self._ready_package(st, story, layers, i, base_sha, built, guide)
-        story = _current(st, story)  # a criterion the architect found false was reworded on the way
-        attempts = self.s.layer_attempts
-        for attempt in range(1, attempts + 1):
-            if isinstance(package, Satisfied):
-                await self._satisfy(st, card, layers, i, package)
-                return
-            again = await self._build_once(
-                st,
-                card,
-                story,
-                layers,
-                i,
-                package,
-                (base_ref, base_sha, branch, author),
-                built,
-                attempt,
-            )
-            if again is None:
-                return
-            package = await self._ready_package(st, story, layers, i, base_sha, built, guide, feedback=again)
-            story = _current(st, story)
+        return (base_ref, base_sha, branch, author), built, guide
 
     async def _satisfy(
         self, st: StoryState, card: Card, layers: tuple[Layer, ...], i: int, satisfied: Satisfied
@@ -1825,20 +1789,22 @@ class StoryPipeline:
         proof: tuple[ProofTest, ...] = (),
         *,
         revised: bool = False,
+        drafting: Session | None = None,
     ) -> Package | ProofChange | Satisfied:
         """One architect ask for layer `i`'s package, read-only at the layer's real base, parsed: the package,
         or a ProofChange when the architect says the layer's agreed `proof` is wrong. A reply that cannot be
         used is a StoryError: its text is the next try's feedback. A retry (`feedback`), or the ask after the
-        layer's proof was `revised`, while the drafting conversation is held is a turn of it (`_resumed`),
-        not a new ask.
+        layer's proof was `revised`, while the drafting conversation is held (`drafting`: the driver's, or
+        the composer's `drafts_session`) is a turn of it (`_resumed`), not a new ask; with none held (a
+        story built again by another process) it is a new ask.
 
         With story.package_tools the ask writes the tests as files (`_tool_package`), and a retry resumes
         the drafting conversation only when it writes them too (the tool-written packages design,
         2026-11-06)."""
         tools = self.s.package_tools
-        held = self._drafting is not None and (not tools or self._draft_turns is not None)
-        if (feedback is not None or revised) and held:
-            return await self._resumed(st, story, layers, i, base_sha, feedback, proof)
+        held = drafting if drafting is not None and (not tools or drafting.state is not None) else None
+        if (feedback is not None or revised) and held is not None:
+            return await self._resumed(st, story, layers, i, base_sha, feedback, proof, held)
         max_steps, context = self._coder_budget()
         brief = package_brief(
             story,
@@ -1956,6 +1922,7 @@ class StoryPipeline:
         base_sha: str,
         feedback: str | None,
         proof: tuple[ProofTest, ...],
+        drafting: Session,
     ) -> Package | ProofChange | Satisfied:
         """A retry of layer `i`'s package as a turn of the architect's drafting conversation (P9 of the
         performance plan): it still holds the files, the agreement and its drafts, so it does not read them
@@ -1966,10 +1933,9 @@ class StoryPipeline:
         A conversation that writes the tests as files (story.package_tools) has its checkout committed, so it
         moves clean, then the last try's test files placed and committed as "previous try"; the turn's files
         are harvested since the layer's base (the tool-written packages design, 2026-11-06)."""
-        assert self._drafting is not None
-        say, run = self._drafting
+        say, run = drafting.say, drafting.run
         nn = f"{i + 1:02d}"
-        turns = self._draft_turns
+        turns: ToolTurns | None = drafting.state
         sources = layer_sources(self.repo, base_sha, layers[i])
         # worded as a cold retry's brief words it
         again = (
@@ -2002,48 +1968,12 @@ class StoryPipeline:
         proof change (`{"proof_change": ...}`, which its layer takes as its first ask's answer): the layers
         from there on are asked for one by one, as before. Events: packages_drafting,
         package_drafted, and for an unusable reply retry and package_returned."""
-        sha = (await self._base(st))["sha"]
-        guide = repo_guide(
-            self.repo,
-            sha,
-            "\n".join(f"{x.scope}\n{x.brief}" for x in layers),
-            budget_chars=guide_budget(self.cfg, [self.s.architect_role, self.s.build_role]),
-        )
-        max_steps, context = self._coder_budget()
-        first = drafts_brief(
-            story,
-            layers,
-            guide=guide,
-            lessons=self.lessons.recent(),
-            max_steps=max_steps,
-            context_budget=context,
-            proof=self._layer_proof(st, layers[0]),
-            sources=layer_sources(self.repo, sha, layers[0]),  # lever 2: its files, not read by tool
-            dossier=self._dossier(st, sha),
-            lint=lint_note(self.repo, sha, self.commands),
-            tools=self.s.package_tools,
-        )
-        st.emit("packages_drafting", layers=len(layers))
-        turns = ToolTurns(st, sha, self._keep_tests) if self.s.package_tools else None
-        talk = self.asker.conversation(
-            st,
-            "packages",
-            self.s.architect_role,
-            first,
-            steps=self.s.package_steps,
-            at=sha,
-            repo_map=self._map("packages", first),
-            writes=self._writes(turns) if turns is not None else None,
-        )
-        async with contextlib.AsyncExitStack() as here:
-            # held for the story's layers when there is a hold (P9), else closed with the drafting
-            say = await (self._held or here).enter_async_context(talk)
-            run = st.runs[-1]
-            if self._held is not None:
-                self._drafting, self._draft_turns = (say, run), turns
-            await self._draft_each(st, story, layers, sha, say, run, turns)
-        st.drafted = True
-        st.save()
+        opening = await drafts_opening(self, st, story, layers)
+        # held for the story's layers when there is a hold (P9), else closed with the drafting
+        talk = partial(converse, self.asker, st, self.s.architect_role, stage="packages", held=self._held)
+        session = await draft_packages(self, st, story, layers, opening, talk)
+        if self._held is not None:
+            self._drafting = session
 
     async def _draft_each(
         self,
@@ -2190,6 +2120,7 @@ class StoryPipeline:
         guide: str,
         package: Package,
         proof: tuple[ProofTest, ...],
+        drafting: Session | None = None,
     ) -> Package | ProofChange | Satisfied:
         """The tester critic's turn on a package (D9), when the layer has an agreed proof: one read-only ask
         of the tester role at the base with the test files, the layer's proof and the conventions. An
@@ -2200,7 +2131,9 @@ class StoryPipeline:
         if told is None:
             return package
         self._tests_before = dict(package.tests)  # with the file tools, the revision edits them in place
-        return await self._package(st, story, layers, i, base_sha, built, guide, told, proof)
+        return await self._package(
+            st, story, layers, i, base_sha, built, guide, told, proof, drafting=drafting
+        )
 
     async def _objections(
         self,
@@ -2427,12 +2360,13 @@ class StoryPipeline:
         guide: str,
         *,
         feedback: str | None = None,
+        drafting: Session | None = None,
     ) -> Package | Satisfied:
         """`_ready_package`, with the layer named on the `run` event of every ask it makes."""
         token = ASK_LAYER.set(f"{i + 1:02d}")
         try:
             return await self._ready_package_for(
-                st, story, layers, i, base_sha, built, guide, feedback=feedback
+                st, story, layers, i, base_sha, built, guide, feedback=feedback, drafting=drafting
             )
         finally:
             ASK_LAYER.reset(token)
@@ -2448,6 +2382,7 @@ class StoryPipeline:
         guide: str,
         *,
         feedback: str | None = None,
+        drafting: Session | None = None,
     ) -> Package | Satisfied:
         """A package for layer `i` that passes the readiness check (package_checks): up to
         story.package_attempts tries, each a `_package` ask and then the check in a scratch worktree at the
@@ -2543,10 +2478,22 @@ class StoryPipeline:
                     draft = None
                 else:
                     got = await self._package(
-                        st, story, layers, i, base_sha, built, guide, feedback, proof, revised=revised
+                        st,
+                        story,
+                        layers,
+                        i,
+                        base_sha,
+                        built,
+                        guide,
+                        feedback,
+                        proof,
+                        revised=revised,
+                        drafting=drafting,
                     )
                     if isinstance(got, Package) and proof:
-                        got = await self._critique(st, story, layers, i, base_sha, built, guide, got, proof)
+                        got = await self._critique(
+                            st, story, layers, i, base_sha, built, guide, got, proof, drafting
+                        )
                 if isinstance(got, ProofChange):
                     if revisions >= PROOF_REVISIONS:
                         raise StoryError(

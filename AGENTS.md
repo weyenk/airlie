@@ -8,6 +8,7 @@ Committed config is split for readability:
 
 - [`airlie.yaml`](airlie.yaml) — root index (`includes:`, engines, tools, story, …)
 - [`config/models.yaml`](config/models.yaml), [`config/roles.yaml`](config/roles.yaml), [`config/profiles.yaml`](config/profiles.yaml) — included fragments
+- [`config/workflows/story.yaml`](config/workflows/story.yaml), [`config/workflows/layer.yaml`](config/workflows/layer.yaml) — included fragments: the story workflow and its layer bundle, run by the composer when `story.composer` is on
 
 Merge order: `includes` → root keys → `airlie.local.yaml` → topology profile. Role prompts, model paths, and similar data paths resolve against the root file's directory, not the fragment's. Prefer editing the fragment that owns a section rather than inlining it back into the root.
 

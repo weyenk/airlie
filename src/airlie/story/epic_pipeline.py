@@ -53,6 +53,7 @@ from airlie.story.local_board import LocalBoard
 from airlie.story.model import EpicHeader, NoTestGate, StoryError, StorySetupError
 from airlie.story.pipeline import _cap, _reason, _redact_urls
 from airlie.story.publish import Publisher, PublishError
+from airlie.story.rounds import plan_verdict
 from airlie.story.testing_conventions import conventions, conventions_text
 from airlie.teams.worktree import delete_branch, remove_worktree, rev_parse
 from airlie.topology.studio_plan import extract_json_block
@@ -356,7 +357,7 @@ class EpicPipeline:
                 same=same_plans,
                 round_steps=round_steps,
                 rounds=max(1, min(cap // round_steps, plan_spec.max_rounds)),
-                signal=lambda text: (extract_json_block(text) or {}).get("refine"),
+                signal=plan_verdict,
             )
 
         def counted(feedback: str | None) -> str:
