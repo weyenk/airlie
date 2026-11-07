@@ -15,6 +15,9 @@ import pytest
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply
+from airlie.flow.composer import Registry, RunContext
+from airlie.flow.runners import check_runner
+from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.board import text_card
@@ -960,6 +963,41 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         "story.has_package",
     }
     assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+
+
+def run_context(pipe: StoryPipeline, registry: Registry, store: Any, node: str) -> RunContext:
+    """The context the composer hands a story node's runner, over `store`."""
+    return RunContext(
+        cfg=pipe.cfg,
+        store=store,
+        sessions=Sessions(),
+        registry=registry,
+        workflow="story",
+        node=node,
+        item=None,
+        feedback=None,
+    )
+
+
+async def test_check_callables_read_inputs_from_the_store_not_the_pipeline(tmp_path: Path) -> None:
+    """The gate check through the generic check runner reads its base from the store it is handed (the
+    story's state has none): the gate read from that commit's AGENTS.md is its output, and `gate` is said."""
+    repo = gated(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), test_cmd=None, composer=True)
+    card = text_card("add a marker")
+    st = StoryState(path=tmp_path / "story", card={}, repo=str(repo))
+    st.path.mkdir()
+    sha = git(repo, "rev-parse", "HEAD")
+    base = {"ref": f"origin/{pipe.s.trunk}", "sha": sha}
+    store = MemoryStore({"base": base})
+    registry = story_registry(pipe, st, card)
+    node = pipe.cfg.workflows["story"].nodes["gate"]
+    out = await check_runner(node, run_context(pipe, registry, store, "gate"))
+    assert st.base is None  # read from the store, never the pipeline's state
+    assert out == {"gate": st.gate} and out["gate"]["commands"] == ["./check.sh"]
+    gates = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "gate"]
+    assert [e["base"] for e in gates] == [base]
+    assert pipe.commands == ("./check.sh",)  # read into the pipeline, as the driver's gate step does
 
 
 async def test_the_ask_runner_retries_until_the_reply_parses(tmp_path: Path) -> None:

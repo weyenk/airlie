@@ -70,6 +70,16 @@ async def ask_runner(
     return {name: plain for name in list(node.outputs)[:1]}
 
 
+async def check_runner(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    """A deterministic step: the node's `run` id called as `fn(ctx, **node.args)` (it may be async), its
+    inputs read from `ctx.store`, and the mapping it returns is the node's outputs (False or None: none).
+    Whatever it raises propagates: the composer's caller says what a stop means (waiting, blocked)."""
+    assert node.run is not None  # spec.py: a check needs run
+    fn = ctx.registry[node.run]  # resolved before the call: a wrong id is a config error, not the step's
+    out = await _maybe(fn(ctx, **node.args))
+    return out or {}
+
+
 async def _maybe(result: Any) -> Any:
     """`result`, awaited when a hook returned an awaitable."""
     return await result if inspect.isawaitable(result) else result

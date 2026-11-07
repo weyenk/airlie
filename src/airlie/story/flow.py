@@ -5,7 +5,8 @@ A strangler: the runners here call today's `StoryPipeline` steps by node name, w
 return the node's outputs read back from the state, so a story runs the same either way by construction and
 the composer only orders the steps; each type's generic loop is lifted into `airlie.flow.runners` in turn,
 with the story's pieces (the brief, the parser, the after-hook) defined here once and called by both the
-registry and the driver's step. The ask type is lifted: survey and refine."""
+registry and the driver's step. The ask type is lifted (survey and refine), and the check type: each check
+is a `(ctx, **args)` callable that reads its inputs from the store and calls the step the driver calls."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext, Runner
-from airlie.flow.runners import ask_runner
+from airlie.flow.runners import ask_runner, check_runner
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
 from airlie.story.board import Card, note
@@ -111,21 +112,21 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
     rest (prompt, turn and parse ids) raise until their runners are lifted."""
     from airlie.story.pipeline import _covered_below, _to_build  # the pipeline imports this module
 
-    async def intake(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    # ---- the checks (`check_runner`: `fn(ctx, **node.args)`, a declared input read from the store, the
+    # outputs returned). Each calls the pipeline's step, the one implementation the driver calls too.
+    async def intake(ctx: RunContext) -> Mapping[str, Any]:
         await pipe._intake(st, card)
         return {}
 
-    async def base(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        await pipe._base(st, card)
-        return {"base": st.base}
+    async def base(ctx: RunContext) -> Mapping[str, Any]:
+        return {"base": await pipe._base(st, card)}
 
-    async def gate(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        assert st.base is not None  # the node's input
-        pipe._gate(st, st.base)
+    def gate(ctx: RunContext) -> Mapping[str, Any]:
+        pipe._gate(st, ctx.store.get("base"))
         return {"gate": st.gate}
 
-    async def costed(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        await pipe._costed(st, card, *node.args["stages"])
+    async def costed(ctx: RunContext, *, stages: list[str]) -> Mapping[str, Any]:
+        await pipe._costed(st, card, *stages)
         return {}
 
     async def amigos(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
@@ -134,7 +135,7 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         await pipe._agree(st, card, Story.from_dict(st.story), layers)
         return {"agreement": st.agreement, "story": st.story, "layers": st.layers}
 
-    async def planned(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    def planned(ctx: RunContext) -> Mapping[str, Any]:
         # the planning lane's last word, as the driver says it; a run that goes on to build says nothing here
         if until == "planned":
             st.emit("story_planned", layers=len(st.layers or ()))
@@ -146,15 +147,15 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
 
     def at(ctx: RunContext) -> tuple[str, int, Story, tuple[Layer, ...]]:
         """The layer the bundle is on (its number and index) and the story and layers as they now stand
-        (`_current`: a criterion reworded on the way is read back)."""
-        assert ctx.item is not None and st.story is not None and st.layers is not None  # an each item
-        return ctx.item, int(ctx.item) - 1, Story.from_dict(st.story), _plan(st)
+        in the store (`_current`: a criterion reworded on the way is read back)."""
+        assert ctx.item is not None  # an each item
+        return ctx.item, int(ctx.item) - 1, *_planned(ctx)
 
     def open_layer(ctx: RunContext) -> bool:
         """Neither built nor satisfied: `_build` returns at once for a layer that is either."""
         return ctx.item is not None and ctx.item not in st.built and ctx.item not in st.satisfied
 
-    async def covered(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    async def covered(ctx: RunContext) -> Mapping[str, Any]:
         """Satisfied by the layers below (`_covered_below`), or else where it is built (`_layer_site`, which
         finds its author and clears what an earlier run left of it): no outputs, so nothing is skipped."""
         nn, i, story, layers = at(ctx)
@@ -188,21 +189,19 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
             return {FAIL_KEY: "layer red", "feedback": again}
         return {"built.{item}": st.built[nn]}
 
-    async def build_done(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        if not st.done("build"):  # here, not in the last layer: a note that failed there must not skip it
-            st.finish("build")
+    def build_done(ctx: RunContext) -> Mapping[str, Any]:
+        build_finished(st)
         return {}
 
-    async def publish(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        assert st.story is not None  # planned
-        await pipe._publish(st, card, Story.from_dict(st.story), _plan(st))
+    async def publish(ctx: RunContext) -> Mapping[str, Any]:
+        await pipe._publish(st, card, *_planned(ctx))
         return {"prs": st.prs} if st.prs else {}  # set only once all are opened, then the node is skipped
 
     async def finish(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         await pipe._finish(st, card)
         raise EndRun()
 
-    async def take_card(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    async def take_card(ctx: RunContext) -> Mapping[str, Any]:
         await take_card_as_story(pipe, st, card)
         return {"story": st.story}
 
@@ -216,22 +215,24 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
     registry.add("story.refined", lambda ctx, story: refined(pipe, st, card, story))
     for id in LATER:
         registry.add(id, _later(id))
-    steps: dict[str, Step] = {
+    checks: dict[str, Callable[..., Any]] = {  # (ctx, **args)
         "story.intake": intake,
         "story.take_card_as_story": take_card,
         "story.base": base,
         "story.gate": gate,
         "story.costed": costed,
-        "story.amigos": amigos,
         "story.planned": planned,
         "story.covered": covered,
-        "story.ready_package": ready_package,
-        "story.build_once": build_once,
         "story.build_done": build_done,
         "story.publish": publish,
+    }
+    steps: dict[str, Step] = {  # the meeting, the layer's package and build, the review: (node, ctx)
+        "story.amigos": amigos,
+        "story.ready_package": ready_package,
+        "story.build_once": build_once,
         "story.finish": finish,
     }
-    for id, fn in steps.items():
+    for id, fn in {**checks, **steps}.items():
         registry.add(id, fn)
     registry.add("story.to_build", lambda ctx: _to_build(st))
     # `_survey`'s own skips: a story surveyed already (its notes may be "", a survey that failed) or
@@ -252,10 +253,23 @@ def _plan(st: StoryState) -> tuple[Layer, ...]:
     return tuple(Layer.from_dict(d) for d in st.layers)
 
 
+def _planned(ctx: RunContext) -> tuple[Story, tuple[Layer, ...]]:
+    """The story and its agreed layers as the store holds them (a node's `story` and `layers`)."""
+    return Story.from_dict(ctx.store.get("story")), tuple(Layer.from_dict(d) for d in ctx.store.get("layers"))
+
+
+def build_finished(st: StoryState) -> None:
+    """The build stage finished, once every layer is built or satisfied: after the layers, not in the last
+    one, so a note that failed there never skips it. The driver's step and the `built` check's."""
+    if not st.done("build"):
+        st.finish("build")
+
+
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
-    """One runner per node type. A check, a meeting, a write or a gate runs its `run` id from the registry;
-    an ask is the generic `ask_runner` (the layer's package ask still its `run` id), asking through `_ask`
-    for the stage's map as the driver does, and a conversation calls today's step by node name."""
+    """One runner per node type. A check is the generic `check_runner`; a meeting, a write or a gate runs
+    its `run` id from the registry; an ask is the generic `ask_runner` (the layer's package ask still its
+    `run` id), asking through `_ask` for the stage's map as the driver does, and a conversation calls
+    today's step by node name."""
 
     async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
         assert node.run is not None  # spec.py: a check, a gate and a meeting need run
@@ -286,7 +300,7 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         raise NotImplementedError(f"{node.type} node '{ctx.node}': no runner yet")
 
     return {
-        "check": by_run,
+        "check": check_runner,
         "meeting": by_run,
         "ask": ask,
         "conversation": conversation,

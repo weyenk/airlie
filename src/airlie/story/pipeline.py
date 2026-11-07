@@ -85,7 +85,15 @@ from airlie.story.diagnosis import (
 from airlie.story.dossier import story_dossier
 from airlie.story.epic_plan import StoryCard, after_keys, story_card_of
 from airlie.story.fixes import file_fix, home_checkout, home_repo, render_fix_card, signature_label
-from airlie.story.flow import compose, parse_refined, refined, survey_failed, surveyed, take_card_as_story
+from airlie.story.flow import (
+    build_finished,
+    compose,
+    parse_refined,
+    refined,
+    survey_failed,
+    surveyed,
+    take_card_as_story,
+)
 from airlie.story.gate import gate_command, gate_shown, missing_gate, read_gate
 from airlie.story.harvest import (
     DELETED_TESTS,
@@ -703,10 +711,7 @@ class StoryPipeline:
                             await self._costed(st, card, "package", "layer", "review")
                     finally:
                         self._held, self._drafting, self._draft_turns = None, None, None
-                if not st.done(
-                    "build"
-                ):  # here, not in the last layer: a note that failed there must not skip it
-                    st.finish("build")
+                build_finished(st)
                 await self._publish(st, card, _current(st, story), layers)
                 await self._costed(st, card, "publish")
                 await self._finish(st, card)
