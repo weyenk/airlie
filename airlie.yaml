@@ -6,8 +6,7 @@ includes:
   - config/models.yaml
   - config/roles.yaml
   - config/profiles.yaml
-  - config/workflows/story.yaml
-  - config/workflows/layer.yaml
+  - config/workflows/*.yaml
 
 # ---- Inference engines ------------------------------------------------------------------------------------------
 # A `vllm_mlx` engine is a process airlie starts for you (`task up`); `openai_http` is any external

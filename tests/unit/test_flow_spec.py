@@ -1,6 +1,6 @@
 import pytest
 
-from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
+from airlie.flow.spec import Layout, NodeSpec, WorkflowSpec, check_workflows
 
 
 def wf(**nodes):
@@ -116,3 +116,14 @@ def test_a_parallel_child_may_not_use_loop_branch_next_or_an_on_fail_loop():
     problems = check_workflows({"w": w})
     msg = "a parallel child may not use loop, branch, next or an on_fail loop"
     assert problems == [f"workflow w: node {n}: {msg}" for n in "abcd"]
+
+
+def test_type_and_layout_are_optional_and_layout_must_name_nodes():
+    w = WorkflowSpec(
+        start="a", type="bug", layout={"a": Layout(x=10, y=20)}, nodes={"a": NodeSpec(type="check", run="r")}
+    )
+    assert check_workflows({"w": w}) == []
+    w2 = WorkflowSpec(
+        start="a", layout={"zz": Layout(x=0, y=0)}, nodes={"a": NodeSpec(type="check", run="r")}
+    )
+    assert check_workflows({"w": w2}) == ["workflow w: layout names unknown node 'zz'"]

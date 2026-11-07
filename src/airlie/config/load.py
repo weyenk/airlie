@@ -103,10 +103,17 @@ def _read_yaml_with_includes(path: Path, _seen: frozenset[Path] | None = None) -
         if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
             raise ConfigError(f"{path}: includes must be a list of paths")
         for inc in includes:
-            inc_path = (path.parent / inc).resolve()
-            if not inc_path.is_file():
-                raise ConfigError(f"{path}: includes: file not found: {inc}")
-            merged = deep_merge(merged, _read_yaml_with_includes(inc_path, seen))
+            if any(c in inc for c in "*?["):
+                matches = [m for m in sorted(path.parent.glob(inc)) if m.is_file()]
+                if not matches:
+                    raise ConfigError(f"{path}: includes: nothing matches {inc}")
+            else:
+                inc_path = (path.parent / inc).resolve()
+                if not inc_path.is_file():
+                    raise ConfigError(f"{path}: includes: file not found: {inc}")
+                matches = [inc_path]
+            for match in matches:
+                merged = deep_merge(merged, _read_yaml_with_includes(match.resolve(), seen))
     body = {k: v for k, v in raw.items() if k != "includes"}
     return deep_merge(merged, body)
 

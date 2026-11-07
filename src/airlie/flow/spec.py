@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Strict(BaseModel):
@@ -56,10 +56,17 @@ class NodeSpec(Strict):
     advisor: str | None = None  # write, Part 2
 
 
+class Layout(Strict):
+    x: float
+    y: float
+
+
 class WorkflowSpec(Strict):
+    type: str | None = None  # the card type this workflow serves; the composer ignores it
     start: str
     loose: list[str] = []  # inputs the caller supplies: card, repo
     nodes: dict[str, NodeSpec]
+    layout: dict[str, Layout] = Field(default_factory=dict)  # canvas positions; the composer ignores them
 
 
 def _requirements(node: NodeSpec) -> str | None:
@@ -102,6 +109,9 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
             available |= _produced(workflows[caller]) | set(workflows[caller].loose)
         if w.start not in known:
             problems.append(f"workflow {wname}: start names unknown node '{w.start}'")
+        for lname in w.layout:
+            if lname not in known:
+                problems.append(f"workflow {wname}: layout names unknown node '{lname}'")
         for nname, n in w.nodes.items():
 
             def add(what: str, _w: str = wname, _n: str = nname) -> None:
