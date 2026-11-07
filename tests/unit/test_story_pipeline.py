@@ -264,13 +264,16 @@ async def test_a_layer_built_with_the_done_check_on_ticks_its_criteria_before_re
     assert [len(r) for r in runs] == [1, 1]  # once per built layer, none in refine or the packages
 
 
-async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_front(tmp_path: Path) -> None:
+@pytest.mark.parametrize("composer", [False, True])
+async def test_each_layer_is_built_from_its_package_drafted_with_the_others_up_front(
+    tmp_path: Path, composer: bool
+) -> None:
     """P1 (2026-10-24), amended 2026-10-26: the architect drafts every layer's package in one conversation
     before the first layer is built, each checked just before its layer; the pipeline places its tests in the
     worktree and commits them with the layer, and the coder's goal is the package."""
     repo = repo_with_marker_tests(tmp_path)
     engine = happy_engine()
-    st = await pipeline(tmp_path, repo, engine).run(text_card("avatars"))
+    st = await pipeline(tmp_path, repo, engine, composer=composer).run(text_card("avatars"))
     assert st.blocked is None and st.stage == "review", st.blocked
     assert [row["id"] for row in st.built["01"]["subtasks"]] == ["build"]
     assert st.built["01"]["tests"] == ["tests/unit/test_storage.py::test_stores_an_avatar"]
@@ -642,7 +645,10 @@ async def test_a_cancel_while_muse_reads_the_block_puts_the_issue_back_in_intake
     assert kinds(st.path / "events.jsonl", "cancelled") and not kinds(st.path / "events.jsonl", "blocked")
 
 
-async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(tmp_path: Path) -> None:
+@pytest.mark.parametrize("composer", [False, True])
+async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
+    tmp_path: Path, composer: bool
+) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     engine = FakeEngine(
@@ -654,7 +660,9 @@ async def test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review(
         }
     )
     gh = RecordedGh()
-    st = await pipeline(tmp_path, repo, engine, gh).run(text_card("Let users upload an avatar"))
+    st = await pipeline(tmp_path, repo, engine, gh, composer=composer).run(
+        text_card("Let users upload an avatar")
+    )
     assert st.blocked is None and st.stage == "review"
     # one commit per layer, stacked, by airlie
     assert git(repo, "log", "--format=%s", f"{trunk}..{B1}") == "Add avatar upload: Storage (01/02)"
@@ -1060,15 +1068,16 @@ NIT_WITHOUT_A_LINE = FakeReply(
 )
 
 
+@pytest.mark.parametrize("composer", [False, True])
 async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings_reach_the_prs(
-    tmp_path: Path,
+    tmp_path: Path, composer: bool
 ) -> None:
     repo = repo_with_marker_tests(tmp_path)
     trunk = git(repo, "branch", "--show-current")
     a1, a2 = f"AIR-7-{B1}", f"AIR-7-{B2}"
     gh = RecordedGh()
     engine = happy_engine(reviewer=[NIT, NIT_WITHOUT_A_LINE])
-    st = await pipeline(tmp_path, repo, engine, gh).run(ISSUE)
+    st = await pipeline(tmp_path, repo, engine, gh, composer=composer).run(ISSUE)
     assert st.blocked is None and st.stage == "review"
     assert git(repo, "branch", "--list", "AIR-7-*", "--format=%(refname:short)").splitlines() == [a1, a2]
     assert ["gh", "stack", "init", "--base", trunk, a1, a2] in gh.calls
@@ -1081,7 +1090,8 @@ async def test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings
     # every run is on record, and the events follow the stages
     assert len(st.runs) == 5  # refine, layers, the packages drafted together, then a build per layer
     log = [json.loads(x) for x in (st.path / "events.jsonl").read_text().splitlines()]
-    assert [e["kind"] for e in log] == [
+    # the composer's node events say which box ran: the trail is the story's own events
+    assert [e["kind"] for e in log if not e["kind"].startswith("node_")] == [
         *("story_start", "stage"),  # intake; the trunk is fetched, quietly
         *("run", "stage", "run", "stage"),  # refine, layers
         # build: every package drafted in one conversation, then each checked just before its layer;
@@ -3345,14 +3355,17 @@ async def test_the_meeting_opens_with_the_repositorys_test_levels_and_the_tester
     assert kinds(st.path / "events.jsonl", "skill")[0]["chosen"] is None
 
 
-async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("composer", [False, True])
+async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(
+    tmp_path: Path, composer: bool
+) -> None:
     """The planning lane's half ends at the stored layers (and agreement); the build lane's half starts there
     and is no resume (P5b, 2026-10-25)."""
     repo = repo_with_marker_tests(tmp_path)
     card = text_card("avatars")
     board = RecordingBoard()
     engine = happy_engine()
-    planner = pipeline(tmp_path, repo, engine, board=board)
+    planner = pipeline(tmp_path, repo, engine, board=board, composer=composer)
     st = await planner.plan(card)
     assert st.stage == "layers" and st.blocked is None and not st.built
     assert {r.role for r in engine.requests} == {"product", "architect"}  # no coder, reviewer or package
@@ -3360,7 +3373,9 @@ async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path:
     asked = len(engine.requests)
     again = await planner.plan(card)  # planned: nothing is asked again
     assert again.stage == "layers" and len(engine.requests) == asked
-    builder = pipeline(tmp_path, repo, happy_engine(product=[], architect=PKGS), board=board)
+    builder = pipeline(
+        tmp_path, repo, happy_engine(product=[], architect=PKGS), board=board, composer=composer
+    )
     built = await builder.build(card)
     assert built.stage == "review" and built.blocked is None and [p["number"] for p in built.prs] == [11, 12]
     texts = [text for call, text in board.calls if call == "comment"]
@@ -3373,9 +3388,9 @@ async def test_run_is_plan_then_build_and_each_resumes_at_the_boundary(tmp_path:
     # and `run` is the same two halves in one go
     elsewhere = tmp_path / "again"
     elsewhere.mkdir()
-    full = await pipeline(elsewhere, repo_with_marker_tests(elsewhere), happy_engine()).run(
-        text_card("again")
-    )
+    full = await pipeline(
+        elsewhere, repo_with_marker_tests(elsewhere), happy_engine(), composer=composer
+    ).run(text_card("again"))
     assert full.stage == "review" and full.blocked is None
 
 

@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal
 
-from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext, Runner
+from airlie.flow.composer import FAIL_KEY, Composer, Registry, RunContext, Runner
 from airlie.flow.runners import (
     Hold,
     Opening,
@@ -27,6 +27,7 @@ from airlie.flow.runners import (
     ask_runner,
     check_runner,
     conversation_runner,
+    gate_runner,
     meeting_runner,
 )
 from airlie.flow.spec import NodeSpec, NodeType
@@ -393,9 +394,10 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         await pipe._publish(st, card, *_planned(ctx))
         return {"prs": st.prs} if st.prs else {}  # set only once all are opened, then the node is skipped
 
-    async def finish(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    async def finish(ctx: RunContext) -> None:
+        """The review gate's piece (`gate_runner`, which then ends the run): the PR links posted, the card
+        moved to review and the stage finished, as `_finish` does for the driver."""
         await pipe._finish(st, card)
-        raise EndRun()
 
     async def take_card(ctx: RunContext) -> Mapping[str, Any]:
         await take_card_as_story(pipe, st, card)
@@ -454,11 +456,11 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         "story.covered": covered,
         "story.build_done": build_done,
         "story.publish": publish,
+        "story.finish": finish,  # the review gate's (`gate_runner`)
     }
-    steps: dict[str, Step] = {  # the layer's package and build, the review: (node, ctx)
+    steps: dict[str, Step] = {  # the layer's package and build: (node, ctx)
         "story.ready_package": ready_package,
         "story.build_once": build_once,
-        "story.finish": finish,
     }
     for id, fn in {**checks, **steps}.items():
         registry.add(id, fn)
@@ -491,14 +493,15 @@ def build_finished(st: StoryState) -> None:
 
 
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
-    """One runner per node type. A check is the generic `check_runner`; a write or a gate runs its `run` id
-    from the registry; an ask is the generic `ask_runner` (the layer's package ask still its `run` id),
-    asking through `_ask` for the stage's map as the driver does; a conversation is the generic
-    `conversation_runner` (the plan's rounds and the drafting are its turn bodies), and a meeting the
-    generic `meeting_runner` over the story's meeting parts (`_meeting_parts`, the driver's too)."""
+    """One runner per node type. A check is the generic `check_runner` and a gate the generic `gate_runner`
+    (the review, which ends the run); a write runs its `run` id from the registry; an ask is the generic
+    `ask_runner` (the layer's package ask still its `run` id), asking through `_ask` for the stage's map as
+    the driver does; a conversation is the generic `conversation_runner` (the plan's rounds and the drafting
+    are its turn bodies), and a meeting the generic `meeting_runner` over the story's meeting parts
+    (`_meeting_parts`, the driver's too)."""
 
     async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        assert node.run is not None  # spec.py: a check, a gate and a meeting need run
+        assert node.run is not None  # spec.py: a write and the package ask need run
         step: Step = ctx.registry[node.run]
         return await step(node, ctx)
 
@@ -524,7 +527,7 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         "ask": ask,
         "conversation": conversation,
         "write": by_run,  # the layer's build (`_build_once`)
-        "gate": by_run,  # the review (`_finish`), which ends the run
+        "gate": gate_runner,  # the review (`story.finish`), which ends the run
         "each": later,  # the composer runs an each node's bundle itself
         "parallel": later,  # and a parallel node's children
     }

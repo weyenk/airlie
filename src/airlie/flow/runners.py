@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from airlie.flow.composer import FAIL_KEY, RunContext, resolve_count
+from airlie.flow.composer import FAIL_KEY, EndRun, RunContext, resolve_count
 from airlie.flow.spec import NodeSpec
 from airlie.story.asking import Asker, Recorder, Say, StoryBlocked
 from airlie.story.model import NotActionable
@@ -291,6 +291,16 @@ async def meeting_runner(
     hold = Hold(meeting, ctx.cfg, tools, on_turn, before_turn, state)
     out = await _maybe(run(ctx, hold, **node.args))
     return out or {}
+
+
+async def gate_runner(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+    """The run's end: the node's `run` id called as `fn(ctx, **node.args)` (it may be async), then `EndRun`,
+    whatever it returned. The composer records the node done and its `run` returns the gate's name; whatever
+    the piece raises propagates as a check's does."""
+    assert node.run is not None  # spec.py: a gate needs run
+    fn = ctx.registry[node.run]  # resolved before the call: a wrong id is a config error, not the gate's
+    await _maybe(fn(ctx, **node.args))
+    raise EndRun()
 
 
 async def _maybe(result: Any) -> Any:

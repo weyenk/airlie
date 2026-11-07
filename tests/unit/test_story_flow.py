@@ -19,15 +19,23 @@ import pytest
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply
-from airlie.flow.composer import Composer, Registry, RunContext
-from airlie.flow.runners import Hold, Session, check_runner, conversation_runner, meeting_runner
+from airlie.flow.composer import Composer, EndRun, Registry, RunContext
+from airlie.flow.runners import (
+    Hold,
+    Session,
+    check_runner,
+    conversation_runner,
+    gate_runner,
+    meeting_runner,
+)
 from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.board import text_card
 from airlie.story.flow import story_registry, story_runners
+from airlie.story.phase import phase_path
 from airlie.story.pipeline import StoryPipeline
-from airlie.story.state import StoryState
+from airlie.story.state import StoryState, lane_lock, lock_held
 from tests.unit.git_helpers import git
 from tests.unit.test_story_epic import fenced
 from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
@@ -1633,3 +1641,58 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
         ("open", ("story", "layers", {}, set()), tmp_path, "b", {"saved": True}, wait),
     ]
     assert turned == [("turn", {"n": 1})]
+
+
+async def test_the_gate_runner_calls_its_run_piece_with_the_nodes_args_then_ends_the_run(
+    tmp_path: Path,
+) -> None:
+    """The generic runner: the node's `run` id resolved before the call, called as `fn(ctx, **node.args)`
+    (it may be async), and then the run ends (`EndRun`), whatever the piece returned."""
+    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine(), composer=True)
+    node = pipe.cfg.workflows["story"].nodes["review"]
+    called: list[Any] = []
+
+    async def piece(ctx: RunContext, **args: Any) -> None:
+        called.append((ctx.node, args))
+
+    registry = Registry()
+    registry.add("story.finish", piece)
+    ctx = run_context(pipe, registry, MemoryStore(), "review")
+    with pytest.raises(EndRun):
+        await gate_runner(node.model_copy(update={"args": {"to": "review"}}), ctx)
+    assert called == [("review", {"to": "review"})]
+    with pytest.raises(KeyError):  # a wrong id is a config error, raised before anything is called
+        await gate_runner(node.model_copy(update={"run": "story.nope"}), ctx)
+    assert len(called) == 1
+
+
+async def test_the_review_gate_ends_the_run_and_releases_the_build_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through `run` with the composer on, holding the build lane as the line does: the review gate posts the
+    links and moves the card, the composer's run returns at the gate's name, `_drive` returns normally (the
+    stage `review`, then `story_done`), its `finally` writes the idle phase, and the lane is free after."""
+    returned: list[Any] = []
+    run = Composer.run
+
+    async def spy(self: Composer, *args: Any, **kwargs: Any) -> Any:
+        returned.append(await run(self, *args, **kwargs))
+        return returned[-1]
+
+    monkeypatch.setattr(Composer, "run", spy)
+    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine(), composer=True)
+    with lane_lock(pipe.stories_dir, "build") as held:
+        assert held
+        st = await pipe.run(text_card("add a marker"))
+    assert st.blocked is None and st.stage == "review" and st.done("review"), st.blocked
+    assert returned == ["review"]
+    events = kinds_all(st.path / "events.jsonl")
+    story = [e for e in events if not e["kind"].startswith("node_")]
+    assert [(e["kind"], e.get("stage")) for e in story[-2:]] == [
+        ("stage", "review"),
+        ("story_done", "review"),
+    ]
+    gate = [e for e in events if e["kind"] == "node_finished" and e["node"] == "review"]
+    assert [e["outcome"] for e in gate] == ["done"]
+    assert json.loads(phase_path(pipe.stories_dir).read_text())["phase"] == "idle"
+    assert lock_held(pipe.stories_dir, "build") is False
