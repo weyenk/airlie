@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from airlie.flow.catalog import Catalog
 
 __all__ = [
+    "ASSIGNMENT",
     "RESERVED",
     "Format",
     "Layout",
@@ -42,6 +43,8 @@ RESERVED = ("path", "artifacts", "workflow", "nodes_done")
 never saved), `artifacts` (the store of a workflow's own outputs, D15), `workflow` (the card's snapshot,
 D21) and `nodes_done` (the composer's done set, D17). `artifacts.<name>` is a name inside the store, and is
 fine; nothing may write inside the others."""
+ASSIGNMENT = "assignment"
+"""What a team's `worker` text reads beside its inputs: the one assignment the worker was given."""
 
 _OLD_NODE_FIELDS = ("parse", "after", "done", "when", "next", "on", "branch", "loop", "nodes", "over")
 _OLD_WORKFLOW_FIELDS = ("start", "loose")
@@ -263,7 +266,8 @@ def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -
 
 def _placeholder_problems(node: NodeSpec) -> list[str]:
     """Rule 4: every placeholder head of a model node's own prompt text (and `turn`, `worker`) is one of its
-    inputs, `feedback`, `item` or `config`. A `prompt:<id>` is checked by `_prompt_file` instead."""
+    inputs, `feedback`, `item` or `config`, and a team's `worker` text may name its `assignment` too. A
+    `prompt:<id>` is checked by `_prompt_file` instead."""
     from airlie.flow import render
     from airlie.flow.prompt_files import FEEDBACK, PREFIX
     from airlie.prompts.hub import PromptError
@@ -275,13 +279,14 @@ def _placeholder_problems(node: NodeSpec) -> list[str]:
     for field, text in (("prompt", node.prompt), ("turn", node.turn), ("worker", node.worker)):
         if text is None or text.startswith(PREFIX):
             continue
+        readable = allowed | {ASSIGNMENT} if field == "worker" else allowed
         try:
             heads = render.names(text)
         except PromptError as e:
             found.append(str(e))
             continue
         found += [
-            f"{field} names '{head}', which is not one of its inputs" for head in sorted(heads - allowed)
+            f"{field} names '{head}', which is not one of its inputs" for head in sorted(heads - readable)
         ]
     return found
 

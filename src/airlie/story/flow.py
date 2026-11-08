@@ -52,6 +52,7 @@ from airlie.flow.runners import (
 )
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
+from airlie.flow.team import team_runner
 from airlie.prompts.hub import PromptText
 from airlie.story.amigos import ROLES, Agreement
 from airlie.story.board import Card, note
@@ -1022,16 +1023,13 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
     gate `gate_runner` (the review, which ends the run); an ask, a conversation and a write are the model
     runners over the pipeline's asker and the story's state, a seat named as the story names it (`seat`),
     the ask through `_ask` for the stage's map as the driver does; a meeting is `meeting_runner` over the
-    amigos protocol (`_agree`, D20) with the story's meeting parts (`_meeting_parts`, the driver's too). A
-    team has no runner until Task 7; a bundle is the composer's own."""
+    amigos protocol (`_agree`, D20) with the story's meeting parts (`_meeting_parts`, the driver's too); a
+    team is `team_runner` over the same asker and state. A bundle is the composer's own."""
     seated = functools.partial(seat, pipe)
 
     async def agree(ctx: RunContext, hold: Hold, opening: str | None) -> Mapping[str, Any]:
         await pipe._agree(st, card, *_planned(ctx), hold, opening=opening)
         return {"agreement": st.agreement, "story": st.story, "layers": st.layers}
-
-    async def team(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        raise NotImplementedError(f"team node '{ctx.node}': no runner yet (Task 7)")
 
     return {
         "ask": functools.partial(ask_runner, asker=pipe.asker, st=st, seat=seated, ask=pipe._ask),
@@ -1040,7 +1038,7 @@ def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeT
         "meeting": functools.partial(meeting_runner, agree=agree, roles=ROLES, **pipe._meeting_parts(st)),
         "check": check_runner,
         "gate": gate_runner,  # the review (`story.finish`), which ends the run
-        "team": team,
+        "team": functools.partial(team_runner, asker=pipe.asker, st=st, seat=seated),
     }
 
 
