@@ -53,13 +53,20 @@ def test_a_model_node_may_name_no_code():
     ]
 
 
-def test_lines_name_known_nodes_and_a_when_is_kept_for_the_condition_task():
+def test_lines_name_known_nodes_and_a_when_must_parse_and_name_what_is_produced():
     w = wf(
         a=check(outputs={"x": "json"}, to=[Line(node="zz"), Line(node="b", when="x.kind == y")]),
         b=check(inputs=["x"]),
     )
     assert check_workflows({"w": w}) == ["workflow w: node a: to names unknown node 'zz'"]
     assert check_workflows({"w": wf(a=check(to=["a2"]), a2=check())}) == []  # a bare name is a line
+    bad = wf(a=check(to=[Line(node="b", when="x ==")]), b=check())
+    (problem,) = check_workflows({"w": bad})
+    assert problem.startswith("workflow w: node a: line to b: condition at ")
+    ghost = wf(a=check(to=[Line(node="b", when="nope.kind == y or card exists or config.k")]), b=check())
+    assert check_workflows({"w": ghost}) == [
+        "workflow w: node a: line to b: condition names 'nope', which nothing produces"
+    ]
 
 
 def test_an_input_nothing_produces_is_refused_unless_the_workflow_declares_it():

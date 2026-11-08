@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
+from airlie.flow import conditions
 from airlie.flow.outputs import Format, OutputSpec, Strict
 
 __all__ = [
@@ -298,6 +299,24 @@ def _session_problems(w: WorkflowSpec, n: NodeSpec) -> list[str]:
     return found
 
 
+def _condition_problems(n: NodeSpec, heads: set[str]) -> list[str]:
+    """A line's `when` must parse and read only names something produces (or `config`)."""
+    found: list[str] = []
+    for line in n.to:
+        if line.when is None:
+            continue
+        try:
+            cond = conditions.parse(line.when)
+        except conditions.ConditionError as e:
+            found.append(f"line to {line.node}: condition {e}")
+            continue
+        found += [
+            f"line to {line.node}: condition names '{x}', which nothing produces"
+            for x in sorted(cond.names - heads)
+        ]
+    return found
+
+
 def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collection[str] = ()) -> list[str]:
     """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent.
     `prompts` are the ids of the prompt files the drafts carry, beside the hub's rules, that a node's
@@ -307,6 +326,7 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collectio
     for wname, w in workflows.items():
         known = set(w.nodes)
         available = _produced(w)
+        heads = {name.split(".")[0] for name in available} | {"config"}
         for lname in w.layout:
             if lname not in known:
                 problems.append(f"workflow {wname}: layout names unknown node '{lname}'")
@@ -325,6 +345,7 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collectio
                 if name not in available
             ]
             found += [f"to names unknown node '{line.node}'" for line in n.to if line.node not in known]
+            found += _condition_problems(n, heads)
             found += [
                 f"the line to '{dst}' closes a cycle and has no loop bound"
                 for src, dst in closing
