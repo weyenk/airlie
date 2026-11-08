@@ -10,6 +10,7 @@ schema (nodes-are-config design, Outputs)."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -79,3 +80,79 @@ class OutputSpec(Strict):
             except ValueError as e:
                 raise ValueError(f"field '{name}': {e}") from None
         return self
+
+
+def _kind_text(kind: Kind) -> str:
+    if kind.name == "list":
+        assert kind.item is not None
+        return f"list of {_kind_text(kind.item)}"
+    return "one of " + " | ".join(kind.options) if kind.name == "one_of" else kind.name
+
+
+def _fits(value: Any, kind: Kind) -> bool:
+    if kind.name == "text":
+        return isinstance(value, str)
+    if kind.name == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if kind.name == "bool":
+        return isinstance(value, bool)
+    if kind.name == "one_of":
+        return isinstance(value, str) and value in kind.options
+    assert kind.item is not None
+    return isinstance(value, list) and all(_fits(v, kind.item) for v in value)
+
+
+_BOOLS = {"yes": True, "true": True, "no": False, "false": False}
+
+
+def parse_output(text: str, spec: OutputSpec) -> Any:
+    """The value a reply `text` stands for under `spec`; `StoryError` naming what is wrong when it does not
+    fit. `json`: the last ```json block, every non-optional field present and of its kind; `markdown` and
+    `text`: the reply stripped; `bool`: yes/no/true/false; `list`: a JSON list. Other formats are refs the
+    engine writes itself, not replies."""
+    from airlie.story.model import StoryError
+    from airlie.topology.studio_plan import extract_json_block
+
+    if spec.format in ("markdown", "text"):
+        return text.strip()
+    if spec.format == "bool":
+        word = text.strip().strip(".!").lower()
+        if word not in _BOOLS:
+            raise StoryError("the reply must be yes or no (or true or false)")
+        return _BOOLS[word]
+    if spec.format == "list":
+        try:
+            value = json.loads(text.strip())
+        except ValueError:
+            value = None
+        if not isinstance(value, list):
+            raise StoryError("the reply must be a JSON list")
+        return value
+    if spec.format != "json":
+        raise StoryError(f"a reply cannot be parsed as {spec.format}")
+    block = extract_json_block(text)
+    if block is None:
+        raise StoryError("the reply has no JSON object (one ```json block)")
+    for name, kind_text in (spec.fields or {}).items():
+        kind = parse_kind(kind_text)
+        if name not in block or block[name] is None:
+            if kind.optional:
+                continue
+            raise StoryError(f"field '{name}' is missing; it must be {_kind_text(kind)}")
+        if not _fits(block[name], kind):
+            raise StoryError(f"field '{name}' must be {_kind_text(kind)}")
+    return block
+
+
+def describe(spec: OutputSpec) -> str:
+    """The sentence a generic ask adds to say how to reply: the hub rule `output-format` filled with the
+    fields. For the builder and the team node; never appended to a prompt automatically."""
+    from airlie.prompts import hub
+
+    if spec.format != "json" or not spec.fields:
+        return "Reply with one ```json block." if spec.format == "json" else f"Reply with {spec.format}."
+    listing = ", ".join(
+        f"{name} ({_kind_text(kind)}{', optional' if kind.optional else ''})"
+        for name, kind in ((n, parse_kind(k)) for n, k in spec.fields.items())
+    )
+    return hub.text("output-format", fields=listing)

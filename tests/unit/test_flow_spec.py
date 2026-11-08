@@ -299,3 +299,26 @@ def test_an_output_named_as_the_states_own_bookkeeping_is_refused(name):
 def test_an_output_inside_the_artifact_store_is_fine():
     w = wf(a=check(outputs={"artifacts.note": "text", "repro": "text"}))
     assert check_workflows({"w": w}) == []
+
+
+def test_prompt_placeholders_must_be_inputs_feedback_item_or_config():
+    w = wf(
+        a=NodeSpec(
+            type="ask",
+            role="r",
+            prompt="{card} {story.title} {config.x} {feedback} {item} {?notes}{/notes}",
+            turn="{other}",
+            inputs=["card"],
+        )
+    )
+    problems = check_workflows({"w": w})
+    assert "workflow w: node a: prompt names 'story', which is not one of its inputs" in problems
+    assert "workflow w: node a: prompt names 'notes', which is not one of its inputs" in problems
+    assert "workflow w: node a: prompt names 'other', which is not one of its inputs" in problems
+    assert not [p for p in problems if "'card'" in p or "'config'" in p or "'item'" in p]
+
+
+def test_unknown_prompt_file_keeps_its_message_only():
+    problems = check_workflows({"w": wf(a=NodeSpec(type="ask", role="r", prompt="prompt:nope"))})
+    assert [p for p in problems if "nope" in p] == ["workflow w: node a: unknown prompt file 'nope'"]
+    assert not [p for p in problems if "names" in p]

@@ -134,6 +134,10 @@ def _package_brief(i: int, **kwargs: Any) -> str:
 
 
 CASES: dict[str, Callable[[], str]] = {
+    # --- flow/outputs.py: what a generic ask says about its reply
+    "output-format": lambda: text(
+        "output-format", fields="decision (one of agree | object), reasons (list of text)"
+    ),
     # --- teams/native_team.py: steering the loop sends
     "malformed-call": lambda: text("malformed-call"),
     "no-tools": lambda: text("no-tools"),

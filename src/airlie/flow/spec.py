@@ -258,6 +258,31 @@ def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -
     ]
 
 
+def _placeholder_problems(node: NodeSpec) -> list[str]:
+    """Rule 4: every placeholder head of a model node's own prompt text (and `turn`, `worker`) is one of its
+    inputs, `feedback`, `item` or `config`. A `prompt:<id>` is checked by `_prompt_file` instead."""
+    from airlie.flow import render
+    from airlie.flow.prompt_files import FEEDBACK, PREFIX
+    from airlie.prompts.hub import PromptError
+
+    if node.type not in _MODEL_TYPES:
+        return []
+    allowed = {*node.inputs, FEEDBACK, render.ITEM, "config"}
+    found: list[str] = []
+    for text in (node.prompt, node.turn, node.worker):
+        if text is None or text.startswith(PREFIX):
+            continue
+        try:
+            heads = render.names(text)
+        except PromptError as e:
+            found.append(str(e))
+            continue
+        found += [
+            f"prompt names '{head}', which is not one of its inputs" for head in sorted(heads - allowed)
+        ]
+    return found
+
+
 def _bundle_problems(
     w: WorkflowSpec, nname: str, n: NodeSpec, workflows: Mapping[str, WorkflowSpec]
 ) -> list[str]:
@@ -339,6 +364,7 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collectio
                 found.append(wrong)
             found += [f"output '{out}' is reserved" for out in n.outputs if reserved_output(out)]
             found += _prompt_file(n, set(n.inputs) | set(w.inputs), prompts)
+            found += _placeholder_problems(n)
             found += [
                 f"input '{name}' is not produced by any node and not a workflow input"
                 for name in n.inputs
