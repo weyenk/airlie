@@ -15,8 +15,6 @@ from typing import Any
 
 import pytest
 
-from tests.unit.schema_v2_pending import PENDING
-
 os.environ.setdefault("NO_PROXY", "*")
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
@@ -66,17 +64,7 @@ collect_ignore = [] if HAS_MLX else list(MAC_ONLY)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """xfail the PENDING tests (schema v2 readers not landed yet); skip MAC_ONLY_TESTS where vllm-mlx is
-    missing, naming where they run instead."""
-    pending = pytest.mark.xfail(strict=True, reason="schema v2: composer and shipped workflows, Tasks 5/8")
-    ids = {item.nodeid.removeprefix("tests/unit/") for item in items}
-    modules = {i.split("::")[0] for i in ids}
-    stale = sorted(p for p in PENDING if p.split("::")[0] in modules and p not in ids)
-    if stale:  # a renamed or deleted test must leave schema_v2_pending.py; a partial run skips other modules
-        raise pytest.UsageError("schema_v2_pending.py names tests that no longer exist: " + ", ".join(stale))
-    for item in items:
-        if item.nodeid.removeprefix("tests/unit/") in PENDING:
-            item.add_marker(pending)
+    """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead."""
     if HAS_MLX:
         return
     skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")

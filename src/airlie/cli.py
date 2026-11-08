@@ -66,6 +66,11 @@ prompts_app = typer.Typer(
     "(docs/superpowers/specs/2026-10-22-prompt-hub-design.md).",
 )
 app.add_typer(prompts_app, name="prompts")
+workflows_app = typer.Typer(
+    no_args_is_help=True,
+    help="Workflows are nodes and lines (docs/superpowers/specs/2026-11-08-nodes-are-config-design.md).",
+)
+app.add_typer(workflows_app, name="workflows")
 board_app = typer.Typer(
     no_args_is_help=True, help="The local board (initiative → epic → story → subtask; served at /v1/board)."
 )
@@ -2475,6 +2480,25 @@ def route_eval(
         console.print(f"saved {save(rep, out)}")
     if rep.accuracy < min_accuracy:
         raise typer.Exit(1)
+
+
+@workflows_app.command("catalog")
+def workflows_catalog() -> None:
+    """The checks a `check` or `gate` node may name in `run`, with what each reads and writes."""
+    from airlie.story.flow import STORY_CATALOG
+
+    table = Table("name", "title", "inputs", "outputs", "transient", "every_run")
+    table.columns[0].no_wrap = True
+    for c in STORY_CATALOG.describe():
+        table.add_row(
+            escape(c["name"]),
+            escape(c["title"]),
+            escape(", ".join(c["inputs"])),
+            escape(", ".join(c["outputs"])),
+            escape(", ".join(c["transient"])),
+            "yes" if c["every_run"] else "",
+        )
+    console.print(table)
 
 
 def main() -> None:

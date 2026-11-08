@@ -1,12 +1,11 @@
 """The run view of a card on any workflow (D22): one box per node of its snapshot, in order, with the status
-its composer events give it, a lane per item of an `each` node and the children of a `parallel` node under
-one bracket."""
+its composer events give it, a lane per item of a bundle with `each`, a bundle without it drawn flat."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from airlie.flow.spec import NodeSpec, WorkflowSpec
+from airlie.flow.spec import Line, NodeSpec, WorkflowSpec
 from airlie.serve.flow_nodes import node_flow
 
 
@@ -22,19 +21,17 @@ def snapshot(name: str, specs: dict[str, WorkflowSpec]) -> dict[str, Any]:
 
 def bugfix() -> dict[str, Any]:
     root = WorkflowSpec(
-        start="intake",
-        loose=["card"],
+        inputs=["card"],
         nodes={
-            "intake": NodeSpec(type="check", run="story.intake", next="reproduce"),
-            "reproduce": NodeSpec(type="ask", role="architect", prompt="p", next="fix_layers"),
-            "fix_layers": NodeSpec(type="each", over="layers", workflow="fix", next="review"),
+            "intake": NodeSpec(type="check", run="story.intake", to=[Line(node="reproduce")]),
+            "reproduce": NodeSpec(type="ask", role="architect", prompt="p", to=[Line(node="fix_layers")]),
+            "fix_layers": NodeSpec(type="bundle", each="layers", workflow="fix", to=[Line(node="review")]),
             "review": NodeSpec(type="gate", run="story.review"),
         },
     )
     fix = WorkflowSpec(
-        start="write",
         nodes={
-            "write": NodeSpec(type="write", role="coder", prompt="p", next="gate"),
+            "write": NodeSpec(type="write", role="coder", prompt="p", to=[Line(node="gate")]),
             "gate": NodeSpec(type="gate", run="story.layer_gate"),
         },
     )
@@ -127,33 +124,48 @@ def test_a_failed_and_a_skipped_node_and_one_not_reached() -> None:
 
 
 def test_a_planned_check_is_a_milestone() -> None:
-    w = WorkflowSpec(start="planned", nodes={"planned": NodeSpec(type="check", run="story.planned")})
+    w = WorkflowSpec(nodes={"planned": NodeSpec(type="check", run="story.planned")})
     (node,) = node_flow(snapshot("w", {"w": w}), [])
     assert node["jobs"][0]["shape"] == "milestone"
 
 
-def test_the_children_of_a_parallel_node_share_its_group() -> None:
+def test_nodes_fanned_out_from_one_node_are_drawn_in_the_files_order() -> None:
     w = WorkflowSpec(
-        start="look",
         nodes={
-            "look": NodeSpec(type="parallel", nodes=["survey", "refine"], next="decide"),
-            "survey": NodeSpec(type="ask", role="architect", prompt="p"),
-            "refine": NodeSpec(type="ask", role=["product", "architect"], prompt="p"),
-            "decide": NodeSpec(type="meeting", role="amigos", run="story.meeting"),
+            "look": NodeSpec(type="check", run="story.intake", to=[Line(node="survey"), Line(node="refine")]),
+            "survey": NodeSpec(type="ask", role="architect", prompt="p", to=[Line(node="decide")]),
+            "refine": NodeSpec(
+                type="ask", role=["product", "architect"], prompt="p", to=[Line(node="decide")]
+            ),
+            "decide": NodeSpec(type="meeting", role=["amigos"], prompt="p"),
         },
     )
     events = [
-        ev(1.0, "node_started", "look", "parallel", "w"),
         ev(1.0, "node_started", "survey", "ask", "w"),
         ev(1.1, "node_started", "refine", "ask", "w"),
         done(2.0, "refine", "ask"),
     ]
     nodes = node_flow(snapshot("w", {"w": w}), events)
-    assert [n["id"] for n in nodes] == ["survey", "refine", "decide"]
-    assert [n.get("group") for n in nodes] == ["look", "look", None]
-    assert [n["status"] for n in nodes] == ["running", "passed", "pending"]
+    assert [n["id"] for n in nodes] == ["look", "survey", "refine", "decide"]
+    assert all("group" not in n for n in nodes)
+    assert [n["status"] for n in nodes] == ["pending", "running", "passed", "pending"]
     assert by_id(nodes, "refine")["jobs"][0]["role"] == "product, architect"
     assert by_id(nodes, "decide")["jobs"][0]["shape"] == "model"
+
+
+def test_a_bundle_without_each_is_drawn_flat_from_the_workflow_it_runs() -> None:
+    root = WorkflowSpec(
+        nodes={
+            "intake": NodeSpec(type="check", run="story.intake", to=[Line(node="sub")]),
+            "sub": NodeSpec(type="bundle", workflow="inner", to=[Line(node="review")]),
+            "review": NodeSpec(type="gate", run="story.review"),
+        }
+    )
+    inner = WorkflowSpec(nodes={"look": NodeSpec(type="ask", role="architect", prompt="p")})
+    events = [ev(1.0, "node_started", "look", "ask", "inner")]
+    nodes = node_flow(snapshot("w", {"w": root, "inner": inner}), events)
+    assert [n["id"] for n in nodes] == ["intake", "look", "review"]
+    assert [n["status"] for n in nodes] == ["pending", "running", "pending"]
 
 
 def test_a_node_run_again_shows_its_latest_run() -> None:

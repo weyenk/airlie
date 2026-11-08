@@ -1,15 +1,14 @@
 """A card on any workflow as the pipeline screen draws it (D22): one box per node of the workflow it
-snapshotted, in order, with the status the composer's node events give it. A `parallel` node's children sit
-under one bracket (they share its `group`); an `each` node is a lane per item it has reached, holding the
-bundle's nodes. The story's own screen (flow_plan, flow_build) is not drawn from here."""
+snapshotted, in the order the file lists them, with the status the composer's node events give it. The lines
+(`to`) are the composer's business and are not drawn. A `bundle` node is drawn through the workflow it runs:
+with `each`, a lane per item it has reached, holding that workflow's nodes; without, those nodes flat, in
+place. The story's own screen (flow_plan, flow_build) is not drawn from here."""
 
-# This module still reads the schema v1 fields; Task 10 rewrites it and removes the mypy ignore below.
-# mypy: ignore-errors
 from __future__ import annotations
 
 from typing import Any
 
-from airlie.flow.spec import NodeSpec, WorkflowSpec
+from airlie.flow.spec import NodeSpec, TeamRole, WorkflowSpec
 from airlie.serve.flow_parts import Shape, card, job, shaped, step_row, tag
 
 _MODEL = frozenset({"ask", "conversation", "write", "meeting"})
@@ -79,7 +78,14 @@ def _job(name: str, spec: NodeSpec, events: list[dict[str, Any]]) -> dict[str, A
     start = starts[-1] if starts else None
     end = events[-1] if start is not None and events[-1]["kind"] == "node_finished" else None
     a, b = _ts(start), _ts(end)
-    role = ", ".join(spec.role) if isinstance(spec.role, list) else spec.role or ""
+    r = spec.role
+    role = (
+        ", ".join(r)
+        if isinstance(r, list)
+        else f"{r.supervisor} / {r.worker}"
+        if isinstance(r, TeamRole)
+        else r or ""
+    )
     box = job(
         name,
         name,
@@ -116,7 +122,7 @@ def _lane_status(jobs: list[dict[str, Any]]) -> str:
 def _lanes(
     name: str, spec: NodeSpec, specs: dict[str, WorkflowSpec], by: dict[Key, list[dict[str, Any]]]
 ) -> list[dict[str, Any]]:
-    """An `each` node: one lane per item its bundle has reached, in the order reached."""
+    """A bundle with `each`: one lane per item it has reached, in the order reached."""
     bundle = specs.get(spec.workflow or "")
     if bundle is None:
         return []
@@ -126,7 +132,7 @@ def _lanes(
         jobs = [
             _job(n, s, by.get((spec.workflow or "", n, item), []))
             for n, s in bundle.nodes.items()
-            if s.type != "parallel"
+            if s.type != "bundle"
         ]
         status = _lane_status(jobs)
         row = {"kind": "cycle", "id": "c1", "label": item, "status": status, "jobs": jobs}
@@ -150,25 +156,24 @@ def _lanes(
 
 def node_flow(st: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The nodes of the card's snapshotted workflow (`st["workflow"]`) for the pipeline screen, in the root
-    workflow's order: a stage per node with its one job, a parallel node's children sharing its `group`, an
-    each node's lanes (`kind: "layer"`) per item. Statuses and hover cards come from the node events."""
+    workflow's order: a stage per node with its one job, a bundle's nodes flat in its place, or, with `each`,
+    its lanes (`kind: "layer"`) per item. Statuses and hover cards come from the node events."""
     snap = st["workflow"]
     root = str(snap["name"])
     specs = {n: WorkflowSpec.model_validate(d) for n, d in snap["specs"].items()}
-    w = specs[root]
     by = _attributed(events, root)
-    children = {c for n in w.nodes.values() if n.type == "parallel" for c in n.nodes}
+    return _draw(root, specs, by, ())
+
+
+def _draw(
+    name: str, specs: dict[str, WorkflowSpec], by: dict[Key, list[dict[str, Any]]], seen: tuple[str, ...]
+) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
-    for name, spec in w.nodes.items():
-        if name in children:
-            continue
-        if spec.type == "parallel":
-            for child in spec.nodes:
-                if child in w.nodes:
-                    box = _job(child, w.nodes[child], by.get((root, child, None), []))
-                    nodes.append({**_stage(box), "group": name})
-        elif spec.type == "each":
-            nodes += _lanes(name, spec, specs, by)
-        else:
-            nodes.append(_stage(_job(name, spec, by.get((root, name, None), []))))
+    for node, spec in specs[name].nodes.items():
+        if spec.type != "bundle":
+            nodes.append(_stage(_job(node, spec, by.get((name, node, None), []))))
+        elif spec.each:
+            nodes += _lanes(node, spec, specs, by)
+        elif spec.workflow in specs and spec.workflow not in (*seen, name):
+            nodes += _draw(spec.workflow, specs, by, (*seen, name))
     return nodes
