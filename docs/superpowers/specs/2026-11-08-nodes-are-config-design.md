@@ -191,6 +191,7 @@ contract):
 | `amigos` meeting with `run: story.amigos`, `when: story.amigos_on` | meeting: roles product/architect/tester, prompt + turn texts, output `agreement: json`; the `when` becomes a condition on the line into it |
 | `parallel` box over survey and refine | two lines out of `gate` |
 | `each` box over layers | a line carrying `layers` into the `layer` bundle |
+| `drafts` conversation with `args.turns`, its critic inside the turn body | conversation: turn text, output `drafts_session`; `critic` ask with one loop line back (D19) |
 | 12 checks by `run:` id | the same 12 from the catalog, with inputs and outputs declared |
 | the layer's `package` ask and `build` write by `run:` id | package: ask with the package brief as text and `package: json` fields; build: Part 2's split |
 
@@ -226,6 +227,56 @@ in this round; the trace diff (Part 2, Task 6) proves it.
 - How the catalog reads a check function's signature (type hints, or a small declaration).
 - The modal's layout; the phone sheet.
 - Whether the YAML keeps `next` as a shorthand for a single unconditional line.
+
+## Answers from the builder check
+
+A reviewer read the design as the engineer who would plan from it (2026-11-08) and asked eleven questions.
+None needs Noah; each is settled here as my call.
+
+- **D12. The driver and the flag.** The driver stays until Part 2's flip. The Python briefs, parsers and
+  afters leave the registry and the YAML in this round; their copies inside `pipeline.py` go with the driver.
+  The side-by-side tests (driver against composer) are what proves the prompt files say the same words.
+- **D13. Computed inputs.** A value a brief computes from the repository or the state (the repository guide
+  at the base, recent lessons, the dossier, a layer's sources, the agreed proof) is a catalog check with
+  that artifact as its output, drawn before the node that reads it. A value from config (`max_layers`, a
+  budget) is readable in prompt text and conditions as `{config.story.max_layers}`. Nothing else reaches a
+  prompt.
+- **D14. Same events and state.** The contract stays Part 1's: the exact event stream and the same
+  `StoryState` fields, so the web app does not change. A model node may declare `events: {done: survey_done,
+  failed: survey_failed}` to name the legacy kinds its outcomes emit; the phase markers
+  (`finish("refine")` and the like) are the catalog's mark checks. Where no legacy kind is named only the
+  node events are emitted.
+- **D15. Alternatives that join.** Two nodes may produce the same artifact when their lines carry exclusive
+  conditions (refine or take-card-as-story; amigos or agree-plain). A node's input is satisfied when the
+  artifact exists, or when every line that could carry it was not taken. A line not taken counts as done;
+  nothing waits on a skipped branch.
+- **D16. What a condition reads.** A condition is a small expression over outputs (`verdict.decision ==
+  object`, `survey exists`), loose inputs (`card.level == story`) and config (`config.amigos.enabled`), with
+  `not`, `and`, `or`. A predicate that needs code (per-item built or satisfied sets) is a catalog check with
+  a bool output, and the condition reads it.
+- **D17. Lines that carry nothing.** A line may be drawn from a box's edge rather than a port: it orders
+  without carrying. A check with no output is skipped on resume when its completion is recorded; the state
+  keeps a `done` set of output-less node names for that.
+- **D18. The catalog is complete.** Every check the story and layer workflows name today is in it
+  (take-card-as-story, the four costed marks, agree-plain, finish, covered included); the table in Checks is
+  the shape, not the list. Place, run tests and squash arrive with Part 2.
+- **D19. Logic beyond field kinds.** Validation against the story (ids, `max_layers`, renumbering) is a
+  catalog check after the ask with a loop line back carrying the reason. A conversation ends when its output
+  parses, within `steps` turns; the size review is an ask with a line back into the planning conversation;
+  the drafting critic is an ask with one loop in the layer bundle (as the generic nodes design's table
+  already had it). The rewrite table gains `drafts` and `critic` rows.
+- **D20. The meeting's protocol stays code.** Turn order, team-state resume, the proof plan and the
+  agreement's effect on `story` and `layers` are the meeting type's protocol; prompt and turn texts are
+  config and `agreement`, `story`, `layers` are declared outputs.
+- **D21. Old snapshots and drafts.** A card in flight finishes on its snapshot through an old-schema reader
+  kept for one release. A board draft in the old schema is migrated once at load: wiring becomes lines; a
+  node that named a code id is marked with a problem ("write this node's prompt") and stays unrunnable until
+  a person fills it in.
+- **D22. Writing workers.** A writing worker hands back a diff and its branch. The supervisor, one held
+  conversation across hand-backs, applies each diff to its own worktree in arrival order; a diff that does
+  not apply comes back to it as a failed hand-back to reassign. The node's outputs are `results`, the
+  synthesis, and a `ref:branch` of the assembled work. Assignments are one fixed JSON shape
+  (`{assignments: [{id, task, files}]}`), parsed as any output is.
 
 ## Order of work and the finish line
 
