@@ -239,7 +239,7 @@ def test_a_workflow_in_the_old_schema_is_set_aside_with_its_problems(tmp_path):
     from tests.unit.test_config import MINIMAL, write
 
     old = {"start": "a", "loose": ["card"], "nodes": {"a": {"type": "check", "run": "r", "next": "b"}}}
-    new = {"nodes": {"a": {"type": "check", "run": "r"}}}
+    new = {"nodes": {"a": {"type": "check", "run": "story.build_done"}}}
     cfg = load_config(write(tmp_path, {**MINIMAL, "workflows": {"old": old, "new": new}}))
     assert list(cfg.workflows) == ["new"]
     assert cfg.workflow_problems == [
@@ -263,7 +263,7 @@ def test_the_composer_on_without_its_workflows_is_a_problem(tmp_path, names, mis
     from airlie.config import ConfigError, load_config
     from tests.unit.test_config import MINIMAL, write
 
-    workflows = {n: {"nodes": {"a": {"type": "check", "run": "r"}}} for n in names}
+    workflows = {n: {"nodes": {"a": {"type": "check", "run": "story.build_done"}}} for n in names}
     data = {**MINIMAL, "story": {**MINIMAL.get("story", {}), "composer": True}, "workflows": workflows}
     with pytest.raises(ConfigError) as raised:
         load_config(write(tmp_path, data))
@@ -277,7 +277,8 @@ def test_the_composer_on_with_both_workflows_loads(tmp_path):
     from airlie.config import load_config
     from tests.unit.test_config import MINIMAL, write
 
-    workflows = {n: {"nodes": {"a": {"type": "check", "run": "r"}}} for n in ("story", "layer")}
+    check = {"type": "check", "run": "story.build_done"}
+    workflows = {n: {"nodes": {"a": check}} for n in ("story", "layer")}
     data = {**MINIMAL, "story": {**MINIMAL.get("story", {}), "composer": True}, "workflows": workflows}
     assert load_config(write(tmp_path, data)).story.composer is True
 

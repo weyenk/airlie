@@ -974,8 +974,11 @@ class AirlieConfig(Strict):
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
         """Return human-readable problems; empty means consistent."""
+        # the story's checks (rule 9), imported here: the story package imports this module
+        from airlie.story.flow import STORY_CATALOG
+
         problems: list[str] = []
-        problems.extend(check_workflows(self.workflows))
+        problems.extend(check_workflows(self.workflows, catalog=STORY_CATALOG))
         if self.story.composer:  # fail at load, not when the first story reaches the composer
             problems += self.workflow_problems
             problems += [

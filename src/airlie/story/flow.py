@@ -20,11 +20,13 @@ import functools
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.catalog import STORY_CATALOG as STORY_CATALOG  # re-exported: the catalog with these declared
 from airlie.flow.catalog import Check, check
-from airlie.flow.composer import FAIL_KEY, Composer, Registry, RunContext, Runner
+from airlie.flow.composer import FAIL_KEY, Composer, MissingInput, Registry, RunContext, Runner
 from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.runners import (
     Hold,
@@ -371,62 +373,110 @@ def _run(ctx: RunContext, name: str) -> StoryRun:
     return ctx.registry.run
 
 
-def _sha(ctx: RunContext) -> str:
+def _peek(ctx: RunContext, name: str, default: Any = None) -> Any:
+    """A name the check reads that may be absent from the store: its value, else `default`."""
+    try:
+        return ctx.store.get(name)
+    except KeyError:
+        return default
+
+
+def _in(ctx: RunContext, check: str, name: str) -> Any:
+    """A declared input of `check` the store must hold; `MissingInput` naming the node, the check and the
+    input when it does not."""
+    value = _peek(ctx, name)
+    if value is None:
+        raise MissingInput(f"node '{ctx.node}': {check} needs '{name}', which the store does not hold")
+    return value
+
+
+def _card(ctx: RunContext, check: str) -> Card:
+    return _in(ctx, check, "card")
+
+
+def _repo(ctx: RunContext, check: str) -> Path:
+    return Path(_in(ctx, check, "repo"))
+
+
+def _story(ctx: RunContext, check: str) -> Story:
+    return Story.from_dict(_in(ctx, check, "story"))
+
+
+def _layers(ctx: RunContext, check: str) -> tuple[Layer, ...]:
+    return tuple(Layer.from_dict(d) for d in _in(ctx, check, "layers"))
+
+
+def _sha(ctx: RunContext, check: str) -> str:
     """The commit the story's base names, as the store holds it."""
-    return str(ctx.store.get("base")["sha"])
+    base = _in(ctx, check, "base")
+    if not isinstance(base, Mapping) or not base.get("sha"):
+        raise MissingInput(f"node '{ctx.node}': {check} needs 'base' with its sha, and the store's has none")
+    return str(base["sha"])
 
 
-def _at(ctx: RunContext) -> tuple[str, int, Story, tuple[Layer, ...]]:
+def _item(ctx: RunContext, check: str) -> tuple[str, int]:
+    """The layer the bundle is on: its number and its index."""
+    if ctx.item is None:
+        raise MissingInput(f"node '{ctx.node}': {check} runs per layer, and the node has no item")
+    return ctx.item, int(ctx.item) - 1
+
+
+def _at(ctx: RunContext, check: str) -> tuple[str, int, Story, tuple[Layer, ...]]:
     """The layer the bundle is on (its number and index) and the story and layers as they now stand in the
     store (`_current`: a criterion reworded on the way is read back)."""
-    assert ctx.item is not None  # an each item
-    return ctx.item, int(ctx.item) - 1, *_planned(ctx)
+    return *_item(ctx, check), _story(ctx, check), _layers(ctx, check)
 
 
-# ---- the checks (`check_runner`: `fn(ctx, **node.args)`, a declared input read from the store, the outputs
-# returned). Each calls the pipeline's step, the one implementation the driver calls too.
+# ---- the checks (`check_runner`: `fn(ctx, **node.args)`, every store and loose name it reads declared as
+# an input (D23), the outputs returned). Each calls the pipeline's step, the one implementation the driver
+# calls too. `repo` is declared where the step works on the repository (the store's loose `repo` is the
+# pipeline's), read by the step itself where the body hands it nothing.
 
 
-@check("story.intake", title="Take the card in: move it to building and say where its progress is")
+@check(
+    "story.intake", inputs=("card",), title="Take the card in: move it to building, say where its progress is"
+)
 async def intake(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.intake")
-    await r.pipe._intake(r.st, r.card)
+    await r.pipe._intake(r.st, _card(ctx, "story.intake"))
     return {}
 
 
 @check(
     "story.take_card_as_story",
+    inputs=("card",),
     outputs=("story",),
     formats={"story": "json"},
     title="Take the story an epic's plan wrote on the card (refine is skipped)",
 )
 async def take_card(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.take_card_as_story")
-    await take_card_as_story(r.pipe, r.st, r.card)
+    await take_card_as_story(r.pipe, r.st, _card(ctx, "story.take_card_as_story"))
     return {"story": r.st.story}
 
 
 @check(
     "story.base",
+    inputs=("card", "repo"),
     outputs=("base",),
     formats={"base": "json"},
     title="Resolve the commit the story builds on: its base",
 )
 async def base(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.base")
-    return {"base": await r.pipe._base(r.st, r.card)}
+    return {"base": await r.pipe._base(r.st, _card(ctx, "story.base"))}
 
 
 @check(
     "story.gate",
-    inputs=("base",),
+    inputs=("repo", "base"),
     outputs=("gate",),
     formats={"gate": "json"},
     title="Read the test gate the repository's AGENTS.md names at the base",
 )
 def gate(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.gate")
-    r.pipe._gate(r.st, ctx.store.get("base"))
+    r.pipe._gate(r.st, _in(ctx, "story.gate", "base"))
     return {"gate": r.st.gate}
 
 
@@ -439,29 +489,33 @@ def gate(ctx: RunContext) -> Mapping[str, Any]:
 )
 def plain(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.agree_plain")
-    agree_plain(r.st, *_planned(ctx))
+    agree_plain(r.st, _story(ctx, "story.agree_plain"), _layers(ctx, "story.agree_plain"))
     return {"agreement": r.st.agreement}
 
 
-@check("story.costed", title="Record what the stages named (args.stages) cost against their budgets")
+@check(
+    "story.costed",
+    inputs=("card",),
+    title="Record what the stages named (args.stages) cost against their budgets",
+)
 async def costed(ctx: RunContext, *, stages: list[str]) -> Mapping[str, Any]:
     r = _run(ctx, "story.costed")
-    await r.pipe._costed(r.st, r.card, *stages)
+    await r.pipe._costed(r.st, _card(ctx, "story.costed"), *stages)
     return {}
 
 
-@check("story.planned", title="Mark the story planned (the planning lane's last word)")
+@check("story.planned", inputs=("layers",), title="Mark the story planned (the planning lane's last word)")
 def planned(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.planned")
     # the planning lane's last word, as the driver says it; a run that goes on to build says nothing here
     if r.until == "planned":
-        r.st.emit("story_planned", layers=len(r.st.layers or ()))
+        r.st.emit("story_planned", layers=len(_peek(ctx, "layers") or ()))
     return {}
 
 
 @check(
     "story.covered",
-    inputs=("story", "layers"),
+    inputs=("card", "repo", "story", "layers"),
     outputs=("satisfied.{item}",),
     formats={"satisfied.{item}": "json"},
     title="Find the layer satisfied by the layers below, or else where it is built",
@@ -472,11 +526,12 @@ async def covered(ctx: RunContext) -> Mapping[str, Any]:
     from airlie.story.pipeline import _covered_below  # the pipeline imports this module
 
     r = _run(ctx, "story.covered")
-    nn, i, story, layers = _at(ctx)
+    nn, i, story, layers = _at(ctx, "story.covered")
+    card = _card(ctx, "story.covered")
     if (below := _covered_below(r.st, layers, i)) is not None:
-        await r.pipe._satisfy(r.st, r.card, layers, i, below)
+        await r.pipe._satisfy(r.st, card, layers, i, below)
         return {"satisfied.{item}": r.st.satisfied[nn]}
-    r.sites[nn] = await r.pipe._layer_site(r.st, r.card, story, layers, i)
+    r.sites[nn] = await r.pipe._layer_site(r.st, card, story, layers, i)
     return {}
 
 
@@ -486,32 +541,33 @@ async def covered(ctx: RunContext) -> Mapping[str, Any]:
 
 @check(
     "story.ready_package",
-    inputs=("base", "story", "layers"),
+    inputs=("card", "repo", "story", "layers"),
     outputs=("package.{item}", "satisfied.{item}"),
     formats={"package.{item}": "json", "satisfied.{item}": "json"},
-    title="Ready the layer's package at its base (interim: Part 2 makes it a model node)",
+    title="Ready the layer's package where it is built (interim: Part 2 makes it a model node)",
 )
 async def ready_package(ctx: RunContext, *, session: str | None = None) -> Mapping[str, Any]:
-    """`_ready_package` at the layer's base, with the build's feedback when the build node looped back
-    here (`ctx.feedback`), continuing the drafting conversation `session` names (`ctx.sessions`) while the
-    run holds it, else asking afresh (a story built again by another process); an architect's satisfied
-    reply is `_satisfy`'d, and the build node is then skipped."""
+    """`_ready_package` where `covered` found the layer is built, with the build's feedback when the build
+    node looped back here (`ctx.feedback`), continuing the drafting conversation `session` names
+    (`ctx.sessions`) while the run holds it, else asking afresh (a story built again by another process);
+    an architect's satisfied reply is `_satisfy`'d, and the build node is then skipped."""
     r = _run(ctx, "story.ready_package")
-    nn, i, story, layers = _at(ctx)
+    nn, i, story, layers = _at(ctx, "story.ready_package")
+    card = _card(ctx, "story.ready_package")
     where, built, guide = r.sites[nn]
     drafting = ctx.sessions.get(session) if session is not None else None
     got = await r.pipe._ready_package(
         r.st, story, layers, i, where[1], built, guide, feedback=ctx.feedback, drafting=drafting
     )
     if isinstance(got, Satisfied):
-        await r.pipe._satisfy(r.st, r.card, layers, i, got)
+        await r.pipe._satisfy(r.st, card, layers, i, got)
         return {"satisfied.{item}": r.st.satisfied[nn]}
     return {"package.{item}": got.to_dict()}
 
 
 @check(
     "story.build_once",
-    inputs=("package.{item}", "story", "layers"),
+    inputs=("card", "repo", "package.{item}", "story", "layers"),
     outputs=("built.{item}",),
     formats={"built.{item}": "json"},
     title="Build the layer once from its package (interim: Part 2 makes it a write node)",
@@ -521,11 +577,12 @@ async def build_once(ctx: RunContext) -> Mapping[str, Any]:
     feedback back to the package node. The attempt counts this run's builds, so the last of
     story.layer_attempts stops the story there, as the driver's loop does."""
     r = _run(ctx, "story.build_once")
-    nn, i, story, layers = _at(ctx)
+    nn, i, story, layers = _at(ctx, "story.build_once")
     where, built, _ = r.sites[nn]
     r.attempts[nn] = attempt = r.attempts.get(nn, 0) + 1
-    package = Package.from_dict(ctx.store.get(f"package.{nn}"))
-    again = await r.pipe._build_once(r.st, r.card, story, layers, i, package, where, built, attempt)
+    package = Package.from_dict(_in(ctx, "story.build_once", f"package.{nn}"))
+    card = _card(ctx, "story.build_once")
+    again = await r.pipe._build_once(r.st, card, story, layers, i, package, where, built, attempt)
     if again is not None:
         return {FAIL_KEY: "layer red", "feedback": again}
     return {"built.{item}": r.st.built[nn]}
@@ -550,23 +607,24 @@ def build_done(ctx: RunContext) -> Mapping[str, Any]:
 
 @check(
     "story.publish",
-    inputs=("story", "layers"),
+    inputs=("card", "repo", "story", "layers"),
     outputs=("prs",),
     formats={"prs": "list"},
     title="Open the layers' stacked draft PRs",
 )
 async def publish(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.publish")
-    await r.pipe._publish(r.st, r.card, *_planned(ctx))
+    card = _card(ctx, "story.publish")
+    await r.pipe._publish(r.st, card, _story(ctx, "story.publish"), _layers(ctx, "story.publish"))
     return {"prs": r.st.prs} if r.st.prs else {}  # set only once all are opened, then the node is skipped
 
 
-@check("story.finish", title="Post the PR links, move the card to review and finish the stage")
+@check("story.finish", inputs=("card",), title="Post the PR links, move the card to review, finish the stage")
 async def finish(ctx: RunContext) -> None:
     """The review gate's piece (`gate_runner`, which then ends the run): the PR links posted, the card
     moved to review and the stage finished, as `_finish` does for the driver."""
     r = _run(ctx, "story.finish")
-    await r.pipe._finish(r.st, r.card)
+    await r.pipe._finish(r.st, _card(ctx, "story.finish"))
 
 
 # ---- the computed inputs of the briefs (D13): what a brief computes from the repository or the state, as
@@ -575,31 +633,32 @@ async def finish(ctx: RunContext) -> None:
 
 @check(
     "story.repo_guide",
-    inputs=("story", "base"),
+    inputs=("repo", "story", "base"),
     outputs=("guide",),
     formats={"guide": "text"},
     title="The repository guide to the files the story names, at its base (the layer plan's)",
 )
 def repo_guide_check(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.repo_guide")
-    story = Story.from_dict(ctx.store.get("story"))
+    name = "story.repo_guide"
+    r = _run(ctx, name)
+    text = story_text(_story(ctx, name))
     budget = guide_budget(r.pipe.cfg, [r.pipe.s.architect_role])
-    return {"guide": repo_guide(r.pipe.repo, _sha(ctx), story_text(story), budget_chars=budget)}
+    return {"guide": repo_guide(_repo(ctx, name), _sha(ctx, name), text, budget_chars=budget)}
 
 
 @check(
     "story.scope_guide",
-    inputs=("base", "layers"),
+    inputs=("repo", "base", "layers"),
     outputs=("guide",),
     formats={"guide": "text"},
     title="The repository guide to the layers' scope, at the base (the packages' drafting)",
 )
 def scope_guide(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.scope_guide")
-    layers = tuple(Layer.from_dict(d) for d in ctx.store.get("layers"))
+    name = "story.scope_guide"
+    r = _run(ctx, name)
+    scope = "\n".join(f"{x.scope}\n{x.brief}" for x in _layers(ctx, name))
     budget = guide_budget(r.pipe.cfg, [r.pipe.s.architect_role, r.pipe.s.build_role])
-    scope = "\n".join(f"{x.scope}\n{x.brief}" for x in layers)
-    return {"guide": repo_guide(r.pipe.repo, _sha(ctx), scope, budget_chars=budget)}
+    return {"guide": repo_guide(_repo(ctx, name), _sha(ctx, name), scope, budget_chars=budget)}
 
 
 @check(
@@ -614,14 +673,14 @@ def lessons(ctx: RunContext) -> Mapping[str, Any]:
 
 @check(
     "story.dossier",
-    inputs=("base",),
+    inputs=("repo", "base"),
     outputs=("dossier",),
     formats={"dossier": "json"},
     title="The story's dossier: the files its studio runs read so far, at the base",
 )
 def dossier(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.dossier")
-    return {"dossier": dict(r.pipe._dossier(r.st, _sha(ctx)))}
+    return {"dossier": dict(r.pipe._dossier(r.st, _sha(ctx, "story.dossier")))}
 
 
 @check(
@@ -637,15 +696,16 @@ def coder_budget(ctx: RunContext) -> Mapping[str, Any]:
 
 @check(
     "story.layer_sources",
-    inputs=("base", "layers"),
+    inputs=("repo", "base", "layers"),
     outputs=("sources.{item}",),
     formats={"sources.{item}": "json"},
     title="The files the layer changes, as they are at the base",
 )
 def sources(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.layer_sources")
-    _, i, _, layers = _at(ctx)
-    return {"sources.{item}": layer_sources(r.pipe.repo, _sha(ctx), layers[i])}
+    name = "story.layer_sources"
+    _run(ctx, name)
+    _, i = _item(ctx, name)
+    return {"sources.{item}": layer_sources(_repo(ctx, name), _sha(ctx, name), _layers(ctx, name)[i])}
 
 
 @check(
@@ -656,21 +716,25 @@ def sources(ctx: RunContext) -> Mapping[str, Any]:
     title="The tests the agreement holds for the layer",
 )
 def layer_proof(ctx: RunContext) -> Mapping[str, Any]:
-    _, i, _, layers = _at(ctx)
-    agreement = Agreement.from_dict(ctx.store.get("agreement"))  # `_layer_proof`, read from the store
-    return {"proof.{item}": [t.to_dict() for t in agreement.proof_for(layers[i].slug)]}
+    name = "story.layer_proof"
+    _run(ctx, name)
+    _, i = _item(ctx, name)
+    layer = _layers(ctx, name)[i]
+    agreement = Agreement.from_dict(_in(ctx, name, "agreement"))  # `_layer_proof`, read from the store
+    return {"proof.{item}": [t.to_dict() for t in agreement.proof_for(layer.slug)]}
 
 
 @check(
     "story.lint_note",
-    inputs=("base", "gate"),
+    inputs=("repo", "base"),
     outputs=("lint",),
     formats={"lint": "text"},
     title="What the repository's linters say a test file must keep to",
 )
 def lint(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.lint_note")
-    return {"lint": lint_note(r.pipe.repo, _sha(ctx), r.pipe.commands)}
+    name = "story.lint_note"
+    r = _run(ctx, name)
+    return {"lint": lint_note(_repo(ctx, name), _sha(ctx, name), r.pipe.commands)}
 
 
 # ---- the board notes and phase marks the asks' after-hooks made (D14)
@@ -697,28 +761,30 @@ def survey_note(ctx: RunContext) -> Mapping[str, Any]:
 
 @check(
     "story.refined_note",
-    inputs=("story",),
+    inputs=("card", "story"),
     title="Finish refine and tell the card the story, as product",
 )
 async def refined_note(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.refined_note")
-    await refined(r.pipe, r.st, r.card, Story.from_dict(ctx.store.get("story")))
+    name = "story.refined_note"
+    r = _run(ctx, name)
+    await refined(r.pipe, r.st, _card(ctx, name), _story(ctx, name))
     return {}
 
 
 @check(
     "story.layers_note",
-    inputs=("layers",),
+    inputs=("card", "layers"),
     title="Keep the layer plan and tell the card the layers, as the architect",
 )
 async def layers_note(ctx: RunContext) -> Mapping[str, Any]:
-    r = _run(ctx, "story.layers_note")
-    await layers_planned(r.pipe, r.st, r.card, tuple(Layer.from_dict(d) for d in ctx.store.get("layers")))
+    name = "story.layers_note"
+    r = _run(ctx, name)
+    await layers_planned(r.pipe, r.st, _card(ctx, name), _layers(ctx, name))
     return {}
 
 
 # ---- the predicates (`when:`, a loop's `when:`; `(ctx) -> bool`), and each as a check with one bool output
-# (D16), which a line's condition reads
+# (D16), which a line's condition reads. What they read of the state they read from the store by name.
 
 
 def _amigos_on(ctx: RunContext) -> bool:
@@ -730,21 +796,28 @@ def _amigos_off(ctx: RunContext) -> bool:
 
 
 def _to_build_now(ctx: RunContext) -> bool:
+    """`_to_build`: the layers are not planned yet, or one is neither built nor satisfied."""
     from airlie.story.pipeline import _to_build  # the pipeline imports this module
 
-    return bool(_to_build(_run(ctx, "story.to_build").st))
+    _run(ctx, "story.to_build")
+    seen = SimpleNamespace(
+        layers=_peek(ctx, "layers"), built=_peek(ctx, "built") or {}, satisfied=_peek(ctx, "satisfied") or {}
+    )
+    return bool(_to_build(seen))
 
 
 def _survey_on(ctx: RunContext) -> bool:
     # `_survey`'s own skips: a story surveyed already (its notes may be "", a survey that failed) or refined
     # (a resume, or a story card taken by `take_card_as_story`) is not surveyed
     r = _run(ctx, "story.survey_on")
-    return bool(r.pipe.s.survey and r.st.survey is None and r.st.story is None)
+    survey, story = _peek(ctx, "survey"), _peek(ctx, "story")
+    fresh = survey is None and story is None
+    return bool(r.pipe.s.survey and fresh)
 
 
 def _is_story_card(ctx: RunContext) -> bool:
     r = _run(ctx, "story.is_story_card")
-    return r.pipe._story_card(r.card) is not None
+    return r.pipe._story_card(_card(ctx, "story.is_story_card")) is not None
 
 
 def _not_story_card(ctx: RunContext) -> bool:
@@ -753,33 +826,42 @@ def _not_story_card(ctx: RunContext) -> bool:
 
 def _open_layer(ctx: RunContext) -> bool:
     """Neither built nor satisfied: `_build` returns at once for a layer that is either."""
-    st = _run(ctx, "story.open_layer").st
-    return ctx.item is not None and ctx.item not in st.built and ctx.item not in st.satisfied
+    _run(ctx, "story.open_layer")
+    built, satisfied = _peek(ctx, "built") or {}, _peek(ctx, "satisfied") or {}
+    return ctx.item is not None and ctx.item not in built and ctx.item not in satisfied
 
 
 def _not_built(ctx: RunContext) -> bool:
     # the whole plan is drafted once, before the first layer is built (`_build`)
-    st = _run(ctx, "story.not_built").st
-    return not st.drafted and not st.built and _open_layer(ctx)
+    _run(ctx, "story.not_built")
+    return not _peek(ctx, "drafted") and not _peek(ctx, "built") and _open_layer(ctx)
 
 
 def _has_package(ctx: RunContext) -> bool:
     return _open_layer(ctx) and ctx.store.has(f"package.{ctx.item}")
 
 
-PREDICATES: Mapping[str, tuple[Callable[[RunContext], bool], str]] = {
-    "amigos_on": (_amigos_on, "Whether the three amigos meet (story.amigos.enabled)"),
-    "amigos_off": (_amigos_off, "Whether the three amigos do not meet"),
-    "to_build": (_to_build_now, "Whether the story goes on to build"),
-    "survey_on": (_survey_on, "Whether the architect surveys the story first"),
-    "is_story_card": (_is_story_card, "Whether the card carries a story an epic's plan wrote"),
-    "not_story_card": (_not_story_card, "Whether the card carries no story of its own"),
-    "open_layer": (_open_layer, "Whether the layer is neither built nor satisfied"),
-    "not_built": (_not_built, "Whether no layer is built and the packages are not drafted yet"),
-    "has_package": (_has_package, "Whether the open layer has its package ready"),
+PREDICATES: Mapping[str, tuple[Callable[[RunContext], bool], tuple[str, ...], str]] = {
+    "amigos_on": (_amigos_on, (), "Whether the three amigos meet (story.amigos.enabled)"),
+    "amigos_off": (_amigos_off, (), "Whether the three amigos do not meet"),
+    "to_build": (_to_build_now, ("layers", "built", "satisfied"), "Whether the story goes on to build"),
+    "survey_on": (_survey_on, ("survey", "story"), "Whether the architect surveys the story first"),
+    "is_story_card": (_is_story_card, ("card",), "Whether the card carries a story an epic's plan wrote"),
+    "not_story_card": (_not_story_card, ("card",), "Whether the card carries no story of its own"),
+    "open_layer": (_open_layer, ("built", "satisfied"), "Whether the layer is neither built nor satisfied"),
+    "not_built": (
+        _not_built,
+        ("drafted", "built", "satisfied"),
+        "Whether no layer is built and the packages are not drafted yet",
+    ),
+    "has_package": (
+        _has_package,
+        ("built", "satisfied", "package.{item}"),
+        "Whether the open layer has its package ready",
+    ),
 }
-"""The predicates by name: the old registry's `story.<name>` (until Task 8 removes them) and the catalog's
-`story.<name>` check with the one bool output `<name>`."""
+"""The predicates by name, with the names they read: the old registry's `story.<name>` (until Task 8
+removes them) and the catalog's `story.<name>` check with the one bool output `<name>`."""
 
 
 def _flag(name: str, test: Callable[[RunContext], bool]) -> Callable[[RunContext], Mapping[str, Any]]:
@@ -790,8 +872,8 @@ def _flag(name: str, test: Callable[[RunContext], bool]) -> Callable[[RunContext
     return flag
 
 
-for _name, (_test, _title) in PREDICATES.items():
-    STORY_CATALOG.add(Check(f"story.{_name}", (), (_name,), _title, _flag(_name, _test), {_name: "bool"}))
+for _name, (_test, _reads, _title) in PREDICATES.items():
+    STORY_CATALOG.add(Check(f"story.{_name}", _reads, (_name,), _title, _flag(_name, _test), {_name: "bool"}))
 
 STEPS = ("story.ready_package", "story.build_once")
 """The catalog checks the old registry keeps as `(node, ctx)` steps (`_interim_step`), until Part 2."""

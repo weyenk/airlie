@@ -183,6 +183,18 @@ def test_a_snapshot_round_trips_and_names_its_nodes() -> None:
     assert from_snapshot(older)[2] == {}
 
 
+def test_a_draft_is_held_to_the_story_catalog() -> None:
+    """Rule 9 runs where drafts resolve: a check whose `run` the catalog lacks is refused, one that matches
+    its declaration is not."""
+    cfg = load_config(Path("airlie.yaml"))
+    draft = "workflows:\n  nope:\n    inputs: [card]\n    nodes:\n      a: {type: check, run: story.nope}\n"
+    assert workflow_problems(cfg, {"nope": draft}, "nope") == [
+        "workflow nope: node a: run 'story.nope' is not in the catalog"
+    ]
+    fine = draft.replace("run: story.nope}", "run: story.intake, inputs: [card]}")
+    assert workflow_problems(cfg, {"nope": fine}, "nope") == []
+
+
 def test_a_drafts_own_prompt_file_resolves_and_an_unknown_or_broken_one_does_not() -> None:
     cfg = load_config(Path("airlie.yaml"))
     own = {"mini": {"mini-note": NOTE}}

@@ -151,7 +151,9 @@ def resolve_workflows(
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:
         raise WorkflowError(f"draft workflow {name!r}: prompt file {e}") from None
-    if problems := check_workflows(specs, prompts=texts):
+    from airlie.story.flow import STORY_CATALOG  # the story's checks; story.flow imports this module
+
+    if problems := check_workflows(specs, prompts=texts, catalog=STORY_CATALOG):
         raise WorkflowError("; ".join(problems))
     return specs
 

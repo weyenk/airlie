@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from airlie.flow.catalog import STORY_CATALOG, Catalog, Check, check
-from airlie.flow.composer import RunContext
-from airlie.flow.store import MemoryStore, Sessions
+from airlie.flow.composer import MissingInput, RunContext
+from airlie.flow.store import MemoryStore, Sessions, StateStore
 from airlie.story.amigos import Agreement, ProofTest
 from airlie.story.board import text_card
 from airlie.story.flow import CATALOG, StoryRegistry, story_registry
@@ -90,36 +91,50 @@ PREDICATES = (
     "has_package",
 )
 
+READS: dict[str, tuple[str, ...]] = {
+    "amigos_on": (),
+    "amigos_off": (),
+    "to_build": ("layers", "built", "satisfied"),
+    "survey_on": ("survey", "story"),
+    "is_story_card": ("card",),
+    "not_story_card": ("card",),
+    "open_layer": ("built", "satisfied"),
+    "not_built": ("drafted", "built", "satisfied"),
+    "has_package": ("built", "satisfied", "package.{item}"),
+}
+"""What each predicate reads from the store."""
+
 DECLARED: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    # today's checks, the layer's package and build (an interim adapter until Part 2), and the review gate's
-    "story.intake": ((), ()),
-    "story.take_card_as_story": ((), ("story",)),
-    "story.base": ((), ("base",)),
-    "story.gate": (("base",), ("gate",)),
+    # today's checks, the layer's package and build (an interim adapter until Part 2), and the review gate's;
+    # every store and loose name each reads is an input (D23), `card` and `repo` included
+    "story.intake": (("card",), ()),
+    "story.take_card_as_story": (("card",), ("story",)),
+    "story.base": (("card", "repo"), ("base",)),
+    "story.gate": (("repo", "base"), ("gate",)),
     "story.agree_plain": (("story", "layers"), ("agreement",)),
-    "story.costed": ((), ()),
-    "story.planned": ((), ()),
-    "story.covered": (("story", "layers"), ("satisfied.{item}",)),
+    "story.costed": (("card",), ()),
+    "story.planned": (("layers",), ()),
+    "story.covered": (("card", "repo", "story", "layers"), ("satisfied.{item}",)),
     "story.build_done": ((), ()),
-    "story.publish": (("story", "layers"), ("prs",)),
-    "story.finish": ((), ()),
-    "story.ready_package": (("base", "story", "layers"), ("package.{item}", "satisfied.{item}")),
-    "story.build_once": (("package.{item}", "story", "layers"), ("built.{item}",)),
+    "story.publish": (("card", "repo", "story", "layers"), ("prs",)),
+    "story.finish": (("card",), ()),
+    "story.ready_package": (("card", "repo", "story", "layers"), ("package.{item}", "satisfied.{item}")),
+    "story.build_once": (("card", "repo", "package.{item}", "story", "layers"), ("built.{item}",)),
     # the computed inputs of the briefs (D13)
-    "story.repo_guide": (("story", "base"), ("guide",)),
-    "story.scope_guide": (("base", "layers"), ("guide",)),
+    "story.repo_guide": (("repo", "story", "base"), ("guide",)),
+    "story.scope_guide": (("repo", "base", "layers"), ("guide",)),
     "story.lessons": ((), ("lessons",)),
-    "story.dossier": (("base",), ("dossier",)),
+    "story.dossier": (("repo", "base"), ("dossier",)),
     "story.coder_budget": ((), ("budget",)),
-    "story.layer_sources": (("base", "layers"), ("sources.{item}",)),
+    "story.layer_sources": (("repo", "base", "layers"), ("sources.{item}",)),
     "story.layer_proof": (("agreement", "layers"), ("proof.{item}",)),
-    "story.lint_note": (("base", "gate"), ("lint",)),
+    "story.lint_note": (("repo", "base"), ("lint",)),
     # the board notes and phase marks the asks' after-hooks made
     "story.survey_note": (("survey",), ()),
-    "story.refined_note": (("story",), ()),
-    "story.layers_note": (("layers",), ()),
+    "story.refined_note": (("card", "story"), ()),
+    "story.layers_note": (("card", "layers"), ()),
     # the predicates, as checks with one bool output (D16)
-    **{f"story.{p}": ((), (p,)) for p in PREDICATES},
+    **{f"story.{p}": (READS[p], (p,)) for p in PREDICATES},
 }
 
 
@@ -130,7 +145,7 @@ def test_every_check_the_old_catalog_named_is_declared() -> None:
 def test_every_predicate_is_a_check_with_one_bool_output() -> None:
     for p in PREDICATES:
         got = STORY_CATALOG[f"story.{p}"]
-        assert (got.inputs, got.outputs, dict(got.formats)) == ((), (p,), {p: "bool"}), p
+        assert (got.inputs, got.outputs, dict(got.formats)) == (READS[p], (p,), {p: "bool"}), p
     assert {f"story.{p}" for p in PREDICATES} == set(CATALOG["predicates"])
 
 
@@ -181,7 +196,7 @@ class Run:
     ) -> RunContext:
         return RunContext(
             cfg=self.pipe.cfg,
-            store=MemoryStore(values),
+            store=MemoryStore({"card": self.card, "repo": self.repo, **values}),
             sessions=Sessions(),
             registry=self.registry,
             workflow="story",
@@ -229,8 +244,13 @@ async def test_the_predicates_answer_as_their_registry_entries_do(tmp_path: Path
         assert await call(f"story.{p}", ctx) == {p: run.registry[f"story.{p}"](ctx)}, p
     assert await call("story.amigos_on", ctx) == {"amigos_on": False}  # the test pipeline's meeting is off
     assert await call("story.open_layer", ctx) == {"open_layer": True}
+    # over the story's state, the state fields are read by name, as the old predicates read them
+    ctx.store = StateStore(run.st, loose={"card": run.card, "repo": run.repo})
     run.st.built["01"] = {"sha": "x"}
     assert await call("story.open_layer", ctx) == {"open_layer": False}
+    assert await call("story.to_build", ctx) == {"to_build": True}  # no layers planned yet
+    run.st.layers = [x.to_dict() for x in run.layers[:1]]
+    assert await call("story.to_build", ctx) == {"to_build": False}
 
 
 async def test_the_coder_budget_lessons_and_dossier_are_the_briefs_values(tmp_path: Path) -> None:
@@ -316,3 +336,125 @@ async def test_the_layers_steps_keep_their_old_registry_shape_through_the_interi
         assert list(inspect.signature(step).parameters) == ["node", "ctx"], id
         assert step is not STORY_CATALOG[id].fn
     assert "session" in inspect.signature(STORY_CATALOG["story.ready_package"].fn).parameters
+
+
+class Undeclared(Exception):
+    """A check read a name its declaration does not give."""
+
+
+class Recording:
+    """A memory store that records every name read and refuses one outside `allowed`."""
+
+    def __init__(self, values: dict[str, Any], allowed: set[str]) -> None:
+        self.inner = MemoryStore(values)
+        self.allowed = allowed
+        self.read: set[str] = set()
+
+    def _reading(self, name: str) -> None:
+        if name not in self.allowed:
+            raise Undeclared(name)
+        self.read.add(name)
+
+    def has(self, name: str) -> bool:
+        self._reading(name)
+        return self.inner.has(name)
+
+    def get(self, name: str) -> Any:
+        self._reading(name)
+        return self.inner.get(name)
+
+    def put(self, name: str, value: Any) -> None:
+        self.inner.put(name, value)
+
+    def save(self) -> None:
+        pass
+
+    def emit(self, kind: str, **fields: Any) -> None:
+        self.inner.emit(kind, **fields)
+
+
+THROUGH_THE_PIPELINE = {
+    # declared names a check's body hands to the pipeline's step, which reads them itself (`repo`: the
+    # store's loose repo is the pipeline's), or reads only on one path
+    "story.base": {"repo"},
+    "story.gate": {"repo"},
+    "story.covered": {"repo"},
+    "story.ready_package": {"repo"},
+    "story.build_once": {"repo"},
+    "story.publish": {"repo"},
+    "story.dossier": {"repo"},
+    "story.planned": {"layers"},  # read for the planning lane's story_planned only (`until: planned`)
+}
+
+
+async def test_every_story_check_reads_only_what_it_declares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each check of the story catalog, in declaration order on one layer, over a store that refuses any name
+    its declaration does not give; the pipeline's steps are fakes (they read the state, not the store). It
+    reads every name it declares but those the pipeline's step reads itself (`THROUGH_THE_PIPELINE`)."""
+    run = Run(tmp_path)
+    pipe: Any = run.pipe
+
+    async def nothing(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def site(*args: Any) -> Any:
+        return ("a", "b", "c", None), "built", "guide"
+
+    async def package(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(to_dict=lambda: {"package": 1})
+
+    async def build(st: StoryState, *args: Any) -> None:
+        st.built["01"] = {"sha": "x"}
+
+    async def resolved(*args: Any) -> dict[str, str]:
+        return {"ref": "origin/main", "sha": run.sha}
+
+    for name in ("_intake", "_costed", "_satisfy", "_publish", "_finish"):
+        monkeypatch.setattr(pipe, name, nothing)
+    monkeypatch.setattr(pipe, "_base", resolved)
+    monkeypatch.setattr(pipe, "_gate", lambda st, base: None)
+    monkeypatch.setattr(pipe, "_layer_site", site)
+    monkeypatch.setattr(pipe, "_ready_package", package)
+    monkeypatch.setattr(pipe, "_build_once", build)
+    monkeypatch.setattr(pipe, "_story_card", lambda card: None)
+    monkeypatch.setattr("airlie.story.flow.Package", SimpleNamespace(from_dict=lambda d: d))
+    values = {
+        **run.planned(),
+        "card": run.card,
+        "repo": run.repo,
+        "gate": {"commands": []},
+        "agreement": Agreement(run.story, run.layers, ()).to_dict(),
+        "survey": "notes",
+        "built": {},
+        "satisfied": {},
+        "drafted": False,
+        "package.01": {"package": 1},
+    }
+    args: dict[str, dict[str, Any]] = {"story.costed": {"stages": ["plan"]}}
+    unread: dict[str, set[str]] = {}
+    for c in STORY_CATALOG:
+        allowed = {name.replace("{item}", "01") for name in c.inputs}
+        store = Recording(values, allowed)
+        ctx = run.ctx({}, item="01")
+        ctx.store = store
+        try:
+            await call(c.name, ctx, **args.get(c.name, {}))
+        except Undeclared as e:
+            pytest.fail(f"{c.name} reads '{e}', which it does not declare")
+        if left := allowed - store.read:
+            unread[c.name] = left
+    assert unread == THROUGH_THE_PIPELINE
+
+
+async def test_a_missing_input_names_the_node_the_check_and_the_input(tmp_path: Path) -> None:
+    run = Run(tmp_path)
+    with pytest.raises(MissingInput, match="story.repo_guide needs 'story', which the store does not"):
+        await call("story.repo_guide", run.ctx({"base": {"sha": run.sha}}))
+    with pytest.raises(MissingInput, match="node 'n': story.scope_guide needs 'base' with its sha"):
+        await call("story.scope_guide", run.ctx({**run.planned(), "base": {"ref": "x"}}))
+    with pytest.raises(MissingInput, match="node 'n': story.layer_sources needs 'layers'"):
+        await call("story.layer_sources", run.ctx({"base": {"sha": run.sha}}, item="01"))
+    with pytest.raises(MissingInput, match="story.layer_proof runs per layer, and the node has no"):
+        await call("story.layer_proof", run.ctx(run.planned()))

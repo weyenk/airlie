@@ -1365,7 +1365,7 @@ def test_tool_written_packages_stay_off_in_the_schema_and_the_committed_config()
 
 
 def _wf(name: str) -> dict:
-    return {"workflows": {name: {"nodes": {"a": {"type": "check", "run": "r"}}}}}
+    return {"workflows": {name: {"nodes": {"a": {"type": "check", "run": "story.build_done"}}}}}
 
 
 def test_includes_accept_a_glob_in_sorted_order(tmp_path: Path) -> None:
