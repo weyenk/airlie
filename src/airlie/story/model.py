@@ -263,6 +263,36 @@ def _text(d: dict[str, Any], key: str, where: str) -> str:
     return _encodable(v.strip(), f"{where}: '{key}'")
 
 
+_AC_ID = re.compile(r"AC\d+", re.IGNORECASE)
+"""How a criterion id is written in a plan (`AC3`): under `unchanged`, anything else is words."""
+
+
+def _unchanged_ids(marked: Sequence[str], acc: Sequence[str], story: Story) -> tuple[str, ...]:
+    """A layer's `unchanged` entries as criterion ids. The architect writes a criterion's words there as
+    readily as its id (AIR-55, 2026-11-07: three plans in a row refused for one then-clause quoted under
+    `unchanged`, each refusal read as a request for more words): an entry that is no id of the story's is
+    the one criterion of the layer whose then-clause it quotes or is quoted by, and is left out when none or
+    several are, since the list only spares the size cap. Anything written as an id (AC9) is kept as
+    written, for the check that it is one of the layer's."""
+    known = {c.id: c for c in story.acceptance}
+    out: list[str] = []
+    for m in marked:
+        if m in known or _AC_ID.fullmatch(m.strip()):
+            out.append(m)
+            continue
+        words = m.strip().lower()
+        if not words:
+            continue
+        hits = [
+            a
+            for a in acc
+            if a in known and (words in known[a].then.lower() or known[a].then.lower() in words)
+        ]
+        if len(hits) == 1:
+            out.append(hits[0])
+    return tuple(dict.fromkeys(out))
+
+
 def _strs(v: Any, what: str, of: str = "strings") -> tuple[str, ...]:
     """A list field read as `_str_list` reads one (studio_plan): missing or null is empty, a lone string is a
     list of one, a list is the str of each item; anything else is a StoryError naming `what`."""
@@ -386,7 +416,7 @@ def parse_layers(obj: dict[str, Any] | None, story: Story, max_layers: int) -> t
                 )
             owner[a] = slug
         where = f"layer '{slug}'"
-        same = _strs(d.get("unchanged"), f"{where}: 'unchanged'", "criterion ids")
+        same = _unchanged_ids(_strs(d.get("unchanged"), f"{where}: 'unchanged'", "criterion ids"), acc, story)
         stray = [a for a in same if a not in acc]
         if stray:
             raise StoryError(

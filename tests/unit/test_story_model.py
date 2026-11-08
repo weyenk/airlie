@@ -166,6 +166,30 @@ def test_the_architect_may_mark_a_layers_unchanged_criteria_itself() -> None:
         parse_layers({"layers": [{**one, "unchanged": ["AC9"]}]}, story, 3)
 
 
+def test_a_criterions_words_under_unchanged_are_its_id_and_stray_words_are_left_out() -> None:
+    """AIR-55 (2026-11-07): the architect quoted a criterion's then-clause under `unchanged`
+    ("paused(state_dir) still means exactly a person's pause: …") and the plan was refused three times in a
+    row for it, each refusal read as a request for more words. Words that quote one of the layer's criteria
+    are that criterion; words that quote none, or several, are left out, since the list only spares the size
+    cap; an id the layer does not list, or the story lacks, is still refused."""
+    story = _story_of("the avatar is stored", "paused() still means exactly a person's pause, as before")
+    one = {"slug": "x", "title": "X", "scope": "x.py", "brief": "b", "acceptance": ["AC1", "AC2"]}
+    [quoted] = parse_layers(
+        {"layers": [{**one, "unchanged": ["paused() still means exactly a person's pause, as before"]}]},
+        story,
+        3,
+    )
+    assert quoted.unchanged == ("AC2",)
+    [partial] = parse_layers({"layers": [{**one, "unchanged": ["a person's pause"]}]}, story, 3)
+    assert partial.unchanged == ("AC2",)  # part of one then-clause
+    [stray] = parse_layers({"layers": [{**one, "unchanged": ["nothing the story says", ""]}]}, story, 3)
+    assert stray.unchanged == ()
+    [twice] = parse_layers({"layers": [{**one, "unchanged": ["AC2", "a person's pause"]}]}, story, 3)
+    assert twice.unchanged == ("AC2",)  # once, however often it is named
+    with pytest.raises(StoryError, match=r"layer 'x' marks \['AC3'\] unchanged"):
+        parse_layers({"layers": [{**one, "unchanged": ["AC3"]}]}, story, 3)  # the story's, not the layer's
+
+
 def test_a_layer_whose_files_are_all_test_files_is_refused() -> None:
     """AIR-62's re-plan (2026-11-05): a layer of the unchanged criteria alone, its only file the test file,
     had no change a test could fail before; it could never get a package and blocked."""
