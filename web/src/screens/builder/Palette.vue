@@ -22,7 +22,7 @@ function add(item: { type: NodeType } | { bundle: string }) {
 </script>
 
 <template>
-  <aside aria-label="Palette" class="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+  <aside aria-label="Palette" class="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 shadow-sm min-[901px]:min-h-0 min-[901px]:overflow-auto">
     <h2 class="text-xs font-semibold tracking-[0.06em] text-muted-foreground uppercase">Nodes</h2>
     <ul class="grid grid-cols-2 gap-2 max-[900px]:grid-cols-4 max-[640px]:grid-cols-2">
       <li v-for="t in NODE_TYPES" :key="t" class="contents">
