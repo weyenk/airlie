@@ -233,7 +233,7 @@ async def test_a_bundle_runs_once_per_item_and_writes_back_only_its_declared_out
     events = [(k, f["node"], f.get("item")) for k, f in store.events]
     assert events[0] == ("node_started", "lay", None) and events[-1][:2] == ("node_finished", "lay")
     assert ("node_skipped", "b", "01") in events
-    assert store.done("b@02") and store.done("b@03") and store.done("lay")
+    assert store.done("lay/b@02") and store.done("lay/b@03") and store.done("lay")
 
     # a bundle node writing a name its workflow does not declare as an output is refused
     wf["layer"]["nodes"]["b"]["outputs"] = {"built.{item}": "json", "note": "text"}
@@ -377,6 +377,108 @@ async def test_feedback_carried_in_one_item_is_not_read_by_the_next(tmp_path):
     }
     await composer(tmp_path, wf, {"check": check_that(build)}, store=store).run("story")
     assert calls == [("01", None), ("01", "red 01"), ("02", None), ("02", "red 02")]
+
+
+async def test_until_on_a_node_skipped_by_its_outputs_stops_there(tmp_path):
+    seen = []
+    wf = {
+        "w": {
+            "nodes": {
+                "a": chk(outputs={"x": "text"}, to=["b"]),
+                "b": chk(outputs={"y": "text"}, to=["c"]),
+                "c": chk(outputs={"z": "text"}),
+            }
+        }
+    }
+    store = MemoryStore({"card": "c", "y": "kept"})
+    assert await composer(tmp_path, wf, {"check": outputs(seen)}, store=store).run("w", until="b") == "b"
+    assert seen == ["a"] and skipped(store) == ["b"] and not store.has("z")
+
+
+async def test_a_loop_back_to_a_bundle_runs_its_items_again(tmp_path):
+    seen = []
+
+    def run(n, c):
+        seen.append((c.node, c.item))
+        if c.node == "rev":
+            return {"verdict": {"n": sum(1 for name, _ in seen if name == "rev")}}
+        return {"built.{item}": {"try": len(seen)}}
+
+    wf = {
+        "story": {
+            "inputs": ["card", "layers"],
+            "nodes": {
+                "lay": {
+                    "type": "bundle",
+                    "workflow": "layer",
+                    "each": "layers",
+                    "inputs": ["layers"],
+                    "to": ["rev"],
+                },
+                "rev": chk(
+                    outputs={"verdict": "json"},
+                    to=[{"node": "lay", "when": "verdict.n == 1", "loop": {"max": 1}}],
+                ),
+            },
+        },
+        "layer": {
+            "inputs": ["layers"],
+            "outputs": ["built.{item}"],
+            "nodes": {"b": chk(outputs={"built.{item}": "json"})},
+        },
+    }
+    store = MemoryStore({"card": "c", "layers": [{}]})
+    await composer(tmp_path, wf, {"check": check_that(run)}, store=store).run("story")
+    assert seen == [("b", "01"), ("rev", None), ("b", "01"), ("rev", None)]
+    assert store.get("built.01") == {"try": 3} and store.done("lay/b@01")
+
+
+async def test_the_done_set_skips_only_an_outputless_node_and_a_re_run_producer_is_waited_for(tmp_path):
+    """`a` is in the done set but its output was cleared: it runs again, and `b`, reading it without a line
+    from it, waits for it (`a` leaves the done set as it starts). `mark`, with no outputs, is skipped."""
+    order = []
+
+    async def runner(node, ctx):
+        order.append((ctx.node, "start", ctx.store.done("a")))
+        if ctx.node == "a":
+            await asyncio.sleep(0.02)
+        order.append((ctx.node, "end", None))
+        return {k: ctx.node for k in node.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "a": chk(outputs={"x": "text"}),
+                "b": chk(inputs=["x"], outputs={"y": "text"}),
+                "mark": chk(),
+            }
+        }
+    }
+    store = MemoryStore({"card": "c"})
+    for name in ("a", "mark"):
+        store.mark_done(name)
+    await composer(tmp_path, wf, {"check": runner}, store=store).run("w")
+    assert order == [("a", "start", False), ("a", "end", None), ("b", "start", True), ("b", "end", None)]
+    assert skipped(store) == ["mark"] and store.get("y") == "b"
+
+
+async def test_two_bundle_nodes_over_one_workflow_resume_independently(tmp_path):
+    seen = []
+    wf = {
+        "story": {
+            "inputs": ["card", "layers"],
+            "nodes": {
+                "l1": {"type": "bundle", "workflow": "layer", "each": "layers", "inputs": ["layers"]},
+                "l2": {"type": "bundle", "workflow": "layer", "each": "layers", "inputs": ["layers"]},
+            },
+        },
+        "layer": {"inputs": ["layers"], "nodes": {"mark": chk()}},
+    }
+    store = MemoryStore({"card": "c", "layers": [{}]})
+    store.mark_done("l1/mark@01")
+    await composer(tmp_path, wf, {"check": outputs(seen)}, store=store).run("story")
+    assert seen == ["mark"] and store.done("l2/mark@01")
+    assert [(f["node"], f["item"]) for k, f in store.events if k == "node_skipped"] == [("mark", "01")]
 
 
 # ---- the node step: events, outputs, sessions, failures, the run's end ----

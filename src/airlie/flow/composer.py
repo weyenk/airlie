@@ -16,26 +16,29 @@ when a node runs. The rules, as `_Run` implements them:
   the node itself nor downstream of it has finished or died: an artifact a producer left empty (`[]`, `""`)
   or never wrote (a failed survey, the alternative not taken) does not stall the node. A name nothing in
   the workflow produces must be present.
-- A ready node is **skipped** (finished, `node_skipped`, recorded done) when its outputs are all present, or
-  when its done name (`<node>`, `<node>@<item>` in a bundle item) is in the store's done set: this is the
-  resume. A node a loop sent back to is never skipped so. Every other ready node **runs**; all that are
-  ready run at once, each as a task, and one that raises cancels the others and its error is raised. A
-  node that succeeds is recorded done; a failed one is not, so a resume runs it again.
+- A ready node is **skipped** (finished, `node_skipped`, recorded done) when it has outputs and they are
+  all present, or when it has none and its done name is in the store's done set: this is the resume. A
+  done name is `<node>`, `<node>@<item>` in a bundle item, behind the bundle node(s) it runs under
+  (`lay/build@01`). A node a loop sent back to is never skipped so. Every other ready node **runs**: it
+  leaves the done set as it starts, and all that are ready run at once, each as a task; one that raises
+  cancels the others and its error is raised. A node that succeeds is recorded done; a failed one is not,
+  so a resume runs it again.
 - When a node finishes, its loop lines are tried first, in order: one fires when its `when` holds (with no
   `when`, when the node failed) and its bound (`max`, a count or a config path) is not spent. It puts its
   `carry` under `feedback.<target>` (`.<item>` in a bundle item), cancels any of the target and the nodes
   downstream of it (through forward lines) still running, and sends them back to pending: out of the done
   set, their outputs cleared (`store.put(name, None)`; a session popped; the memory heads kept) and the
-  lines out of them unresolved. Else a failed node with `on_fail: block` raises `StoryBlocked`; else its
-  forward lines fire or die by their conditions.
+  lines out of them unresolved; a bundle node sent back forgets its items too (their done names, the
+  bundle workflow's outputs, feedback and loop counts), so each item runs again. Else a failed node with
+  `on_fail: block` raises `StoryBlocked`; else its forward lines fire or die by their conditions.
 - A `bundle` node runs its workflow once per item of its `each` list (`01`, `02`, ... in order), or once
   without `each`, on a `BundleStore`: the parent's store read by name, written only under the bundle
   workflow's declared outputs.
-- `until`: once the named node finishes, nothing new starts; the run returns its name when the nodes still
-  running end. A gate (`EndRun`) ends the run the same way, and inside a bundle it ends the parent's run at
-  the bundle node. A run where nothing can start and some node is still pending raises `Stalled` naming the
-  pending nodes and what each lacks. A condition reads `RunContext.lookup`: the store, the card's fields,
-  `config.<path>`."""
+- `until`: once the named node finishes (or is skipped), nothing new starts; the run returns its name
+  when the nodes still running end. A gate (`EndRun`) ends the run the same way, and inside a bundle it
+  ends the parent's run at the bundle node. A run where nothing can start and some node is still pending
+  raises `Stalled` naming the pending nodes and what each lacks. A condition reads `RunContext.lookup`: the
+  store, the card's fields, `config.<path>`."""
 
 from __future__ import annotations
 
@@ -193,7 +196,7 @@ class Composer:
         and closed, whatever ends the run, when `run` returns or raises. None outside a run, so a node that
         would hold a session there fails loudly instead of holding it on a stack nothing closes."""
         self.loops: dict[tuple[str, str | None, str, str], int] = {}
-        """Re-runs a loop line has taken: (workflow, item, source, target) -> count."""
+        """Re-runs a loop line has taken: (`<bundle scope>workflow`, item, source, target) -> count."""
 
     def spec(self, name: str) -> WorkflowSpec:
         """The workflow `name`: from the mapping the composer was given (the repo's workflows and drafts),
@@ -231,9 +234,11 @@ class _Run:
         *,
         until: str | None,
         bundle: bool,
+        scope: str = "",
     ) -> None:
         self.c, self.workflow, self.item, self.store = c, workflow, item, store
         self.until, self.bundle = until, bundle
+        self.scope = scope  # `<bundle node>/` per level of bundle: the done names' prefix
         self.spec = c.spec(workflow)
         self.nodes = self.spec.nodes
         self.names = list(self.nodes)
@@ -254,6 +259,8 @@ class _Run:
         self.running: dict[asyncio.Task[Mapping[str, Any]], str] = {}
         self.last: str | None = None
         self._below: dict[str, set[str]] = {}
+        self.items_run: dict[str, list[str | None]] = {}  # bundle node -> the items it ran this run
+        self._skipped = False  # settle skipped a node: save once
         self._conditions: dict[str, conditions.Condition] = {}
 
     # ---- names ----
@@ -262,12 +269,12 @@ class _Run:
         return name.replace("{item}", self.item) if self.item is not None else name
 
     def done_name(self, node: str) -> str:
-        return node if self.item is None else f"{node}@{self.item}"
+        return _done_name(self.scope, node, self.item)
 
     def feedback_name(self, node: str) -> str:
         """Where the feedback carried to `node` is kept: per bundle item, so a layer's first try never reads
         what the layer before it was told."""
-        return f"feedback.{node}" if self.item is None else f"feedback.{node}.{self.item}"
+        return _feedback_name(node, self.item)
 
     def fields(self, name: str) -> dict[str, Any]:
         return {"node": name, "type": self.nodes[name].type, "workflow": self.workflow, "item": self.item}
@@ -311,7 +318,9 @@ class _Run:
         if name in self.forced:
             return False
         outs = self.nodes[name].outputs
-        return (bool(outs) and all(self.present(o) for o in outs)) or self.store.done(self.done_name(name))
+        if outs:  # a node with outputs is done when they are all present, whatever the done set says
+            return all(self.present(o) for o in outs)
+        return self.store.done(self.done_name(name))
 
     def holds(self, when: str | None, source: str) -> bool:
         if when is None:
@@ -325,9 +334,18 @@ class _Run:
             if line.loop is None:
                 self.line_state[(source, i)] = "fired" if self.holds(line.when, source) else "dead"
 
-    def settle(self) -> None:
+    def settle(self) -> str | None:
         """Kill the nodes every line into which died, and skip the ready nodes done already, until neither
-        changes anything."""
+        changes anything; saved once if a node was skipped. Returns `until` when it was skipped (the run
+        stops there), else None."""
+        self._skipped = False
+        try:
+            return self._settle()
+        finally:
+            if self._skipped:
+                self.store.save()
+
+    def _settle(self) -> str | None:
         changed = True
         while changed:
             changed = False
@@ -348,7 +366,10 @@ class _Run:
                     self.store.emit("node_skipped", **self.fields(name))
                     self.fire(name)
                     self.last = name
-                    changed = True
+                    self._skipped = changed = True
+                    if name == self.until:
+                        return name
+        return None
 
     def stalled(self) -> Stalled:
         pending = [n for n in self.names if self.state[n] == "pending"]
@@ -381,6 +402,7 @@ class _Run:
     def start(self, name: str) -> None:
         self.state[name] = "running"
         self.forced.discard(name)
+        self.store.clear_done(self.done_name(name))  # running again: not done until it finishes
         self.store.emit("node_started", **self.fields(name))
         self.running[asyncio.ensure_future(self.step(name))] = name
 
@@ -390,7 +412,8 @@ class _Run:
         try:
             while True:
                 if stop is None:
-                    self.settle()
+                    stop = self.settle()
+                if stop is None:
                     for name in self.names:
                         if self.state[name] == "pending" and self.ready(name):
                             self.start(name)
@@ -436,7 +459,7 @@ class _Run:
         started = time.monotonic()
         try:
             if node.type == "bundle":
-                result: Mapping[str, Any] = await self.bundle_items(node)
+                result: Mapping[str, Any] = await self.bundle_items(name, node)
             else:
                 result = await self.c.runners[node.type](node, self.ctx(name))
         except EndRun:  # a gate did its job
@@ -470,18 +493,51 @@ class _Run:
         ms = int((time.monotonic() - started) * 1000)
         self.store.emit("node_finished", node=name, type=self.nodes[name].type, outcome=outcome, ms=ms)
 
-    async def bundle_items(self, node: NodeSpec) -> Mapping[str, Any]:
+    async def bundle_items(self, name: str, node: NodeSpec) -> Mapping[str, Any]:
         assert node.workflow is not None  # spec.py: a bundle needs workflow
         spec = self.c.spec(node.workflow)
-        if node.each is None:
-            items: list[str | None] = [self.item]
-        else:
-            listed = self.store.get(node.each) if self.store.has(node.each) else []
-            items = [f"{i + 1:02d}" for i in range(len(listed))]
+        items = self.items_of(node)
+        scope = f"{self.scope}{name}/"
+        self.items_run[name] = items
         for item in items:
             view = BundleStore(self.store, workflow=node.workflow, outputs=spec.outputs, item=item)
-            await _Run(self.c, node.workflow, item, view, until=None, bundle=True).go()
+            await _Run(self.c, node.workflow, item, view, until=None, bundle=True, scope=scope).go()
         return {}
+
+    def items_of(self, node: NodeSpec) -> list[str | None]:
+        if node.each is None:
+            return [self.item]
+        listed = self.store.get(node.each) if self.store.has(node.each) else []
+        return [f"{i + 1:02d}" for i in range(len(listed))]
+
+    def forget(self, name: str) -> None:
+        """A bundle node sent back: what its items left (their done names, the bundle workflow's outputs,
+        feedback and loop counts, a nested bundle's in turn) is cleared, so every item runs again."""
+        node = self.nodes[name]
+        assert node.workflow is not None
+        items = dict.fromkeys([*self.items_run.get(name, []), *self.items_of(node)])
+        for item in items:
+            self._forget(node.workflow, f"{self.scope}{name}/", item)
+
+    def _forget(self, workflow: str, scope: str, item: str | None) -> None:
+        spec = self.c.spec(workflow)
+        for n, ns in spec.nodes.items():
+            self.store.clear_done(_done_name(scope, n, item))
+            self.store.put(_feedback_name(n, item), None)
+            for out, o in ns.outputs.items():
+                if o.format == "session":
+                    self.c.sessions.pop(_sub(out, item))
+            if ns.type == "bundle" and ns.workflow is not None:
+                listed = self.store.get(ns.each) if ns.each is not None and self.store.has(ns.each) else []
+                inner = [f"{i + 1:02d}" for i in range(len(listed))] if ns.each is not None else [item]
+                for it in inner:
+                    self._forget(ns.workflow, f"{scope}{n}/", it)
+        for out in spec.outputs:
+            if out.partition(".")[0] not in MEMORY:
+                with contextlib.suppress(KeyError):  # a name this level may not write was never written
+                    self.store.put(_sub(out, item), None)
+        for key in [k for k in self.c.loops if k[0] == f"{scope}{workflow}" and k[1] == item]:
+            del self.c.loops[key]
 
     async def after(self, name: str, result: Mapping[str, Any]) -> None:
         """Route a node that returned: a loop line that fires sends its target and what is downstream back;
@@ -511,7 +567,7 @@ class _Run:
     def again(self, name: str, line: Line, result: Mapping[str, Any]) -> bool:
         """Count one re-run if the loop's bound allows it, carrying feedback; False once it is spent."""
         assert line.loop is not None
-        key = (self.workflow, self.item, name, line.node)
+        key = (f"{self.scope}{self.workflow}", self.item, name, line.node)
         if self.c.loops.get(key, 0) >= resolve_count(self.c.cfg, line.loop.max):
             return False
         self.c.loops[key] = self.c.loops.get(key, 0) + 1
@@ -534,3 +590,19 @@ class _Run:
                     self.store.put(self.name(out), None)
             for i in range(len(self.nodes[n].to)):
                 self.line_state[(n, i)] = None
+            if self.nodes[n].type == "bundle":
+                self.forget(n)
+        self.store.save()
+
+
+def _sub(name: str, item: str | None) -> str:
+    return name.replace("{item}", item) if item is not None else name
+
+
+def _done_name(scope: str, node: str, item: str | None) -> str:
+    """`<node>`, `<node>@<item>` in a bundle item, behind the bundle nodes it runs under (`lay/build@01`)."""
+    return f"{scope}{node}" if item is None else f"{scope}{node}@{item}"
+
+
+def _feedback_name(node: str, item: str | None) -> str:
+    return f"feedback.{node}" if item is None else f"feedback.{node}.{item}"
