@@ -31,6 +31,10 @@ def _git(
     )
 
 
+run_git = _git
+"""airlie's own git (`_git`) for callers outside this module: the team node applying its hand-backs."""
+
+
 AIRLIE = ("airlie", "airlie@local")
 """Who commits in a worktree: the studio's WIP rounds, and a layer's commit unless a GitHub App's bot does."""
 _ENV = ["-c", f"user.name={AIRLIE[0]}", "-c", f"user.email={AIRLIE[1]}"]

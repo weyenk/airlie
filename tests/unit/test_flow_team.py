@@ -11,15 +11,19 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.engine.protocol import OnToken
 from airlie.engine.types import GenRequest, GenResult
 from airlie.flow.composer import Registry
+from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.spec import WorkflowSpec, check_workflows
 from airlie.flow.store import MemoryStore
-from airlie.flow.team import team_runner
+from airlie.flow.team import Handback, _result, team_runner
 from airlie.story.board import text_card
 from airlie.story.flow import story_runners
+from airlie.story.model import StoryError
 from tests.unit.git_helpers import git
 from tests.unit.test_story_flow import bare_state, briefs_to, run_context, v2
 from tests.unit.test_story_pipeline import fenced, pipeline, repo_with_marker_tests
@@ -139,6 +143,9 @@ async def test_three_workers_hand_back_in_finish_order_and_the_synthesis_is_stor
         mine = [b for b in briefs_to(engine, "coder") if f"[{i}]" in b]
         assert mine and all(f"Do write {i}.txt" in b for b in mine)
         assert not any(f"[{o}]" in b for b in mine for o in {"w1", "w2", "w3"} - {i})
+    first_ask = next(r for r in engine.requests if r.role == "coder" and "[w1]" in r.messages[1].content)
+    assert first_ask.messages[1].content.startswith("Goal:\nDo write w1.txt [w1].\n\n")  # the worker text
+    assert re.search(r"w1\.txt \|\s+1 \+", third)  # an applied change comes with its --stat
     branch = out["branch"]
     assert [git(repo, "show", f"{branch}:{i}.txt") for i in ("w1", "w2", "w3")] == ["w1", "w2", "w3"]
     subjects = git(repo, "log", "--format=%s", f"{base}..{branch}").splitlines()
@@ -254,3 +261,109 @@ def test_a_team_worker_may_name_its_assignment_and_the_story_runs_teams(tmp_path
     pipe = pipeline(tmp_path, repo, FakeEngine({}))
     runner = story_runners(pipe, bare_state(tmp_path, repo), text_card("x"))["team"]
     assert getattr(runner, "func", None) is team_runner
+
+
+async def test_a_worker_that_raises_is_a_failed_hand_back_and_the_node_finishes(tmp_path: Path) -> None:
+    """A worker whose turn fails (here its engine has nothing to say) hands back failed with the reason; the
+    supervisor is told, and its synthesis is still the node's."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = TeamEngine(
+        {"architect": [assign("a", "b"), FakeReply(text="a in"), fenced({"summary": "half"})]},
+        worker="product",
+        workers={"a": [FakeReply(text="answer a")], "b": []},
+        order=["a", "b"],
+    )
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "two questions"}), "ask")
+    out = await team_runner(team("product"), ctx, asker=pipe.asker, st=st)
+    [a, b] = out["results"]
+    assert a == {"id": "a", "ok": True, "text": "answer a"}
+    assert b["id"] == "b" and b["ok"] is False and b["text"]
+    _, failed = handbacks(engine)
+    assert "Worker b has handed back" in failed and "Status: failed" in failed and b["text"] in failed
+    assert out["summary"] == {"summary": "half"}
+
+
+def follow_ups(engine: FakeEngine) -> list[str]:
+    """What the supervisor was sent after its opening (its last request holds it all)."""
+    last = [r for r in engine.requests if r.role == "architect"][-1]
+    return [m.content for m in last.messages if m.role == "user"][1:]
+
+
+async def test_assignments_that_never_parse_are_asked_again_then_block_with_the_reason(
+    tmp_path: Path,
+) -> None:
+    """A supervisor reply with no usable assignments goes back with the reason and the assignment rule; after
+    the third, the node stops (on_fail: block) with that reason, and no worker was started."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = TeamEngine(
+        {"architect": [FakeReply(text="no plan"), fenced({"assignments": []}), FakeReply(text="still none")]},
+        worker="product",
+        workers={"a": []},
+        order=["a"],
+    )
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "q"}), "ask")
+    with pytest.raises(StoryError, match="did not produce usable assignments: the reply has no JSON object"):
+        await team_runner(team("product"), ctx, asker=pipe.asker, st=st)
+    sent = follow_ups(engine)
+    assert len(sent) == 2 and sent[0].startswith("the reply has no JSON object")
+    assert sent[1].startswith("field 'assignments' must be a list of at least one assignment")
+    assert all("You lead a team of at most 5 workers." in s for s in sent)
+    assert not [r for r in engine.requests if r.role == "product"]
+
+
+async def test_a_writer_team_whose_supervisor_checkout_never_opened_fails_before_any_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer team needs the supervisor's checkout to apply hand-backs on: if it never opened, the node
+    fails naming itself, and no worker is started."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = TeamEngine(
+        {"architect": [assign("w1")]}, worker="coder", workers={"w1": writes("A", "a\n", "a")}, order=["w1"]
+    )
+    pipe = pipeline(tmp_path, repo, engine)
+    conversation = pipe.asker.conversation
+
+    def unprepared(*args: Any, writes: Any = None, **kwargs: Any) -> Any:
+        return conversation(*args, **kwargs)  # its checkout is never reported
+
+    monkeypatch.setattr(pipe.asker, "conversation", unprepared)
+    st = bare_state(tmp_path, repo)
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "q"}), "split")
+    with pytest.raises(StoryError, match="team node 'split': the supervisor's checkout never opened"):
+        await team_runner(team("coder", tools=["write_file"]), ctx, asker=pipe.asker, st=st)
+    assert not [r for r in engine.requests if r.role == "coder"]
+
+
+def test_a_hand_back_shows_the_stat_and_the_diff_cut_to_the_cap() -> None:
+    """The supervisor is shown an applied change's --stat and its diff up to the tools' output cap, with how
+    much was cut (the whole change is in its checkout)."""
+    back = Handback("w1", True, "wrote it", diff="x" * 50, stat=" A | 1 +")
+    shown = _result(back, True, 20)
+    assert "wrote it" in shown and " A | 1 +" in shown
+    assert "x" * 20 + "\n… [truncated 30 chars]" in shown and "x" * 21 not in shown
+    assert _result(back, True, 100).count("x") == 50
+
+
+def test_a_team_worker_prompt_file_may_read_its_assignment() -> None:
+    """A team's `worker: prompt:<id>` file may name `assignment` beside the node's inputs; its `prompt` file
+    may not."""
+    raw = "---\nkind: rule\nroles: [coder]\nfields: [card, assignment]\nwhy: w\n---\n{card}: {assignment}\n"
+    prompts = parse_draft_prompts({"work": raw})
+    node = {
+        "type": "team",
+        "role": {"supervisor": "architect", "worker": "coder"},
+        "prompt": "Split {card}.",
+        "worker": "prompt:work",
+        "inputs": ["card"],
+        "outputs": {"results": "list"},
+    }
+    ok = WorkflowSpec.model_validate({"inputs": ["card"], "nodes": {"t": node}})
+    assert check_workflows({"w": ok}, prompts=prompts) == []
+    bad = WorkflowSpec.model_validate({"inputs": ["card"], "nodes": {"t": {**node, "prompt": "prompt:work"}}})
+    assert check_workflows({"w": bad}, prompts=prompts) == [
+        "workflow w: node t: prompt file 'work' reads 'assignment', which is not an input of the node"
+    ]

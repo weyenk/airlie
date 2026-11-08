@@ -62,17 +62,17 @@ def _role(node: NodeSpec, seat: Seat) -> str:
     return seat(node.role)
 
 
-def _steps(node: NodeSpec, ctx: RunContext) -> int | None:
+def step_count(node: NodeSpec, ctx: RunContext) -> int | None:
     return resolve_count(ctx.cfg, node.steps) if node.steps is not None else None
 
 
-def _done(node: NodeSpec, st: Recorder, reply: str) -> None:
+def emit_done(node: NodeSpec, st: Recorder, reply: str) -> None:
     """The node's legacy `done` event, with the fields the driver's has: the reply's length (D14)."""
     if (kind := node.events.get("done")) is not None:
         st.emit(kind, chars=len(reply))
 
 
-def _failed(node: NodeSpec, ctx: RunContext, st: Recorder, error: Exception) -> Mapping[str, Any]:
+def node_failed(node: NodeSpec, ctx: RunContext, st: Recorder, error: Exception) -> Mapping[str, Any]:
     """A model node's failure: on `on_fail: continue` its `failed` event and the node fails without outputs;
     else it propagates, a seat that says the work cannot be done as written (`NotActionable`) as a block."""
     if node.on_fail != "continue":
@@ -108,7 +108,7 @@ async def ask_runner(
     and the whole reply is its first output. The stage the asker records is the node's name, the role
     `seat(node.role)`, and `ask` replaces `Asker.ask` (a workflow's own map for the turn)."""
     role = _role(node, seat)
-    steps = _steps(node, ctx)  # resolved before the ask: a wrong count is no failed ask to continue past
+    steps = step_count(node, ctx)  # resolved before the ask: a wrong count is no failed ask to continue past
     asking = ask or asker.ask
     fielded = structured(node)
     replies: list[str] = []
@@ -135,8 +135,8 @@ async def ask_runner(
             value = await asking(st, ctx.node, role, brief(node, ctx), steps=steps, long=False)
             replies.append(value)
     except Exception as e:
-        return _failed(node, ctx, st, e)
-    _done(node, st, replies[-1])
+        return node_failed(node, ctx, st, e)
+    emit_done(node, st, replies[-1])
     return {name: _value(value)} if name in node.outputs else {}
 
 
@@ -268,7 +268,7 @@ async def conversation_runner(
     output; a session output is the conversation, held for the run (`Composer.held`). A conversation that
     never parses fails with the last reason (`on_fail`)."""
     role = _role(node, seat)
-    count = _steps(node, ctx) or 1
+    count = step_count(node, ctx) or 1
     fielded = structured(node)
     first = next((n for n, spec in node.outputs.items() if spec.format != "session"), None)
     reply, value, reason = "", None, ""
@@ -294,8 +294,8 @@ async def conversation_runner(
                 raise StoryBlocked(f"{role} did not produce a usable {fielded[0]}: {reason}")
             session = s if not cont else None  # a continued session is the node's input, not its output
     except Exception as e:
-        return _failed(node, ctx, st, e)
-    _done(node, st, reply)
+        return node_failed(node, ctx, st, e)
+    emit_done(node, st, reply)
     out: dict[str, Any] = {}
     name = fielded[0] if fielded is not None else first
     if name is not None:
@@ -347,7 +347,7 @@ def write_tools(node: NodeSpec, ctx: RunContext, role: str) -> tuple[str, ...]:
     return tuple(t for t in listed if t in WRITE_TOOLS)
 
 
-def _worktree_at(node: NodeSpec, ctx: RunContext) -> str | None:
+def worktree_at(node: NodeSpec, ctx: RunContext) -> str | None:
     """The commit of the worktree a `ref:worktree` input names (its checked-out HEAD), else None."""
     for name in node.inputs:
         if ctx.formats.get(name) == "ref:worktree" and ctx.store.has(name):
@@ -372,13 +372,13 @@ async def write_runner(
     `session` output the held conversation; any other output is refused (`StoryError`), before anything is
     asked."""
     role = _role(node, seat)
-    steps = _steps(node, ctx)
+    steps = step_count(node, ctx)
     routes = _write_routes(node, ctx)
     checkout = Checkout()
 
     def opening() -> Opening:
         grant = Writes(tools=write_tools(node, ctx, role), scope="any", prepare=checkout.prepare)
-        at = _worktree_at(node, ctx)
+        at = worktree_at(node, ctx)
         return Opening(brief(node, ctx), steps, at=at, options={"writes": grant}, state=checkout)
 
     try:
@@ -387,8 +387,8 @@ async def write_runner(
             diff = s.state.diff() if isinstance(s.state, Checkout) else ""
             session = s if not cont else None
     except Exception as e:
-        return _failed(node, ctx, st, e)
-    _done(node, st, reply)
+        return node_failed(node, ctx, st, e)
+    emit_done(node, st, reply)
     values = {"diff": diff, "account": reply, "session": session}
     return {name: values[what] for name, what in routes.items() if values[what] is not None}
 

@@ -36,12 +36,12 @@ from airlie.flow.outputs import OutputSpec, describe, parse_output
 from airlie.flow.runners import (
     Checkout,
     Seat,
-    _done,
-    _failed,
-    _steps,
-    _worktree_at,
     brief,
+    emit_done,
+    node_failed,
+    step_count,
     structured,
+    worktree_at,
     write_runner,
 )
 from airlie.flow.spec import ASSIGNMENT, NodeSpec, TeamRole
@@ -71,13 +71,14 @@ class Assignment:
 
 @dataclass(frozen=True)
 class Handback:
-    """What one worker handed back: whether it finished (`ok`), its reply or why it failed (`text`), and a
-    writer's diff."""
+    """What one worker handed back: whether it finished (`ok`), its reply or why it failed (`text`), a
+    writer's diff and, once applied, its `git apply --stat`."""
 
     id: str
     ok: bool
     text: str
     diff: str = ""
+    stat: str = ""
 
 
 def assignments(reply: str) -> list[Assignment]:
@@ -199,8 +200,8 @@ async def _work(
         if writer:
             out = await write_runner(worker, mine, asker=asker, st=st, seat=seat)
             return Handback(assignment.id, True, str(out.get("account", "")), str(out.get("diff", "")))
-        at = _worktree_at(node, ctx)
-        steps = _steps(worker, mine)
+        at = worktree_at(node, ctx)
+        steps = step_count(worker, mine)
         reply = await asker.ask(st, mine.node, seat(role), brief(worker, mine), at=at, steps=steps)
         return Handback(assignment.id, True, reply)
     except Exception as e:
@@ -209,18 +210,20 @@ async def _work(
 
 def _apply(tree: Path, handback: Handback) -> Handback:
     """A writer's hand-back with its diff applied and committed on the supervisor's checkout `tree`; one
-    whose diff does not apply comes back failed, with git's reason, and the checkout as it was."""
-    from airlie.teams.worktree import _git, commit_wip, reset_to_head
+    whose diff does not apply comes back failed, with git's reason, and the checkout as it was. Blocking:
+    run it in a thread (`asyncio.to_thread`), so the other workers go on meanwhile."""
+    from airlie.teams.worktree import commit_wip, reset_to_head, run_git
 
     if not handback.ok or not handback.diff.strip():
         return handback
-    applied = _git(tree, "apply", "--3way", "--whitespace=nowarn", check=False, stdin=handback.diff)
+    applied = run_git(tree, "apply", "--3way", "--whitespace=nowarn", check=False, stdin=handback.diff)
     if applied.returncode != 0:
         reset_to_head(tree)
         reason = (applied.stderr or applied.stdout).strip()
         return Handback(handback.id, False, f"{handback.text}\n\n{reason}".strip(), handback.diff)
     commit_wip(tree, f"team: {handback.id}")
-    return handback
+    stat = run_git(tree, "apply", "--stat", check=False, stdin=handback.diff).stdout.rstrip()
+    return dataclasses.replace(handback, stat=stat)
 
 
 async def _until_parsed[T](
@@ -239,12 +242,15 @@ async def _until_parsed[T](
     raise StoryError(f"the supervisor did not produce usable {what}: {reason}")
 
 
-def _result(handback: Handback, writer: bool) -> str:
+def _result(handback: Handback, writer: bool, cap: int) -> str:
     """What the supervisor is shown of a hand-back: the worker's reply (or why it failed) and, for a change
-    that was applied, its diff."""
-    if writer and handback.ok and handback.diff.strip():
-        return f"{handback.text}\n\n```diff\n{handback.diff.rstrip()}\n```"
-    return handback.text
+    that was applied, its `--stat` and its diff cut to `cap` characters (the tools' output cap, as the gate's
+    tail is), with how much was cut: the whole change is in the supervisor's checkout."""
+    if not (writer and handback.ok and handback.diff.strip()):
+        return handback.text
+    diff = handback.diff.rstrip()
+    shown = diff[:cap] + (f"\n… [truncated {len(diff) - cap} chars]" if len(diff) > cap else "")
+    return f"{handback.text}\n\n```\n{handback.stat}\n```\n\n```diff\n{shown}\n```"
 
 
 async def team_runner(
@@ -279,11 +285,13 @@ async def team_runner(
             supervisor,
             opening,
             steps=None,
-            at=_worktree_at(node, ctx),
+            at=worktree_at(node, ctx),
             writes=Writes(prepare=checkout.prepare),  # no tools: only so its checkout is known
         )
         async with talk as say:
             _, planned = await _until_parsed(say, None, assign, assignments, "assignments")
+            if writer and checkout.tree is None:
+                raise StoryError(f"team node '{ctx.node}': the supervisor's checkout never opened")
             running, left = planned[:cap], [a.id for a in planned[cap:]]
             tasks = [
                 asyncio.create_task(
@@ -296,7 +304,7 @@ async def team_runner(
             for done in asyncio.as_completed(tasks):
                 back = await done
                 if writer and checkout.tree is not None:
-                    back = _apply(checkout.tree, back)
+                    back = await asyncio.to_thread(_apply, checkout.tree, back)
                 handed.append(back)
                 waiting.remove(back.id)
                 status = ("applied" if writer and back.diff.strip() else "answered") if back.ok else "failed"
@@ -307,7 +315,7 @@ async def team_runner(
                     waiting=", ".join(waiting) or NONE,
                     not_started=", ".join(left) or NONE,
                     format=finish,
-                    result=_result(back, writer),
+                    result=_result(back, writer, ctx.cfg.tools.output_cap_chars),
                 )
                 left = []  # named once, on the first hand-back
                 if waiting or synthesis is None:
@@ -316,14 +324,14 @@ async def team_runner(
                     parse = functools.partial(parse_output, spec=synthesis[1])
                     reply, value = await _until_parsed(say, nudge, finish, parse, synthesis[0])
             if writer and checkout.tree is not None and any(h.ok and h.diff.strip() for h in handed):
-                branch = _branch(checkout.tree, ctx)
+                branch = await asyncio.to_thread(_branch, checkout.tree, ctx)
     except Exception as e:
-        return _failed(node, ctx, st, e)
+        return node_failed(node, ctx, st, e)
     finally:
         for task in tasks:
             task.cancel()  # a supervisor that failed leaves no worker running
         await asyncio.gather(*tasks, return_exceptions=True)
-    _done(node, st, reply)
+    emit_done(node, st, reply)
     out: dict[str, Any] = {}
     if results_name is not None:
         out[results_name] = [{"id": h.id, "ok": h.ok, "text": h.text} for h in handed]
@@ -336,10 +344,10 @@ async def team_runner(
 
 def _branch(tree: Path, ctx: RunContext) -> str:
     """A branch at the supervisor's checkout's HEAD (it outlives the checkout): the assembled work."""
-    from airlie.teams.worktree import _git, head_sha
+    from airlie.teams.worktree import head_sha, run_git
 
     head = head_sha(tree)
     where = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{ctx.node}-{ctx.item}" if ctx.item else ctx.node)
     name = f"airlie/team/{where}-{head[:10]}"
-    _git(tree, "branch", "-f", name, head)
+    run_git(tree, "branch", "-f", name, head)
     return name

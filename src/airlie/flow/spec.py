@@ -240,15 +240,23 @@ def _closing_lines(w: WorkflowSpec) -> list[tuple[str, str]]:
 
 
 def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -> list[str]:
-    """What is wrong with the prompt file a node's `prompt: "prompt:<id>"` names: an id that is neither a
-    hub rule nor in `prompts`, or a field the node cannot read (the hub's rules always, a draft's when
-    `prompts` maps its ids to their parsed files)."""
+    """What is wrong with the prompt files a node's `prompt` (and a team's `worker`) names as `prompt:<id>`:
+    an id that is neither a hub rule nor in `prompts`, or a field the node cannot read (the hub's rules
+    always, a draft's when `prompts` maps its ids to their parsed files). A team's worker file may read its
+    `assignment` too."""
+    found = _one_prompt_file(node.prompt, readable, prompts)
+    if node.type == "team":
+        found += _one_prompt_file(node.worker, readable | {ASSIGNMENT}, prompts)
+    return found
+
+
+def _one_prompt_file(text: str | None, readable: set[str], prompts: Collection[str]) -> list[str]:
     from airlie.flow.prompt_files import FEEDBACK, PREFIX, rule_ids
     from airlie.prompts.hub import PromptText, entry
 
-    if node.prompt is None or not node.prompt.startswith(PREFIX):
+    if text is None or not text.startswith(PREFIX):
         return []
-    id = node.prompt.removeprefix(PREFIX)
+    id = text.removeprefix(PREFIX)
     parsed: PromptText | None
     if id in rule_ids():  # the hub first (D19)
         parsed = entry(id)
