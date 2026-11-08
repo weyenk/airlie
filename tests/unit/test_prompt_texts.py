@@ -138,6 +138,17 @@ CASES: dict[str, Callable[[], str]] = {
     "output-format": lambda: text(
         "output-format", fields="decision (one of agree | object), reasons (list of text)"
     ),
+    # --- flow/team.py: the team node's supervisor
+    "team-assign": lambda: text("team-assign", workers=3, format="Reply with one ```json block."),
+    "team-handback": lambda: text(
+        "team-handback",
+        id="w2",
+        status="applied",
+        waiting="w1, w3",
+        not_started="w4",
+        format="Reply with one ```json block with fields: summary (text).",
+        result="added w2.txt",
+    ),
     # --- teams/native_team.py: steering the loop sends
     "malformed-call": lambda: text("malformed-call"),
     "no-tools": lambda: text("no-tools"),
