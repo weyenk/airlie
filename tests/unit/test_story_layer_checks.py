@@ -323,14 +323,18 @@ async def test_outcome_lines_in_a_passing_tests_captured_output_are_not_its_suit
     assert await findings(root, base) == []
 
 
-async def test_a_changed_test_is_held_to_the_same_red(tmp_path: Path) -> None:
+async def test_an_existing_test_changed_in_place_is_the_architects_call(tmp_path: Path) -> None:
+    """Noah, 2026-11-06 and 2026-11-08: a test the layer makes invalid is changed or removed; the gate proves
+    the suite green and the reviewer sees the diff. AIR-54 layer 01 (2026-11-07) was bounced for retargeting
+    an existing test's storage, the very edit the meeting had asked for. A changed test made red is red as
+    any new one; one changed in place and still passing (a retarget, a weakened assertion) is no finding."""
     root, base = repo(tmp_path, {"calc.py": CALC, "tests/test_calc.py": OLD_TESTS})
     commit(root, "tests", {"tests/test_calc.py": OLD_TESTS + "    assert add('1', '2') == 3\n"})
     assert await findings(root, base) == []  # strings are not summed as numbers yet: red
+    commit(root, "retarget", {"tests/test_calc.py": OLD_TESTS.replace("add(1, 2) == 3", "add(2, 1) == 3")})
+    assert await findings(root, base) == []
     commit(root, "weaker", {"tests/test_calc.py": OLD_TESTS.replace("== 3", "== 3 or True")})
-    found = await findings(root, base)
-    assert [(f.kind, f.test) for f in found] == [("existing_test_changed", "tests/test_calc.py::test_add")]
-    assert found[0].before.endswith("assert add(1, 2) == 3") and "or True" in found[0].source
+    assert await findings(root, base) == []
 
 
 SPLIT_BASE = (

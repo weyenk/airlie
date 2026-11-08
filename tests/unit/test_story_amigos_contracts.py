@@ -310,6 +310,32 @@ def test_a_gate_entry_with_no_criterion_is_read_past_not_refused() -> None:
     assert [t.name for t in tests] == [t.name for t in _proof()] and problems == []
 
 
+@pytest.mark.parametrize(
+    ("name", "asserts"),
+    [
+        ("regression: existing thread assertions retargeted to localStorage still pass", "x"),
+        ("the two thread-key reads in the story card test move", "the existing tests still pass"),
+        ("Regression guard for the composer", "it renders as before"),
+        ("what is there is unchanged", "the old output"),
+    ],
+)
+def test_a_row_that_only_says_the_existing_tests_keep_passing_is_read_past(name: str, asserts: str) -> None:
+    """AIR-54 layer 01 (2026-11-07): the meeting agreed three "regression: …" rows that named no test, and
+    the readiness check demanded a test by each name; no package could cover them. Noah, 2026-11-08: keeping
+    the existing tests green is every layer's expectation (the gate proves it), never a proof row."""
+    from airlie.story.amigos import parse_proof_entries
+
+    obj = copy.deepcopy(GOOD)
+    row = {**copy.deepcopy(GOOD["tests"][0]), "criterion": None, "name": name, "asserts": asserts}
+    obj["tests"].append(row)
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert [t.name for t in tests] == [t.name for t in _proof()] and problems == []
+    # the same words under a criterion are a test the meeting means: kept
+    obj["tests"][-1] = {**row, "criterion": GOOD["tests"][0]["criterion"], "name": f"{name} (AC)"}
+    tests, problems = parse_proof_entries(obj, STORY, LAYERS, LEVELS, GUIDELINES)
+    assert tests[-1].name == f"{name} (AC)" and problems == []
+
+
 def test_a_test_proposed_at_a_level_a_one_level_tree_lacks_is_put_at_its_one_level() -> None:
     flat = {"tests": 1}
     obj = {"type": "proof", "tests": [{**copy.deepcopy(GOOD["tests"][0]), "file": "tests/test_store.py"}]}

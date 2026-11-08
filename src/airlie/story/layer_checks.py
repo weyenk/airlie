@@ -71,14 +71,30 @@ NOT_RUN = (
 """A test the suite never reported: before 2026-11-03 it counted as red, unseen (AIR-47 layer 04 passed on
 its base, its PASSED line cut off with the capped output, and two builds changed nothing)."""
 EXISTING_CHANGED = (
-    "it was already there on the layer's base and still passes, so your edit changed it without testing "
-    "anything new. An edit anchored inside a test splits it: the rest of its body ends up under your new "
-    "test. Put it back as it was on the base (below), unless the brief asks you to change it, and add new "
-    "tests after it ends"
+    "it was already there on the layer's base, and a line of its body now sits under another test: an edit "
+    "anchored inside a test splits it, and the rest of its body ends up under your new test. Put it back as "
+    "it was on the base (below), and add new tests after it ends"
 )
-"""Why an existing test the layer changed and that still passes comes back: it is no new red, and the usual
-cause is a split (AIR-9 layer 05, 2026-10-22: reported as passing before the code, it read as a new test to
-make red, and neither the tests' author nor the supervisor saw that it had been cut in two)."""
+"""Why an existing test the layer cut in two comes back (AIR-9 layer 05, 2026-10-22: reported as passing
+before the code, it read as a new test to make red, and neither the tests' author nor the supervisor saw that
+it had been split). An existing test changed in place on purpose, still passing on the base (a retarget, an
+assertion the layer makes stale), is no finding: Noah, 2026-11-06 and 2026-11-08, a test the layer makes
+invalid is changed or removed; the gate proves the suite green and the reviewer sees the diff."""
+
+
+def _split(before: str, after: str, module: Path) -> bool:
+    """Whether an edit cut an existing test in two: a line of its body on the base (`before`) is gone from
+    the test as it is now (`after`) and sits elsewhere in its module (an insert anchored mid-function puts
+    the rest of the body under the new test; AIR-9 layer 05). A line merely changed in place is not one."""
+    try:
+        text = module.read_text("utf-8", "replace")
+    except OSError:
+        return False
+    rest = text.replace(after, "", 1)
+    lost = [ln.strip() for ln in before.splitlines() if ln.strip() and ln.strip() not in after]
+    return any(ln in rest for ln in lost)
+
+
 EXISTING_FAILS = (
     "it passes on the layer's base and fails with the new tests in place: a fixture, conftest.py or shared "
     "helper the tests changed broke it"
@@ -362,9 +378,10 @@ class PytestChecks:
                 findings.append(Finding("test_not_run", t.id, NOT_RUN, t.source))
             elif any(o == "PASSED" and _same(t.id, k) for k, o in outcomes.items()):
                 if t.before:  # it was there: a test the edit changed, not a new one that is not red
-                    findings.append(
-                        Finding("existing_test_changed", t.id, EXISTING_CHANGED, t.source, t.before)
-                    )
+                    if _split(t.before, t.source, worktree / t.path):
+                        findings.append(
+                            Finding("existing_test_changed", t.id, EXISTING_CHANGED, t.source, t.before)
+                        )
                 else:
                     findings.append(Finding("passes_before_code", t.id, PASSES_BEFORE_CODE, t.source))
         existing = [

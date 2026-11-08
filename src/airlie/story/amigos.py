@@ -161,6 +161,21 @@ def _test_path(path: str, level: str, levels: Mapping[str, int], where: str) -> 
     return clean
 
 
+_KEEPS_GREEN = re.compile(
+    r"^\s*regressions?\b|\b(?:still|keep|keeps|continue to) pass(?:es|ing)?\b|\bunchanged\b|\bas before\b",
+    re.IGNORECASE,
+)
+"""How a proof row says that what is there keeps working, instead of naming a test to write."""
+
+
+def keeps_existing_green(t: Mapping[str, Any]) -> bool:
+    """Whether a proof row with no criterion only says the existing tests keep passing: its name opens with
+    "regression", or its name or assertion says they still pass, are unchanged or as before. Every layer's
+    gate proves that already, so the row names no test the package must cover (Noah, 2026-11-08)."""
+    name, asserts = str(t.get("name") or ""), str(t.get("asserts") or "")
+    return bool(_KEEPS_GREEN.search(name) or _KEEPS_GREEN.search(asserts))
+
+
 def _proof_entry(
     t: Any,
     where: str,
@@ -247,6 +262,11 @@ def parse_proof_entries(
         if isinstance(t, dict) and t.get("gate") is True and t.get("criterion") is None:
             # the gate runs for every layer: an entry that leaves it no criterion adds nothing, so it is read
             # past, not refused (2026-10-31, roman round 6: one held the meeting up as part_invalid)
+            continue
+        if isinstance(t, dict) and t.get("criterion") is None and keeps_existing_green(t):
+            # "the existing tests still pass" is every layer's expectation (the gate proves it), not a test
+            # to write: read past (AIR-54 layer 01, 2026-11-07: three such rows, and no package could cover
+            # them; Noah, 2026-11-08)
             continue
         try:
             test = _proof_entry(t, f"proof test {n}", criteria, slugs, levels, guidelines)
