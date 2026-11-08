@@ -481,6 +481,40 @@ async def test_two_bundle_nodes_over_one_workflow_resume_independently(tmp_path)
     assert [(f["node"], f["item"]) for k, f in store.events if k == "node_skipped"] == [("mark", "01")]
 
 
+async def test_a_condition_in_a_bundle_item_reads_its_item_and_a_bundle_is_never_skipped(tmp_path):
+    """`built.{item} exists` reads the item's own entry; a bundle node done before (in the done set, its
+    outputs present) runs its items again, which skip themselves: a resume reaches the item still open."""
+    seen = []
+    wf = {
+        "story": {
+            "inputs": ["card", "layers"],
+            "nodes": {
+                "lay": {
+                    "type": "bundle",
+                    "workflow": "layer",
+                    "each": "layers",
+                    "inputs": ["layers"],
+                    "outputs": {"built": "json"},
+                },
+            },
+        },
+        "layer": {
+            "inputs": ["layers"],
+            "outputs": ["built.{item}"],
+            "nodes": {
+                "start": chk(to=[{"node": "build", "when": "not built.{item} exists"}]),
+                "build": chk(outputs={"built.{item}": "json"}),
+            },
+        },
+    }
+    store = MemoryStore({"card": "c", "layers": [{}, {}]})
+    store.put("built", {"01": {"sha": "a"}})
+    store.mark_done("lay")
+    await composer(tmp_path, wf, {"check": outputs(seen)}, store=store).run("story")
+    assert seen == ["start", "start", "build"]  # layer 01 built already: its build's line dies
+    assert [(f["node"], f["item"]) for k, f in store.events if k == "node_skipped"] == [("build", "01")]
+
+
 # ---- the node step: events, outputs, sessions, failures, the run's end ----
 
 
@@ -527,6 +561,41 @@ async def test_a_failing_node_cancels_the_ones_running_beside_it(tmp_path):
     with pytest.raises(RuntimeError, match="boom"):
         await asyncio.wait_for(composer(tmp_path, wf, {"check": runner}).run("w"), 5)
     assert cancelled == ["slow"]
+
+
+async def test_a_sibling_is_stopped_the_moment_a_node_raises_and_a_nodes_own_cancel_ends_the_run(tmp_path):
+    """A node beside one that raises is cancelled at once, before its own next step (the driver's survey
+    beside a refine that blocks), and a node cancelled from inside (a killed run) ends the run so."""
+    went_on = []
+    raised = asyncio.Event()
+
+    async def runner(node, ctx):
+        if ctx.node == "bad":
+            raised.set()  # wakes `near` first: only an immediate cancel keeps it from going on
+            raise RuntimeError("boom")
+        if ctx.node == "near":
+            await raised.wait()
+            went_on.append(ctx.node)
+        return {k: 1 for k in node.outputs}
+
+    wf = {
+        "w": {
+            "nodes": {
+                "a": chk(outputs={"x": "text"}, to=["near", "bad"]),
+                "near": chk(outputs={"n": "text"}),
+                "bad": chk(outputs={"b": "text"}),
+            }
+        }
+    }
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(composer(tmp_path, wf, {"check": runner}).run("w"), 5)
+    assert went_on == []
+
+    async def killed(node, ctx):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await composer(tmp_path, ONE, {"check": killed}).run("w")
 
 
 async def test_a_failed_node_stores_none_of_its_outputs_and_a_stray_result_key_is_not_stored(tmp_path):

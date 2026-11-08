@@ -21,8 +21,8 @@ when a node runs. The rules, as `_Run` implements them:
   done name is `<node>`, `<node>@<item>` in a bundle item, behind the bundle node(s) it runs under
   (`lay/build@01`). A node a loop sent back to is never skipped so. Every other ready node **runs**: it
   leaves the done set as it starts, and all that are ready run at once, each as a task; one that raises
-  cancels the others and its error is raised. A node that succeeds is recorded done; a failed one is not,
-  so a resume runs it again.
+  cancels the others at once and its error is raised. A node that succeeds is recorded done; a failed one is
+  not, so a resume runs it again.
 - When a node finishes, its loop lines are tried first, in order: one fires when its `when` holds (with no
   `when`, when the node failed) and its bound (`max`, a count or a config path) is not spent. It puts its
   `carry` under `feedback.<target>` (`.<item>` in a bundle item), cancels any of the target and the nodes
@@ -38,7 +38,10 @@ when a node runs. The rules, as `_Run` implements them:
   when the nodes still running end. A gate (`EndRun`) ends the run the same way, and inside a bundle it
   ends the parent's run at the bundle node. A run where nothing can start and some node is still pending
   raises `Stalled` naming the pending nodes and what each lacks. A condition reads `RunContext.lookup`: the
-  store, the card's fields, `config.<path>`."""
+  store, the card's fields, `config.<path>`; in a bundle item a path's `{item}` is the item
+  (`built.{item} exists`).
+- A bundle node is never skipped by its outputs or the done set: its items' nodes skip themselves, so a
+  resume reaches the item still open."""
 
 from __future__ import annotations
 
@@ -258,6 +261,7 @@ class _Run:
         self.line_state: dict[LineId, Literal["fired", "dead"] | None] = dict.fromkeys(self.lines)
         self.forced: set[str] = set()  # sent back by a loop: run, never skipped by outputs
         self.running: dict[asyncio.Task[Mapping[str, Any]], str] = {}
+        self.stopped: set[asyncio.Task[Mapping[str, Any]]] = set()  # cancelled here, as a sibling raised
         self.last: str | None = None
         self._below: dict[str, set[str]] = {}
         self.items_run: dict[str, list[str | None]] = {}  # bundle node -> the items it ran this run
@@ -316,8 +320,8 @@ class _Run:
         return all(self.satisfied(name, x) for x in self.nodes[name].inputs)
 
     def skippable(self, name: str) -> bool:
-        if name in self.forced:
-            return False
+        if name in self.forced or self.nodes[name].type == "bundle":
+            return False  # a bundle's items skip their own nodes: a resume reaches the item still open
         outs = self.nodes[name].outputs
         if outs:  # a node with outputs is done when they are all present, whatever the done set says
             return all(self.present(o) for o in outs)
@@ -328,7 +332,8 @@ class _Run:
             return True
         if when not in self._conditions:
             self._conditions[when] = conditions.parse(when)
-        return self._conditions[when].evaluate(self.ctx(source).lookup)
+        lookup = self.ctx(source).lookup
+        return self._conditions[when].evaluate(lambda path: lookup(self.name(path)))
 
     def fire(self, source: str) -> None:
         for i, line in enumerate(self.nodes[source].to):
@@ -425,8 +430,10 @@ class _Run:
                 order = {t: self.names.index(self.running[t]) for t in finished}
                 for task in sorted(finished, key=order.__getitem__):
                     name = self.running.pop(task, "")
-                    if not name or task.cancelled():
-                        continue  # sent back by a loop while it ran (or after it returned)
+                    if not name or task in self.stopped:
+                        continue  # sent back by a loop while it ran (or after it returned), or stopped
+                    if task.cancelled():  # cancelled from inside its node (a killed run): the run's own
+                        raise asyncio.CancelledError
                     try:
                         result = task.result()
                     except EndRun:
@@ -467,8 +474,17 @@ class _Run:
         except EndRun:  # a gate did its job
             self.finished(name, "done", started)
             raise
+        except asyncio.CancelledError:
+            self.finished(name, "failed", started)
+            raise
         except BaseException:
             self.finished(name, "failed", started)
+            # the others stop now, not when the scheduler next wakes: a sibling one tick from its end (the
+            # survey beside a refine that blocks) is cancelled as the driver cancels it
+            for task, other in self.running.items():
+                if other != name and not task.done():
+                    task.cancel()
+                    self.stopped.add(task)
             raise
         failure = result.get(FAIL_KEY)
         # only the node's declared outputs land: a loop's carry key and FAIL_KEY are for routing, and any
