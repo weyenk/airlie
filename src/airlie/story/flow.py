@@ -362,7 +362,7 @@ class StoryRegistry(Registry):
     on, which a check reaches from its context (`_run`)."""
 
     def __init__(self, run: StoryRun, prompts: Mapping[str, PromptText] | None = None) -> None:
-        super().__init__(prompts=prompts)
+        super().__init__(prompts=prompts, catalog=STORY_CATALOG)
         self.run = run
 
 

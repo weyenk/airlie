@@ -458,3 +458,19 @@ def test_a_state_with_no_workflow_or_artifacts_saves_neither_key_and_one_with_th
     st.save()
     again = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
     assert again.artifacts == st.artifacts and again.workflow == st.workflow
+
+
+def test_a_state_with_no_done_nodes_saves_no_key_and_one_with_them_round_trips(tmp_path: Path) -> None:
+    """The composer's done set (`nodes_done`) is left out while empty, so a story the driver ran saves the
+    bytes it saved before the done set existed; once a node is done it is saved and read back."""
+    card = text_card("x")
+    st = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    st.finish("intake")
+    before = (tmp_path / card.key / "state.json").read_text()
+    assert "nodes_done" not in json.loads(before)
+    st.save()
+    assert (tmp_path / card.key / "state.json").read_text() == before
+    st.nodes_done = ["mark", "covered@01"]
+    st.save()
+    again = StoryState.open(tmp_path / card.key, card, tmp_path / "repo")
+    assert again.nodes_done == ["mark", "covered@01"]

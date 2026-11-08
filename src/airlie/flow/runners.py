@@ -85,11 +85,12 @@ async def ask_runner(
 
 
 async def check_runner(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-    """A deterministic step: the node's `run` id called as `fn(ctx, **node.args)` (it may be async), its
-    inputs read from `ctx.store`, and the mapping it returns is the node's outputs (False or None: none).
-    Whatever it raises propagates: the composer's caller says what a stop means (waiting, blocked)."""
+    """A deterministic step: the catalog's check the node's `run` names (`Registry.check`: the registry's
+    catalog, else its id) called as `fn(ctx, **node.args)` (it may be async), its inputs read from
+    `ctx.store`, and the mapping it returns is the node's outputs (False or None: none). Whatever it raises
+    propagates: the composer's caller says what a stop means (waiting, blocked)."""
     assert node.run is not None  # spec.py: a check needs run
-    fn = ctx.registry[node.run]  # resolved before the call: a wrong id is a config error, not the step's
+    fn = ctx.registry.check(node.run)  # resolved before the call: a wrong id is a config error
     out = await _maybe(fn(ctx, **node.args))
     return out or {}
 
@@ -297,11 +298,12 @@ async def meeting_runner(
 
 
 async def gate_runner(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-    """The run's end: the node's `run` id called as `fn(ctx, **node.args)` (it may be async), then `EndRun`,
-    whatever it returned. The composer records the node done and its `run` returns the gate's name; whatever
-    the piece raises propagates as a check's does."""
+    """The run's end: the check the node's `run` names (`Registry.check`) called as `fn(ctx, **node.args)`
+    (it may be async), then `EndRun`, whatever it returned. The composer finishes the node as done (not in
+    the done set: a resume reaches the gate again) and its `run` returns the gate's name; whatever the piece
+    raises propagates as a check's does."""
     assert node.run is not None  # spec.py: a gate needs run
-    fn = ctx.registry[node.run]  # resolved before the call: a wrong id is a config error, not the gate's
+    fn = ctx.registry.check(node.run)  # resolved before the call: a wrong id is a config error
     await _maybe(fn(ctx, **node.args))
     raise EndRun()
 

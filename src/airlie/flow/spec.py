@@ -37,11 +37,11 @@ __all__ = [
 
 NodeType = Literal["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
 
-RESERVED = ("path", "artifacts", "workflow")
+RESERVED = ("path", "artifacts", "workflow", "nodes_done")
 """Names of the story state's own bookkeeping that no node output may take: `path` (where the state lives,
-never saved), `artifacts` (the store of a workflow's own outputs, D15) and `workflow` (the card's snapshot,
-D21). `artifacts.<name>` is a name inside the store, and is fine; nothing may write inside `path` or
-`workflow`."""
+never saved), `artifacts` (the store of a workflow's own outputs, D15), `workflow` (the card's snapshot,
+D21) and `nodes_done` (the composer's done set, D17). `artifacts.<name>` is a name inside the store, and is
+fine; nothing may write inside the others."""
 
 _OLD_NODE_FIELDS = ("parse", "after", "done", "when", "next", "on", "branch", "loop", "nodes", "over")
 _OLD_WORKFLOW_FIELDS = ("start", "loose")
