@@ -209,7 +209,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 px-5 pt-6 pb-10 max-[640px]:gap-3 max-[640px]:px-3 max-[640px]:pt-4">
+  <div class="flex flex-col gap-4 px-5 pt-6 pb-10 max-[640px]:gap-3 max-[640px]:px-3 max-[640px]:pt-4 min-[901px]:h-[calc(100dvh-var(--header-h))] min-[901px]:pb-5">
     <section class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-[18px] py-3.5 shadow-sm">
       <RouterLink to="/workflows" class="inline-flex items-center gap-1 text-[13px] text-muted-foreground"><ChevronLeft class="size-4" />Workflows</RouterLink>
       <h1 class="font-mono text-lg font-bold">{{ title }}</h1>
@@ -244,12 +244,12 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
 
     <template v-if="tab === 'yaml'">
       <p data-yaml-notice class="text-[13px] text-muted-foreground">Saving regenerates the file; comments in a hand-written file are kept only when the definition is unchanged.</p>
-      <pre data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed">{{ b.yamlText.value }}</pre>
+      <pre data-yaml class="overflow-auto rounded-xl border border-border bg-[var(--code)] p-4 font-mono text-xs leading-relaxed min-[901px]:min-h-0 min-[901px]:flex-1">{{ b.yamlText.value }}</pre>
     </template>
 
-    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)_280px] items-start gap-3 max-[900px]:grid-cols-1">
+    <div v-else class="grid grid-cols-[180px_minmax(0,1fr)_280px] items-start gap-3 max-[900px]:grid-cols-1 min-[901px]:min-h-0 min-[901px]:flex-1 min-[901px]:items-stretch">
       <Palette :bundles="bundles" :failed="failed" :readonly="b.broken.value" @retry="reload" @add="(item) => b.place(item)" />
-      <section aria-label="Canvas" class="max-h-[calc(100dvh-var(--header-h)-200px)] min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm">
+      <section aria-label="Canvas" class="min-h-[240px] overflow-auto rounded-xl border border-border bg-card shadow-sm max-[900px]:max-h-[calc(100dvh-var(--header-h)-200px)] min-[901px]:h-full">
         <Canvas
           :graph="graph"
           :selected="selected"
@@ -263,7 +263,7 @@ const tabClass = (on: boolean) => ["rounded-md px-2.5 py-1 text-[13px] font-medi
           @place="(item, x, y) => b.place(item, x, y)"
         />
       </section>
-      <aside aria-label="Fields" data-fields class="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-[13px] shadow-sm">
+      <aside aria-label="Fields" data-fields class="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-[13px] shadow-sm min-[901px]:min-h-0 min-[901px]:overflow-auto">
         <WireForm
           v-if="wire && wireEnds?.from && wireEnds.to"
           :from="wireEnds.from"

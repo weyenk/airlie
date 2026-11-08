@@ -192,7 +192,7 @@ function onDrop(e: DragEvent) {
     ref="root"
     data-canvas
     :data-readonly="readonly ? 'true' : undefined"
-    class="relative min-w-full touch-none bg-[radial-gradient(var(--border)_1px,transparent_1px)] [background-size:16px_16px] select-none"
+    class="relative min-h-full min-w-full touch-none bg-[radial-gradient(var(--border)_1px,transparent_1px)] [background-size:16px_16px] select-none"
     :style="{ width: `${size.width}px`, height: `${size.height}px` }"
     @dragover="onDragOver"
     @drop="onDrop"
