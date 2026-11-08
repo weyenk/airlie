@@ -290,7 +290,8 @@ as ok. Without the patch (another server), every turn re-prefills. Swap with one
 Everything is in [`airlie.yaml`](airlie.yaml); the committed file `includes:` [`config/models.yaml`](config/models.yaml),
 [`config/roles.yaml`](config/roles.yaml), [`config/profiles.yaml`](config/profiles.yaml) and the glob
 `config/workflows/*.yaml` (the workflows a card's `workflow:<name>` label runs; paths relative to the file that lists
-them). A glob expands to its matching files in sorted order, and one that matches nothing is an error. Each included
+them; each is nodes and lines: a node's `to` names the nodes its outputs feed, a model node's `prompt` is text or
+`prompt:<id>`, and a `check`/`gate` node's `run` comes from the catalog that `airlie workflows catalog` prints). A glob expands to its matching files in sorted order, and one that matches nothing is an error. Each included
 fragment is deep-merged in list order, then the root file's other keys merge on
 top, then `airlie.local.yaml` (deep-merged, gitignored, and **not** processed for `includes:`), then the selected
 topology profile. Role prompts, model paths, `story.repo`, and the like resolve against the **root** config file's

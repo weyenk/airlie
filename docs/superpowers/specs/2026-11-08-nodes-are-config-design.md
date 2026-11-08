@@ -319,3 +319,45 @@ None needs Noah; each is settled here as my call.
 Finish line: a person builds a new workflow in the builder from the palette, writing prompts, picking inputs
 and declaring outputs, with no dropdown that names a Python function; and the story runs on the rewritten
 file with the same events and state as today.
+
+## As built (plan 1, 2026-11-08)
+
+What differs from the text above, and what was added, in plain words.
+
+- **Bundles.** A `bundle` node type with `workflow` and `each` replaces the design's `bundle:` key; the
+  design's `each` box is gone.
+- **Conditions.** `expr := term (("and"|"or") term)*; term := "not" term | "(" expr ")" | atom;
+  atom := path "exists" | path ("=="|"!=") literal | path`. Literals are a quoted string, a number, `true`,
+  `false` or a bare word. `and` binds tighter than `or`. A missing path is false.
+- **Field kinds.** `text | number | bool | list of <kind> | one of a | b`, optional with a trailing `?` on the
+  outermost kind.
+- **Prompt placeholders.** `{name}`, `{name.field}`, `{config.a.b}`, `{feedback}`, `{item}`, optional blocks
+  `{?name}...{/name}`, and literal braces `{{ }}`. A prompt may name only the node's own inputs.
+- **The done set.** `StoryState.nodes_done` (omitted from the file when empty): it skips only output-less
+  nodes; a node with outputs is skipped only by its outputs. A restart drops every entry.
+- **Transient outputs.** `OutputSpec.transient` and `Check.transient` mark computed inputs and condition
+  booleans as run memory, recomputed every run. `Check.every_run` marks (intake, costed_*, planned, build_done,
+  layer_start) never enter the done set.
+- **When a node runs.** An input is satisfied when its artifact is present or its producer is done; a line
+  fires when its source finishes; a dead line counts as done; a `Stalled` error names what a run waits for.
+- **Loops.** A loop line re-runs its target and everything downstream and clears their outputs, also inside
+  bundles (done names are scoped `<bundle>/<node>@<item>`).
+- **The `output-format` rule.** The hub rule is never auto-appended to an ask; it exists for the builder and
+  for the team's two rules, `team-assign` and `team-handback`.
+- **Events.** Legacy events declared per node (`events: {done, failed}`) carry exactly the driver's fields.
+- **The story this round (option A).** `survey` is a generic ask on `prompt:story-survey`; `refine`,
+  `plan_layers`, `draft_packages`, `package` and `build` stay named catalog operations until Part 2, because
+  their round-and-retry protocols are code whose exact events the equivalence tests protect. The `plan_check`,
+  `size_review` and `critic` nodes and five prompt files move to Part 2. New nodes: `to_build`, `story_card`,
+  `request`, and a no-op layer `start`.
+- **The upgrade.** Old wiring becomes lines (a `*` branch default becomes `not (<on> == a or ...)`); parallel
+  children inherit the parent's lines (their own wiring is a problem); `each` becomes a bundle; `loose`
+  becomes inputs. A node that named code is marked "write this node's prompt" and is unrunnable. Drafts
+  upgrade where they are read.
+- **Adopting the current workflow.** A changed node is treated like a loop target (cleared with its
+  downstream); the card is held meanwhile; the note is posted first.
+- **The team node.** Readers or writers, by the worker's tools; writers hand back diffs the supervisor applies
+  with `git apply --3way`; the cap is 5; diffs are capped for the supervisor; a worker's prompt may name
+  `{assignment}`.
+- **The builder.** The live Vue builder cannot open the v2 files until plan 2 (unknown type `bundle`); its
+  tests read frozen v1 copies; plans 1 and 2 merge together.
