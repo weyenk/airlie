@@ -29,7 +29,10 @@ F = TypeVar("F", bound=Callable[..., Any])
 @dataclass(frozen=True)
 class Check:
     """One declared operation: its `name` (the `run` id), what it reads (`inputs`) and returns (`outputs`),
-    a one-line `title` for the builder, the function, and the format of each output it states one for."""
+    a one-line `title` for the builder, the function, the format of each output it states one for, the
+    outputs it makes `transient` (held in the run's memory, recomputed every run: a node that runs it must
+    declare them so), and `every_run`: an output-less check run on every run, never recorded done (a mark
+    or a cost the driver makes on every pass)."""
 
     name: str
     inputs: tuple[str, ...]
@@ -37,6 +40,8 @@ class Check:
     title: str
     fn: CheckFn
     formats: Mapping[str, Format] = field(default_factory=dict)
+    transient: tuple[str, ...] = ()
+    every_run: bool = False
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -45,6 +50,8 @@ class Check:
             "inputs": list(self.inputs),
             "outputs": list(self.outputs),
             "formats": dict(self.formats),
+            "transient": list(self.transient),
+            "every_run": self.every_run,
         }
 
 
@@ -61,6 +68,12 @@ class Catalog:
             raise ValueError(
                 f"check '{check.name}': formats name {', '.join(stray)}, which it does not output"
             )
+        if stray := sorted(set(check.transient) - set(check.outputs)):
+            raise ValueError(
+                f"check '{check.name}': transient names {', '.join(stray)}, which it does not output"
+            )
+        if check.every_run and check.outputs:
+            raise ValueError(f"check '{check.name}': every_run is for a check with no outputs")
         self._checks[check.name] = check
 
     def __getitem__(self, name: str) -> Check:
@@ -92,11 +105,14 @@ class Catalog:
         outputs: Sequence[str] = (),
         formats: Mapping[str, Format] | None = None,
         title: str,
+        transient: Sequence[str] = (),
+        every_run: bool = False,
     ) -> Callable[[F], F]:
         """A decorator: the function, unchanged, declared here under `name`."""
 
         def register(fn: F) -> F:
-            self.add(Check(name, tuple(inputs), tuple(outputs), title, fn, dict(formats or {})))
+            fmt = dict(formats or {})
+            self.add(Check(name, tuple(inputs), tuple(outputs), title, fn, fmt, tuple(transient), every_run))
             return fn
 
         return register
@@ -113,6 +129,16 @@ def check(
     outputs: Sequence[str] = (),
     formats: Mapping[str, Format] | None = None,
     title: str,
+    transient: Sequence[str] = (),
+    every_run: bool = False,
 ) -> Callable[[F], F]:
     """Declare the decorated `(ctx, **args)` function on `STORY_CATALOG` (`Catalog.declare`)."""
-    return STORY_CATALOG.declare(name, inputs=inputs, outputs=outputs, formats=formats, title=title)
+    return STORY_CATALOG.declare(
+        name,
+        inputs=inputs,
+        outputs=outputs,
+        formats=formats,
+        title=title,
+        transient=transient,
+        every_run=every_run,
+    )

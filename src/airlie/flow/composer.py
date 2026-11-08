@@ -41,7 +41,9 @@ when a node runs. The rules, as `_Run` implements them:
   store, the card's fields, `config.<path>`; in a bundle item a path's `{item}` is the item
   (`built.{item} exists`).
 - A bundle node is never skipped by its outputs or the done set: its items' nodes skip themselves, so a
-  resume reaches the item still open."""
+  resume reaches the item still open. Nor is a node whose outputs are all transient (held in the run's
+  memory, `OutputSpec.transient`), or one running a catalog check declared `every_run` (never recorded
+  done)."""
 
 from __future__ import annotations
 
@@ -319,10 +321,19 @@ class _Run:
             return False
         return all(self.satisfied(name, x) for x in self.nodes[name].inputs)
 
+    def every_run(self, name: str) -> bool:
+        """The node runs a catalog check declared `every_run`: never recorded done, so never skipped."""
+        node, catalog = self.nodes[name], self.c.registry.catalog
+        if node.type not in ("check", "gate") or catalog is None or node.run is None:
+            return False
+        return node.run in catalog and catalog[node.run].every_run
+
     def skippable(self, name: str) -> bool:
-        if name in self.forced or self.nodes[name].type == "bundle":
+        if name in self.forced or self.nodes[name].type == "bundle" or self.every_run(name):
             return False  # a bundle's items skip their own nodes: a resume reaches the item still open
         outs = self.nodes[name].outputs
+        if outs and all(o.transient for o in outs.values()):
+            return False  # held in the run's memory: what a resume finds there is this run's, so it runs
         if outs:  # a node with outputs is done when they are all present, whatever the done set says
             return all(self.present(o) for o in outs)
         return self.store.done(self.done_name(name))
@@ -501,7 +512,7 @@ class _Run:
                 self.c.sessions.put(target, value)
             else:
                 self.store.put(target, value)
-        if failure is None:
+        if failure is None and not self.every_run(name):
             self.store.mark_done(self.done_name(name))  # a loop line that fires takes it out again
         self.store.save()
         self.finished(name, "failed" if failure is not None else "done", started)

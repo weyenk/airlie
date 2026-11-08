@@ -11,6 +11,7 @@ import re
 import shlex
 import sys
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -907,10 +908,10 @@ def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
     ]
 
 
-COMPOSERS_OWN = ("workflow", "nodes_done", "artifacts")
-"""What only the composer saves (the driver runs no workflow): the card's snapshot (D21), the done set of the
-nodes that ran (D17) and the workflow's own outputs that are no state field (D15: the conditions' bool checks,
-the survey's quoted request)."""
+COMPOSERS_OWN = ("workflow", "nodes_done")
+"""What only the composer saves (the driver runs no workflow): the card's snapshot (D21) and the done set of
+the nodes that ran (D17). The conditions' bools and the briefs' computed inputs are transient, never saved: a
+story's `artifacts` stay empty, as the driver's do."""
 
 
 def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
@@ -1143,6 +1144,45 @@ async def test_a_story_card_skips_refine_and_logs_refine_skipped(tmp_path: Path)
 NOT_ACTIONABLE = FakeReply(text=fenced({"type": "blocked", "reason": "which image sizes?"}))
 
 
+async def test_a_resumed_survey_quotes_the_card_as_it_is_now(tmp_path: Path) -> None:
+    """The survey's request is transient: a story stopped before its survey ran (product blocked it beside
+    the survey) and started again on an edited card is surveyed from the card as it is now."""
+    repo = repo_with_marker_tests(tmp_path)
+    card = text_card("add a marker")
+    first = happy_engine(product=[NOT_ACTIONABLE], architect=[SURVEY_NOTES])
+    stopped = await pipeline(tmp_path, repo, first, story={"survey": True}, composer=True).plan(card)
+    assert stopped.blocked is not None and stopped.survey is None and stopped.story is None
+    edited = replace(card, description="add a marker, in red")
+    again = happy_engine(architect=[SURVEY_NOTES, LAYERS])
+    st = await pipeline(tmp_path, repo, again, story={"survey": True}, composer=True).plan(edited)
+    assert st.blocked is None and st.survey == SURVEY_NOTES.text
+    assert "> add a marker, in red" in briefs_to(again, "architect")[0]
+    assert "artifacts" not in json.loads((st.path / "state.json").read_text())  # nothing transient saved
+
+
+async def test_a_resumed_story_card_keeps_its_stored_story_whatever_its_block_says_now(
+    tmp_path: Path,
+) -> None:
+    """A story card stopped after its story was taken, its block then broken: the stored story is the
+    story, the block is not read again (`story.is_story_card` is false once a story is stored), and the
+    story is planned, as the driver plans it."""
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        card = card_of_epic("AIR-4", planned("S1", "Add avatar upload"))
+        nonsense = FakeReply(text="no plan here")
+        first = happy_engine(product=[], architect=[nonsense] * 4)
+        stopped = await pipeline(root, repo, first, composer=composer).plan(card)
+        assert stopped.blocked is not None and stopped.story is not None and stopped.layers is None
+        broken = replace(card, description=card.description.replace('"size": "S"', '"size": "huge"'))
+        with pytest.raises(StoryBlocked):
+            StoryPipeline._story_card(broken)  # the block as it is now cannot be read
+        st = await pipeline(root, repo, happy_engine(product=[]), composer=composer).plan(broken)
+        assert st.blocked is None and st.layers is not None, st.blocked
+        assert st.story is not None and st.story["title"] == "Add avatar upload"
+
+
 @pytest.mark.parametrize("case", ["retry", "story card", "not actionable", "survey fails"])
 async def test_the_ask_nodes_edge_cases_run_the_same_either_way(tmp_path: Path, case: str) -> None:
     """The ask runner's other paths, driver beside composer: a reply that goes back once, a story card,
@@ -1280,10 +1320,10 @@ async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_comp
 
 async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) -> None:
     """A story built and published, then put back to its planned stage with layer 02's build and the PRs
-    forgotten, and built again: through the composer layer 01's steps are skipped (the line from `start` to
-    `covered` dies for a built layer, and every step below it with it; `costed_layer` runs, as the driver
-    costs every layer)
-    and layer 02 is built again from a fresh package, with the driver's events and state."""
+    forgotten, and built again. Through the composer, layer 01's steps are skipped: the line from `start`
+    to `covered` dies for a built layer, and every step below it dies with it. `start` and `costed_layer`
+    run on every run, as the driver costs every layer, though the first run's done set is still saved.
+    Layer 02 is built again from a fresh package, with the driver's events and state."""
     seen = []
     for composer in (False, True):
         root = tmp_path / ("composer" if composer else "driver")
@@ -1295,7 +1335,6 @@ async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) ->
         saved = json.loads((first.path / "state.json").read_text())
         del saved["built"]["02"]
         saved["prs"], saved["stage"] = [], "layers"
-        saved.pop("nodes_done", None)  # the composer's done set goes with a rewind, as a restart drops it
         (first.path / "state.json").write_text(json.dumps(saved))
         git(repo, "branch", "-D", B2)  # gone with its record, as a layer stopped part-way leaves none
         log = first.path / "events.jsonl"
@@ -1315,6 +1354,37 @@ async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) ->
                 "build",
             ]
             assert ("drafts", "02") in skipped  # the drafting was held once, before layer 01
+        seen.append(built_run(st, root, composer=composer))
+    assert seen[1] == seen[0]
+
+
+async def test_a_story_put_back_to_publish_publishes_again_without_a_stale_gate_or_bool(
+    tmp_path: Path,
+) -> None:
+    """A story built and published, put back to before its publish (its PRs forgotten) and built again: no
+    condition's bool was saved, so `to_build` is computed afresh (every layer is built: false) and the gate
+    is not read again, the publish runs, with the driver's events and state."""
+    seen = []
+    for composer in (False, True):
+        root = tmp_path / ("composer" if composer else "driver")
+        root.mkdir()
+        repo = repo_with_marker_tests(root)
+        card = text_card("add a marker")
+        first = await pipeline(root, repo, happy_engine(), composer=composer).run(card)
+        assert first.blocked is None and first.stage == "review"
+        saved = json.loads((first.path / "state.json").read_text())
+        assert "artifacts" not in saved  # the bools and computed inputs are transient
+        saved["prs"], saved["stage"] = [], "build"
+        (first.path / "state.json").write_text(json.dumps(saved))
+        log = first.path / "events.jsonl"
+        before = len(log.read_text().splitlines())
+        st = await pipeline(root, repo, FakeEngine({}), composer=composer).build(card)
+        assert st.blocked is None and st.stage == "review", st.blocked
+        later = kinds_all(log)[before:]
+        assert "gate" not in [e["kind"] for e in later] and "published" in [e["kind"] for e in later]
+        if composer:
+            ran = {e["node"] for e in later if e["kind"] == "node_started"}
+            assert "to_build" in ran and "gate" not in ran
         seen.append(built_run(st, root, composer=composer))
     assert seen[1] == seen[0]
 

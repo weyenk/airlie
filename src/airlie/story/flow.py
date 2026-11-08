@@ -38,7 +38,7 @@ from airlie.flow.runners import (
     meeting_runner,
     write_runner,
 )
-from airlie.flow.spec import NodeType
+from airlie.flow.spec import NodeType, transient_heads
 from airlie.flow.store import Sessions, StateStore
 from airlie.flow.team import team_runner
 from airlie.prompts.hub import PromptText
@@ -389,7 +389,10 @@ def _at(ctx: RunContext, check: str) -> tuple[str, int, Story, tuple[Layer, ...]
 
 
 @check(
-    "story.intake", inputs=("card",), title="Take the card in: move it to building, say where its progress is"
+    "story.intake",
+    inputs=("card",),
+    title="Take the card in: move it to building, say where its progress is",
+    every_run=True,  # `_intake` does nothing once the stage is done, as the driver calls it every run
 )
 async def intake(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.intake")
@@ -451,6 +454,7 @@ def plain(ctx: RunContext) -> Mapping[str, Any]:
 @check(
     "story.costed",
     inputs=("card",),
+    every_run=True,  # the driver costs its stages on every run
     title="Record what the stages named (args.stages) cost against their budgets",
 )
 async def costed(ctx: RunContext, *, stages: list[str]) -> Mapping[str, Any]:
@@ -459,7 +463,12 @@ async def costed(ctx: RunContext, *, stages: list[str]) -> Mapping[str, Any]:
     return {}
 
 
-@check("story.planned", inputs=("layers",), title="Mark the story planned (the planning lane's last word)")
+@check(
+    "story.planned",
+    inputs=("layers",),
+    title="Mark the story planned (the planning lane's last word)",
+    every_run=True,  # said on every planning run that gets here, as the driver says it
+)
 def planned(ctx: RunContext) -> Mapping[str, Any]:
     r = _run(ctx, "story.planned")
     # the planning lane's last word, as the driver says it; a run that goes on to build says nothing here
@@ -544,7 +553,11 @@ async def build_once(ctx: RunContext) -> Mapping[str, Any]:
     return {"built.{item}": r.st.built[nn]}
 
 
-@check("story.build_done", title="Finish the build stage once every layer is built or satisfied")
+@check(
+    "story.build_done",
+    title="Finish the build stage once every layer is built or satisfied",
+    every_run=True,  # `build_finished` finishes the stage once, as the driver calls it every run
+)
 def build_done(ctx: RunContext) -> Mapping[str, Any]:
     build_finished(_run(ctx, "story.build_done").st)
     return {}
@@ -634,7 +647,9 @@ async def drafts(ctx: RunContext) -> Mapping[str, Any]:
 
 
 @check(
-    "story.layer_start", title="Begin a layer: the lines out of it say which of its steps are still to run"
+    "story.layer_start",
+    title="Begin a layer: the lines out of it say which of its steps are still to run",
+    every_run=True,  # its lines read the layer as it stands on every run
 )
 def layer_start(ctx: RunContext) -> Mapping[str, Any]:
     return {}
@@ -649,6 +664,7 @@ def layer_start(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("card",),
     outputs=("request",),
     formats={"request": "text"},
+    transient=("request",),
     title="The card's request as a brief quotes it: its title on one line, its description quoted",
 )
 def request(ctx: RunContext) -> Mapping[str, Any]:
@@ -660,6 +676,7 @@ def request(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("repo", "story", "base"),
     outputs=("guide",),
     formats={"guide": "text"},
+    transient=("guide",),
     title="The repository guide to the files the story names, at its base (the layer plan's)",
 )
 def repo_guide_check(ctx: RunContext) -> Mapping[str, Any]:
@@ -675,6 +692,7 @@ def repo_guide_check(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("repo", "base", "layers"),
     outputs=("guide",),
     formats={"guide": "text"},
+    transient=("guide",),
     title="The repository guide to the layers' scope, at the base (the packages' drafting)",
 )
 def scope_guide(ctx: RunContext) -> Mapping[str, Any]:
@@ -689,6 +707,7 @@ def scope_guide(ctx: RunContext) -> Mapping[str, Any]:
     "story.lessons",
     outputs=("lessons",),
     formats={"lessons": "list"},
+    transient=("lessons",),
     title="The repository's recent lessons (size blocks and how they ran)",
 )
 def lessons(ctx: RunContext) -> Mapping[str, Any]:
@@ -700,6 +719,7 @@ def lessons(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("repo", "base"),
     outputs=("dossier",),
     formats={"dossier": "json"},
+    transient=("dossier",),
     title="The story's dossier: the files its studio runs read so far, at the base",
 )
 def dossier(ctx: RunContext) -> Mapping[str, Any]:
@@ -711,6 +731,7 @@ def dossier(ctx: RunContext) -> Mapping[str, Any]:
     "story.coder_budget",
     outputs=("budget",),
     formats={"budget": "json"},
+    transient=("budget",),
     title="The coder's steps and context per layer, what a layer is sized to",
 )
 def coder_budget(ctx: RunContext) -> Mapping[str, Any]:
@@ -723,6 +744,7 @@ def coder_budget(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("repo", "base", "layers"),
     outputs=("sources.{item}",),
     formats={"sources.{item}": "json"},
+    transient=("sources.{item}",),
     title="The files the layer changes, as they are at the base",
 )
 def sources(ctx: RunContext) -> Mapping[str, Any]:
@@ -737,6 +759,7 @@ def sources(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("agreement", "layers"),
     outputs=("proof.{item}",),
     formats={"proof.{item}": "list"},
+    transient=("proof.{item}",),
     title="The tests the agreement holds for the layer",
 )
 def layer_proof(ctx: RunContext) -> Mapping[str, Any]:
@@ -753,6 +776,7 @@ def layer_proof(ctx: RunContext) -> Mapping[str, Any]:
     inputs=("repo", "base"),
     outputs=("lint",),
     formats={"lint": "text"},
+    transient=("lint",),
     title="What the repository's linters say a test file must keep to",
 )
 def lint(ctx: RunContext) -> Mapping[str, Any]:
@@ -836,7 +860,11 @@ def _survey_on(ctx: RunContext) -> bool:
 
 
 def _is_story_card(ctx: RunContext) -> bool:
+    # a story stored already (a resume) is the story: the card's block is not read again, as `_refine`
+    # returns the stored story before it looks at the card
     r = _run(ctx, "story.is_story_card")
+    if _peek(ctx, "story") is not None:
+        return False
     return r.pipe._story_card(_card(ctx, "story.is_story_card")) is not None
 
 
@@ -866,8 +894,16 @@ PREDICATES: Mapping[str, tuple[Callable[[RunContext], bool], tuple[str, ...], st
     "amigos_off": (_amigos_off, (), "Whether the three amigos do not meet"),
     "to_build": (_to_build_now, ("layers", "built", "satisfied"), "Whether the story goes on to build"),
     "survey_on": (_survey_on, ("survey", "story"), "Whether the architect surveys the story first"),
-    "is_story_card": (_is_story_card, ("card",), "Whether the card carries a story an epic's plan wrote"),
-    "not_story_card": (_not_story_card, ("card",), "Whether the card carries no story of its own"),
+    "is_story_card": (
+        _is_story_card,
+        ("card", "story"),
+        "Whether the card carries a story an epic's plan wrote, and none is stored yet",
+    ),
+    "not_story_card": (
+        _not_story_card,
+        ("card", "story"),
+        "Whether the card carries no story of its own, or one is stored already",
+    ),
     "open_layer": (_open_layer, ("built", "satisfied"), "Whether the layer is neither built nor satisfied"),
     "not_built": (
         _not_built,
@@ -881,7 +917,7 @@ PREDICATES: Mapping[str, tuple[Callable[[RunContext], bool], tuple[str, ...], st
     ),
 }
 """The predicates by name, with the names they read: each the catalog's `story.<name>` check with the one bool
-output `<name>`, which a line's condition reads."""
+output `<name>`, transient (recomputed every run), which a line's condition reads."""
 
 
 def _flag(name: str, test: Callable[[RunContext], bool]) -> Callable[[RunContext], Mapping[str, Any]]:
@@ -893,7 +929,10 @@ def _flag(name: str, test: Callable[[RunContext], bool]) -> Callable[[RunContext
 
 
 for _name, (_test, _reads, _title) in PREDICATES.items():
-    STORY_CATALOG.add(Check(f"story.{_name}", _reads, (_name,), _title, _flag(_name, _test), {_name: "bool"}))
+    _out = (_name,)
+    STORY_CATALOG.add(
+        Check(f"story.{_name}", _reads, _out, _title, _flag(_name, _test), {_name: "bool"}, _out)
+    )
 
 
 def story_registry(
@@ -973,7 +1012,7 @@ async def compose(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Unt
         pipe.cfg,
         runners=story_runners(pipe, st, card),
         registry=story_registry(pipe, st, card, until=until, prompts=parse_draft_prompts(prompts)),
-        store=StateStore(st, loose={"card": card, "repo": pipe.repo}),
+        store=StateStore(st, loose={"card": card, "repo": pipe.repo}, transient=transient_heads(specs)),
         sessions=Sessions(),
         workflows=specs,
     )

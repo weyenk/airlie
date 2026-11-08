@@ -515,6 +515,41 @@ async def test_a_condition_in_a_bundle_item_reads_its_item_and_a_bundle_is_never
     assert [(f["node"], f["item"]) for k, f in store.events if k == "node_skipped"] == [("build", "01")]
 
 
+async def test_a_node_of_transient_outputs_and_an_every_run_check_run_on_every_run(tmp_path):
+    """A node whose outputs are all transient is run though its outputs are present, and a check declared
+    `every_run` is run though the done set names it, and is not recorded done."""
+    from airlie.flow.catalog import Catalog, Check
+
+    seen = []
+    cat = Catalog()
+    cat.add(Check("mark", (), (), "Mark", lambda ctx: {}, every_run=True))
+    cat.add(Check("r", (), ("flag",), "Flag", lambda ctx: {}, transient=("flag",)))
+    wf = {
+        "w": {
+            "nodes": {
+                "flag": {
+                    "type": "check",
+                    "run": "r",
+                    "outputs": {"flag": {"format": "bool", "transient": True}},
+                    "to": ["mark"],
+                },
+                "mark": {"type": "check", "run": "mark"},
+            }
+        }
+    }
+    store = MemoryStore({"card": "c", "flag": True})
+    store.mark_done("mark")
+    c = composer(tmp_path, wf, {"check": outputs(seen)}, store=store, registry=Registry(catalog=cat))
+    await c.run("w")
+    assert seen == ["flag", "mark"] and skipped(store) == []
+    assert not store.done("mark") and store.done("flag")  # running, it left the done set, and stays out
+    store._done.clear()
+    await composer(tmp_path, wf, {"check": outputs(seen)}, store=store, registry=Registry(catalog=cat)).run(
+        "w"
+    )
+    assert not store.done("mark") and store.done("flag")
+
+
 # ---- the node step: events, outputs, sessions, failures, the run's end ----
 
 

@@ -1,3 +1,4 @@
+# frozen copy of the pre-v2 file for the builder's tests until plan 2 (config/workflows/story.yaml is schema v2)
 # The story workflow: the pipeline as typed nodes. Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
 workflows:
   story:

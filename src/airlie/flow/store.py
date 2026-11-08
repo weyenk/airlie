@@ -80,18 +80,24 @@ class StateStore:
     `st.artifacts` under that name (`<name>.<key>` in the dict there), saved with the state.
 
     `put(name, None)` clears: a state field goes back to its default, an artifact or a key inside a dict is
-    removed. The done set is `st.nodes_done`, saved with the state."""
+    removed. The done set is `st.nodes_done`, saved with the state.
+
+    `transient` names the heads of a workflow's transient outputs (`OutputSpec.transient`: a condition's bool,
+    a brief's computed input): `<head>` and `<head>.<key>` are held here in memory, by their whole name, ahead
+    of a state field or an artifact of the same head, and never saved: every run computes them again."""
 
     MEMORY = MEMORY
     RESERVED = RESERVED
     """Names no node may write (`airlie.flow.spec.RESERVED`): the state's own place, the artifact store whole
     and the card's snapshot; `check_workflows` refuses them as outputs too."""
 
-    def __init__(self, st: StoryState, *, loose: Mapping[str, Any]) -> None:
+    def __init__(self, st: StoryState, *, loose: Mapping[str, Any], transient: Collection[str] = ()) -> None:
         self.st = st
         self._fields = frozenset(f.name for f in dataclasses.fields(st)) - {"path"}
         self._loose = dict(loose)
         self._memory: dict[str, dict[str, Any]] = {head: {} for head in self.MEMORY}
+        self._transient = frozenset(transient)
+        self._held: dict[str, Any] = {}  # the transient outputs, by their whole name
 
     def has(self, name: str) -> bool:
         try:
@@ -101,6 +107,8 @@ class StateStore:
 
     def get(self, name: str) -> Any:
         head, _, key = name.partition(".")
+        if head in self._transient:
+            return self._held[name]
         if head in self._memory and key:
             return self._memory[head][key]
         if not key:
@@ -118,7 +126,9 @@ class StateStore:
             self._clear(name)
             return
         head, _, key = name.partition(".")
-        if head in self._memory and key:
+        if head in self._transient:
+            self._held[name] = value
+        elif head in self._memory and key:
             self._memory[head][key] = value
         elif reserved_output(name):
             raise KeyError(name)
@@ -143,7 +153,9 @@ class StateStore:
 
     def _clear(self, name: str) -> None:
         head, _, key = name.partition(".")
-        if head in self._memory and key:
+        if head in self._transient:
+            self._held.pop(name, None)
+        elif head in self._memory and key:
             self._memory[head].pop(key, None)
         elif reserved_output(name) or head in self._loose or (head in self.MEMORY and not key):
             raise KeyError(name)

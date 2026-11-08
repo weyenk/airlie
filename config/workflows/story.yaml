@@ -23,7 +23,7 @@ workflows:
         type: check
         run: story.to_build
         inputs: [layers, built, satisfied]
-        outputs: {to_build: bool}
+        outputs: {to_build: {format: bool, transient: true}}  # recomputed every run, never saved
         to:
           - {node: gate, when: to_build}
           - {node: request, when: config.story.survey}
@@ -41,13 +41,13 @@ workflows:
         type: check
         run: story.request
         inputs: [card]
-        outputs: {request: text}
+        outputs: {request: {format: text, transient: true}}  # the card as it is now, every run
         to: [story_card]
       story_card:
         type: check
-        run: story.is_story_card
-        inputs: [card]
-        outputs: {is_story_card: bool}
+        run: story.is_story_card  # false once a story is stored: a resume never reads the block again
+        inputs: [card, story]
+        outputs: {is_story_card: {format: bool, transient: true}}
         to:
           - {node: take_card_as_story, when: is_story_card}
           # refine is listed before the survey: the driver starts it first (the same event order)

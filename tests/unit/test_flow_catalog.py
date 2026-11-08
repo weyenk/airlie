@@ -54,13 +54,37 @@ def test_a_declared_checks_inputs_and_outputs_are_read_back() -> None:
 
 def test_describe_lists_every_check_in_declaration_order() -> None:
     cat = Catalog()
-    cat.add(Check("b", ("x",), ("y.{item}",), "B", lambda ctx: {}))
-    cat.add(Check("a", (), (), "A", lambda ctx: {}))
+    cat.add(Check("b", ("x",), ("y.{item}",), "B", lambda ctx: {}, transient=("y.{item}",)))
+    cat.add(Check("a", (), (), "A", lambda ctx: {}, every_run=True))
     assert cat.names() == ["b", "a"]
     assert cat.describe() == [
-        {"name": "b", "title": "B", "inputs": ["x"], "outputs": ["y.{item}"], "formats": {}},
-        {"name": "a", "title": "A", "inputs": [], "outputs": [], "formats": {}},
+        {
+            "name": "b",
+            "title": "B",
+            "inputs": ["x"],
+            "outputs": ["y.{item}"],
+            "formats": {},
+            "transient": ["y.{item}"],
+            "every_run": False,
+        },
+        {
+            "name": "a",
+            "title": "A",
+            "inputs": [],
+            "outputs": [],
+            "formats": {},
+            "transient": [],
+            "every_run": True,
+        },
     ]
+
+
+def test_transient_names_only_outputs_and_every_run_only_an_outputless_check() -> None:
+    cat = Catalog()
+    with pytest.raises(ValueError, match="transient names z, which it does not output"):
+        cat.add(Check("b", (), ("y",), "B", lambda ctx: {}, transient=("z",)))
+    with pytest.raises(ValueError, match="every_run is for a check with no outputs"):
+        cat.add(Check("c", (), ("y",), "C", lambda ctx: {}, every_run=True))
 
 
 def test_a_check_declared_twice_or_formatting_what_it_does_not_output_is_refused() -> None:
@@ -98,8 +122,8 @@ READS: dict[str, tuple[str, ...]] = {
     "amigos_off": (),
     "to_build": ("layers", "built", "satisfied"),
     "survey_on": ("survey", "story"),
-    "is_story_card": ("card",),
-    "not_story_card": ("card",),
+    "is_story_card": ("card", "story"),
+    "not_story_card": ("card", "story"),
     "open_layer": ("built", "satisfied"),
     "not_built": ("drafted", "built", "satisfied"),
     "has_package": ("built", "satisfied", "package.{item}"),
@@ -173,6 +197,7 @@ def test_every_predicate_is_a_check_with_one_bool_output() -> None:
     for p in PREDICATES:
         got = STORY_CATALOG[f"story.{p}"]
         assert (got.inputs, got.outputs, dict(got.formats)) == (READS[p], (p,), {p: "bool"}), p
+        assert got.transient == (p,), p  # recomputed every run, never saved
     assert set(TESTS) == set(PREDICATES)
 
 
@@ -187,6 +212,28 @@ def test_every_story_check_is_called_with_the_context_and_its_args() -> None:
         params = list(inspect.signature(c.fn).parameters.values())
         assert params and params[0].name == "ctx", c.name
         assert all(p.kind is p.KEYWORD_ONLY for p in params[1:]), c.name
+
+
+COMPUTED = {
+    "story.request": ("request",),
+    "story.repo_guide": ("guide",),
+    "story.scope_guide": ("guide",),
+    "story.lessons": ("lessons",),
+    "story.dossier": ("dossier",),
+    "story.coder_budget": ("budget",),
+    "story.layer_sources": ("sources.{item}",),
+    "story.layer_proof": ("proof.{item}",),
+    "story.lint_note": ("lint",),
+}
+"""The briefs' computed inputs (D13): transient, the value of the run that reads them."""
+EVERY_RUN = {"story.intake", "story.costed", "story.planned", "story.build_done", "story.layer_start"}
+"""The output-less checks the driver makes on every pass, never recorded done."""
+
+
+def test_the_computed_inputs_and_bools_are_transient_and_the_marks_run_every_run() -> None:
+    transient = {c.name: c.transient for c in STORY_CATALOG if c.transient}
+    assert transient == {**COMPUTED, **{f"story.{p}": (p,) for p in PREDICATES}}
+    assert {c.name for c in STORY_CATALOG if c.every_run} == EVERY_RUN
 
 
 def test_describe_gives_the_builder_every_story_check() -> None:
@@ -466,6 +513,9 @@ THROUGH_THE_PIPELINE = {
     "story.planned": {"layers"},  # read for the planning lane's story_planned only (`until: planned`)
     "story.plan_layers": {"repo", "base", "survey"},  # `_layers` reads them from the state
     "story.draft_packages": {"repo", "base", "agreement"},  # `drafts_opening` reads them from the state
+    # the card's block is read only while no story is stored (here one is)
+    "story.is_story_card": {"card"},
+    "story.not_story_card": {"card"},
 }
 
 

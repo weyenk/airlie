@@ -66,6 +66,9 @@ def parse_kind(text: str) -> Kind:
 class OutputSpec(Strict):
     format: Format
     fields: dict[str, str] | None = None  # field name -> kind text, for a structured (json) answer
+    # held in the run's memory only: never saved, recomputed on every run, so a node whose outputs are all
+    # transient is never skipped by them (a condition's bool, a brief's computed input)
+    transient: bool = False
 
     @model_validator(mode="before")
     @classmethod

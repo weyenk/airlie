@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => ({
   server: {
     // `task web:dev` serves the app on Vite's port and sends the API to `task serve`.
     proxy: { "/v1": "http://127.0.0.1:8090" },
-    // the tests alone may read the repo beside web/ (the builder's tests import config/workflows/*.yaml?raw);
+    // the tests alone may read the repo beside web/ (the builder's tests read the shipped workflow files again
+    // once plan 2 teaches the builder schema v2; until then, frozen copies in src/test-utils/workflows-v1/);
     // the dev server keeps Vite's default of web/ only
     ...(mode === "test" ? { fs: { allow: [new URL("..", import.meta.url).pathname] } } : {}),
   },

@@ -245,6 +245,30 @@ def test_a_workflow_in_the_old_schema_fails_the_load_naming_what_is_old(tmp_path
     assert list(load_config(write(tmp_path, {**MINIMAL, "workflows": {"new": new}})).workflows) == ["new"]
 
 
+def test_rule_nine_holds_a_catalog_transient_output_transient_on_the_node():
+    from airlie.flow.catalog import Catalog, Check
+    from airlie.flow.spec import WorkflowSpec, check_workflows
+
+    cat = Catalog()
+    cat.add(Check("w.flag", (), ("flag",), "Flag", lambda ctx: {}, {"flag": "bool"}, ("flag",)))
+    saved = {
+        "w": WorkflowSpec.model_validate(
+            {"nodes": {"f": {"type": "check", "run": "w.flag", "outputs": {"flag": "bool"}}}}
+        )
+    }
+    assert check_workflows(saved, catalog=cat) == [
+        "workflow w: node f: output 'flag' is transient in the catalog's 'w.flag'; "
+        "declare it `transient: true`"
+    ]
+    held = {"format": "bool", "transient": True}
+    fine = {
+        "w": WorkflowSpec.model_validate(
+            {"nodes": {"f": {"type": "check", "run": "w.flag", "outputs": {"flag": held}}}}
+        )
+    }
+    assert check_workflows(fine, catalog=cat) == []
+
+
 def test_story_composer_defaults_off(tmp_path):
     from airlie.config import load_config
     from tests.unit.test_config import MINIMAL, write

@@ -34,6 +34,7 @@ __all__ = [
     "WorkflowSpec",
     "check_workflows",
     "reserved_output",
+    "transient_heads",
 ]  # Format and Strict are re-exported from outputs
 
 NodeType = Literal["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
@@ -53,6 +54,18 @@ _OLD_TYPES = ("parallel", "each")
 
 def _old(what: str, then: str = "write a `to` line") -> str:
     return f"{what} is the old schema; run the workflow upgrade or {then}"
+
+
+def transient_heads(workflows: Mapping[str, WorkflowSpec]) -> frozenset[str]:
+    """The heads of every output the workflows declare transient (`built` of `built.{item}`): what a store
+    holds in the run's memory only (`StateStore`'s `transient`)."""
+    return frozenset(
+        name.partition(".")[0]
+        for w in workflows.values()
+        for n in w.nodes.values()
+        for name, out in n.outputs.items()
+        if out.transient
+    )
 
 
 def reserved_output(name: str) -> bool:
@@ -379,6 +392,11 @@ def _catalog_problems(n: NodeSpec, catalog: Catalog) -> list[str]:
         f"the catalog's '{n.run}' reads {name}, which is not one of its inputs"
         for name in declared.inputs
         if name not in n.inputs
+    ]
+    found += [
+        f"output '{name}' is transient in the catalog's '{n.run}'; declare it `transient: true`"
+        for name in declared.transient
+        if name in n.outputs and not n.outputs[name].transient
     ]
     return found
 

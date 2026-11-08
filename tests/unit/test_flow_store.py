@@ -51,6 +51,30 @@ def test_feedback_and_packages_live_beside_the_state_and_are_never_saved(tmp_pat
     assert head not in json.loads((tmp_path / "AIR-1" / "state.json").read_text())
 
 
+def test_a_transient_output_is_held_in_memory_ahead_of_a_field_and_never_saved(tmp_path):
+    """A transient head (a condition's bool, a brief's computed input) is held by its whole name, never in
+    `artifacts` nor a state field of the same head, and a fresh store over the saved state has none."""
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={}, transient=("to_build", "sources", "survey"))
+    s.put("to_build", False)
+    s.put("sources.01", {"a.py": "x"})
+    s.put("survey", "held, not the state's")
+    assert s.get("to_build") is False and not s.has("to_build")  # False is held, and absent as ever
+    assert s.get("sources.01") == {"a.py": "x"} and s.has("sources.01") and not s.has("sources.02")
+    assert s.get("survey") == "held, not the state's" and st.survey is None
+    s.save()
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert "artifacts" not in saved and saved["survey"] is None
+    s.put("sources.01", None)
+    assert not s.has("sources.01")
+    again = StateStore(
+        StoryState.open(tmp_path / "AIR-1", text_card("x"), repo), loose={}, transient=["to_build"]
+    )
+    with pytest.raises(KeyError):
+        again.get("to_build")
+
+
 def test_a_name_that_is_no_field_is_a_workflow_artifact_saved_with_the_state(tmp_path):
     """D15: a workflow's own output (`repro`) lives in `st.artifacts`; `<name>.<key>` in the dict there."""
     repo = repo_with_marker_tests(tmp_path)
