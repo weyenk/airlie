@@ -100,9 +100,18 @@ def _fits(value: Any, kind: Kind) -> bool:
     if kind.name == "bool":
         return isinstance(value, bool)
     if kind.name == "one_of":
+        if isinstance(value, int | float) and not isinstance(value, bool):  # `1 | 2` reads a JSON number
+            return any(_number(o) == value for o in kind.options)
         return isinstance(value, str) and value in kind.options
     assert kind.item is not None
     return isinstance(value, list) and all(_fits(v, kind.item) for v in value)
+
+
+def _number(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 _BOOLS = {"yes": True, "true": True, "no": False, "false": False}

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -102,3 +104,15 @@ def test_describe_uses_the_hub_rule():
         "Reply with one ```json block with fields: decision (one of agree | object), reasons (list of text)."
     )
     assert "score (number, optional)" in describe(spec())
+
+
+def test_a_numeric_choice_matches_a_json_number_and_its_string():
+    from airlie.flow.outputs import OutputSpec, parse_output
+    from airlie.story.model import StoryError
+
+    spec = OutputSpec(format="json", fields={"n": "one of 1 | 2"})
+    for value in (1, 2, "1", 2.0):
+        assert parse_output("```json\n" + json.dumps({"n": value}) + "\n```", spec)["n"] == value
+    for value in (3, True, "3"):
+        with pytest.raises(StoryError, match="field 'n' must be one of 1 | 2"):
+            parse_output("```json\n" + json.dumps({"n": value}) + "\n```", spec)

@@ -73,3 +73,15 @@ def test_a_malformed_expression_says_where_and_what_was_expected():
 def test_a_path_part_starting_with_an_underscore_is_refused_naming_it(text):
     with pytest.raises(ConditionError, match=r"names '_"):
         parse(text)
+
+
+def test_equality_is_type_aware_between_bools_and_numbers():
+    values = {"flag": True, "off": False, "one": 1, "zero": 0}
+    look = values.__getitem__
+    assert parse("flag == true").evaluate(look) and parse("off == false").evaluate(look)
+    assert not parse("one == true").evaluate(look)  # a number is not a bool
+    assert not parse("zero == false").evaluate(look)
+    assert not parse("flag == 1").evaluate(look)  # a bool is not a number
+    assert not parse("off == 0").evaluate(look)
+    assert parse("one != true").evaluate(look) and parse("flag != 1").evaluate(look)
+    assert parse("one == 1").evaluate(look) and parse("zero == 0").evaluate(look)

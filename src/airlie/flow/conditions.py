@@ -75,10 +75,17 @@ class _Atom(_Node):
         if self.op == "exists":
             return True
         if self.op == "==":
-            return bool(value == self.literal)
+            return _equal(value, self.literal)
         if self.op == "!=":
-            return bool(value != self.literal)
+            return not _equal(value, self.literal)
         return bool(value)
+
+
+def _equal(value: Any, literal: Any) -> bool:
+    """`value == literal`, but a bool equals only a bool: `true` never matches 1, nor 1 matches true."""
+    if isinstance(value, bool) or isinstance(literal, bool):
+        return isinstance(value, bool) and isinstance(literal, bool) and value is literal
+    return bool(value == literal)
 
 
 @dataclass(frozen=True)
