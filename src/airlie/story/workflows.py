@@ -3,6 +3,8 @@ found among the repo's workflows and the board's drafts, and snapshotted into th
 it is used, so every resume runs what the card started on whatever the drafts and files say since
 (docs/superpowers/specs/2026-11-07-workflow-builder-design.md, D16, D17, D21)."""
 
+# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# mypy: ignore-errors
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping

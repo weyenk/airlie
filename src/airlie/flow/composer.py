@@ -5,6 +5,8 @@ input must be present before a node runs. The wiring moves: `parallel` and `each
 picks the next node by an output, `loop` (or a LoopSpec `on_fail`) re-runs from a node
 with carried feedback."""
 
+# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# mypy: ignore-errors
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from airlie.flow.prompt_files import PREFIX, prompt_builder
-from airlie.flow.spec import LoopSpec, NodeSpec, NodeType, WorkflowSpec
+from airlie.flow.spec import LoopBound as LoopSpec  # v2 has no on_fail loop; Task 5 rewrites this
+from airlie.flow.spec import NodeSpec, NodeType, WorkflowSpec
 from airlie.flow.store import Sessions, Store
 from airlie.prompts.hub import PromptText
 

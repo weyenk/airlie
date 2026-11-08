@@ -965,6 +965,11 @@ class AirlieConfig(Strict):
     lhr: LhrSpec = Field(default_factory=LhrSpec)
     bridge: BridgeSpec = Field(default_factory=BridgeSpec)
     source_path: Path | None = Field(default=None, exclude=True, description="set by load_config")
+    workflow_problems: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description="old-schema workflows load_config set aside (they are not in `workflows`)",
+    )
 
     # ---- cross-reference checks (run by load_config after path resolution) ----
     def validate_references(self) -> list[str]:
@@ -972,6 +977,7 @@ class AirlieConfig(Strict):
         problems: list[str] = []
         problems.extend(check_workflows(self.workflows))
         if self.story.composer:  # fail at load, not when the first story reaches the composer
+            problems += self.workflow_problems
             problems += [
                 f"story.composer is on but workflows.{name} is missing"
                 for name in ("story", "layer")

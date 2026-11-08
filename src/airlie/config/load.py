@@ -11,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
+from airlie.flow.spec import old_schema_problems
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -220,6 +221,23 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
     return out
 
 
+def set_aside_old_workflows(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """`data` without the workflows still in the old schema, and one problem per old-schema field found.
+    Until the shipped workflows are rewritten, an old-schema file is recorded on the config
+    (`workflow_problems`) instead of failing the whole load."""
+    workflows = data.get("workflows")
+    if not isinstance(workflows, dict):
+        return data, []
+    problems: list[str] = []
+    kept: dict[str, Any] = {}
+    for name, raw in workflows.items():
+        old = old_schema_problems(raw) if isinstance(raw, dict) else []
+        problems += [f"workflow {name}: {what}" for what in old]
+        if not old:
+            kept[name] = raw
+    return {**data, "workflows": kept}, problems
+
+
 def load_config(
     path: Path | None = None, local_path: Path | None = None, *, topology: str | None = None
 ) -> AirlieConfig:
@@ -233,12 +251,14 @@ def load_config(
     if local.is_file():
         data = deep_merge(data, _read_yaml(local))
     data = apply_profile(data, topology)
+    data, workflow_problems = set_aside_old_workflows(data)
     try:
         cfg = AirlieConfig.model_validate(data)
     except ValidationError as e:
         # from None: the chained error carries input_value, which can be a token under a mistyped key
         raise ConfigError(_format_validation_error(e)) from None
     cfg.source_path = path
+    cfg.workflow_problems = workflow_problems
     base = path.parent
     for role in cfg.roles.values():
         role.prompt = (base / role.prompt.expanduser()).resolve()

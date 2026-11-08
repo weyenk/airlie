@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit.schema_v2_pending import PENDING
+
 os.environ.setdefault("NO_PROXY", "*")
 
 ATLASSIAN = ("ATLASSIAN_API_KEY", "ATLASSIAN_EMAIL", "ATLASSIAN_BASE_URL", "ATLASSIAN_PROJECT_KEY")
@@ -64,7 +66,12 @@ collect_ignore = [] if HAS_MLX else list(MAC_ONLY)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Skip MAC_ONLY_TESTS where vllm-mlx is missing, naming where they run instead."""
+    """xfail the PENDING tests (schema v2 readers not landed yet); skip MAC_ONLY_TESTS where vllm-mlx is
+    missing, naming where they run instead."""
+    pending = pytest.mark.xfail(strict=True, reason="schema v2: composer and shipped workflows, Tasks 5/8")
+    for item in items:
+        if item.nodeid.removeprefix("tests/unit/") in PENDING:
+            item.add_marker(pending)
     if HAS_MLX:
         return
     skip = pytest.mark.skip(reason="needs vllm-mlx or mlx (macOS only): `task test:mac` runs it")

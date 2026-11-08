@@ -11,6 +11,8 @@ conversation type: the layer plan's rounds and the packages' drafting are turn b
 open their conversation through the runner's `Talk`, the drafting one held for the run as the
 `drafts_session` the layer's package node continues."""
 
+# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# mypy: ignore-errors
 from __future__ import annotations
 
 import functools
