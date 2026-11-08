@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useBoardStore } from "@/stores/board";
+import { useCardDraftStore } from "@/stores/card_draft";
 import BoardColumn from "./board/BoardColumn.vue";
 import CardModal from "./board/CardModal.vue";
 import CreateModal from "./board/CreateModal.vue";
@@ -38,8 +39,13 @@ const typeLabel = computed(() => TYPE_FILTERS.find((t) => t.value === type.value
 
 /** The open card, from the address (/board/AIR-4). */
 const openKey = computed(() => (typeof route.params.key === "string" && route.params.key ? route.params.key : null));
-/** Create, when it is open: `parent` is the card Add child was pressed on. */
-const creating = ref<{ parent: Item | null } | null>(null);
+/** Create, when it is open: `parent` is the card Add child was pressed on. The builder comes back to
+ * `/board?create=<token>`, which opens Create again with the form it held; the held parent (`parentKey`) is the
+ * card that closing goes back to, as Add child's would. */
+const heldToken = typeof route.query.create === "string" ? route.query.create : null;
+const creating = ref<{ parent: Item | null; parentKey?: string | null } | null>(
+  heldToken ? { parent: null, parentKey: useCardDraftStore().take(heldToken)?.parent ?? null } : null,
+);
 // Closing leaves the card's address; Back must not reopen it, so the entry the card was opened from is
 // returned to when it was the board, else the card's entry is replaced.
 const closeCard = () => {
@@ -52,8 +58,12 @@ const addChild = (parent: Item) => {
 /** Create is done (made, or given up): back to the card it was opened from, else the board. */
 const closeCreate = () => {
   const parent = creating.value?.parent;
+  const heldParent = creating.value?.parentKey;
   creating.value = null;
   if (parent) void router.push(`/board/${encodeURIComponent(parent.key)}`);
+  // back from the builder: replace the ?create= address, so Back or a reload does not reopen Create
+  else if (heldParent) void router.replace(`/board/${encodeURIComponent(heldParent)}`);
+  else if (route.query.create !== undefined) void router.replace("/board");
 };
 const move = (key: string, status: Status, before: string | null) => void board.move(key, status, before).catch(() => {});
 </script>

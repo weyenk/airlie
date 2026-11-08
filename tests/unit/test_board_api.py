@@ -7,9 +7,12 @@ from pathlib import Path
 import httpx
 
 from airlie.board import BoardStore
+from airlie.flow.spec import check_workflows
 from airlie.serve.app import create_app
+from airlie.story.workflows import draft_spec
 from tests.unit.serve_helpers import TestClient
 from tests.unit.test_serve import FakeUpstream, cfg
+from tests.unit.test_story_workflows import MINI
 
 
 def client(tmp_path: Path, **kw: object) -> TestClient:
@@ -86,7 +89,9 @@ def test_comments_are_by_noah_and_the_export_has_everything(tmp_path: Path) -> N
         [comment] = r.json()["comments"]
         assert comment["author"] == "noah" and comment["text"] == "looks good"
         out = c.get("/v1/board/export").json()
-        assert out["prefix"] == "AIR" and out["items"] == [c.get("/v1/board/items/AIR-1").json()]
+        one = c.get("/v1/board/items/AIR-1").json()
+        assert one.pop("started") is False  # the one item says whether it has started; the export does not
+        assert out["prefix"] == "AIR" and out["items"] == [one]
 
 
 def test_the_board_is_in_state_dir_and_survives_a_restart(tmp_path: Path) -> None:
@@ -139,6 +144,83 @@ def test_a_move_through_the_api_is_recorded_as_the_principals(tmp_path: Path) ->
     moves = BoardStore(tmp_path / "state" / "board.sqlite").moves(key)
     assert [(m.from_status, m.to_status) for m in moves] == [("todo", "approved"), ("approved", "doing")]
     assert {m.by for m in moves} == {moves[0].by} and moves[0].by != "line"
+
+
+# ---- the card's workflow (docs/superpowers/specs/2026-11-07-workflow-builder-design.md) ----
+
+NO_RUN = MINI.replace("intake: {type: check, run: story.intake}", "intake: {type: check}")
+
+
+def test_a_label_naming_an_unknown_workflow_is_refused_with_422(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        r = c.patch(f"/v1/board/items/{story}", json={"labels": ["repo:o/r", "workflow:nope"]})
+        assert r.status_code == 422 and r.json()["detail"] == "no workflow named 'nope'"
+        assert c.get(f"/v1/board/items/{story}").json()["labels"] == []  # nothing stored
+        # a card with no workflow label runs the story's: never a problem
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["repo:o/r"]}).status_code == 200
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "approved"}).status_code == 200
+
+
+def test_moving_a_story_with_an_invalid_draft_to_approved_is_refused(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini"]}).status_code == 200
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": NO_RUN}).status_code == 200
+        [problem] = check_workflows({"mini": draft_spec("mini", NO_RUN)})
+        r = c.post(f"/v1/board/items/{story}/move", json={"status": "approved"})
+        assert r.status_code == 422 and problem in r.json()["detail"]
+        assert c.get(f"/v1/board/items/{story}").json()["status"] == "todo"
+        # only approval runs it: any other column takes the card as it is
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "doing"}).status_code == 200
+        assert c.post(f"/v1/board/items/{story}/move", json={"status": "todo"}).status_code == 200
+        # a PATCH of the status is the other way into approved: refused the same
+        r = c.patch(f"/v1/board/items/{story}", json={"status": "approved"})
+        assert r.status_code == 422 and problem in r.json()["detail"]
+        assert c.get(f"/v1/board/items/{story}").json()["status"] == "todo"
+
+
+def test_a_label_change_that_keeps_the_workflow_is_not_checked(tmp_path: Path) -> None:
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        story = c.post("/v1/board/items", json={"level": "story", "title": "s"}).json()["key"]
+        assert c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini"]}).status_code == 200
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": NO_RUN}).status_code == 200
+        # another label added beside it: the workflow is the same, so its problem is not this edit's
+        r = c.patch(f"/v1/board/items/{story}", json={"labels": ["workflow:mini", "repo:o/r"]})
+        assert r.status_code == 200 and r.json()["labels"] == ["workflow:mini", "repo:o/r"]
+
+
+STARTED = "the workflow of a started card cannot be changed; make a new card for the other workflow"
+
+
+def test_the_workflow_of_a_started_card_cannot_be_changed(tmp_path: Path) -> None:
+    """A card with a saved state started on its workflow (D21): adding, removing or changing its `workflow:`
+    label is refused; its other labels change as ever, and the item says it has started."""
+    with client(tmp_path) as c:
+        assert c.put("/v1/workflows/drafts/mini", json={"type": "bug", "yaml": MINI}).status_code == 200
+        plain = c.post("/v1/board/items", json={"level": "story", "title": "plain"}).json()["key"]
+        mini = c.post(
+            "/v1/board/items", json={"level": "story", "title": "mini", "labels": ["workflow:mini"]}
+        ).json()["key"]
+        fresh = c.post("/v1/board/items", json={"level": "story", "title": "fresh"}).json()["key"]
+        for key in (plain, mini):
+            (tmp_path / "state" / "stories" / key).mkdir(parents=True)
+            (tmp_path / "state" / "stories" / key / "state.json").write_text('{"stage": "intake"}')
+        assert c.get(f"/v1/board/items/{plain}").json()["started"] is True
+        assert c.get(f"/v1/board/items/{fresh}").json()["started"] is False
+        for key, labels in (
+            (plain, ["workflow:mini"]),  # added
+            (mini, []),  # removed
+            (mini, ["workflow:story"]),  # changed
+        ):
+            r = c.patch(f"/v1/board/items/{key}", json={"labels": labels})
+            assert (r.status_code, r.json()["detail"]) == (422, STARTED), (key, labels)
+        assert c.get(f"/v1/board/items/{mini}").json()["labels"] == ["workflow:mini"]
+        assert c.patch(f"/v1/board/items/{mini}", json={"labels": ["workflow:mini", "x"]}).status_code == 200
+        assert c.patch(f"/v1/board/items/{plain}", json={"labels": ["x"]}).status_code == 200
+        assert c.patch(f"/v1/board/items/{fresh}", json={"labels": ["workflow:mini"]}).status_code == 200
 
 
 def test_delete_removes_the_principals_comment_and_leaves_the_other_unchanged(tmp_path: Path) -> None:

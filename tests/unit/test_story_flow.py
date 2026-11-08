@@ -32,7 +32,7 @@ from airlie.flow.store import MemoryStore, Sessions
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.board import text_card
-from airlie.story.flow import story_registry, story_runners
+from airlie.story.flow import CATALOG, story_registry, story_runners
 from airlie.story.phase import phase_path
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState, lane_lock, lock_held
@@ -895,8 +895,9 @@ def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
 
 
 def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
+    """The saved state but its runs and the workflow snapshot (the composer's alone: the driver runs none)."""
     saved = neutral((path / "state.json").read_text(), root, sha)
-    return {k: v for k, v in saved.items() if k != "runs"}
+    return {k: v for k, v in saved.items() if k not in ("runs", "workflow")}
 
 
 @pytest.mark.parametrize("survey", [False, True])
@@ -990,6 +991,17 @@ def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
         "story.has_package",
     }
     assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+
+
+def test_the_catalog_names_every_registered_id(tmp_path: Path) -> None:
+    repo = repo_with_marker_tests(tmp_path)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
+    st = StoryState(path=tmp_path, card={}, repo=str(repo))
+    registry = story_registry(pipe, st, text_card("add a marker"), until="review")
+    listed = [id for ids in CATALOG.values() for id in ids]
+    assert set(CATALOG) == {"prompts", "parsers", "checks", "predicates", "afters", "turns", "meetings"}
+    assert len(listed) == len(set(listed))  # each id in one kind
+    assert set(listed) == set(registry._fns)
 
 
 def run_context(pipe: StoryPipeline, registry: Registry, store: Any, node: str) -> RunContext:
@@ -1154,6 +1166,8 @@ async def test_the_composer_runs_a_story_with_the_drivers_events_fields_and_stat
         repo = repo_with_marker_tests(root)
         st = await pipeline(root, repo, happy_engine(), composer=composer).run(text_card("add a marker"))
         assert st.blocked is None and st.stage == "review", st.blocked
+        # the composer ran the story's snapshot, taken when the card started (D21); the driver takes none
+        assert (st.workflow or {}).get("name") == ("story" if composer else None)
         seen.append(built_run(st, root, composer=composer))
     (driver_events, driver_state), (composer_events, composer_state) = seen
     assert composer_events == driver_events
@@ -1733,3 +1747,34 @@ async def test_a_build_after_the_review_gate_resumes_after_it_the_same_either_wa
         assert any(e["kind"] == "node_started" for e in again) is composer
         seen.append(story)
     assert seen[1] == seen[0]
+
+
+# ---- a card on another workflow (D22, 2026-11-07) ----
+
+
+def test_a_card_on_another_workflow_is_drawn_from_its_nodes(tmp_path: Path) -> None:
+    from tests.unit.test_flow_nodes import EVENTS, bugfix
+
+    story = tmp_path / "stories" / "AIR-9"
+    story.mkdir(parents=True)
+    st = {"stage": "new", "card": {"key": "AIR-9", "title": "Fix the bug"}, **bugfix()}
+    (story / "state.json").write_text(json.dumps(st))
+    write_events(story / "events.jsonl", EVENTS)
+    flow = story_flow(tmp_path, "AIR-9", held=True)
+    ids = [n["id"] for n in flow["nodes"]]
+    assert ids == ["intake", "reproduce", "fix_layers:01", "fix_layers:02", "review"]
+    assert flow["title"] == "Fix the bug"
+    assert flow["now"]["status"] == "running" and flow["now"]["node"] == "fix_layers:02"
+    assert flow["now"]["job"] == "write"
+    quiet = story_flow(tmp_path, "AIR-9", now=10_000.0)  # nobody works on it: the running box is stopped
+    assert by_id(quiet["nodes"], "fix_layers:02")["status"] == "stopped"
+
+
+def test_a_card_on_the_story_workflow_keeps_the_story_screen(state_dir: Path) -> None:
+    from tests.unit.test_flow_nodes import bugfix
+
+    f = state_dir / "stories" / KEY / "state.json"
+    snap = bugfix()["workflow"]
+    f.write_text(json.dumps({**json.loads(f.read_text()), "workflow": {**snap, "name": "story"}}))
+    ids = [n["id"] for n in story_flow(state_dir, KEY, held=True)["nodes"]]
+    assert ids[:3] == ["intake", "base", "gate"] and "layer-01" in ids

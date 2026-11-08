@@ -27,6 +27,8 @@ export function createAppRouter(history: RouterHistory = createWebHistory("/")):
       { path: "/workflows", name: "workflows", component: () => import("./screens/WorkflowsScreen.vue"), meta: { tab: "workflows" } },
       // the run route comes first, so /workflows/runs/<id> is never read as a story called "runs"
       { path: "/workflows/runs/:id/:node?/:job?", name: "run", component: () => import("./screens/RunWorkflowScreen.vue"), meta: { tab: "workflows" } },
+      // the builder too, so /workflows/build/<name> is never a story called "build"
+      { path: "/workflows/build/:name", name: "builder", component: () => import("./screens/BuilderScreen.vue"), meta: { tab: "workflows" } },
       { path: "/workflows/:key/:node?/:job?", name: "story", component: () => import("./screens/WorkflowScreen.vue"), meta: { tab: "workflows" } },
       { path: "/board/:key?", name: "board", component: () => import("./screens/BoardScreen.vue"), meta: { tab: "board" } },
       { path: "/metrics", name: "metrics", component: () => import("./screens/MetricsScreen.vue"), meta: { tab: "metrics" } },

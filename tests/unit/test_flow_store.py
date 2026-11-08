@@ -51,13 +51,42 @@ def test_feedback_and_packages_live_beside_the_state_and_are_never_saved(tmp_pat
     assert head not in json.loads((tmp_path / "AIR-1" / "state.json").read_text())
 
 
-def test_put_on_an_unknown_field_is_refused(tmp_path):
+def test_a_name_that_is_no_field_is_a_workflow_artifact_saved_with_the_state(tmp_path):
+    """D15: a workflow's own output (`repro`) lives in `st.artifacts`; `<name>.<key>` in the dict there."""
     repo = repo_with_marker_tests(tmp_path)
     st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={"card": "c"})
+    assert not s.has("repro") and not s.has("found.01")
     with pytest.raises(KeyError):
-        StateStore(st, loose={}).put("ghost", 1)
+        s.get("repro")
+    s.put("repro", "steps to see it")
+    s.put("found.01", {"file": "a.py"})
+    assert s.has("repro") and s.get("repro") == "steps to see it"
+    assert s.has("found.01") and s.get("found.01") == {"file": "a.py"} and not s.has("found.02")
+    s.save()
+    saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
+    assert saved["artifacts"] == {"repro": "steps to see it", "found": {"01": {"file": "a.py"}}}
+    again = StateStore(StoryState.open(tmp_path / "AIR-1", text_card("x"), repo), loose={})
+    assert again.get("repro") == "steps to see it" and again.has("found.01")
+
+
+def test_a_dotted_name_under_a_plain_artifact_is_refused(tmp_path):
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={})
+    s.put("repro", "text")
     with pytest.raises(KeyError):
-        StateStore(st, loose={}).put("path", 1)
+        s.put("repro.01", 1)
+    assert not s.has("repro.01")
+
+
+def test_put_on_a_reserved_or_memory_head_is_refused(tmp_path):
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    for name in ("path", "path.x", "feedback", "package", "artifacts", "workflow", "workflow.name"):
+        with pytest.raises(KeyError):
+            StateStore(st, loose={}).put(name, 1)
+    assert st.artifacts == {}
 
 
 def test_put_on_a_loose_name_is_refused(tmp_path):
@@ -80,3 +109,13 @@ def test_sessions_hold_objects_in_memory_only():
     ss.put("a", 1)
     ss.clear()
     assert ss.get("a") is None
+
+
+def test_undeclared_outputs_land_in_artifacts(tmp_path):
+    repo = repo_with_marker_tests(tmp_path)
+    st = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    s = StateStore(st, loose={})
+    s.put("artifacts.repro", {"steps": 3})
+    s.save()
+    again = StoryState.open(tmp_path / "AIR-1", text_card("x"), repo)
+    assert again.artifacts["repro"] == {"steps": 3} and again.workflow is None

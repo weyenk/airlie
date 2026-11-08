@@ -48,6 +48,7 @@ from airlie.story.publish import Checked, Publisher, PublishError
 from airlie.story.restack import RestackError
 from airlie.story.restart import FRESH, Restarted, restart
 from airlie.story.state import STAGES, StoryState, lane_lock, lane_record, lock_held
+from airlie.story.workflows import board_problems
 from airlie.teams.worktree import remote_url, rev_parse
 from airlie.topology.studio import StudioOrchestrator, specialists
 
@@ -175,11 +176,19 @@ def make_board(cfg: AirlieConfig) -> Board:
     beside airlie.yaml, then story.jira), else a NullBoard. BoardError names what a half-configured Jira
     lacks."""
     if cfg.story.board == "local":
+        store = BoardStore(_board_path(cfg), prefix=cfg.board.prefix)
+
+        def workflow_problem(name: str) -> str | None:
+            """What stops workflow `name` resolving over the drafts as they are now (read at each pick: they
+            are small), or None: the picks pass over a card whose workflow has one."""
+            return "; ".join(board_problems(cfg, store.drafts(), name)) or None
+
         return LocalBoard(
-            BoardStore(_board_path(cfg), prefix=cfg.board.prefix),
+            store,
             role_names=set(cfg.roles),
             epics_dir=epics_dir(cfg),
             stories_dir=stories_dir(cfg),
+            workflow_problem=workflow_problem,
         )
     board = jira_board(cfg)
     return board if board is not None else NullBoard(stories_dir(cfg))
@@ -250,7 +259,7 @@ def make_pipeline(
     pinned_base: str | None = None,
 ) -> StoryPipeline:
     engine = _engine(cfg)
-    return StoryPipeline(
+    pipe = StoryPipeline(
         cfg,
         board=board,
         studio=lambda: StudioOrchestrator(cfg, engine),
@@ -260,6 +269,10 @@ def make_pipeline(
         github_repo=github_repo,
         pinned_base=pinned_base,
     )
+    if isinstance(board, LocalBoard):  # a card labelled workflow:<name> can run a draft of the board
+        pipe.drafts = lambda: {d.name: d.yaml for d in board.store.drafts()}
+        pipe.draft_prompts = lambda: {d.name: d.prompts for d in board.store.drafts()}
+    return pipe
 
 
 async def run_one(

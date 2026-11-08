@@ -112,6 +112,14 @@ class StoryState:
     it, so a fresh story saves one)."""
     blocked: str | None = None
     github_repo: str | None = None
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    """Outputs of a workflow's nodes that are not fields of this state, by name (`artifacts.<name>` in the
+    store). JSON-serialisable: they are saved with the state."""
+    workflow: dict[str, Any] | None = None
+    """The workflow this card started on, snapshotted so a later edit does not change a running card:
+    `{"name": str, "specs": {workflow name: WorkflowSpec.model_dump(mode="json")}, "prompts": {prompt id:
+    the draft's prompt file text}}` (`story.workflows.snapshot`). None: not snapshotted
+    (the repo's workflows are read) or cleared by a restart."""
 
     @classmethod
     def open(cls, path: Path, card: Card, repo: Path, github_repo: str | None = None) -> StoryState:
@@ -191,9 +199,15 @@ class StoryState:
 
     def save(self) -> None:
         """The new bytes are synced before the rename and the directory after it, so a crash leaves the old
-        state or the new one, never a short file."""
+        state or the new one, never a short file. A story that ran no workflow saves no `artifacts` or
+        `workflow` key, so its file is the one airlie wrote before workflows existed (and opens there on a
+        rollback); both load through their defaults."""
         data = asdict(self)
         del data["path"]
+        if not data["artifacts"]:
+            del data["artifacts"]
+        if data["workflow"] is None:
+            del data["workflow"]
         tmp = self.path / "state.json.tmp"
         with tmp.open("w") as f:
             f.write(json.dumps(data, indent=1, default=str))

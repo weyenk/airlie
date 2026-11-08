@@ -6,10 +6,10 @@ field for a node's type, an input nothing produces) before anything runs. This m
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Strict(BaseModel):
@@ -20,6 +20,19 @@ NodeType = Literal["ask", "conversation", "write", "meeting", "check", "gate", "
 Format = Literal[
     "json", "markdown", "text", "bool", "list", "ref:branch", "ref:worktree", "ref:pr", "file", "session"
 ]
+
+
+RESERVED = ("path", "artifacts", "workflow")
+"""Names of the story state's own bookkeeping that no node output may take: `path` (where the state lives,
+never saved), `artifacts` (the store of a workflow's own outputs, D15) and `workflow` (the card's snapshot,
+D21). `artifacts.<name>` is a name inside the store, and is fine; nothing may write inside `path` or
+`workflow`."""
+
+
+def reserved_output(name: str) -> bool:
+    """`name` would overwrite the state's own bookkeeping (`RESERVED`)."""
+    head, dot, _ = name.partition(".")
+    return head in RESERVED and (not dot or head != "artifacts")
 
 
 class LoopSpec(Strict):
@@ -56,10 +69,17 @@ class NodeSpec(Strict):
     advisor: str | None = None  # write, Part 2
 
 
+class Layout(Strict):
+    x: float
+    y: float
+
+
 class WorkflowSpec(Strict):
+    type: str | None = None  # the card type this workflow serves; the composer ignores it
     start: str
     loose: list[str] = []  # inputs the caller supplies: card, repo
     nodes: dict[str, NodeSpec]
+    layout: dict[str, Layout] = Field(default_factory=dict)  # canvas positions; the composer ignores them
 
 
 def _requirements(node: NodeSpec) -> str | None:
@@ -86,8 +106,36 @@ def _produced(w: WorkflowSpec) -> set[str]:
     return names
 
 
-def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
-    """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent."""
+def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -> list[str]:
+    """What is wrong with the prompt file a node's `prompt: "prompt:<id>"` names: an id that is neither a
+    hub rule nor in `prompts`, or a field the node cannot read (the hub's rules always, a draft's when
+    `prompts` maps its ids to their parsed files)."""
+    from airlie.flow.prompt_files import FEEDBACK, PREFIX, rule_ids
+    from airlie.prompts.hub import PromptText, entry
+
+    if node.prompt is None or not node.prompt.startswith(PREFIX):
+        return []
+    id = node.prompt.removeprefix(PREFIX)
+    parsed: PromptText | None
+    if id in rule_ids():  # the hub first (D19)
+        parsed = entry(id)
+    elif id in prompts:
+        parsed = prompts[id] if isinstance(prompts, Mapping) else None
+    else:
+        return [f"unknown prompt file '{id}'"]
+    fields = parsed.fields if parsed is not None else ()
+    return [
+        f"prompt file '{id}' reads '{name}', which is not an input of the node"
+        for name in fields
+        if name != FEEDBACK and name not in readable
+    ]
+
+
+def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collection[str] = ()) -> list[str]:
+    """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent.
+    `prompts` are the ids of the prompt files the drafts carry, beside the hub's rules, that a node's
+    `prompt: "prompt:<id>"` may name; a mapping of them to their parsed files (`PromptText`) has their
+    fields checked as well."""
     problems: list[str] = []
     callers: dict[str, list[str]] = {}  # bundle -> workflows whose `each` nodes call it
     for wname, w in workflows.items():
@@ -102,6 +150,9 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
             available |= _produced(workflows[caller]) | set(workflows[caller].loose)
         if w.start not in known:
             problems.append(f"workflow {wname}: start names unknown node '{w.start}'")
+        for lname in w.layout:
+            if lname not in known:
+                problems.append(f"workflow {wname}: layout names unknown node '{lname}'")
         for nname, n in w.nodes.items():
 
             def add(what: str, _w: str = wname, _n: str = nname) -> None:
@@ -109,6 +160,11 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec]) -> list[str]:
 
             if (missing := _requirements(n)) is not None:
                 add(missing)
+            for out in n.outputs:
+                if reserved_output(out):
+                    add(f"output '{out}' is reserved")
+            for what in _prompt_file(n, set(n.inputs) | set(w.loose), prompts):
+                add(what)
             for name in n.inputs:
                 if name not in available:
                     add(f"input '{name}' is not produced by any node and not loose")

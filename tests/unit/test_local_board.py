@@ -361,3 +361,63 @@ def test_a_blocked_ancestor_holds_every_card_under_it_and_release_lets_them_go(t
     s.update(init.key, status="blocked")
     assert board.held(board.item(story.key)) is True and board.held(board.item(epic.key)) is True
     assert board.held(board.item(init.key)) is False  # a card is not held by itself: its own status says so
+
+
+async def test_the_picks_skip_a_story_whose_workflow_has_a_problem_and_say_so_once(tmp_path: Path) -> None:
+    s = BoardStore(tmp_path / "board.sqlite")
+    asked: list[str] = []
+
+    def problem(name: str) -> str | None:
+        asked.append(name)
+        return "no workflow named 'nope'" if name == "nope" else None
+
+    board = LocalBoard(s, stories_dir=tmp_path / "stories", workflow_problem=problem)
+    broken = s.create(level="story", title="broken", labels=["workflow:nope"]).key
+    fine = s.create(level="story", title="fine", labels=["workflow:ok"]).key
+    plain = s.create(level="story", title="plain").key
+    for key in (broken, fine, plain):
+        s.update(key, status="approved")
+    text = note("workflow nope: no workflow named 'nope'")
+    assert (await board.next_card()) is not None and (await board.next_card()).key == fine  # type: ignore[union-attr]
+    assert board.next_unplanned_story().key == fine  # type: ignore[union-attr]
+    assert [c.text for c in s.get(broken).comments] == [text]  # said once, however often it is picked over
+    assert s.get(broken).status == "approved" and "ok" in asked
+    # a card that started runs its snapshot: it is never resolved again (D21)
+    folder = tmp_path / "stories" / broken
+    folder.mkdir(parents=True)
+    (folder / "state.json").write_text('{"stage": "intake", "workflow": {"name": "nope", "specs": {}}}')
+    assert (await board.next_card()).key == broken  # type: ignore[union-attr]
+
+
+async def test_a_story_labelled_with_the_default_workflow_is_not_resolved_at_pick(tmp_path: Path) -> None:
+    """`workflow:story` is the default written out, as `Line._workflow_hold` reads it: never asked about."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    asked: list[str] = []
+
+    def problem(name: str) -> str | None:
+        asked.append(name)
+        return "broken"
+
+    board = LocalBoard(s, stories_dir=tmp_path / "stories", workflow_problem=problem)
+    story = s.create(level="story", title="labelled", labels=["workflow:story"]).key
+    s.update(story, status="approved")
+    assert (await board.next_card()).key == story  # type: ignore[union-attr]
+    assert asked == [] and not s.get(story).comments
+
+
+async def test_a_started_card_with_no_snapshot_is_not_resolved_at_pick(tmp_path: Path) -> None:
+    """It runs the story (`running_workflow`), so its label's problem is not its own: it is picked."""
+    s = BoardStore(tmp_path / "board.sqlite")
+    asked: list[str] = []
+
+    def problem(name: str) -> str | None:
+        asked.append(name)
+        return "broken"
+
+    board = LocalBoard(s, stories_dir=tmp_path / "stories", workflow_problem=problem)
+    story = s.create(level="story", title="relabelled", labels=["workflow:nope"]).key
+    s.update(story, status="approved")
+    (tmp_path / "stories" / story).mkdir(parents=True)
+    (tmp_path / "stories" / story / "state.json").write_text('{"stage": "intake"}')
+    assert (await board.next_card()).key == story  # type: ignore[union-attr]
+    assert asked == [] and not s.get(story).comments

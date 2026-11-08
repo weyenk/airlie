@@ -148,6 +148,7 @@ from airlie.story.satisfied_check import satisfied_feedback, unproven
 from airlie.story.state import STAGES, StoryState
 from airlie.story.tester_lint import lint_note
 from airlie.story.testing_conventions import conventions, conventions_text, test_levels
+from airlie.story.workflows import WorkflowError, has_node, running_workflow, workflow_for
 from airlie.supervisor.answer import Answer
 from airlie.supervisor.layer import LayerSupervisor
 from airlie.supervisor.ledger import Ledger
@@ -539,6 +540,10 @@ def _reason(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+def _no_drafts() -> Mapping[str, str]:
+    return {}
+
+
 def _board_error(st: StoryState, call: str, e: Exception) -> None:
     st.emit("board_error", call=call, error=_redact_urls(f"{type(e).__name__}: {e}"))
 
@@ -587,6 +592,11 @@ class StoryPipeline:
         self.stories_dir = cfg.observability.state_dir / "stories"
         self.lessons = LessonsStore(cfg.observability.state_dir, self.repo)
         self.asker = Asker(cfg, self.studio, self.repo, lane=None)
+        self.drafts: Callable[[], Mapping[str, str]] = _no_drafts
+        """The board's draft workflows (name -> YAML text), read when a card's workflow is first resolved
+        (`workflows.workflow_for`); none until the serve wires the board's drafts in."""
+        self.draft_prompts: Callable[[], Mapping[str, Mapping[str, str]]] = lambda: {}
+        """The prompt files those drafts carry (draft name -> {prompt id: text}), read with them."""
         self._package_run = ""  # the studio run of the architect's latest package ask: the critic's is not it
         self._tests_before: dict[str, str] = {}
         """The test files a layer's last package try left (story.package_tools): the next try starts there."""
@@ -656,11 +666,22 @@ class StoryPipeline:
         self.asker.lane = "plan" if until == "planned" else None
         if until == "review":
             write_phase(self.stories_dir, "gap")
+        # a card that names a workflow other than the story runs it through the composer whatever the flag
+        # says; the flag governs the story's (D16, D17); a card that took a snapshot runs it whatever its
+        # label says now (D21). A card that started with no snapshot (the driver ran it, or an airlie from
+        # before workflows) and gained a label since has run the story's stages, which no snapshot records,
+        # so D21 cannot hold it: it stays on the story, the flag deciding as for any story card (with no
+        # label it runs as it always has). The board API refuses that relabel; a Jira card's does not ask.
+        named = running_workflow({"stage": st.stage, "workflow": st.workflow}, card.labels)
+        composed = st.workflow is not None or named != "story" or self.s.composer
         try:
             if st.base is None:  # a dependent story waits for the branch it is built on, before anything else
                 self._stacked_base(card)
-            if until == "review" and not st.done(
-                "publish"
+            # the card's workflow, snapshotted the first time it is used (D21); the driver runs the story's
+            name, specs, _ = workflow_for(self, st, card, named) if composed else ("story", None, None)
+            spec = None if specs is None else specs[name]
+            if (
+                until == "review" and not st.done("publish") and (spec is None or has_node(spec, "publish"))
             ):  # a layer to build, or the stack to publish: GitHub
                 # before any model works in this run: what it plants in the repository's git configuration
                 # later changes neither the repository every publish step must fetch from and push to (the
@@ -681,11 +702,18 @@ class StoryPipeline:
                     st.blocked = None
                     st.save()
             # the same steps, ordered by config/workflows/story.yaml
-            if self.s.composer and until == "planned":
-                await compose(self, st, card, until=until)  # its `planned` node says story_planned
+            if composed and until == "planned":
+                assert spec is not None
+                if has_node(spec, "planned"):
+                    await compose(self, st, card, until=until)  # its `planned` node says story_planned
+                else:  # nothing to plan: the card is taken in; the build lane runs the workflow whole (D16)
+                    await self._intake(st, card)  # the move to building and the note, as the story's intake
+                    # the stage then claims refine and layers too: a stage is an ordinal, not a record
+                    st.emit("story_planned", layers=0)
+                    st.finish(PLANNED)
                 st.emit("story_done", stage=st.stage, blocked=st.blocked)
                 return st
-            if self.s.composer:  # the composer holds the drafting conversation for its run (`Composer.held`)
+            if composed:  # the composer holds the drafting conversation for its run (`Composer.held`)
                 await compose(self, st, card, until=until)
             else:
                 await self._intake(st, card)
@@ -717,7 +745,7 @@ class StoryPipeline:
                 await self._finish(st, card)
         except StoryWaiting as e:
             await self._wait(st, card, str(e), e.on)
-        except StoryBlocked as e:
+        except (StoryBlocked, WorkflowError) as e:
             await self._block(st, card, str(e))
         except asyncio.CancelledError:
             await self._cancelled(st, card)

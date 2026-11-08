@@ -391,7 +391,9 @@ def test_a_full_known_repository_name_saves_on_one_enter(
     dialog.get_by_text("weyenk/airlie").click()
     editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("weyenk/OpenHand")
-    evidence.expect(dialog.get_by_role("option").first, "the typed name is offered").to_be_visible()
+    evidence.expect(
+        dialog.get_by_role("listbox").get_by_role("option").first, "the typed name is offered"
+    ).to_be_visible()
     editor.press("Enter")
     evidence.expect(editor, "one Enter saved it and closed the field").to_have_count(0)
     evidence.expect(dialog, "the card names it").to_contain_text("weyenk/OpenHand")
@@ -466,9 +468,9 @@ def test_the_repository_field_completes_a_known_repository_with_tab(
     dialog.get_by_text("weyenk/airlie").click()
     editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("weyenk/air")
-    evidence.expect(dialog.get_by_role("option").first, "the top match is offered").to_contain_text(
-        "weyenk/airlie"
-    )
+    evidence.expect(
+        dialog.get_by_role("listbox").get_by_role("option").first, "the top match is offered"
+    ).to_contain_text("weyenk/airlie")
     editor.press("Tab")
     evidence.expect(editor, "Tab completes the field").to_have_value("weyenk/airlie")
     editor.fill("weyenk/air")
@@ -488,9 +490,13 @@ def test_escape_closes_the_suggestions_first_then_discards_the_edit(
     dialog.get_by_text("weyenk/airlie").click()
     editor = dialog.get_by_label("Repository", exact=True)
     editor.fill("weyenk/air")
-    evidence.expect(dialog.get_by_role("option").first, "the list is open").to_be_visible()
+    evidence.expect(
+        dialog.get_by_role("listbox").get_by_role("option").first, "the list is open"
+    ).to_be_visible()
     editor.press("Escape")
-    evidence.expect(dialog.get_by_role("option"), "the first Escape closes the list").to_have_count(0)
+    evidence.expect(
+        dialog.get_by_role("listbox").get_by_role("option"), "the first Escape closes the list"
+    ).to_have_count(0)
     evidence.expect(editor, "the editor is still open").to_be_visible()
     evidence.expect(dialog, "and so is the modal").to_be_visible()
     editor.press("Escape")

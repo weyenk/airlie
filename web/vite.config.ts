@@ -3,7 +3,7 @@ import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 
 // The build lands inside the Python package, where `airlie serve` serves it at /.
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: "/",
   plugins: [vue(), tailwindcss()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
@@ -14,9 +14,12 @@ export default defineConfig({
   server: {
     // `task web:dev` serves the app on Vite's port and sends the API to `task serve`.
     proxy: { "/v1": "http://127.0.0.1:8090" },
+    // the tests alone may read the repo beside web/ (the builder's tests import config/workflows/*.yaml?raw);
+    // the dev server keeps Vite's default of web/ only
+    ...(mode === "test" ? { fs: { allow: [new URL("..", import.meta.url).pathname] } } : {}),
   },
   test: {
     environment: "jsdom",
     globals: true,
   },
-});
+}));

@@ -9,7 +9,9 @@ import ErrorBanner from "@/components/ErrorBanner.vue";
 import { liveResource } from "@/stores/live";
 import { useWorkflowsStore } from "@/stores/workflows";
 import { date } from "./board/time";
+import { useWorkflowDefs } from "./board/workflow";
 import { repoLabels } from "./workflows/repoLabel";
+import DefinitionsTable from "./workflows/DefinitionsTable.vue";
 import RunningCard from "./workflows/RunningCard.vue";
 import StoriesTable from "./workflows/StoriesTable.vue";
 
@@ -26,6 +28,7 @@ const BLOCKED = [
 ] as const;
 
 const store = useWorkflowsStore();
+const definitions = useWorkflowDefs();
 const route = useRoute();
 const router = useRouter();
 
@@ -182,6 +185,7 @@ const selectClass =
 
     <ErrorBanner v-if="store.runningError" :error="store.runningError" />
     <RunningCard :rows="store.running" />
+    <DefinitionsTable :defs="definitions.defs.value" :failed="definitions.failed.value" @retry="definitions.reload" />
 
     <section aria-label="Stories" class="rounded-xl border border-border bg-card shadow-sm">
       <div class="flex items-center gap-2.5 border-b border-border px-[18px] py-3.5">

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import type { Item, Level } from "@/api/board";
 import { TYPE_COLOURS } from "@/components/typeColours";
 import Typeahead from "@/components/Typeahead.vue";
@@ -8,14 +9,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useRepoNames } from "@/composables/useRepoNames";
 import { useBoardStore } from "@/stores/board";
+import { useCardDraftStore } from "@/stores/card_draft";
 import ModalShell from "./ModalShell.vue";
 import { cleanRepo, repoOf, repoProblem } from "./repo";
+import { BUILD_NEW, DEFAULT_WORKFLOW, WORKFLOW_PREFIX, useWorkflowDefs, workflowGroups } from "./workflow";
 
 defineOptions({ name: "AirlieCreateModal" });
 
 // Create: the type tiles, a title, an optional parent, the repository and a description. The picker offers the
 // four levels the board model has until the work-types design adds the rest. A child (Add child) starts with
-// its parent's repository.
+// its parent's repository. The workflow is required and starts on story; "Build new…" holds the form and opens
+// the builder, which comes back to the board with `?create=<token>` and the workflow it made chosen.
 const props = defineProps<{ parent?: Item | null }>();
 const emit = defineEmits<{ close: []; created: [item: Item] }>();
 
@@ -30,13 +34,20 @@ const above = (level: Level): Level | null => ORDER[ORDER.indexOf(level) - 1] ??
 
 const board = useBoardStore();
 const names = useRepoNames();
+const drafts = useCardDraftStore();
+const router = useRouter();
+const route = useRoute();
+const { defs, failed, reload } = useWorkflowDefs();
 
+const token = typeof route.query.create === "string" ? route.query.create : null;
+const held = token ? drafts.take(token) : null;
 const parentItem = props.parent ?? null;
-const level = ref<Level>(parentItem ? (ORDER[ORDER.indexOf(parentItem.level) + 1] ?? "subtask") : "story");
-const title = ref("");
-const description = ref("");
-const parentKey = ref(parentItem?.key ?? "");
-const repo = ref(parentItem ? repoOf(parentItem.labels) : "");
+const level = ref<Level>(held?.level ?? (parentItem ? (ORDER[ORDER.indexOf(parentItem.level) + 1] ?? "subtask") : "story"));
+const title = ref(held?.title ?? "");
+const description = ref(held?.description ?? "");
+const parentKey = ref(held ? (held.parent ?? "") : (parentItem?.key ?? ""));
+const repo = ref(held?.repo ?? (parentItem ? repoOf(parentItem.labels) : ""));
+const workflow = ref(held?.workflow ?? DEFAULT_WORKFLOW);
 const error = ref("");
 const busy = ref(false);
 const titleBox = useTemplateRef<InstanceType<typeof Input>>("titleBox");
@@ -46,6 +57,34 @@ const parents = computed(() => {
   return want ? board.items.filter((i) => i.level === want) : [];
 });
 const label = computed(() => LEVELS.find((l) => l.level === level.value)!.label.toLowerCase());
+/** Only a story runs a workflow this round (D17): the field and its label are a story's alone. */
+const isStory = computed(() => level.value === "story");
+const groups = computed(() => (failed.value ? [] : workflowGroups(defs.value)));
+const listed = computed(() => groups.value.some((g) => g.options.some((o) => o.value === workflow.value)));
+/** Plain options ahead of the groups: with no list, story (and a choice the builder brought back, so it is not
+ * lost); before the list answers, the current choice, so the select never shows blank. */
+const loose = computed(() => (failed.value ? [...new Set([DEFAULT_WORKFLOW, workflow.value])] : listed.value ? [] : [workflow.value]));
+const chosen = computed({
+  get: () => workflow.value,
+  set: (value: string) => {
+    if (value === BUILD_NEW) void buildNew();
+    else workflow.value = value;
+  },
+});
+
+/** Hold what is typed and open the builder for a new workflow; the token brings it back. */
+async function buildNew(): Promise<void> {
+  await nextTick(); // a keystroke's value reaches the model a tick later
+  const kept = drafts.hold({
+    level: level.value,
+    title: title.value,
+    description: description.value,
+    parent: parentKey.value || null,
+    repo: repo.value,
+    workflow: workflow.value,
+  });
+  void router.push({ name: "builder", params: { name: "new" }, query: { card: kept } });
+}
 
 function pick(next: Level): void {
   level.value = next;
@@ -81,8 +120,9 @@ async function submit(): Promise<void> {
       title: t,
       description: description.value,
       parent: parentKey.value || null,
-      labels: clean ? [`repo:${clean}`] : [],
+      labels: [...(clean ? [`repo:${clean}`] : []), ...(isStory.value ? [`${WORKFLOW_PREFIX}${workflow.value}`] : [])],
     });
+    if (token) drafts.drop(token);
     emit("created", made);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -137,6 +177,20 @@ const fieldLabel = "mb-1.5 block text-[13px] font-semibold text-muted-foreground
         <div class="min-w-0">
           <span :class="fieldLabel">Repository</span>
           <Typeahead v-model="repo" :source="names" label="Repository" placeholder="owner/name" />
+        </div>
+        <div v-if="isStory" class="min-w-0">
+          <label for="create-workflow" :class="fieldLabel">Workflow</label>
+          <select id="create-workflow" v-model="chosen" data-workflow required aria-label="Workflow" :class="select">
+            <option v-for="v in loose" :key="v" :value="v">{{ v }}</option>
+            <optgroup v-for="g in groups" :key="g.label" :label="g.label">
+              <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
+            </optgroup>
+            <option :value="BUILD_NEW">＋ Build new…</option>
+          </select>
+          <p v-if="failed" role="status" class="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            Workflows did not load
+            <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reload">Retry</Button>
+          </p>
         </div>
       </div>
 

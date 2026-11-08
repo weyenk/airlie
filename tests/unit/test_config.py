@@ -27,6 +27,7 @@ MINIMAL: dict = {
 
 def write(tmp_path: Path, data: dict, name: str = "airlie.yaml") -> Path:
     p = tmp_path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(yaml.safe_dump(data))
     for role in data.get("roles", {}).values():
         (tmp_path / role["prompt"]).parent.mkdir(parents=True, exist_ok=True)
@@ -1361,3 +1362,30 @@ def test_tool_written_packages_stay_off_in_the_schema_and_the_committed_config()
     assert (cfg.package_tools, cfg.package_write_chars, cfg.package_steps) == (False, 12_000, 24)
     with pytest.raises(ValidationError, match="greater than or equal to 1000"):
         StorySpec(**_story(package_write_chars=999))
+
+
+def _wf(name: str) -> dict:
+    return {"workflows": {name: {"start": "a", "nodes": {"a": {"type": "check", "run": "r"}}}}}
+
+
+def test_includes_accept_a_glob_in_sorted_order(tmp_path: Path) -> None:
+    write(tmp_path, _wf("b"), name="parts/b.yaml")
+    write(tmp_path, _wf("a"), name="parts/a.yaml")
+    cfg = load_config(write(tmp_path, {**MINIMAL, "includes": ["parts/*.yaml"]}))
+    assert list(cfg.workflows) == ["a", "b"]
+
+
+def test_a_glob_ignores_directories(tmp_path: Path) -> None:
+    write(tmp_path, _wf("a"), name="parts/a.yaml")
+    (tmp_path / "parts" / "sub.yaml").mkdir()
+    cfg = load_config(write(tmp_path, {**MINIMAL, "includes": ["parts/*.yaml"]}))
+    assert list(cfg.workflows) == ["a"]
+
+
+def test_a_glob_that_matches_nothing_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="nothing matches parts/\\*.yaml"):
+        load_config(write(tmp_path, {**MINIMAL, "includes": ["parts/*.yaml"]}))
+
+
+def test_the_shipped_story_workflow_declares_its_type() -> None:
+    assert load_config(Path("airlie.yaml")).workflows["story"].type == "story"

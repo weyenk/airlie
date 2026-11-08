@@ -11,15 +11,20 @@ import httpx
 import pytest
 
 from airlie.engine import FakeEngine
+from airlie.flow.spec import check_workflows
 from airlie.story import factory
+from airlie.story.board import Card, note
 from airlie.story.factory import tick
 from airlie.story.line import Line
 from airlie.story.local_board import LocalBoard
 from airlie.story.phase import paused, set_paused
-from airlie.story.state import lane_lock, lock_held
+from airlie.story.state import StoryState, lane_lock, lock_held
+from airlie.story.workflows import draft_spec
+from tests.unit.test_board_api import NO_RUN
 from tests.unit.test_story_epic_pipeline import plan_obj, reply
 from tests.unit.test_story_factory import started_log
 from tests.unit.test_story_tick_epics import TickRig, specs_rig
+from tests.unit.test_story_workflows import MINI
 
 # ---- Task 6: two lanes, two locks ----
 
@@ -343,3 +348,97 @@ async def test_a_job_that_finds_its_lane_held_leaves_the_holders_record_alone(
     started = started_log(monkeypatch)
     await line.run_job(job)
     assert seen == [f"plan {story}"] and not holder.exists() and started == []
+
+
+# ---- the card's workflow (docs/superpowers/specs/2026-11-07-workflow-builder-design.md) ----
+
+
+async def test_the_line_holds_a_card_whose_draft_no_longer_validates_with_a_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(tmp_path, monkeypatch)
+    rig.store.save_draft("mini", type="bug", yaml=MINI)
+    story = rig.store.create(level="story", title="S", labels=["repo:o/r", "workflow:mini"]).key
+    rig.store.update(story, status="approved")
+    rig.store.save_draft("mini", type="bug", yaml=NO_RUN)  # broken after the card was approved
+
+    def said() -> list[str]:
+        return [c.text for c in rig.store.get(story).comments if c.text.startswith(note("workflow mini:"))]
+
+    await tick(rig.cfg)
+    assert rig.status(story) == "approved"  # held where it is: not blocked, not moved
+    [text] = said()
+    [problem] = check_workflows({"mini": draft_spec("mini", NO_RUN)})
+    assert problem in text and not rig.engine.requests
+    assert factory._saved(rig.cfg, story) is None  # nothing was started
+    await tick(rig.cfg)  # the next beat holds it again and does not say it twice
+    assert rig.status(story) == "approved" and len(said()) == 1
+
+
+async def test_a_card_that_reaches_the_story_line_with_a_broken_workflow_is_held_there_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backstop for a pick that does not check (a board made without `workflow_problem`)."""
+    rig = TickRig(tmp_path, monkeypatch)
+    rig.store.save_draft("mini", type="bug", yaml=NO_RUN)
+    story = rig.store.create(level="story", title="S", labels=["repo:o/r", "workflow:mini"]).key
+    rig.store.update(story, status="approved")
+    board = LocalBoard(rig.store, stories_dir=factory.stories_dir(rig.cfg))
+    line = Line(rig.cfg, board=board, state_dir=rig.cfg.observability.state_dir)
+    card = board.card_of(rig.store.get(story))
+    assert await line._story_line(card, "plan") == ("held", None)
+    assert await line._story_line(card, "build") == ("held", None)
+    held = [c for c in rig.store.get(story).comments if c.text.startswith(note("workflow mini:"))]
+    assert len(held) == 1 and rig.status(story) == "approved" and not rig.engine.requests
+
+
+async def test_a_started_card_with_no_snapshot_is_not_held_for_its_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It runs the story (`running_workflow`), as `_drive` runs it: its label is not resolved."""
+    rig = TickRig(tmp_path, monkeypatch)
+    story = rig.store.create(level="story", title="S", labels=["repo:o/r", "workflow:nope"]).key
+    folder = factory.stories_dir(rig.cfg) / story
+    folder.mkdir(parents=True)
+    (folder / "state.json").write_text('{"stage": "intake"}')
+    board = LocalBoard(rig.store, stories_dir=factory.stories_dir(rig.cfg))
+    line = Line(rig.cfg, board=board, state_dir=rig.cfg.observability.state_dir)
+    card = board.card_of(rig.store.get(story))
+    assert await line._workflow_hold(card, None) is None  # type: ignore[arg-type]
+    assert not rig.store.get(story).comments
+
+
+async def test_a_card_whose_workflow_has_a_problem_is_skipped_so_the_next_one_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = TickRig(tmp_path, monkeypatch)
+    rig.store.save_draft("mini", type="bug", yaml=NO_RUN)
+    broken = rig.store.create(level="story", title="Broken", labels=["repo:o/r", "workflow:mini"]).key
+    plain = rig.store.create(level="story", title="Plain", labels=["repo:o/r"]).key
+    for key in (broken, plain):
+        rig.store.update(key, status="approved")
+    planned: list[str] = []
+
+    class Planner:
+        def drafts(self) -> dict[str, str]:
+            return {d.name: d.yaml for d in rig.store.drafts()}
+
+        async def plan(self, card: Card) -> StoryState:
+            planned.append(card.key)
+            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="layers")
+
+        async def build(self, card: Card) -> StoryState:  # the beat hands a planned story to the build lane
+            return StoryState(path=Path("s"), card=card.to_dict(), repo="r", stage="review")
+
+    monkeypatch.setattr(factory, "make_pipeline", lambda cfg, **kw: Planner())
+
+    def said() -> list[str]:
+        return [c.text for c in rig.store.get(broken).comments if c.text.startswith(note("workflow mini:"))]
+
+    line = await tick(rig.cfg)
+    assert planned == [plain] and f"{plain} Plain" in line  # the one behind it was not starved
+    assert rig.status(broken) == "approved" and len(said()) == 1
+    [problem] = check_workflows({"mini": draft_spec("mini", NO_RUN)})
+    assert problem in said()[0]
+    await tick(rig.cfg)
+    assert len(said()) == 1 and broken not in planned

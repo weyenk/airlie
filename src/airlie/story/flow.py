@@ -19,6 +19,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.composer import FAIL_KEY, Composer, Registry, RunContext, Runner
+from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.runners import (
     Hold,
     Opening,
@@ -32,6 +33,7 @@ from airlie.flow.runners import (
 )
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
+from airlie.prompts.hub import PromptText
 from airlie.story.amigos import Agreement
 from airlie.story.board import Card, note
 from airlie.story.briefs import (
@@ -48,6 +50,7 @@ from airlie.story.package import Package, Satisfied
 from airlie.story.rounds import plan_verdict, same_layers
 from airlie.story.state import StoryState
 from airlie.story.tester_lint import lint_note
+from airlie.story.workflows import has_node, workflow_for
 from airlie.topology.studio_plan import extract_json_block
 
 # the pipeline imports this module for `compose`
@@ -58,6 +61,41 @@ Until = Literal["planned", "review"]
 Step = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
 Opener = Callable[[Opening], AbstractAsyncContextManager[Session]]
 """How a conversation step opens its conversation: the runner's `Talk.open`, or the driver's `converse`."""
+
+CATALOG: Mapping[str, tuple[str, ...]] = {
+    # every id `story_registry` adds, by the node field that names it: the builder's dropdowns
+    "prompts": ("story.survey", "story.refine", "story.layers", "story.drafts"),  # prompt: (ctx, feedback)
+    "parsers": ("story.story", "story.layer_plan"),  # parse:
+    "checks": (  # run: of a check or gate node, and the layer bundle's package and build steps
+        "story.intake",
+        "story.take_card_as_story",
+        "story.base",
+        "story.gate",
+        "story.agree_plain",
+        "story.costed",
+        "story.planned",
+        "story.covered",
+        "story.build_done",
+        "story.publish",
+        "story.finish",
+        "story.ready_package",
+        "story.build_once",
+    ),
+    "predicates": (  # when:, done:, a loop's when: (ctx)
+        "story.amigos_on",
+        "story.amigos_off",
+        "story.to_build",
+        "story.survey_on",
+        "story.is_story_card",
+        "story.not_story_card",
+        "story.open_layer",
+        "story.not_built",
+        "story.has_package",
+    ),
+    "afters": ("story.surveyed", "story.survey_failed", "story.refined"),  # after:, an ask's args.failed
+    "turns": ("story.layers_turns", "story.drafts_turns"),  # a conversation's args.turns
+    "meetings": ("story.amigos",),  # run: of a meeting node
+}
 
 
 # ---- the ask nodes' pieces (survey, refine): the registry's and the driver's step's one implementation ----
@@ -295,10 +333,18 @@ def seat(pipe: StoryPipeline, role: str) -> str:
     return str(getattr(pipe.s, f"{role}_role", role))
 
 
-def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until) -> Registry:
+def story_registry(
+    pipe: StoryPipeline,
+    st: StoryState,
+    card: Card,
+    *,
+    until: Until,
+    prompts: Mapping[str, PromptText] | None = None,
+) -> Registry:
     """Every `story.*` id the story and layer workflows name. The checks, the meeting's piece, the layer's
     package and build, and the review gate call today's steps; the predicates are today's conditions; the
-    asks' and conversations' briefs, parsers, after-hooks and turn bodies are their pieces."""
+    asks' and conversations' briefs, parsers, after-hooks and turn bodies are their pieces. `prompts` are
+    the drafts' prompt files a `prompt:<id>` may name beside the hub's rules (`Registry`)."""
     from airlie.story.pipeline import _covered_below, _to_build  # the pipeline imports this module
 
     # ---- the checks (`check_runner`: `fn(ctx, **node.args)`, a declared input read from the store, the
@@ -432,7 +478,7 @@ def story_registry(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Un
         await draft_packages(pipe, st, *_planned(ctx), await talk.opening(), talk.open)
         return True
 
-    registry = Registry()
+    registry = Registry(prompts=prompts)
     # the ask nodes' pieces: briefs (ctx, feedback), the parser, the after-hooks (ctx, value)
     registry.add("story.survey", lambda ctx, feedback: survey_brief(card))
     registry.add("story.surveyed", lambda ctx, text: surveyed(st, text))
@@ -550,21 +596,18 @@ def _restore(pipe: StoryPipeline, st: StoryState) -> None:
 
 
 async def compose(pipe: StoryPipeline, st: StoryState, card: Card, *, until: Until) -> None:
-    """Run the story workflow over `st`: up to and including `planned` for the planning lane, else to the
-    end. The driver's prologue and its stop mapping stay in `_drive`, around this call."""
-    if "story" not in pipe.cfg.workflows:
-        from airlie.config import ConfigError
-
-        raise ConfigError(
-            "story.composer is on, but the config has no 'story' workflow: include "
-            "config/workflows/story.yaml and config/workflows/layer.yaml"
-        )
+    """Run the card's workflow over `st` (its snapshot, taken now if the card has none: `workflow_for`): up
+    to and including `planned` for the planning lane when the workflow has that node, else to the end. The
+    driver's prologue and its stop mapping stay in `_drive`, around this call."""
+    name, specs, prompts = workflow_for(pipe, st, card)
     composer = Composer(
         pipe.cfg,
         runners=story_runners(pipe, st, card),
-        registry=story_registry(pipe, st, card, until=until),
+        registry=story_registry(pipe, st, card, until=until, prompts=parse_draft_prompts(prompts)),
         store=StateStore(st, loose={"card": card, "repo": pipe.repo}),
         sessions=Sessions(),
+        workflows=specs,
     )
     _restore(pipe, st)
-    await composer.run("story", until="planned" if until == "planned" else None)
+    planned_lane = until == "planned" and has_node(specs[name], "planned")
+    await composer.run(name, until="planned" if planned_lane else None)

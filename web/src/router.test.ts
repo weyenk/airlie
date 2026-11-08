@@ -74,6 +74,15 @@ test("a run address is never read as a story called runs", async () => {
   expect(router.currentRoute.value.meta.tab).toBe("workflows");
 });
 
+test("the builder address is never read as a story called build", async () => {
+  fakeFetch("signed-in");
+  const router = createAppRouter(createMemoryHistory("/"));
+  await router.push("/workflows/build/x");
+  expect(router.currentRoute.value.name).toBe("builder");
+  expect(router.currentRoute.value.params.name).toBe("x");
+  expect(router.currentRoute.value.meta.tab).toBe("workflows");
+});
+
 test("sign in and join are public and bare; unknown addresses are not found", async () => {
   fakeFetch("signed-out");
   const router = createAppRouter(createMemoryHistory("/"));

@@ -21,6 +21,9 @@ export type Item = {
   created_at: number;
   updated_at: number;
   created_by: string;
+  /** `GET /v1/board/items/{key}` alone, on a local board: the card has a saved state (it started on its
+   * workflow, which can no longer change). */
+  started?: boolean;
 };
 
 export type NewItem = { level: Level; title: string; description?: string; parent?: string | null; labels?: string[] };

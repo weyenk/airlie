@@ -3,6 +3,7 @@ comments."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, get_args
 
@@ -37,6 +38,21 @@ class Move:
     to_status: str
     by: str
     at: float
+
+
+@dataclass(frozen=True)
+class WorkflowDraft:
+    """A workflow the builder has not published: its YAML text and the prompts it carries, by name. A card
+    labelled `workflow:<name>` runs it at once; `published_*` is the PR that put it in the repo."""
+
+    name: str
+    type: str | None
+    yaml: str
+    prompts: Mapping[str, str]
+    created_at: float
+    updated_at: float
+    published_pr: int | None
+    published_url: str | None
 
 
 @dataclass(frozen=True)

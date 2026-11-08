@@ -5,17 +5,23 @@ approve it), the pipeline's columns are the board's statuses, and airlie's notes
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from airlie.board import BoardStore, Item
 from airlie.board.model import Comment, Status
-from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column
+from airlie.story.board import ISSUE_KEY, NOTE_PREFIX, BoardError, Card, Column, note
 from airlie.story.epic import epic_of
 from airlie.story.epic_plan import after_keys, epic_key_of
 from airlie.story.epic_state import epic_needs_work
 from airlie.story.initiative import Initiative, initiative_key_of
 from airlie.story.model import PLANNED, StoryError
 from airlie.story.state import STAGES
+from airlie.story.workflows import DEFAULT, running_workflow
+
+log = logging.getLogger(__name__)
 
 STATUS_OF: dict[Column, str] = {
     "intake": "todo",
@@ -43,14 +49,19 @@ class LocalBoard:
         role_names: set[str] | None = None,
         epics_dir: Path | None = None,
         stories_dir: Path | None = None,
+        workflow_problem: Callable[[str], str | None] | None = None,
     ) -> None:
         """`epics_dir` is where the epics' records are (observability.state_dir/epics): `next_epic` reads
         them to tell an epic that still needs its stories from one that has them. `stories_dir` is where the
-        stories' are: `next_planned_story` and `next_unplanned_story` read how far each story got."""
+        stories' are: `next_planned_story` and `next_unplanned_story` read how far each story got.
+        `workflow_problem`, when given, says what stops a workflow resolving over the board's drafts as they
+        are now (None when nothing does): the picks pass over a story whose workflow has one
+        (`_unrunnable`)."""
         self.store = store
         self.role_names = frozenset(role_names or ())
         self.epics_dir = epics_dir
         self.stories_dir = stories_dir
+        self.workflow_problem = workflow_problem
 
     def close(self) -> None:
         """Closes the store's connection (a later read opens it again)."""
@@ -138,9 +149,43 @@ class LocalBoard:
         todo, so it waits to be approved again); epics and initiatives are never built. A story the line made
         for an epic (its `epic:` label) is passed over while its epic is held (D10 of the plans phase)."""
         for story in self.store.list(level="story", status="approved"):
-            if not self.is_held(story):
+            if not self.is_held(story) and not self._unrunnable(story):
                 return self._card(story)
         return None
+
+    def _unrunnable(self, story: Item) -> bool:
+        """The workflow the story's `workflow:` label names has a problem (a draft edited or deleted after
+        the card was approved): the picks pass over it, so the cards behind it still run, and it is told why
+        once per problem (by its stored comments) until a person fixes the draft or the label. A story with
+        no label (or `workflow:story`, the default written out) runs the story's own workflow, and one that
+        has started runs the workflow it snapshotted whatever the drafts say since (D21), or the story when
+        it started with none (`running_workflow`): none of them is resolved. A note the store refuses never
+        fails the pick."""
+        saved = self._saved(story.key)
+        name = running_workflow(saved, story.labels)
+        if self.workflow_problem is None or name == DEFAULT or (saved or {}).get("workflow") is not None:
+            return False
+        problem = self.workflow_problem(name)
+        if problem is None:
+            return False
+        text = note(f"workflow {name}: {problem}")
+        if all(c.text != text for c in story.comments):
+            try:
+                # the line's own narration, as its hold's (`Line._workflow_hold`): posted as airlie
+                self.store.comment(story.key, "airlie", text)
+            except Exception:  # noqa: BLE001 - the pick goes on; the next one tries the note again
+                log.warning("the workflow note on %s failed", story.key, exc_info=True)
+        return True
+
+    def _saved(self, key: str) -> dict[str, Any] | None:
+        """The story's record (state.json) as a dict, or None when there is none or it cannot be read."""
+        if self.stories_dir is None:
+            return None
+        try:
+            saved = json.loads((self.stories_dir / key / "state.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return saved if isinstance(saved, dict) else None
 
     def _planned(self, key: str) -> bool:
         """The story's record has reached the boundary stage (`PLANNED`): its layers are split and agreed. A
@@ -163,7 +208,7 @@ class LocalBoard:
         never started by the line (a person moved it): it is left where it is."""
         for status in ("approved", "doing"):
             for story in self.store.list(level="story", status=status):
-                if self.is_held(story) or self._planned(story.key) != planned:
+                if self.is_held(story) or self._planned(story.key) != planned or self._unrunnable(story):
                     continue
                 if status == "doing" and not planned and not self._started(story.key):
                     continue

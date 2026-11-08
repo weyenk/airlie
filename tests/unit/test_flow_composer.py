@@ -5,6 +5,7 @@ import pytest
 
 from airlie.config import ConfigError
 from airlie.flow import Composer, EndRun, MemoryStore, MissingInput, Registry, Sessions, resolve_count
+from airlie.flow.spec import NodeSpec, WorkflowSpec
 from airlie.story.asking import StoryBlocked
 from tests.unit.test_studio_orchestrator import cfg_for
 
@@ -631,3 +632,21 @@ async def test_a_when_loop_on_a_state_store_carries_feedback_without_storing_the
     assert calls == [None, "fb"] and st.story == {"n": 2}
     saved = json.loads((tmp_path / "AIR-1" / "state.json").read_text())
     assert saved["story"] == {"n": 2} and "note" not in saved and "feedback" not in saved
+
+
+async def test_the_composer_runs_a_workflow_from_a_given_mapping_not_the_config(tmp_path):
+    cfg = cfg_for(tmp_path)  # no workflows in config
+    specs = {
+        "w": WorkflowSpec(start="a", nodes={"a": NodeSpec(type="check", run="r", outputs={"x": "text"})})
+    }
+    c = Composer(
+        cfg,
+        runners={"check": check_that(lambda n, c: {"x": 1})},
+        registry=Registry(),
+        store=MemoryStore({}),
+        sessions=Sessions(),
+        workflows=specs,
+    )
+    assert await c.run("w") == "a"
+    with pytest.raises(KeyError, match="no workflow named 'nope'"):
+        c.spec("nope")

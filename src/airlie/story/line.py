@@ -33,7 +33,7 @@ from airlie.board import Item
 from airlie.config import AirlieConfig
 from airlie.doctor import RealProbe, SystemProbe, engine_matches_profile
 from airlie.story import factory
-from airlie.story.board import Board, BoardError, Card, NullBoard
+from airlie.story.board import Board, BoardError, Card, NullBoard, note
 from airlie.story.epic_pipeline import EpicPipeline, epics_dir
 from airlie.story.epic_plan import after_keys
 from airlie.story.fixes import GhRun, bookkeep, line_event
@@ -53,6 +53,7 @@ from airlie.story.phase import (
 )
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import Lane, StoryState, lane_lock, lane_record, lock_held
+from airlie.story.workflows import DEFAULT, WorkflowError, resolve_workflows, running_workflow
 
 Spawn = Callable[["Job"], None]
 """Starts a lane's job in the background and returns at once (the serve process registers it in its jobs)."""
@@ -143,6 +144,8 @@ class Line:
         self.lanes: tuple[Lane, ...] = LANES if isinstance(board, LocalBoard) else ("build",)
         """The lanes this board has: a Jira board has no epics or initiatives to plan, so one lane (the
         story's whole run) is all there is."""
+        self.held_notes: set[tuple[str, str]] = set()
+        """The (card, text) notes this line said about a card it holds for its workflow, said once each."""
 
     # ---- the beat ----
 
@@ -477,6 +480,8 @@ class Line:
         try:
             where = factory.place(cfg, card)
             pipe = self.pipes.story(where.repo, where.github_repo)
+            if (held := await self._workflow_hold(card, pipe)) is not None:
+                return held, None
             st = await getattr(pipe, how)(card)
         except StorySetupError as e:
             line = await factory._set_aside(cfg, board, card, e)
@@ -490,6 +495,41 @@ class Line:
                 line = f"{card.ref} {card.title}: {outcome}{taken}"
         # a title and a stop reason are issue and git text: their whitespace is folded, so it stays one line
         return " ".join(line.split()), st
+
+    async def _workflow_hold(self, card: Card, pipe: StoryPipeline) -> str | None:
+        """`held` when the workflow `card`'s label names does not resolve over the board's drafts as they are
+        now (a draft edited or deleted after the card was approved): the card stays where it is, untouched,
+        and is told why once per problem, until a person fixes the draft or the label. None otherwise, and
+        always for a card with no label (the story's own workflow)."""
+        saved = factory._saved(self.cfg, card.key)
+        name = running_workflow(saved, card.labels)
+        # only a card with no snapshot is resolved here: one that has started runs the workflow it
+        # snapshotted, whatever the drafts say since (D21), and one started without a snapshot runs the story
+        if name == DEFAULT or (saved or {}).get("workflow") is not None:
+            return None
+        try:
+            resolve_workflows(self.cfg, pipe.drafts(), name, prompts=pipe.draft_prompts())
+        except WorkflowError as e:
+            text = f"workflow {name}: {e}"
+            if not self._said(card, text):
+                try:
+                    # the line's own narration, as _set_aside's: no role, so it posts as airlie
+                    await self.board.comment(card, note(text))
+                    self.held_notes.add((card.key, text))
+                except Exception as err:  # noqa: BLE001 - a board that fails is logged, not raised
+                    log.warning("the hold note on %s failed: %s", card.key, factory._why(err))
+            return "held"
+        return None
+
+    def _said(self, card: Card, text: str) -> bool:
+        """This note was said already: by this line, or, on a local board (read now), by an earlier beat's
+        (each beat is a new Line)."""
+        if (card.key, text) in self.held_notes:
+            return True
+        if isinstance(self.board, LocalBoard):
+            with contextlib.suppress(KeyError):
+                return any(c.text == note(text) for c in self.board.store.get(card.key).comments)
+        return False
 
 
 __all__ = [

@@ -18,6 +18,7 @@ import ModalShell from "./ModalShell.vue";
 import { repoOf, repoProblem, withRepo } from "./repo";
 import { STATUSES } from "./statuses";
 import StoryFlow from "./StoryFlow.vue";
+import { useWorkflowDefs, withWorkflow, workflowGroups, workflowOf } from "./workflow";
 import { ago, date } from "./time";
 
 defineOptions({ name: "AirlieCardModal" });
@@ -86,6 +87,35 @@ async function patch(body: ItemChange): Promise<void> {
 }
 const saveRepo = (value: string) => patch({ labels: withRepo(item.value?.labels ?? [], value) });
 
+// The workflow: a select of the same choices Create offers (less Build new…), saved on change. A refusal (422:
+// the workflow does not validate) shows the server's words and puts the select back.
+const { defs, failed: defsFailed, reload: reloadDefs } = useWorkflowDefs();
+const groups = computed(() => workflowGroups(defs.value));
+const workflow = computed(() => workflowOf(item.value?.labels ?? []));
+const workflowDef = computed(() => defs.value.find((d) => d.name === workflow.value));
+const listed = computed(() => groups.value.some((g) => g.options.some((o) => o.value === workflow.value)));
+const workflowError = ref("");
+async function saveWorkflow(name: string): Promise<void> {
+  if (name === workflow.value) return;
+  workflowError.value = "";
+  try {
+    await patch({ labels: withWorkflow(item.value?.labels ?? [], name) });
+  } catch (e) {
+    workflowError.value = (e as Error).message; // the re-render puts the select back on the card's workflow
+  }
+}
+// v-model, not :value: it selects the card's workflow again on every render, so a list that loads after the card
+// (or a refused change) still shows the right one
+const chosenWorkflow = computed({ get: () => workflow.value, set: (name: string) => void saveWorkflow(name) });
+/** The card has started on its workflow (its state snapshotted it), so the server refuses a change: the server's
+ * word when the card was fetched, else a column past approved; and once the line takes it up (doing), always. */
+const STARTED_HELP = "the workflow of a started card cannot be changed; make a new card for the other workflow";
+const started = computed(() => {
+  const status = item.value?.status;
+  if (status === "doing") return true;
+  return fetched.value?.started ?? (status !== undefined && status !== "todo" && status !== "approved");
+});
+
 async function moveTo(status: Status): Promise<void> {
   problem.value = "";
   try {
@@ -143,6 +173,33 @@ function giveFocusBack(e: Event): void {
             :validate="repoProblem"
             :save="saveRepo"
           />
+          <!-- only a story runs a workflow this round (D17) -->
+          <template v-if="item.level === 'story'">
+            <span class="text-xs text-muted-foreground">· Workflow</span>
+            <div data-workflow-field class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+              <select
+                v-model="chosenWorkflow"
+                required
+                :disabled="defsFailed || started"
+                :title="started ? STARTED_HELP : undefined"
+                aria-label="Workflow"
+                class="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+              >
+                <option v-if="!listed" :value="workflow">{{ workflow }}</option>
+                <optgroup v-for="g in groups" :key="g.label" :label="g.label">
+                  <option v-for="o in g.options" :key="o.value" :value="o.value" :disabled="o.disabled" :title="o.title">{{ o.label }}</option>
+                </optgroup>
+              </select>
+              <a v-if="workflowDef?.pr" data-workflow-pr :href="workflowDef.pr.url" target="_blank" rel="noopener" class="text-primary hover:underline">PR #{{ workflowDef.pr.number }}</a>
+              <span v-else-if="workflowDef?.source === 'draft'" data-workflow-draft class="rounded-full bg-muted px-2 font-semibold">draft</span>
+              <p v-if="defsFailed" role="status" class="flex items-center gap-1.5 text-muted-foreground">
+                Workflows did not load
+                <Button type="button" data-workflow-retry variant="outline" size="xs" @click="reloadDefs">Retry</Button>
+              </p>
+              <p v-if="started" data-workflow-started class="basis-full text-muted-foreground">Locked: {{ STARTED_HELP }}.</p>
+              <p v-if="workflowError" role="alert" class="basis-full break-words text-danger-foreground">{{ workflowError }}</p>
+            </div>
+          </template>
         </div>
       </div>
 

@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from airlie.flow.spec import LoopSpec, NodeSpec, NodeType
+from airlie.flow.prompt_files import PREFIX, prompt_builder
+from airlie.flow.spec import LoopSpec, NodeSpec, NodeType, WorkflowSpec
 from airlie.flow.store import Sessions, Store
+from airlie.prompts.hub import PromptText
 
 # airlie.config imports airlie.flow.spec, so this package cannot import the config (or the story) at load.
 if TYPE_CHECKING:
@@ -33,19 +35,23 @@ class EndRun(Exception):
 
 
 class Registry:
-    """Callables by id: brief builders, parsers, predicates, checks."""
+    """Callables by id: brief builders, parsers, predicates, checks. An id `prompt:<id>` that was not added
+    is a prompt file's brief builder (`prompt_files.prompt_builder`): a draft's file from `prompts`, else
+    the hub's rule."""
 
-    def __init__(self) -> None:
+    def __init__(self, prompts: Mapping[str, PromptText] | None = None) -> None:
         self._fns: dict[str, Callable[..., Any]] = {}
+        self.prompts: Mapping[str, PromptText] = dict(prompts or {})
 
     def add(self, id: str, fn: Callable[..., Any]) -> None:
         self._fns[id] = fn
 
     def __getitem__(self, id: str) -> Callable[..., Any]:
-        try:
+        if id in self._fns:
             return self._fns[id]
-        except KeyError:
-            raise KeyError(f"registry has no '{id}'") from None
+        if id.startswith(PREFIX):
+            return prompt_builder(id.removeprefix(PREFIX), self.prompts)
+        raise KeyError(f"registry has no '{id}'")
 
 
 @dataclass
@@ -59,6 +65,7 @@ class RunContext:
     item: str | None  # the each-loop item, else None
     feedback: str | None  # the carried loop feedback for this node, else None
     held: contextlib.AsyncExitStack | None = None  # the run's: what nodes hold open for later ones
+    inputs: Collection[str] = ()  # the names the node reads: its inputs and its workflow's loose names
 
 
 Runner = Callable[[NodeSpec, RunContext], Awaitable[Mapping[str, Any]]]
@@ -87,8 +94,10 @@ class Composer:
         registry: Registry,
         store: Store,
         sessions: Sessions,
+        workflows: Mapping[str, WorkflowSpec] | None = None,
     ) -> None:
         self.cfg = cfg
+        self.workflows = workflows
         self.runners = runners
         self.registry = registry
         self.store = store
@@ -101,6 +110,14 @@ class Composer:
             tuple[str, str | None, str, str], int
         ] = {}  # (workflow, item, node, which) -> re-runs
 
+    def spec(self, name: str) -> WorkflowSpec:
+        """The workflow `name`: from the mapping the composer was given (the repo's workflows and drafts),
+        else from the config."""
+        found = self.cfg.workflows if self.workflows is None else self.workflows
+        if name not in found:
+            raise KeyError(f"no workflow named {name!r}")
+        return found[name]
+
     async def run(self, workflow: str, *, until: str | None = None, item: str | None = None) -> str:
         """Run `workflow` from its start; stop after node `until` if given. Returns the last node reached.
         What the run's nodes held open (`held`) is closed when it returns or raises."""
@@ -112,7 +129,7 @@ class Composer:
                 self.held = None
 
     async def _walk(self, workflow: str, until: str | None, item: str | None, *, bundle: bool) -> str:
-        spec = self.cfg.workflows[workflow]
+        spec = self.spec(workflow)
         names = list(spec.nodes)
         formats = {name: fmt for n in spec.nodes.values() for name, fmt in n.outputs.items()}
         children = {c for n in spec.nodes.values() if n.type == "parallel" for c in n.nodes}
@@ -200,6 +217,7 @@ class Composer:
         return True
 
     def _ctx(self, workflow: str, name: str, item: str | None) -> RunContext:
+        spec = self.spec(workflow)
         return RunContext(
             cfg=self.cfg,
             store=self.store,
@@ -210,6 +228,7 @@ class Composer:
             item=item,
             feedback=self.store.get(fb) if self.store.has(fb := self._feedback(name, item)) else None,
             held=self.held,
+            inputs=frozenset(spec.nodes[name].inputs) | set(spec.loose),
         )
 
     async def _step(
@@ -251,7 +270,7 @@ class Composer:
         in this coroutine until it first waits, the rest as tasks that start then. Any failure stops the
         rest and is raised: the first's cancels the tasks (one not started yet never takes a step); a later
         child's cancels this coroutine, and so the first, at once, and is raised in place of the cancel."""
-        spec = self.cfg.workflows[workflow]
+        spec = self.spec(workflow)
         first, *rest = node.nodes
         parent = asyncio.current_task()
         failed: list[BaseException] = []
@@ -351,7 +370,7 @@ class Composer:
             raise
         failure = result.get(FAIL_KEY)
         # only the node's declared outputs land: a loop's carry key and FAIL_KEY are for routing, and any
-        # other key a runner returns is not an artifact (a StateStore would refuse a name it has no field for)
+        # other key a runner returns is not an artifact (a StateStore would keep it as an artifact)
         for key, fmt in ({} if failure is not None else node.outputs).items():
             target = self._name(key, item)
             if key in result:

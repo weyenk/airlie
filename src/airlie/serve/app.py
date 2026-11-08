@@ -27,6 +27,7 @@ from airlie.auth.principal import NotInvited, Principal, Resolver
 from airlie.auth.store import AuthStore
 from airlie.board import BoardStore
 from airlie.board.api import board_router
+from airlie.board.model import WorkflowDraft
 from airlie.config import AirlieConfig
 from airlie.metrics import series as metrics_series
 from airlie.metrics import summary as metrics_summary
@@ -44,18 +45,22 @@ from airlie.serve.ticker import LineFor, LineTicker
 from airlie.serve.tree import RunNotFound, run_tree
 from airlie.serve.uploads import MEDIA, Upload, UploadStore, UploadTooLarge, has_uploads, resolve
 from airlie.serve.watch import Watcher
+from airlie.serve.workflows_api import workflows_router
 from airlie.skills import Skill, load_chat_skills, prompt_text
 from airlie.story.board import BoardError
 from airlie.story.diagnosis import diagnosis_json, latest, read_diagnosis
 from airlie.story.epic import REPOSITORY
+from airlie.story.fixes import home_checkout
 from airlie.story.mockups import OPTION_FILE, mockup_dir, record_pick
 from airlie.story.model import StoryBusy, StoryError, StoryRunning, StorySetupError
 from airlie.story.phase import set_paused
 from airlie.story.pipeline import build_commit
-from airlie.story.publish import PublishError
+from airlie.story.publish import Publisher, PublishError
 from airlie.story.restart import FRESH, RestartError, RestartIncomplete
 from airlie.story.state import STAGES
 from airlie.story.stats import line_stats, parse_since
+from airlie.story.workflow_publish import publish_workflow
+from airlie.story.workflows import board_problems
 from airlie.teams.worktree import rev_parse
 from airlie.topology.studio import PlanOutcome, StudioOrchestrator, check_plan
 from airlie.topology.studio_plan import Plan, PlanError, pin, plan_from_dict, plan_to_dict
@@ -376,6 +381,26 @@ def _default_factory(cfg: AirlieConfig, k: int | None, topology: str | None = No
     return _orchestrator(cfg)
 
 
+def _workflow_publisher(cfg: AirlieConfig) -> Callable[[WorkflowDraft], Awaitable[tuple[int, str]]]:
+    """What publishes a draft as a PR: publish_workflow from airlie's own checkout (found when a publish
+    starts), through the story's Publisher as one PR on one branch (the bot when story.github_app is set)."""
+    from airlie.story.factory import github_app
+
+    publisher = Publisher(remote=cfg.story.remote, app=github_app(cfg), publish="single")
+    locks: dict[
+        str, asyncio.Lock
+    ] = {}  # one publish per workflow at a time: they share a worktree and branch
+
+    async def publish(draft: WorkflowDraft) -> tuple[int, str]:
+        home = home_checkout()
+        if home is None:
+            raise HTTPException(503, "airlie's own checkout was not found: serve runs from no git checkout")
+        async with locks.setdefault(draft.name, asyncio.Lock()):
+            return await publish_workflow(cfg, publisher, draft, home=home)
+
+    return publish
+
+
 CHAT_COMPLETIONS_READ_TIMEOUT_S = 900.0
 """How long a non-streamed `/v1/chat/completions` waits on the engine. It sends no bytes until the reply is
 whole, so a long thinking reply outlasts the shared client's 600 s; the bridge's llm jobs
@@ -422,7 +447,30 @@ def create_app(
     make_initiative = initiative_job or _initiative_job_factory()
     restart_story = story_restart or _story_restart_factory()
     board = BoardStore(cfg.observability.state_dir.expanduser() / "board.sqlite", prefix=cfg.board.prefix)
-    app.include_router(board_router(board, feed.publish))
+
+    def workflow_check(name: str) -> str | None:
+        """What stops workflow `name` resolving over the board's drafts as they are now, or None."""
+        problems = board_problems(cfg, board.drafts(), name)
+        return "; ".join(problems) or None
+
+    local = cfg.story.board == "local"  # drafts live in the local board's store; a Jira card is not checked
+
+    def started(key: str) -> bool:
+        """The card has a saved state: it started on the workflow it snapshotted."""
+        from airlie.story.factory import _saved
+
+        return _saved(cfg, key) is not None
+
+    app.include_router(
+        board_router(
+            board,
+            feed.publish,
+            workflow_check=workflow_check if local else None,
+            started=started if local else None,
+        )
+    )
+    if local:
+        app.include_router(workflows_router(cfg, board, feed.publish, _workflow_publisher(cfg)))
 
     def repo_path(raw: str) -> Path:
         repo = Path(raw).expanduser().resolve()

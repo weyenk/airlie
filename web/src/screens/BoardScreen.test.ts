@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createMemoryHistory, createRouter } from "vue-router";
 import type { Item } from "@/api/board";
+import { useCardDraftStore } from "@/stores/card_draft";
 import BoardScreen from "./BoardScreen.vue";
 import { DRAG_TYPE } from "./board/statuses";
 import { item } from "@/test-utils/board-fixtures";
@@ -18,6 +19,8 @@ const api = vi.hoisted(() => ({
 vi.mock("@/api/board", () => api);
 const wf = vi.hoisted(() => ({ storyFlow: vi.fn(), repoNames: vi.fn() }));
 vi.mock("@/api/workflows", () => wf);
+const defs = vi.hoisted(() => ({ listWorkflowDefs: vi.fn(async () => []) }));
+vi.mock("@/api/workflow_defs", () => defs);
 
 const ITEMS: Item[] = [
   item("AIR-1", { status: "todo", level: "epic" }),
@@ -109,6 +112,32 @@ test("Create opens the create modal, and its close puts the board back", async (
   (document.body.querySelector("[data-cancel]") as HTMLElement).click();
   await flushPromises();
   expect(document.body.querySelector("[data-submit]")).toBeNull();
+});
+
+test("coming back from the builder (?create=<token>) opens Create with the held form; closing leaves the address", async () => {
+  const token = useCardDraftStore().hold({ level: "story", title: "Held", description: "", parent: null, repo: "", workflow: "story" });
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
+  await router.push(`/board?create=${token}`);
+  const w = mount(BoardScreen, { global: { plugins: [router] }, attachTo: document.body });
+  await flushPromises();
+  expect(document.body.querySelector<HTMLInputElement>("input[aria-label=Title]")!.value).toBe("Held");
+  (document.body.querySelector("[data-cancel]") as HTMLElement).click();
+  await flushPromises();
+  expect(document.body.querySelector("[data-submit]")).toBeNull();
+  expect(router.currentRoute.value.fullPath).toBe("/board");
+  w.unmount();
+});
+
+test("an Add child that went to the builder comes back to its parent card when Create closes", async () => {
+  const token = useCardDraftStore().hold({ level: "story", title: "Held", description: "", parent: "AIR-1", repo: "", workflow: "story" });
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/board/:key?", name: "board", component: { template: "<i/>" } }] });
+  await router.push(`/board?create=${token}`);
+  const w = mount(BoardScreen, { global: { plugins: [router] }, attachTo: document.body });
+  await flushPromises();
+  (document.body.querySelector("[data-cancel]") as HTMLElement).click();
+  await flushPromises();
+  expect(router.currentRoute.value.fullPath).toBe("/board/AIR-1");
+  w.unmount();
 });
 
 test("an address with a key shows that card's modal over the board; closing returns to /board", async () => {

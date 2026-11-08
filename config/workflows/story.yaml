@@ -1,6 +1,7 @@
 # The story workflow: the pipeline as typed nodes. Design: docs/superpowers/specs/2026-11-06-generic-nodes-design.md
 workflows:
   story:
+    type: story
     start: intake
     loose: [card, repo]
     nodes:
