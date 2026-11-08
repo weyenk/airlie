@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -12,6 +13,8 @@ from pydantic import ValidationError
 
 from airlie.config.schema import TOPOLOGY_KINDS, AirlieConfig
 from airlie.flow.spec import old_schema_problems
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = "airlie.yaml"
 DEFAULT_LOCAL = "airlie.local.yaml"
@@ -224,7 +227,8 @@ def apply_profile(data: dict[str, Any], kind: str | None) -> dict[str, Any]:
 def set_aside_old_workflows(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """`data` without the workflows still in the old schema, and one problem per old-schema field found.
     Until the shipped workflows are rewritten, an old-schema file is recorded on the config
-    (`workflow_problems`) instead of failing the whole load."""
+    (`workflow_problems`) instead of failing the whole load, and one warning names each.
+    Task 8 removes this."""
     workflows = data.get("workflows")
     if not isinstance(workflows, dict):
         return data, []
@@ -233,7 +237,9 @@ def set_aside_old_workflows(data: dict[str, Any]) -> tuple[dict[str, Any], list[
     for name, raw in workflows.items():
         old = old_schema_problems(raw) if isinstance(raw, dict) else []
         problems += [f"workflow {name}: {what}" for what in old]
-        if not old:
+        if old:
+            log.warning("workflow %s is in the old schema and is set aside: %s", name, old[0])
+        else:
             kept[name] = raw
     return {**data, "workflows": kept}, problems
 

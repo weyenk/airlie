@@ -5,7 +5,7 @@ input must be present before a node runs. The wiring moves: `parallel` and `each
 picks the next node by an output, `loop` (or a LoopSpec `on_fail`) re-runs from a node
 with carried feedback."""
 
-# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# This module still reads the schema v1 fields; Task 5/6 rewrites it and removes the mypy ignore below.
 # mypy: ignore-errors
 from __future__ import annotations
 

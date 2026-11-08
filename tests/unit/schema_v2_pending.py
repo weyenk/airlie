@@ -3,7 +3,10 @@
 They run the shipped story/layer workflows through the composer, or build old-schema workflows, and the
 composer and the two shipped files are rewritten in those tasks. `conftest.py` marks each one
 `xfail(strict=True)`, so the task that fixes it sees an XPASS failure and deletes the entry; Task 8 deletes
-this file."""
+this file.
+
+Delete an entry in the same commit that rewrites its test body; Task 5 removes the composer entries,
+Task 8 the rest and this file. Collection fails on an entry whose test no longer exists."""
 
 PENDING: frozenset[str] = frozenset(
     {

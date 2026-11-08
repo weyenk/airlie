@@ -16,7 +16,20 @@ from pydantic import Field, model_validator
 
 from airlie.flow.outputs import Format, OutputSpec, Strict
 
-__all__ = ["Format", "Strict"]  # re-exported: readers of the specs import them from here
+__all__ = [
+    "RESERVED",
+    "Format",
+    "Layout",
+    "Line",
+    "LoopBound",
+    "NodeSpec",
+    "NodeType",
+    "Strict",
+    "TeamRole",
+    "WorkflowSpec",
+    "check_workflows",
+    "reserved_output",
+]  # Format and Strict are re-exported from outputs
 
 NodeType = Literal["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
 

@@ -69,6 +69,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """xfail the PENDING tests (schema v2 readers not landed yet); skip MAC_ONLY_TESTS where vllm-mlx is
     missing, naming where they run instead."""
     pending = pytest.mark.xfail(strict=True, reason="schema v2: composer and shipped workflows, Tasks 5/8")
+    ids = {item.nodeid.removeprefix("tests/unit/") for item in items}
+    modules = {i.split("::")[0] for i in ids}
+    stale = sorted(p for p in PENDING if p.split("::")[0] in modules and p not in ids)
+    if stale:  # a renamed or deleted test must leave schema_v2_pending.py; a partial run skips other modules
+        raise pytest.UsageError("schema_v2_pending.py names tests that no longer exist: " + ", ".join(stale))
     for item in items:
         if item.nodeid.removeprefix("tests/unit/") in PENDING:
             item.add_marker(pending)

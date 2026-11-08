@@ -5,7 +5,7 @@ The runners depend on the story package's `Asker`, `Recorder`, `Say`, `StoryBloc
 types, but hold no story-specific logic: a workflow binds the asker, the record it writes on and how a YAML
 role names a configured seat (`functools.partial`), and registers the pieces its nodes name."""
 
-# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# This module still reads the schema v1 fields; Task 5/6 rewrites it and removes the mypy ignore below.
 # mypy: ignore-errors
 from __future__ import annotations
 

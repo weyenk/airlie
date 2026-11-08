@@ -53,7 +53,7 @@ def test_a_model_node_may_name_no_code():
     ]
 
 
-def test_lines_name_known_nodes_and_conditions_name_known_artifacts():
+def test_lines_name_known_nodes_and_a_when_is_kept_for_the_condition_task():
     w = wf(
         a=check(outputs={"x": "json"}, to=[Line(node="zz"), Line(node="b", when="x.kind == y")]),
         b=check(inputs=["x"]),
@@ -127,6 +127,20 @@ def test_a_session_line_is_only_between_two_nodes_of_the_same_role():
         )
 
     assert check_workflows({"w": build("architect")}) == []
+    by_field = wf(
+        drafts=NodeSpec(
+            type="conversation",
+            role="architect",
+            prompt="p",
+            outputs={"drafts_session": "session"},
+            to=["pkg"],
+        ),
+        pkg=ask("coder", session="drafts_session"),
+    )
+    assert check_workflows({"w": by_field}) == [
+        "workflow w: node pkg: input 'drafts_session' is a session of node 'drafts' (role architect); "
+        "a session continues only between nodes of the same role"
+    ]
     assert check_workflows({"w": build("coder")}) == [
         "workflow w: node pkg: input 'drafts_session' is a session of node 'drafts' (role architect); "
         "a session continues only between nodes of the same role"

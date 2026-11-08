@@ -3,7 +3,7 @@ snapshotted, in order, with the status the composer's node events give it. A `pa
 under one bracket (they share its `group`); an `each` node is a lane per item it has reached, holding the
 bundle's nodes. The story's own screen (flow_plan, flow_build) is not drawn from here."""
 
-# This module still reads the schema v1 fields; schema v2 readers land in Tasks 5 and 8.
+# This module still reads the schema v1 fields; Task 10 rewrites it and removes the mypy ignore below.
 # mypy: ignore-errors
 from __future__ import annotations
 
