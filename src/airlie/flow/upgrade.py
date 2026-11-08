@@ -42,9 +42,16 @@ def _literal(value: str) -> str:
     return value if _BARE.fullmatch(value) and value not in ("and", "or", "not", "exists") else f'"{value}"'
 
 
-def _old_loop(node: str, loop: Mapping[str, Any], problems: list[str], *, when: bool) -> dict[str, Any]:
-    """A loop line from an old `loop` (or `on_fail`) mapping. An old loop's `when` was a predicate in code;
-    `on_fail` ignored it."""
+def _old_loop(
+    node: str, loop: Mapping[str, Any], problems: list[str], *, when: bool
+) -> dict[str, Any] | None:
+    """A loop line from an old `loop` (or `on_fail`) mapping, or None with a problem when it names no `to`
+    or no `max`. An old loop's `when` was a predicate in code; `on_fail` ignored it."""
+    field = "loop" if when else "on_fail"
+    missing = [k for k in ("to", "max") if not _set(loop.get(k))]
+    if missing:
+        problems.append(f"node {node}: its {field} names no {' and no '.join(missing)}; draw the loop again")
+        return None
     line: dict[str, Any] = {"node": str(loop["to"]), "loop": {"max": loop["max"]}}
     if _set(loop.get("carry")):
         line["loop"]["carry"] = loop["carry"]
@@ -53,10 +60,16 @@ def _old_loop(node: str, loop: Mapping[str, Any], problems: list[str], *, when: 
     return line
 
 
-def _forward(node: Mapping[str, Any], after: str | None) -> list[dict[str, Any]]:
+def _forward(
+    name: str, node: Mapping[str, Any], after: str | None, problems: list[str]
+) -> list[dict[str, Any]]:
     """The forward lines out of an old node: one per branch value (`<on> == <value>`), the default (`*`,
-    else the next node) taken when none of them holds; else `next`; else the node listed after it."""
+    else the next node) taken when none of them holds; else `next`; else the node listed after it. A branch
+    without `on` (or `on` without a branch) is a problem: the old schema followed `next` or the order."""
     fallthrough = str(node["next"]) if _set(node.get("next")) else after
+    if _set(node.get("branch")) != _set(node.get("on")):
+        has, lacks = ("branch", "on") if _set(node.get("branch")) else ("on", "branch")
+        problems.append(f"node {name}: its {has} has no {lacks} and was dropped; draw its lines again")
     branch = node.get("branch") if _set(node.get("on")) else None
     if not isinstance(branch, Mapping) or not branch:
         return [{"node": fallthrough}] if fallthrough is not None else []
@@ -138,16 +151,26 @@ def upgrade_v1(
     for i, name in enumerate(order):
         node = nodes[name]
         lines: list[dict[str, Any]] = []
-        if isinstance(node.get("loop"), Mapping):
-            lines.append(_old_loop(name, node["loop"], problems, when=True))
-        if isinstance(node.get("on_fail"), Mapping):
-            lines.append(_old_loop(name, node["on_fail"], problems, when=False))
+        for field, when in (("loop", True), ("on_fail", False)):
+            value = node.get(field)
+            if isinstance(value, Mapping):
+                if (line := _old_loop(name, value, problems, when=when)) is not None:
+                    lines.append(line)
+            elif field == "loop" and _set(value):
+                problems.append(f"node {name}: its loop is not a mapping; draw the loop again")
         after = order[i + 1] if i + 1 < len(order) else None
-        lines += _forward(node, after)
+        lines += _forward(name, node, after, problems)
         out_lines[name] = redirected(lines)
     for parent, kids in groups.items():
         for kid in kids:
             out_lines[kid] = [dict(ln) for ln in out_lines.get(parent, [])]
+            child = nodes.get(kid, {})
+            own = [f for f in ("next", "branch", "loop") if _set(child.get(f))]
+            own += ["on_fail"] if isinstance(child.get("on_fail"), Mapping) else []
+            if own:
+                problems.append(
+                    f"node {kid}: its own {'/'.join(own)} was dropped under parallel; draw it again"
+                )
         out_lines.pop(parent, None)
 
     upgraded: dict[str, dict[str, Any]] = {}

@@ -29,6 +29,7 @@ from airlie.story.state import StoryState
 from airlie.story.workflows import (
     WorkflowError,
     adopt_current,
+    changed_nodes,
     draft_spec,
     from_snapshot,
     resolve_workflows,
@@ -372,7 +373,8 @@ async def test_adopting_the_current_workflow_replaces_the_snapshot_and_the_next_
     new = await adopt_current(pipe, st, card)
     assert new == st.workflow and "costed" in new["specs"]["mini"]["nodes"]
     saved = json.loads((st.path / "state.json").read_text())
-    assert saved["workflow"] == new and saved["nodes_done"] == done and saved["base"] == base
+    assert saved["workflow"] == new and saved["base"] == base
+    assert saved["nodes_done"] == [d for d in done if d != "gate"]  # gate's line changed: it runs again
     assert (st.base, st.gate) == (base, gate)
     [adopted] = [e for e in kinds_all(st.path / "events.jsonl")[before:] if e["kind"] == "workflow_adopted"]
     assert adopted["name"] == "mini" and adopted["from"] == spec_hash(old) and adopted["to"] == spec_hash(new)
@@ -583,3 +585,201 @@ def test_snapshot_round_trip_is_untouched_by_the_upgrade() -> None:
     cfg = load_config(Path("airlie.yaml"))
     specs = resolve_workflows(cfg, {}, "story")
     assert from_snapshot(json.loads(json.dumps(snapshot("story", specs))))[1] == specs
+
+
+# ---- review fix round 1 ----
+
+
+def test_a_parallel_childs_own_wiring_is_dropped_with_a_problem() -> None:
+    out, problems = up(
+        "workflows:\n  w:\n    start: both\n    nodes:\n"
+        "      both: {type: parallel, nodes: [a, b]}\n"
+        "      a: {type: check, run: x.a, next: c, loop: {to: a, max: 1}}\n"
+        "      b: {type: check, run: x.b}\n"
+        "      c: {type: check, run: x.c}\n"
+    )
+    assert lines(out["nodes"]["a"]) == lines(out["nodes"]["b"]) == [{"node": "c"}]  # the parent's
+    assert problems == ["node a: its own next/loop was dropped under parallel; draw it again"]
+
+
+def test_a_malformed_loop_and_a_branch_without_on_are_problems_not_errors(tmp_path: Path) -> None:
+    text = (
+        "workflows:\n  w:\n    start: a\n    nodes:\n"
+        "      a: {type: check, run: x.a, loop: {max: 2}, on_fail: {to: a}}\n"
+        "      b: {type: check, run: x.b, branch: {ok: a}}\n"
+        "      c: {type: check, run: x.c, loop: again}\n"
+    )
+    out, problems = up(text)
+    assert lines(out["nodes"]["a"]) == [{"node": "b"}] and lines(out["nodes"]["b"]) == [{"node": "c"}]
+    assert problems == [
+        "node a: its loop names no to; draw the loop again",
+        "node a: its on_fail names no max; draw the loop again",
+        "node b: its branch has no on and was dropped; draw its lines again",
+        "node c: its loop is not a mapping; draw the loop again",
+    ]
+    c, s = _shipped(tmp_path)
+    s.save_draft("w", type=None, yaml=text)
+    with TestClient(_router(c, s)) as http:
+        r = http.get("/v1/workflows")
+    assert r.status_code == 200
+    [row] = [w for w in r.json()["workflows"] if w["name"] == "w"]
+    assert row["problems"]  # a draft that does not validate says so; nothing raises
+
+
+def test_a_node_with_next_and_a_branch_falls_through_to_next_when_no_value_holds() -> None:
+    out, problems = up(
+        "workflows:\n  w:\n    start: a\n    nodes:\n"
+        "      a: {type: check, run: x.a, outputs: {v: text}, next: c, 'on': v, branch: {go: b}}\n"
+        "      b: {type: check, run: x.b}\n"
+        "      c: {type: check, run: x.c}\n"
+    )
+    assert lines(out["nodes"]["a"]) == [
+        {"node": "b", "when": "v == go"},
+        {"node": "c", "when": "not (v == go)"},
+    ]
+    assert problems == []
+
+
+@pytest.mark.parametrize("text", [MINI_V1, PACKAGE_V1, MINI])
+def test_upgrading_twice_is_upgrading_once(text: str) -> None:
+    once, _ = up(text)
+    assert upgrade_v1(once) == (once, [])
+
+
+def test_an_each_target_called_from_two_workflows_is_used_by_both(tmp_path: Path) -> None:
+    c, _ = _shipped(tmp_path)
+
+    def caller(name: str) -> str:
+        return MINI_V1.replace("  mini:", f"  {name}:").replace(
+            "      review:", "      build: {type: each, over: layers, workflow: tiny}\n      review:"
+        )
+
+    drafts = {"one": caller("one"), "two": caller("two"), "tiny": TINY}
+    assert used_by(c, drafts, "tiny") == ["one", "two"]
+    for name in ("one", "two"):
+        bundle = draft_spec(name, drafts[name]).nodes["build"]
+        assert (bundle.type, bundle.workflow, bundle.each) == ("bundle", "tiny", "layers")
+
+
+MINI_TWO = MINI.replace("to: [review]}", "to: [seen, repro]}").replace(
+    "      review:",
+    "      seen: {type: ask, role: product, prompt: 'Say what you see: {card}', inputs: [card],"
+    " outputs: {seen: text}, to: [review]}\n"
+    "      repro: {type: ask, role: product, prompt: 'Write one line about this card: {card}',"
+    " inputs: [card], outputs: {repro: text}, to: [review]}\n"
+    "      review:",
+)
+"""MINI with two asks side by side after the gate."""
+
+
+async def test_adopting_runs_a_changed_node_and_what_is_below_it_again_and_skips_the_unchanged(
+    tmp_path: Path,
+) -> None:
+    from airlie.engine import FakeReply
+
+    repo = repo_with_marker_tests(tmp_path)
+    replies = [FakeReply(text="one"), FakeReply(text="two"), FakeReply(text="a poem")]
+    engine = happy_engine(product=replies)
+    board = RecordingBoard()
+    pipe = pipeline(tmp_path, repo, engine, composer=False, board=board)
+    pipe.drafts = lambda: {"mini": MINI_TWO}
+    card = mini_card()
+    await pipe.plan(card)
+    st = await pipe.build(card)
+    assert st.blocked is None and set(st.artifacts) == {"seen", "repro"}, st.blocked
+    seen = st.artifacts["seen"]
+
+    pipe.drafts = lambda: {"mini": MINI_TWO.replace("Write one line", "Write a poem")}
+    await adopt_current(pipe, st, card)
+    saved = json.loads((st.path / "state.json").read_text())
+    assert saved["artifacts"] == {"seen": seen}  # repro's output cleared; review below it has none
+    assert "changed, so run again: repro, review" in board.notes[-1]
+    mark = len(kinds_all(st.path / "events.jsonl"))
+
+    st = await pipe.build(card)
+    assert st.blocked is None and st.stage == "review", st.blocked
+    later = kinds_all(st.path / "events.jsonl")[mark:]
+    ran = {e["node"] for e in later if e["kind"] == "node_started"}
+    skipped = {e["node"] for e in later if e["kind"] == "node_skipped"}
+    assert {"repro", "review"} <= ran and {"seen", "base"} <= skipped and "seen" not in ran
+    asked = [r.messages[-1].content for r in engine.requests if r.role == "product"]
+    assert "Write a poem about this card" in asked[-1] and st.artifacts["seen"] == seen
+
+
+def test_changed_nodes_compares_each_nodes_definition() -> None:
+    cfg = load_config(Path("airlie.yaml"))
+    old = snapshot("mini", resolve_workflows(cfg, {"mini": MINI}, "mini"))
+    same = resolve_workflows(cfg, {"mini": MINI}, "mini")
+    edited = resolve_workflows(
+        cfg, {"mini": MINI.replace("run: story.gate,", "run: story.gate, on_fail: continue,")}, "mini"
+    )
+    more = resolve_workflows(cfg, {"mini": MINI_MORE}, "mini")
+    assert changed_nodes(old, "mini", same) == set()
+    assert changed_nodes(old, "mini", edited) == {"gate"}
+    assert changed_nodes(old, "mini", more) == {"gate"}  # its line now goes to costed; costed is new
+    assert changed_nodes(old, "other", same) == set()
+    assert changed_nodes(v1_snapshot(MINI_V1, "mini"), "mini", same) == {
+        "gate"
+    }  # upgraded first: its inputs listed in another order
+
+
+async def test_adopting_holds_the_card_out_of_the_line_and_puts_it_back(tmp_path: Path) -> None:
+    from airlie.story.local_board import LocalBoard
+
+    repo = repo_with_marker_tests(tmp_path)
+    store = BoardStore(tmp_path / "state" / "board.sqlite")
+    item = store.create(level="story", title="fix the marker", labels=["workflow:mini"])
+    store.update(item.key, status="approved")
+    board = LocalBoard(store)
+    card = await board.card(item.key)
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=False, board=board)
+    pipe.drafts = lambda: {"mini": MINI}
+    st = await pipe.run(card)
+    assert st.blocked is None and store.get(item.key).status == "review", st.blocked
+    seen: list[str] = []
+
+    def watching(text: str) -> dict[str, str]:
+        seen.append(store.get(item.key).status)
+        return {"mini": text}
+
+    pipe.drafts = lambda: watching(MINI_MORE)
+    await adopt_current(pipe, st, card, by="noah")
+    assert seen == ["todo"] and store.get(item.key).status == "review"
+    assert [m.to_status for m in store.moves(item.key)][-2:] == ["todo", "review"]
+    pipe.drafts = lambda: watching(MINI.replace("run: story.intake,", ""))  # broken: a refusal
+    with pytest.raises(WorkflowError, match="check needs run"):
+        await adopt_current(pipe, st, card, by="noah")
+    assert seen[-1] == "todo" and store.get(item.key).status == "review"
+
+
+async def test_a_board_that_refuses_the_note_leaves_nothing_changed_and_a_retry_adopts_once(
+    tmp_path: Path,
+) -> None:
+    from airlie.story.board import BoardError
+
+    class Refusing(RecordingBoard):
+        refuse = True
+
+        async def comment(self, card: Any, text: str, role: str | None = None) -> None:
+            if self.refuse:
+                raise BoardError("the board is down")
+            await super().comment(card, text, role)
+
+    repo = repo_with_marker_tests(tmp_path)
+    board = Refusing()
+    board.refuse = False
+    pipe = pipeline(tmp_path, repo, happy_engine(), composer=False, board=board)
+    pipe.drafts = lambda: {"mini": MINI}
+    card = mini_card()
+    await pipe.plan(card)
+    st = await pipe.build(card)
+    before = (st.path / "state.json").read_text()
+    pipe.drafts = lambda: {"mini": MINI_MORE}
+    board.refuse = True
+    with pytest.raises(BoardError, match="down"):
+        await adopt_current(pipe, st, card)
+    assert (st.path / "state.json").read_text() == before
+    assert not [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "workflow_adopted"]
+    board.refuse = False
+    await adopt_current(pipe, st, card)
+    assert len([e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "workflow_adopted"]) == 1

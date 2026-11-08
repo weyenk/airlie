@@ -5,6 +5,7 @@ it is used, so every resume runs what the card started on whatever the drafts an
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
@@ -256,6 +257,84 @@ def spec_hash(data: Mapping[str, Any] | None) -> str | None:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
+def changed_nodes(old: Mapping[str, Any], name: str, specs: Mapping[str, WorkflowSpec]) -> set[str]:
+    """The nodes of workflow `name` in `specs` whose definition differs from the one snapshot `old` keeps
+    (their JSON compared; an old-schema snapshot is upgraded first), and the bundle nodes whose workflow
+    differs at all. A node `old` does not have is not among them: it has no outputs yet, so it runs anyway.
+    A snapshot of another workflow shares no nodes with `specs`; one that cannot be read is compared as
+    it was saved."""
+    if old.get("name") != name:
+        return set()
+    try:
+        kept = {w: s.model_dump(mode="json") for w, s in from_snapshot(old)[1].items()}
+    except (WorkflowError, KeyError, TypeError, AttributeError):
+        kept = dict(old.get("specs") or {})
+    was = (kept.get(name) or {}).get("nodes") or {}
+    found: set[str] = set()
+    for n, node in specs[name].nodes.items():
+        if n not in was:
+            continue
+        inner = specs.get(node.workflow) if node.type == "bundle" and node.workflow is not None else None
+        if node.model_dump(mode="json") != was[n] or (
+            inner is not None and kept.get(str(node.workflow)) != inner.model_dump(mode="json")
+        ):
+            found.add(n)
+    return found
+
+
+def _below(spec: WorkflowSpec, names: Iterable[str]) -> set[str]:
+    """`names` and every node their forward lines reach."""
+    seen: set[str] = set()
+    todo = list(names)
+    while todo:
+        at = todo.pop()
+        if at in seen or at not in spec.nodes:
+            continue
+        seen.add(at)
+        todo += [ln.node for ln in spec.nodes[at].to if ln.loop is None]
+    return seen
+
+
+def _outputs(spec: WorkflowSpec, specs: Mapping[str, WorkflowSpec], node: str) -> list[str]:
+    """What node `node` of `spec` writes to the story's store: its outputs and, for a bundle node, every
+    output of the workflow it runs (nested bundles' too). An item-scoped name (`built.{item}`) is its head
+    (`built`), whole: every item runs again."""
+    n = spec.nodes[node]
+    names = list(n.outputs)
+    if n.type == "bundle" and n.workflow is not None and n.workflow in specs:
+        inner = specs[n.workflow]
+        names += [o for m in inner.nodes for o in _outputs(inner, specs, m)]
+    return list(dict.fromkeys(o.partition(".")[0] if "{item}" in o else o for o in names))
+
+
+def send_back_changed(
+    st: StoryState,
+    card: Card,
+    repo: Any,
+    name: str,
+    specs: Mapping[str, WorkflowSpec],
+    changed: Iterable[str],
+) -> list[str]:
+    """Treat each of the `changed` nodes of workflow `name` like a loop's target (the composer's
+    `send_back`): its outputs and those of every node below it are cleared, and they leave `st.nodes_done`
+    (a bundle node's items too), so the next run runs them again. Returns the nodes sent back, sorted;
+    nothing is saved here."""
+    from airlie.flow.spec import transient_heads
+    from airlie.flow.store import MEMORY, StateStore
+
+    spec = specs[name]
+    again = _below(spec, changed)
+    store = StateStore(st, loose={"card": card, "repo": repo}, transient=transient_heads(specs))
+    for n in again:
+        for out in _outputs(spec, specs, n):
+            if out.partition(".")[0] in MEMORY:
+                continue
+            with contextlib.suppress(KeyError):  # a loose or reserved name holds nothing of the node's
+                store.put(out, None)
+        st.nodes_done = [d for d in st.nodes_done if d != n and not d.startswith((f"{n}/", f"{n}@"))]
+    return sorted(again)
+
+
 async def adopt_current(
     pipe: StoryPipeline,
     st: StoryState,
@@ -265,16 +344,22 @@ async def adopt_current(
     by: str | None = None,
 ) -> Snapshot:
     """The card takes the current workflow in place of its snapshot (D24): `card_workflow(card)` resolved now
-    over the pipeline's drafts and their prompts, snapshotted into `st`, saved. Every other field of the
-    state is kept (`artifacts` and `nodes_done` too), so the next run goes on by what is present: a node
-    whose outputs exist is skipped, one whose outputs are gone runs. Emits `workflow_adopted {name, from,
-    to}` (the old and new specs' `spec_hash`) and posts a note on the card (naming `by`, who asked, when
-    given); returns the new snapshot.
+    over the pipeline's drafts and their prompts, snapshotted into `st`. A node whose definition changed
+    (`changed_nodes`) is treated like a loop's target: its outputs and those of every node below it are
+    cleared and they leave the done set (`send_back_changed`), so the new definition runs. A new node runs
+    because it has no outputs; an unchanged one is skipped by its outputs. Every other field of the state is
+    kept. The note goes on the card first (a board that refuses it changes nothing), then the state is
+    saved and `workflow_adopted {name, from, to}` (the old and new specs' `spec_hash`) emitted; returns the
+    new snapshot. From the running check to the end the card waits out of the line, as a restart holds it
+    (`restart._hold`), and then goes back where it was.
 
     Refused with StoryRunning while the story runs (its serve job, by `running`, or a lane: restart's rule),
     and with a WorkflowError when the card keeps no snapshot (it runs without one, so there is nothing to
     replace) or the current workflow does not resolve; nothing is changed by a refusal."""
-    from airlie.story.restart import _running_now  # restart imports the local board, which imports this
+    from airlie.story.restart import (
+        _hold,
+        _running_now,
+    )  # restart imports the local board, which imports this
 
     why = _running_now(card.key, st.path.parent, running)
     if why is not None:
@@ -286,18 +371,27 @@ async def adopt_current(
         raise WorkflowError(
             f"story {card.key} keeps no workflow snapshot: it runs without one, so nothing is replaced"
         )
-    name = card_workflow(card)
-    prompts = pipe.draft_prompts()
-    specs = resolve_workflows(pipe.cfg, pipe.drafts(), name, prompts=prompts)
-    new = snapshot(name, specs, closure_prompts(prompts, drafted(pipe.cfg, specs)))
-    st.workflow = new
-    st.save()
-    before, after = spec_hash(old), spec_hash(new)
-    st.emit("workflow_adopted", name=name, **{"from": before, "to": after})
-    was = f"{old.get('name')} {before}" if old.get("name") != name else str(before)
-    said = f"now runs the current {name} workflow ({after}, in place of {was})"
-    asked = f", as {by} asked" if by else ""
-    await pipe.board.comment(card, note(f"{said}{asked}; its next run goes on from what it has"))
+    back = await _hold(pipe.board, card, by or "person")
+    try:
+        name = card_workflow(card)
+        prompts = pipe.draft_prompts()
+        specs = resolve_workflows(pipe.cfg, pipe.drafts(), name, prompts=prompts)
+        new = snapshot(name, specs, closure_prompts(prompts, drafted(pipe.cfg, specs)))
+        before, after = spec_hash(old), spec_hash(new)
+        was = f"{old.get('name')} {before}" if old.get("name") != name else str(before)
+        changed = changed_nodes(old, name, specs)
+        again = sorted(_below(specs[name], changed))
+        rerun = f"; changed, so run again: {', '.join(again)}" if again else ""
+        asked = f", as {by} asked" if by else ""
+        said = f"now runs the current {name} workflow ({after}, in place of {was}){asked}{rerun}"
+        await pipe.board.comment(card, note(f"{said}; its next run goes on from what it has"))
+        send_back_changed(st, card, pipe.repo, name, specs, changed)
+        st.workflow = new
+        st.save()
+        st.emit("workflow_adopted", name=name, **{"from": before, "to": after})
+    finally:
+        with contextlib.suppress(Exception):  # the refusal (or the adoption) is what the person needs
+            await back()
     return new
 
 

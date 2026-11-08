@@ -1460,10 +1460,11 @@ def story_adopt_workflow(
     config: ConfigOpt = None,
 ) -> None:
     """Have a story run the current workflow in place of the snapshot it started on: what the workflow files
-    and the board's drafts say now, for the workflow its label names. Everything else it has is kept, so its
-    next run goes on from there: a step whose outputs it holds is skipped, a new or changed one runs. A story
-    that is running, has not started, or whose workflow does not resolve now is refused, with nothing
-    changed."""
+    and the board's drafts say now, for the workflow its label names. A step whose definition changed is run
+    again as a loop re-runs it: its outputs, and those of every step after it, are cleared. A new step runs
+    because it has no outputs; an unchanged one is skipped by the outputs the story holds. Everything else is
+    kept. The card waits out of the line meanwhile. A story that is running, has not started, or whose
+    workflow does not resolve now is refused, with nothing changed."""
     from airlie.story import factory
     from airlie.story.board import BoardError
     from airlie.story.model import StoryRunning, StorySetupError
