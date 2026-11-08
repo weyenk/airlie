@@ -484,6 +484,31 @@ def test_an_agreed_vitest_id_without_its_describe_is_the_package_test_it_names()
     ]
 
 
+def test_an_agreed_name_with_a_slip_of_the_pen_is_the_package_test_it_nearly_names() -> None:
+    """AIR-54 layer 01 (2026-11-07): the meeting agreed "...under airtie.chat in today's shape" and the
+    package wrote "...under airlie.chat in today's shape", a proof_mismatch no package could clear. A name a
+    letter or two off the one covered test of its file is that test; a different test, another file, or two
+    tests both that close, is not guessed at."""
+    from airlie.story.package_checks import proof_mismatches
+
+    right = (
+        "web/src/stores/chat.test.ts::saveThread writes the thread to localStorage under airlie.chat in "
+        "today's shape"
+    )
+    slip = right.replace("airlie.chat", "airtie.chat")
+    p = package(covers={"AC1": (right,)})
+    assert proof_mismatches(p, {slip}) == []
+    assert proof_mismatches(p, {slip, right}) == []  # agreed both ways: the one test covers both
+    other = "web/src/stores/chat.test.ts::a thread saved in localStorage loads on store creation"
+    assert [f.test for f in proof_mismatches(p, {other})] == [other]
+    elsewhere = slip.replace("web/src/stores/", "web/src/screens/")
+    assert [f.test for f in proof_mismatches(p, {elsewhere})] == [elsewhere]
+    twin = right.replace("saveThread", "saveThreads")
+    both = package(covers={"AC1": (right,), "AC2": (twin,)})
+    assert [f.test for f in proof_mismatches(both, {slip})] == [slip]  # two that close: no guess
+    assert proof_mismatches(both, {right, twin}) == []
+
+
 BASE_TESTS = "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
 ADDED = "import os\n\nfrom calc import mul\n\n\ndef test_mul():\n    assert mul(2, 3) == 6 and os.sep\n"
 

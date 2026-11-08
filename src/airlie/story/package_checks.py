@@ -390,16 +390,37 @@ def imports_unresolved(worktree: Path, package: Package) -> list[Finding]:
 def _against_proof(package: Package, proof_ids: Collection[str]) -> tuple[set[str], set[str]]:
     """The package's covered test ids and the agreed ones as it names them. A parametrized test is its
     function's id; an agreed id without its class (as the meeting writes it) is the covered method it
-    names, and one without its describe the covered Vitest test ("Wiki > lists topics")."""
+    names, and one without its describe the covered Vitest test ("Wiki > lists topics"). An agreed name
+    that is a slip of the meeting's pen (AIR-54 layer 01, 2026-11-07: "airtie.chat" for "airlie.chat", a
+    proof_mismatch no package could clear) is the one covered test of its file within a few characters of
+    it; two covered tests that close, or none, leave it as written."""
     covered = {_PARAMS.sub("", t) for t in package.test_ids}
 
+    def title(test_id: str) -> str:
+        return test_id.partition("::")[2].rpartition(" > ")[2]
+
     def as_covered(agreed_id: str) -> str:
+        if agreed_id in covered:
+            return agreed_id
         where, _, name = agreed_id.partition("::")
         ends = (f"::{name}", f" > {name}")
         named = [t for t in covered if t.startswith(f"{where}::") and t.endswith(ends)]
-        return named[0] if agreed_id not in covered and len(named) == 1 else agreed_id
+        if len(named) == 1:
+            return named[0]
+        close = [
+            t
+            for t in covered
+            if t.startswith(f"{where}::")
+            and difflib.SequenceMatcher(None, name, title(t)).ratio() >= NEARLY_NAMED
+        ]
+        return close[0] if len(close) == 1 else agreed_id
 
     return covered, {as_covered(t) for t in proof_ids}
+
+
+NEARLY_NAMED = 0.95
+"""How alike an agreed test name and a covered one must be (difflib ratio) for the agreed one to count as a
+slip of the pen for the covered one: a letter or two in a sentence, never a different test."""
 
 
 def proof_mismatches(package: Package, proof_ids: Collection[str]) -> list[Finding]:
