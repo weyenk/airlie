@@ -914,9 +914,13 @@ the nodes that ran (D17). The conditions' bools and the briefs' computed inputs 
 story's `artifacts` stay empty, as the driver's do."""
 
 
-def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
-    """The saved state but its runs and what only the composer saves (`COMPOSERS_OWN`)."""
+def plan_state(path: Path, root: Path, sha: str, *, composer: bool) -> dict[str, Any]:
+    """The saved state but its runs and what only the composer saves (`COMPOSERS_OWN`). The driver's raw
+    state.json has none of those at all (`composer` says which saved it): the mask is for the comparison
+    only, never a cover for the driver saving them."""
     saved = neutral((path / "state.json").read_text(), root, sha)
+    if not composer:
+        assert not set(COMPOSERS_OWN) & set(saved), f"the driver saved {set(COMPOSERS_OWN) & set(saved)}"
     return {k: v for k, v in saved.items() if k not in ("runs", *COMPOSERS_OWN)}
 
 
@@ -939,7 +943,12 @@ async def test_the_composer_plans_with_the_drivers_events_fields_and_state(
         assert st.blocked is None and st.stage == "layers"
         assert st.base is not None
         sha = st.base["sha"]
-        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+        seen.append(
+            (
+                plan_events(st.path / "events.jsonl", root, sha),
+                plan_state(st.path, root, sha, composer=composer),
+            )
+        )
     (driver_events, driver_state), (composer_events, composer_state) = seen
     assert composer_events == driver_events
     assert composer_state == driver_state
@@ -965,7 +974,12 @@ async def test_a_plan_resumed_through_the_composer_matches_the_drivers_resume(tm
         assert again.commands == ("./check.sh",)
         assert st.base is not None
         sha = st.base["sha"]
-        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+        seen.append(
+            (
+                plan_events(st.path / "events.jsonl", root, sha),
+                plan_state(st.path, root, sha, composer=composer),
+            )
+        )
     assert seen[1] == seen[0]
 
 
@@ -1208,7 +1222,12 @@ async def test_the_ask_nodes_edge_cases_run_the_same_either_way(tmp_path: Path, 
         st = await pipeline(root, repo, engine, story=settings, composer=composer).plan(card)
         assert st.base is not None
         sha = st.base["sha"]
-        seen.append((plan_events(st.path / "events.jsonl", root, sha), plan_state(st.path, root, sha)))
+        seen.append(
+            (
+                plan_events(st.path / "events.jsonl", root, sha),
+                plan_state(st.path, root, sha, composer=composer),
+            )
+        )
     assert seen[1][0] == seen[0][0]
     assert seen[1][1] == seen[0][1]
     events, state = seen[0]
@@ -1248,7 +1267,7 @@ def built_run(st: StoryState, root: Path, *, composer: bool) -> tuple[list[dict[
         return re.sub(r" in \d+\.\d+s\b", " in <s>", re.sub(r"\b\d{8}-\d{6}-[0-9a-f]{4}\b", "<run>", text))
 
     events = same(json.dumps(plan_events(st.path / "events.jsonl", root, st.base["sha"])))
-    state = same(json.dumps(plan_state(st.path, root, st.base["sha"])))
+    state = same(json.dumps(plan_state(st.path, root, st.base["sha"], composer=composer)))
     shas = list(dict.fromkeys(re.findall(r"\b[0-9a-f]{40}\b", events + state)))
     for n, sha in enumerate(shas):
         events, state = (re.sub(rf"\b{sha[:7]}[0-9a-f]*\b", f"<commit {n}>", t) for t in (events, state))
@@ -1871,7 +1890,7 @@ async def test_plan_rounds_are_turns_of_one_conversation(tmp_path: Path) -> None
         rounds = [e["kind"] for e in events if str(e["kind"]).startswith("plan_") or e["kind"] == "steer"]
         assert rounds == ["plan_fix", "steer", "plan_round", "steer", "plan_round", "plan_done"]
         assert [e["kind"] for e in events].count("run") == 2  # refine, and one conversation for the rounds
-        seen.append((events, plan_state(st.path, root, st.base["sha"])))
+        seen.append((events, plan_state(st.path, root, st.base["sha"], composer=composer)))
     assert seen[1] == seen[0]
 
 
@@ -1907,7 +1926,7 @@ async def test_a_plans_own_verdict_ends_the_rounds_early_either_way(tmp_path: Pa
             assert kinds.count("plan_round") == 2 and done == ["converged"]
         else:
             assert kinds.count("plan_round") == 1 and done == ["architect_done"]
-        seen.append((events, plan_state(st.path, root, st.base["sha"])))
+        seen.append((events, plan_state(st.path, root, st.base["sha"], composer=composer)))
     assert seen[1] == seen[0]
 
 
@@ -1978,7 +1997,7 @@ async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_dri
         roles = [e["role"] for e in events if e["kind"] == "amigos_turn"]
         assert roles == ["product", "architect", "tester", "airlie", "product", "architect"]
         assert st.agreement["turns"] == 6
-        seen.append((events, plan_state(st.path, root, st.base["sha"])))
+        seen.append((events, plan_state(st.path, root, st.base["sha"], composer=composer)))
     assert seen[1] == seen[0]
 
 
