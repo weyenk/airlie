@@ -188,12 +188,14 @@ class Said:
         self.events.append((kind, fields))
 
 
-@pytest.mark.parametrize("stop", ["answer_after_cuts", "max_steps"])
+@pytest.mark.parametrize("stop", ["answer_after_cuts", "max_steps", "cut_off"])
 async def test_a_turn_ended_after_cuts_with_its_tests_written_gets_the_turn_for_the_json(stop: str) -> None:
     """AIR-55 (2026-11-06, try 1): the package conversation's architect, cut on reads after it had written
     its tests, was asked its answer as the conversation in text and went on with the transcript. Its run now
     ends unanswered (answer_after_cuts), and that is no failure here, as max_steps is not: the tests are
-    written, and the JSON is asked for in the one short turn (package-json-only)."""
+    written, and the JSON is asked for in the one short turn (package-json-only). Nor is a reply cut at the
+    role's max_tokens (AIR-54 layer 01, 2026-11-07: 91k characters of prose after the files were written,
+    on the last try)."""
     from airlie.story.model import StoryError
     from airlie.story.pipeline import ANSWER_TURN_STEPS, ToolTurns
 
