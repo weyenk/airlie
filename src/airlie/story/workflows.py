@@ -6,6 +6,8 @@ it is used, so every resume runs what the card started on whatever the drafts an
 from __future__ import annotations
 
 import contextlib
+import copy
+import dataclasses
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
@@ -343,14 +345,21 @@ def send_back_changed(
 ) -> list[str]:
     """Treat each of the `changed` nodes of workflow `name` like a loop's target (the composer's
     `send_back`): its outputs and those of every node below it are cleared, and they leave `st.nodes_done`
-    (a bundle node's items too), so the next run runs them again. Returns the nodes sent back, sorted;
-    nothing is saved here."""
+    (a bundle node's items too), so the next run runs them again. When one of them runs an operation a stage
+    gates (`restart.OPERATIONS`: refine, the layer split, the meeting, the build's end, the publish) the
+    stages from the earliest such point on are cleared as a restart from there clears them
+    (`restart.rewind`), so the operation does not find its stage done and skip itself. Returns the nodes
+    that will run again, sorted: those sent back, and any other node that ran and whose output this
+    cleared (refine, when the story is cleared). Nothing is saved here."""
     from airlie.flow.spec import transient_heads
     from airlie.flow.store import MEMORY, StateStore
+    from airlie.story.restart import past, rewind, rewind_point  # restart imports this, through the board
 
     spec = specs[name]
     again = _below(spec, changed)
     store = StateStore(st, loose={"card": card, "repo": repo}, transient=transient_heads(specs))
+    ran = {n for n in spec.nodes if n in st.nodes_done}
+    present = {n: [o for o in _written(spec, n) if store.has(o)] for n in ran - again}
     for n in again:
         for out in _outputs(spec, specs, n):
             if out.partition(".")[0] in MEMORY:
@@ -358,7 +367,20 @@ def send_back_changed(
             with contextlib.suppress(KeyError):  # a loose or reserved name holds nothing of the node's
                 store.put(out, None)
         st.nodes_done = [d for d in st.nodes_done if d != n and not d.startswith((f"{n}/", f"{n}@"))]
-    return sorted(again)
+    point = rewind_point({n: spec.nodes[n] for n in again})
+    if point is not None and past(st, point):
+        rewind(st, point)
+    cleared = {n for n, outs in present.items() if any(not store.has(o) for o in outs)}
+    return sorted(again | cleared)
+
+
+def _written(spec: WorkflowSpec, node: str) -> list[str]:
+    """The outputs of `node` the story's state keeps (not an item's, a transient one or a session)."""
+    return [
+        o
+        for o, out in spec.nodes[node].outputs.items()
+        if "{item}" not in o and not out.transient and out.format != "session"
+    ]
 
 
 async def adopt_current(
@@ -373,11 +395,13 @@ async def adopt_current(
     over the pipeline's drafts and their prompts, snapshotted into `st`. A node whose definition changed
     (`changed_nodes`) is treated like a loop's target: its outputs and those of every node below it are
     cleared and they leave the done set (`send_back_changed`), so the new definition runs. A new node runs
-    because it has no outputs; an unchanged one is skipped by its outputs. Every other field of the state is
-    kept. The note goes on the card first (a board that refuses it changes nothing), then the state is
-    saved and `workflow_adopted {name, from, to}` (the old and new specs' `spec_hash`) emitted; returns the
-    new snapshot. From the running check to the end the card waits out of the line, as a restart holds it
-    (`restart._hold`), and then goes back where it was.
+    because it has no outputs; an unchanged one is skipped by its outputs. A changed node that runs an
+    operation a stage gates clears the stages from its point on, as a restart from there would; the note
+    names every node that will run again. Every other field of the state is kept. The note goes on the
+    card first (a board that refuses it changes nothing), then the state is saved and `workflow_adopted
+    {name, from, to}` (the old and new specs' `spec_hash`) emitted; returns the new snapshot. From
+    the running check to the end the card waits out of the line, as a restart holds it (`restart._hold`),
+    and then goes back where it was.
 
     Refused with StoryRunning while the story runs (its serve job, by `running`, or a lane: restart's rule),
     and with a WorkflowError when the card keeps no snapshot (it runs without one, so there is nothing to
@@ -406,12 +430,14 @@ async def adopt_current(
         before, after = spec_hash(old), spec_hash(new)
         was = f"{old.get('name')} {before}" if old.get("name") != name else str(before)
         changed = changed_nodes(old, name, specs, prompts=new["prompts"])
-        again = sorted(_below(specs[name], changed))
+        trial = copy.deepcopy(st)  # what the adoption leaves, worked out before the note: none if refused
+        again = send_back_changed(trial, card, pipe.repo, name, specs, changed)
         rerun = f"; changed, so run again: {', '.join(again)}" if again else ""
         asked = f", as {by} asked" if by else ""
         said = f"now runs the current {name} workflow ({after}, in place of {was}){asked}{rerun}"
         await pipe.board.comment(card, note(f"{said}; its next run goes on from what it has"))
-        send_back_changed(st, card, pipe.repo, name, specs, changed)
+        for f in dataclasses.fields(st):
+            setattr(st, f.name, getattr(trial, f.name))
         st.workflow = new
         st.save()
         st.emit("workflow_adopted", name=name, **{"from": before, "to": after})

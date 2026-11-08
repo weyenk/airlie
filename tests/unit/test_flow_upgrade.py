@@ -732,6 +732,59 @@ def test_changed_nodes_compares_each_nodes_definition() -> None:
     }  # upgraded first: its inputs listed in another order
 
 
+async def test_adopting_a_changed_meeting_holds_the_meeting_again_on_the_story_workflow(
+    tmp_path: Path,
+) -> None:
+    """The shipped story workflow with the meeting on: a story planned through the meeting, then its amigos
+    node's prompt text changed and the current workflow adopted. The stages from the meeting on are cleared
+    as a restart from there clears them (the story and the plan as they stood before it), so the next plan
+    holds the meeting again instead of finding the layers stage done and taking the split as the agreement;
+    the note names what runs again, and refine is not among them (its story is kept)."""
+    from tests.unit.test_story_pipeline import (
+        EASY_MEETING,
+        MEETING,
+        MEETING_ROLES,
+        replay_meeting,
+        repo_with_levels,
+    )
+
+    repo = repo_with_levels(tmp_path)
+    board = RecordingBoard()
+    card = text_card("avatars")
+    pipe = pipeline(
+        tmp_path,
+        repo,
+        happy_engine(),
+        board=board,
+        story=MEETING,
+        roles=MEETING_ROLES,
+        meeting=replay_meeting(EASY_MEETING),
+        composer=True,
+    )
+    st = await pipe.plan(card)
+    assert st.blocked is None and st.stage == "layers" and st.agreement is not None, st.blocked
+    assert st.workflow is not None and st.refined_story is not None
+    refined = st.refined_story
+    spec = pipe.cfg.workflows["story"]
+    amigos = spec.nodes["amigos"].model_copy(
+        update={"prompt": "Agree on {story.title} before anyone builds."}
+    )
+    pipe.cfg.workflows["story"] = spec.model_copy(update={"nodes": {**spec.nodes, "amigos": amigos}})
+
+    await adopt_current(pipe, st, card)
+    assert (st.stage, st.agreement, st.meeting, st.story) == ("refine", None, None, refined)
+    [said] = [n for n in board.notes if "now runs the current story workflow" in n]
+    rerun = said.split("changed, so run again: ")[1].split(";")[0].split(", ")
+    assert "amigos" in rerun and "refine" not in rerun and "layers" not in rerun
+    mark = len(kinds_all(st.path / "events.jsonl"))
+
+    st = await pipe.plan(card)
+    assert st.blocked is None and st.stage == "layers" and st.agreement is not None, st.blocked
+    later = kinds_all(st.path / "events.jsonl")[mark:]
+    assert [e["resumed"] for e in later if e["kind"] == "amigos_start"] == [False]  # held again, afresh
+    assert st.agreement["turns"] == 6  # the meeting's agreement, not the plain split's
+
+
 def test_a_node_whose_prompt_file_changed_in_the_drafts_is_changed() -> None:
     cfg = load_config(Path("airlie.yaml"))
     prompts = {"mini": {"mini-note": NOTE}}
