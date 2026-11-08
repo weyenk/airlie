@@ -234,19 +234,15 @@ def test_the_config_rejects_a_bad_workflow(tmp_path):
         load_config(write(tmp_path, data))
 
 
-def test_a_workflow_in_the_old_schema_is_set_aside_with_its_problems(tmp_path):
-    from airlie.config import load_config
+def test_a_workflow_in_the_old_schema_fails_the_load_naming_what_is_old(tmp_path):
+    from airlie.config import ConfigError, load_config
     from tests.unit.test_config import MINIMAL, write
 
     old = {"start": "a", "loose": ["card"], "nodes": {"a": {"type": "check", "run": "r", "next": "b"}}}
+    with pytest.raises(ConfigError, match="field 'start' is the old schema; run the workflow upgrade"):
+        load_config(write(tmp_path, {**MINIMAL, "workflows": {"old": old}}))
     new = {"nodes": {"a": {"type": "check", "run": "story.build_done"}}}
-    cfg = load_config(write(tmp_path, {**MINIMAL, "workflows": {"old": old, "new": new}}))
-    assert list(cfg.workflows) == ["new"]
-    assert cfg.workflow_problems == [
-        "workflow old: field 'start' is the old schema; run the workflow upgrade or write a `to` line",
-        "workflow old: field 'loose' is the old schema; run the workflow upgrade or write a `to` line",
-        "workflow old: node a: field 'next' is the old schema; run the workflow upgrade or write a `to` line",
-    ]
+    assert list(load_config(write(tmp_path, {**MINIMAL, "workflows": {"new": new}})).workflows) == ["new"]
 
 
 def test_story_composer_defaults_off(tmp_path):

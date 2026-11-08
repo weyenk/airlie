@@ -19,8 +19,10 @@ import pytest
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.flow.catalog import STORY_CATALOG
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext
 from airlie.flow.outputs import OutputSpec
+from airlie.flow.prompt_files import rule_ids
 from airlie.flow.runners import (
     Hold,
     Session,
@@ -39,7 +41,7 @@ from airlie.serve.flow_parts import StoryNotFound
 from airlie.story.amigos import opening_message
 from airlie.story.asking import StoryBlocked
 from airlie.story.board import text_card
-from airlie.story.flow import CATALOG, story_registry, story_runners
+from airlie.story.flow import story_registry, story_runners
 from airlie.story.model import Layer, Story, StoryError
 from airlie.story.phase import phase_path
 from airlie.story.pipeline import REASON_CHARS, StoryPipeline, _cap, _reason
@@ -843,16 +845,17 @@ def test_the_story_flow_carries_its_diagnosis_and_budgets(tmp_path: Path) -> Non
 def test_the_shipped_workflow_lists_the_diagram_boxes_in_order():
     cfg = load_config(Path("airlie.yaml"))
     assert list(cfg.workflows["story"].nodes) == [
-        "intake", "base", "gate", "take_card_as_story", "plan_story", "survey", "refine", "costed_refine",
-        "layers",
-        "costed_plan", "agree_plain", "amigos", "costed_amigos", "planned", "build_layers", "built",
-        "publish", "costed_publish", "review",
+        "intake", "base", "to_build", "gate", "request", "story_card", "take_card_as_story", "refine",
+        "survey", "survey_note", "costed_refine", "layers", "costed_plan", "agree_plain", "amigos",
+        "costed_amigos", "planned", "build_layers", "built", "publish", "costed_publish", "review",
     ]  # fmt: skip
-    assert list(cfg.workflows["layer"].nodes) == ["covered", "drafts", "package", "build", "costed_layer"]
+    layer = cfg.workflows["layer"]
+    assert list(layer.nodes) == ["start", "covered", "drafts", "package", "build", "costed_layer"]
     assert cfg.workflows["story"].nodes["amigos"].role == ["product", "architect", "tester"]
-    loop = cfg.workflows["layer"].nodes["build"].loop
-    assert loop is not None
-    assert loop.max == "story.layer_attempts"
+    [back] = [line for line in layer.nodes["build"].to if line.loop is not None]
+    assert back.node == "package" and back.loop is not None
+    assert (back.loop.max, back.loop.carry) == ("story.layer_attempts", "feedback")
+    assert layer.outputs == ["drafted", "built.{item}", "satisfied.{item}"]
 
 
 # ---- the plan lane through the composer (story.composer), against the driver ----
@@ -904,10 +907,16 @@ def plan_events(path: Path, root: Path, sha: str) -> list[dict[str, Any]]:
     ]
 
 
+COMPOSERS_OWN = ("workflow", "nodes_done", "artifacts")
+"""What only the composer saves (the driver runs no workflow): the card's snapshot (D21), the done set of the
+nodes that ran (D17) and the workflow's own outputs that are no state field (D15: the conditions' bool checks,
+the survey's quoted request)."""
+
+
 def plan_state(path: Path, root: Path, sha: str) -> dict[str, Any]:
-    """The saved state but its runs and the workflow snapshot (the composer's alone: the driver runs none)."""
+    """The saved state but its runs and what only the composer saves (`COMPOSERS_OWN`)."""
     saved = neutral((path / "state.json").read_text(), root, sha)
-    return {k: v for k, v in saved.items() if k not in ("runs", "workflow")}
+    return {k: v for k, v in saved.items() if k not in ("runs", *COMPOSERS_OWN)}
 
 
 @pytest.mark.parametrize("survey", [False, True])
@@ -959,59 +968,39 @@ async def test_a_plan_resumed_through_the_composer_matches_the_drivers_resume(tm
     assert seen[1] == seen[0]
 
 
-def test_every_registry_id_the_workflows_name_resolves(tmp_path: Path) -> None:
+def test_every_check_the_workflows_name_is_in_the_catalog_and_every_prompt_file_resolves(
+    tmp_path: Path,
+) -> None:
+    """The shipped story and layer workflows name code only as catalog checks: each check or gate node's
+    `run` is a declared check the story's registry resolves, each `prompt:<id>` is a hub rule, and the
+    runners cover every node type the files use."""
     repo = repo_with_marker_tests(tmp_path)
     pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
     card = text_card("add a marker")
     st = StoryState(path=tmp_path, card={}, repo=str(repo))
     registry = story_registry(pipe, st, card, until="review")
     nodes = [node for spec in pipe.cfg.workflows.values() for node in spec.nodes.values()]
-    named = {
-        id
-        for node in nodes
-        for id in (node.prompt, node.turn, node.parse, node.run, node.after, node.done, node.when)
-        if id is not None
-    } | {node.loop.when for node in nodes if node.loop is not None and node.loop.when is not None}
-    named |= {node.args["failed"] for node in nodes if "failed" in node.args}  # an ask's failure hook
-    named |= {node.args["turns"] for node in nodes if "turns" in node.args}  # a conversation's turn body
-    assert {
-        "story.layers",
-        "story.layer_plan",
-        "story.layers_turns",
-        "story.drafts",
-        "story.drafts_turns",
-    } <= named
-    assert {"story.to_build", "story.survey_on", "story.amigos", "story.costed"} <= named
-    assert {"story.agree_plain", "story.amigos_on", "story.amigos_off"} <= named  # the meeting's switch
-    asks = {"story.survey", "story.surveyed", "story.survey_failed", "story.refine", "story.story"}
-    asks |= {"story.refined", "story.take_card_as_story", "story.is_story_card", "story.not_story_card"}
-    assert asks <= named  # the ask nodes' pieces are lifted
-    assert all("_later" not in registry[id].__qualname__ for id in sorted(asks))
-    assert all(callable(registry[id]) for id in sorted(named))
-    assert set(story_runners(pipe, st, card)) == {
-        "ask", "conversation", "write", "meeting", "check", "gate", "parallel", "each"
-    }  # fmt: skip
-    # the layer bundle's ids and the build lane's checks are lifted: none raises NotImplementedError
-    build_lane = {id for node in pipe.cfg.workflows["layer"].nodes.values() for id in (node.run, node.when)}
-    build_lane |= {
-        "story.build_done",
-        "story.publish",
-        "story.finish",
-        "story.not_built",
-        "story.has_package",
-    }
-    assert all("_later" not in registry[id].__qualname__ for id in sorted(build_lane - {None}))
+    runs = {node.run for node in nodes if node.type in ("check", "gate")}
+    assert None not in runs
+    assert {"story.refine", "story.plan_layers", "story.draft_packages", "story.request"} <= runs
+    assert {"story.ready_package", "story.build_once", "story.to_build", "story.is_story_card"} <= runs
+    assert all(registry.check(str(run)) is STORY_CATALOG[str(run)].fn for run in sorted(map(str, runs)))
+    prompts = {node.prompt for node in nodes if node.prompt is not None}
+    assert prompts == {"prompt:story-survey", "prompt:amigos-opening"}
+    assert {p.removeprefix("prompt:") for p in prompts} <= rule_ids()
+    assert all(node.run is None for node in nodes if node.type in ("ask", "meeting"))
+    runners = story_runners(pipe, st, card)
+    assert set(runners) == {"ask", "conversation", "write", "meeting", "check", "gate", "team"}
+    assert {node.type for node in nodes} - {"bundle"} <= set(runners)  # a bundle is the composer's own
 
 
-def test_the_catalog_names_every_registered_id(tmp_path: Path) -> None:
+def test_the_registry_holds_the_catalog_and_nothing_else(tmp_path: Path) -> None:
     repo = repo_with_marker_tests(tmp_path)
     pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
     st = StoryState(path=tmp_path, card={}, repo=str(repo))
     registry = story_registry(pipe, st, text_card("add a marker"), until="review")
-    listed = [id for ids in CATALOG.values() for id in ids]
-    assert set(CATALOG) == {"prompts", "parsers", "checks", "predicates", "afters", "turns", "meetings"}
-    assert len(listed) == len(set(listed))  # each id in one kind
-    assert set(listed) == set(registry._fns)
+    assert list(registry._fns) == STORY_CATALOG.names()
+    assert all(registry[c.name] is c.fn for c in STORY_CATALOG)
 
 
 def run_context(pipe: StoryPipeline, registry: Registry, store: Any, node: str) -> RunContext:
@@ -1291,8 +1280,9 @@ async def test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_comp
 
 async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) -> None:
     """A story built and published, then put back to its planned stage with layer 02's build and the PRs
-    forgotten, and built again: through the composer every node of layer 01's bundle is skipped (`covered`
-    and `package` by `story.open_layer`, `drafts` as the drafting was held, `build` on its stored output)
+    forgotten, and built again: through the composer layer 01's steps are skipped (the line from `start` to
+    `covered` dies for a built layer, and every step below it with it; `costed_layer` runs, as the driver
+    costs every layer)
     and layer 02 is built again from a fresh package, with the driver's events and state."""
     seen = []
     for composer in (False, True):
@@ -1305,6 +1295,7 @@ async def test_a_resumed_build_skips_the_layers_already_built(tmp_path: Path) ->
         saved = json.loads((first.path / "state.json").read_text())
         del saved["built"]["02"]
         saved["prs"], saved["stage"] = [], "layers"
+        saved.pop("nodes_done", None)  # the composer's done set goes with a rewind, as a restart drops it
         (first.path / "state.json").write_text(json.dumps(saved))
         git(repo, "branch", "-D", B2)  # gone with its record, as a layer stopped part-way leaves none
         log = first.path / "events.jsonl"

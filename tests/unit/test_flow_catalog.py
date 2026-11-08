@@ -3,6 +3,7 @@ inputs and outputs, and the story's declarations of every check its workflows na
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,8 @@ from airlie.flow.composer import MissingInput, RunContext
 from airlie.flow.store import MemoryStore, Sessions, StateStore
 from airlie.story.amigos import Agreement, ProofTest
 from airlie.story.board import text_card
-from airlie.story.flow import CATALOG, StoryRegistry, story_registry
+from airlie.story.flow import PREDICATES as TESTS
+from airlie.story.flow import StoryRegistry, story_registry
 from airlie.story.model import parse_layers, parse_story
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState
@@ -129,6 +131,13 @@ DECLARED: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "story.layer_sources": (("repo", "base", "layers"), ("sources.{item}",)),
     "story.layer_proof": (("agreement", "layers"), ("proof.{item}",)),
     "story.lint_note": (("repo", "base"), ("lint",)),
+    # the steps that stay code until Part 2 (refine, the plan in rounds, the drafting), and a layer's start
+    "story.refine": (("card",), ("story",)),
+    "story.plan_layers": (("card", "repo", "story", "base", "survey"), ("layers",)),
+    "story.draft_packages": (("repo", "base", "story", "layers", "agreement"), ("drafted", "drafts_session")),
+    "story.layer_start": ((), ()),
+    # the computed input of the survey's prompt file
+    "story.request": (("card",), ("request",)),
     # the board notes and phase marks the asks' after-hooks made
     "story.survey_note": (("survey",), ()),
     "story.refined_note": (("card", "story"), ()),
@@ -138,15 +147,33 @@ DECLARED: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 
-def test_every_check_the_old_catalog_named_is_declared() -> None:
-    assert set(CATALOG["checks"]) <= set(STORY_CATALOG.names())
+OLD_CHECKS = (
+    "story.intake",
+    "story.take_card_as_story",
+    "story.base",
+    "story.gate",
+    "story.agree_plain",
+    "story.costed",
+    "story.planned",
+    "story.covered",
+    "story.build_done",
+    "story.publish",
+    "story.finish",
+    "story.ready_package",
+    "story.build_once",
+)
+"""The checks the old registry named by `run:`."""
+
+
+def test_every_check_the_old_registry_named_is_declared() -> None:
+    assert set(OLD_CHECKS) <= set(STORY_CATALOG.names())
 
 
 def test_every_predicate_is_a_check_with_one_bool_output() -> None:
     for p in PREDICATES:
         got = STORY_CATALOG[f"story.{p}"]
         assert (got.inputs, got.outputs, dict(got.formats)) == (READS[p], (p,), {p: "bool"}), p
-    assert {f"story.{p}" for p in PREDICATES} == set(CATALOG["predicates"])
+    assert set(TESTS) == set(PREDICATES)
 
 
 def test_the_story_catalog_declares_these_inputs_and_outputs() -> None:
@@ -237,11 +264,11 @@ async def test_a_story_check_outside_a_story_registry_is_refused(tmp_path: Path)
         await call("story.lessons", ctx)
 
 
-async def test_the_predicates_answer_as_their_registry_entries_do(tmp_path: Path) -> None:
+async def test_the_predicates_answer_as_their_tests_do(tmp_path: Path) -> None:
     run = Run(tmp_path)
     ctx = run.ctx({}, item="01")
     for p in PREDICATES:
-        assert await call(f"story.{p}", ctx) == {p: run.registry[f"story.{p}"](ctx)}, p
+        assert await call(f"story.{p}", ctx) == {p: TESTS[p][0](ctx)}, p
     assert await call("story.amigos_on", ctx) == {"amigos_on": False}  # the test pipeline's meeting is off
     assert await call("story.open_layer", ctx) == {"open_layer": True}
     # over the story's state, the state fields are read by name, as the old predicates read them
@@ -298,17 +325,15 @@ async def test_a_layers_sources_proof_and_lint_are_per_item(tmp_path: Path) -> N
     assert await call("story.lint_note", ctx) == {"lint": lint_note(run.repo, run.sha, run.pipe.commands)}
 
 
-async def test_the_survey_note_says_done_or_failed_as_the_after_hooks_did(tmp_path: Path) -> None:
+async def test_the_survey_note_keeps_no_notes_for_a_survey_that_failed(tmp_path: Path) -> None:
+    """Notes the survey node stored were said done by its own event: nothing here. A survey that failed
+    stored none: kept as no notes and said done, as the driver's `survey_failed` does after its event."""
     run = Run(tmp_path)
     assert await call("story.survey_note", run.ctx({"survey": "notes"})) == {}
-    assert run.st.survey == "notes" and run.kinds() == ["survey_done"]
-    run.st.survey = None
-    assert await call("story.survey_note", run.ctx({}, feedback="RuntimeError: down")) == {}
+    assert run.st.survey is None and not (run.st.path / "events.jsonl").exists()
+    assert await call("story.survey_note", run.ctx({})) == {}
     events = kinds_all(run.st.path / "events.jsonl")
-    assert [(e["kind"], e.get("reason"), e.get("chars")) for e in events[1:]] == [
-        ("survey_failed", "RuntimeError: down", None),
-        ("survey_done", None, 0),
-    ]
+    assert [(e["kind"], e.get("chars")) for e in events] == [("survey_done", 0)]
     assert run.st.survey == ""  # no notes, and it is not asked again
 
 
@@ -327,15 +352,70 @@ async def test_the_refined_and_layers_notes_mark_and_tell_the_card(tmp_path: Pat
     ]
 
 
-async def test_the_layers_steps_keep_their_old_registry_shape_through_the_interim_adapter(
+def test_the_registry_holds_each_check_itself_the_package_taking_its_session_as_an_arg(
     tmp_path: Path,
 ) -> None:
     run = Run(tmp_path)
-    for id in ("story.ready_package", "story.build_once"):
-        step = run.registry[id]
-        assert list(inspect.signature(step).parameters) == ["node", "ctx"], id
-        assert step is not STORY_CATALOG[id].fn
+    assert all(run.registry.check(c.name) is c.fn for c in STORY_CATALOG)
     assert "session" in inspect.signature(STORY_CATALOG["story.ready_package"].fn).parameters
+
+
+async def test_the_request_is_the_card_as_the_survey_brief_quotes_it(tmp_path: Path) -> None:
+    from airlie.prompts import text
+    from airlie.story.briefs import request_section, survey_brief
+
+    run = Run(tmp_path)
+    got = await call("story.request", run.ctx({}))
+    assert got == {"request": request_section(run.card)}
+    assert text("story-survey", request=got["request"]) == survey_brief(run.card)
+    assert await call("story.layer_start", run.ctx({})) == {}
+
+
+async def test_the_interim_steps_call_the_drivers_and_the_drafting_is_held_for_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """refine and the layer plan are the driver's `_refine` and `_layers`; the drafting conversation is held
+    on the run's stack under `drafts_session`, dropped when the stack closes it, and needs a stack."""
+    run = Run(tmp_path)
+    pipe: Any = run.pipe
+    asked: list[str] = []
+
+    async def refine(st: StoryState, card: Any) -> None:
+        asked.append("refine")
+        st.story = run.story.to_dict()
+
+    async def plan(st: StoryState, card: Any, story: Any) -> None:
+        asked.append(f"layers of {story.title}")
+        st.layers = [x.to_dict() for x in run.layers]
+
+    monkeypatch.setattr(pipe, "_refine", refine)
+    monkeypatch.setattr(pipe, "_layers", plan)
+    assert await call("story.refine", run.ctx({})) == {"story": run.story.to_dict()}
+    planned = await call("story.plan_layers", run.ctx(run.planned()))
+    assert planned == {"layers": [x.to_dict() for x in run.layers]}
+    assert asked == ["refine", f"layers of {run.story.title}"]
+
+    session = SimpleNamespace(say=None, run="r1", state=None)
+    opened: list[Any] = []
+
+    async def opening(pipe: Any, st: Any, story: Any, layers: Any) -> str:
+        return "the opening"
+
+    async def drafted(pipe: Any, st: Any, story: Any, layers: Any, first: str, talk: Any) -> Any:
+        opened.append((first, talk.keywords["stage"], talk.keywords["held"]))
+        return session
+
+    monkeypatch.setattr("airlie.story.flow.drafts_opening", opening)
+    monkeypatch.setattr("airlie.story.flow.draft_packages", drafted)
+    with pytest.raises(RuntimeError, match="holds nothing open"):
+        await call("story.draft_packages", run.ctx(run.planned()))
+    async with contextlib.AsyncExitStack() as held:
+        ctx = run.ctx(run.planned())
+        ctx.held = held
+        assert await call("story.draft_packages", ctx) == {"drafted": True, "drafts_session": session}
+        ctx.sessions.put("drafts_session", session)  # the composer stores the session output
+        assert opened == [("the opening", "packages", held)]
+    assert ctx.sessions.get("drafts_session") is None  # dropped with the conversation
 
 
 class Undeclared(Exception):
@@ -384,6 +464,8 @@ THROUGH_THE_PIPELINE = {
     "story.publish": {"repo"},
     "story.dossier": {"repo"},
     "story.planned": {"layers"},  # read for the planning lane's story_planned only (`until: planned`)
+    "story.plan_layers": {"repo", "base", "survey"},  # `_layers` reads them from the state
+    "story.draft_packages": {"repo", "base", "agreement"},  # `drafts_opening` reads them from the state
 }
 
 
@@ -411,8 +493,16 @@ async def test_every_story_check_reads_only_what_it_declares(
     async def resolved(*args: Any) -> dict[str, str]:
         return {"ref": "origin/main", "sha": run.sha}
 
-    for name in ("_intake", "_costed", "_satisfy", "_publish", "_finish"):
+    async def opening(*args: Any) -> str:
+        return "opening"
+
+    async def drafted(*args: Any) -> Any:
+        return SimpleNamespace(say=None, run="r", state=None)
+
+    for name in ("_intake", "_costed", "_satisfy", "_publish", "_finish", "_refine", "_layers"):
         monkeypatch.setattr(pipe, name, nothing)
+    monkeypatch.setattr("airlie.story.flow.drafts_opening", opening)
+    monkeypatch.setattr("airlie.story.flow.draft_packages", drafted)
     monkeypatch.setattr(pipe, "_base", resolved)
     monkeypatch.setattr(pipe, "_gate", lambda st, base: None)
     monkeypatch.setattr(pipe, "_layer_site", site)
@@ -439,6 +529,7 @@ async def test_every_story_check_reads_only_what_it_declares(
         store = Recording(values, allowed)
         ctx = run.ctx({}, item="01")
         ctx.store = store
+        ctx.held = contextlib.AsyncExitStack()
         try:
             await call(c.name, ctx, **args.get(c.name, {}))
         except Undeclared as e:

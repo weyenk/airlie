@@ -57,7 +57,7 @@ class FakeAsker:
     ) -> Any:
         self.briefs.append(brief(None))
         self.briefs.append(brief("that reply named no steps"))
-        return parse("steps: 1")
+        return parse('```json\n{"steps": 1}\n```')
 
     async def ask(self, st: Any, stage: str, role: str, brief: str, **kw: Any) -> str:
         self.briefs.append(brief)
@@ -79,19 +79,19 @@ def context(n: NodeSpec, registry: Registry, store: MemoryStore, loose: tuple[st
         item=None,
         feedback=None,
         inputs=frozenset(n.inputs) | set(loose),
+        texts=registry.prompts,
     )
 
 
 async def test_a_draft_prompt_file_renders_the_nodes_inputs_and_the_feedback() -> None:
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
-    registry.add("bug.steps", lambda text: text)
-    n = node(inputs=["card"], parse="bug.steps", outputs={"steps": "text"})
+    n = node(inputs=["card"], outputs={"steps": {"format": "json", "fields": {"steps": "number"}}})
     asker = FakeAsker()
     out = await ask_runner(
         n, context(n, registry, MemoryStore({"card": "C1 title"})), asker=cast(Any, asker), st=cast(Any, None)
     )
     assert asker.briefs == ["Reproduce: C1 title\n\n", "Reproduce: C1 title\n\nthat reply named no steps"]
-    assert out == {"steps": "steps: 1"}
+    assert out == {"steps": {"steps": 1}}
 
 
 async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() -> None:
@@ -109,13 +109,15 @@ async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() ->
     assert registry[f"{PREFIX}bug-reproduce"](None, None) == "overridden"
 
 
-async def test_a_field_the_node_does_not_read_is_a_prompt_error_naming_the_node() -> None:
+async def test_a_field_with_no_value_is_a_prompt_error_naming_the_field() -> None:
+    """A field the store has no value for stops the brief (what a node may read is checked when the workflow
+    loads: `check_workflows`, below)."""
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
-    n = node(outputs={"steps": "text"})
-    with pytest.raises(PromptError, match="reproduce.*card"):
+    n = node(inputs=["card"], outputs={"steps": "text"})
+    with pytest.raises(PromptError, match="'card', which has no value here"):
         await ask_runner(
             n,
-            context(n, registry, MemoryStore({"card": "C1"})),
+            context(n, registry, MemoryStore()),
             asker=cast(Any, FakeAsker()),
             st=cast(Any, None),
         )
@@ -139,7 +141,7 @@ def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
 
 def bug(prompt: str, **kw: Any) -> Mapping[str, WorkflowSpec]:
     reproduce = NodeSpec(type="ask", role="tester", prompt=prompt, outputs={"steps": "text"}, **kw)
-    return {"bug": WorkflowSpec(start="reproduce", loose=["card"], nodes={"reproduce": reproduce})}
+    return {"bug": WorkflowSpec(inputs=["card"], nodes={"reproduce": reproduce})}
 
 
 def test_check_workflows_flags_an_unknown_prompt_file() -> None:
@@ -152,7 +154,7 @@ def test_check_workflows_flags_an_unknown_prompt_file() -> None:
 def test_check_workflows_flags_a_field_the_node_cannot_read() -> None:
     texts = parse_draft_prompts({"bug-reproduce": REPRODUCE})
     assert check_workflows(bug("prompt:bug-reproduce"), prompts=texts) == []  # card is loose
-    lonely = {"bug": bug("prompt:bug-reproduce")["bug"].model_copy(update={"loose": []})}
+    lonely = {"bug": bug("prompt:bug-reproduce")["bug"].model_copy(update={"inputs": []})}
     assert check_workflows(lonely, prompts=texts) == [
         "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
         "which is not an input of the node"
@@ -187,15 +189,16 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
         "prompt": "prompt:bug-write",
         "inputs": ["card"],
         "outputs": {"steps": "text"},
+        "to": ["judge"],
     }
     judged = {
         "type": "check",
         "run": "bug.judge",
         "inputs": ["steps"],
         "outputs": {"verdict": "text"},
-        "loop": {"to": "write", "max": 1, "carry": "note"},
+        "to": [{"node": "write", "loop": {"max": 1, "carry": "note"}}],
     }
-    spec = {"start": "write", "loose": ["card"], "nodes": {"write": write, "judge": judged}}
+    spec = {"inputs": ["card"], "nodes": {"write": write, "judge": judged}}
     workflows = {"bug": WorkflowSpec.model_validate(spec)}
     texts = parse_draft_prompts({"bug-write": WRITE})
     assert check_workflows(workflows, prompts=texts) == []

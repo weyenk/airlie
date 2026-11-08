@@ -44,6 +44,7 @@ from airlie.story.briefs import (
     refine_brief,
     render_brief,
     replan_brief,
+    request_section,
     revise_brief,
     survey_brief,
 )
@@ -251,6 +252,8 @@ CASES |= {
     ),
     "fn:briefs.survey_brief:bare": partial(survey_brief, CARD),
     "fn:briefs.survey_brief:described": partial(survey_brief, DESCRIBED),
+    # --- the story workflow's survey node: its prompt file, word for word the survey brief
+    "story-survey": lambda: text("story-survey", request=request_section(DESCRIBED)),
     "fn:briefs.layers_brief:plain": partial(layers_brief, STORY, 4),
     "fn:briefs.layers_brief:lessons": partial(
         layers_brief,

@@ -121,7 +121,7 @@ def resolve_workflows(
     prompts: DraftPrompts | None = None,
     own: bool = False,
 ) -> dict[str, WorkflowSpec]:
-    """Workflow `name` and the bundles it calls through its `each` nodes, transitively: each from the repo's
+    """Workflow `name` and the bundles it calls through its `bundle` nodes, transitively: each from the repo's
     workflows first, else from the drafts (name -> YAML text), and checked together. Nothing else is read,
     so a half-edited draft no other card names never stops this one; the repo's files were checked when
     the config loaded. A file wins over a draft of its name, which is an edit of it waiting to be published
@@ -146,7 +146,7 @@ def resolve_workflows(
         else:  # a bundle that is nowhere: check_workflows names it on the node that calls it
             continue
         specs[wanted] = spec
-        todo += [n.workflow for n in spec.nodes.values() if n.type == "each" and n.workflow is not None]
+        todo += [n.workflow for n in spec.nodes.values() if n.type == "bundle" and n.workflow is not None]
     try:
         texts = parse_draft_prompts(closure_prompts(prompts, from_drafts))
     except PromptError as e:

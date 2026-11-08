@@ -8,7 +8,7 @@ governs.layers.new-name: below-use
 governs.layers.size: small
 governs.tests.fail-first: required
 governs.layers.brief: no-diff
-yields_to: brief-survey-task, brief-layers-rounds
+yields_to: brief-survey-task, brief-layers-rounds, story-survey
 ---
 # architect
 

@@ -1,19 +1,20 @@
-"""Tests that cannot pass until the schema v2 readers land (nodes-are-config plan 1, Tasks 5 and 8).
+"""Tests that cannot pass until the schema v2 readers land (nodes-are-config plan 1, Tasks 9 and 10).
 
-They run the shipped story/layer workflows through the composer, or build old-schema workflows, and the
-composer and the two shipped files are rewritten in those tasks. `conftest.py` marks each one
-`xfail(strict=True)`, so the task that fixes it sees an XPASS failure and deletes the entry; Task 8 deletes
-this file.
+What is left after Task 8 (the shipped story and layer workflows are schema v2): the drafts and snapshots
+written in the old schema (test_story_workflows.py's MINI and its users in test_story_fixes.py,
+test_story_line.py and test_story_restart.py; the board and workflows API's drafts; the publisher's), which
+Task 9's upgrade reads, and the run view over v2 nodes (test_flow_nodes.py and the two story screens that
+draw from its fixtures), Task 10's. `conftest.py` marks each one `xfail(strict=True)`, so the task that fixes
+it sees an XPASS failure and deletes the entry; the last task deletes this file.
 
-Delete an entry in the same commit that rewrites its test body; Task 5 removes the composer entries,
-Task 8 the rest and this file. Collection fails on an entry whose test no longer exists."""
+Delete an entry in the same commit that rewrites its test body. Collection fails on an entry whose test no
+longer exists."""
 
 PENDING: frozenset[str] = frozenset(
     {
         "test_board_api.py::test_a_label_change_that_keeps_the_workflow_is_not_checked",
         "test_board_api.py::test_moving_a_story_with_an_invalid_draft_to_approved_is_refused",
         "test_board_api.py::test_the_workflow_of_a_started_card_cannot_be_changed",
-        "test_config.py::test_the_shipped_story_workflow_declares_its_type",
         "test_flow_nodes.py::test_a_failed_and_a_skipped_node_and_one_not_reached",
         "test_flow_nodes.py::test_a_node_run_again_shows_its_latest_run",
         "test_flow_nodes.py::test_a_planned_check_is_a_milestone",
@@ -21,64 +22,20 @@ PENDING: frozenset[str] = frozenset(
         "test_flow_nodes.py::test_the_children_of_a_parallel_node_share_its_group",
         "test_flow_nodes.py::test_the_hover_card_lists_the_node_events",
         "test_flow_nodes.py::test_the_nodes_are_drawn_in_order_with_their_status_and_a_lane_per_item",
-        "test_prompt_files.py::test_a_draft_prompt_file_renders_the_nodes_inputs_and_the_feedback",
-        "test_prompt_files.py::test_a_field_the_node_does_not_read_is_a_prompt_error_naming_the_node",
-        "test_prompt_files.py::test_a_loop_carry_reaches_the_feedback_field_on_the_re_run",
-        "test_prompt_files.py::test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins",
-        "test_prompt_files.py::test_check_workflows_flags_a_field_the_node_cannot_read",
-        "test_prompt_files.py::test_check_workflows_flags_an_unknown_prompt_file",
         "test_story_fixes.py::test_bookkeeping_keeps_a_draft_whose_pr_is_open_or_cannot_be_read",
         "test_story_fixes.py::test_bookkeeping_retires_a_merged_draft_even_when_the_loaded_file_differs",
         "test_story_fixes.py::test_bookkeeping_retires_a_merged_draft_once_the_file_is_loaded",
-        "test_story_flow.py::test_a_build_after_the_review_gate_resumes_after_it_the_same_either_way",
         "test_story_flow.py::test_a_card_on_another_workflow_is_drawn_from_its_nodes",
         "test_story_flow.py::test_a_card_on_the_story_workflow_keeps_the_story_screen",
-        "test_story_flow.py::test_a_handover_after_planning_is_not_a_resume_despite_node_events",
-        "test_story_flow.py::test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_composers_loop[blocked]",
-        "test_story_flow.py::test_a_layer_sent_back_to_the_architect_runs_the_same_through_the_composers_loop[built]",
-        "test_story_flow.py::test_a_lost_session_falls_back_to_a_fresh_package_ask",
-        "test_story_flow.py::test_a_package_retry_continues_the_drafting_session",
-        "test_story_flow.py::test_a_plan_resumed_through_the_composer_matches_the_drivers_resume",
-        "test_story_flow.py::test_a_plans_own_verdict_ends_the_rounds_early_either_way[False]",
-        "test_story_flow.py::test_a_plans_own_verdict_ends_the_rounds_early_either_way[True]",
-        "test_story_flow.py::test_a_resumed_build_skips_the_layers_already_built",
-        "test_story_flow.py::test_a_satisfied_layer_runs_the_same_through_the_composer[below]",
-        "test_story_flow.py::test_a_satisfied_layer_runs_the_same_through_the_composer[reply]",
-        "test_story_flow.py::test_a_story_builds_publishes_and_reaches_review_the_same_either_way[True]",
-        "test_story_flow.py::test_a_story_card_skips_refine_and_logs_refine_skipped",
-        "test_story_flow.py::test_check_callables_read_inputs_from_the_store_not_the_pipeline",
-        "test_story_flow.py::test_every_registry_id_the_workflows_name_resolves",
-        "test_story_flow.py::test_plan_rounds_are_turns_of_one_conversation",
-        "test_story_flow.py::test_the_ask_nodes_edge_cases_run_the_same_either_way[not actionable]",
-        "test_story_flow.py::test_the_ask_nodes_edge_cases_run_the_same_either_way[retry]",
-        "test_story_flow.py::test_the_ask_nodes_edge_cases_run_the_same_either_way[story card]",
-        "test_story_flow.py::test_the_ask_nodes_edge_cases_run_the_same_either_way[survey fails]",
-        "test_story_flow.py::test_the_catalog_names_every_registered_id",
-        "test_story_flow.py::test_the_composer_plans_with_the_drivers_events_fields_and_state[False]",
-        "test_story_flow.py::test_the_composer_plans_with_the_drivers_events_fields_and_state[True]",
-        "test_story_flow.py::test_the_composer_runs_a_story_with_the_drivers_events_fields_and_state",
-        "test_story_flow.py::test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_driver[False]",
-        "test_story_flow.py::test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_driver[True]",
-        "test_story_flow.py::test_the_plan_lane_produces_the_same_events_and_state_either_way[True]",
-        "test_story_flow.py::test_the_review_gate_ends_the_run_and_releases_the_build_lane",
-        "test_story_flow.py::test_the_shipped_workflow_lists_the_diagram_boxes_in_order",
         "test_story_line.py::test_a_card_whose_workflow_has_a_problem_is_skipped_so_the_next_one_runs",
         "test_story_line.py::test_the_line_holds_a_card_whose_draft_no_longer_validates_with_a_note",
-        "test_story_pipeline.py::test_a_request_becomes_two_stacked_layers_and_the_card_reaches_review[True]",
-        "test_story_pipeline.py::test_an_issue_keeps_its_key_in_branch_names_and_its_trail_and_findings_reach_the_prs[True]",
-        "test_story_pipeline.py::test_each_layer_is_built_from_its_package_drafted_with_the_others_up_front[True]",
-        "test_story_pipeline.py::test_run_is_plan_then_build_and_each_resumes_at_the_boundary[True]",
         "test_story_restart.py::test_a_card_on_a_draft_workflow_restarted_from_a_step_runs_its_own_snapshot_again",
-        "test_story_restart.py::test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_it[True-amigos-refine-kept1-cleared1]",
-        "test_story_restart.py::test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_it[True-layers-refine-kept0-cleared0]",
-        "test_story_restart.py::test_a_story_started_over_from_a_later_stage_keeps_the_stages_before_it[True-packages-layers-kept2-cleared2]",
         "test_story_workflows.py::test_a_card_on_a_draft_runs_it_and_keeps_its_snapshot_when_the_draft_changes",
         "test_story_workflows.py::test_a_card_whose_label_is_removed_after_it_started_still_runs_its_snapshot",
         "test_story_workflows.py::test_a_drafts_each_node_runs_its_draft_bundle_per_item",
         "test_story_workflows.py::test_a_drafts_own_output_is_stored_read_by_a_later_node_and_skipped_on_resume",
         "test_story_workflows.py::test_a_drafts_own_prompt_file_resolves_and_an_unknown_or_broken_one_does_not",
         "test_story_workflows.py::test_a_drafts_prompt_file_is_the_brief_and_a_started_card_keeps_its_text",
-        "test_story_workflows.py::test_a_file_wins_over_a_draft_of_the_same_name",
         "test_story_workflows.py::test_a_snapshot_round_trips_and_names_its_nodes",
         "test_story_workflows.py::test_a_started_card_runs_its_snapshot_not_the_changed_draft",
         "test_story_workflows.py::test_a_workflow_without_a_planned_node_passes_the_plan_lane_at_once",
@@ -86,11 +43,9 @@ PENDING: frozenset[str] = frozenset(
         "test_story_workflows.py::test_only_the_named_workflow_and_the_bundles_it_calls_are_resolved",
         "test_story_workflows.py::test_resolve_adds_a_valid_draft_and_refuses_an_invalid_or_missing_one",
         "test_story_workflows.py::test_the_plan_lane_shortcut_takes_the_card_in_and_says_so_once",
-        "test_workflow_publish.py::test_a_draft_the_trunk_already_holds_is_nothing_to_publish",
         "test_workflow_publish.py::test_a_publish_that_fails_leaves_no_worktree_and_names_the_step",
         "test_workflow_publish.py::test_publish_writes_the_file_and_prompts_in_a_worktree_and_opens_a_pr",
         "test_workflow_publish.py::test_publishing_again_after_its_pr_closed_starts_over_from_the_trunk",
-        "test_workflow_publish.py::test_publishing_an_unchanged_file_diffs_only_the_layout_block",
         "test_workflows_api.py::test_a_draft_named_as_a_file_is_a_pending_edit_of_it",
         "test_workflows_api.py::test_a_draft_naming_its_own_prompt_file_has_no_problems_and_one_naming_none_has_one",
         "test_workflows_api.py::test_a_draft_prompt_file_named_like_a_hub_prompt_is_a_problem",
@@ -99,7 +54,6 @@ PENDING: frozenset[str] = frozenset(
         "test_workflows_api.py::test_a_file_workflow_reads_as_its_file_text_else_its_spec",
         "test_workflows_api.py::test_a_publish_that_fails_is_a_bad_gateway_and_a_vanished_draft_a_404",
         "test_workflows_api.py::test_publishing_a_draft_records_its_pr",
-        "test_workflows_api.py::test_publishing_an_unchanged_file_from_the_builder_diffs_only_the_layout_block",
         "test_workflows_api.py::test_serve_publishes_through_the_story_publisher_from_its_own_checkout",
         "test_workflows_api.py::test_serve_refuses_what_it_cannot_publish",
         "test_workflows_api.py::test_serve_without_its_own_checkout_cannot_publish",
