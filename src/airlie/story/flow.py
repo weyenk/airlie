@@ -944,13 +944,10 @@ def story_registry(
     until: Until,
     prompts: Mapping[str, PromptText] | None = None,
 ) -> Registry:
-    """The story's registry over one story run (`StoryRegistry`): every check of the catalog
-    (`STORY_CATALOG`) by its name. `prompts` are the drafts' prompt files a `prompt:<id>` may name beside
-    the hub's rules (`Registry`)."""
-    registry = StoryRegistry(StoryRun(pipe, st, card, until), prompts=prompts)
-    for c in STORY_CATALOG:
-        registry.add(c.name, c.fn)
-    return registry
+    """The story's registry over one story run (`StoryRegistry`): the checks of the catalog
+    (`STORY_CATALOG`) by name. `prompts` are the drafts' prompt files a `prompt:<id>` may name beside the
+    hub's rules (`Registry`)."""
+    return StoryRegistry(StoryRun(pipe, st, card, until), prompts=prompts)
 
 
 def _planned(ctx: RunContext) -> tuple[Story, tuple[Layer, ...]]:

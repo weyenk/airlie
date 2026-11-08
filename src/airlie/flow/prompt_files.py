@@ -1,24 +1,24 @@
 """Prompt files, the second kind of prompt a node may name
 (docs/superpowers/specs/2026-11-07-workflow-builder-design.md, "Prompts without code", D13, D19):
 `prompt: "prompt:<id>"` is a Markdown file of the prompt hub's `rules/`, or one a draft workflow carries
-under that id, rendered with the node's inputs as its fields. One generic brief builder serves every such
-file, so a workflow built in the GUI needs no Python for its briefs.
+under that id, rendered with the node's inputs as its fields (`airlie.flow.render`, as inline text is), so a
+workflow built in the GUI needs no Python for its briefs.
 
 A field named `feedback` is the reason the last reply did not parse, then the loop's carried feedback, a
-blank line between, blank on a first try; every other field is a name the node reads (one of its inputs, or a
-loose name of its workflow), filled with its value in the store as `render_value` shows it."""
+blank line between, blank on a first try; every other field is one of the node's inputs (`check_workflows`
+holds a file to them), filled with its value in the store as `render_value` shows it."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from airlie.prompts import hub
 from airlie.prompts.hub import PromptError, PromptText
 
 if TYPE_CHECKING:
-    from airlie.flow.composer import RunContext
+    pass
 
 PREFIX = "prompt:"
 FEEDBACK = "feedback"
@@ -62,28 +62,6 @@ def _feedback(reason: str | None, carried: object) -> str:
     between; blank on a first try."""
     parts = [reason or "", render_value(carried) if carried is not None else ""]
     return "\n\n".join(p for p in parts if p)
-
-
-def prompt_builder(id: str, texts: Mapping[str, PromptText]) -> Callable[[RunContext, str | None], str]:
-    """The brief builder for `prompt:<id>`: `(ctx, feedback) -> str`, as a registered brief is called. The
-    file is looked up now, so an unknown id fails when the node resolves its pieces, before any ask."""
-    prompt = prompt_text(id, texts)
-
-    def brief(ctx: RunContext, feedback: str | None) -> str:
-        fields: dict[str, str] = {}
-        for name in prompt.fields:
-            if name == FEEDBACK:
-                fields[name] = _feedback(feedback, ctx.feedback)
-            elif name not in ctx.inputs:
-                raise PromptError(
-                    f"node {ctx.node} of workflow {ctx.workflow}: prompt file {id!r} reads {name!r}, "
-                    "which is not an input of the node"
-                )
-            else:
-                fields[name] = render_value(ctx.store.get(name))
-        return hub.render(prompt, **fields)
-
-    return brief
 
 
 def parse_draft_prompts(prompts: Mapping[str, str]) -> dict[str, PromptText]:

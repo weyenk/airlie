@@ -60,7 +60,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel
 
 from airlie.flow import conditions
-from airlie.flow.prompt_files import FEEDBACK, PREFIX, prompt_builder
+from airlie.flow.prompt_files import FEEDBACK
 from airlie.flow.spec import Line, NodeSpec, NodeType, WorkflowSpec
 from airlie.flow.store import MEMORY, BundleStore, Sessions, Store
 from airlie.prompts.hub import PromptText
@@ -88,31 +88,21 @@ class EndRun(Exception):
 
 
 class Registry:
-    """Callables by id: brief builders, parsers, predicates, checks. An id `prompt:<id>` that was not added
-    is a prompt file's brief builder (`prompt_files.prompt_builder`): a draft's file from `prompts`, else
-    the hub's rule. `catalog` is the checks a check or gate node's `run` names (None: they are looked up
-    here by id)."""
+    """What a run's nodes name beyond their own fields: the checks a check or gate node's `run` names (the
+    `catalog`), and the drafts' prompt files a `prompt:<id>` may name beside the hub's rules (`prompts`)."""
 
     def __init__(
         self, prompts: Mapping[str, PromptText] | None = None, *, catalog: Catalog | None = None
     ) -> None:
-        self._fns: dict[str, Callable[..., Any]] = {}
         self.prompts: Mapping[str, PromptText] = dict(prompts or {})
         self.catalog = catalog
 
-    def add(self, id: str, fn: Callable[..., Any]) -> None:
-        self._fns[id] = fn
-
-    def __getitem__(self, id: str) -> Callable[..., Any]:
-        if id in self._fns:
-            return self._fns[id]
-        if id.startswith(PREFIX):
-            return prompt_builder(id.removeprefix(PREFIX), self.prompts)
-        raise KeyError(f"registry has no '{id}'")
-
     def check(self, run: str) -> Callable[..., Any]:
-        """The function a check or gate node's `run` names: the catalog's, else the registry's id."""
-        return self.catalog[run].fn if self.catalog is not None else self[run]
+        """The function a check or gate node's `run` names in the catalog; a KeyError naming it when the
+        catalog has none (or the registry has no catalog)."""
+        if self.catalog is None:
+            raise KeyError(f"registry has no catalog to find '{run}' in")
+        return self.catalog[run].fn
 
 
 @dataclass

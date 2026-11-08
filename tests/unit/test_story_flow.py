@@ -20,7 +20,7 @@ import pytest
 
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
-from airlie.flow.catalog import STORY_CATALOG
+from airlie.flow.catalog import STORY_CATALOG, Catalog, Check
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext
 from airlie.flow.outputs import OutputSpec
 from airlie.flow.prompt_files import rule_ids
@@ -1014,8 +1014,10 @@ def test_the_registry_holds_the_catalog_and_nothing_else(tmp_path: Path) -> None
     pipe = pipeline(tmp_path, repo, happy_engine(), composer=True)
     st = StoryState(path=tmp_path, card={}, repo=str(repo))
     registry = story_registry(pipe, st, text_card("add a marker"), until="review")
-    assert list(registry._fns) == STORY_CATALOG.names()
-    assert all(registry[c.name] is c.fn for c in STORY_CATALOG)
+    assert registry.catalog is STORY_CATALOG
+    assert all(registry.check(c.name) is c.fn for c in STORY_CATALOG)
+    with pytest.raises(KeyError, match="story.nope"):
+        registry.check("story.nope")
 
 
 def run_context(pipe: StoryPipeline, registry: Registry, store: Any, node: str) -> RunContext:
@@ -1710,8 +1712,9 @@ async def test_a_write_node_starts_from_the_head_of_the_worktree_its_input_names
         staged.append(git(checkout, "diff", "--cached", "--name-only"))
         return out
 
-    registry = Registry()
-    registry.add("place", lambda ctx: {"wt": str(tree)})
+    placed = Catalog()
+    placed.add(Check("place", (), ("wt",), "Place", lambda ctx: {"wt": str(tree)}))
+    registry = Registry(catalog=placed)
     c = Composer(
         pipe.cfg,
         runners={"write": write, "check": check_runner},
@@ -2138,9 +2141,8 @@ async def test_a_meeting_nodes_prompt_and_turn_texts_reach_the_amigos_opening_an
 async def test_the_gate_runner_calls_its_run_piece_with_the_nodes_args_then_ends_the_run(
     tmp_path: Path,
 ) -> None:
-    """The generic runner: the node's `run` resolved before the call (the registry's catalog, else its id),
-    called as `fn(ctx, **node.args)` (it may be async), and then the run ends (`EndRun`), whatever it
-    returned."""
+    """The generic runner: the node's `run` resolved in the registry's catalog before the call, called as
+    `fn(ctx, **node.args)` (it may be async), and then the run ends (`EndRun`), whatever it returned."""
     pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine())
     node = v2(type="gate", run="story.finish", args={"to": "review"})
     called: list[Any] = []
@@ -2148,8 +2150,9 @@ async def test_the_gate_runner_calls_its_run_piece_with_the_nodes_args_then_ends
     async def piece(ctx: RunContext, **args: Any) -> None:
         called.append((ctx.node, args))
 
-    registry = Registry()
-    registry.add("story.finish", piece)
+    finishing = Catalog()
+    finishing.add(Check("story.finish", (), (), "Finish", piece))
+    registry = Registry(catalog=finishing)
     ctx = run_context(pipe, registry, MemoryStore(), "review")
     with pytest.raises(EndRun):
         await gate_runner(node, ctx)

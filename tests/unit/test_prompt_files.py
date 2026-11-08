@@ -14,7 +14,8 @@ from typing import Any, cast
 import pytest
 
 from airlie.flow.composer import Composer, Registry, RunContext
-from airlie.flow.prompt_files import PREFIX, parse_draft_prompts, render_value
+from airlie.flow.prompt_files import parse_draft_prompts, render_value
+from airlie.flow.render import prompt_source, render
 from airlie.flow.runners import ask_runner
 from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
 from airlie.flow.store import MemoryStore, Sessions
@@ -64,6 +65,11 @@ class FakeAsker:
         return "done"
 
 
+def brief(ctx: RunContext, id: str, feedback: str | None = None) -> str:
+    """The text a node naming `prompt:<id>` sends, rendered as the runners render it."""
+    return render(prompt_source(f"prompt:{id}", ctx.texts), ctx.lookup, feedback=feedback)
+
+
 def node(**kw: Any) -> NodeSpec:
     return NodeSpec(type="ask", role="tester", prompt="prompt:bug-reproduce", **kw)
 
@@ -94,7 +100,7 @@ async def test_a_draft_prompt_file_renders_the_nodes_inputs_and_the_feedback() -
     assert out == {"steps": {"steps": 1}}
 
 
-async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() -> None:
+async def test_a_prompt_file_renders_a_loose_name_its_context_reads() -> None:
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     n = node(outputs={"steps": "text"})
     asker = FakeAsker()
@@ -105,8 +111,6 @@ async def test_a_prompt_file_may_read_a_loose_name_and_a_registered_id_wins() ->
         st=cast(Any, None),
     )
     assert asker.briefs == ["Reproduce: C2\n\n"]
-    registry.add(f"{PREFIX}bug-reproduce", lambda ctx, feedback: "overridden")
-    assert registry[f"{PREFIX}bug-reproduce"](None, None) == "overridden"
 
 
 async def test_a_field_with_no_value_is_a_prompt_error_naming_the_field() -> None:
@@ -126,12 +130,13 @@ async def test_a_field_with_no_value_is_a_prompt_error_naming_the_field() -> Non
 def test_a_hub_rule_is_found_without_a_draft() -> None:
     registry = Registry()
     n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
-    brief = registry["prompt:brief-survey-task"](context(n, registry, MemoryStore()), None)
-    assert brief.startswith("Read the code this request touches")
+    assert brief(context(n, registry, MemoryStore()), "brief-survey-task").startswith(
+        "Read the code this request touches"
+    )
     with pytest.raises(PromptError, match="nope"):
-        Registry()["prompt:nope"]
-    with pytest.raises(KeyError, match="registry has no 'story.nope'"):
-        Registry()["story.nope"]
+        prompt_source("prompt:nope", {})
+    with pytest.raises(KeyError, match="registry has no catalog to find 'story.nope'"):
+        Registry().check("story.nope")
 
 
 def test_a_draft_prompt_that_does_not_parse_is_a_prompt_error() -> None:
@@ -223,8 +228,7 @@ async def test_a_loop_carry_reaches_the_feedback_field_on_the_re_run(tmp_path: P
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     carried = context(node(inputs=["card"]), registry, MemoryStore({"card": "C1"}))
     carried.feedback = "make it shorter"
-    brief = registry["prompt:bug-reproduce"]
-    assert brief(carried, "no steps") == "Reproduce: C1\n\nno steps\n\nmake it shorter"
+    assert brief(carried, "bug-reproduce", "no steps") == "Reproduce: C1\n\nno steps\n\nmake it shorter"
 
 
 def test_a_card_renders_as_its_title_and_description_and_an_artifact_as_json() -> None:
@@ -236,7 +240,7 @@ def test_a_card_renders_as_its_title_and_description_and_an_artifact_as_json() -
     assert render_value("plain") == "plain" and render_value(3) == "3"
     registry = Registry(prompts=parse_draft_prompts({"bug-reproduce": REPRODUCE}))
     ctx = context(node(inputs=["card"]), registry, MemoryStore({"card": card}))
-    assert registry["prompt:bug-reproduce"](ctx, None) == "Reproduce: Fix the marker\n\nIt is red.\n\n"
+    assert brief(ctx, "bug-reproduce") == "Reproduce: Fix the marker\n\nIt is red.\n\n"
 
 
 def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() -> None:
@@ -246,5 +250,5 @@ def test_a_draft_prompt_named_like_a_hub_prompt_is_a_problem_and_the_hub_wins() 
             closure_prompts({"bug": {id: clash}}, ["bug"])
     registry = Registry(prompts=parse_draft_prompts({"brief-survey-task": clash}))
     n = NodeSpec(type="ask", role="architect", prompt="prompt:brief-survey-task")
-    brief = registry["prompt:brief-survey-task"](context(n, registry, MemoryStore()), None)
-    assert brief.startswith("Read the code this request touches")  # the hub first, whatever a draft says
+    opening = brief(context(n, registry, MemoryStore()), "brief-survey-task")
+    assert opening.startswith("Read the code this request touches")  # the hub first, whatever a draft says
