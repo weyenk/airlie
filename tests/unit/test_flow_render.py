@@ -75,6 +75,11 @@ def test_malformed_text_is_a_prompt_error(text):
         render(text, lookup_of({}))
 
 
+def test_attribute_miss_in_the_lookup_is_a_prompt_error():
+    with pytest.raises(PromptError, match=r"card\.nope"):
+        render("{card.nope}", lookup_of({"card": Card("T", "D")}))
+
+
 def test_prompt_source_is_the_text_or_the_rule_body():
     assert prompt_source("plain {x}", {}) == "plain {x}"
     assert "Reply again" in prompt_source("prompt:brief-reply-again", {})

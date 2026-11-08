@@ -63,6 +63,12 @@ def test_json_without_a_block_is_an_error():
         parse_output("nothing", spec())
 
 
+def test_json_syntax_error_gets_the_syntax_reason():
+    with pytest.raises(StoryError) as e:
+        parse_output('```json\n{"decision": "agree",}\n```', spec())
+    assert "no JSON object" not in str(e.value)
+
+
 def test_json_without_fields_is_the_block_as_parsed():
     assert parse_output('```json\n{"a": [1]}\n```', OutputSpec(format="json")) == {"a": [1]}
 

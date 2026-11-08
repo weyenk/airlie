@@ -269,7 +269,7 @@ def _placeholder_problems(node: NodeSpec) -> list[str]:
         return []
     allowed = {*node.inputs, FEEDBACK, render.ITEM, "config"}
     found: list[str] = []
-    for text in (node.prompt, node.turn, node.worker):
+    for field, text in (("prompt", node.prompt), ("turn", node.turn), ("worker", node.worker)):
         if text is None or text.startswith(PREFIX):
             continue
         try:
@@ -278,7 +278,7 @@ def _placeholder_problems(node: NodeSpec) -> list[str]:
             found.append(str(e))
             continue
         found += [
-            f"prompt names '{head}', which is not one of its inputs" for head in sorted(heads - allowed)
+            f"{field} names '{head}', which is not one of its inputs" for head in sorted(heads - allowed)
         ]
     return found
 

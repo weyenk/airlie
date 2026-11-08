@@ -314,7 +314,7 @@ def test_prompt_placeholders_must_be_inputs_feedback_item_or_config():
     problems = check_workflows({"w": w})
     assert "workflow w: node a: prompt names 'story', which is not one of its inputs" in problems
     assert "workflow w: node a: prompt names 'notes', which is not one of its inputs" in problems
-    assert "workflow w: node a: prompt names 'other', which is not one of its inputs" in problems
+    assert "workflow w: node a: turn names 'other', which is not one of its inputs" in problems
     assert not [p for p in problems if "'card'" in p or "'config'" in p or "'item'" in p]
 
 

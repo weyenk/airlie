@@ -111,7 +111,7 @@ def parse_output(text: str, spec: OutputSpec) -> Any:
     `text`: the reply stripped; `bool`: yes/no/true/false; `list`: a JSON list. Other formats are refs the
     engine writes itself, not replies."""
     from airlie.story.model import StoryError
-    from airlie.topology.studio_plan import extract_json_block
+    from airlie.topology.studio_plan import extract_json_block, json_block_problem
 
     if spec.format in ("markdown", "text"):
         return text.strip()
@@ -132,7 +132,8 @@ def parse_output(text: str, spec: OutputSpec) -> Any:
         raise StoryError(f"a reply cannot be parsed as {spec.format}")
     block = extract_json_block(text)
     if block is None:
-        raise StoryError("the reply has no JSON object (one ```json block)")
+        problem = json_block_problem(text)
+        raise StoryError(problem or "the reply has no JSON object (one ```json block)")
     for name, kind_text in (spec.fields or {}).items():
         kind = parse_kind(kind_text)
         if name not in block or block[name] is None:

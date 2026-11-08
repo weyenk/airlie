@@ -116,7 +116,7 @@ def render(
             if path == ITEM:
                 return bool(item)
             value = get(path)
-        except KeyError:
+        except (KeyError, AttributeError):
             return False
         return value is not None and value != "" and value != [] and value != {}
 
@@ -135,7 +135,7 @@ def render(
             else:
                 try:
                     out.append(render_value(get(part[1])))
-                except KeyError:
+                except (KeyError, AttributeError):
                     raise PromptError(f"prompt names '{part[1]}', which has no value here") from None
         return "".join(out)
 
