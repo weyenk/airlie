@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import os
+import shutil
 import subprocess
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,9 +66,10 @@ def _steps(node: NodeSpec, ctx: RunContext) -> int | None:
     return resolve_count(ctx.cfg, node.steps) if node.steps is not None else None
 
 
-def _done(node: NodeSpec, ctx: RunContext, st: Recorder, reply: str) -> None:
+def _done(node: NodeSpec, st: Recorder, reply: str) -> None:
+    """The node's legacy `done` event, with the fields the driver's has: the reply's length (D14)."""
     if (kind := node.events.get("done")) is not None:
-        st.emit(kind, node=ctx.node, chars=len(reply))
+        st.emit(kind, chars=len(reply))
 
 
 def _failed(node: NodeSpec, ctx: RunContext, st: Recorder, error: Exception) -> Mapping[str, Any]:
@@ -76,7 +80,9 @@ def _failed(node: NodeSpec, ctx: RunContext, st: Recorder, error: Exception) -> 
             raise StoryBlocked(f"{node.role} says this cannot be built as written: {error}") from error
         raise error
     if (kind := node.events.get("failed")) is not None:
-        st.emit(kind, node=ctx.node, reason=str(error))
+        from airlie.story.pipeline import _cap, _reason  # the pipeline imports this module
+
+        st.emit(kind, reason=_cap(_reason(error)))  # the driver's fields and cap (`story.survey_failed`)
     return {FAIL_KEY: f"{type(error).__name__}: {error}"}
 
 
@@ -130,7 +136,7 @@ async def ask_runner(
             replies.append(value)
     except Exception as e:
         return _failed(node, ctx, st, e)
-    _done(node, ctx, st, replies[-1])
+    _done(node, st, replies[-1])
     return {name: _value(value)} if name in node.outputs else {}
 
 
@@ -289,7 +295,7 @@ async def conversation_runner(
             session = s if not cont else None  # a continued session is the node's input, not its output
     except Exception as e:
         return _failed(node, ctx, st, e)
-    _done(node, ctx, st, reply)
+    _done(node, st, reply)
     out: dict[str, Any] = {}
     name = fielded[0] if fielded is not None else first
     if name is not None:
@@ -312,15 +318,22 @@ class Checkout:
         self.start = _git(tree, "rev-parse", "HEAD").strip()
 
     def diff(self) -> str:
-        """Everything the conversation changed since its start, new files included."""
+        """Everything the conversation changed since its start, new files included. It is read through a
+        copy of the checkout's index, so nothing is left staged in a checkout a held session goes on in."""
         if self.tree is None or self.start is None:
             return ""
-        _git(self.tree, "add", "-A")
-        return _git(self.tree, "diff", "--cached", self.start)
+        index = Path(_git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+            if index.is_file():
+                shutil.copyfile(index, env["GIT_INDEX_FILE"])
+            _git(self.tree, "add", "-A", env=env)
+            return _git(self.tree, "diff", "--cached", self.start, env=env)
 
 
-def _git(tree: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=tree, check=True, capture_output=True, text=True).stdout
+def _git(tree: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
+    done = subprocess.run(["git", *args], cwd=tree, check=True, capture_output=True, text=True, env=env)
+    return done.stdout
 
 
 def write_tools(node: NodeSpec, ctx: RunContext, role: str) -> tuple[str, ...]:
@@ -350,36 +363,51 @@ async def write_runner(
     st: Recorder,
     seat: Seat = str,
 ) -> Mapping[str, Any]:
-    """One writing turn of a conversation: the rendered prompt, with the node's write tools (`write_tools`),
-    on a checkout detached at the commit of the worktree a `ref:worktree` input names, else at the record's
-    base, at most `steps` tool steps. A node that continues a held `session` sends its prompt as the next
-    turn of it. Its outputs: an output named `diff` (or `diff.<x>`) is the change since the conversation's
-    start (`git diff`, new files included), a `session` output the held conversation, any other the reply."""
+    """One writing turn of a conversation: the rendered prompt, with the node's write tools (`write_tools`)
+    on any file (`Writes.scope` "any"), on a checkout of its own detached at the commit of the worktree a
+    `ref:worktree` input names (its HEAD: edits not committed there are not seen until Part 2), else at the
+    record's base, at most `steps` tool steps. A node that continues a held `session` sends its prompt as
+    the next turn of it, with the same `steps`. Its outputs: `diff` (or `diff.<x>`) is the change since the
+    conversation's start (`git diff`, new files included), `account` (or `account.<x>`) the reply, a
+    `session` output the held conversation; any other output is refused (`StoryError`), before anything is
+    asked."""
     role = _role(node, seat)
     steps = _steps(node, ctx)
+    routes = _write_routes(node, ctx)
     checkout = Checkout()
 
     def opening() -> Opening:
-        grant = Writes(tools=write_tools(node, ctx, role), prepare=checkout.prepare)
+        grant = Writes(tools=write_tools(node, ctx, role), scope="any", prepare=checkout.prepare)
         at = _worktree_at(node, ctx)
         return Opening(brief(node, ctx), steps, at=at, options={"writes": grant}, state=checkout)
 
     try:
         async with held_session(node, ctx, asker, st, role, opening) as (s, cont):
-            reply = await s.say(brief(node, ctx) if cont else None)
+            reply = await (s.say(brief(node, ctx), steps=steps) if cont else s.say())
             diff = s.state.diff() if isinstance(s.state, Checkout) else ""
             session = s if not cont else None
     except Exception as e:
         return _failed(node, ctx, st, e)
-    _done(node, ctx, st, reply)
-    out: dict[str, Any] = {}
+    _done(node, st, reply)
+    values = {"diff": diff, "account": reply, "session": session}
+    return {name: values[what] for name, what in routes.items() if values[what] is not None}
+
+
+def _write_routes(node: NodeSpec, ctx: RunContext) -> dict[str, str]:
+    """What each output of a write node holds: `diff`, `account` (by the name's head) or its `session`."""
+    routes: dict[str, str] = {}
     for name, spec in node.outputs.items():
+        head = name.partition(".")[0]
         if spec.format == "session":
-            if session is not None:
-                out[name] = session
+            routes[name] = "session"
+        elif head in ("diff", "account"):
+            routes[name] = head
         else:
-            out[name] = diff if name.partition(".")[0] == "diff" else reply
-    return out
+            raise StoryError(
+                f"write node '{ctx.node}': output '{name}' is none of what a write produces "
+                "(diff, account, a session)"
+            )
+    return routes
 
 
 # ---- meeting ----

@@ -20,6 +20,7 @@ import pytest
 from airlie.config import load_config
 from airlie.engine import FakeEngine, FakeReply, ToolCall
 from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext
+from airlie.flow.outputs import OutputSpec
 from airlie.flow.runners import (
     Hold,
     Session,
@@ -39,9 +40,9 @@ from airlie.story.amigos import opening_message
 from airlie.story.asking import StoryBlocked
 from airlie.story.board import text_card
 from airlie.story.flow import CATALOG, story_registry, story_runners
-from airlie.story.model import Layer, Story
+from airlie.story.model import Layer, Story, StoryError
 from airlie.story.phase import phase_path
-from airlie.story.pipeline import StoryPipeline
+from airlie.story.pipeline import REASON_CHARS, StoryPipeline, _cap, _reason
 from airlie.story.state import StoryState, lane_lock, lock_held
 from tests.unit.git_helpers import git
 from tests.unit.test_story_epic import fenced
@@ -1089,6 +1090,7 @@ async def test_the_ask_runner_retries_a_fielded_output_until_it_parses(tmp_path:
     first, second = briefs_to(engine, "product")
     assert "Refine: add a marker." in first and "Last time" not in first
     assert f"Refine: add a marker. Last time: {retries[0]['error']}" in second
+    assert retries[0]["error"].startswith("the reply has no JSON object")  # parse_output's reason
     assert "Reply with" not in first  # outputs.describe is never appended to a prompt
 
 
@@ -1116,12 +1118,22 @@ async def test_an_ask_without_fields_asks_once_and_its_events_name_the_legacy_ki
     assert set(failed) == {FAIL_KEY}
     legacy = ("survey_done", "survey_failed")
     done, fail = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] in legacy]
-    assert (done["kind"], done["node"], done["chars"]) == ("survey_done", "survey", len(SURVEY_NOTES.text))
-    assert fail["kind"] == "survey_failed" and fail["node"] == "survey" and fail["reason"]
+    bare = [{k: v for k, v in e.items() if k not in ("ts", "run_id")} for e in (done, fail)]
+    assert bare == [  # the driver's fields exactly: no node, the reason capped as the driver's
+        {"kind": "survey_done", "chars": len(SURVEY_NOTES.text)},
+        {"kind": "survey_failed", "reason": "StoryError: the architect did not finish (engine_error)"},
+    ]
     assert "Survey: add a marker" in briefs_to(engine, "architect")[0]
-    with pytest.raises(Exception, match="architect"):  # on_fail block: the failure propagates
+
+    async def long_failure(*args: Any, **kwargs: Any) -> str:
+        raise StoryError("x" * 3000)
+
+    await ask_runner(node, ctx, asker=pipe.asker, st=st, ask=long_failure)
+    capped = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "survey_failed"][-1]["reason"]
+    assert capped == _cap(_reason(StoryError("x" * 3000))) and len(capped) == REASON_CHARS
+    with pytest.raises(StoryError, match="the architect did not finish"):  # on_fail block: it propagates
         await ask_runner(node.model_copy(update={"on_fail": "block"}), ctx, asker=pipe.asker, st=st)
-    assert [e["kind"] for e in kinds_all(st.path / "events.jsonl")].count("survey_failed") == 1
+    assert [e["kind"] for e in kinds_all(st.path / "events.jsonl")].count("survey_failed") == 2
 
 
 async def test_a_story_card_skips_refine_and_logs_refine_skipped(tmp_path: Path) -> None:
@@ -1586,6 +1598,117 @@ async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_no
     assert "Now write MORE after: done" in briefs_to(engine, "coder")[-1]
 
 
+async def test_a_write_node_starts_from_the_head_of_the_worktree_its_input_names(tmp_path: Path) -> None:
+    """A `ref:worktree` input: the write's own checkout is detached at that worktree's HEAD (its `run` event
+    names the commit), so what was committed there is the start and not in the diff; nothing is left
+    staged in the checkout the session goes on in."""
+    repo = repo_with_marker_tests(tmp_path)
+    tree = tmp_path / "other"
+    git(repo, "worktree", "add", "-q", "-b", "other", str(tree))
+    (tree / "OTHER").write_text("other\n")
+    git(tree, "add", "OTHER")
+    git(tree, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "other")
+    head = git(tree, "rev-parse", "HEAD")
+    engine = happy_engine(coder=[WRITE_PASS, DONE], reviewer=[APPROVE] * 2)
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    nodes = {
+        "place": {"type": "check", "run": "place", "outputs": {"wt": "ref:worktree"}, "to": ["build"]},
+        "build": {
+            "type": "write",
+            "role": "coder",
+            "prompt": "Write PASS.",
+            "inputs": ["wt"],
+            "outputs": {"diff": "text", "coding": "session"},
+        },
+    }
+    staged: list[str] = []
+
+    async def write(node: Any, ctx: RunContext) -> Any:
+        out = await write_runner(node, ctx, asker=pipe.asker, st=st)
+        checkout = out["coding"].state.tree
+        staged.append(git(checkout, "diff", "--cached", "--name-only"))
+        return out
+
+    registry = Registry()
+    registry.add("place", lambda ctx: {"wt": str(tree)})
+    c = Composer(
+        pipe.cfg,
+        runners={"write": write, "check": check_runner},
+        registry=registry,
+        store=MemoryStore(),
+        sessions=Sessions(),
+        workflows={"w": WorkflowSpec.model_validate({"nodes": nodes})},
+    )
+    await c.run("w")
+    runs = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "run"]
+    assert [e["base_sha"] for e in runs] == [head]
+    diff = c.store.get("diff")
+    assert "+++ b/PASS" in diff and "OTHER" not in diff
+    assert staged == [""]  # the diff was read through a copy of the index
+
+
+async def test_a_write_that_fails_continues_or_names_an_output_it_cannot_fill(tmp_path: Path) -> None:
+    """`on_fail: continue`: a failed writing turn emits the node's `failed` event and the node fails without
+    outputs. An output a write cannot fill (neither diff, account nor a session) is refused before any
+    turn."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(coder=[])
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    node = v2(
+        type="write",
+        role="coder",
+        prompt="Write PASS.",
+        outputs={"diff": "text", "account": "text"},
+        on_fail="continue",
+        events={"failed": "build_failed"},
+    )
+    ctx = run_context(pipe, Registry(), MemoryStore(), "build")
+    assert set(await write_runner(node, ctx, asker=pipe.asker, st=st)) == {FAIL_KEY}
+    [failed] = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "build_failed"]
+    assert failed["reason"] == "StoryError: the coder did not finish (engine_error)"
+    asked = len(engine.requests)
+    wrong = node.model_copy(update={"outputs": {"notes": OutputSpec(format="text")}})
+    with pytest.raises(StoryError, match="output 'notes' is none of what a write produces"):
+        await write_runner(wrong, ctx, asker=pipe.asker, st=st)
+    assert len(engine.requests) == asked
+
+
+async def test_a_conversation_nodes_events_name_its_legacy_kinds(tmp_path: Path) -> None:
+    asker = TalkingAsker(['```json\n{"layers": ["a"]}\n```', "no", "no"])
+    said: list[tuple[str, dict[str, Any]]] = []
+    st = SimpleNamespace(runs=[], emit=lambda kind, **f: said.append((kind, f)))
+    node = v2(
+        type="conversation",
+        role="architect",
+        prompt="go",
+        turn="again",
+        steps=2,
+        outputs=PLAN_FIELDS,
+        on_fail="continue",
+        events={"done": "layers_done", "failed": "layers_failed"},
+    )
+    ctx = RunContext(
+        cfg=cfg_for(tmp_path),
+        store=MemoryStore(),
+        sessions=Sessions(),
+        registry=Registry(),
+        workflow="w",
+        node="layers",
+        item=None,
+        feedback=None,
+    )
+    assert await conversation_runner(node, ctx, asker=cast(Any, asker), st=cast(Any, st)) == {
+        "plan": {"layers": ["a"]}
+    }
+    assert set(await conversation_runner(node, ctx, asker=cast(Any, asker), st=cast(Any, st))) == {FAIL_KEY}
+    reason = "StoryBlocked: architect did not produce a usable plan: the reply has no JSON object"
+    assert said[0] == ("layers_done", {"chars": len('```json\n{"layers": ["a"]}\n```')})
+    assert said[1][0] == "layers_failed" and said[1][1]["reason"].startswith(reason)
+    assert len(said) == 2
+
+
 def drafting_closed(st: StoryState) -> None:
     """The drafting conversation of `st` was closed when its run ended: its studio worktree is removed.
     (The composer's Sessions live inside `compose`, out of a test's reach: the worktree is what shows it.)"""
@@ -1921,6 +2044,8 @@ async def test_a_meeting_nodes_prompt_and_turn_texts_reach_the_amigos_opening_an
         "story": st.story,
         "layers": st.layers,
     }
+    assert isinstance(out["agreement"], dict) and isinstance(out["story"], dict)  # what the state holds
+    assert all(isinstance(x, dict) for x in out["layers"])
     [(opening, system)] = seen
     assert opening.startswith("Agree on Add avatar upload before anyone builds.\n\n## Product's story")
     assert hub_text("amigos-opening") not in opening
