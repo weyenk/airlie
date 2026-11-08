@@ -12,6 +12,7 @@ imports nothing from the story or the config, so `airlie.flow.spec` may name it.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -32,7 +33,9 @@ class Check:
     a one-line `title` for the builder, the function, the format of each output it states one for, the
     outputs it makes `transient` (held in the run's memory, recomputed every run: a node that runs it must
     declare them so), and `every_run`: an output-less check run on every run, never recorded done (a mark
-    or a cost the driver makes on every pass)."""
+    or a cost the driver makes on every pass), and `args`: the keywords the function cannot be called
+    without, which a node must set in its `args` (`Catalog.add` refuses a function that requires one it
+    does not declare)."""
 
     name: str
     inputs: tuple[str, ...]
@@ -42,6 +45,7 @@ class Check:
     formats: Mapping[str, Format] = field(default_factory=dict)
     transient: tuple[str, ...] = ()
     every_run: bool = False
+    args: tuple[str, ...] = ()  # the `args` a node must set: the function's keywords with no default
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -52,7 +56,19 @@ class Check:
             "formats": dict(self.formats),
             "transient": list(self.transient),
             "every_run": self.every_run,
+            "args": list(self.args),
         }
+
+
+def _required(fn: Callable[..., Any]) -> list[str]:
+    """The keywords `fn(ctx, **args)` cannot be called without: its parameters after the context that have
+    no default (none for a callable whose signature cannot be read)."""
+    try:
+        params = list(inspect.signature(fn).parameters.values())[1:]
+    except (TypeError, ValueError):
+        return []
+    kinds = (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return [p.name for p in params if p.kind in kinds and p.default is inspect.Parameter.empty]
 
 
 class Catalog:
@@ -74,6 +90,11 @@ class Catalog:
             )
         if check.every_run and check.outputs:
             raise ValueError(f"check '{check.name}': every_run is for a check with no outputs")
+        if undeclared := [a for a in _required(check.fn) if a not in check.args]:
+            raise ValueError(
+                f"check '{check.name}': its function requires {', '.join(undeclared)}, which it does not "
+                "declare in args"
+            )
         self._checks[check.name] = check
 
     def __getitem__(self, name: str) -> Check:
@@ -107,12 +128,14 @@ class Catalog:
         title: str,
         transient: Sequence[str] = (),
         every_run: bool = False,
+        args: Sequence[str] = (),
     ) -> Callable[[F], F]:
         """A decorator: the function, unchanged, declared here under `name`."""
 
         def register(fn: F) -> F:
             fmt = dict(formats or {})
-            self.add(Check(name, tuple(inputs), tuple(outputs), title, fn, fmt, tuple(transient), every_run))
+            outs, held = tuple(outputs), tuple(transient)
+            self.add(Check(name, tuple(inputs), outs, title, fn, fmt, held, every_run, tuple(args)))
             return fn
 
         return register
@@ -131,6 +154,7 @@ def check(
     title: str,
     transient: Sequence[str] = (),
     every_run: bool = False,
+    args: Sequence[str] = (),
 ) -> Callable[[F], F]:
     """Declare the decorated `(ctx, **args)` function on `STORY_CATALOG` (`Catalog.declare`)."""
     return STORY_CATALOG.declare(
@@ -141,4 +165,5 @@ def check(
         title=title,
         transient=transient,
         every_run=every_run,
+        args=args,
     )

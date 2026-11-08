@@ -2487,7 +2487,7 @@ def workflows_catalog() -> None:
     """The checks a `check` or `gate` node may name in `run`, with what each reads and writes."""
     from airlie.story.flow import STORY_CATALOG
 
-    table = Table("name", "title", "inputs", "outputs", "transient", "every_run")
+    table = Table("name", "title", "inputs", "outputs", "args", "transient", "every_run")
     table.columns[0].no_wrap = True
     for c in STORY_CATALOG.describe():
         table.add_row(
@@ -2495,6 +2495,7 @@ def workflows_catalog() -> None:
             escape(c["title"]),
             escape(", ".join(c["inputs"])),
             escape(", ".join(c["outputs"])),
+            escape(", ".join(c["args"])),
             escape(", ".join(c["transient"])),
             "yes" if c["every_run"] else "",
         )

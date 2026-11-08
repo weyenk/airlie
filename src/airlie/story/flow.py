@@ -455,6 +455,7 @@ def plain(ctx: RunContext) -> Mapping[str, Any]:
     "story.costed",
     inputs=("card",),
     every_run=True,  # the driver costs its stages on every run
+    args=("stages",),
     title="Record what the stages named (args.stages) cost against their budgets",
 )
 async def costed(ctx: RunContext, *, stages: list[str]) -> Mapping[str, Any]:

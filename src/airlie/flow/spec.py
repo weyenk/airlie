@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ASSIGNMENT",
+    "MEETINGS",
     "RESERVED",
     "Format",
     "Layout",
@@ -46,6 +47,12 @@ D21) and `nodes_done` (the composer's done set, D17). `artifacts.<name>` is a na
 fine; nothing may write inside the others."""
 ASSIGNMENT = "assignment"
 """What a team's `worker` text reads beside its inputs: the one assignment the worker was given."""
+MEETINGS: tuple[dict[str, tuple[str, ...]], ...] = (
+    {"roles": ("product", "architect", "tester"), "inputs": ("story", "layers")},
+)
+"""The meeting protocols a `meeting` node may run, each by the seats it names (in order) and the inputs it
+reads: only the amigos protocol (the story meeting, `_agree`) this round. The builder lists them (the
+catalog route's `meetings`)."""
 
 _OLD_NODE_FIELDS = ("parse", "after", "done", "when", "next", "on", "branch", "loop", "nodes", "over")
 _OLD_WORKFLOW_FIELDS = ("start", "loose")
@@ -255,8 +262,9 @@ def _closing_lines(w: WorkflowSpec) -> list[tuple[str, str]]:
 def _prompt_file(node: NodeSpec, readable: set[str], prompts: Collection[str]) -> list[str]:
     """What is wrong with the prompt files a node's `prompt` (and a team's `worker`) names as `prompt:<id>`:
     an id that is neither a hub rule nor in `prompts`, or a field the node cannot read (the hub's rules
-    always, a draft's when `prompts` maps its ids to their parsed files). A team's worker file may read its
-    `assignment` too."""
+    always, a draft's when `prompts` maps its ids to their parsed files). `readable` is what inline text may
+    name too: the node's own inputs, `item` and `config` (`feedback` always); a team's worker file may read
+    its `assignment` as well."""
     found = _one_prompt_file(node.prompt, readable, prompts)
     if node.type == "team":
         found += _one_prompt_file(node.worker, readable | {ASSIGNMENT}, prompts)
@@ -371,14 +379,66 @@ def _condition_problems(n: NodeSpec, heads: set[str]) -> list[str]:
     return found
 
 
-def _listed(names: Iterable[str]) -> str:
-    return "[" + ", ".join(sorted(names)) + "]"
+def _meeting_problems(n: NodeSpec) -> list[str]:
+    """A meeting whose seats or inputs are no protocol's (`MEETINGS`): checked once its role is a list."""
+    if n.type != "meeting" or not isinstance(n.role, list):
+        return []
+    for proto in MEETINGS:
+        if tuple(n.role) == proto["roles"] and set(proto["inputs"]) <= set(n.inputs):
+            return []
+    (proto,) = MEETINGS
+    return [
+        f"a meeting runs the amigos protocol: role must be {_listed(proto['roles'], sort=False)} and inputs "
+        f"include {', '.join(proto['inputs'])}"
+    ]
+
+
+def _loop_problems(w: WorkflowSpec, nname: str, n: NodeSpec) -> list[str]:
+    """A blocking node's loop line must go back to a node upstream of it (one that reaches it through forward
+    lines): a loop that does not send the node itself back would let a failed node finish as if it passed."""
+    if n.on_fail != "block":
+        return []
+    return [
+        f"the loop line to '{line.node}' goes to a node that does not reach this one through forward lines"
+        for line in n.to
+        if line.loop is not None and line.node in w.nodes and not _reaches(w, line.node, nname)
+    ]
+
+
+def _reaches(w: WorkflowSpec, start: str, goal: str) -> bool:
+    seen: set[str] = set()
+    todo = [start]
+    while todo:
+        at = todo.pop()
+        if at == goal:
+            return True
+        if at not in seen and at in w.nodes:
+            seen.add(at)
+            todo.extend(ln.node for ln in w.nodes[at].to if ln.loop is None)
+    return False
+
+
+def _handed_back(w: WorkflowSpec, n: NodeSpec) -> list[str]:
+    """An output of a node in a bundle's workflow that the store keeps (not a memory head, not a session) and
+    that the workflow's `outputs` do not list: the bundle writes only those back (`BundleStore`)."""
+    from airlie.flow.store import MEMORY  # the store imports this module
+
+    return [
+        f"output '{name}' is not among the bundle workflow's outputs {_listed(w.outputs, sort=False)}"
+        for name, out in n.outputs.items()
+        if name.partition(".")[0] not in MEMORY and out.format != "session" and name not in w.outputs
+    ]
+
+
+def _listed(names: Iterable[str], *, sort: bool = True) -> str:
+    return "[" + ", ".join(sorted(names) if sort else names) + "]"
 
 
 def _catalog_problems(n: NodeSpec, catalog: Catalog) -> list[str]:
     """Rule 9: a check or gate node's `run` is declared in the catalog, its outputs are the declaration's
-    (no more, no fewer) and its inputs include every one the declaration reads. Item-scoped names
-    (`built.{item}`) match literally."""
+    (no more, no fewer, each of the format the declaration states for it), its inputs include every one the
+    declaration reads and its `args` every one the declaration requires. Item-scoped names (`built.{item}`)
+    match literally."""
     if n.type not in ("check", "gate") or n.run is None:
         return []
     if n.run not in catalog:
@@ -398,6 +458,16 @@ def _catalog_problems(n: NodeSpec, catalog: Catalog) -> list[str]:
         for name in declared.transient
         if name in n.outputs and not n.outputs[name].transient
     ]
+    found += [
+        f"output '{name}' is {n.outputs[name].format}, but the catalog's '{n.run}' makes it {fmt}"
+        for name, fmt in declared.formats.items()
+        if name in n.outputs and n.outputs[name].format != fmt
+    ]
+    found += [
+        f"the catalog's '{n.run}' needs args.{arg}, which the node does not set"
+        for arg in declared.args
+        if arg not in n.args
+    ]
     return found
 
 
@@ -413,6 +483,9 @@ def check_workflows(
     fields checked as well. With a `catalog`, each check and gate node is held to its declaration (rule 9,
     `_catalog_problems`)."""
     problems: list[str] = []
+    bundled = {
+        n.workflow for w in workflows.values() for n in w.nodes.values() if n.type == "bundle" and n.workflow
+    }
     for wname, w in workflows.items():
         known = set(w.nodes)
         available = _produced(w)
@@ -428,7 +501,7 @@ def check_workflows(
             if (wrong := _wrong_fields(n)) is not None:
                 found.append(wrong)
             found += [f"output '{out}' is reserved" for out in n.outputs if reserved_output(out)]
-            found += _prompt_file(n, set(n.inputs) | set(w.inputs), prompts)
+            found += _prompt_file(n, {*n.inputs, "item", "config"}, prompts)
             found += _placeholder_problems(n)
             found += [
                 f"input '{name}' is not produced by any node and not a workflow input"
@@ -444,6 +517,12 @@ def check_workflows(
             ]
             if n.type == "bundle":
                 found += _bundle_problems(w, nname, n, workflows)
+            if wname in bundled:
+                found += _handed_back(w, n)
+            if n.type == "team" and n.workers is not None and n.workers < 1:
+                found.append("team workers must be at least 1")
+            found += _meeting_problems(n)
+            found += _loop_problems(w, nname, n)
             found += _session_problems(w, n)
             if catalog is not None:
                 found += _catalog_problems(n, catalog)

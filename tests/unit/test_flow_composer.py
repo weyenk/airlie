@@ -240,11 +240,24 @@ async def test_a_bundle_runs_once_per_item_and_writes_back_only_its_declared_out
     assert ("node_skipped", "b", "01") in events
     assert store.done("lay/b@02") and store.done("lay/b@03") and store.done("lay")
 
-    # a bundle node writing a name its workflow does not declare as an output is refused
+    # a bundle node writing a name its workflow does not declare as an output is refused: by the check
+    # when the workflows load, and by the bundle's store if it runs all the same
     wf["layer"]["nodes"]["b"]["outputs"] = {"built.{item}": "json", "note": "text"}
+    specs = {name: WorkflowSpec.model_validate(w) for name, w in wf.items()}
+    assert check_workflows(specs) == [
+        "workflow layer: node b: output 'note' is not among the bundle workflow's outputs [built.{item}]"
+    ]
     store = MemoryStore({"card": "c", "layers": [{}]})
+    unchecked = Composer(
+        cfg_for(tmp_path),
+        runners={"check": check_that(run)},
+        registry=Registry(),
+        store=store,
+        sessions=Sessions(),
+        workflows=specs,
+    )
     with pytest.raises(KeyError, match="'note' is not one of its outputs"):
-        await composer(tmp_path, wf, {"check": check_that(run)}, store=store).run("story")
+        await unchecked.run("story")
 
 
 async def test_a_node_done_by_its_artifacts_is_skipped_on_resume_and_an_outputless_node_by_the_done_set(

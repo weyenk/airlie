@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import Format, NodeType, WorkflowSpec
+from airlie.flow.spec import MEETINGS, Format, NodeType, WorkflowSpec
 from airlie.prompts.hub import load as hub_prompts
 from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
 from airlie.story.publish import PublishError
@@ -183,6 +183,7 @@ def workflows_router(
             "formats": list(get_args(Format)),
             "kinds": list(KINDS),
             "checks": STORY_CATALOG.describe(),
+            "meetings": [{"roles": list(m["roles"]), "inputs": list(m["inputs"])} for m in MEETINGS],
             "prompt_files": sorted(p.id for p in hub_prompts().values() if p.kind == "rule"),
         }
 

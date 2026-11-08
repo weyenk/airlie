@@ -66,6 +66,7 @@ def test_describe_lists_every_check_in_declaration_order() -> None:
             "formats": {},
             "transient": ["y.{item}"],
             "every_run": False,
+            "args": [],
         },
         {
             "name": "a",
@@ -75,6 +76,7 @@ def test_describe_lists_every_check_in_declaration_order() -> None:
             "formats": {},
             "transient": [],
             "every_run": True,
+            "args": [],
         },
     ]
 

@@ -176,6 +176,46 @@ async def test_a_cap_of_two_runs_the_first_two_and_names_the_rest_as_not_started
     assert len(asked) == 2 and not any(f"[{i}]" in b for b in asked for i in "cde")
 
 
+async def test_with_no_cap_set_the_default_five_run_and_the_sixth_is_not_started(tmp_path: Path) -> None:
+    """Review Focus 5 on the default cap: six assignments and no `workers` on the node; the first five run,
+    the supervisor is told the sixth was not started, and the node finishes."""
+    ids = ("a", "b", "c", "d", "e", "f")
+    repo = repo_with_marker_tests(tmp_path)
+    engine = TeamEngine(
+        {
+            "architect": [
+                assign(*ids),
+                *[FakeReply(text=f"{i} in") for i in ids[:4]],
+                fenced({"summary": "five"}),
+            ]
+        },
+        worker="product",
+        workers={i: [FakeReply(text=f"answer {i}")] for i in ids[:5]},
+        order=list(ids[:5]),
+    )
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "six questions"}), "ask")
+    out = await team_runner(team("product"), ctx, asker=pipe.asker, st=st)
+    assert [r["id"] for r in out["results"]] == list(ids[:5])
+    assert out["summary"] == {"summary": "five"}
+    assert "Not started, over the team's cap: f." in handbacks(engine)[0]
+    assert "at most 5 workers" in briefs_to(engine, "architect")[0]
+    asked = briefs_to(engine, "product")
+    assert len(asked) == 5 and not any("[f]" in b for b in asked)
+
+
+def test_the_spec_refuses_a_team_cap_below_one() -> None:
+    from airlie.flow.spec import WorkflowSpec, check_workflows
+
+    for workers in (0, -2):
+        w = WorkflowSpec(inputs=["card"], nodes={"t": team("product", workers=workers)})
+        assert "workflow w: node t: team workers must be at least 1" in check_workflows({"w": w})
+    assert (
+        check_workflows({"w": WorkflowSpec(inputs=["card"], nodes={"t": team("product", workers=1)})}) == []
+    )
+
+
 async def test_a_diff_that_does_not_apply_is_a_failed_hand_back_and_the_node_still_finishes(
     tmp_path: Path,
 ) -> None:

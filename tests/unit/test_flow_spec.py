@@ -82,7 +82,7 @@ def test_an_input_nothing_produces_is_refused_unless_the_workflow_declares_it():
 
 def test_feedback_is_readable_where_a_loop_line_carries_it():
     w = wf(
-        build=ask("coder", inputs=["feedback"], outputs={"built": "json"}),
+        build=ask("coder", inputs=["feedback"], outputs={"built": "json"}, to=["gate"]),
         gate=check(
             inputs=["built"],
             outputs={"result": "json"},
@@ -389,3 +389,116 @@ def test_with_a_catalog_a_checks_run_must_be_declared_and_match_its_declaration(
 def test_rule_nine_reads_only_check_and_gate_nodes():
     w = wf(a=ask(outputs={"gate": "json"}))
     assert check_workflows({"w": w}, catalog=_catalog()) == []
+
+
+# ---- the whole-branch review's rules (I7, M1, M3, M7) ----
+
+
+def test_a_bundle_workflows_node_may_write_only_what_the_bundle_hands_back():
+    outer = wf(lay=NodeSpec(type="bundle", workflow="layer"))
+    inner = WorkflowSpec(
+        outputs=["built.{item}"],
+        nodes={
+            "a": check(
+                outputs={
+                    "built.{item}": "json",  # handed back
+                    "package.{item}": "json",  # kept in memory
+                    "talk": "session",  # held for the run
+                    "stray": "json",
+                }
+            )
+        },
+    )
+    assert check_workflows({"story": outer, "layer": inner}) == [
+        "workflow layer: node a: output 'stray' is not among the bundle workflow's outputs [built.{item}]"
+    ]
+    assert check_workflows({"layer": inner}) == []  # run by no bundle here: its outputs are its own
+
+
+def test_a_check_declares_the_args_its_function_requires_and_rule_nine_holds_a_node_to_them():
+    from airlie.flow.catalog import Catalog, Check
+
+    def costed(ctx, *, stages):
+        return {}
+
+    cat = Catalog()
+    cat.add(Check("w.costed", (), (), "Cost", costed, args=("stages",)))
+    assert cat["w.costed"].describe()["args"] == ["stages"]
+    w = wf(
+        ok=NodeSpec(type="check", run="w.costed", args={"stages": ["plan"]}),
+        bare=NodeSpec(type="check", run="w.costed"),
+    )
+    assert check_workflows({"w": w}, catalog=cat) == [
+        "workflow w: node bare: the catalog's 'w.costed' needs args.stages, which the node does not set"
+    ]
+    with pytest.raises(ValueError, match="requires stages, which it does not declare in args"):
+        Catalog().add(Check("w.costed", (), (), "Cost", costed))
+
+
+def test_the_storys_costed_check_declares_its_stages():
+    from airlie.story.flow import STORY_CATALOG
+
+    assert STORY_CATALOG["story.costed"].args == ("stages",)
+    assert all(c.describe()["args"] == list(c.args) for c in STORY_CATALOG)
+
+
+def test_a_meeting_names_the_amigos_roles_in_order_and_reads_the_story_and_the_layers():
+    def meeting(roles, inputs):
+        return NodeSpec(type="meeting", role=roles, prompt="p", inputs=inputs)
+
+    w = WorkflowSpec(
+        inputs=["story", "layers", "base"],
+        nodes={
+            "ok": meeting(["product", "architect", "tester"], ["story", "layers", "base"]),
+            "order": meeting(["architect", "product", "tester"], ["story", "layers"]),
+            "short": meeting(["product", "architect"], ["story", "layers"]),
+            "blind": meeting(["product", "architect", "tester"], ["story"]),
+        },
+    )
+    rule = (
+        "a meeting runs the amigos protocol: role must be [product, architect, tester] "
+        "and inputs include story, layers"
+    )
+    assert check_workflows({"w": w}) == [f"workflow w: node {n}: {rule}" for n in ("order", "short", "blind")]
+
+
+def test_rule_nine_holds_an_outputs_format_to_the_catalogs():
+    from airlie.flow.catalog import Catalog, Check
+
+    cat = Catalog()
+    cat.add(Check("w.drafts", (), ("drafted", "talk"), "Drafts", lambda ctx: {}, {"talk": "session"}))
+    w = wf(
+        ok=NodeSpec(type="check", run="w.drafts", outputs={"drafted": "bool", "talk": "session"}),
+        bad=NodeSpec(type="check", run="w.drafts", outputs={"drafted": "bool", "talk": "json"}),
+    )
+    assert check_workflows({"w": w}, catalog=cat) == [
+        "workflow w: node bad: output 'talk' is json, but the catalog's 'w.drafts' makes it session"
+    ]
+
+
+def test_a_prompt_file_reads_only_the_nodes_own_inputs_not_the_workflows():
+    from airlie.prompts.hub import parse
+
+    raw = "---\nkind: rule\nroles: [product]\nfields: [card, repo]\nwhy: w\n---\n{card} {repo}\n"
+    note = parse("note.md", "rule", raw)
+    w = WorkflowSpec(
+        inputs=["card", "repo"],
+        nodes={"a": NodeSpec(type="ask", role="product", prompt="prompt:note", inputs=["card"])},
+    )
+    assert check_workflows({"w": w}, prompts={"note": note}) == [
+        "workflow w: node a: prompt file 'note' reads 'repo', which is not an input of the node"
+    ]
+
+
+def test_a_blocking_nodes_loop_line_goes_back_to_a_node_upstream_of_it():
+    loop = {"max": 2}
+    w = wf(
+        a=check(outputs={"x": "json"}, to=["b"]),
+        b=check(inputs=["x"], outputs={"y": "json"}, to=[Line(node="a", loop=loop)]),  # upstream: fine
+        c=check(outputs={"z": "json"}, to=[Line(node="a", loop=loop)]),  # a does not reach c
+        d=check(outputs={"w": "json"}, on_fail="continue", to=[Line(node="a", loop=loop)]),
+    )
+    assert check_workflows({"w": w}) == [
+        "workflow w: node c: the loop line to 'a' goes to a node that does not reach this one through "
+        "forward lines"
+    ]

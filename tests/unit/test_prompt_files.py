@@ -153,7 +153,12 @@ def test_check_workflows_flags_an_unknown_prompt_file() -> None:
 
 def test_check_workflows_flags_a_field_the_node_cannot_read() -> None:
     texts = parse_draft_prompts({"bug-reproduce": REPRODUCE})
-    assert check_workflows(bug("prompt:bug-reproduce"), prompts=texts) == []  # card is loose
+    assert check_workflows(bug("prompt:bug-reproduce", inputs=["card"]), prompts=texts) == []
+    # a workflow input the node does not list is not the node's to read, as for inline text
+    assert check_workflows(bug("prompt:bug-reproduce"), prompts=texts) == [
+        "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
+        "which is not an input of the node"
+    ]
     lonely = {"bug": bug("prompt:bug-reproduce")["bug"].model_copy(update={"inputs": []})}
     assert check_workflows(lonely, prompts=texts) == [
         "workflow bug: node reproduce: prompt file 'bug-reproduce' reads 'card', "
