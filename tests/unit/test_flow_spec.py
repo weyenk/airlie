@@ -322,3 +322,49 @@ def test_unknown_prompt_file_keeps_its_message_only():
     problems = check_workflows({"w": wf(a=NodeSpec(type="ask", role="r", prompt="prompt:nope"))})
     assert [p for p in problems if "nope" in p] == ["workflow w: node a: unknown prompt file 'nope'"]
     assert not [p for p in problems if "names" in p]
+
+
+def _catalog():
+    from airlie.flow.catalog import Catalog, Check
+
+    cat = Catalog()
+    cat.add(Check("w.gate", ("base",), ("gate",), "Gate", lambda ctx: {}))
+    cat.add(Check("w.covered", ("layers",), ("satisfied.{item}",), "Covered", lambda ctx: {}))
+    cat.add(Check("w.finish", (), (), "Finish", lambda ctx: {}))
+    return cat
+
+
+def test_with_a_catalog_a_checks_run_must_be_declared_and_match_its_declaration():
+    w = WorkflowSpec(
+        inputs=["card", "base", "layers"],
+        nodes={
+            "ok": NodeSpec(type="check", run="w.gate", inputs=["base"], outputs={"gate": "json"}),
+            "item": NodeSpec(
+                type="check", run="w.covered", inputs=["layers"], outputs={"satisfied.{item}": "json"}
+            ),
+            "end": NodeSpec(type="gate", run="w.finish"),
+            "lost": NodeSpec(type="check", run="w.nothing"),
+            "extra": NodeSpec(
+                type="check", run="w.gate", inputs=["base"], outputs={"gate": "json", "x": "json"}
+            ),
+            "short": NodeSpec(type="check", run="w.gate", inputs=["base"]),
+            "blind": NodeSpec(type="check", run="w.gate", outputs={"gate": "json"}),
+            "plain": NodeSpec(
+                type="check", run="w.covered", inputs=["layers"], outputs={"satisfied.01": "json"}
+            ),
+        },
+    )
+    assert check_workflows({"w": w}) == []  # no catalog given: rule 9 is not run
+    assert check_workflows({"w": w}, catalog=_catalog()) == [
+        "workflow w: node lost: run 'w.nothing' is not in the catalog",
+        "workflow w: node extra: outputs [gate, x] do not match the catalog's [gate] for 'w.gate'",
+        "workflow w: node short: outputs [] do not match the catalog's [gate] for 'w.gate'",
+        "workflow w: node blind: the catalog's 'w.gate' reads base, which is not one of its inputs",
+        "workflow w: node plain: outputs [satisfied.01] do not match the catalog's [satisfied.{item}] for "
+        "'w.covered'",
+    ]
+
+
+def test_rule_nine_reads_only_check_and_gate_nodes():
+    w = wf(a=ask(outputs={"gate": "json"}))
+    assert check_workflows({"w": w}, catalog=_catalog()) == []

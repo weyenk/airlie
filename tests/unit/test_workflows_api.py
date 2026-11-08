@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 import yaml
@@ -14,11 +14,12 @@ from fastapi import FastAPI
 
 from airlie.board import BoardStore
 from airlie.board.model import WorkflowDraft
+from airlie.flow.catalog import STORY_CATALOG
+from airlie.flow.outputs import Format
 from airlie.prompts.hub import load
 from airlie.serve import app as app_module
 from airlie.serve.app import create_app
 from airlie.serve.workflows_api import workflows_router
-from airlie.story.flow import CATALOG
 from airlie.story.publish import CannotStart, Publisher
 from airlie.story.workflow_publish import NothingToPublish, publish_workflow
 from tests.unit.git_helpers import git
@@ -411,14 +412,17 @@ def test_publishing_a_draft_records_its_pr(tmp_path: Path) -> None:
     assert s.draft("mini").published_pr == 7
 
 
-def test_the_catalog_lists_roles_types_registry_ids_and_rule_files(tmp_path: Path) -> None:
+def test_the_catalog_lists_roles_types_kinds_checks_and_rule_files(tmp_path: Path) -> None:
     http, c = client(tmp_path)
     with http:
         got = http.get("/v1/workflows/catalog", headers=AUTH).json()
+    assert set(got) == {"roles", "types", "formats", "kinds", "checks", "prompt_files"}
     assert got["roles"] == sorted(c.roles)
-    assert got["types"] == ["ask", "conversation", "write", "meeting", "check", "gate", "parallel", "each"]
-    assert "story.refine" in got["prompts"]
-    assert {k: got[k] for k in CATALOG} == {k: list(v) for k, v in CATALOG.items()}
+    assert got["types"] == ["ask", "conversation", "write", "meeting", "team", "check", "gate", "bundle"]
+    assert got["formats"] == list(get_args(Format))
+    assert got["kinds"] == ["text", "number", "bool", "list of …", "one of …"]
+    assert got["checks"] == STORY_CATALOG.describe()
+    assert {"story.gate", "story.repo_guide", "story.open_layer"} <= {x["name"] for x in got["checks"]}
     assert got["prompt_files"] == sorted(p.id for p in load().values() if p.kind == "rule")
     assert got["prompt_files"]
 

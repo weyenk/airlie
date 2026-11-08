@@ -9,13 +9,16 @@ nothing from `airlie.config.schema` (which imports it)."""
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
-from typing import Any, Literal
+from collections.abc import Collection, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
 
 from airlie.flow import conditions
 from airlie.flow.outputs import Format, OutputSpec, Strict
+
+if TYPE_CHECKING:
+    from airlie.flow.catalog import Catalog
 
 __all__ = [
     "RESERVED",
@@ -342,11 +345,42 @@ def _condition_problems(n: NodeSpec, heads: set[str]) -> list[str]:
     return found
 
 
-def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collection[str] = ()) -> list[str]:
+def _listed(names: Iterable[str]) -> str:
+    return "[" + ", ".join(sorted(names)) + "]"
+
+
+def _catalog_problems(n: NodeSpec, catalog: Catalog) -> list[str]:
+    """Rule 9: a check or gate node's `run` is declared in the catalog, its outputs are the declaration's
+    (no more, no fewer) and its inputs include every one the declaration reads. Item-scoped names
+    (`built.{item}`) match literally."""
+    if n.type not in ("check", "gate") or n.run is None:
+        return []
+    if n.run not in catalog:
+        return [f"run '{n.run}' is not in the catalog"]
+    declared = catalog[n.run]
+    found: list[str] = []
+    if set(n.outputs) != set(declared.outputs):
+        theirs = _listed(declared.outputs)
+        found.append(f"outputs {_listed(n.outputs)} do not match the catalog's {theirs} for '{n.run}'")
+    found += [
+        f"the catalog's '{n.run}' reads {name}, which is not one of its inputs"
+        for name in declared.inputs
+        if name not in n.inputs
+    ]
+    return found
+
+
+def check_workflows(
+    workflows: Mapping[str, WorkflowSpec],
+    *,
+    prompts: Collection[str] = (),
+    catalog: Catalog | None = None,
+) -> list[str]:
     """Return one problem string per mistake: "workflow <w>: node <n>: <what>". Empty means consistent.
     `prompts` are the ids of the prompt files the drafts carry, beside the hub's rules, that a node's
     `prompt: "prompt:<id>"` may name; a mapping of them to their parsed files (`PromptText`) has their
-    fields checked as well."""
+    fields checked as well. With a `catalog`, each check and gate node is held to its declaration (rule 9,
+    `_catalog_problems`)."""
     problems: list[str] = []
     for wname, w in workflows.items():
         known = set(w.nodes)
@@ -380,5 +414,7 @@ def check_workflows(workflows: Mapping[str, WorkflowSpec], *, prompts: Collectio
             if n.type == "bundle":
                 found += _bundle_problems(w, nname, n, workflows)
             found += _session_problems(w, n)
+            if catalog is not None:
+                found += _catalog_problems(n, catalog)
             problems += [f"workflow {wname}: node {nname}: {what}" for what in found]
     return problems

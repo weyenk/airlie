@@ -18,9 +18,9 @@ from pydantic import BaseModel, ConfigDict
 from airlie.board.model import WorkflowDraft
 from airlie.board.store import BoardStore, BoardStoreError
 from airlie.config import AirlieConfig
-from airlie.flow.spec import NodeType, WorkflowSpec
+from airlie.flow.spec import Format, NodeType, WorkflowSpec
 from airlie.prompts.hub import load as hub_prompts
-from airlie.story.flow import CATALOG
+from airlie.story.flow import STORY_CATALOG  # the catalog, with the story's checks declared on it
 from airlie.story.publish import PublishError
 from airlie.story.workflow_publish import NothingToPublish
 from airlie.story.workflows import (
@@ -31,6 +31,10 @@ from airlie.story.workflows import (
     edits_file,
     workflow_problems,
 )
+
+KINDS = ("text", "number", "bool", "list of …", "one of …")
+"""The field kinds an output's field list may use (`airlie.flow.outputs.parse_kind`), as the builder offers
+them; any kind may end in `?` for an optional field."""
 
 RESERVED = frozenset({"catalog", "validate", "drafts"})
 """Names a draft may not take: the router's own paths under /v1/workflows, which `GET /{name}` would never
@@ -165,7 +169,9 @@ def workflows_router(
         return {
             "roles": sorted(cfg.roles),
             "types": list(get_args(NodeType)),
-            **{kind: list(ids) for kind, ids in CATALOG.items()},
+            "formats": list(get_args(Format)),
+            "kinds": list(KINDS),
+            "checks": STORY_CATALOG.describe(),
             "prompt_files": sorted(p.id for p in hub_prompts().values() if p.kind == "rule"),
         }
 

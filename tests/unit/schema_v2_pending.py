@@ -140,7 +140,6 @@ PENDING: frozenset[str] = frozenset(
         "test_workflows_api.py::test_serve_publishes_through_the_story_publisher_from_its_own_checkout",
         "test_workflows_api.py::test_serve_refuses_what_it_cannot_publish",
         "test_workflows_api.py::test_serve_without_its_own_checkout_cannot_publish",
-        "test_workflows_api.py::test_the_catalog_lists_roles_types_registry_ids_and_rule_files",
         "test_workflows_api.py::test_the_list_shows_the_repo_workflows_and_the_drafts",
         "test_workflows_api.py::test_validate_returns_the_check_problem_and_saves_nothing",
     }
