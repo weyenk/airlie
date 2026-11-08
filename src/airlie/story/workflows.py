@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
-from airlie.flow.prompt_files import parse_draft_prompts
-from airlie.flow.spec import WorkflowSpec, check_workflows
+from airlie.flow.prompt_files import PREFIX, parse_draft_prompts
+from airlie.flow.spec import NodeSpec, WorkflowSpec, check_workflows
 from airlie.flow.upgrade import upgrade_v1
 from airlie.prompts.hub import PromptError
 from airlie.prompts.hub import load as hub_prompts
@@ -257,12 +257,20 @@ def spec_hash(data: Mapping[str, Any] | None) -> str | None:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
-def changed_nodes(old: Mapping[str, Any], name: str, specs: Mapping[str, WorkflowSpec]) -> set[str]:
+def changed_nodes(
+    old: Mapping[str, Any],
+    name: str,
+    specs: Mapping[str, WorkflowSpec],
+    *,
+    prompts: Mapping[str, str] | None = None,
+) -> set[str]:
     """The nodes of workflow `name` in `specs` whose definition differs from the one snapshot `old` keeps
-    (their JSON compared; an old-schema snapshot is upgraded first), and the bundle nodes whose workflow
-    differs at all. A node `old` does not have is not among them: it has no outputs yet, so it runs anyway.
-    A snapshot of another workflow shares no nodes with `specs`; one that cannot be read is compared as
-    it was saved."""
+    (their JSON compared; an old-schema snapshot is upgraded first), those whose `prompt`, `turn` or
+    `worker` names a `prompt:<id>` whose text in `prompts` (the new snapshot's drafts' files) is not the
+    text `old` keeps for it, and the bundle nodes whose workflow differs at all (a node of it naming such
+    a file too). A node `old` does not have is not among them: it has no outputs yet, so it runs anyway. A
+    snapshot of another workflow shares no nodes with `specs`; one that cannot be read is compared as it
+    was saved."""
     if old.get("name") != name:
         return set()
     try:
@@ -270,13 +278,31 @@ def changed_nodes(old: Mapping[str, Any], name: str, specs: Mapping[str, Workflo
     except (WorkflowError, KeyError, TypeError, AttributeError):
         kept = dict(old.get("specs") or {})
     was = (kept.get(name) or {}).get("nodes") or {}
+    texts_were, texts = dict(old.get("prompts") or {}), dict(prompts or {})
+
+    def reworded(node: NodeSpec) -> bool:
+        ids = [
+            t.removeprefix(PREFIX)
+            for t in (node.prompt, node.turn, node.worker)
+            if t and t.startswith(PREFIX)
+        ]
+        return any(texts_were.get(id) != texts.get(id) for id in ids)
+
     found: set[str] = set()
     for n, node in specs[name].nodes.items():
         if n not in was:
             continue
         inner = specs.get(node.workflow) if node.type == "bundle" and node.workflow is not None else None
-        if node.model_dump(mode="json") != was[n] or (
-            inner is not None and kept.get(str(node.workflow)) != inner.model_dump(mode="json")
+        if (
+            node.model_dump(mode="json") != was[n]
+            or reworded(node)
+            or (
+                inner is not None
+                and (
+                    kept.get(str(node.workflow)) != inner.model_dump(mode="json")
+                    or any(reworded(m) for m in inner.nodes.values())
+                )
+            )
         ):
             found.add(n)
     return found
@@ -379,7 +405,7 @@ async def adopt_current(
         new = snapshot(name, specs, closure_prompts(prompts, drafted(pipe.cfg, specs)))
         before, after = spec_hash(old), spec_hash(new)
         was = f"{old.get('name')} {before}" if old.get("name") != name else str(before)
-        changed = changed_nodes(old, name, specs)
+        changed = changed_nodes(old, name, specs, prompts=new["prompts"])
         again = sorted(_below(specs[name], changed))
         rerun = f"; changed, so run again: {', '.join(again)}" if again else ""
         asked = f", as {by} asked" if by else ""

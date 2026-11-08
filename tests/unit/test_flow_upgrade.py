@@ -47,7 +47,16 @@ from tests.unit.test_story_pipeline import (
     pipeline,
     repo_with_marker_tests,
 )
-from tests.unit.test_story_workflows import MINI, MINI_EACH, MINI_MORE, TINY, mini_card, started
+from tests.unit.test_story_workflows import (
+    MINI,
+    MINI_EACH,
+    MINI_MORE,
+    MINI_NOTE,
+    NOTE,
+    TINY,
+    mini_card,
+    started,
+)
 from tests.unit.test_studio_orchestrator import cfg_for
 
 MINI_V1 = """\
@@ -721,6 +730,18 @@ def test_changed_nodes_compares_each_nodes_definition() -> None:
     assert changed_nodes(v1_snapshot(MINI_V1, "mini"), "mini", same) == {
         "gate"
     }  # upgraded first: its inputs listed in another order
+
+
+def test_a_node_whose_prompt_file_changed_in_the_drafts_is_changed() -> None:
+    cfg = load_config(Path("airlie.yaml"))
+    prompts = {"mini": {"mini-note": NOTE}}
+    specs = resolve_workflows(cfg, {"mini": MINI_NOTE}, "mini", prompts=prompts)
+    old = snapshot("mini", specs, {"mini-note": NOTE})
+    same = {"mini-note": NOTE}
+    edited = {"mini-note": NOTE.replace("Write one line", "Write a poem")}
+    assert changed_nodes(old, "mini", specs, prompts=same) == set()
+    assert changed_nodes(old, "mini", specs, prompts=edited) == {"note"}
+    assert changed_nodes(old, "mini", specs) == {"note"}  # no file of that id now: changed too
 
 
 async def test_adopting_holds_the_card_out_of_the_line_and_puts_it_back(tmp_path: Path) -> None:
