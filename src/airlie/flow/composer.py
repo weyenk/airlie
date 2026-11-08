@@ -118,6 +118,7 @@ class RunContext:
     held: contextlib.AsyncExitStack | None = None  # the run's: what nodes hold open for later ones
     inputs: Collection[str] = ()  # the names the node reads: its inputs and its workflow's inputs
     texts: Mapping[str, PromptText] = field(default_factory=dict)  # the drafts' prompt files, by id
+    formats: Mapping[str, str] = field(default_factory=dict)  # each output name of the workflow: its format
 
     def lookup(self, path: str) -> Any:
         """The value of a dotted path: `feedback` is the carried feedback; `config.<a>.<b>` is read on the
@@ -397,6 +398,7 @@ class _Run:
             held=self.c.held,
             inputs=frozenset(self.nodes[name].inputs) | set(self.spec.inputs),
             texts=self.c.texts,
+            formats=self.formats,
         )
 
     def start(self, name: str) -> None:

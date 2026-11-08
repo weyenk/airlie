@@ -8,16 +8,18 @@ with the story's pieces (the brief, the parser, the after-hook) defined here onc
 registry and the driver's step. The ask type is lifted (survey and refine), the check type (each check is a
 `(ctx, **args)` callable that reads its inputs from the store and calls the step the driver calls), and the
 conversation type: the layer plan's rounds and the packages' drafting are turn bodies (`args.turns`) that
-open their conversation through the runner's `Talk`, the drafting one held for the run as the
-`drafts_session` the layer's package node continues."""
+open their conversation through `Talk` (kept here until Task 8 removes the turn bodies; the generic
+runners run every v2 model node from its own fields, `story_runners`)."""
 
 # This module still reads the schema v1 fields; Task 8 rewrites it and removes the mypy ignore below.
 # mypy: ignore-errors
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
-from collections.abc import Awaitable, Callable, Mapping
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,23 +28,32 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from airlie.flow.catalog import STORY_CATALOG as STORY_CATALOG  # re-exported: the catalog with these declared
 from airlie.flow.catalog import Check, check
-from airlie.flow.composer import FAIL_KEY, Composer, MissingInput, Registry, RunContext, Runner
+from airlie.flow.composer import (
+    FAIL_KEY,
+    Composer,
+    MissingInput,
+    Registry,
+    RunContext,
+    Runner,
+    resolve_count,
+)
 from airlie.flow.prompt_files import parse_draft_prompts
 from airlie.flow.runners import (
     Hold,
     Opening,
     Session,
-    Talk,
     ask_runner,
     check_runner,
     conversation_runner,
+    converse,
     gate_runner,
     meeting_runner,
+    write_runner,
 )
 from airlie.flow.spec import NodeSpec, NodeType
 from airlie.flow.store import Sessions, StateStore
 from airlie.prompts.hub import PromptText
-from airlie.story.amigos import Agreement
+from airlie.story.amigos import ROLES, Agreement
 from airlie.story.board import Card, note
 from airlie.story.briefs import (
     drafts_brief,
@@ -301,6 +312,46 @@ async def draft_packages(
     st.drafted = True
     st.save()
     return session
+
+
+class Talk:
+    """The old schema's turn bodies' handle on their conversation (`args.turns`: the layer plan's rounds and
+    the packages' drafting, still registered until Task 8 removes them with the registry ids): `opening`
+    builds the node's opening (its `prompt` piece), `open` starts the conversation, or continues the session
+    the node names, and `count` is the node's turn count (`steps`, else 1). The generic
+    `conversation_runner` no longer calls a turn body."""
+
+    def __init__(self, node: NodeSpec, ctx: RunContext, *, asker: Any, st: Any, role: str) -> None:
+        self.node, self.ctx, self.asker, self.st, self.role = node, ctx, asker, st, role
+        self.count = resolve_count(ctx.cfg, node.steps) if node.steps is not None else 1
+        self.output = next((n for n, f in node.outputs.items() if f.format == "session"), None)
+        named = ctx.sessions.get(node.session) if node.session is not None else None
+        self.continued: Session | None = named
+        self.session: Session | None = named
+
+    async def opening(self, feedback: str | None = None) -> Opening:
+        assert self.node.prompt is not None
+        got = self.ctx.registry[self.node.prompt](self.ctx, feedback)
+        got = await got if inspect.isawaitable(got) else got
+        return got if isinstance(got, Opening) else Opening(str(got))
+
+    @contextlib.asynccontextmanager
+    async def open(self, opening: Opening) -> AsyncIterator[Session]:
+        if self.continued is not None:
+            yield self.continued
+            return
+        held = self.ctx.held if self.output is not None else None
+        if self.output is not None:
+            if held is None:
+                raise RuntimeError(
+                    f"node '{self.ctx.node}' outputs a session, but the run holds nothing open"
+                )
+            item = self.ctx.item
+            name = self.output if item is None else self.output.replace("{item}", item)
+            held.callback(self.ctx.sessions.pop, name)
+        async with converse(self.asker, self.st, self.role, opening, stage=self.ctx.node, held=held) as s:
+            self.session = s
+            yield s
 
 
 # ---- the meeting's pieces (amigos, agree_plain): `_agree`'s branches, shared with the composer ----
@@ -967,43 +1018,29 @@ def build_finished(st: StoryState) -> None:
 
 
 def story_runners(pipe: StoryPipeline, st: StoryState, card: Card) -> dict[NodeType, Runner]:
-    """One runner per node type. A check is the generic `check_runner` and a gate the generic `gate_runner`
-    (the review, which ends the run); a write runs its `run` id from the registry; an ask is the generic
-    `ask_runner` (the layer's package ask still its `run` id), asking through `_ask` for the stage's map as
-    the driver does; a conversation is the generic `conversation_runner` (the plan's rounds and the drafting
-    are its turn bodies), and a meeting the generic `meeting_runner` over the story's meeting parts
-    (`_meeting_parts`, the driver's too)."""
+    """One runner per node type, each the generic one bound to the story: a check is `check_runner` and a
+    gate `gate_runner` (the review, which ends the run); an ask, a conversation and a write are the model
+    runners over the pipeline's asker and the story's state, a seat named as the story names it (`seat`),
+    the ask through `_ask` for the stage's map as the driver does; a meeting is `meeting_runner` over the
+    amigos protocol (`_agree`, D20) with the story's meeting parts (`_meeting_parts`, the driver's too). A
+    team has no runner until Task 7; a bundle is the composer's own."""
+    seated = functools.partial(seat, pipe)
 
-    async def by_run(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        assert node.run is not None  # spec.py: a write and the package ask need run
-        step: Step = ctx.registry[node.run]
-        return await step(node, ctx)
+    async def agree(ctx: RunContext, hold: Hold, opening: str | None) -> Mapping[str, Any]:
+        await pipe._agree(st, card, *_planned(ctx), hold, opening=opening)
+        return {"agreement": st.agreement, "story": st.story, "layers": st.layers}
 
-    asked = functools.partial(
-        ask_runner, asker=pipe.asker, st=st, seat=functools.partial(seat, pipe), ask=pipe._ask
-    )
-
-    async def ask(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        if ctx.node == "package":  # the layer's step, which needs the layer's site from `covered`
-            return await by_run(node, ctx)
-        return await asked(node, ctx)
-
-    conversation = functools.partial(
-        conversation_runner, asker=pipe.asker, st=st, seat=functools.partial(seat, pipe)
-    )
-
-    async def later(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
-        raise NotImplementedError(f"{node.type} node '{ctx.node}': no runner yet")
+    async def team(node: NodeSpec, ctx: RunContext) -> Mapping[str, Any]:
+        raise NotImplementedError(f"team node '{ctx.node}': no runner yet (Task 7)")
 
     return {
+        "ask": functools.partial(ask_runner, asker=pipe.asker, st=st, seat=seated, ask=pipe._ask),
+        "conversation": functools.partial(conversation_runner, asker=pipe.asker, st=st, seat=seated),
+        "write": functools.partial(write_runner, asker=pipe.asker, st=st, seat=seated),
+        "meeting": functools.partial(meeting_runner, agree=agree, roles=ROLES, **pipe._meeting_parts(st)),
         "check": check_runner,
-        "meeting": functools.partial(meeting_runner, **pipe._meeting_parts(st)),
-        "ask": ask,
-        "conversation": conversation,
-        "write": by_run,  # the layer's build (`_build_once`)
         "gate": gate_runner,  # the review (`story.finish`), which ends the run
-        "each": later,  # the composer runs an each node's bundle itself
-        "parallel": later,  # and a parallel node's children
+        "team": team,
     }
 
 

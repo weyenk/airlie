@@ -13,26 +13,33 @@ import sys
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from airlie.config import load_config
-from airlie.engine import FakeEngine, FakeReply
-from airlie.flow.composer import Composer, EndRun, Registry, RunContext
+from airlie.engine import FakeEngine, FakeReply, ToolCall
+from airlie.flow.composer import FAIL_KEY, Composer, EndRun, Registry, RunContext
 from airlie.flow.runners import (
     Hold,
     Session,
+    ask_runner,
     check_runner,
     conversation_runner,
     gate_runner,
     meeting_runner,
+    write_runner,
 )
+from airlie.flow.spec import NodeSpec, WorkflowSpec
 from airlie.flow.store import MemoryStore, Sessions
+from airlie.prompts.hub import text as hub_text
 from airlie.serve.flow import epic_flow, job_detail, story_flow
 from airlie.serve.flow_parts import StoryNotFound
+from airlie.story.amigos import opening_message
+from airlie.story.asking import StoryBlocked
 from airlie.story.board import text_card
 from airlie.story.flow import CATALOG, story_registry, story_runners
+from airlie.story.model import Layer, Story
 from airlie.story.phase import phase_path
 from airlie.story.pipeline import StoryPipeline
 from airlie.story.state import StoryState, lane_lock, lock_held
@@ -42,6 +49,7 @@ from tests.unit.test_story_epic_pipeline import EPIC_TEXT, SPEC, plan_obj
 from tests.unit.test_story_layer_checks_flow import BROKEN, FEATURE, OTHER_RED, RED, STILL_BROKEN, calc_repo
 from tests.unit.test_story_layer_checks_flow import LAYERS as CALC_LAYERS
 from tests.unit.test_story_pipeline import (
+    AGREED_SPLIT,
     B2,
     CUT_THINKING,
     EASY_MEETING,
@@ -52,6 +60,7 @@ from tests.unit.test_story_pipeline import (
     PKG1,
     PKG2,
     PKGS,
+    REWORDED_STORY,
     SATISFIED,
     STORY,
     SURVEY_NOTES,
@@ -1039,17 +1048,80 @@ async def test_check_callables_read_inputs_from_the_store_not_the_pipeline(tmp_p
     assert pipe.commands == ("./check.sh",)  # read into the pipeline, as the driver's gate step does
 
 
-async def test_the_ask_runner_retries_until_the_reply_parses(tmp_path: Path) -> None:
-    """Refine through the generic ask runner: an unusable reply goes back with the reason (`Asker.usable`),
-    one `retry` event, and the second reply's story lands in the store."""
+def v2(**fields: Any) -> NodeSpec:
+    """A schema v2 node, as a workflow file would declare it."""
+    return NodeSpec.model_validate(fields)
+
+
+def bare_state(tmp_path: Path, repo: Path, title: str = "add a marker") -> StoryState:
+    """A story's state with nothing in it yet but its card's title (what an ask names its run by)."""
+    st = StoryState(path=tmp_path / "story", card={"title": title}, repo=str(repo))
+    st.path.mkdir()
+    return st
+
+
+def briefs_to(engine: FakeEngine, role: str) -> list[str]:
+    """Every request the engine was sent for `role`, its messages joined."""
+    return ["\n".join(m.content for m in r.messages) for r in engine.requests if r.role == role]
+
+
+async def test_the_ask_runner_retries_a_fielded_output_until_it_parses(tmp_path: Path) -> None:
+    """An ask whose output has fields: the rendered prompt is the brief, a reply the fields do not parse goes
+    back with the reason in `{feedback}` (`Asker.usable`, one `retry` event at the node's stage), and the
+    parsed fields are the output; nothing is appended to the prompt."""
     repo = repo_with_marker_tests(tmp_path)
-    garbage = FakeReply(text="no story here")
-    pipe = pipeline(tmp_path, repo, happy_engine(product=[garbage, STORY]), composer=True)
-    st = await pipe.plan(text_card("add a marker"))
-    events = [(e["kind"], e) for e in kinds_all(st.path / "events.jsonl")]
-    assert [k for k, e in events if k == "retry"] == ["retry"]
-    assert [e["stage"] for k, e in events if k == "retry"] == ["refine"]
-    assert st.blocked is None and st.story is not None and st.story["title"] == "Add avatar upload"
+    engine = happy_engine(product=[FakeReply(text="no story here"), STORY])
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    node = v2(
+        type="ask",
+        role="product",
+        prompt="Refine: {card}.{?feedback} Last time: {feedback}{/feedback}",
+        inputs=["card"],
+        outputs={"story": {"format": "json", "fields": {"title": "text", "summary": "text"}}},
+        steps=3,
+    )
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "add a marker"}), "refine")
+    out = await ask_runner(node, ctx, asker=pipe.asker, st=st)
+    assert set(out) == {"story"} and out["story"]["title"] == "Add avatar upload"
+    retries = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] == "retry"]
+    assert [e["stage"] for e in retries] == ["refine"]
+    first, second = briefs_to(engine, "product")
+    assert "Refine: add a marker." in first and "Last time" not in first
+    assert f"Refine: add a marker. Last time: {retries[0]['error']}" in second
+    assert "Reply with" not in first  # outputs.describe is never appended to a prompt
+
+
+async def test_an_ask_without_fields_asks_once_and_its_events_name_the_legacy_kinds(tmp_path: Path) -> None:
+    """A node's `events`: on success its `done` kind with the node and the reply's length, the whole reply
+    stored under its first output; on an `on_fail: continue` failure its `failed` kind with the reason, and
+    the node fails without outputs; with `on_fail: block` the failure propagates."""
+    repo = repo_with_marker_tests(tmp_path)
+    engine = happy_engine(architect=[SURVEY_NOTES])
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    node = v2(
+        type="ask",
+        role="architect",
+        prompt="Survey: {card}",
+        inputs=["card"],
+        outputs={"survey": "markdown"},
+        steps=8,
+        on_fail="continue",
+        events={"done": "survey_done", "failed": "survey_failed"},
+    )
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "add a marker"}), "survey")
+    assert await ask_runner(node, ctx, asker=pipe.asker, st=st) == {"survey": SURVEY_NOTES.text}
+    failed = await ask_runner(node, ctx, asker=pipe.asker, st=st)  # the architect's script is spent
+    assert set(failed) == {FAIL_KEY}
+    legacy = ("survey_done", "survey_failed")
+    done, fail = [e for e in kinds_all(st.path / "events.jsonl") if e["kind"] in legacy]
+    assert (done["kind"], done["node"], done["chars"]) == ("survey_done", "survey", len(SURVEY_NOTES.text))
+    assert fail["kind"] == "survey_failed" and fail["node"] == "survey" and fail["reason"]
+    assert "Survey: add a marker" in briefs_to(engine, "architect")[0]
+    with pytest.raises(Exception, match="architect"):  # on_fail block: the failure propagates
+        await ask_runner(node.model_copy(update={"on_fail": "block"}), ctx, asker=pipe.asker, st=st)
+    assert [e["kind"] for e in kinds_all(st.path / "events.jsonl")].count("survey_failed") == 1
 
 
 async def test_a_story_card_skips_refine_and_logs_refine_skipped(tmp_path: Path) -> None:
@@ -1300,69 +1372,116 @@ class TalkingAsker:
             self.closed += 1
 
 
-def talk_workflow(tmp_path: Path, nodes: dict[str, Any]) -> Any:
-    return cfg_for(tmp_path, extra={"workflows": {"w": {"start": next(iter(nodes)), "nodes": nodes}}})
+def talk_composer(tmp_path: Path, nodes: dict[str, Any], runners: dict[str, Any]) -> Composer:
+    """A composer over one schema v2 workflow `w` of `nodes`."""
+    spec = WorkflowSpec.model_validate({"nodes": nodes})
+    return Composer(
+        cfg_for(tmp_path),
+        runners=runners,
+        registry=Registry(),
+        store=MemoryStore(),
+        sessions=Sessions(),
+        workflows={"w": spec},
+    )
 
 
-async def test_the_conversation_runner_holds_its_session_for_the_run_and_ends_when_done_says(
+PLAN_FIELDS = {"plan": {"format": "json", "fields": {"layers": "list of text"}}}
+
+
+async def test_the_conversation_runner_holds_its_session_for_the_run_and_ends_on_the_parsed_turn(
     tmp_path: Path,
 ) -> None:
-    """The generic turn loop: the opening brief, then each turn's nudge from `turn`, each reply parsed, and
-    `done` ending it early; the session is stored under the session output and the next node that names it
-    continues it, one more turn of the same conversation; the composer closes it when the run ends, and the
-    session is dropped then."""
+    """The generic turn loop: the rendered prompt opens the conversation (turn 0), each later turn sends the
+    rendered `turn` text with the reason the last reply did not parse, and the conversation ends on the
+    first reply the fielded output parses; the session is stored under the session output and the next node
+    that names it continues it, its rendered prompt one more turn of the same conversation; the composer
+    closes it when the run ends, and the session is dropped then."""
     nodes = {
         "talk": {
             "type": "conversation",
             "role": "architect",
-            "prompt": "open",
-            "turn": "again",
-            "parse": "upper",
-            "done": "said_done",
+            "prompt": "the opening",
+            "turn": "again: {feedback}",
             "steps": 5,
-            "outputs": {"said": "text", "talk_session": "session"},
+            "outputs": {**PLAN_FIELDS, "talk_session": "session"},
+            "to": ["more"],
         },
         "more": {
             "type": "conversation",
             "role": "architect",
-            "prompt": "open_more",
-            "turn": "again",
+            "prompt": "one more for {plan.layers}",
             "session": "talk_session",
-            "parse": "upper",
-            "inputs": ["talk_session"],
+            "inputs": ["talk_session", "plan"],
             "outputs": {"more": "text"},
         },
     }
-    registry = Registry()
-    registry.add("open", lambda ctx, feedback: "the opening")
-    registry.add("open_more", lambda ctx, feedback: "one more")
-    registry.add("again", lambda ctx, index, feedback: f"turn {index}")
-    registry.add("upper", str.upper)
-    registry.add("said_done", lambda ctx, value: value == "DONE")
-    asker = TalkingAsker(["first", "second", "done", "after"])
+    plan = '```json\n{"layers": ["a", "b"]}\n```'
+    asker = TalkingAsker(["first", "second", plan, "after"])
     st = SimpleNamespace(runs=[])
     held: list[Any] = []
 
     async def converse(node: Any, ctx: RunContext) -> Any:
-        out = await conversation_runner(node, ctx, asker=asker, st=st)
+        out = await conversation_runner(node, ctx, asker=cast(Any, asker), st=cast(Any, st))
         held.append((out.get("talk_session") or ctx.sessions.get("talk_session"), asker.closed))
         return out
 
-    c = Composer(
-        talk_workflow(tmp_path, nodes),
-        runners={"conversation": converse},
-        registry=registry,
-        store=MemoryStore(),
-        sessions=Sessions(),
-    )
+    c = talk_composer(tmp_path, nodes, {"conversation": converse})
     await c.run("w")
     assert asker.opened == [("talk", "architect", "the opening", None)]  # one conversation, opened once
-    assert asker.said == [None, "turn 1", "turn 2", "one more"]  # `done` ended it on the third turn
-    assert c.store.get("said") == "DONE" and c.store.get("more") == "AFTER"
+    assert asker.said[0] is None and len(asker.said) == 4  # it ended on the third turn, when it parsed
+    assert asker.said[1].startswith("again: ") and "JSON" in asker.said[1]  # the parse reason
+    assert asker.said[3] == 'one more for [\n "a",\n "b"\n]'
+    assert c.store.get("plan") == {"layers": ["a", "b"]} and c.store.get("more") == "after"
     [(session, closed), (again, still)] = held
     assert isinstance(session, Session) and session.run == "run-1" and again is session
     assert closed == still == 0  # held while the run goes on
     assert asker.closed == 1 and c.sessions.get("talk_session") is None  # closed, and dropped, at its end
+
+
+async def test_a_conversation_that_never_parses_within_its_steps_blocks_or_continues(tmp_path: Path) -> None:
+    asker = TalkingAsker(["no", "still no", "no", "still no"])
+    st = SimpleNamespace(runs=[], emit=lambda kind, **f: None)
+    node = v2(type="conversation", role="architect", prompt="go", turn="again", steps=2, outputs=PLAN_FIELDS)
+    ctx = RunContext(
+        cfg=cfg_for(tmp_path),
+        store=MemoryStore(),
+        sessions=Sessions(),
+        registry=Registry(),
+        workflow="w",
+        node="talk",
+        item=None,
+        feedback=None,
+    )
+    with pytest.raises(StoryBlocked, match="architect did not produce a usable plan"):
+        await conversation_runner(node, ctx, asker=cast(Any, asker), st=cast(Any, st))
+    cont = node.model_copy(update={"on_fail": "continue"})
+    assert set(await conversation_runner(cont, ctx, asker=cast(Any, asker), st=cast(Any, st))) == {FAIL_KEY}
+    assert asker.said == [None, "again", None, "again"] and asker.closed == 2
+
+
+async def test_the_conversation_runner_talks_through_the_asker_with_the_fake_engine(tmp_path: Path) -> None:
+    """Through the real `Asker.conversation`: the opening is the studio subtask, the turn a follow-up in the
+    same conversation, and the parsed reply the output."""
+    repo = repo_with_marker_tests(tmp_path)
+    plan = FakeReply(text='Here.\n```json\n{"layers": ["storage"]}\n```')
+    engine = happy_engine(architect=[FakeReply(text="thinking aloud"), plan])
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    node = v2(
+        type="conversation",
+        role="architect",
+        prompt="Plan {card}.",
+        turn="Again, as one json block: {feedback}",
+        inputs=["card"],
+        steps=3,
+        outputs=PLAN_FIELDS,
+    )
+    ctx = run_context(pipe, Registry(), MemoryStore({"card": "add a marker"}), "layers")
+    out = await conversation_runner(node, ctx, asker=pipe.asker, st=st)
+    assert out == {"plan": {"layers": ["storage"]}}
+    first, second = briefs_to(engine, "architect")
+    assert "Plan add a marker." in first and "Again, as one json block: " in second
+    assert len(st.runs) == 1  # one studio run: the second turn was a follow-up in it
 
 
 async def test_the_composer_closes_its_held_conversations_when_the_run_raises(tmp_path: Path) -> None:
@@ -1370,13 +1489,12 @@ async def test_the_composer_closes_its_held_conversations_when_the_run_raises(tm
         "talk": {
             "type": "conversation",
             "role": "architect",
-            "prompt": "open",
+            "prompt": "the opening",
             "outputs": {"said": "text", "s": "session"},
+            "to": ["boom"],
         },
         "boom": {"type": "check", "run": "boom"},
     }
-    registry = Registry()
-    registry.add("open", lambda ctx, feedback: "the opening")
     asker = TalkingAsker(["first"])
     st = SimpleNamespace(runs=[])
 
@@ -1385,21 +1503,87 @@ async def test_the_composer_closes_its_held_conversations_when_the_run_raises(tm
         raise RuntimeError("boom")
 
     async def converse(node: Any, ctx: RunContext) -> Any:
-        return await conversation_runner(node, ctx, asker=asker, st=st)
+        return await conversation_runner(node, ctx, asker=cast(Any, asker), st=cast(Any, st))
 
-    c = Composer(
-        talk_workflow(tmp_path, nodes),
-        runners={"conversation": converse, "check": boom},
-        registry=registry,
-        store=MemoryStore(),
-        sessions=Sessions(),
-    )
+    c = talk_composer(tmp_path, nodes, {"conversation": converse, "check": boom})
     assert c.held is None  # nothing can be held before the run, or after it
     with pytest.raises(RuntimeError, match="boom"):
         await c.run("w")
     assert asker.said == [None] and asker.closed == 1 and c.held is None
+    ctx = RunContext(
+        cfg=c.cfg,
+        store=c.store,
+        sessions=c.sessions,
+        registry=c.registry,
+        workflow="w",
+        node="talk",
+        item=None,
+        feedback=None,
+    )
     with pytest.raises(RuntimeError, match="holds nothing open"):  # a session node outside a run: loud
-        await converse(c.cfg.workflows["w"].nodes["talk"], c._ctx("w", "talk", None))
+        await converse(c.spec("w").nodes["talk"], ctx)
+
+
+# ---- the write type (`write_runner`): one writing turn, its diff, its session ----
+
+
+async def test_a_write_node_yields_its_diff_its_account_and_a_session_a_later_node_continues(
+    tmp_path: Path,
+) -> None:
+    """A write node is one writing turn of a conversation detached at the base: its outputs are the diff
+    since that base (new files included), the reply and the held session; a later write node that names the
+    session sends its rendered prompt as the next turn, and its diff is the whole change since the base."""
+    repo = repo_with_marker_tests(tmp_path)
+    more = FakeReply(
+        tool_calls=[ToolCall("m", "write_file", json.dumps({"path": "MORE", "content": "more\n"}))]
+    )
+    engine = happy_engine(
+        coder=[WRITE_PASS, DONE, more, FakeReply(text="added MORE")], reviewer=[APPROVE] * 4
+    )
+    pipe = pipeline(tmp_path, repo, engine)
+    st = bare_state(tmp_path, repo)
+    nodes = {
+        "build": {
+            "type": "write",
+            "role": "coder",
+            "prompt": "Write PASS for {card}.",
+            "inputs": ["card"],
+            "outputs": {"diff": "text", "account": "text", "coding": "session"},
+            "to": ["fix"],
+        },
+        "fix": {
+            "type": "write",
+            "role": "coder",
+            "prompt": "Now write MORE after: {account}",
+            "session": "coding",
+            "inputs": ["coding", "account"],
+            "outputs": {"diff.fix": "text", "account.fix": "text"},
+        },
+    }
+    held: list[Any] = []
+
+    async def write(node: Any, ctx: RunContext) -> Any:
+        out = await write_runner(node, ctx, asker=pipe.asker, st=st)
+        held.append(out.get("coding") or ctx.sessions.get("coding"))
+        return out
+
+    spec = WorkflowSpec.model_validate({"inputs": ["card"], "nodes": nodes})
+    c = Composer(
+        pipe.cfg,
+        runners={"write": write},
+        registry=Registry(),
+        store=MemoryStore({"card": "add a marker"}),
+        sessions=Sessions(),
+        workflows={"w": spec},
+    )
+    await c.run("w")
+    diff, later = c.store.get("diff"), c.store.get("diff.fix")
+    assert "+++ b/PASS" in diff and "+ok" in diff and "MORE" not in diff
+    assert "+++ b/PASS" in later and "+++ b/MORE" in later and "+more" in later
+    assert c.store.get("account") == "done" and c.store.get("account.fix") == "added MORE"
+    assert isinstance(held[0], Session) and held[1] is held[0]  # one session, continued
+    assert len(st.runs) == 1 and c.sessions.get("coding") is None  # one studio run, closed at the end
+    assert "Now write MORE after: done" in briefs_to(engine, "coder")[-1]
 
 
 def drafting_closed(st: StoryState) -> None:
@@ -1614,14 +1798,25 @@ async def test_the_meeting_runs_and_resumes_from_saved_state_the_same_as_the_dri
     assert seen[1] == seen[0]
 
 
-async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through_its_run_piece(
+MEETING_NODE = {
+    "type": "meeting",
+    "role": ["product", "architect", "tester"],
+    "prompt": "Agree on {story.title} before anyone builds.",
+    "turn": "Speak for your part of {story.title}.",
+    "inputs": ["story", "layers"],
+    "outputs": {"agreement": "json", "story": "json", "layers": "list"},
+}
+
+
+async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through_the_protocol(
     tmp_path: Path,
 ) -> None:
-    """The generic runner: the node's `run` piece is called with a `Hold`, which makes the meeting from the
-    factory (the tools over the checkout the piece names, a fresh turn callback, the wait before each turn)
-    and holds it from the team state the store has saved; the piece's mapping is the node's outputs."""
-    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine(), composer=True)
-    node = pipe.cfg.workflows["story"].nodes["amigos"]
+    """The generic runner: the protocol (`agree`) is called with a `Hold`, which makes the meeting from the
+    factory (the tools over the checkout the protocol names, a fresh turn callback, the wait before each
+    turn, the node's rendered turn text) and holds it from the team state the store has saved, and with the
+    node's rendered prompt as the opening text; the node's declared outputs are what the protocol returns."""
+    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine())
+    node = v2(**MEETING_NODE)
     made: list[Any] = []
     turned: list[Any] = []
 
@@ -1630,9 +1825,10 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
 
     class Held:
         before_turn: Any = None
+        turn_text: Any = None
 
         async def run(self, opening: str, *args: Any, repo: Path, base: str, state: Any = None) -> Any:
-            made.append((opening, args, repo, base, state, self.before_turn))
+            made.append((opening, args, repo, base, state, self.before_turn, self.turn_text))
             self_on_turn("turn", {"n": 1})
             return "the agreement"
 
@@ -1644,36 +1840,104 @@ async def test_the_meeting_runner_holds_its_meeting_from_the_saved_state_through
 
     self_on_turn: Any = None
 
-    async def piece(ctx: RunContext, hold: Hold) -> dict[str, Any]:
-        agreed = await hold(tmp_path / "tree", "open", "story", "layers", {}, set(), repo=tmp_path, base="b")
-        return {"agreement": agreed}
+    async def agree(ctx: RunContext, hold: Hold, opening: str | None) -> dict[str, Any]:
+        agreed = await hold(
+            tmp_path / "tree", opening or "", "story", "layers", {}, set(), repo=tmp_path, base="b"
+        )
+        return {"agreement": agreed, "story": "reworded", "stray": "not an output"}
 
-    registry = Registry()
-    registry.add("story.amigos", piece)
-    store = MemoryStore({"meeting": {"saved": True}})
+    store = MemoryStore({"meeting": {"saved": True}, "story": {"title": "Avatars"}, "layers": []})
     out = await meeting_runner(
         node,
-        run_context(pipe, registry, store, "amigos"),
+        run_context(pipe, Registry(), store, "amigos"),
+        agree=agree,
         meeting=factory,
         tools=lambda tree: lambda role: f"{role} reads {tree.name}",
         on_turn=lambda: lambda turn, state: turned.append((turn, state)),
         before_turn=lambda: wait,
+        roles=("product", "architect", "tester"),
     )
-    assert out == {"agreement": "the agreement"}
+    assert out == {"agreement": "the agreement", "story": "reworded"}
+    opening = "Agree on Avatars before anyone builds."
     assert made == [
         (True, "tester reads tree"),
-        ("open", ("story", "layers", {}, set()), tmp_path, "b", {"saved": True}, wait),
+        (
+            opening,
+            ("story", "layers", {}, set()),
+            tmp_path,
+            "b",
+            {"saved": True},
+            wait,
+            "Speak for your part of Avatars.",
+        ),
     ]
     assert turned == [("turn", {"n": 1})]
+    with pytest.raises(ValueError, match="product, architect, tester"):  # the protocol's seats
+        await meeting_runner(
+            node.model_copy(update={"role": ["product", "coder"]}),
+            run_context(pipe, Registry(), store, "amigos"),
+            agree=agree,
+            meeting=factory,
+            tools=lambda tree: lambda role: role,
+            on_turn=lambda: lambda turn, state: None,
+            roles=("product", "architect", "tester"),
+        )
+
+
+async def test_a_meeting_nodes_prompt_and_turn_texts_reach_the_amigos_opening_and_every_seat(
+    tmp_path: Path,
+) -> None:
+    """The story's meeting runner over the amigos protocol (`_agree`): the node's rendered prompt replaces the
+    hub's `amigos-opening` text at the head of the opening message (the story, the split and the contracts
+    follow as before), its rendered turn text replaces `amigos-turn` in each seat's system message, and the
+    agreement rewrites the story and the layers."""
+    repo = repo_with_levels(tmp_path)
+    seen: list[tuple[str, str]] = []
+    replay = replay_meeting(EASY_MEETING)
+
+    def recording(cfg: Any, tools: Any, on_turn: Any) -> Any:
+        meeting = replay(cfg, tools, on_turn)
+        run = meeting.run
+
+        async def run_and_see(opening: str, *args: Any, **kwargs: Any) -> Any:
+            agent, client = meeting._agent("tester")
+            seen.append((opening, agent._system_messages[0].content))
+            await client.close()
+            return await run(opening, *args, **kwargs)
+
+        meeting.run = run_and_see  # type: ignore[method-assign]
+        return meeting
+
+    pipe = pipeline(tmp_path, repo, happy_engine(), story=MEETING, roles=MEETING_ROLES, meeting=recording)
+    card = text_card("avatars")
+    st = StoryState.open(pipe.stories_dir / card.key, card, pipe.repo)
+    st.base = {"ref": "HEAD", "sha": git(repo, "rev-parse", "HEAD")}
+    story, split = Story.from_dict(REWORDED_STORY), AGREED_SPLIT["layers"]
+    store = MemoryStore({"story": story.to_dict(), "layers": split})
+    runner = story_runners(pipe, st, card)["meeting"]
+    out = await runner(v2(**MEETING_NODE), run_context(pipe, Registry(), store, "amigos"))
+    assert st.agreement is not None and out == {
+        "agreement": st.agreement,
+        "story": st.story,
+        "layers": st.layers,
+    }
+    [(opening, system)] = seen
+    assert opening.startswith("Agree on Add avatar upload before anyone builds.\n\n## Product's story")
+    assert hub_text("amigos-opening") not in opening
+    assert "Speak for your part of Add avatar upload." in system and hub_text("amigos-turn") not in system
+    assert opening_message(story, tuple(Layer.from_dict(x) for x in split), "c", []).startswith(
+        hub_text("amigos-opening")
+    )  # without a node's text, the opening is the hub's as before
 
 
 async def test_the_gate_runner_calls_its_run_piece_with_the_nodes_args_then_ends_the_run(
     tmp_path: Path,
 ) -> None:
-    """The generic runner: the node's `run` id resolved before the call, called as `fn(ctx, **node.args)`
-    (it may be async), and then the run ends (`EndRun`), whatever the piece returned."""
-    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine(), composer=True)
-    node = pipe.cfg.workflows["story"].nodes["review"]
+    """The generic runner: the node's `run` resolved before the call (the registry's catalog, else its id),
+    called as `fn(ctx, **node.args)` (it may be async), and then the run ends (`EndRun`), whatever it
+    returned."""
+    pipe = pipeline(tmp_path, repo_with_marker_tests(tmp_path), happy_engine())
+    node = v2(type="gate", run="story.finish", args={"to": "review"})
     called: list[Any] = []
 
     async def piece(ctx: RunContext, **args: Any) -> None:
@@ -1683,7 +1947,7 @@ async def test_the_gate_runner_calls_its_run_piece_with_the_nodes_args_then_ends
     registry.add("story.finish", piece)
     ctx = run_context(pipe, registry, MemoryStore(), "review")
     with pytest.raises(EndRun):
-        await gate_runner(node.model_copy(update={"args": {"to": "review"}}), ctx)
+        await gate_runner(node, ctx)
     assert called == [("review", {"to": "review"})]
     with pytest.raises(KeyError):  # a wrong id is a config error, raised before anything is called
         await gate_runner(node.model_copy(update={"run": "story.nope"}), ctx)
